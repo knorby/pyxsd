@@ -1,0 +1,432 @@
+<?xml version="1.0" encoding="ascii"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+          "DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <title>pyxsd.transforms.transform</title>
+  <link rel="stylesheet" href="epydoc.css" type="text/css" />
+  <script type="text/javascript" src="epydoc.js"></script>
+</head>
+
+<body bgcolor="white" text="black" link="blue" vlink="#204080"
+      alink="#204080">
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0">
+  <tr valign="top">
+    <td width="100%">
+      <span class="breadcrumbs">
+        <a href="pyxsd-module.html">Package&nbsp;pyxsd</a> ::
+        <a href="pyxsd.transforms-module.html">Package&nbsp;transforms</a> ::
+        Module&nbsp;transform
+      </span>
+    </td>
+    <td>
+      <table cellpadding="0" cellspacing="0">
+        <!-- hide/show private -->
+        <tr><td align="right"><span class="options">[<a href="javascript: void(0);" class="privatelink"
+    onclick="toggle_private();">hide private</a>]</span></td></tr>
+        <tr><td align="right"><span class="options"
+            >[<a href="frames.html" target="_top">frames</a
+            >]&nbsp;|&nbsp;<a href="pyxsd.transforms.transform-pysrc.html"
+            target="_top">no&nbsp;frames</a>]</span></td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<h1 class="epydoc">Source Code for <a href="pyxsd.transforms.transform-module.html">Module pyxsd.transforms.transform</a></h1>
+<pre class="py-src">
+<span class="py-lineno">  1</span>  <span class="py-line"><span class="py-docstring">"""</span> </span>
+<span class="py-lineno">  2</span>  <span class="py-line"><span class="py-docstring">See the transforms manual on the `pyXSD website &lt;http://pyXSD.org/&gt;`_</span> </span>
+<span class="py-lineno">  3</span>  <span class="py-line"><span class="py-docstring">or in the /doc directory of the installation.</span> </span>
+<span class="py-lineno">  4</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">  5</span>  <span class="py-line"><span class="py-docstring">In the transform manual:</span> </span>
+<span class="py-lineno">  6</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">  7</span>  <span class="py-line"><span class="py-docstring">- Basic and advanced tutorials on writing transfomers</span> </span>
+<span class="py-lineno">  8</span>  <span class="py-line"><span class="py-docstring">- An overview of this class</span> </span>
+<span class="py-lineno">  9</span>  <span class="py-line"><span class="py-docstring">- Basic use instructions</span> </span>
+<span class="py-lineno"> 10</span>  <span class="py-line"><span class="py-docstring">- Documentation on included transform libraries</span> </span>
+<span class="py-lineno"> 11</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 12</span>  <span class="py-line"><span class="py-docstring">"""</span> </span>
+<a name="Transform"></a><div id="Transform-def"><span class="py-lineno"> 13</span> <a class="py-toggle" href="#" id="Transform-toggle" onclick="toggle('Transform'); return false;">-</a><span class="py-line"><span class="py-keyword">class</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html">Transform</a> <span class="py-op">(</span><span class="py-base-class">object</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform-collapsed" style="display:none;" pad="+++" indent="++++"></div><div id="Transform-expanded"><span class="py-lineno"> 14</span>  <span class="py-line">    <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 15</span>  <span class="py-line"><span class="py-docstring">    The base abstract class for all transforms. All methods should</span> </span>
+<span class="py-lineno"> 16</span>  <span class="py-line"><span class="py-docstring">    mix into the usable transform classes. Contains methods to</span> </span>
+<span class="py-lineno"> 17</span>  <span class="py-line"><span class="py-docstring">    retrieve elements from the tree. </span> </span>
+<span class="py-lineno"> 18</span>  <span class="py-line"><span class="py-docstring">    """</span> </span>
+<span class="py-lineno"> 19</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 20</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="Transform.__init__"></a><div id="Transform.__init__-def"><span class="py-lineno"> 21</span> <a class="py-toggle" href="#" id="Transform.__init__-toggle" onclick="toggle('Transform.__init__'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#__init__">__init__</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.__init__-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.__init__-expanded"><span class="py-lineno"> 22</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 23</span>  <span class="py-line"><span class="py-docstring">        Cannot Initialize a true abstact class!</span> </span>
+<span class="py-lineno"> 24</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno"> 25</span>  <span class="py-line">        <span class="py-keyword">raise</span> <span class="py-name">TypeError</span><span class="py-op">,</span> <span class="py-string">"an abstract class cannot be instantiated"</span> </span>
+</div><span class="py-lineno"> 26</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 27</span>  <span class="py-line">     </span>
+<span class="py-lineno"> 28</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 29</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="Transform.makeElemObj"></a><div id="Transform.makeElemObj-def"><span class="py-lineno"> 30</span> <a class="py-toggle" href="#" id="Transform.makeElemObj-toggle" onclick="toggle('Transform.makeElemObj'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#makeElemObj">makeElemObj</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">name</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.makeElemObj-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.makeElemObj-expanded"><span class="py-lineno"> 31</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 32</span>  <span class="py-line"><span class="py-docstring">        Creates a new element that contains the proper tree stucture</span> </span>
+<span class="py-lineno"> 33</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno"> 34</span>  <span class="py-line">        <span class="py-keyword">class</span> <span class="py-def-name">ElemObjClass</span><span class="py-op">(</span><span class="py-base-class">object</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 35</span>  <span class="py-line">            <span class="py-keyword">def</span> <span class="py-def-name">__init__</span><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">name</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 36</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_children_</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 37</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_attribs_</span>  <span class="py-op">=</span> <span class="py-op">{</span><span class="py-op">}</span> </span>
+<span class="py-lineno"> 38</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_name_</span>     <span class="py-op">=</span> <span id="link-0" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-0', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> </span>
+<span class="py-lineno"> 39</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_value_</span>    <span class="py-op">=</span> <span class="py-name">None</span> </span>
+</div></div><span class="py-lineno"> 40</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 41</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">ElemObjClass</span><span class="py-op">(</span><span id="link-1" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-1', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">)</span> </span>
+</div><span class="py-lineno"> 42</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 43</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 44</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<span class="py-lineno"> 45</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-string">"""</span> </span>
+<span class="py-lineno"> 46</span>  <span class="py-line"><span class="py-string">    Makes a comment element</span> </span>
+<span class="py-lineno"> 47</span>  <span class="py-line"><span class="py-string">    """</span> </span>
+<a name="Transform.makeCommentElem"></a><div id="Transform.makeCommentElem-def"><span class="py-lineno"> 48</span> <a class="py-toggle" href="#" id="Transform.makeCommentElem-toggle" onclick="toggle('Transform.makeCommentElem'); return false;">-</a><span class="py-line">    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#makeCommentElem">makeCommentElem</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">comment</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.makeCommentElem-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.makeCommentElem-expanded"><span class="py-lineno"> 49</span>  <span class="py-line">        <span class="py-name">obj</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-2" class="py-name"><a title="pyxsd.transforms.transform.Transform.makeElemObj" class="py-name" href="#" onclick="doclink('link-2', 'makeElemObj', 'Method pyxsd.transforms.transform.Transform.makeElemObj()=pyxsd.transforms.transform.Transform-class.html#makeElemObj'); return false;">makeElemObj</a></span></span><span class="py-op">(</span><span class="py-string">'_comment_'</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 50</span>  <span class="py-line">        <span class="py-name">obj</span><span class="py-op">.</span><span class="py-name">_value_</span> <span class="py-op">=</span> <span class="py-name">comment</span> </span>
+<span class="py-lineno"> 51</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">obj</span> </span>
+</div><span class="py-lineno"> 52</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 53</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 54</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<span class="py-lineno"> 55</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<span class="py-lineno"> 56</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-string">"""</span> </span>
+<span class="py-lineno"> 57</span>  <span class="py-line"><span class="py-string">    The *walk* function walks through the tree structure, and</span> </span>
+<span class="py-lineno"> 58</span>  <span class="py-line"><span class="py-string">    runs a provided visitor function on all elements.</span> </span>
+<span class="py-lineno"> 59</span>  <span class="py-line"><span class="py-string">    """</span> </span>
+<a name="Transform.walk"></a><div id="Transform.walk-def"><span class="py-lineno"> 60</span> <a class="py-toggle" href="#" id="Transform.walk-toggle" onclick="toggle('Transform.walk'); return false;">-</a><span class="py-line">    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#walk">walk</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">instance</span><span class="py-op">,</span> <span class="py-param">visitor</span><span class="py-op">,</span> <span class="py-op">*</span><span class="py-param">args</span><span class="py-op">,</span> <span class="py-op">**</span><span class="py-param">kwargs</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.walk-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.walk-expanded"><span class="py-lineno"> 61</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 62</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">isinstance</span><span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">,</span> <span id="link-3" class="py-name"><a title="pyxsd.elementRepresentatives.list" class="py-name" href="#" onclick="doclink('link-3', 'list', 'Module pyxsd.elementRepresentatives.list=pyxsd.elementRepresentatives.list-module.html'); return false;">list</a></span></span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 63</span>  <span class="py-line">            <span class="py-keyword">for</span> <span class="py-name">item</span> <span class="py-keyword">in</span> <span class="py-name">instance</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 64</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span id="link-4" class="py-name"><a title="pyxsd.transforms.transform.Transform.walk" class="py-name" href="#" onclick="doclink('link-4', 'walk', 'Method pyxsd.transforms.transform.Transform.walk()=pyxsd.transforms.transform.Transform-class.html#walk'); return false;">walk</a></span></span><span class="py-op">(</span><span class="py-name">item</span><span class="py-op">,</span> <span class="py-name">visitor</span><span class="py-op">,</span> <span class="py-op">*</span><span class="py-name">args</span><span class="py-op">,</span> <span class="py-op">**</span><span class="py-name">kwargs</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 65</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 66</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">isinstance</span><span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">,</span> <span class="py-name">dict</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 67</span>  <span class="py-line">            <span class="py-keyword">for</span> <span class="py-name">item</span> <span class="py-keyword">in</span> <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">values</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 68</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span id="link-5" class="py-name"><a title="pyxsd.transforms.transform.Transform.walk" class="py-name" href="#" onclick="doclink('link-5', 'walk', 'Method pyxsd.transforms.transform.Transform.walk()=pyxsd.transforms.transform.Transform-class.html#walk'); return false;">walk</a></span></span><span class="py-op">(</span><span class="py-name">item</span><span class="py-op">,</span> <span class="py-name">visitor</span><span class="py-op">,</span> <span class="py-op">*</span><span class="py-name">args</span><span class="py-op">,</span> <span class="py-op">**</span><span class="py-name">kwargs</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 69</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 70</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">hasattr</span><span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">,</span> <span class="py-string">'_children_'</span><span class="py-op">)</span><span class="py-op">:</span>   <span class="py-keyword">return</span> </span>
+<span class="py-lineno"> 71</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">hasattr</span><span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">,</span> <span class="py-string">'_attribs_'</span><span class="py-op">)</span><span class="py-op">:</span> <span class="py-keyword">return</span> </span>
+<span class="py-lineno"> 72</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 73</span>  <span class="py-line">        <span id="link-6" class="py-name"><a title="pyxsd.elementRepresentatives.annotation.Annotation.getName
+pyxsd.elementRepresentatives.choice.Choice.getName
+pyxsd.elementRepresentatives.complexContent.ComplexContent.getName
+pyxsd.elementRepresentatives.documentation.Documentation.getName
+pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.getName
+pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.getName
+pyxsd.elementRepresentatives.enumeration.Enumeration.getName
+pyxsd.elementRepresentatives.extension.Extension.getName
+pyxsd.elementRepresentatives.length.Length.getName
+pyxsd.elementRepresentatives.list.List.getName
+pyxsd.elementRepresentatives.maxExclusive.MaxExclusive.getName
+pyxsd.elementRepresentatives.maxInclusive.MaxInclusive.getName
+pyxsd.elementRepresentatives.minExclusive.MinExclusive.getName
+pyxsd.elementRepresentatives.minInclusive.MinInclusive.getName
+pyxsd.elementRepresentatives.pattern.Pattern.getName
+pyxsd.elementRepresentatives.restriction.Restriction.getName
+pyxsd.elementRepresentatives.schema.Schema.getName
+pyxsd.elementRepresentatives.sequence.Sequence.getName
+pyxsd.elementRepresentatives.simpleContent.SimpleContent.getName
+pyxsd.elementRepresentatives.xsdType.XsdType.getName" class="py-name" href="#" onclick="doclink('link-6', 'getName', 'Method pyxsd.elementRepresentatives.annotation.Annotation.getName()=pyxsd.elementRepresentatives.annotation.Annotation-class.html#getName,Method pyxsd.elementRepresentatives.choice.Choice.getName()=pyxsd.elementRepresentatives.choice.Choice-class.html#getName,Method pyxsd.elementRepresentatives.complexContent.ComplexContent.getName()=pyxsd.elementRepresentatives.complexContent.ComplexContent-class.html#getName,Method pyxsd.elementRepresentatives.documentation.Documentation.getName()=pyxsd.elementRepresentatives.documentation.Documentation-class.html#getName,Method pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.getName()=pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#getName,Method pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.getName()=pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#getName,Method pyxsd.elementRepresentatives.enumeration.Enumeration.getName()=pyxsd.elementRepresentatives.enumeration.Enumeration-class.html#getName,Method pyxsd.elementRepresentatives.extension.Extension.getName()=pyxsd.elementRepresentatives.extension.Extension-class.html#getName,Method pyxsd.elementRepresentatives.length.Length.getName()=pyxsd.elementRepresentatives.length.Length-class.html#getName,Method pyxsd.elementRepresentatives.list.List.getName()=pyxsd.elementRepresentatives.list.List-class.html#getName,Method pyxsd.elementRepresentatives.maxExclusive.MaxExclusive.getName()=pyxsd.elementRepresentatives.maxExclusive.MaxExclusive-class.html#getName,Method pyxsd.elementRepresentatives.maxInclusive.MaxInclusive.getName()=pyxsd.elementRepresentatives.maxInclusive.MaxInclusive-class.html#getName,Method pyxsd.elementRepresentatives.minExclusive.MinExclusive.getName()=pyxsd.elementRepresentatives.minExclusive.MinExclusive-class.html#getName,Method pyxsd.elementRepresentatives.minInclusive.MinInclusive.getName()=pyxsd.elementRepresentatives.minInclusive.MinInclusive-class.html#getName,Method pyxsd.elementRepresentatives.pattern.Pattern.getName()=pyxsd.elementRepresentatives.pattern.Pattern-class.html#getName,Method pyxsd.elementRepresentatives.restriction.Restriction.getName()=pyxsd.elementRepresentatives.restriction.Restriction-class.html#getName,Method pyxsd.elementRepresentatives.schema.Schema.getName()=pyxsd.elementRepresentatives.schema.Schema-class.html#getName,Method pyxsd.elementRepresentatives.sequence.Sequence.getName()=pyxsd.elementRepresentatives.sequence.Sequence-class.html#getName,Method pyxsd.elementRepresentatives.simpleContent.SimpleContent.getName()=pyxsd.elementRepresentatives.simpleContent.SimpleContent-class.html#getName,Method pyxsd.elementRepresentatives.xsdType.XsdType.getName()=pyxsd.elementRepresentatives.xsdType.XsdType-class.html#getName'); return false;">getName</a></span></span> <span class="py-op">=</span> <span class="py-keyword">lambda</span> <span class="py-name">x</span><span class="py-op">:</span> <span class="py-name">x</span><span class="py-op">.</span><span id="link-7" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-7', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> </span>
+<span class="py-lineno"> 74</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 75</span>  <span class="py-line">        <span class="py-name">elemNames</span> <span class="py-op">=</span> <span class="py-name">map</span><span class="py-op">(</span><span class="py-keyword">lambda</span> <span class="py-name">x</span><span class="py-op">:</span> <span class="py-name">x</span><span class="py-op">.</span><span class="py-name">_name_</span><span class="py-op">,</span> <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 76</span>  <span class="py-line">        <span class="py-name">attrNames</span> <span class="py-op">=</span> <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_attribs_</span><span class="py-op">.</span><span class="py-name">keys</span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 77</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 78</span>  <span class="py-line">        <span class="py-name">visitor</span><span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">,</span> <span class="py-name">attrNames</span><span class="py-op">,</span> <span class="py-name">elemNames</span><span class="py-op">,</span> <span class="py-op">*</span><span class="py-name">args</span><span class="py-op">,</span> <span class="py-op">**</span><span class="py-name">kwargs</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 79</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 80</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">el</span> <span class="py-keyword">in</span> <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 81</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 82</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span id="link-8" class="py-name"><a title="pyxsd.transforms.transform.Transform.walk" class="py-name" href="#" onclick="doclink('link-8', 'walk', 'Method pyxsd.transforms.transform.Transform.walk()=pyxsd.transforms.transform.Transform-class.html#walk'); return false;">walk</a></span></span><span class="py-op">(</span><span class="py-name">el</span><span class="py-op">,</span> <span class="py-name">visitor</span><span class="py-op">,</span> <span class="py-op">*</span><span class="py-name">args</span><span class="py-op">,</span> <span class="py-op">**</span><span class="py-name">kwargs</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno"> 83</span>  <span class="py-line">         </span>
+<span class="py-lineno"> 84</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 85</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="Transform.classCollector"></a><div id="Transform.classCollector-def"><span class="py-lineno"> 86</span> <a class="py-toggle" href="#" id="Transform.classCollector-toggle" onclick="toggle('Transform.classCollector'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#classCollector">classCollector</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">instance</span><span class="py-op">,</span> <span class="py-param">attrNames</span><span class="py-op">,</span> <span class="py-param">elemNames</span><span class="py-op">,</span> <span class="py-param">collectorDict</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.classCollector-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.classCollector-expanded"><span class="py-lineno"> 87</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 88</span>  <span class="py-line"><span class="py-docstring">        Visitor function to make a dictionary that associates a class with</span> </span>
+<span class="py-lineno"> 89</span>  <span class="py-line"><span class="py-docstring">        its instances. The class name is the key, and the value is the list</span> </span>
+<span class="py-lineno"> 90</span>  <span class="py-line"><span class="py-docstring">        of associated instances. SEE *getInstancesByClassName*</span> </span>
+<span class="py-lineno"> 91</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno"> 92</span>  <span class="py-line">        <span class="py-name">className</span> <span class="py-op">=</span> <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">__class__</span><span class="py-op">.</span><span class="py-name">__name__</span> </span>
+<span class="py-lineno"> 93</span>  <span class="py-line">         </span>
+<span class="py-lineno"> 94</span>  <span class="py-line">        <span class="py-name">collection</span> <span class="py-op">=</span> <span class="py-name">collectorDict</span><span class="py-op">.</span><span class="py-name">get</span><span class="py-op">(</span><span class="py-name">className</span><span class="py-op">,</span> <span class="py-name">None</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 95</span>  <span class="py-line">         </span>
+<span class="py-lineno"> 96</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">collection</span> <span class="py-op">==</span> <span class="py-name">None</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 97</span>  <span class="py-line">            <span class="py-name">collection</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 98</span>  <span class="py-line">            <span class="py-name">collectorDict</span><span class="py-op">[</span><span class="py-name">className</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">collection</span> </span>
+<span class="py-lineno"> 99</span>  <span class="py-line">             </span>
+<span class="py-lineno">100</span>  <span class="py-line">        <span class="py-name">collection</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">[</span><span class="py-name">instance</span><span class="py-op">]</span> </span>
+</div><span class="py-lineno">101</span>  <span class="py-line">     </span>
+<span class="py-lineno">102</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">103</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="Transform.tagCollector"></a><div id="Transform.tagCollector-def"><span class="py-lineno">104</span> <a class="py-toggle" href="#" id="Transform.tagCollector-toggle" onclick="toggle('Transform.tagCollector'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#tagCollector">tagCollector</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">instance</span><span class="py-op">,</span> <span class="py-param">attrNames</span><span class="py-op">,</span> <span class="py-param">elemNames</span><span class="py-op">,</span> <span class="py-param">collectorDict</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.tagCollector-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.tagCollector-expanded"><span class="py-lineno">105</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">106</span>  <span class="py-line"><span class="py-docstring">        A visitor function that is used to make a dictionary that associates</span> </span>
+<span class="py-lineno">107</span>  <span class="py-line"><span class="py-docstring">        a tag name with its children. SEE *getAllSubElements*</span> </span>
+<span class="py-lineno">108</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">109</span>  <span class="py-line"> </span>
+<span class="py-lineno">110</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">i</span><span class="py-op">,</span> <span class="py-name">tagName</span> <span class="py-keyword">in</span> <span id="link-9" class="py-name"><a title="pyxsd.elementRepresentatives.list" class="py-name" href="#" onclick="doclink('link-9', 'list', 'Module pyxsd.elementRepresentatives.list=pyxsd.elementRepresentatives.list-module.html'); return false;">list</a></span></span><span class="py-op">(</span><span class="py-name">enumerate</span><span class="py-op">(</span><span class="py-name">elemNames</span><span class="py-op">)</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">111</span>  <span class="py-line">            <span class="py-name">obj</span> <span class="py-op">=</span> <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">[</span><span class="py-name">i</span><span class="py-op">]</span> </span>
+<span class="py-lineno">112</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">obj</span> <span class="py-op">==</span> <span class="py-name">None</span><span class="py-op">:</span> <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">113</span>  <span class="py-line"> </span>
+<span class="py-lineno">114</span>  <span class="py-line"> </span>
+<span class="py-lineno">115</span>  <span class="py-line">            <span class="py-name">collection</span> <span class="py-op">=</span> <span class="py-name">collectorDict</span><span class="py-op">.</span><span class="py-name">get</span><span class="py-op">(</span><span class="py-name">tagName</span><span class="py-op">,</span> <span class="py-name">None</span><span class="py-op">)</span> </span>
+<span class="py-lineno">116</span>  <span class="py-line">         </span>
+<span class="py-lineno">117</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">collection</span> <span class="py-op">==</span> <span class="py-name">None</span><span class="py-op">:</span> </span>
+<span class="py-lineno">118</span>  <span class="py-line">                 </span>
+<span class="py-lineno">119</span>  <span class="py-line">                <span class="py-name">collection</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno">120</span>  <span class="py-line">                <span class="py-name">collectorDict</span><span class="py-op">[</span><span class="py-name">tagName</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">collection</span> </span>
+<span class="py-lineno">121</span>  <span class="py-line"> </span>
+<span class="py-lineno">122</span>  <span class="py-line">            <span class="py-name">collection</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">obj</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">123</span>  <span class="py-line">             </span>
+<span class="py-lineno">124</span>  <span class="py-line"> </span>
+<span class="py-lineno">125</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">126</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="Transform.tagFinder"></a><div id="Transform.tagFinder-def"><span class="py-lineno">127</span> <a class="py-toggle" href="#" id="Transform.tagFinder-toggle" onclick="toggle('Transform.tagFinder'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#tagFinder">tagFinder</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">instance</span><span class="py-op">,</span> <span class="py-param">attrNames</span><span class="py-op">,</span> <span class="py-param">elemNames</span><span class="py-op">,</span> <span class="py-param">collection</span><span class="py-op">,</span> <span class="py-param">name</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.tagFinder-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.tagFinder-expanded"><span class="py-lineno">128</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">129</span>  <span class="py-line"><span class="py-docstring">        A visitor function to collect all tags with a particular name, and</span> </span>
+<span class="py-lineno">130</span>  <span class="py-line"><span class="py-docstring">        put them into a list. SEE *getElementsByName*</span> </span>
+<span class="py-lineno">131</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">132</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">i</span><span class="py-op">,</span> <span class="py-name">tagName</span> <span class="py-keyword">in</span> <span id="link-10" class="py-name"><a title="pyxsd.elementRepresentatives.list" class="py-name" href="#" onclick="doclink('link-10', 'list', 'Module pyxsd.elementRepresentatives.list=pyxsd.elementRepresentatives.list-module.html'); return false;">list</a></span></span><span class="py-op">(</span><span class="py-name">enumerate</span><span class="py-op">(</span><span class="py-name">elemNames</span><span class="py-op">)</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">133</span>  <span class="py-line">            <span class="py-keyword">if</span> <span id="link-11" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-11', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> <span class="py-op">==</span> <span class="py-name">tagName</span><span class="py-op">:</span> </span>
+<span class="py-lineno">134</span>  <span class="py-line">                <span class="py-name">obj</span> <span class="py-op">=</span> <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">[</span><span class="py-name">i</span><span class="py-op">]</span> </span>
+<span class="py-lineno">135</span>  <span class="py-line">                <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">obj</span><span class="py-op">==</span><span class="py-name">None</span><span class="py-op">:</span> </span>
+<span class="py-lineno">136</span>  <span class="py-line">                    <span class="py-name">collection</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">obj</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">137</span>  <span class="py-line"> </span>
+<span class="py-lineno">138</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">139</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="Transform.getInstancesByClassName"></a><div id="Transform.getInstancesByClassName-def"><span class="py-lineno">140</span> <a class="py-toggle" href="#" id="Transform.getInstancesByClassName-toggle" onclick="toggle('Transform.getInstancesByClassName'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#getInstancesByClassName">getInstancesByClassName</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">root</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.getInstancesByClassName-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.getInstancesByClassName-expanded"><span class="py-lineno">141</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">142</span>  <span class="py-line"><span class="py-docstring">        Function to use the *walk* function with the *classCollector*</span> </span>
+<span class="py-lineno">143</span>  <span class="py-line"><span class="py-docstring">        visitor function. Used to associate a class name with the class'</span> </span>
+<span class="py-lineno">144</span>  <span class="py-line"><span class="py-docstring">        instances.</span> </span>
+<span class="py-lineno">145</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">146</span>  <span class="py-line">        <span class="py-name">collectorDict</span> <span class="py-op">=</span> <span class="py-op">{</span><span class="py-op">}</span> </span>
+<span class="py-lineno">147</span>  <span class="py-line"> </span>
+<span class="py-lineno">148</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span id="link-12" class="py-name"><a title="pyxsd.transforms.transform.Transform.walk" class="py-name" href="#" onclick="doclink('link-12', 'walk', 'Method pyxsd.transforms.transform.Transform.walk()=pyxsd.transforms.transform.Transform-class.html#walk'); return false;">walk</a></span></span><span class="py-op">(</span><span class="py-name">root</span><span class="py-op">,</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-13" class="py-name"><a title="pyxsd.transforms.transform.Transform.classCollector" class="py-name" href="#" onclick="doclink('link-13', 'classCollector', 'Method pyxsd.transforms.transform.Transform.classCollector()=pyxsd.transforms.transform.Transform-class.html#classCollector'); return false;">classCollector</a></span></span><span class="py-op">,</span> <span class="py-name">collectorDict</span><span class="py-op">)</span> </span>
+<span class="py-lineno">149</span>  <span class="py-line"> </span>
+<span class="py-lineno">150</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">collectorDict</span> </span>
+</div><span class="py-lineno">151</span>  <span class="py-line"> </span>
+<span class="py-lineno">152</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">153</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="Transform.getAllSubElements"></a><div id="Transform.getAllSubElements-def"><span class="py-lineno">154</span> <a class="py-toggle" href="#" id="Transform.getAllSubElements-toggle" onclick="toggle('Transform.getAllSubElements'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#getAllSubElements">getAllSubElements</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">root</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.getAllSubElements-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.getAllSubElements-expanded"><span class="py-lineno">155</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">156</span>  <span class="py-line"><span class="py-docstring">        Function to use the *walk* function with the *tagCollector*</span> </span>
+<span class="py-lineno">157</span>  <span class="py-line"><span class="py-docstring">        visitor function to make a dictionary that associates all</span> </span>
+<span class="py-lineno">158</span>  <span class="py-line"><span class="py-docstring">        elements with their sub-Elements.</span> </span>
+<span class="py-lineno">159</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">160</span>  <span class="py-line">        <span class="py-name">collectorDict</span> <span class="py-op">=</span> <span class="py-op">{</span><span class="py-op">}</span> </span>
+<span class="py-lineno">161</span>  <span class="py-line"> </span>
+<span class="py-lineno">162</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span id="link-14" class="py-name"><a title="pyxsd.transforms.transform.Transform.walk" class="py-name" href="#" onclick="doclink('link-14', 'walk', 'Method pyxsd.transforms.transform.Transform.walk()=pyxsd.transforms.transform.Transform-class.html#walk'); return false;">walk</a></span></span><span class="py-op">(</span><span class="py-name">root</span><span class="py-op">,</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-15" class="py-name"><a title="pyxsd.transforms.transform.Transform.tagCollector" class="py-name" href="#" onclick="doclink('link-15', 'tagCollector', 'Method pyxsd.transforms.transform.Transform.tagCollector()=pyxsd.transforms.transform.Transform-class.html#tagCollector'); return false;">tagCollector</a></span></span><span class="py-op">,</span> <span class="py-name">collectorDict</span><span class="py-op">)</span> </span>
+<span class="py-lineno">163</span>  <span class="py-line"> </span>
+<span class="py-lineno">164</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">collectorDict</span> </span>
+</div><span class="py-lineno">165</span>  <span class="py-line"> </span>
+<span class="py-lineno">166</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">167</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="Transform.getElementsByName"></a><div id="Transform.getElementsByName-def"><span class="py-lineno">168</span> <a class="py-toggle" href="#" id="Transform.getElementsByName-toggle" onclick="toggle('Transform.getElementsByName'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#getElementsByName">getElementsByName</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">root</span><span class="py-op">,</span> <span class="py-param">name</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.getElementsByName-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.getElementsByName-expanded"><span class="py-lineno">169</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">170</span>  <span class="py-line"><span class="py-docstring">        Function to use the *walk* function with the *tagFinder*</span> </span>
+<span class="py-lineno">171</span>  <span class="py-line"><span class="py-docstring">        visitor function to make a list containing all elements</span> </span>
+<span class="py-lineno">172</span>  <span class="py-line"><span class="py-docstring">        with a particular name.</span> </span>
+<span class="py-lineno">173</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">174</span>  <span class="py-line">        <span class="py-name">collection</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno">175</span>  <span class="py-line"> </span>
+<span class="py-lineno">176</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span id="link-16" class="py-name"><a title="pyxsd.transforms.transform.Transform.walk" class="py-name" href="#" onclick="doclink('link-16', 'walk', 'Method pyxsd.transforms.transform.Transform.walk()=pyxsd.transforms.transform.Transform-class.html#walk'); return false;">walk</a></span></span><span class="py-op">(</span><span class="py-name">root</span><span class="py-op">,</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-17" class="py-name"><a title="pyxsd.transforms.transform.Transform.tagFinder" class="py-name" href="#" onclick="doclink('link-17', 'tagFinder', 'Method pyxsd.transforms.transform.Transform.tagFinder()=pyxsd.transforms.transform.Transform-class.html#tagFinder'); return false;">tagFinder</a></span></span><span class="py-op">,</span> <span class="py-name">collection</span><span class="py-op">,</span> <span id="link-18" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-18', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">177</span>  <span class="py-line"> </span>
+<span class="py-lineno">178</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">collection</span> </span>
+</div><span class="py-lineno">179</span>  <span class="py-line"> </span>
+<span class="py-lineno">180</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">181</span>  <span class="py-line"><span class="py-comment"></span>         </span>
+<span class="py-lineno">182</span>  <span class="py-line"> </span>
+<span class="py-lineno">183</span>  <span class="py-line"> </span>
+<span class="py-lineno">184</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">185</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<span class="py-lineno">186</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-string">"""Finds an element from a given tagName. Returns the first one found,</span> </span>
+<span class="py-lineno">187</span>  <span class="py-line"><span class="py-string">    or returns None. This function is an alternative to the walk/vistor functions.</span> </span>
+<span class="py-lineno">188</span>  <span class="py-line"><span class="py-string">    SEE *getElementsByName*</span> </span>
+<span class="py-lineno">189</span>  <span class="py-line"><span class="py-string">    """</span> </span>
+<a name="Transform.find"></a><div id="Transform.find-def"><span class="py-lineno">190</span> <a class="py-toggle" href="#" id="Transform.find-toggle" onclick="toggle('Transform.find'); return false;">-</a><span class="py-line">    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#find">find</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">tagName</span><span class="py-op">,</span> <span class="py-param">baseElem</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.find-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.find-expanded"><span class="py-lineno">191</span>  <span class="py-line"> </span>
+<span class="py-lineno">192</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">baseElem</span><span class="py-op">.</span><span class="py-name">_name_</span> <span class="py-op">==</span> <span class="py-name">tagName</span><span class="py-op">:</span> </span>
+<span class="py-lineno">193</span>  <span class="py-line"> </span>
+<span class="py-lineno">194</span>  <span class="py-line">            <span class="py-keyword">return</span> <span class="py-name">baseElem</span> </span>
+<span class="py-lineno">195</span>  <span class="py-line"> </span>
+<span class="py-lineno">196</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">child</span> <span class="py-keyword">in</span> <span class="py-name">baseElem</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">:</span> </span>
+<span class="py-lineno">197</span>  <span class="py-line"> </span>
+<span class="py-lineno">198</span>  <span class="py-line">            <span class="py-name">returnedElement</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-19" class="py-name"><a title="pyxsd.transforms.transform.Transform.find" class="py-name" href="#" onclick="doclink('link-19', 'find', 'Method pyxsd.transforms.transform.Transform.find()=pyxsd.transforms.transform.Transform-class.html#find'); return false;">find</a></span></span><span class="py-op">(</span><span class="py-name">tagName</span><span class="py-op">,</span> <span class="py-name">child</span><span class="py-op">)</span> </span>
+<span class="py-lineno">199</span>  <span class="py-line"> </span>
+<span class="py-lineno">200</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">returnedElement</span> <span class="py-op">==</span> <span class="py-name">None</span><span class="py-op">:</span> </span>
+<span class="py-lineno">201</span>  <span class="py-line"> </span>
+<span class="py-lineno">202</span>  <span class="py-line">                <span class="py-keyword">return</span> <span class="py-name">returnedElement</span> </span>
+<span class="py-lineno">203</span>  <span class="py-line"> </span>
+<span class="py-lineno">204</span>  <span class="py-line">            <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">205</span>  <span class="py-line"> </span>
+<span class="py-lineno">206</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">None</span> </span>
+</div><span class="py-lineno">207</span>  <span class="py-line"> </span>
+<span class="py-lineno">208</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">209</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<span class="py-lineno">210</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-string">"""</span> </span>
+<span class="py-lineno">211</span>  <span class="py-line"><span class="py-string">    Finds all elements with a given tagName. Returns a list of elements or None.</span> </span>
+<span class="py-lineno">212</span>  <span class="py-line"><span class="py-string">    This function is an alternative to the walk/vistor functions.</span> </span>
+<span class="py-lineno">213</span>  <span class="py-line"><span class="py-string">    SEE *getElementsByName*</span> </span>
+<span class="py-lineno">214</span>  <span class="py-line"><span class="py-string">    """</span> </span>
+<a name="Transform.findAll"></a><div id="Transform.findAll-def"><span class="py-lineno">215</span> <a class="py-toggle" href="#" id="Transform.findAll-toggle" onclick="toggle('Transform.findAll'); return false;">-</a><span class="py-line">    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.transform.Transform-class.html#findAll">findAll</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">tagName</span><span class="py-op">,</span> <span class="py-param">baseElem</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="Transform.findAll-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="Transform.findAll-expanded"><span class="py-lineno">216</span>  <span class="py-line"> </span>
+<span class="py-lineno">217</span>  <span class="py-line">        <span class="py-name">found</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno">218</span>  <span class="py-line"> </span>
+<span class="py-lineno">219</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">baseElem</span><span class="py-op">.</span><span class="py-name">_name_</span> <span class="py-op">==</span> <span class="py-name">tagName</span><span class="py-op">:</span> </span>
+<span class="py-lineno">220</span>  <span class="py-line"> </span>
+<span class="py-lineno">221</span>  <span class="py-line">            <span class="py-name">found</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">baseElem</span><span class="py-op">)</span> </span>
+<span class="py-lineno">222</span>  <span class="py-line"> </span>
+<span class="py-lineno">223</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">child</span> <span class="py-keyword">in</span> <span class="py-name">baseElem</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">:</span> </span>
+<span class="py-lineno">224</span>  <span class="py-line"> </span>
+<span class="py-lineno">225</span>  <span class="py-line">            <span class="py-name">returnedElement</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-20" class="py-name"><a title="pyxsd.transforms.transform.Transform.findAll" class="py-name" href="#" onclick="doclink('link-20', 'findAll', 'Method pyxsd.transforms.transform.Transform.findAll()=pyxsd.transforms.transform.Transform-class.html#findAll'); return false;">findAll</a></span></span><span class="py-op">(</span><span class="py-name">tagName</span><span class="py-op">,</span> <span class="py-name">child</span><span class="py-op">)</span> </span>
+<span class="py-lineno">226</span>  <span class="py-line"> </span>
+<span class="py-lineno">227</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">returnedElement</span> <span class="py-op">==</span> <span class="py-name">None</span><span class="py-op">:</span> </span>
+<span class="py-lineno">228</span>  <span class="py-line"> </span>
+<span class="py-lineno">229</span>  <span class="py-line">                <span class="py-name">found</span><span class="py-op">.</span><span class="py-name">extend</span><span class="py-op">(</span><span class="py-name">returnedElement</span><span class="py-op">)</span> </span>
+<span class="py-lineno">230</span>  <span class="py-line"> </span>
+<span class="py-lineno">231</span>  <span class="py-line">            <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">232</span>  <span class="py-line"> </span>
+<span class="py-lineno">233</span>  <span class="py-line"> </span>
+<span class="py-lineno">234</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">found</span><span class="py-op">)</span> <span class="py-op">&gt;</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno">235</span>  <span class="py-line">            <span class="py-keyword">return</span> <span class="py-name">found</span> </span>
+<span class="py-lineno">236</span>  <span class="py-line">         </span>
+<span class="py-lineno">237</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">None</span> </span>
+</div></div><span class="py-lineno">238</span>  <span class="py-line"> </span><script type="text/javascript">
+<!--
+expandto(location.href);
+// -->
+</script>
+</pre>
+<br />
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table border="0" cellpadding="0" cellspacing="0" width="100%%">
+  <tr>
+    <td align="left" class="footer">Generated by Epydoc
+        3.0alpha3 on Thu Sep 07 21:19:42 2006</td>
+    <td align="right" class="footer">
+      <a href="http://epydoc.sourceforge.net">http://epydoc.sourceforge.net</a>
+    </td>
+  </tr>
+</table>
+
+<script type="text/javascript">
+  <!--
+  // Private objects are initially displayed (because if
+  // javascript is turned off then we want them to be
+  // visible); but by default, we want to hide them.  So hide
+  // them unless we have a cookie that says to show them.
+  checkCookie()
+  // -->
+</script>
+  
+</body>
+</html>

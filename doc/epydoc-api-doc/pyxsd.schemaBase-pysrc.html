@@ -1,0 +1,852 @@
+<?xml version="1.0" encoding="ascii"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+          "DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <title>pyxsd.schemaBase</title>
+  <link rel="stylesheet" href="epydoc.css" type="text/css" />
+  <script type="text/javascript" src="epydoc.js"></script>
+</head>
+
+<body bgcolor="white" text="black" link="blue" vlink="#204080"
+      alink="#204080">
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0">
+  <tr valign="top">
+    <td width="100%">
+      <span class="breadcrumbs">
+        <a href="pyxsd-module.html">Package&nbsp;pyxsd</a> ::
+        Module&nbsp;schemaBase
+      </span>
+    </td>
+    <td>
+      <table cellpadding="0" cellspacing="0">
+        <!-- hide/show private -->
+        <tr><td align="right"><span class="options">[<a href="javascript: void(0);" class="privatelink"
+    onclick="toggle_private();">hide private</a>]</span></td></tr>
+        <tr><td align="right"><span class="options"
+            >[<a href="frames.html" target="_top">frames</a
+            >]&nbsp;|&nbsp;<a href="pyxsd.schemaBase-pysrc.html"
+            target="_top">no&nbsp;frames</a>]</span></td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<h1 class="epydoc">Source Code for <a href="pyxsd.schemaBase-module.html">Module pyxsd.schemaBase</a></h1>
+<pre class="py-src">
+<span class="py-lineno">  1</span>  <span class="py-line"><span class="py-keyword">import</span> <span class="py-name">sets</span> </span>
+<span class="py-lineno">  2</span>  <span class="py-line"> </span>
+<a name="SchemaBase"></a><div id="SchemaBase-def"><span class="py-lineno">  3</span> <a class="py-toggle" href="#" id="SchemaBase-toggle" onclick="toggle('SchemaBase'); return false;">-</a><span class="py-line"><span class="py-keyword">class</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html">SchemaBase</a><span class="py-op">(</span><span class="py-base-class">object</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase-collapsed" style="display:none;" pad="+++" indent="++++"></div><div id="SchemaBase-expanded"><span class="py-lineno">  4</span>  <span class="py-line">    <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">  5</span>  <span class="py-line"><span class="py-docstring">    Serves as the base class for all schema type classes created. The pythonic instance tree is built from this class.</span> </span>
+<span class="py-lineno">  6</span>  <span class="py-line"><span class="py-docstring">    This class also contains the means to do non-fatal parser error checking. A little bit of the work this class does</span> </span>
+<span class="py-lineno">  7</span>  <span class="py-line"><span class="py-docstring">    is also done in pyXSD. The schema and xml file do not line up perfectly. The top level element in the schema and the</span> </span>
+<span class="py-lineno">  8</span>  <span class="py-line"><span class="py-docstring">    schema tag both contain information relevent to the top-level tag in the XML. For this reason, the tree</span> </span>
+<span class="py-lineno">  9</span>  <span class="py-line"><span class="py-docstring">    building/checking must be started in the same location the method `makeInstanceFromTag` is called in this class.</span> </span>
+<span class="py-lineno"> 10</span>  <span class="py-line"><span class="py-docstring">    """</span> </span>
+<span class="py-lineno"> 11</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 12</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 13</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.__init__"></a><div id="SchemaBase.__init__-def"><span class="py-lineno"> 14</span> <a class="py-toggle" href="#" id="SchemaBase.__init__-toggle" onclick="toggle('SchemaBase.__init__'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#__init__">__init__</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.__init__-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.__init__-expanded"><span class="py-lineno"> 15</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 16</span>  <span class="py-line"><span class="py-docstring">        Creates the instances that are in the tree. These objects are initialized from within SchemaBase. </span> </span>
+<span class="py-lineno"> 17</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 18</span>  <span class="py-line"><span class="py-docstring">        No parameters</span> </span>
+<span class="py-lineno"> 19</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno"> 20</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_children_</span>  <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 21</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 22</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_value_</span>     <span class="py-op">=</span> <span class="py-name">None</span> </span>
+</div><span class="py-lineno"> 23</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 24</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 25</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.makeInstanceFromTag"></a><div id="SchemaBase.makeInstanceFromTag-def"><span class="py-lineno"> 26</span> <a class="py-toggle" href="#" id="SchemaBase.makeInstanceFromTag-toggle" onclick="toggle('SchemaBase.makeInstanceFromTag'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#makeInstanceFromTag">makeInstanceFromTag</a><span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">,</span> <span class="py-param">elementTag</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.makeInstanceFromTag-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.makeInstanceFromTag-expanded"><span class="py-lineno"> 27</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 28</span>  <span class="py-line"><span class="py-docstring">        A classmethod. It takes in a schema type class and its corresponding xml element.</span> </span>
+<span class="py-lineno"> 29</span>  <span class="py-line"><span class="py-docstring">        It then instanciates the class. It adds a name from the name in the xml element,</span> </span>
+<span class="py-lineno"> 30</span>  <span class="py-line"><span class="py-docstring">        and then it hands the instance and the element to other methods to add attributes,</span> </span>
+<span class="py-lineno"> 31</span>  <span class="py-line"><span class="py-docstring">        elements, and values to this instance. It adds these according to the schema classes,</span> </span>
+<span class="py-lineno"> 32</span>  <span class="py-line"><span class="py-docstring">        and not the element. A non-fatal (when possible) error is raised when the xml element</span> </span>
+<span class="py-lineno"> 33</span>  <span class="py-line"><span class="py-docstring">        does not correspond to the schema class.</span> </span>
+<span class="py-lineno"> 34</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 35</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno"> 36</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 37</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.</span> </span>
+<span class="py-lineno"> 38</span>  <span class="py-line"><span class="py-docstring">        - `elementTag`- The xml element that correspond to `cls` </span> </span>
+<span class="py-lineno"> 39</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno"> 40</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno"> 41</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 42</span>  <span class="py-line">        <span class="py-name">instance</span>           <span class="py-op">=</span> <span class="py-name">cls</span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 43</span>  <span class="py-line">         </span>
+<span class="py-lineno"> 44</span>  <span class="py-line">        <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_name_</span>    <span class="py-op">=</span> <span class="py-name">elementTag</span><span class="py-op">.</span><span id="link-0" class="py-name"><a title="pyxsd.elementRepresentatives.elementRepresentative.tag" class="py-name" href="#" onclick="doclink('link-0', 'tag', 'Variable pyxsd.elementRepresentatives.elementRepresentative.tag=pyxsd.elementRepresentatives.elementRepresentative-module.html#tag'); return false;">tag</a></span></span><span class="py-op">.</span><span class="py-name">split</span><span class="py-op">(</span><span class="py-string">'}'</span><span class="py-op">)</span><span class="py-op">[</span><span class="py-op">-</span><span class="py-number">1</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 45</span>  <span class="py-line">         </span>
+<span class="py-lineno"> 46</span>  <span class="py-line">        <span class="py-name">cls</span><span class="py-op">.</span><span id="link-1" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addAttributesTo" class="py-name" href="#" onclick="doclink('link-1', 'addAttributesTo', 'Class Method pyxsd.schemaBase.SchemaBase.addAttributesTo()=pyxsd.schemaBase.SchemaBase-class.html#addAttributesTo'); return false;">addAttributesTo</a></span></span><span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">,</span> <span class="py-name">elementTag</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 47</span>  <span class="py-line">        <span class="py-name">cls</span><span class="py-op">.</span><span id="link-2" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addElementsTo" class="py-name" href="#" onclick="doclink('link-2', 'addElementsTo', 'Class Method pyxsd.schemaBase.SchemaBase.addElementsTo()=pyxsd.schemaBase.SchemaBase-class.html#addElementsTo'); return false;">addElementsTo</a></span></span>  <span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">,</span> <span class="py-name">elementTag</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 48</span>  <span class="py-line">        <span class="py-name">cls</span><span class="py-op">.</span><span id="link-3" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addValueTo" class="py-name" href="#" onclick="doclink('link-3', 'addValueTo', 'Class Method pyxsd.schemaBase.SchemaBase.addValueTo()=pyxsd.schemaBase.SchemaBase-class.html#addValueTo'); return false;">addValueTo</a></span></span>     <span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">,</span> <span class="py-name">elementTag</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 49</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 50</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">instance</span> </span>
+</div><span class="py-lineno"> 51</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 52</span>  <span class="py-line">    <span id="link-4" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.makeInstanceFromTag" class="py-name" href="#" onclick="doclink('link-4', 'makeInstanceFromTag', 'Class Method pyxsd.schemaBase.SchemaBase.makeInstanceFromTag()=pyxsd.schemaBase.SchemaBase-class.html#makeInstanceFromTag'); return false;">makeInstanceFromTag</a></span></span> <span class="py-op">=</span> <span class="py-name">classmethod</span><span class="py-op">(</span><span id="link-5" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.makeInstanceFromTag" class="py-name" href="#" onclick="doclink('link-5', 'makeInstanceFromTag', 'Class Method pyxsd.schemaBase.SchemaBase.makeInstanceFromTag()=pyxsd.schemaBase.SchemaBase-class.html#makeInstanceFromTag'); return false;">makeInstanceFromTag</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 53</span>  <span class="py-line">         </span>
+<span class="py-lineno"> 54</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 55</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.addAttributesTo"></a><div id="SchemaBase.addAttributesTo-def"><span class="py-lineno"> 56</span> <a class="py-toggle" href="#" id="SchemaBase.addAttributesTo-toggle" onclick="toggle('SchemaBase.addAttributesTo'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#addAttributesTo">addAttributesTo</a><span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">,</span> <span class="py-param">instance</span><span class="py-op">,</span> <span class="py-param">elementTag</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.addAttributesTo-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.addAttributesTo-expanded"><span class="py-lineno"> 57</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 58</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 59</span>  <span class="py-line"><span class="py-docstring">        A classmethod. Called by `makeInstanceFromTag()`. Adds attributes according to the schema by calling</span> </span>
+<span class="py-lineno"> 60</span>  <span class="py-line"><span class="py-docstring">        `getAttributesFromTag()`. The attributes are then checked.</span> </span>
+<span class="py-lineno"> 61</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 62</span>  <span class="py-line"><span class="py-docstring">        parameters:</span> </span>
+<span class="py-lineno"> 63</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 64</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.</span> </span>
+<span class="py-lineno"> 65</span>  <span class="py-line"><span class="py-docstring">        - `instance` - The instance of `cls` that is having attributes added to it.</span> </span>
+<span class="py-lineno"> 66</span>  <span class="py-line"><span class="py-docstring">        - `elementTag`- The xml element that correspond to `cls` </span> </span>
+<span class="py-lineno"> 67</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 68</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno"> 69</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 70</span>  <span class="py-line">        <span class="py-name">tagsUsed</span> <span class="py-op">=</span> <span class="py-name">instance</span><span class="py-op">.</span><span id="link-6" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.getAttributesFromTag" class="py-name" href="#" onclick="doclink('link-6', 'getAttributesFromTag', 'Method pyxsd.schemaBase.SchemaBase.getAttributesFromTag()=pyxsd.schemaBase.SchemaBase-class.html#getAttributesFromTag'); return false;">getAttributesFromTag</a></span></span><span class="py-op">(</span><span class="py-name">elementTag</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 71</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 72</span>  <span class="py-line">        <span class="py-name">instance</span><span class="py-op">.</span><span id="link-7" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.checkAttributes" class="py-name" href="#" onclick="doclink('link-7', 'checkAttributes', 'Method pyxsd.schemaBase.SchemaBase.checkAttributes()=pyxsd.schemaBase.SchemaBase-class.html#checkAttributes'); return false;">checkAttributes</a></span></span><span class="py-op">(</span><span class="py-name">tagsUsed</span><span class="py-op">,</span> <span class="py-name">elementTag</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno"> 73</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 74</span>  <span class="py-line">    <span id="link-8" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addAttributesTo" class="py-name" href="#" onclick="doclink('link-8', 'addAttributesTo', 'Class Method pyxsd.schemaBase.SchemaBase.addAttributesTo()=pyxsd.schemaBase.SchemaBase-class.html#addAttributesTo'); return false;">addAttributesTo</a></span></span> <span class="py-op">=</span> <span class="py-name">classmethod</span><span class="py-op">(</span><span id="link-9" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addAttributesTo" class="py-name" href="#" onclick="doclink('link-9', 'addAttributesTo', 'Class Method pyxsd.schemaBase.SchemaBase.addAttributesTo()=pyxsd.schemaBase.SchemaBase-class.html#addAttributesTo'); return false;">addAttributesTo</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 75</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 76</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 77</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 78</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.getAttributesFromTag"></a><div id="SchemaBase.getAttributesFromTag-def"><span class="py-lineno"> 79</span> <a class="py-toggle" href="#" id="SchemaBase.getAttributesFromTag-toggle" onclick="toggle('SchemaBase.getAttributesFromTag'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#getAttributesFromTag">getAttributesFromTag</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">elementTag</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.getAttributesFromTag-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.getAttributesFromTag-expanded"><span class="py-lineno"> 80</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 81</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 82</span>  <span class="py-line"><span class="py-docstring">        Adds attributes to the *_attribs_* dictionary in the instance. Only attributes in</span> </span>
+<span class="py-lineno"> 83</span>  <span class="py-line"><span class="py-docstring">        the type classes are added. All of the attribute values are validated against</span> </span>
+<span class="py-lineno"> 84</span>  <span class="py-line"><span class="py-docstring">        descriptors in the Attribute class in ElementRepresentatives. The only exception</span> </span>
+<span class="py-lineno"> 85</span>  <span class="py-line"><span class="py-docstring">        to this proceedure is for namespace and schemaLocation tags, as the program</span> </span>
+<span class="py-lineno"> 86</span>  <span class="py-line"><span class="py-docstring">        currently does not have any mechanism to actually check these.</span> </span>
+<span class="py-lineno"> 87</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 88</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno"> 89</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 90</span>  <span class="py-line"><span class="py-docstring">        - `elementTag`: the xml element that the instance represents</span> </span>
+<span class="py-lineno"> 91</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno"> 92</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno"> 93</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 94</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_attribs_</span> <span class="py-op">=</span> <span class="py-op">{</span><span class="py-op">}</span> </span>
+<span class="py-lineno"> 95</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 96</span>  <span class="py-line">        <span class="py-name">usedAttributes</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 97</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 98</span>  <span class="py-line">                 </span>
+<span class="py-lineno"> 99</span>  <span class="py-line">         </span>
+<span class="py-lineno">100</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">attr</span> <span class="py-keyword">in</span> <span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">attrib</span><span class="py-op">.</span><span class="py-name">keys</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">101</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-string">'xmlns'</span> <span class="py-keyword">in</span> <span class="py-name">attr</span> <span class="py-keyword">or</span> <span class="py-string">'xsi:'</span> <span class="py-keyword">in</span> <span class="py-name">attr</span><span class="py-op">:</span> </span>
+<span class="py-lineno">102</span>  <span class="py-line"> </span>
+<span class="py-lineno">103</span>  <span class="py-line">                <span class="py-name">setattr</span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">,</span><span class="py-name">attr</span><span class="py-op">,</span><span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">attrib</span><span class="py-op">[</span><span class="py-name">attr</span><span class="py-op">]</span><span class="py-op">)</span> </span>
+<span class="py-lineno">104</span>  <span class="py-line"> </span>
+<span class="py-lineno">105</span>  <span class="py-line">                <span class="py-name">usedAttributes</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">attr</span><span class="py-op">)</span> </span>
+<span class="py-lineno">106</span>  <span class="py-line"> </span>
+<span class="py-lineno">107</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_attribs_</span><span class="py-op">[</span><span class="py-name">attr</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">attrib</span><span class="py-op">[</span><span class="py-name">attr</span><span class="py-op">]</span> </span>
+<span class="py-lineno">108</span>  <span class="py-line"> </span>
+<span class="py-lineno">109</span>  <span class="py-line">        <span class="py-keyword">for</span> <span id="link-10" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-10', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> <span class="py-keyword">in</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-11" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.descAttributeNames" class="py-name" href="#" onclick="doclink('link-11', 'descAttributeNames', 'Method pyxsd.schemaBase.SchemaBase.descAttributeNames()=pyxsd.schemaBase.SchemaBase-class.html#descAttributeNames'); return false;">descAttributeNames</a></span></span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">110</span>  <span class="py-line"> </span>
+<span class="py-lineno">111</span>  <span class="py-line">            <span class="py-keyword">if</span> <span id="link-12" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-12', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> <span class="py-keyword">in</span> <span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">attrib</span><span class="py-op">.</span><span class="py-name">keys</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">112</span>  <span class="py-line"> </span>
+<span class="py-lineno">113</span>  <span class="py-line">                <span class="py-name">setattr</span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">,</span><span id="link-13" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-13', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">,</span><span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">attrib</span><span class="py-op">[</span><span id="link-14" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-14', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">]</span><span class="py-op">)</span> </span>
+<span class="py-lineno">114</span>  <span class="py-line"> </span>
+<span class="py-lineno">115</span>  <span class="py-line">                <span class="py-name">usedAttributes</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span id="link-15" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-15', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">116</span>  <span class="py-line"> </span>
+<span class="py-lineno">117</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_attribs_</span><span class="py-op">[</span><span id="link-16" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-16', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">attrib</span><span class="py-op">[</span><span id="link-17" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-17', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">]</span> </span>
+<span class="py-lineno">118</span>  <span class="py-line"> </span>
+<span class="py-lineno">119</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">usedAttributes</span> </span>
+</div><span class="py-lineno">120</span>  <span class="py-line"> </span>
+<span class="py-lineno">121</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">122</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.addElementsTo"></a><div id="SchemaBase.addElementsTo-def"><span class="py-lineno">123</span> <a class="py-toggle" href="#" id="SchemaBase.addElementsTo-toggle" onclick="toggle('SchemaBase.addElementsTo'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#addElementsTo">addElementsTo</a><span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">,</span> <span class="py-param">instance</span><span class="py-op">,</span> <span class="py-param">elementTag</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.addElementsTo-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.addElementsTo-expanded"><span class="py-lineno">124</span>  <span class="py-line"> </span>
+<span class="py-lineno">125</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">126</span>  <span class="py-line"><span class="py-docstring">        A classmethod. Checks order on the child elements, with different functions for `sequences` and `choices`.</span> </span>
+<span class="py-lineno">127</span>  <span class="py-line"><span class="py-docstring">        Iterates through all the elements specified in the class of the schema, and matches these elements with the</span> </span>
+<span class="py-lineno">128</span>  <span class="py-line"><span class="py-docstring">        elements from the xml. Redirects elements that are primitive types (integer, double, string, and so on) to another function.</span> </span>
+<span class="py-lineno">129</span>  <span class="py-line"><span class="py-docstring">        Calls makeInstanceFromTag() on all the children.</span> </span>
+<span class="py-lineno">130</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">131</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno">132</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">133</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.</span> </span>
+<span class="py-lineno">134</span>  <span class="py-line"><span class="py-docstring">        - `instance` - The instance of `cls` that is having elements added to it.</span> </span>
+<span class="py-lineno">135</span>  <span class="py-line"><span class="py-docstring">        - `elementTag`- The xml element that correspond to `cls`</span> </span>
+<span class="py-lineno">136</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno">137</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">138</span>  <span class="py-line"> </span>
+<span class="py-lineno">139</span>  <span class="py-line">        <span class="py-name">subElements</span> <span class="py-op">=</span> <span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">getchildren</span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">140</span>  <span class="py-line"> </span>
+<span class="py-lineno">141</span>  <span class="py-line">        <span class="py-name">getSubElementName</span> <span class="py-op">=</span> <span class="py-keyword">lambda</span> <span class="py-name">x</span><span class="py-op">:</span> <span class="py-name">x</span><span class="py-op">.</span><span id="link-18" class="py-name"><a title="pyxsd.elementRepresentatives.elementRepresentative.tag" class="py-name" href="#" onclick="doclink('link-18', 'tag', 'Variable pyxsd.elementRepresentatives.elementRepresentative.tag=pyxsd.elementRepresentatives.elementRepresentative-module.html#tag'); return false;">tag</a></span></span><span class="py-op">.</span><span class="py-name">split</span><span class="py-op">(</span><span class="py-string">'}'</span><span class="py-op">)</span><span class="py-op">[</span><span class="py-op">-</span><span class="py-number">1</span><span class="py-op">]</span> </span>
+<span class="py-lineno">142</span>  <span class="py-line"> </span>
+<span class="py-lineno">143</span>  <span class="py-line">        <span class="py-name">elemDescriptors</span> <span class="py-op">=</span> <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_getElements</span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">144</span>  <span class="py-line"> </span>
+<span class="py-lineno">145</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">subElements</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">0</span><span class="py-op">:</span> <span class="py-comment"># This element has no children</span> </span>
+<span class="py-lineno">146</span>  <span class="py-line">            <span class="py-keyword">return</span> </span>
+<span class="py-lineno">147</span>  <span class="py-line"> </span>
+<span class="py-lineno">148</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">elemDescriptors</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span><span class="py-op">.</span><span class="py-name">sOrC</span> <span class="py-op">==</span> <span class="py-string">"sequence"</span><span class="py-op">:</span> </span>
+<span class="py-lineno">149</span>  <span class="py-line"> </span>
+<span class="py-lineno">150</span>  <span class="py-line">            <span class="py-name">cls</span><span class="py-op">.</span><span id="link-19" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.checkElementOrderInSequence" class="py-name" href="#" onclick="doclink('link-19', 'checkElementOrderInSequence', 'Class Method pyxsd.schemaBase.SchemaBase.checkElementOrderInSequence()=pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInSequence'); return false;">checkElementOrderInSequence</a></span></span><span class="py-op">(</span><span class="py-name">elemDescriptors</span><span class="py-op">,</span> <span class="py-name">subElements</span><span class="py-op">)</span> </span>
+<span class="py-lineno">151</span>  <span class="py-line"> </span>
+<span class="py-lineno">152</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">elemDescriptors</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span><span class="py-op">.</span><span class="py-name">sOrC</span> <span class="py-op">==</span> <span class="py-string">"choice"</span><span class="py-op">:</span> </span>
+<span class="py-lineno">153</span>  <span class="py-line"> </span>
+<span class="py-lineno">154</span>  <span class="py-line">            <span class="py-name">cls</span><span class="py-op">.</span><span id="link-20" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.checkElementOrderInChoice" class="py-name" href="#" onclick="doclink('link-20', 'checkElementOrderInChoice', 'Class Method pyxsd.schemaBase.SchemaBase.checkElementOrderInChoice()=pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInChoice'); return false;">checkElementOrderInChoice</a></span></span><span class="py-op">(</span><span class="py-name">elemDescriptors</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span><span class="py-op">,</span> <span class="py-name">subElements</span><span class="py-op">)</span> </span>
+<span class="py-lineno">155</span>  <span class="py-line">             </span>
+<span class="py-lineno">156</span>  <span class="py-line">        <span class="py-comment">#-----------------------------</span> </span>
+<span class="py-lineno">157</span>  <span class="py-line"><span class="py-comment"></span>         </span>
+<span class="py-lineno">158</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">descriptor</span> <span class="py-keyword">in</span> <span class="py-name">elemDescriptors</span><span class="py-op">:</span> </span>
+<span class="py-lineno">159</span>  <span class="py-line"> </span>
+<span class="py-lineno">160</span>  <span class="py-line">            <span class="py-name">descriptorName</span> <span class="py-op">=</span> <span class="py-name">descriptor</span><span class="py-op">.</span><span id="link-21" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-21', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> </span>
+<span class="py-lineno">161</span>  <span class="py-line"> </span>
+<span class="py-lineno">162</span>  <span class="py-line">            <span class="py-keyword">for</span> <span class="py-name">subElement</span> <span class="py-keyword">in</span> <span class="py-name">subElements</span><span class="py-op">:</span> </span>
+<span class="py-lineno">163</span>  <span class="py-line"> </span>
+<span class="py-lineno">164</span>  <span class="py-line">                <span class="py-name">subElementName</span> <span class="py-op">=</span> <span class="py-name">getSubElementName</span><span class="py-op">(</span><span class="py-name">subElement</span><span class="py-op">)</span> </span>
+<span class="py-lineno">165</span>  <span class="py-line">                 </span>
+<span class="py-lineno">166</span>  <span class="py-line">                <span class="py-keyword">if</span> <span class="py-name">descriptorName</span> <span class="py-op">==</span> <span class="py-name">subElementName</span><span class="py-op">:</span> </span>
+<span class="py-lineno">167</span>  <span class="py-line"> </span>
+<span class="py-lineno">168</span>  <span class="py-line">                    <span class="py-name">subElCls</span>    <span class="py-op">=</span> <span class="py-name">descriptor</span><span class="py-op">.</span><span id="link-22" class="py-name"><a title="pyxsd.elementRepresentatives.attribute.Attribute.getType
+pyxsd.elementRepresentatives.element.Element.getType" class="py-name" href="#" onclick="doclink('link-22', 'getType', 'Method pyxsd.elementRepresentatives.attribute.Attribute.getType()=pyxsd.elementRepresentatives.attribute.Attribute-class.html#getType,Method pyxsd.elementRepresentatives.element.Element.getType()=pyxsd.elementRepresentatives.element.Element-class.html#getType'); return false;">getType</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">169</span>  <span class="py-line">                     </span>
+<span class="py-lineno">170</span>  <span class="py-line">                    <span class="py-keyword">if</span> <span class="py-name">subElCls</span> <span class="py-op">==</span> <span class="py-name">None</span><span class="py-op">:</span> <span class="py-comment">#An Error Message</span> </span>
+<span class="py-lineno">171</span>  <span class="py-line">                        <span class="py-keyword">print</span> <span class="py-string">"Parser Error: There is no type in the schema that corresponds to the type stated in the %s element"</span> \ </span>
+<span class="py-lineno">172</span>  <span class="py-line">                              <span class="py-op">%</span> <span class="py-name">descriptorName</span>  </span>
+<span class="py-lineno">173</span>  <span class="py-line">                        <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">174</span>  <span class="py-line">                     </span>
+<span class="py-lineno">175</span>  <span class="py-line">                    <span class="py-comment">#-----------------------------</span> </span>
+<span class="py-lineno">176</span>  <span class="py-line"><span class="py-comment"></span>                    <span class="py-comment">#for elements with primitive types</span> </span>
+<span class="py-lineno">177</span>  <span class="py-line"><span class="py-comment"></span> </span>
+<span class="py-lineno">178</span>  <span class="py-line">                    <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">issubclass</span><span class="py-op">(</span><span class="py-name">subElCls</span><span class="py-op">,</span> <span id="link-23" class="py-name"><a title="pyxsd.schemaBase.SchemaBase" class="py-name" href="#" onclick="doclink('link-23', 'SchemaBase', 'Class pyxsd.schemaBase.SchemaBase=pyxsd.schemaBase.SchemaBase-class.html'); return false;">SchemaBase</a></span></span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">179</span>  <span class="py-line">                        <span class="py-name">subInstance</span>        <span class="py-op">=</span> <span class="py-name">cls</span><span class="py-op">.</span><span id="link-24" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.primitiveValueFor" class="py-name" href="#" onclick="doclink('link-24', 'primitiveValueFor', 'Class Method pyxsd.schemaBase.SchemaBase.primitiveValueFor()=pyxsd.schemaBase.SchemaBase-class.html#primitiveValueFor'); return false;">primitiveValueFor</a></span></span><span class="py-op">(</span><span class="py-name">subElCls</span><span class="py-op">,</span> <span class="py-name">subElement</span><span class="py-op">)</span> </span>
+<span class="py-lineno">180</span>  <span class="py-line">                        <span class="py-name">subInstance</span><span class="py-op">.</span><span class="py-name">_name_</span> <span class="py-op">=</span> <span class="py-name">subElementName</span> </span>
+<span class="py-lineno">181</span>  <span class="py-line">                        <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">subInstance</span><span class="py-op">)</span> </span>
+<span class="py-lineno">182</span>  <span class="py-line">                        <span class="py-name">setattr</span><span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">,</span> <span class="py-name">subElementName</span><span class="py-op">,</span> <span class="py-name">subInstance</span><span class="py-op">)</span> </span>
+<span class="py-lineno">183</span>  <span class="py-line">                        <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">184</span>  <span class="py-line"> </span>
+<span class="py-lineno">185</span>  <span class="py-line">                    <span class="py-comment">#-----------------------------</span> </span>
+<span class="py-lineno">186</span>  <span class="py-line"><span class="py-comment"></span>                     </span>
+<span class="py-lineno">187</span>  <span class="py-line">                    <span class="py-name">subInstance</span>        <span class="py-op">=</span> <span class="py-name">subElCls</span><span class="py-op">.</span><span id="link-25" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.makeInstanceFromTag" class="py-name" href="#" onclick="doclink('link-25', 'makeInstanceFromTag', 'Class Method pyxsd.schemaBase.SchemaBase.makeInstanceFromTag()=pyxsd.schemaBase.SchemaBase-class.html#makeInstanceFromTag'); return false;">makeInstanceFromTag</a></span></span><span class="py-op">(</span><span class="py-name">subElement</span><span class="py-op">)</span> </span>
+<span class="py-lineno">188</span>  <span class="py-line">                    <span class="py-name">subInstance</span><span class="py-op">.</span><span class="py-name">_name_</span> <span class="py-op">=</span> <span class="py-name">subElementName</span> </span>
+<span class="py-lineno">189</span>  <span class="py-line">                    <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">subInstance</span><span class="py-op">)</span> </span>
+<span class="py-lineno">190</span>  <span class="py-line">                    <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">191</span>  <span class="py-line">                 </span>
+<span class="py-lineno">192</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">instance</span> </span>
+</div><span class="py-lineno">193</span>  <span class="py-line">     </span>
+<span class="py-lineno">194</span>  <span class="py-line">    <span id="link-26" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addElementsTo" class="py-name" href="#" onclick="doclink('link-26', 'addElementsTo', 'Class Method pyxsd.schemaBase.SchemaBase.addElementsTo()=pyxsd.schemaBase.SchemaBase-class.html#addElementsTo'); return false;">addElementsTo</a></span></span> <span class="py-op">=</span> <span class="py-name">classmethod</span><span class="py-op">(</span><span id="link-27" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addElementsTo" class="py-name" href="#" onclick="doclink('link-27', 'addElementsTo', 'Class Method pyxsd.schemaBase.SchemaBase.addElementsTo()=pyxsd.schemaBase.SchemaBase-class.html#addElementsTo'); return false;">addElementsTo</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">195</span>  <span class="py-line">             </span>
+<span class="py-lineno">196</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">197</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.addValueTo"></a><div id="SchemaBase.addValueTo-def"><span class="py-lineno">198</span> <a class="py-toggle" href="#" id="SchemaBase.addValueTo-toggle" onclick="toggle('SchemaBase.addValueTo'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#addValueTo">addValueTo</a><span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">,</span> <span class="py-param">instance</span><span class="py-op">,</span> <span class="py-param">elementTag</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.addValueTo-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.addValueTo-expanded"><span class="py-lineno">199</span>  <span class="py-line"> </span>
+<span class="py-lineno">200</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">201</span>  <span class="py-line"><span class="py-docstring">        Checks to see if the tag has a value, and assigns it to the element instance if it does.</span> </span>
+<span class="py-lineno">202</span>  <span class="py-line"><span class="py-docstring">        Uses the ElementTree function `.text` to retrieve this information from the tag.</span> </span>
+<span class="py-lineno">203</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">204</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno">205</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">206</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.</span> </span>
+<span class="py-lineno">207</span>  <span class="py-line"><span class="py-docstring">        - `instance` - The instance of `cls` that is having values added to it.</span> </span>
+<span class="py-lineno">208</span>  <span class="py-line"><span class="py-docstring">        - `elementTag`- The xml element that correspond to `cls`</span> </span>
+<span class="py-lineno">209</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">210</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">211</span>  <span class="py-line"> </span>
+<span class="py-lineno">212</span>  <span class="py-line">        <span class="py-name">lineStrip</span> <span class="py-op">=</span> <span class="py-keyword">lambda</span> <span class="py-name">x</span><span class="py-op">:</span> <span class="py-name">x</span><span class="py-op">.</span><span class="py-name">strip</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">.</span><span class="py-name">strip</span><span class="py-op">(</span><span class="py-string">'\n'</span><span class="py-op">)</span><span class="py-op">.</span><span class="py-name">strip</span><span class="py-op">(</span><span class="py-string">'\t'</span><span class="py-op">)</span>  </span>
+<span class="py-lineno">213</span>  <span class="py-line"> </span>
+<span class="py-lineno">214</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">text</span><span class="py-op">:</span> </span>
+<span class="py-lineno">215</span>  <span class="py-line"> </span>
+<span class="py-lineno">216</span>  <span class="py-line">            <span class="py-name">dataEntry</span> <span class="py-op">=</span> <span class="py-name">None</span> </span>
+<span class="py-lineno">217</span>  <span class="py-line"> </span>
+<span class="py-lineno">218</span>  <span class="py-line">            <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_value_</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno">219</span>  <span class="py-line"> </span>
+<span class="py-lineno">220</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-string">'\n'</span> <span class="py-keyword">in</span> <span class="py-name">sets</span><span class="py-op">.</span><span class="py-name">Set</span><span class="py-op">(</span><span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">text</span><span class="py-op">.</span><span class="py-name">rstrip</span><span class="py-op">(</span><span class="py-string">'\n'</span><span class="py-op">)</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">221</span>  <span class="py-line"> </span>
+<span class="py-lineno">222</span>  <span class="py-line">                <span class="py-name">dataEntry</span> <span class="py-op">=</span> <span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">text</span><span class="py-op">.</span><span class="py-name">split</span><span class="py-op">(</span><span class="py-string">'\n'</span><span class="py-op">)</span> </span>
+<span class="py-lineno">223</span>  <span class="py-line"> </span>
+<span class="py-lineno">224</span>  <span class="py-line">                <span class="py-keyword">for</span> <span class="py-name">line</span> <span class="py-keyword">in</span> <span class="py-name">dataEntry</span><span class="py-op">:</span> </span>
+<span class="py-lineno">225</span>  <span class="py-line">                     </span>
+<span class="py-lineno">226</span>  <span class="py-line">                    <span class="py-name">line</span> <span class="py-op">=</span> <span class="py-name">lineStrip</span><span class="py-op">(</span><span class="py-name">line</span><span class="py-op">)</span> </span>
+<span class="py-lineno">227</span>  <span class="py-line"> </span>
+<span class="py-lineno">228</span>  <span class="py-line">                    <span class="py-keyword">if</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">line</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno">229</span>  <span class="py-line"> </span>
+<span class="py-lineno">230</span>  <span class="py-line">                            <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">231</span>  <span class="py-line">                         </span>
+<span class="py-lineno">232</span>  <span class="py-line">                    <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_value_</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">line</span><span class="py-op">)</span> </span>
+<span class="py-lineno">233</span>  <span class="py-line"> </span>
+<span class="py-lineno">234</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_value_</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno">235</span>  <span class="py-line">                <span class="py-name">instance</span><span class="py-op">.</span><span class="py-name">_value_</span> <span class="py-op">=</span> <span class="py-name">None</span> </span>
+</div><span class="py-lineno">236</span>  <span class="py-line"> </span>
+<span class="py-lineno">237</span>  <span class="py-line">    <span id="link-28" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addValueTo" class="py-name" href="#" onclick="doclink('link-28', 'addValueTo', 'Class Method pyxsd.schemaBase.SchemaBase.addValueTo()=pyxsd.schemaBase.SchemaBase-class.html#addValueTo'); return false;">addValueTo</a></span></span> <span class="py-op">=</span> <span class="py-name">classmethod</span><span class="py-op">(</span><span id="link-29" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addValueTo" class="py-name" href="#" onclick="doclink('link-29', 'addValueTo', 'Class Method pyxsd.schemaBase.SchemaBase.addValueTo()=pyxsd.schemaBase.SchemaBase-class.html#addValueTo'); return false;">addValueTo</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">238</span>  <span class="py-line"> </span>
+<span class="py-lineno">239</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">240</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.checkElementOrderInChoice"></a><div id="SchemaBase.checkElementOrderInChoice-def"><span class="py-lineno">241</span> <a class="py-toggle" href="#" id="SchemaBase.checkElementOrderInChoice-toggle" onclick="toggle('SchemaBase.checkElementOrderInChoice'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInChoice">checkElementOrderInChoice</a><span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">,</span> <span class="py-param">elemDescriptor</span><span class="py-op">,</span> <span class="py-param">subElements</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.checkElementOrderInChoice-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.checkElementOrderInChoice-expanded"><span class="py-lineno">242</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">243</span>  <span class="py-line"><span class="py-docstring">        A classmethod. Checks to see that elements in a choice field, which is specified in the schema, follow</span> </span>
+<span class="py-lineno">244</span>  <span class="py-line"><span class="py-docstring">        the rules of such a field. Gets minOccurs and maxOccurs from the choice element in the schema, and</span> </span>
+<span class="py-lineno">245</span>  <span class="py-line"><span class="py-docstring">        checks the number of elements from there.</span> </span>
+<span class="py-lineno">246</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">247</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno">248</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">249</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.</span> </span>
+<span class="py-lineno">250</span>  <span class="py-line"><span class="py-docstring">        - `subElements`- All of the children of an element that is being processed in addElementsTo().</span> </span>
+<span class="py-lineno">251</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">252</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">253</span>  <span class="py-line">         </span>
+<span class="py-lineno">254</span>  <span class="py-line">        <span class="py-name">minOccurs</span> <span class="py-op">=</span> <span class="py-name">elemDescriptor</span><span class="py-op">.</span><span id="link-30" class="py-name"><a title="pyxsd.elementRepresentatives.choice.Choice.getMinOccurs
+pyxsd.elementRepresentatives.element.Element.getMinOccurs" class="py-name" href="#" onclick="doclink('link-30', 'getMinOccurs', 'Method pyxsd.elementRepresentatives.choice.Choice.getMinOccurs()=pyxsd.elementRepresentatives.choice.Choice-class.html#getMinOccurs,Method pyxsd.elementRepresentatives.element.Element.getMinOccurs()=pyxsd.elementRepresentatives.element.Element-class.html#getMinOccurs'); return false;">getMinOccurs</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">255</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">minOccurs</span> <span class="py-op">&lt;</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno">256</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"Parser Error: the value of 'minOccurs' in %s must be greater than or equal to zero."</span> <span class="py-op">%</span> <span class="py-name">cls</span><span class="py-op">.</span><span id="link-31" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-31', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> </span>
+<span class="py-lineno">257</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"The program will assign minOccurs the default vaule of 1 and attempt to proceed."</span> </span>
+<span class="py-lineno">258</span>  <span class="py-line">            <span class="py-keyword">print</span> </span>
+<span class="py-lineno">259</span>  <span class="py-line">            <span class="py-name">minOccurs</span> <span class="py-op">=</span> <span class="py-number">1</span> </span>
+<span class="py-lineno">260</span>  <span class="py-line">             </span>
+<span class="py-lineno">261</span>  <span class="py-line"> </span>
+<span class="py-lineno">262</span>  <span class="py-line">        <span class="py-name">maxOccurs</span> <span class="py-op">=</span> <span class="py-name">elemDescriptor</span><span class="py-op">.</span><span id="link-32" class="py-name"><a title="pyxsd.elementRepresentatives.choice.Choice.getMaxOccurs
+pyxsd.elementRepresentatives.element.Element.getMaxOccurs" class="py-name" href="#" onclick="doclink('link-32', 'getMaxOccurs', 'Method pyxsd.elementRepresentatives.choice.Choice.getMaxOccurs()=pyxsd.elementRepresentatives.choice.Choice-class.html#getMaxOccurs,Method pyxsd.elementRepresentatives.element.Element.getMaxOccurs()=pyxsd.elementRepresentatives.element.Element-class.html#getMaxOccurs'); return false;">getMaxOccurs</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">263</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">minOccurs</span> <span class="py-op">&lt;</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno">264</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"Parser Error: the value of 'maxOccurs' in %s must be greater than or equal to zero."</span> <span class="py-op">%</span> <span class="py-name">cls</span><span class="py-op">.</span><span id="link-33" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-33', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> </span>
+<span class="py-lineno">265</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"The program will assign minOccurs the default vaule of 1 and attempt to proceed."</span> </span>
+<span class="py-lineno">266</span>  <span class="py-line">            <span class="py-keyword">print</span> </span>
+<span class="py-lineno">267</span>  <span class="py-line">            <span class="py-name">maxOccurs</span> <span class="py-op">=</span> <span class="py-number">1</span> </span>
+<span class="py-lineno">268</span>  <span class="py-line">         </span>
+<span class="py-lineno">269</span>  <span class="py-line"> </span>
+<span class="py-lineno">270</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">subElements</span><span class="py-op">)</span> <span class="py-op">&lt;</span> <span class="py-name">minOccurs</span><span class="py-op">:</span> </span>
+<span class="py-lineno">271</span>  <span class="py-line"> </span>
+<span class="py-lineno">272</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"Parser Error: the program cannot find any elements in the xml that are specified in the choice field for"</span><span class="py-op">,</span> <span class="py-name">cls</span><span class="py-op">.</span><span id="link-34" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-34', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> </span>
+<span class="py-lineno">273</span>  <span class="py-line">            <span class="py-keyword">print</span> </span>
+<span class="py-lineno">274</span>  <span class="py-line"> </span>
+<span class="py-lineno">275</span>  <span class="py-line">        <span class="py-keyword">elif</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">subElements</span><span class="py-op">)</span> <span class="py-op">&gt;</span> <span class="py-name">maxOccurs</span><span class="py-op">:</span> </span>
+<span class="py-lineno">276</span>  <span class="py-line"> </span>
+<span class="py-lineno">277</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"Parser Error: the parser found too many elements for a choice element in %s."</span> <span class="py-op">%</span> <span class="py-name">cls</span><span class="py-op">.</span><span id="link-35" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-35', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> </span>
+<span class="py-lineno">278</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"This choice element can only have one element in it."</span> </span>
+<span class="py-lineno">279</span>  <span class="py-line">            <span class="py-keyword">print</span> </span>
+<span class="py-lineno">280</span>  <span class="py-line">         </span>
+<span class="py-lineno">281</span>  <span class="py-line"> </span>
+<span class="py-lineno">282</span>  <span class="py-line">        <span class="py-keyword">return</span> </span>
+</div><span class="py-lineno">283</span>  <span class="py-line">             </span>
+<span class="py-lineno">284</span>  <span class="py-line">    <span id="link-36" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.checkElementOrderInChoice" class="py-name" href="#" onclick="doclink('link-36', 'checkElementOrderInChoice', 'Class Method pyxsd.schemaBase.SchemaBase.checkElementOrderInChoice()=pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInChoice'); return false;">checkElementOrderInChoice</a></span></span> <span class="py-op">=</span> <span class="py-name">classmethod</span><span class="py-op">(</span><span id="link-37" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.checkElementOrderInChoice" class="py-name" href="#" onclick="doclink('link-37', 'checkElementOrderInChoice', 'Class Method pyxsd.schemaBase.SchemaBase.checkElementOrderInChoice()=pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInChoice'); return false;">checkElementOrderInChoice</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">285</span>  <span class="py-line"> </span>
+<span class="py-lineno">286</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">287</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.checkElementOrderInSequence"></a><div id="SchemaBase.checkElementOrderInSequence-def"><span class="py-lineno">288</span> <a class="py-toggle" href="#" id="SchemaBase.checkElementOrderInSequence-toggle" onclick="toggle('SchemaBase.checkElementOrderInSequence'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInSequence">checkElementOrderInSequence</a><span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">,</span> <span class="py-param">descriptors</span><span class="py-op">,</span> <span class="py-param">subElements</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.checkElementOrderInSequence-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.checkElementOrderInSequence-expanded"><span class="py-lineno">289</span>  <span class="py-line"> </span>
+<span class="py-lineno">290</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">291</span>  <span class="py-line"><span class="py-docstring">        A classmethodChecks the element order in sequence fields to make sure that the order specified in the schema is preserved</span> </span>
+<span class="py-lineno">292</span>  <span class="py-line"><span class="py-docstring">        in the xml. Raises non-fatal errors when a problem is found. Checks minOccurs and maxOccurs on each element as well.</span> </span>
+<span class="py-lineno">293</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">294</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno">295</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno">296</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.</span> </span>
+<span class="py-lineno">297</span>  <span class="py-line"><span class="py-docstring">        - `descriptors`- a list of schema-specified elements that define parameters for an element. Called `descriptors` because the program takes advantage of descriptors in python to help check the data. These descriptors are in the Element class in elementRepresentatives. </span> </span>
+<span class="py-lineno">298</span>  <span class="py-line"><span class="py-docstring">        - `subElements`- All of the children of an element that is being processed in addElementsTo(). Correspond to elements in `descriptors`</span> </span>
+<span class="py-lineno">299</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno">300</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">301</span>  <span class="py-line"> </span>
+<span class="py-lineno">302</span>  <span class="py-line">        <span class="py-name">descriptorNames</span> <span class="py-op">=</span> <span class="py-name">map</span><span class="py-op">(</span><span class="py-keyword">lambda</span> <span class="py-name">x</span><span class="py-op">:</span> <span class="py-name">x</span><span class="py-op">.</span><span id="link-38" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-38', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">,</span> <span class="py-name">descriptors</span><span class="py-op">)</span> </span>
+<span class="py-lineno">303</span>  <span class="py-line">        <span class="py-name">subElementNames</span> <span class="py-op">=</span> <span class="py-name">map</span><span class="py-op">(</span><span class="py-keyword">lambda</span> <span class="py-name">x</span><span class="py-op">:</span> <span class="py-name">x</span><span class="py-op">.</span><span id="link-39" class="py-name"><a title="pyxsd.elementRepresentatives.elementRepresentative.tag" class="py-name" href="#" onclick="doclink('link-39', 'tag', 'Variable pyxsd.elementRepresentatives.elementRepresentative.tag=pyxsd.elementRepresentatives.elementRepresentative-module.html#tag'); return false;">tag</a></span></span><span class="py-op">.</span><span class="py-name">split</span><span class="py-op">(</span><span class="py-string">'}'</span><span class="py-op">)</span><span class="py-op">[</span><span class="py-number">1</span><span class="py-op">]</span><span class="py-op">,</span> <span class="py-name">subElements</span><span class="py-op">)</span> </span>
+<span class="py-lineno">304</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">descriptorNames</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">descriptors</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">305</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"Name descriptor mismatch"</span> </span>
+<span class="py-lineno">306</span>  <span class="py-line">             </span>
+<span class="py-lineno">307</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">index</span> <span class="py-keyword">in</span> <span class="py-name">range</span><span class="py-op">(</span><span class="py-number">0</span><span class="py-op">,</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">descriptors</span><span class="py-op">)</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">308</span>  <span class="py-line">            <span class="py-name">descriptor</span> <span class="py-op">=</span> <span class="py-name">descriptors</span><span class="py-op">[</span><span class="py-name">index</span><span class="py-op">]</span> </span>
+<span class="py-lineno">309</span>  <span class="py-line">            <span class="py-name">dname</span>      <span class="py-op">=</span> <span class="py-name">descriptorNames</span><span class="py-op">[</span><span class="py-name">index</span><span class="py-op">]</span> </span>
+<span class="py-lineno">310</span>  <span class="py-line">             </span>
+<span class="py-lineno">311</span>  <span class="py-line">             </span>
+<span class="py-lineno">312</span>  <span class="py-line">            <span class="py-name">count</span><span class="py-op">,</span> <span class="py-name">subElementNames</span> <span class="py-op">=</span> <span class="py-name">cls</span><span class="py-op">.</span><span id="link-40" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.consume" class="py-name" href="#" onclick="doclink('link-40', 'consume', 'Class Method pyxsd.schemaBase.SchemaBase.consume()=pyxsd.schemaBase.SchemaBase-class.html#consume'); return false;">consume</a></span></span><span class="py-op">(</span><span class="py-name">dname</span><span class="py-op">,</span> <span class="py-name">subElementNames</span><span class="py-op">)</span> </span>
+<span class="py-lineno">313</span>  <span class="py-line"> </span>
+<span class="py-lineno">314</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">count</span> <span class="py-op">==</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno">315</span>  <span class="py-line">                <span class="py-keyword">if</span> <span class="py-name">descriptor</span><span class="py-op">.</span><span id="link-41" class="py-name"><a title="pyxsd.elementRepresentatives.choice.Choice.getMinOccurs
+pyxsd.elementRepresentatives.element.Element.getMinOccurs" class="py-name" href="#" onclick="doclink('link-41', 'getMinOccurs', 'Method pyxsd.elementRepresentatives.choice.Choice.getMinOccurs()=pyxsd.elementRepresentatives.choice.Choice-class.html#getMinOccurs,Method pyxsd.elementRepresentatives.element.Element.getMinOccurs()=pyxsd.elementRepresentatives.element.Element-class.html#getMinOccurs'); return false;">getMinOccurs</a></span></span><span class="py-op">(</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno">316</span>  <span class="py-line">                    <span class="py-keyword">if</span>  <span class="py-keyword">not</span> <span class="py-name">dname</span> <span class="py-keyword">in</span> <span class="py-name">subElementNames</span><span class="py-op">:</span> </span>
+<span class="py-lineno">317</span>  <span class="py-line">                        <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">318</span>  <span class="py-line">                <span class="py-keyword">print</span> <span class="py-string">"Parser Error: Order Error - Expected element name '%s' in different position."</span> <span class="py-op">%</span> <span class="py-name">dname</span>   </span>
+<span class="py-lineno">319</span>  <span class="py-line">                <span class="py-keyword">print</span> </span>
+<span class="py-lineno">320</span>  <span class="py-line">                <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">321</span>  <span class="py-line">             </span>
+<span class="py-lineno">322</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">count</span> <span class="py-op">&lt;</span> <span class="py-name">descriptor</span><span class="py-op">.</span><span id="link-42" class="py-name"><a title="pyxsd.elementRepresentatives.choice.Choice.getMinOccurs
+pyxsd.elementRepresentatives.element.Element.getMinOccurs" class="py-name" href="#" onclick="doclink('link-42', 'getMinOccurs', 'Method pyxsd.elementRepresentatives.choice.Choice.getMinOccurs()=pyxsd.elementRepresentatives.choice.Choice-class.html#getMinOccurs,Method pyxsd.elementRepresentatives.element.Element.getMinOccurs()=pyxsd.elementRepresentatives.element.Element-class.html#getMinOccurs'); return false;">getMinOccurs</a></span></span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">323</span>  <span class="py-line">                <span class="py-comment">#complain</span> </span>
+<span class="py-lineno">324</span>  <span class="py-line"><span class="py-comment"></span>                <span class="py-keyword">print</span> <span class="py-string">"Parser Error: The Element '%s' in '%s' occurs less"</span> <span class="py-op">%</span> <span class="py-op">(</span><span class="py-name">dname</span><span class="py-op">,</span> <span class="py-name">cls</span><span class="py-op">.</span><span id="link-43" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-43', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">325</span>  <span class="py-line">                <span class="py-keyword">print</span> <span class="py-string">"than the specified number of minOccurs (%i) in the schema."</span> <span class="py-op">%</span> <span class="py-name">descriptor</span><span class="py-op">.</span><span id="link-44" class="py-name"><a title="pyxsd.elementRepresentatives.choice.Choice.getMinOccurs
+pyxsd.elementRepresentatives.element.Element.getMinOccurs" class="py-name" href="#" onclick="doclink('link-44', 'getMinOccurs', 'Method pyxsd.elementRepresentatives.choice.Choice.getMinOccurs()=pyxsd.elementRepresentatives.choice.Choice-class.html#getMinOccurs,Method pyxsd.elementRepresentatives.element.Element.getMinOccurs()=pyxsd.elementRepresentatives.element.Element-class.html#getMinOccurs'); return false;">getMinOccurs</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">326</span>  <span class="py-line">                <span class="py-keyword">print</span> <span class="py-string">"Note: it is possible that there is a problem with the order of"</span> </span>
+<span class="py-lineno">327</span>  <span class="py-line">                <span class="py-keyword">print</span> <span class="py-string">"elements and not the minOccurs value."</span> </span>
+<span class="py-lineno">328</span>  <span class="py-line">                <span class="py-keyword">print</span> </span>
+<span class="py-lineno">329</span>  <span class="py-line">                <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">330</span>  <span class="py-line"> </span>
+<span class="py-lineno">331</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">count</span> <span class="py-op">&gt;</span> <span class="py-name">descriptor</span><span class="py-op">.</span><span id="link-45" class="py-name"><a title="pyxsd.elementRepresentatives.choice.Choice.getMaxOccurs
+pyxsd.elementRepresentatives.element.Element.getMaxOccurs" class="py-name" href="#" onclick="doclink('link-45', 'getMaxOccurs', 'Method pyxsd.elementRepresentatives.choice.Choice.getMaxOccurs()=pyxsd.elementRepresentatives.choice.Choice-class.html#getMaxOccurs,Method pyxsd.elementRepresentatives.element.Element.getMaxOccurs()=pyxsd.elementRepresentatives.element.Element-class.html#getMaxOccurs'); return false;">getMaxOccurs</a></span></span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">332</span>  <span class="py-line">                <span class="py-comment">#complain</span> </span>
+<span class="py-lineno">333</span>  <span class="py-line"><span class="py-comment"></span>                <span class="py-keyword">print</span> <span class="py-string">"Parser Error: The element '%s' in '%s' occurs more"</span> <span class="py-op">%</span> <span class="py-op">(</span><span class="py-name">dname</span><span class="py-op">,</span> <span class="py-name">cls</span><span class="py-op">.</span><span id="link-46" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-46', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">334</span>  <span class="py-line">                <span class="py-keyword">print</span> <span class="py-string">" than the specified number of maxOccurs in the schema."</span> </span>
+<span class="py-lineno">335</span>  <span class="py-line">                <span class="py-keyword">if</span> <span class="py-name">descriptor</span><span class="py-op">.</span><span id="link-47" class="py-name"><a title="pyxsd.elementRepresentatives.choice.Choice.getMaxOccurs
+pyxsd.elementRepresentatives.element.Element.getMaxOccurs" class="py-name" href="#" onclick="doclink('link-47', 'getMaxOccurs', 'Method pyxsd.elementRepresentatives.choice.Choice.getMaxOccurs()=pyxsd.elementRepresentatives.choice.Choice-class.html#getMaxOccurs,Method pyxsd.elementRepresentatives.element.Element.getMaxOccurs()=pyxsd.elementRepresentatives.element.Element-class.html#getMaxOccurs'); return false;">getMaxOccurs</a></span></span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">==</span><span class="py-number">1</span><span class="py-op">:</span> </span>
+<span class="py-lineno">336</span>  <span class="py-line">                    <span class="py-keyword">print</span> <span class="py-string">"Your maxOccurs value is 1, which is the default value."</span> </span>
+<span class="py-lineno">337</span>  <span class="py-line">                    <span class="py-keyword">print</span> <span class="py-string">"Perhaps you meant to assign this vairablea different value?"</span> </span>
+<span class="py-lineno">338</span>  <span class="py-line">                <span class="py-keyword">print</span> </span>
+<span class="py-lineno">339</span>  <span class="py-line">                <span class="py-keyword">continue</span> </span>
+</div><span class="py-lineno">340</span>  <span class="py-line">             </span>
+<span class="py-lineno">341</span>  <span class="py-line">    <span id="link-48" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.checkElementOrderInSequence" class="py-name" href="#" onclick="doclink('link-48', 'checkElementOrderInSequence', 'Class Method pyxsd.schemaBase.SchemaBase.checkElementOrderInSequence()=pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInSequence'); return false;">checkElementOrderInSequence</a></span></span> <span class="py-op">=</span> <span class="py-name">classmethod</span><span class="py-op">(</span><span id="link-49" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.checkElementOrderInSequence" class="py-name" href="#" onclick="doclink('link-49', 'checkElementOrderInSequence', 'Class Method pyxsd.schemaBase.SchemaBase.checkElementOrderInSequence()=pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInSequence'); return false;">checkElementOrderInSequence</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">342</span>  <span class="py-line"> </span>
+<span class="py-lineno">343</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">344</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.consume"></a><div id="SchemaBase.consume-def"><span class="py-lineno">345</span> <a class="py-toggle" href="#" id="SchemaBase.consume-toggle" onclick="toggle('SchemaBase.consume'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#consume">consume</a><span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">,</span> <span class="py-param">dname</span><span class="py-op">,</span> <span class="py-param">subElements</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.consume-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.consume-expanded"><span class="py-lineno">346</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">347</span>  <span class="py-line"><span class="py-docstring">        A classmethod. Used to check the number of times an element type in the schema is used with the xml elements.  Used by checkElementOrderInSequence().</span> </span>
+<span class="py-lineno">348</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">349</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno">350</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">351</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.</span> </span>
+<span class="py-lineno">352</span>  <span class="py-line"><span class="py-docstring">        - `dname`- The name of the descriptor that is currently being checked.</span> </span>
+<span class="py-lineno">353</span>  <span class="py-line"><span class="py-docstring">        - `subElements`- the list of subElements being checked.</span> </span>
+<span class="py-lineno">354</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno">355</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">356</span>  <span class="py-line">        <span class="py-name">count</span> <span class="py-op">=</span> <span class="py-number">0</span> </span>
+<span class="py-lineno">357</span>  <span class="py-line">        <span class="py-keyword">while</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">subElements</span><span class="py-op">)</span> <span class="py-op">&gt;</span> <span class="py-number">0</span> <span class="py-keyword">and</span> <span class="py-name">subElements</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span> <span class="py-op">==</span> <span class="py-name">dname</span><span class="py-op">:</span> </span>
+<span class="py-lineno">358</span>  <span class="py-line">            <span class="py-name">subElements</span> <span class="py-op">=</span> <span class="py-name">subElements</span><span class="py-op">[</span><span class="py-number">1</span><span class="py-op">:</span><span class="py-op">]</span> </span>
+<span class="py-lineno">359</span>  <span class="py-line">            <span class="py-name">count</span><span class="py-op">+=</span><span class="py-number">1</span> </span>
+<span class="py-lineno">360</span>  <span class="py-line"> </span>
+<span class="py-lineno">361</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">count</span><span class="py-op">,</span> <span class="py-name">subElements</span> </span>
+</div><span class="py-lineno">362</span>  <span class="py-line"> </span>
+<span class="py-lineno">363</span>  <span class="py-line">    <span id="link-50" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.consume" class="py-name" href="#" onclick="doclink('link-50', 'consume', 'Class Method pyxsd.schemaBase.SchemaBase.consume()=pyxsd.schemaBase.SchemaBase-class.html#consume'); return false;">consume</a></span></span> <span class="py-op">=</span> <span class="py-name">classmethod</span><span class="py-op">(</span><span id="link-51" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.consume" class="py-name" href="#" onclick="doclink('link-51', 'consume', 'Class Method pyxsd.schemaBase.SchemaBase.consume()=pyxsd.schemaBase.SchemaBase-class.html#consume'); return false;">consume</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">364</span>  <span class="py-line"> </span>
+<span class="py-lineno">365</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">366</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.primitiveValueFor"></a><div id="SchemaBase.primitiveValueFor-def"><span class="py-lineno">367</span> <a class="py-toggle" href="#" id="SchemaBase.primitiveValueFor-toggle" onclick="toggle('SchemaBase.primitiveValueFor'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#primitiveValueFor">primitiveValueFor</a><span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">,</span> <span class="py-param">subElCls</span><span class="py-op">,</span> <span class="py-param">subElement</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.primitiveValueFor-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.primitiveValueFor-expanded"><span class="py-lineno">368</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">369</span>  <span class="py-line"><span class="py-docstring">        A classmethod. Used to check and assign primitive values to an instance. called by addElementsTo().</span> </span>
+<span class="py-lineno">370</span>  <span class="py-line"><span class="py-docstring">        NOTE: this class may not work correctly for all elements with primitive data types.</span> </span>
+<span class="py-lineno">371</span>  <span class="py-line"><span class="py-docstring">        If you find an error in this method or any other error in the program, please submit</span> </span>
+<span class="py-lineno">372</span>  <span class="py-line"><span class="py-docstring">        this error and the appropiate correction on the `pyXSD website &lt;http://pyxsd.org&gt;`_. </span> </span>
+<span class="py-lineno">373</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">374</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno">375</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno">376</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.</span> </span>
+<span class="py-lineno">377</span>  <span class="py-line"><span class="py-docstring">        - `subElCls`- the schema type class that corresponds to the subElement that is being processed.</span> </span>
+<span class="py-lineno">378</span>  <span class="py-line"><span class="py-docstring">        - `subElement`- The subElement that has a primitive data type.</span> </span>
+<span class="py-lineno">379</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno">380</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">381</span>  <span class="py-line">         </span>
+<span class="py-lineno">382</span>  <span class="py-line">        <span class="py-name">dataTypeChildren</span> <span class="py-op">=</span> <span class="py-name">subElement</span><span class="py-op">.</span><span class="py-name">getchildren</span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">383</span>  <span class="py-line"> </span>
+<span class="py-lineno">384</span>  <span class="py-line">        <span class="py-name">dataTypeText</span>   <span class="py-op">=</span>  <span class="py-name">subElement</span><span class="py-op">.</span><span class="py-name">text</span> </span>
+<span class="py-lineno">385</span>  <span class="py-line">         </span>
+<span class="py-lineno">386</span>  <span class="py-line">        <span class="py-name">dataTypeAttrib</span> <span class="py-op">=</span> <span class="py-name">subElement</span><span class="py-op">.</span><span class="py-name">items</span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">387</span>  <span class="py-line">         </span>
+<span class="py-lineno">388</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">dataTypeText</span> <span class="py-op">==</span> <span class="py-name">None</span> <span class="py-keyword">and</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">dataTypeAttrib</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">0</span> \ </span>
+<span class="py-lineno">389</span>  <span class="py-line">               <span class="py-keyword">and</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">dataTypeChildren</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno">390</span>  <span class="py-line">             </span>
+<span class="py-lineno">391</span>  <span class="py-line">            <span class="py-name">dataTypeVal</span> <span class="py-op">=</span> <span class="py-name">True</span> </span>
+<span class="py-lineno">392</span>  <span class="py-line">             </span>
+<span class="py-lineno">393</span>  <span class="py-line">        <span class="py-keyword">elif</span> <span class="py-name">dataTypeText</span><span class="py-op">:</span> </span>
+<span class="py-lineno">394</span>  <span class="py-line">             </span>
+<span class="py-lineno">395</span>  <span class="py-line">            <span class="py-name">dataTypeVal</span> <span class="py-op">=</span> <span class="py-name">dataTypeText</span> </span>
+<span class="py-lineno">396</span>  <span class="py-line">             </span>
+<span class="py-lineno">397</span>  <span class="py-line">        <span class="py-keyword">elif</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">dataTypeAttrib</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">1</span><span class="py-op">:</span> </span>
+<span class="py-lineno">398</span>  <span class="py-line"> </span>
+<span class="py-lineno">399</span>  <span class="py-line">            <span class="py-name">dataTypeVal</span> <span class="py-op">=</span> <span class="py-name">dataTypeAttrib</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span><span class="py-op">[</span><span class="py-number">1</span><span class="py-op">]</span> </span>
+<span class="py-lineno">400</span>  <span class="py-line">             </span>
+<span class="py-lineno">401</span>  <span class="py-line">        <span class="py-keyword">elif</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">dataTypeChildren</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">1</span><span class="py-op">:</span> </span>
+<span class="py-lineno">402</span>  <span class="py-line">             </span>
+<span class="py-lineno">403</span>  <span class="py-line">            <span class="py-name">dataTypeVal</span> <span class="py-op">=</span> <span class="py-name">dataTypeChildren</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span> </span>
+<span class="py-lineno">404</span>  <span class="py-line">             </span>
+<span class="py-lineno">405</span>  <span class="py-line">        <span class="py-keyword">else</span><span class="py-op">:</span> </span>
+<span class="py-lineno">406</span>  <span class="py-line">             </span>
+<span class="py-lineno">407</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"An error occured while reading the data in the %s element."</span> \ </span>
+<span class="py-lineno">408</span>  <span class="py-line">                  <span class="py-op">%</span> <span class="py-name">subElementName</span> </span>
+<span class="py-lineno">409</span>  <span class="py-line"> </span>
+<span class="py-lineno">410</span>  <span class="py-line">            <span class="py-keyword">return</span> </span>
+<span class="py-lineno">411</span>  <span class="py-line">                    </span>
+<span class="py-lineno">412</span>  <span class="py-line">        <span class="py-name">dataTypeValInst</span> <span class="py-op">=</span> <span class="py-name">subElCls</span><span class="py-op">(</span><span class="py-name">dataTypeVal</span><span class="py-op">)</span> </span>
+<span class="py-lineno">413</span>  <span class="py-line"> </span>
+<span class="py-lineno">414</span>  <span class="py-line">        <span class="py-name">dataTypeValInst</span><span class="py-op">.</span><span class="py-name">_attribs_</span> <span class="py-op">=</span> <span class="py-name">subElement</span><span class="py-op">.</span><span class="py-name">attrib</span> </span>
+<span class="py-lineno">415</span>  <span class="py-line"> </span>
+<span class="py-lineno">416</span>  <span class="py-line">        <span class="py-name">dataTypeValInst</span><span class="py-op">.</span><span class="py-name">_value_</span>   <span class="py-op">=</span> <span class="py-name">dataTypeText</span> </span>
+<span class="py-lineno">417</span>  <span class="py-line"> </span>
+<span class="py-lineno">418</span>  <span class="py-line">        <span class="py-name">dataTypeValInst</span><span class="py-op">.</span><span class="py-name">_children_</span> <span class="py-op">=</span> <span class="py-name">dataTypeChildren</span> </span>
+<span class="py-lineno">419</span>  <span class="py-line"> </span>
+<span class="py-lineno">420</span>  <span class="py-line">        <span class="py-name">dataTypeVal</span> </span>
+<span class="py-lineno">421</span>  <span class="py-line"> </span>
+<span class="py-lineno">422</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">dataTypeValInst</span> </span>
+</div><span class="py-lineno">423</span>  <span class="py-line"> </span>
+<span class="py-lineno">424</span>  <span class="py-line">    <span id="link-52" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.primitiveValueFor" class="py-name" href="#" onclick="doclink('link-52', 'primitiveValueFor', 'Class Method pyxsd.schemaBase.SchemaBase.primitiveValueFor()=pyxsd.schemaBase.SchemaBase-class.html#primitiveValueFor'); return false;">primitiveValueFor</a></span></span> <span class="py-op">=</span> <span class="py-name">classmethod</span><span class="py-op">(</span><span id="link-53" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.primitiveValueFor" class="py-name" href="#" onclick="doclink('link-53', 'primitiveValueFor', 'Class Method pyxsd.schemaBase.SchemaBase.primitiveValueFor()=pyxsd.schemaBase.SchemaBase-class.html#primitiveValueFor'); return false;">primitiveValueFor</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">425</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">426</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.addBaseDescriptors"></a><div id="SchemaBase.addBaseDescriptors-def"><span class="py-lineno">427</span> <a class="py-toggle" href="#" id="SchemaBase.addBaseDescriptors-toggle" onclick="toggle('SchemaBase.addBaseDescriptors'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#addBaseDescriptors">addBaseDescriptors</a> <span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.addBaseDescriptors-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.addBaseDescriptors-expanded"><span class="py-lineno">428</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">429</span>  <span class="py-line"><span class="py-docstring">        Adds attribute descriptors from classes that are bases to the current class.</span> </span>
+<span class="py-lineno">430</span>  <span class="py-line"><span class="py-docstring">        Does this recursively down the list of bases. Everything returned as a dictionary.</span> </span>
+<span class="py-lineno">431</span>  <span class="py-line"><span class="py-docstring">        A classmethod.</span> </span>
+<span class="py-lineno">432</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">433</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno">434</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">435</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.</span> </span>
+<span class="py-lineno">436</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">437</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">438</span>  <span class="py-line"> </span>
+<span class="py-lineno">439</span>  <span class="py-line">        <span class="py-name">descriptors</span> <span class="py-op">=</span> <span class="py-op">{</span><span class="py-op">}</span> </span>
+<span class="py-lineno">440</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">key</span><span class="py-op">,</span> <span class="py-name">value</span> <span class="py-keyword">in</span> <span class="py-name">vars</span><span class="py-op">(</span><span class="py-name">cls</span><span class="py-op">)</span><span class="py-op">.</span><span class="py-name">iteritems</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">441</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">isinstance</span><span class="py-op">(</span><span class="py-name">value</span><span class="py-op">,</span> <span id="link-54" class="py-name"><a title="pyxsd.elementRepresentatives.attribute.Attribute" class="py-name" href="#" onclick="doclink('link-54', 'Attribute', 'Class pyxsd.elementRepresentatives.attribute.Attribute=pyxsd.elementRepresentatives.attribute.Attribute-class.html'); return false;">Attribute</a></span></span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">442</span>  <span class="py-line">                <span class="py-name">descriptors</span><span class="py-op">[</span><span class="py-name">key</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">value</span> </span>
+<span class="py-lineno">443</span>  <span class="py-line"> </span>
+<span class="py-lineno">444</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">bcls</span> <span class="py-keyword">in</span> <span class="py-name">cls</span><span class="py-op">.</span><span class="py-name">__bases__</span><span class="py-op">:</span> </span>
+<span class="py-lineno">445</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">hasattr</span><span class="py-op">(</span><span class="py-name">bcls</span><span class="py-op">,</span><span class="py-string">'addBaseDescriptors'</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">446</span>  <span class="py-line">                <span class="py-name">bclsDescriptors</span> <span class="py-op">=</span> <span class="py-name">bcls</span><span class="py-op">.</span><span id="link-55" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addBaseDescriptors" class="py-name" href="#" onclick="doclink('link-55', 'addBaseDescriptors', 'Class Method pyxsd.schemaBase.SchemaBase.addBaseDescriptors()=pyxsd.schemaBase.SchemaBase-class.html#addBaseDescriptors'); return false;">addBaseDescriptors</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">447</span>  <span class="py-line">                <span class="py-keyword">for</span> <span class="py-name">key</span><span class="py-op">,</span> <span class="py-name">value</span> <span class="py-keyword">in</span> <span class="py-name">bclsDescriptors</span><span class="py-op">.</span><span class="py-name">iteritems</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">448</span>  <span class="py-line">                    <span class="py-keyword">if</span> <span class="py-name">key</span> <span class="py-keyword">in</span> <span class="py-name">descriptors</span><span class="py-op">.</span><span class="py-name">keys</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">449</span>  <span class="py-line">                        <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">450</span>  <span class="py-line">                    <span class="py-name">descriptors</span><span class="py-op">[</span><span class="py-name">key</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">value</span> </span>
+<span class="py-lineno">451</span>  <span class="py-line"> </span>
+<span class="py-lineno">452</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">descriptors</span> </span>
+</div><span class="py-lineno">453</span>  <span class="py-line">    <span id="link-56" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addBaseDescriptors" class="py-name" href="#" onclick="doclink('link-56', 'addBaseDescriptors', 'Class Method pyxsd.schemaBase.SchemaBase.addBaseDescriptors()=pyxsd.schemaBase.SchemaBase-class.html#addBaseDescriptors'); return false;">addBaseDescriptors</a></span></span> <span class="py-op">=</span> <span class="py-name">classmethod</span><span class="py-op">(</span><span id="link-57" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addBaseDescriptors" class="py-name" href="#" onclick="doclink('link-57', 'addBaseDescriptors', 'Class Method pyxsd.schemaBase.SchemaBase.addBaseDescriptors()=pyxsd.schemaBase.SchemaBase-class.html#addBaseDescriptors'); return false;">addBaseDescriptors</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">454</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">455</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.descAttributes"></a><div id="SchemaBase.descAttributes-def"><span class="py-lineno">456</span> <a class="py-toggle" href="#" id="SchemaBase.descAttributes-toggle" onclick="toggle('SchemaBase.descAttributes'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#descAttributes">descAttributes</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.descAttributes-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.descAttributes-expanded"><span class="py-lineno">457</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">458</span>  <span class="py-line"><span class="py-docstring">        Returns a dictionary of the  descriptor attributes. These attributes are from the schema and use descriptors,</span> </span>
+<span class="py-lineno">459</span>  <span class="py-line"><span class="py-docstring">        which are specified in the Attribute class in elementReprsentatives, that help check element attribute values.</span> </span>
+<span class="py-lineno">460</span>  <span class="py-line"><span class="py-docstring">        Uses lazy evulation by storing the descriptor attributes in a variable  called '_descAttrs_', which it returns</span> </span>
+<span class="py-lineno">461</span>  <span class="py-line"><span class="py-docstring">        if this variable is specified.</span> </span>
+<span class="py-lineno">462</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">463</span>  <span class="py-line"><span class="py-docstring">        No parameters.</span> </span>
+<span class="py-lineno">464</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">465</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-string">'_descAttrs_'</span> <span class="py-keyword">in</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">__dict__</span><span class="py-op">.</span><span class="py-name">keys</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">466</span>  <span class="py-line">            <span class="py-keyword">return</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">_descAttrs_</span> </span>
+<span class="py-lineno">467</span>  <span class="py-line">        <span class="py-name">attrs</span> <span class="py-op">=</span> <span class="py-op">{</span><span class="py-op">}</span> </span>
+<span class="py-lineno">468</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">key</span><span class="py-op">,</span> <span class="py-name">value</span> <span class="py-keyword">in</span> <span class="py-name">vars</span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">__class__</span><span class="py-op">)</span><span class="py-op">.</span><span class="py-name">iteritems</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">469</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">isinstance</span><span class="py-op">(</span><span class="py-name">value</span><span class="py-op">,</span> <span id="link-58" class="py-name"><a title="pyxsd.elementRepresentatives.attribute.Attribute" class="py-name" href="#" onclick="doclink('link-58', 'Attribute', 'Class pyxsd.elementRepresentatives.attribute.Attribute=pyxsd.elementRepresentatives.attribute.Attribute-class.html'); return false;">Attribute</a></span></span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">470</span>  <span class="py-line">                <span class="py-name">attrs</span><span class="py-op">[</span><span class="py-name">key</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">value</span> </span>
+<span class="py-lineno">471</span>  <span class="py-line"> </span>
+<span class="py-lineno">472</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">base</span> <span class="py-keyword">in</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">__class__</span><span class="py-op">.</span><span class="py-name">__bases__</span><span class="py-op">:</span> </span>
+<span class="py-lineno">473</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">hasattr</span><span class="py-op">(</span><span class="py-name">base</span><span class="py-op">,</span> <span class="py-string">'addBaseDescriptors'</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">474</span>  <span class="py-line">                <span class="py-name">bclsDescriptors</span> <span class="py-op">=</span> <span class="py-name">base</span><span class="py-op">.</span><span id="link-59" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.addBaseDescriptors" class="py-name" href="#" onclick="doclink('link-59', 'addBaseDescriptors', 'Class Method pyxsd.schemaBase.SchemaBase.addBaseDescriptors()=pyxsd.schemaBase.SchemaBase-class.html#addBaseDescriptors'); return false;">addBaseDescriptors</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">475</span>  <span class="py-line">                <span class="py-keyword">for</span> <span class="py-name">key</span><span class="py-op">,</span> <span class="py-name">value</span> <span class="py-keyword">in</span> <span class="py-name">bclsDescriptors</span><span class="py-op">.</span><span class="py-name">iteritems</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">476</span>  <span class="py-line">                    <span class="py-keyword">if</span> <span class="py-name">key</span> <span class="py-keyword">in</span> <span class="py-name">attrs</span><span class="py-op">.</span><span class="py-name">keys</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">477</span>  <span class="py-line">                        <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">478</span>  <span class="py-line">                    <span class="py-name">attrs</span><span class="py-op">[</span><span class="py-name">key</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">value</span> </span>
+<span class="py-lineno">479</span>  <span class="py-line">                 </span>
+<span class="py-lineno">480</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">__dict__</span><span class="py-op">[</span><span class="py-string">'_descAttrs_'</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">attrs</span> </span>
+<span class="py-lineno">481</span>  <span class="py-line">                         </span>
+<span class="py-lineno">482</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">attrs</span> </span>
+</div><span class="py-lineno">483</span>  <span class="py-line"> </span>
+<span class="py-lineno">484</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">485</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.descAttributeNames"></a><div id="SchemaBase.descAttributeNames-def"><span class="py-lineno">486</span> <a class="py-toggle" href="#" id="SchemaBase.descAttributeNames-toggle" onclick="toggle('SchemaBase.descAttributeNames'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#descAttributeNames">descAttributeNames</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.descAttributeNames-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.descAttributeNames-expanded"><span class="py-lineno">487</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">488</span>  <span class="py-line"><span class="py-docstring">        Returns a list that has all of the names of attribute descriptors. Calls descAttributes(), and returns a list of the keys from</span> </span>
+<span class="py-lineno">489</span>  <span class="py-line"><span class="py-docstring">        that dictionary.</span> </span>
+<span class="py-lineno">490</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">491</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-60" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.descAttributes" class="py-name" href="#" onclick="doclink('link-60', 'descAttributes', 'Method pyxsd.schemaBase.SchemaBase.descAttributes()=pyxsd.schemaBase.SchemaBase-class.html#descAttributes'); return false;">descAttributes</a></span></span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">.</span><span class="py-name">keys</span><span class="py-op">(</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">492</span>  <span class="py-line">         </span>
+<span class="py-lineno">493</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">494</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.checkAttributes"></a><div id="SchemaBase.checkAttributes-def"><span class="py-lineno">495</span> <a class="py-toggle" href="#" id="SchemaBase.checkAttributes-toggle" onclick="toggle('SchemaBase.checkAttributes'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#checkAttributes">checkAttributes</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">usedAttrs</span><span class="py-op">,</span> <span class="py-param">elementTag</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.checkAttributes-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.checkAttributes-expanded"><span class="py-lineno">496</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">497</span>  <span class="py-line"><span class="py-docstring">        Checks to see that required attributes are used in the xml, and does other such checks on the attributes.</span> </span>
+<span class="py-lineno">498</span>  <span class="py-line"><span class="py-docstring">        Note: the attribute descriptors check the values in element attributes.</span> </span>
+<span class="py-lineno">499</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">500</span>  <span class="py-line"><span class="py-docstring">        Parameters:</span> </span>
+<span class="py-lineno">501</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">502</span>  <span class="py-line"><span class="py-docstring">        - `usedAttrs`- a list containing the names of attributes that were put into the instance.</span> </span>
+<span class="py-lineno">503</span>  <span class="py-line"><span class="py-docstring">        - `elementTag`- The ElementTree tag for the instance that is being checked.</span> </span>
+<span class="py-lineno">504</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno">505</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">506</span>  <span class="py-line"> </span>
+<span class="py-lineno">507</span>  <span class="py-line">        <span class="py-name">descriptorAttributes</span>     <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-61" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.descAttributes" class="py-name" href="#" onclick="doclink('link-61', 'descAttributes', 'Method pyxsd.schemaBase.SchemaBase.descAttributes()=pyxsd.schemaBase.SchemaBase-class.html#descAttributes'); return false;">descAttributes</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">508</span>  <span class="py-line"> </span>
+<span class="py-lineno">509</span>  <span class="py-line">        <span class="py-name">descriptorAttributeNames</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-62" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.descAttributeNames" class="py-name" href="#" onclick="doclink('link-62', 'descAttributeNames', 'Method pyxsd.schemaBase.SchemaBase.descAttributeNames()=pyxsd.schemaBase.SchemaBase-class.html#descAttributeNames'); return false;">descAttributeNames</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">510</span>  <span class="py-line"> </span>
+<span class="py-lineno">511</span>  <span class="py-line">        <span class="py-name">attrInElementTag</span> <span class="py-op">=</span> <span id="link-63" class="py-name"><a title="pyxsd.elementRepresentatives.list" class="py-name" href="#" onclick="doclink('link-63', 'list', 'Module pyxsd.elementRepresentatives.list=pyxsd.elementRepresentatives.list-module.html'); return false;">list</a></span></span><span class="py-op">(</span><span class="py-name">elementTag</span><span class="py-op">.</span><span class="py-name">attrib</span><span class="py-op">.</span><span class="py-name">keys</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">)</span> </span>
+<span class="py-lineno">512</span>  <span class="py-line"> </span>
+<span class="py-lineno">513</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">usedAttrs</span><span class="py-op">)</span> <span class="py-op">&gt;</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">attrInElementTag</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">514</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"Parser Error: For an unknown reason, in %s, the program parsed more attributes than there are in the XML file."</span> \ </span>
+<span class="py-lineno">515</span>  <span class="py-line">                  <span class="py-op">%</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">__class__</span><span class="py-op">.</span><span class="py-name">__name__</span> </span>
+<span class="py-lineno">516</span>  <span class="py-line">        <span class="py-keyword">elif</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">usedAttrs</span><span class="py-op">)</span> <span class="py-op">&lt;</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">attrInElementTag</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">517</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"Parser Error: Not all attributes in the XML file in %s were parsed."</span> <span class="py-op">%</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">__class__</span><span class="py-op">.</span><span class="py-name">__name__</span> </span>
+<span class="py-lineno">518</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"Attributes not processed:"</span>  </span>
+<span class="py-lineno">519</span>  <span class="py-line">            <span class="py-keyword">for</span> <span class="py-name">attrET</span> <span class="py-keyword">in</span> <span class="py-name">attrInElementTag</span><span class="py-op">:</span>    </span>
+<span class="py-lineno">520</span>  <span class="py-line">                <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">attrET</span> <span class="py-keyword">in</span> <span class="py-name">usedAttrs</span><span class="py-op">:</span>    </span>
+<span class="py-lineno">521</span>  <span class="py-line">                    <span class="py-keyword">print</span> <span class="py-string">"   "</span><span class="py-op">,</span> <span class="py-name">attrET</span> </span>
+<span class="py-lineno">522</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">descriptorAttrName</span> <span class="py-keyword">in</span> <span class="py-name">descriptorAttributeNames</span><span class="py-op">:</span> </span>
+<span class="py-lineno">523</span>  <span class="py-line">            <span class="py-name">found</span> <span class="py-op">=</span> <span class="py-name">False</span> </span>
+<span class="py-lineno">524</span>  <span class="py-line">            <span class="py-name">attrUse</span> <span class="py-op">=</span> <span class="py-name">descriptorAttributes</span><span class="py-op">[</span><span class="py-name">descriptorAttrName</span><span class="py-op">]</span><span class="py-op">.</span><span id="link-64" class="py-name"><a title="pyxsd.elementRepresentatives.attribute.Attribute.getUse" class="py-name" href="#" onclick="doclink('link-64', 'getUse', 'Method pyxsd.elementRepresentatives.attribute.Attribute.getUse()=pyxsd.elementRepresentatives.attribute.Attribute-class.html#getUse'); return false;">getUse</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">525</span>  <span class="py-line">            <span class="py-keyword">for</span> <span class="py-name">usedAttr</span> <span class="py-keyword">in</span> <span class="py-name">usedAttrs</span><span class="py-op">:</span> </span>
+<span class="py-lineno">526</span>  <span class="py-line">                <span class="py-keyword">if</span> <span class="py-name">usedAttr</span> <span class="py-op">==</span> <span class="py-name">descriptorAttrName</span><span class="py-op">:</span> </span>
+<span class="py-lineno">527</span>  <span class="py-line">                    <span class="py-name">found</span> <span class="py-op">=</span> <span class="py-name">True</span> </span>
+<span class="py-lineno">528</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">attrUse</span> <span class="py-op">==</span> <span class="py-string">'required'</span> <span class="py-keyword">and</span> <span class="py-keyword">not</span> <span class="py-name">found</span><span class="py-op">:</span> </span>
+<span class="py-lineno">529</span>  <span class="py-line">                <span class="py-keyword">print</span> <span class="py-string">"Parser Error: the %s in the %s element is required but was not found."</span>\ </span>
+<span class="py-lineno">530</span>  <span class="py-line">                      <span class="py-op">%</span>  <span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">descriptorAttrName</span><span class="py-op">,</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">tagName</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">531</span>  <span class="py-line">                 </span>
+<span class="py-lineno">532</span>  <span class="py-line"> </span>
+<span class="py-lineno">533</span>  <span class="py-line"> </span>
+<span class="py-lineno">534</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">535</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="SchemaBase.dumpCls"></a><div id="SchemaBase.dumpCls-def"><span class="py-lineno">536</span> <a class="py-toggle" href="#" id="SchemaBase.dumpCls-toggle" onclick="toggle('SchemaBase.dumpCls'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.schemaBase.SchemaBase-class.html#dumpCls">dumpCls</a><span class="py-op">(</span><span class="py-param">cls</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="SchemaBase.dumpCls-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="SchemaBase.dumpCls-expanded"><span class="py-lineno">537</span>  <span class="py-line"> </span>
+<span class="py-lineno">538</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">539</span>  <span class="py-line"><span class="py-docstring">        For debugging purposes only. Prints out the contents of a class. A staticmethod.</span> </span>
+<span class="py-lineno">540</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">541</span>  <span class="py-line"><span class="py-docstring">        parameters:</span> </span>
+<span class="py-lineno">542</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">543</span>  <span class="py-line"><span class="py-docstring">        - `cls`- The class to dump the contents of. NOTE: this is the only arguement, since it is a staticmethod.</span> </span>
+<span class="py-lineno">544</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno">545</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">546</span>  <span class="py-line"> </span>
+<span class="py-lineno">547</span>  <span class="py-line">        <span class="py-keyword">print</span> <span class="py-string">" In dumpCls[%s] bases = %s "</span> <span class="py-op">%</span> \ </span>
+<span class="py-lineno">548</span>  <span class="py-line">              <span class="py-op">(</span><span class="py-name">cls</span><span class="py-op">.</span><span class="py-name">__name__</span><span class="py-op">,</span> <span class="py-name">cls</span><span class="py-op">.</span><span class="py-name">__bases__</span><span class="py-op">)</span> </span>
+<span class="py-lineno">549</span>  <span class="py-line">         </span>
+<span class="py-lineno">550</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">key</span><span class="py-op">,</span><span class="py-name">value</span> <span class="py-keyword">in</span> <span class="py-name">cls</span><span class="py-op">.</span><span class="py-name">__dict__</span><span class="py-op">.</span><span class="py-name">iteritems</span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">551</span>  <span class="py-line">            <span class="py-keyword">print</span> <span class="py-string">"   %s - %s"</span> <span class="py-op">%</span> <span class="py-op">(</span><span class="py-name">key</span><span class="py-op">,</span> <span class="py-name">repr</span><span class="py-op">(</span><span class="py-name">value</span><span class="py-op">)</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">552</span>  <span class="py-line"> </span>
+<span class="py-lineno">553</span>  <span class="py-line">    <span id="link-65" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.dumpCls" class="py-name" href="#" onclick="doclink('link-65', 'dumpCls', 'Static Method pyxsd.schemaBase.SchemaBase.dumpCls()=pyxsd.schemaBase.SchemaBase-class.html#dumpCls'); return false;">dumpCls</a></span></span> <span class="py-op">=</span> <span class="py-name">staticmethod</span><span class="py-op">(</span><span id="link-66" class="py-name"><a title="pyxsd.schemaBase.SchemaBase.dumpCls" class="py-name" href="#" onclick="doclink('link-66', 'dumpCls', 'Static Method pyxsd.schemaBase.SchemaBase.dumpCls()=pyxsd.schemaBase.SchemaBase-class.html#dumpCls'); return false;">dumpCls</a></span></span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">554</span>  <span class="py-line"> </span>
+<span class="py-lineno">555</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">556</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<span class="py-lineno">557</span>  <span class="py-line"><span class="py-comment"></span> </span>
+<span class="py-lineno">558</span>  <span class="py-line"><span class="py-keyword">import</span> <span id="link-67" class="py-name"><a title="pyxsd.elementRepresentatives" class="py-name" href="#" onclick="doclink('link-67', 'elementRepresentatives', 'Package pyxsd.elementRepresentatives=pyxsd.elementRepresentatives-module.html'); return false;">elementRepresentatives</a></span></span><span class="py-op">.</span><span id="link-68" class="py-name"><a title="pyxsd.elementRepresentatives.elementRepresentative" class="py-name" href="#" onclick="doclink('link-68', 'elementRepresentative', 'Module pyxsd.elementRepresentatives.elementRepresentative=pyxsd.elementRepresentatives.elementRepresentative-module.html'); return false;">elementRepresentative</a></span></span>  </span>
+<span class="py-lineno">559</span>  <span class="py-line"><span class="py-keyword">from</span> <span id="link-69" class="py-name"><a title="pyxsd.elementRepresentatives" class="py-name" href="#" onclick="doclink('link-69', 'elementRepresentatives', 'Package pyxsd.elementRepresentatives=pyxsd.elementRepresentatives-module.html'); return false;">elementRepresentatives</a></span></span><span class="py-op">.</span><span id="link-70" class="py-name"><a title="pyxsd.elementRepresentatives.attribute" class="py-name" href="#" onclick="doclink('link-70', 'attribute', 'Module pyxsd.elementRepresentatives.attribute=pyxsd.elementRepresentatives.attribute-module.html'); return false;">attribute</a></span></span> <span class="py-keyword">import</span> <span id="link-71" class="py-name"><a title="pyxsd.elementRepresentatives.attribute.Attribute" class="py-name" href="#" onclick="doclink('link-71', 'Attribute', 'Class pyxsd.elementRepresentatives.attribute.Attribute=pyxsd.elementRepresentatives.attribute.Attribute-class.html'); return false;">Attribute</a></span></span> </span>
+<span class="py-lineno">560</span>  <span class="py-line"> </span><script type="text/javascript">
+<!--
+expandto(location.href);
+// -->
+</script>
+</pre>
+<br />
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table border="0" cellpadding="0" cellspacing="0" width="100%%">
+  <tr>
+    <td align="left" class="footer">Generated by Epydoc
+        3.0alpha3 on Thu Sep 07 21:19:42 2006</td>
+    <td align="right" class="footer">
+      <a href="http://epydoc.sourceforge.net">http://epydoc.sourceforge.net</a>
+    </td>
+  </tr>
+</table>
+
+<script type="text/javascript">
+  <!--
+  // Private objects are initially displayed (because if
+  // javascript is turned off then we want them to be
+  // visible); but by default, we want to hide them.  So hide
+  // them unless we have a cookie that says to show them.
+  checkCookie()
+  // -->
+</script>
+  
+</body>
+</html>

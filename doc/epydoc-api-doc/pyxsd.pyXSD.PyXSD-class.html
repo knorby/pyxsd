@@ -1,0 +1,777 @@
+<?xml version="1.0" encoding="ascii"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+          "DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <title>pyxsd.pyXSD.PyXSD</title>
+  <link rel="stylesheet" href="epydoc.css" type="text/css" />
+  <script type="text/javascript" src="epydoc.js"></script>
+</head>
+
+<body bgcolor="white" text="black" link="blue" vlink="#204080"
+      alink="#204080">
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0">
+  <tr valign="top">
+    <td width="100%">
+      <span class="breadcrumbs">
+        <a href="pyxsd-module.html">Package&nbsp;pyxsd</a> ::
+        <a href="pyxsd.pyXSD-module.html">Module&nbsp;pyXSD</a> ::
+        Class&nbsp;PyXSD
+      </span>
+    </td>
+    <td>
+      <table cellpadding="0" cellspacing="0">
+        <!-- hide/show private -->
+        <tr><td align="right"><span class="options">[<a href="javascript: void(0);" class="privatelink"
+    onclick="toggle_private();">hide private</a>]</span></td></tr>
+        <tr><td align="right"><span class="options"
+            >[<a href="frames.html" target="_top">frames</a
+            >]&nbsp;|&nbsp;<a href="pyxsd.pyXSD.PyXSD-class.html"
+            target="_top">no&nbsp;frames</a>]</span></td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<!-- ==================== CLASS DESCRIPTION ==================== -->
+<h1 class="epydoc">Class PyXSD</h1><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD">source&nbsp;code</a></span><br /><br />
+<pre class="base-tree">
+object --+
+         |
+        <strong class="uidshort">PyXSD</strong>
+</pre>
+
+<hr />
+main class of the program that is in charge of data flow.
+Has command line support when it is called as a script.<br /><br />
+
+<!-- ==================== INSTANCE METHODS ==================== -->
+<a name="section-InstanceMethods"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Instance Methods</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-InstanceMethods"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#__init__" class="summary-sig-name">__init__</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">xmlFileInput</span>,
+        <span class="summary-sig-arg">xsdFile</span>=<span class="summary-sig-default">None</span>,
+        <span class="summary-sig-arg">xmlFileOutput</span>=<span class="summary-sig-default">False</span>,
+        <span class="summary-sig-arg">transformOutputName</span>=<span class="summary-sig-default">None</span>,
+        <span class="summary-sig-arg">transforms</span>=<span class="summary-sig-default">[]</span>,
+        <span class="summary-sig-arg">classFile</span>=<span class="summary-sig-default">None</span>,
+        <span class="summary-sig-arg">verbose</span>=<span class="summary-sig-default">False</span>,
+        <span class="summary-sig-arg">quiet</span>=<span class="summary-sig-default">False</span>)</span><br />
+      This class is init'ed from the command line normally.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#executeAndWriteTransforms" class="summary-sig-name">executeAndWriteTransforms</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">rootInstance</span>)</span>
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#getSchemaFile" class="summary-sig-name">getSchemaFile</a>(<span class="summary-sig-arg">self</span>)</span>
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#writeParsedXMLFile" class="summary-sig-name">writeParsedXMLFile</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">rootInstance</span>)</span><br />
+      Function to write the xml output after it is parsed.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#parseXSD" class="summary-sig-name">parseXSD</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Reads the given xsd file and creates a set of classes that corespond to the complex and simple type definitions.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#parseXML" class="summary-sig-name">parseXML</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Reads the given xml file in the context of the xsd file.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#generateCorrectSchemaTags" class="summary-sig-name">generateCorrectSchemaTags</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Generates the proper schema information and namespace information for a tag.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#writeXML" class="summary-sig-name">writeXML</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">rootInstance</span>,
+        <span class="summary-sig-arg">output</span>)</span><br />
+      Sends a pythonic instance tree to the tree writer.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#getClasses" class="summary-sig-name">getClasses</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Returns the dictionary of classes created by ElementRepresentative for each type specified in the schema.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#loadClassFromFile" class="summary-sig-name">loadClassFromFile</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">classFile</span>)</span><br />
+      Loads a file with overlay classes into the class dictionary.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#getXmlTree" class="summary-sig-name">getXmlTree</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Sends the xml file into the ElementTree library's parser.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#getXmlOutputFileName" class="summary-sig-name">getXmlOutputFileName</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Creates a default name for xml file that is parsed without any transforms.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#getTransformModuleAndLoad" class="summary-sig-name">getTransformModuleAndLoad</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">className</span>)</span><br />
+      Loads a transform class from its class name.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#transform" class="summary-sig-name">transform</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">transforms</span>,
+        <span class="summary-sig-arg">root</span>)</span><br />
+      Calls the transforms specified by the user.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#getTransformsFileName" class="summary-sig-name">getTransformsFileName</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Creates a default name for xml file that is written after all of the transforms.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#getSchemaInfo" class="summary-sig-name">getSchemaInfo</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">nameOrLocation</span>)</span><br />
+      Extracts information from the <em>schemaLocation</em> tag or the <em>noNamespaceSchemaLocation</em> tag.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.pyXSD.PyXSD-class.html#makeFullName" class="summary-sig-name">makeFullName</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">ns</span>,
+        <span class="summary-sig-arg">text</span>)</span><br />
+      Makes a string that looks similar to some of the names in ElementTree when it contains namespace information.
+  </td>
+</tr>
+  <tr>
+    <td colspan="2" class="summary">
+    <p class="indent-wrapped-lines"><b>Inherited from <code>object</code></b>:
+      <code>__delattr__</code>,
+      <code>__getattribute__</code>,
+      <code>__hash__</code>,
+      <code>__new__</code>,
+      <code>__reduce__</code>,
+      <code>__reduce_ex__</code>,
+      <code>__repr__</code>,
+      <code>__setattr__</code>,
+      <code>__str__</code>
+      </p>
+    </td>
+  </tr>
+</table>
+
+<br />
+<!-- ==================== PROPERTIES ==================== -->
+<a name="section-Properties"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Properties</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-Properties"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+  <tr>
+    <td colspan="2" class="summary">
+    <p class="indent-wrapped-lines"><b>Inherited from <code>object</code></b>:
+      <code>__class__</code>
+      </p>
+    </td>
+  </tr>
+</table>
+
+<br />
+<!-- ==================== METHOD DETAILS ==================== -->
+<a name="section-MethodDetails"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Method Details</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-MethodDetails"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+</table>
+<a name="__init__"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">__init__</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">xmlFileInput</span>,
+        <span class="sig-arg">xsdFile</span>=<span class="sig-default">None</span>,
+        <span class="sig-arg">xmlFileOutput</span>=<span class="sig-default">False</span>,
+        <span class="sig-arg">transformOutputName</span>=<span class="sig-default">None</span>,
+        <span class="sig-arg">transforms</span>=<span class="sig-default">[]</span>,
+        <span class="sig-arg">classFile</span>=<span class="sig-default">None</span>,
+        <span class="sig-arg">verbose</span>=<span class="sig-default">False</span>,
+        <span class="sig-arg">quiet</span>=<span class="sig-default">False</span>)</span>
+    <br /><em class="fname">(Constructor)</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.__init__">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>This class is init'ed from the command line normally. Use this information for uses of pyXSD as a library.</p>
+<p>Parameters:</p>
+<p><code class="link">- xmlFileInput</code>- The filename of the xml file to input. Can include path information. Will raise an error if not specified.
+<code class="link">- xsdFile</code>- The filename/path information for the schema file. Will attempt to use the schemaLocation tag in the xml if not specified.
+<code class="link">- xmlFileOutput</code>- location for xml output to be sent after it is parsed. Will use a default name if not specified. Will not output if value is set to _No_Output_
+<code class="link">- transformOutputName</code>- location of the xml output after transform. Will make default filename if not specified.
+<code class="link">- transforms</code>- A list containing the transform calls in the order they will be performed.
+<code class="link">- classFile</code>- The location of the overlay class file. Experimental.
+<code class="link">- verbose</code>- A boolean value. If set to true, will output more information.
+<code class="link">- quiet</code>- A boolean value. If set to true, will output less information and errors than normal.</p>
+  <dl><dt></dt><dd>
+    <dl><dt>Overrides:
+      object.__init__
+    </dt></dl>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="executeAndWriteTransforms"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">executeAndWriteTransforms</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">rootInstance</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.executeAndWriteTransforms">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  None
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getSchemaFile"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getSchemaFile</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.getSchemaFile">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  None
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="writeParsedXMLFile"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">writeParsedXMLFile</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">rootInstance</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.writeParsedXMLFile">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Function to write the xml output after it is parsed. Called from the __init__.</p>
+<p>Parameters:</p>
+<p>-<code class="link">rootInstance</code>: The root instance of a tree. Must be formatted in program's tree structure.</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="parseXSD"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">parseXSD</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.parseXSD">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Reads the given xsd file and creates a set of classes that corespond to the complex and simple type definitions.</p>
+<p>No parameters.</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="parseXML"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">parseXML</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.parseXML">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Reads the given xml file in the context of the xsd file.
+Produces instances of the above classes.
+Does validation.
+returns a a schema instance object.</p>
+<p>no parameters</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="generateCorrectSchemaTags"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">generateCorrectSchemaTags</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.generateCorrectSchemaTags">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Generates the proper schema information and namespace information for a tag.
+ElementTree leaves the schema information in a form that is not valid XML
+on its own.</p>
+<p>No parameters</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="writeXML"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">writeXML</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">rootInstance</span>,
+        <span class="sig-arg">output</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.writeXML">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Sends a pythonic instance tree to the tree writer.</p>
+<p>parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">rootInstance</code>: The root instance of a tree. Must be formatted in program's tree structure.</li>
+<li><code class="link">output</code>: The file object to write the tree to.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getClasses"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getClasses</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.getClasses">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Returns the dictionary of classes created by ElementRepresentative for each type specified in the schema.</p>
+<p>no parameters</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="loadClassFromFile"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">loadClassFromFile</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">classFile</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.loadClassFromFile">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Loads a file with overlay classes into the class dictionary.
+Overlay classes add to and override the schema type classes to allow for a user to create their own types without changing the schema file itself.
+<strong>Consider this functionality experimental.</strong></p>
+<p>parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">classFile</code>: A string that specifies the location of a user-created overlay class file</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getXmlTree"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getXmlTree</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.getXmlTree">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Sends the xml file into the ElementTree library's parser. Allows for the program to get the schemaLocation before parsing the xml against the schema.</p>
+<p>No parameters.</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getXmlOutputFileName"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getXmlOutputFileName</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.getXmlOutputFileName">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Creates a default name for xml file that is parsed without any transforms.
+Uses the name from the inputed xml file.</p>
+<p>no parameters</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getTransformModuleAndLoad"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getTransformModuleAndLoad</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">className</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.getTransformModuleAndLoad">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Loads a transform class from its class name.
+The file that it is located in must be the same as the className, except the first
+letter in the filename must be lowercase. The transform must be located in a
+directory called <a href="pyxsd.transforms-module.html" class="link">transforms</a> that is in the installation folder of pyXSD, the
+directory you called the program from, or in the directory where the xml file is.</p>
+<p>parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">className</code>: A string of the transform class name being called</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="transform"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">transform</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">transforms</span>,
+        <span class="sig-arg">root</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.transform">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Calls the transforms specified by the user. Each transform is loaded into memory by
+getTransformModuleAndLoad(). The transform class is passed the instance of the root
+element when it is initialized. The transform object is called with the specified
+arguements and the new root instance is set to whatever the transform returns,
+which is usually the root, but it is not required. Any user who uses a transform
+that does not return the root tree instance should be aware that any transform
+that uses the root instance will fail to work and raise a fatal error. Transforms
+add a great amount of power to the program, but users might need to tweak their
+transform calls and any user-written classes in order to get them to work correctly.</p>
+<p>Further documentation is located in the doc/ directory and on the <a class="rst-reference" href="http://pyxsd.org" target="_top">pyXSD website</a>.
+These documents can help users write transform classes and calls.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><a href="pyxsd.transforms-module.html" class="link">transforms</a>: a list containing the transform calls in the order that they should be called.</li>
+<li><code class="link">root</code>: the root instance of a tree. Must be formatted in program's tree structure.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getTransformsFileName"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getTransformsFileName</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.getTransformsFileName">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Creates a default name for xml file that is written after all of the transforms.
+Uses the name from the inputed xml file.</p>
+<p>no parameters</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getSchemaInfo"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getSchemaInfo</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">nameOrLocation</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.getSchemaInfo">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Extracts information from the <em>schemaLocation</em> tag or the <em>noNamespaceSchemaLocation</em> tag.
+Depending on the value of parameter <code class="link">nameOrLocation</code>, the function outputs the namespace,
+schema location, or the tag type. This function is meant for use with other functions
+to easily grab bits of data that are used in various locations in the program.</p>
+<p>parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">nameOrLocation</code>: a one letter string that is either 'l', 'n', or 't'. If the variable is</li>
+</ul>
+<p>'l', the location of the schema is returned. If it is 'n', the namespace is returned, if there
+is one. 't' returns the tag name to indicate if the xml uses <em>schemaLocation</em> or <em>noNamespaceSchemaLocation</em></p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="makeFullName"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">makeFullName</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">ns</span>,
+        <span class="sig-arg">text</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.pyXSD-pysrc.html#PyXSD.makeFullName">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Makes a string that looks similar to some of the names in ElementTree when it contains namespace information.</p>
+<p>parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">ns</code>: a string of the namespace used. For this function, this variable is usually set to a url.</li>
+<li><code class="link">text</code>: a string of the name of the tag that the full name is being created for.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<br />
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table border="0" cellpadding="0" cellspacing="0" width="100%%">
+  <tr>
+    <td align="left" class="footer">Generated by Epydoc
+        3.0alpha3 on Thu Sep 07 21:19:40 2006</td>
+    <td align="right" class="footer">
+      <a href="http://epydoc.sourceforge.net">http://epydoc.sourceforge.net</a>
+    </td>
+  </tr>
+</table>
+
+<script type="text/javascript">
+  <!--
+  // Private objects are initially displayed (because if
+  // javascript is turned off then we want them to be
+  // visible); but by default, we want to hide them.  So hide
+  // them unless we have a cookie that says to show them.
+  checkCookie()
+  // -->
+</script>
+  
+</body>
+</html>

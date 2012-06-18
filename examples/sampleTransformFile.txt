@@ -1,0 +1,4 @@
+ExpandCell(3, 3, 3)
+PrintData('newXmlFile.xml')
+SphereCutter(2, (0, 0, 1))
+

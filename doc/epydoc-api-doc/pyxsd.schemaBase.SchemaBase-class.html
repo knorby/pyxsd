@@ -1,0 +1,796 @@
+<?xml version="1.0" encoding="ascii"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+          "DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <title>pyxsd.schemaBase.SchemaBase</title>
+  <link rel="stylesheet" href="epydoc.css" type="text/css" />
+  <script type="text/javascript" src="epydoc.js"></script>
+</head>
+
+<body bgcolor="white" text="black" link="blue" vlink="#204080"
+      alink="#204080">
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0">
+  <tr valign="top">
+    <td width="100%">
+      <span class="breadcrumbs">
+        <a href="pyxsd-module.html">Package&nbsp;pyxsd</a> ::
+        <a href="pyxsd.schemaBase-module.html">Module&nbsp;schemaBase</a> ::
+        Class&nbsp;SchemaBase
+      </span>
+    </td>
+    <td>
+      <table cellpadding="0" cellspacing="0">
+        <!-- hide/show private -->
+        <tr><td align="right"><span class="options">[<a href="javascript: void(0);" class="privatelink"
+    onclick="toggle_private();">hide private</a>]</span></td></tr>
+        <tr><td align="right"><span class="options"
+            >[<a href="frames.html" target="_top">frames</a
+            >]&nbsp;|&nbsp;<a href="pyxsd.schemaBase.SchemaBase-class.html"
+            target="_top">no&nbsp;frames</a>]</span></td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<!-- ==================== CLASS DESCRIPTION ==================== -->
+<h1 class="epydoc">Class SchemaBase</h1><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase">source&nbsp;code</a></span><br /><br />
+<pre class="base-tree">
+object --+
+         |
+        <strong class="uidshort">SchemaBase</strong>
+</pre>
+
+<hr />
+Serves as the base class for all schema type classes created. The pythonic instance tree is built from this class.
+This class also contains the means to do non-fatal parser error checking. A little bit of the work this class does
+is also done in pyXSD. The schema and xml file do not line up perfectly. The top level element in the schema and the
+schema tag both contain information relevent to the top-level tag in the XML. For this reason, the tree
+building/checking must be started in the same location the method <a href="pyxsd.schemaBase.SchemaBase-class.html#makeInstanceFromTag" class="link">makeInstanceFromTag</a> is called in this class.<br /><br />
+
+<!-- ==================== INSTANCE METHODS ==================== -->
+<a name="section-InstanceMethods"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Instance Methods</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-InstanceMethods"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#__init__" class="summary-sig-name">__init__</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Creates the instances that are in the tree.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#getAttributesFromTag" class="summary-sig-name">getAttributesFromTag</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">elementTag</span>)</span><br />
+      Adds attributes to the <em>_attribs_</em> dictionary in the instance.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#descAttributes" class="summary-sig-name">descAttributes</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Returns a dictionary of the  descriptor attributes.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#descAttributeNames" class="summary-sig-name">descAttributeNames</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Returns a list that has all of the names of attribute descriptors.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#checkAttributes" class="summary-sig-name">checkAttributes</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">usedAttrs</span>,
+        <span class="summary-sig-arg">elementTag</span>)</span><br />
+      Checks to see that required attributes are used in the xml, and does other such checks on the attributes.
+  </td>
+</tr>
+  <tr>
+    <td colspan="2" class="summary">
+    <p class="indent-wrapped-lines"><b>Inherited from <code>object</code></b>:
+      <code>__delattr__</code>,
+      <code>__getattribute__</code>,
+      <code>__hash__</code>,
+      <code>__new__</code>,
+      <code>__reduce__</code>,
+      <code>__reduce_ex__</code>,
+      <code>__repr__</code>,
+      <code>__setattr__</code>,
+      <code>__str__</code>
+      </p>
+    </td>
+  </tr>
+</table>
+
+<br />
+<!-- ==================== CLASS METHODS ==================== -->
+<a name="section-ClassMethods"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Class Methods</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-ClassMethods"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#makeInstanceFromTag" class="summary-sig-name">makeInstanceFromTag</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">elementTag</span>)</span><br />
+      A classmethod.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#addAttributesTo" class="summary-sig-name">addAttributesTo</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">instance</span>,
+        <span class="summary-sig-arg">elementTag</span>)</span><br />
+      A classmethod.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#addElementsTo" class="summary-sig-name">addElementsTo</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">instance</span>,
+        <span class="summary-sig-arg">elementTag</span>)</span><br />
+      A classmethod.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#addValueTo" class="summary-sig-name">addValueTo</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">instance</span>,
+        <span class="summary-sig-arg">elementTag</span>)</span><br />
+      Checks to see if the tag has a value, and assigns it to the element instance if it does.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInChoice" class="summary-sig-name">checkElementOrderInChoice</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">elemDescriptor</span>,
+        <span class="summary-sig-arg">subElements</span>)</span><br />
+      A classmethod.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#checkElementOrderInSequence" class="summary-sig-name">checkElementOrderInSequence</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">descriptors</span>,
+        <span class="summary-sig-arg">subElements</span>)</span><br />
+      A classmethodChecks the element order in sequence fields to make sure that the order specified in the schema is preserved
+in the xml.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#consume" class="summary-sig-name">consume</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">dname</span>,
+        <span class="summary-sig-arg">subElements</span>)</span><br />
+      A classmethod.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#primitiveValueFor" class="summary-sig-name">primitiveValueFor</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">subElCls</span>,
+        <span class="summary-sig-arg">subElement</span>)</span><br />
+      A classmethod.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#addBaseDescriptors" class="summary-sig-name">addBaseDescriptors</a>(<span class="summary-sig-arg">cls</span>)</span><br />
+      Adds attribute descriptors from classes that are bases to the current class.
+  </td>
+</tr>
+</table>
+
+<br />
+<!-- ==================== STATIC METHODS ==================== -->
+<a name="section-StaticMethods"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Static Methods</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-StaticMethods"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.schemaBase.SchemaBase-class.html#dumpCls" class="summary-sig-name">dumpCls</a>(<span class="summary-sig-arg">cls</span>)</span><br />
+      For debugging purposes only.
+  </td>
+</tr>
+</table>
+
+<br />
+<!-- ==================== PROPERTIES ==================== -->
+<a name="section-Properties"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Properties</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-Properties"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+  <tr>
+    <td colspan="2" class="summary">
+    <p class="indent-wrapped-lines"><b>Inherited from <code>object</code></b>:
+      <code>__class__</code>
+      </p>
+    </td>
+  </tr>
+</table>
+
+<br />
+<!-- ==================== METHOD DETAILS ==================== -->
+<a name="section-MethodDetails"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Method Details</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-MethodDetails"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+</table>
+<a name="__init__"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">__init__</span>(<span class="sig-arg">self</span>)</span>
+    <br /><em class="fname">(Constructor)</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.__init__">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Creates the instances that are in the tree. These objects are initialized from within SchemaBase.</p>
+<p>No parameters</p>
+  <dl><dt></dt><dd>
+    <dl><dt>Overrides:
+      object.__init__
+    </dt></dl>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="makeInstanceFromTag"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">makeInstanceFromTag</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">elementTag</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.makeInstanceFromTag">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A classmethod. It takes in a schema type class and its corresponding xml element.
+It then instanciates the class. It adds a name from the name in the xml element,
+and then it hands the instance and the element to other methods to add attributes,
+elements, and values to this instance. It adds these according to the schema classes,
+and not the element. A non-fatal (when possible) error is raised when the xml element
+does not correspond to the schema class.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The schema type class to use. NOTE: since this function is a classmethod, <code class="link">cls</code> is the first argument, not the instance of the class.</li>
+<li><code class="link">elementTag</code>- The xml element that correspond to <code class="link">cls</code></li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="addAttributesTo"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">addAttributesTo</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">instance</span>,
+        <span class="sig-arg">elementTag</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.addAttributesTo">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A classmethod. Called by <a href="pyxsd.schemaBase.SchemaBase-class.html#makeInstanceFromTag" class="link">makeInstanceFromTag()</a>. Adds attributes according to the schema by calling
+<a href="pyxsd.schemaBase.SchemaBase-class.html#getAttributesFromTag" class="link">getAttributesFromTag()</a>. The attributes are then checked.</p>
+<p>parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The schema type class to use. NOTE: since this function is a classmethod, <code class="link">cls</code> is the first argument, not the instance of the class.</li>
+<li><code class="link">instance</code> - The instance of <code class="link">cls</code> that is having attributes added to it.</li>
+<li><code class="link">elementTag</code>- The xml element that correspond to <code class="link">cls</code></li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getAttributesFromTag"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getAttributesFromTag</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">elementTag</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.getAttributesFromTag">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Adds attributes to the <em>_attribs_</em> dictionary in the instance. Only attributes in
+the type classes are added. All of the attribute values are validated against
+descriptors in the Attribute class in ElementRepresentatives. The only exception
+to this proceedure is for namespace and schemaLocation tags, as the program
+currently does not have any mechanism to actually check these.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">elementTag</code>: the xml element that the instance represents</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="addElementsTo"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">addElementsTo</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">instance</span>,
+        <span class="sig-arg">elementTag</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.addElementsTo">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A classmethod. Checks order on the child elements, with different functions for <code class="link">sequences</code> and <code class="link">choices</code>.
+Iterates through all the elements specified in the class of the schema, and matches these elements with the
+elements from the xml. Redirects elements that are primitive types (integer, double, string, and so on) to another function.
+Calls makeInstanceFromTag() on all the children.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The schema type class to use. NOTE: since this function is a classmethod, <code class="link">cls</code> is the first argument, not the instance of the class.</li>
+<li><code class="link">instance</code> - The instance of <code class="link">cls</code> that is having elements added to it.</li>
+<li><code class="link">elementTag</code>- The xml element that correspond to <code class="link">cls</code></li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="addValueTo"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">addValueTo</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">instance</span>,
+        <span class="sig-arg">elementTag</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.addValueTo">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Checks to see if the tag has a value, and assigns it to the element instance if it does.
+Uses the ElementTree function <code class="link">.text</code> to retrieve this information from the tag.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The schema type class to use. NOTE: since this function is a classmethod, <code class="link">cls</code> is the first argument, not the instance of the class.</li>
+<li><code class="link">instance</code> - The instance of <code class="link">cls</code> that is having values added to it.</li>
+<li><code class="link">elementTag</code>- The xml element that correspond to <code class="link">cls</code></li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="checkElementOrderInChoice"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">checkElementOrderInChoice</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">elemDescriptor</span>,
+        <span class="sig-arg">subElements</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.checkElementOrderInChoice">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A classmethod. Checks to see that elements in a choice field, which is specified in the schema, follow
+the rules of such a field. Gets minOccurs and maxOccurs from the choice element in the schema, and
+checks the number of elements from there.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The schema type class in use. NOTE: since this function is a classmethod, <code class="link">cls</code> is the first argument, not the instance of the class.</li>
+<li><code class="link">subElements</code>- All of the children of an element that is being processed in addElementsTo().</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="checkElementOrderInSequence"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">checkElementOrderInSequence</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">descriptors</span>,
+        <span class="sig-arg">subElements</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.checkElementOrderInSequence">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A classmethodChecks the element order in sequence fields to make sure that the order specified in the schema is preserved
+in the xml. Raises non-fatal errors when a problem is found. Checks minOccurs and maxOccurs on each element as well.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The schema type class in use. NOTE: since this function is a classmethod, <code class="link">cls</code> is the first argument, not the instance of the class.</li>
+<li><code class="link">descriptors</code>- a list of schema-specified elements that define parameters for an element. Called <code class="link">descriptors</code> because the program takes advantage of descriptors in python to help check the data. These descriptors are in the Element class in elementRepresentatives.</li>
+<li><code class="link">subElements</code>- All of the children of an element that is being processed in addElementsTo(). Correspond to elements in <code class="link">descriptors</code></li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="consume"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">consume</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">dname</span>,
+        <span class="sig-arg">subElements</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.consume">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A classmethod. Used to check the number of times an element type in the schema is used with the xml elements.  Used by checkElementOrderInSequence().</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The schema type class in use. NOTE: since this function is a classmethod, <code class="link">cls</code> is the first argument, not the instance of the class.</li>
+<li><code class="link">dname</code>- The name of the descriptor that is currently being checked.</li>
+<li><code class="link">subElements</code>- the list of subElements being checked.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="primitiveValueFor"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">primitiveValueFor</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">subElCls</span>,
+        <span class="sig-arg">subElement</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.primitiveValueFor">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A classmethod. Used to check and assign primitive values to an instance. called by addElementsTo().
+NOTE: this class may not work correctly for all elements with primitive data types.
+If you find an error in this method or any other error in the program, please submit
+this error and the appropiate correction on the <a class="rst-reference" href="http://pyxsd.org" target="_top">pyXSD website</a>.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The schema type class in use. NOTE: since this function is a classmethod, <code class="link">cls</code> is the first argument, not the instance of the class.</li>
+<li><code class="link">subElCls</code>- the schema type class that corresponds to the subElement that is being processed.</li>
+<li><code class="link">subElement</code>- The subElement that has a primitive data type.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="addBaseDescriptors"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">addBaseDescriptors</span>(<span class="sig-arg">cls</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.addBaseDescriptors">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Adds attribute descriptors from classes that are bases to the current class.
+Does this recursively down the list of bases. Everything returned as a dictionary.
+A classmethod.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The schema type class in use. NOTE: since this function is a classmethod, <code class="link">cls</code> is the first argument, not the instance of the class.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="descAttributes"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">descAttributes</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.descAttributes">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Returns a dictionary of the  descriptor attributes. These attributes are from the schema and use descriptors,
+which are specified in the Attribute class in elementReprsentatives, that help check element attribute values.
+Uses lazy evulation by storing the descriptor attributes in a variable  called '_descAttrs_', which it returns
+if this variable is specified.</p>
+<p>No parameters.</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="descAttributeNames"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">descAttributeNames</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.descAttributeNames">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  Returns a list that has all of the names of attribute descriptors. Calls descAttributes(), and returns a list of the keys from
+that dictionary.
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="checkAttributes"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">checkAttributes</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">usedAttrs</span>,
+        <span class="sig-arg">elementTag</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.checkAttributes">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Checks to see that required attributes are used in the xml, and does other such checks on the attributes.
+Note: the attribute descriptors check the values in element attributes.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">usedAttrs</code>- a list containing the names of attributes that were put into the instance.</li>
+<li><code class="link">elementTag</code>- The ElementTree tag for the instance that is being checked.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="dumpCls"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">dumpCls</span>(<span class="sig-arg">cls</span>)</span>
+    <br /><em class="fname">Static Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.schemaBase-pysrc.html#SchemaBase.dumpCls">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>For debugging purposes only. Prints out the contents of a class. A staticmethod.</p>
+<p>parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The class to dump the contents of. NOTE: this is the only arguement, since it is a staticmethod.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<br />
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table border="0" cellpadding="0" cellspacing="0" width="100%%">
+  <tr>
+    <td align="left" class="footer">Generated by Epydoc
+        3.0alpha3 on Thu Sep 07 21:19:40 2006</td>
+    <td align="right" class="footer">
+      <a href="http://epydoc.sourceforge.net">http://epydoc.sourceforge.net</a>
+    </td>
+  </tr>
+</table>
+
+<script type="text/javascript">
+  <!--
+  // Private objects are initially displayed (because if
+  // javascript is turned off then we want them to be
+  // visible); but by default, we want to hide them.  So hide
+  // them unless we have a cookie that says to show them.
+  checkCookie()
+  // -->
+</script>
+  
+</body>
+</html>

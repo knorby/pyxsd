@@ -1,0 +1,382 @@
+<?xml version="1.0" encoding="ascii"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+          "DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <title>pyxsd.writers.xmlTagWriter</title>
+  <link rel="stylesheet" href="epydoc.css" type="text/css" />
+  <script type="text/javascript" src="epydoc.js"></script>
+</head>
+
+<body bgcolor="white" text="black" link="blue" vlink="#204080"
+      alink="#204080">
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0">
+  <tr valign="top">
+    <td width="100%">
+      <span class="breadcrumbs">
+        <a href="pyxsd-module.html">Package&nbsp;pyxsd</a> ::
+        <a href="pyxsd.writers-module.html">Package&nbsp;writers</a> ::
+        Module&nbsp;xmlTagWriter
+      </span>
+    </td>
+    <td>
+      <table cellpadding="0" cellspacing="0">
+        <!-- hide/show private -->
+        <tr><td align="right"><span class="options">[<a href="javascript: void(0);" class="privatelink"
+    onclick="toggle_private();">hide private</a>]</span></td></tr>
+        <tr><td align="right"><span class="options"
+            >[<a href="frames.html" target="_top">frames</a
+            >]&nbsp;|&nbsp;<a href="pyxsd.writers.xmlTagWriter-pysrc.html"
+            target="_top">no&nbsp;frames</a>]</span></td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<h1 class="epydoc">Source Code for <a href="pyxsd.writers.xmlTagWriter-module.html">Module pyxsd.writers.xmlTagWriter</a></h1>
+<pre class="py-src">
+<a name="XmlTagWriter"></a><div id="XmlTagWriter-def"><span class="py-lineno">  1</span> <a class="py-toggle" href="#" id="XmlTagWriter-toggle" onclick="toggle('XmlTagWriter'); return false;">-</a><span class="py-line"><span class="py-keyword">class</span> <a class="py-def-name" href="pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html">XmlTagWriter</a><span class="py-op">(</span><span class="py-base-class">object</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="XmlTagWriter-collapsed" style="display:none;" pad="+++" indent="++++"></div><div id="XmlTagWriter-expanded"><span class="py-lineno">  2</span>  <span class="py-line">    <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">  3</span>  <span class="py-line"><span class="py-docstring">    This class writes one element. Each tag has its own instance of this class. it contains a function to write the end tag</span> </span>
+<span class="py-lineno">  4</span>  <span class="py-line"><span class="py-docstring">    if the element has children, but this function is called from the tree writer. See XmlTreeWriter for the API and other</span> </span>
+<span class="py-lineno">  5</span>  <span class="py-line"><span class="py-docstring">    information. This class should only be initialized by XmlTreeWriter.</span> </span>
+<span class="py-lineno">  6</span>  <span class="py-line"><span class="py-docstring">    """</span> </span>
+<span class="py-lineno">  7</span>  <span class="py-line"> </span>
+<span class="py-lineno">  8</span>  <span class="py-line">     </span>
+<span class="py-lineno">  9</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 10</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="XmlTagWriter.__init__"></a><div id="XmlTagWriter.__init__-def"><span class="py-lineno"> 11</span> <a class="py-toggle" href="#" id="XmlTagWriter.__init__-toggle" onclick="toggle('XmlTagWriter.__init__'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#__init__">__init__</a> <span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">name</span><span class="py-op">,</span> <span class="py-param">attribs</span><span class="py-op">,</span> <span class="py-param">value</span><span class="py-op">,</span> <span class="py-param">hasChildren</span><span class="py-op">,</span> <span class="py-param">hasValue</span><span class="py-op">,</span> <span class="py-param">tabs</span><span class="py-op">,</span> <span class="py-param">output</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="XmlTagWriter.__init__-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="XmlTagWriter.__init__-expanded"><span class="py-lineno"> 12</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 13</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 14</span>  <span class="py-line"><span class="py-docstring">        Initializes the tag writer</span> </span>
+<span class="py-lineno"> 15</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 16</span>  <span class="py-line"><span class="py-docstring">        parameters:</span> </span>
+<span class="py-lineno"> 17</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 18</span>  <span class="py-line"><span class="py-docstring">        - `name`: A string of the name of the tag</span> </span>
+<span class="py-lineno"> 19</span>  <span class="py-line"><span class="py-docstring">        - `attribs`: A dictionary of the tag attributes</span> </span>
+<span class="py-lineno"> 20</span>  <span class="py-line"><span class="py-docstring">        - `value`: A list of the element values or None if there are no values</span> </span>
+<span class="py-lineno"> 21</span>  <span class="py-line"><span class="py-docstring">        - `hasChildren`: a boolean to indicate if the tag has children</span> </span>
+<span class="py-lineno"> 22</span>  <span class="py-line"><span class="py-docstring">        - `hasValue`: a boolean to indicate if the tag any value</span> </span>
+<span class="py-lineno"> 23</span>  <span class="py-line"><span class="py-docstring">        - `tabs`: an integer that indicates the number of tabs over the element is in the document</span> </span>
+<span class="py-lineno"> 24</span>  <span class="py-line"><span class="py-docstring">        - `output`: the file object to write to</span> </span>
+<span class="py-lineno"> 25</span>  <span class="py-line"><span class="py-docstring">        </span> </span>
+<span class="py-lineno"> 26</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno"> 27</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 28</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span id="link-0" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-0', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span>              <span class="py-op">=</span> <span id="link-1" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-1', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> </span>
+<span class="py-lineno"> 29</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 30</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">attribs</span>           <span class="py-op">=</span> <span class="py-name">attribs</span> </span>
+<span class="py-lineno"> 31</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 32</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">sortedKeyList</span>     <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">attribs</span><span class="py-op">.</span><span class="py-name">keys</span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 33</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 34</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">sortedKeyList</span><span class="py-op">.</span><span class="py-name">sort</span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 35</span>  <span class="py-line">         </span>
+<span class="py-lineno"> 36</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">value</span>             <span class="py-op">=</span> <span class="py-name">value</span> </span>
+<span class="py-lineno"> 37</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 38</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">hasValue</span>          <span class="py-op">=</span> <span class="py-name">hasValue</span> </span>
+<span class="py-lineno"> 39</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 40</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">hasChildren</span>       <span class="py-op">=</span> <span class="py-name">hasChildren</span> </span>
+<span class="py-lineno"> 41</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 42</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">tabs</span>              <span class="py-op">=</span> <span class="py-name">tabs</span> </span>
+<span class="py-lineno"> 43</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 44</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span>            <span class="py-op">=</span> <span class="py-name">output</span> </span>
+<span class="py-lineno"> 45</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 46</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span id="link-2" class="py-name"><a title="pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTag" class="py-name" href="#" onclick="doclink('link-2', 'writeTag', 'Method pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTag()=pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeTag'); return false;">writeTag</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno"> 47</span>  <span class="py-line">         </span>
+<span class="py-lineno"> 48</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno"> 49</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="XmlTagWriter.writeTag"></a><div id="XmlTagWriter.writeTag-def"><span class="py-lineno"> 50</span> <a class="py-toggle" href="#" id="XmlTagWriter.writeTag-toggle" onclick="toggle('XmlTagWriter.writeTag'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeTag">writeTag</a> <span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="XmlTagWriter.writeTag-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="XmlTagWriter.writeTag-expanded"><span class="py-lineno"> 51</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 52</span>  <span class="py-line"><span class="py-docstring">        Writes the tag. Called from the init function. All its non-necessary formatting is standard</span> </span>
+<span class="py-lineno"> 53</span>  <span class="py-line"><span class="py-docstring">        and is not dependant apon specifics of the format of the data.</span> </span>
+<span class="py-lineno"> 54</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno"> 55</span>  <span class="py-line"><span class="py-docstring">        No parameters</span> </span>
+<span class="py-lineno"> 56</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno"> 57</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 58</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span id="link-3" class="py-name"><a title="pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs" class="py-name" href="#" onclick="doclink('link-3', 'writeTabs', 'Method pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs()=pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeTabs'); return false;">writeTabs</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 59</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 60</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-4" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-4', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span> <span class="py-op">==</span> <span class="py-string">'_comment_'</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 61</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span id="link-5" class="py-name"><a title="pyxsd.writers.xmlTagWriter.XmlTagWriter.writeComment" class="py-name" href="#" onclick="doclink('link-5', 'writeComment', 'Method pyxsd.writers.xmlTagWriter.XmlTagWriter.writeComment()=pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeComment'); return false;">writeComment</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 62</span>  <span class="py-line">            <span class="py-keyword">return</span> </span>
+<span class="py-lineno"> 63</span>  <span class="py-line">             </span>
+<span class="py-lineno"> 64</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-string">'&lt;%s'</span> <span class="py-op">%</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-6" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-6', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 65</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 66</span>  <span class="py-line">        <span class="py-name">openingTagLen</span> <span class="py-op">=</span> <span class="py-number">1</span> <span class="py-op">+</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span id="link-7" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-7', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 67</span>  <span class="py-line">     </span>
+<span class="py-lineno"> 68</span>  <span class="py-line">        <span class="py-name">longestNameLen</span> <span class="py-op">=</span> <span class="py-number">0</span> </span>
+<span class="py-lineno"> 69</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 70</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">attrKey</span> <span class="py-keyword">in</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">sortedKeyList</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 71</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 72</span>  <span class="py-line">            <span class="py-name">nameLen</span> <span class="py-op">=</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">attrKey</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 73</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 74</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">nameLen</span> <span class="py-op">&gt;</span> <span class="py-name">longestNameLen</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 75</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 76</span>  <span class="py-line">                <span class="py-name">longestNameLen</span> <span class="py-op">=</span> <span class="py-name">nameLen</span> </span>
+<span class="py-lineno"> 77</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 78</span>  <span class="py-line">        <span class="py-name">longestNameLen</span><span class="py-op">+=</span><span class="py-number">1</span> </span>
+<span class="py-lineno"> 79</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 80</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">key</span> <span class="py-keyword">in</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">sortedKeyList</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 81</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 82</span>  <span class="py-line">            <span class="py-name">value</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">attribs</span><span class="py-op">[</span><span class="py-name">key</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 83</span>  <span class="py-line">                           </span>
+<span class="py-lineno"> 84</span>  <span class="py-line">            <span class="py-name">value</span> <span class="py-op">=</span> <span class="py-name">str</span><span class="py-op">(</span><span class="py-name">value</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 85</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 86</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-string">'\n'</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 87</span>  <span class="py-line">             </span>
+<span class="py-lineno"> 88</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span id="link-8" class="py-name"><a title="pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs" class="py-name" href="#" onclick="doclink('link-8', 'writeTabs', 'Method pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs()=pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeTabs'); return false;">writeTabs</a></span></span><span class="py-op">(</span><span class="py-number">7</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 89</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 90</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-name">key</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 91</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 92</span>  <span class="py-line">            <span class="py-name">nameLen</span> <span class="py-op">=</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">key</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 93</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 94</span>  <span class="py-line">            <span class="py-name">spaces</span>  <span class="py-op">=</span> <span class="py-name">longestNameLen</span> <span class="py-op">-</span> <span class="py-name">nameLen</span> </span>
+<span class="py-lineno"> 95</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 96</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span id="link-9" class="py-name"><a title="pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs" class="py-name" href="#" onclick="doclink('link-9', 'writeTabs', 'Method pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs()=pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeTabs'); return false;">writeTabs</a></span></span><span class="py-op">(</span><span class="py-name">spaces</span><span class="py-op">,</span> <span class="py-number">0</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 97</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 98</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-string">'= "%s"'</span> <span class="py-op">%</span> <span class="py-name">value</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 99</span>  <span class="py-line">                 </span>
+<span class="py-lineno">100</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">hasChildren</span> <span class="py-keyword">and</span> <span class="py-keyword">not</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">hasValue</span><span class="py-op">:</span> </span>
+<span class="py-lineno">101</span>  <span class="py-line"> </span>
+<span class="py-lineno">102</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-string">'/&gt;\n'</span><span class="py-op">)</span> </span>
+<span class="py-lineno">103</span>  <span class="py-line"> </span>
+<span class="py-lineno">104</span>  <span class="py-line">            <span class="py-keyword">return</span> <span class="py-name">None</span> </span>
+<span class="py-lineno">105</span>  <span class="py-line"> </span>
+<span class="py-lineno">106</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-string">'&gt;\n'</span><span class="py-op">)</span> </span>
+<span class="py-lineno">107</span>  <span class="py-line"> </span>
+<span class="py-lineno">108</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">hasValue</span><span class="py-op">:</span> </span>
+<span class="py-lineno">109</span>  <span class="py-line"> </span>
+<span class="py-lineno">110</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">isinstance</span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">value</span><span class="py-op">,</span> <span id="link-10" class="py-name"><a title="pyxsd.elementRepresentatives.list" class="py-name" href="#" onclick="doclink('link-10', 'list', 'Module pyxsd.elementRepresentatives.list=pyxsd.elementRepresentatives.list-module.html'); return false;">list</a></span></span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">111</span>  <span class="py-line"> </span>
+<span class="py-lineno">112</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">value</span> <span class="py-op">=</span> <span id="link-11" class="py-name"><a title="pyxsd.elementRepresentatives.list" class="py-name" href="#" onclick="doclink('link-11', 'list', 'Module pyxsd.elementRepresentatives.list=pyxsd.elementRepresentatives.list-module.html'); return false;">list</a></span></span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">value</span><span class="py-op">)</span> </span>
+<span class="py-lineno">113</span>  <span class="py-line"> </span>
+<span class="py-lineno">114</span>  <span class="py-line">            <span class="py-keyword">for</span> <span class="py-name">line</span> <span class="py-keyword">in</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">value</span><span class="py-op">:</span> </span>
+<span class="py-lineno">115</span>  <span class="py-line"> </span>
+<span class="py-lineno">116</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span id="link-12" class="py-name"><a title="pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs" class="py-name" href="#" onclick="doclink('link-12', 'writeTabs', 'Method pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs()=pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeTabs'); return false;">writeTabs</a></span></span><span class="py-op">(</span><span class="py-number">3</span><span class="py-op">)</span> </span>
+<span class="py-lineno">117</span>  <span class="py-line"> </span>
+<span class="py-lineno">118</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-string">'%s\n'</span> <span class="py-op">%</span> <span class="py-name">line</span><span class="py-op">)</span> </span>
+<span class="py-lineno">119</span>  <span class="py-line"> </span>
+<span class="py-lineno">120</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">hasChildren</span><span class="py-op">:</span> </span>
+<span class="py-lineno">121</span>  <span class="py-line"> </span>
+<span class="py-lineno">122</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span id="link-13" class="py-name"><a title="pyxsd.writers.xmlTagWriter.XmlTagWriter.writeEndTag" class="py-name" href="#" onclick="doclink('link-13', 'writeEndTag', 'Method pyxsd.writers.xmlTagWriter.XmlTagWriter.writeEndTag()=pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeEndTag'); return false;">writeEndTag</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">123</span>  <span class="py-line"> </span>
+<span class="py-lineno">124</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">None</span> </span>
+</div><span class="py-lineno">125</span>  <span class="py-line"> </span>
+<span class="py-lineno">126</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">127</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="XmlTagWriter.writeComment"></a><div id="XmlTagWriter.writeComment-def"><span class="py-lineno">128</span> <a class="py-toggle" href="#" id="XmlTagWriter.writeComment-toggle" onclick="toggle('XmlTagWriter.writeComment'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeComment">writeComment</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="XmlTagWriter.writeComment-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="XmlTagWriter.writeComment-expanded"><span class="py-lineno">129</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">130</span>  <span class="py-line"><span class="py-docstring">        If `name` is set to '_comment_' this function is called. A comment can be in the tree only</span> </span>
+<span class="py-lineno">131</span>  <span class="py-line"><span class="py-docstring">        if it is included in a transform or the writer is used by another program.</span> </span>
+<span class="py-lineno">132</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">133</span>  <span class="py-line"><span class="py-docstring">        No parameters</span> </span>
+<span class="py-lineno">134</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">135</span>  <span class="py-line"> </span>
+<span class="py-lineno">136</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-string">'&lt;!--%s--&gt;'</span> <span class="py-op">%</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">value</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">137</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">138</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="XmlTagWriter.writeEndTag"></a><div id="XmlTagWriter.writeEndTag-def"><span class="py-lineno">139</span> <a class="py-toggle" href="#" id="XmlTagWriter.writeEndTag-toggle" onclick="toggle('XmlTagWriter.writeEndTag'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeEndTag">writeEndTag</a> <span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="XmlTagWriter.writeEndTag-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="XmlTagWriter.writeEndTag-expanded"><span class="py-lineno">140</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">141</span>  <span class="py-line"><span class="py-docstring">        Writes the ending tag for an element. Called by the tree writer if the element has children.</span> </span>
+<span class="py-lineno">142</span>  <span class="py-line"><span class="py-docstring">        It is called only after the other children have been written.</span> </span>
+<span class="py-lineno">143</span>  <span class="py-line"><span class="py-docstring">        An end tag appear as follows::</span> </span>
+<span class="py-lineno">144</span>  <span class="py-line"><span class="py-docstring">            &lt;/TagName&gt;</span> </span>
+<span class="py-lineno">145</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">146</span>  <span class="py-line"><span class="py-docstring">        no parameters</span> </span>
+<span class="py-lineno">147</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">148</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span id="link-14" class="py-name"><a title="pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs" class="py-name" href="#" onclick="doclink('link-14', 'writeTabs', 'Method pyxsd.writers.xmlTagWriter.XmlTagWriter.writeTabs()=pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeTabs'); return false;">writeTabs</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno">149</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-string">'&lt;/%s&gt;\n'</span> <span class="py-op">%</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-15" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-15', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">150</span>  <span class="py-line"> </span>
+<span class="py-lineno">151</span>  <span class="py-line">    <span class="py-comment">#=======================================================</span> </span>
+<span class="py-lineno">152</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="XmlTagWriter.writeTabs"></a><div id="XmlTagWriter.writeTabs-def"><span class="py-lineno">153</span> <a class="py-toggle" href="#" id="XmlTagWriter.writeTabs-toggle" onclick="toggle('XmlTagWriter.writeTabs'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#writeTabs">writeTabs</a> <span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">tabSpec</span><span class="py-op">=</span><span class="py-name">None</span><span class="py-op">,</span> <span class="py-param">tabs</span> <span class="py-op">=</span> <span class="py-name">None</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="XmlTagWriter.writeTabs-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="XmlTagWriter.writeTabs-expanded"><span class="py-lineno">154</span>  <span class="py-line"> </span>
+<span class="py-lineno">155</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">156</span>  <span class="py-line"><span class="py-docstring">        Writes out the tabs before an element. Can also write a certain number</span> </span>
+<span class="py-lineno">157</span>  <span class="py-line"><span class="py-docstring">        of spaces after the tabs have been written, if `tabSpec` is specified.</span> </span>
+<span class="py-lineno">158</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">159</span>  <span class="py-line"><span class="py-docstring">        parameters:</span> </span>
+<span class="py-lineno">160</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">161</span>  <span class="py-line"><span class="py-docstring">        - `tabSpec`: An integer. By default, it is a NoneType. If specified, the program will make the specified number of spaces after the tab it writes.</span> </span>
+<span class="py-lineno">162</span>  <span class="py-line"><span class="py-docstring">        - `tabs`:  n integer that indicates the number of tabs over the element is in the document. By default, it is set to self.tabs, which is the `tabs`</span> </span>
+<span class="py-lineno">163</span>  <span class="py-line"><span class="py-docstring">        value provided in the initialization. </span> </span>
+<span class="py-lineno">164</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">165</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">166</span>  <span class="py-line"> </span>
+<span class="py-lineno">167</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">tabs</span><span class="py-op">:</span> </span>
+<span class="py-lineno">168</span>  <span class="py-line"> </span>
+<span class="py-lineno">169</span>  <span class="py-line">            <span class="py-name">tabs</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">tabs</span> </span>
+<span class="py-lineno">170</span>  <span class="py-line"> </span>
+<span class="py-lineno">171</span>  <span class="py-line">        <span class="py-name">tab</span> <span class="py-op">=</span> <span class="py-string">""</span> </span>
+<span class="py-lineno">172</span>  <span class="py-line">         </span>
+<span class="py-lineno">173</span>  <span class="py-line">        <span class="py-name">x</span> <span class="py-op">=</span> <span class="py-number">0</span> </span>
+<span class="py-lineno">174</span>  <span class="py-line"> </span>
+<span class="py-lineno">175</span>  <span class="py-line">        <span class="py-keyword">while</span> <span class="py-name">x</span> <span class="py-op">&lt;</span> <span class="py-name">tabs</span><span class="py-op">:</span> </span>
+<span class="py-lineno">176</span>  <span class="py-line"> </span>
+<span class="py-lineno">177</span>  <span class="py-line">            <span class="py-name">tab</span> <span class="py-op">=</span> <span class="py-name">tab</span> <span class="py-op">+</span> <span class="py-string">'    '</span> </span>
+<span class="py-lineno">178</span>  <span class="py-line">             </span>
+<span class="py-lineno">179</span>  <span class="py-line">            <span class="py-name">x</span><span class="py-op">+=</span><span class="py-number">1</span> </span>
+<span class="py-lineno">180</span>  <span class="py-line"> </span>
+<span class="py-lineno">181</span>  <span class="py-line">            <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">182</span>  <span class="py-line">        </span>
+<span class="py-lineno">183</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-name">tabSpec</span><span class="py-op">:</span> </span>
+<span class="py-lineno">184</span>  <span class="py-line"> </span>
+<span class="py-lineno">185</span>  <span class="py-line">            <span class="py-name">y</span> <span class="py-op">=</span> <span class="py-number">0</span> </span>
+<span class="py-lineno">186</span>  <span class="py-line"> </span>
+<span class="py-lineno">187</span>  <span class="py-line">            <span class="py-keyword">while</span> <span class="py-name">y</span> <span class="py-op">&lt;</span> <span class="py-name">tabSpec</span><span class="py-op">:</span> </span>
+<span class="py-lineno">188</span>  <span class="py-line"> </span>
+<span class="py-lineno">189</span>  <span class="py-line">                <span class="py-name">tab</span> <span class="py-op">=</span> <span class="py-name">tab</span> <span class="py-op">+</span> <span class="py-string">' '</span> </span>
+<span class="py-lineno">190</span>  <span class="py-line"> </span>
+<span class="py-lineno">191</span>  <span class="py-line">                <span class="py-name">y</span><span class="py-op">+=</span><span class="py-number">1</span> </span>
+<span class="py-lineno">192</span>  <span class="py-line"> </span>
+<span class="py-lineno">193</span>  <span class="py-line">                <span class="py-keyword">continue</span> </span>
+<span class="py-lineno">194</span>  <span class="py-line">             </span>
+<span class="py-lineno">195</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">output</span><span class="py-op">.</span><span class="py-name">write</span><span class="py-op">(</span><span class="py-name">tab</span><span class="py-op">)</span> </span>
+</div></div><span class="py-lineno">196</span>  <span class="py-line"> </span><script type="text/javascript">
+<!--
+expandto(location.href);
+// -->
+</script>
+</pre>
+<br />
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table border="0" cellpadding="0" cellspacing="0" width="100%%">
+  <tr>
+    <td align="left" class="footer">Generated by Epydoc
+        3.0alpha3 on Thu Sep 07 21:19:43 2006</td>
+    <td align="right" class="footer">
+      <a href="http://epydoc.sourceforge.net">http://epydoc.sourceforge.net</a>
+    </td>
+  </tr>
+</table>
+
+<script type="text/javascript">
+  <!--
+  // Private objects are initially displayed (because if
+  // javascript is turned off then we want them to be
+  // visible); but by default, we want to hide them.  So hide
+  // them unless we have a cookie that says to show them.
+  checkCookie()
+  // -->
+</script>
+  
+</body>
+</html>

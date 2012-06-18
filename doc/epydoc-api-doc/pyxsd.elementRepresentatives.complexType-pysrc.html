@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="ascii"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+          "DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <title>pyxsd.elementRepresentatives.complexType</title>
+  <link rel="stylesheet" href="epydoc.css" type="text/css" />
+  <script type="text/javascript" src="epydoc.js"></script>
+</head>
+
+<body bgcolor="white" text="black" link="blue" vlink="#204080"
+      alink="#204080">
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0">
+  <tr valign="top">
+    <td width="100%">
+      <span class="breadcrumbs">
+        <a href="pyxsd-module.html">Package&nbsp;pyxsd</a> ::
+        <a href="pyxsd.elementRepresentatives-module.html">Package&nbsp;elementRepresentatives</a> ::
+        Module&nbsp;complexType
+      </span>
+    </td>
+    <td>
+      <table cellpadding="0" cellspacing="0">
+        <!-- hide/show private -->
+        <tr><td align="right"><span class="options">[<a href="javascript: void(0);" class="privatelink"
+    onclick="toggle_private();">hide private</a>]</span></td></tr>
+        <tr><td align="right"><span class="options"
+            >[<a href="frames.html" target="_top">frames</a
+            >]&nbsp;|&nbsp;<a href="pyxsd.elementRepresentatives.complexType-pysrc.html"
+            target="_top">no&nbsp;frames</a>]</span></td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<h1 class="epydoc">Source Code for <a href="pyxsd.elementRepresentatives.complexType-module.html">Module pyxsd.elementRepresentatives.complexType</a></h1>
+<pre class="py-src">
+<span class="py-lineno"> 1</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 2</span>  <span class="py-line"><span class="py-keyword">from</span> <span id="link-0" class="py-name"><a title="pyxsd.elementRepresentatives.xsdType" class="py-name" href="#" onclick="doclink('link-0', 'xsdType', 'Module pyxsd.elementRepresentatives.xsdType=pyxsd.elementRepresentatives.xsdType-module.html'); return false;">xsdType</a></span></span> <span class="py-keyword">import</span> <span id="link-1" class="py-name"><a title="pyxsd.elementRepresentatives.xsdType.XsdType" class="py-name" href="#" onclick="doclink('link-1', 'XsdType', 'Class pyxsd.elementRepresentatives.xsdType.XsdType=pyxsd.elementRepresentatives.xsdType.XsdType-class.html'); return false;">XsdType</a></span></span> </span>
+<span class="py-lineno"> 3</span>  <span class="py-line"><span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno"> 4</span>  <span class="py-line"><span class="py-comment"></span><span class="py-comment">#</span> </span>
+<span class="py-lineno"> 5</span>  <span class="py-line"><span class="py-comment"></span> </span>
+<a name="ComplexType"></a><div id="ComplexType-def"><span class="py-lineno"> 6</span> <a class="py-toggle" href="#" id="ComplexType-toggle" onclick="toggle('ComplexType'); return false;">-</a><span class="py-line"><span class="py-keyword">class</span> <a class="py-def-name" href="pyxsd.elementRepresentatives.complexType.ComplexType-class.html">ComplexType</a><span class="py-op">(</span><span class="py-base-class">XsdType</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="ComplexType-collapsed" style="display:none;" pad="++" indent="++++"></div><div id="ComplexType-expanded"><span class="py-lineno"> 7</span>  <span class="py-line">    <span class="py-docstring">"""</span> </span>
+<span class="py-lineno"> 8</span>  <span class="py-line"><span class="py-docstring">    The class for the complexType tag. Subclass of *XsdType*.</span> </span>
+<span class="py-lineno"> 9</span>  <span class="py-line"><span class="py-docstring">    """</span> </span>
+<span class="py-lineno">10</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno">11</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="ComplexType.__init__"></a><div id="ComplexType.__init__-def"><span class="py-lineno">12</span> <a class="py-toggle" href="#" id="ComplexType.__init__-toggle" onclick="toggle('ComplexType.__init__'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.elementRepresentatives.complexType.ComplexType-class.html#__init__">__init__</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">xsdElement</span><span class="py-op">,</span> <span class="py-param">parent</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="ComplexType.__init__-collapsed" style="display:none;" pad="++" indent="++++++++"></div><div id="ComplexType.__init__-expanded"><span class="py-lineno">13</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">14</span>  <span class="py-line"><span class="py-docstring">        Keeps a list of sequences and choices that are children of it.</span> </span>
+<span class="py-lineno">15</span>  <span class="py-line"><span class="py-docstring">        Stores itself in the schema dictionary of complexTypes.</span> </span>
+<span class="py-lineno">16</span>  <span class="py-line"><span class="py-docstring">        Uses the XsdType `__init__`.</span> </span>
+<span class="py-lineno">17</span>  <span class="py-line"><span class="py-docstring">         See *ElementRepresentative* for more documentation.</span> </span>
+<span class="py-lineno">18</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">19</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">sequencesOrChoices</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno">20</span>  <span class="py-line">         </span>
+<span class="py-lineno">21</span>  <span class="py-line">        <span id="link-2" class="py-name"><a title="pyxsd.elementRepresentatives.xsdType.XsdType" class="py-name" href="#" onclick="doclink('link-2', 'XsdType', 'Class pyxsd.elementRepresentatives.xsdType.XsdType=pyxsd.elementRepresentatives.xsdType.XsdType-class.html'); return false;">XsdType</a></span></span><span class="py-op">.</span><span id="link-3" class="py-name"><a title="pyxsd.elementRepresentatives.annotation.Annotation.__init__
+pyxsd.elementRepresentatives.attribute.Attribute.__init__
+pyxsd.elementRepresentatives.attributeGroup.AttributeGroup.__init__
+pyxsd.elementRepresentatives.choice.Choice.__init__
+pyxsd.elementRepresentatives.complexContent.ComplexContent.__init__
+pyxsd.elementRepresentatives.complexType.ComplexType.__init__
+pyxsd.elementRepresentatives.documentation.Documentation.__init__
+pyxsd.elementRepresentatives.element.Element.__init__
+pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.__init__
+pyxsd.elementRepresentatives.enumeration.Enumeration.__init__
+pyxsd.elementRepresentatives.extension.Extension.__init__
+pyxsd.elementRepresentatives.length.Length.__init__
+pyxsd.elementRepresentatives.list.List.__init__
+pyxsd.elementRepresentatives.maxExclusive.MaxExclusive.__init__
+pyxsd.elementRepresentatives.maxInclusive.MaxInclusive.__init__
+pyxsd.elementRepresentatives.minExclusive.MinExclusive.__init__
+pyxsd.elementRepresentatives.minInclusive.MinInclusive.__init__
+pyxsd.elementRepresentatives.pattern.Pattern.__init__
+pyxsd.elementRepresentatives.restriction.Restriction.__init__
+pyxsd.elementRepresentatives.schema.Schema.__init__
+pyxsd.elementRepresentatives.sequence.Sequence.__init__
+pyxsd.elementRepresentatives.simpleContent.SimpleContent.__init__
+pyxsd.elementRepresentatives.simpleType.SimpleType.__init__
+pyxsd.elementRepresentatives.xsdType.XsdType.__init__
+pyxsd.pyXSD.PyXSD.__init__
+pyxsd.schemaBase.SchemaBase.__init__
+pyxsd.transforms.atom.Atom.__init__
+pyxsd.transforms.bravaisLattice.BravaisLattice.__init__
+pyxsd.transforms.expandCell.ExpandCell.__init__
+pyxsd.transforms.sphereCutter.SphereCutter.__init__
+pyxsd.transforms.transform.Transform.__init__
+pyxsd.transforms.vector.Vector.__init__
+pyxsd.writers.xmlTagWriter.XmlTagWriter.__init__
+pyxsd.writers.xmlTreeWriter.XmlTreeWriter.__init__
+pyxsd.xsdDataTypes.Base64Binary.__init__
+pyxsd.xsdDataTypes.Boolean.__init__
+pyxsd.xsdDataTypes.Double.__init__
+pyxsd.xsdDataTypes.ID.__init__
+pyxsd.xsdDataTypes.IDREF.__init__
+pyxsd.xsdDataTypes.Integer.__init__
+pyxsd.xsdDataTypes.NegativeInteger.__init__
+pyxsd.xsdDataTypes.NonNegativeInteger.__init__
+pyxsd.xsdDataTypes.NonPositiveInteger.__init__
+pyxsd.xsdDataTypes.PositiveInteger.__init__
+pyxsd.xsdDataTypes.String.__init__
+pyxsd.xsdDataTypes.TypeList.__init__" class="py-name" href="#" onclick="doclink('link-3', '__init__', 'Method pyxsd.elementRepresentatives.annotation.Annotation.__init__()=pyxsd.elementRepresentatives.annotation.Annotation-class.html#__init__,Method pyxsd.elementRepresentatives.attribute.Attribute.__init__()=pyxsd.elementRepresentatives.attribute.Attribute-class.html#__init__,Method pyxsd.elementRepresentatives.attributeGroup.AttributeGroup.__init__()=pyxsd.elementRepresentatives.attributeGroup.AttributeGroup-class.html#__init__,Method pyxsd.elementRepresentatives.choice.Choice.__init__()=pyxsd.elementRepresentatives.choice.Choice-class.html#__init__,Method pyxsd.elementRepresentatives.complexContent.ComplexContent.__init__()=pyxsd.elementRepresentatives.complexContent.ComplexContent-class.html#__init__,Method pyxsd.elementRepresentatives.complexType.ComplexType.__init__()=pyxsd.elementRepresentatives.complexType.ComplexType-class.html#__init__,Method pyxsd.elementRepresentatives.documentation.Documentation.__init__()=pyxsd.elementRepresentatives.documentation.Documentation-class.html#__init__,Method pyxsd.elementRepresentatives.element.Element.__init__()=pyxsd.elementRepresentatives.element.Element-class.html#__init__,Method pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.__init__()=pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#__init__,Method pyxsd.elementRepresentatives.enumeration.Enumeration.__init__()=pyxsd.elementRepresentatives.enumeration.Enumeration-class.html#__init__,Method pyxsd.elementRepresentatives.extension.Extension.__init__()=pyxsd.elementRepresentatives.extension.Extension-class.html#__init__,Method pyxsd.elementRepresentatives.length.Length.__init__()=pyxsd.elementRepresentatives.length.Length-class.html#__init__,Method pyxsd.elementRepresentatives.list.List.__init__()=pyxsd.elementRepresentatives.list.List-class.html#__init__,Method pyxsd.elementRepresentatives.maxExclusive.MaxExclusive.__init__()=pyxsd.elementRepresentatives.maxExclusive.MaxExclusive-class.html#__init__,Method pyxsd.elementRepresentatives.maxInclusive.MaxInclusive.__init__()=pyxsd.elementRepresentatives.maxInclusive.MaxInclusive-class.html#__init__,Method pyxsd.elementRepresentatives.minExclusive.MinExclusive.__init__()=pyxsd.elementRepresentatives.minExclusive.MinExclusive-class.html#__init__,Method pyxsd.elementRepresentatives.minInclusive.MinInclusive.__init__()=pyxsd.elementRepresentatives.minInclusive.MinInclusive-class.html#__init__,Method pyxsd.elementRepresentatives.pattern.Pattern.__init__()=pyxsd.elementRepresentatives.pattern.Pattern-class.html#__init__,Method pyxsd.elementRepresentatives.restriction.Restriction.__init__()=pyxsd.elementRepresentatives.restriction.Restriction-class.html#__init__,Method pyxsd.elementRepresentatives.schema.Schema.__init__()=pyxsd.elementRepresentatives.schema.Schema-class.html#__init__,Method pyxsd.elementRepresentatives.sequence.Sequence.__init__()=pyxsd.elementRepresentatives.sequence.Sequence-class.html#__init__,Method pyxsd.elementRepresentatives.simpleContent.SimpleContent.__init__()=pyxsd.elementRepresentatives.simpleContent.SimpleContent-class.html#__init__,Method pyxsd.elementRepresentatives.simpleType.SimpleType.__init__()=pyxsd.elementRepresentatives.simpleType.SimpleType-class.html#__init__,Method pyxsd.elementRepresentatives.xsdType.XsdType.__init__()=pyxsd.elementRepresentatives.xsdType.XsdType-class.html#__init__,Method pyxsd.pyXSD.PyXSD.__init__()=pyxsd.pyXSD.PyXSD-class.html#__init__,Method pyxsd.schemaBase.SchemaBase.__init__()=pyxsd.schemaBase.SchemaBase-class.html#__init__,Method pyxsd.transforms.atom.Atom.__init__()=pyxsd.transforms.atom.Atom-class.html#__init__,Method pyxsd.transforms.bravaisLattice.BravaisLattice.__init__()=pyxsd.transforms.bravaisLattice.BravaisLattice-class.html#__init__,Method pyxsd.transforms.expandCell.ExpandCell.__init__()=pyxsd.transforms.expandCell.ExpandCell-class.html#__init__,Method pyxsd.transforms.sphereCutter.SphereCutter.__init__()=pyxsd.transforms.sphereCutter.SphereCutter-class.html#__init__,Method pyxsd.transforms.transform.Transform.__init__()=pyxsd.transforms.transform.Transform-class.html#__init__,Method pyxsd.transforms.vector.Vector.__init__()=pyxsd.transforms.vector.Vector-class.html#__init__,Method pyxsd.writers.xmlTagWriter.XmlTagWriter.__init__()=pyxsd.writers.xmlTagWriter.XmlTagWriter-class.html#__init__,Method pyxsd.writers.xmlTreeWriter.XmlTreeWriter.__init__()=pyxsd.writers.xmlTreeWriter.XmlTreeWriter-class.html#__init__,Method pyxsd.xsdDataTypes.Base64Binary.__init__()=pyxsd.xsdDataTypes.Base64Binary-class.html#__init__,Method pyxsd.xsdDataTypes.Boolean.__init__()=pyxsd.xsdDataTypes.Boolean-class.html#__init__,Method pyxsd.xsdDataTypes.Double.__init__()=pyxsd.xsdDataTypes.Double-class.html#__init__,Method pyxsd.xsdDataTypes.ID.__init__()=pyxsd.xsdDataTypes.ID-class.html#__init__,Method pyxsd.xsdDataTypes.IDREF.__init__()=pyxsd.xsdDataTypes.IDREF-class.html#__init__,Method pyxsd.xsdDataTypes.Integer.__init__()=pyxsd.xsdDataTypes.Integer-class.html#__init__,Method pyxsd.xsdDataTypes.NegativeInteger.__init__()=pyxsd.xsdDataTypes.NegativeInteger-class.html#__init__,Method pyxsd.xsdDataTypes.NonNegativeInteger.__init__()=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#__init__,Method pyxsd.xsdDataTypes.NonPositiveInteger.__init__()=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#__init__,Method pyxsd.xsdDataTypes.PositiveInteger.__init__()=pyxsd.xsdDataTypes.PositiveInteger-class.html#__init__,Method pyxsd.xsdDataTypes.String.__init__()=pyxsd.xsdDataTypes.String-class.html#__init__,Method pyxsd.xsdDataTypes.TypeList.__init__()=pyxsd.xsdDataTypes.TypeList-class.html#__init__'); return false;">__init__</a></span></span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">,</span> <span class="py-name">xsdElement</span><span class="py-op">,</span> <span class="py-name">parent</span><span class="py-op">)</span> </span>
+<span class="py-lineno">22</span>  <span class="py-line">         </span>
+<span class="py-lineno">23</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span id="link-4" class="py-name"><a title="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.getSchema
+pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.getSchema
+pyxsd.elementRepresentatives.schema.Schema.getSchema" class="py-name" href="#" onclick="doclink('link-4', 'getSchema', 'Method pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.getSchema()=pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#getSchema,Method pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative.getSchema()=pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#getSchema,Method pyxsd.elementRepresentatives.schema.Schema.getSchema()=pyxsd.elementRepresentatives.schema.Schema-class.html#getSchema'); return false;">getSchema</a></span></span><span class="py-op">(</span><span class="py-op">)</span><span class="py-op">.</span><span class="py-name">complexTypes</span><span class="py-op">[</span><span class="py-name">self</span><span class="py-op">.</span><span id="link-5" class="py-name"><a title="pyxsd.xsdDataTypes.Base64Binary.name
+pyxsd.xsdDataTypes.Boolean.name
+pyxsd.xsdDataTypes.Double.name
+pyxsd.xsdDataTypes.ID.name
+pyxsd.xsdDataTypes.IDREF.name
+pyxsd.xsdDataTypes.Integer.name
+pyxsd.xsdDataTypes.NegativeInteger.name
+pyxsd.xsdDataTypes.NonNegativeInteger.name
+pyxsd.xsdDataTypes.NonPositiveInteger.name
+pyxsd.xsdDataTypes.PositiveInteger.name
+pyxsd.xsdDataTypes.String.name
+pyxsd.xsdDataTypes.TypeList.name" class="py-name" href="#" onclick="doclink('link-5', 'name', 'Variable pyxsd.xsdDataTypes.Base64Binary.name=pyxsd.xsdDataTypes.Base64Binary-class.html#name,Variable pyxsd.xsdDataTypes.Boolean.name=pyxsd.xsdDataTypes.Boolean-class.html#name,Variable pyxsd.xsdDataTypes.Double.name=pyxsd.xsdDataTypes.Double-class.html#name,Variable pyxsd.xsdDataTypes.ID.name=pyxsd.xsdDataTypes.ID-class.html#name,Variable pyxsd.xsdDataTypes.IDREF.name=pyxsd.xsdDataTypes.IDREF-class.html#name,Variable pyxsd.xsdDataTypes.Integer.name=pyxsd.xsdDataTypes.Integer-class.html#name,Variable pyxsd.xsdDataTypes.NegativeInteger.name=pyxsd.xsdDataTypes.NegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonNegativeInteger.name=pyxsd.xsdDataTypes.NonNegativeInteger-class.html#name,Variable pyxsd.xsdDataTypes.NonPositiveInteger.name=pyxsd.xsdDataTypes.NonPositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.PositiveInteger.name=pyxsd.xsdDataTypes.PositiveInteger-class.html#name,Variable pyxsd.xsdDataTypes.String.name=pyxsd.xsdDataTypes.String-class.html#name,Variable pyxsd.xsdDataTypes.TypeList.name=pyxsd.xsdDataTypes.TypeList-class.html#name'); return false;">name</a></span></span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">self</span> </span>
+</div><span class="py-lineno">24</span>  <span class="py-line"> </span>
+<span class="py-lineno">25</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno">26</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="ComplexType.getElements"></a><div id="ComplexType.getElements-def"><span class="py-lineno">27</span> <a class="py-toggle" href="#" id="ComplexType.getElements-toggle" onclick="toggle('ComplexType.getElements'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.elementRepresentatives.complexType.ComplexType-class.html#getElements">getElements</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="ComplexType.getElements-collapsed" style="display:none;" pad="++" indent="++++++++"></div><div id="ComplexType.getElements-expanded"><span class="py-lineno">28</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">29</span>  <span class="py-line"><span class="py-docstring">        Returns a list of elements. Uses lazy evaluation. Goes through the `sequencesOrChoices` list,</span> </span>
+<span class="py-lineno">30</span>  <span class="py-line"><span class="py-docstring">        goes through each ones elements, adds its container information, then adds the element to a list</span> </span>
+<span class="py-lineno">31</span>  <span class="py-line"><span class="py-docstring">        which it returns.</span> </span>
+<span class="py-lineno">32</span>  <span class="py-line"><span class="py-docstring"></span> </span>
+<span class="py-lineno">33</span>  <span class="py-line"><span class="py-docstring">        No parameters.</span> </span>
+<span class="py-lineno">34</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">35</span>  <span class="py-line">        <span class="py-name">elements</span> <span class="py-op">=</span> <span class="py-name">getattr</span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">,</span> <span class="py-string">'elements_'</span><span class="py-op">,</span> <span class="py-name">None</span><span class="py-op">)</span> </span>
+<span class="py-lineno">36</span>  <span class="py-line">         </span>
+<span class="py-lineno">37</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">elements</span> <span class="py-op">==</span> <span class="py-name">None</span><span class="py-op">:</span> </span>
+<span class="py-lineno">38</span>  <span class="py-line">            <span class="py-keyword">return</span> <span class="py-name">elements</span> </span>
+<span class="py-lineno">39</span>  <span class="py-line">         </span>
+<span class="py-lineno">40</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">elements_</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno">41</span>  <span class="py-line">        <span class="py-name">itemInfo</span> <span class="py-op">=</span> <span class="py-name">None</span> </span>
+<span class="py-lineno">42</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">item</span> <span class="py-keyword">in</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">sequencesOrChoices</span><span class="py-op">:</span> </span>
+<span class="py-lineno">43</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">item</span><span class="py-op">.</span><span class="py-name">tagType</span> <span class="py-op">==</span> <span class="py-string">"sequence"</span><span class="py-op">:</span> </span>
+<span class="py-lineno">44</span>  <span class="py-line">                <span class="py-name">itemInfo</span> <span class="py-op">=</span> <span class="py-string">"sequence"</span> </span>
+<span class="py-lineno">45</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-name">item</span><span class="py-op">.</span><span class="py-name">tagType</span> <span class="py-op">==</span> <span class="py-string">"choice"</span><span class="py-op">:</span> </span>
+<span class="py-lineno">46</span>  <span class="py-line">                <span class="py-name">itemInfo</span> <span class="py-op">=</span> <span class="py-string">"choice"</span> </span>
+<span class="py-lineno">47</span>  <span class="py-line">            <span class="py-keyword">for</span> <span id="link-6" class="py-name"><a title="pyxsd.elementRepresentatives.element" class="py-name" href="#" onclick="doclink('link-6', 'element', 'Module pyxsd.elementRepresentatives.element=pyxsd.elementRepresentatives.element-module.html'); return false;">element</a></span></span> <span class="py-keyword">in</span> <span class="py-name">item</span><span class="py-op">.</span><span class="py-name">elements</span><span class="py-op">:</span> </span>
+<span class="py-lineno">48</span>  <span class="py-line">                <span id="link-7" class="py-name"><a title="pyxsd.elementRepresentatives.element" class="py-name" href="#" onclick="doclink('link-7', 'element', 'Module pyxsd.elementRepresentatives.element=pyxsd.elementRepresentatives.element-module.html'); return false;">element</a></span></span><span class="py-op">.</span><span class="py-name">sOrC</span> <span class="py-op">=</span> <span class="py-name">itemInfo</span> </span>
+<span class="py-lineno">49</span>  <span class="py-line">                <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">elements_</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span id="link-8" class="py-name"><a title="pyxsd.elementRepresentatives.element" class="py-name" href="#" onclick="doclink('link-8', 'element', 'Module pyxsd.elementRepresentatives.element=pyxsd.elementRepresentatives.element-module.html'); return false;">element</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno">50</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">elements_</span> </span>
+</div><span class="py-lineno">51</span>  <span class="py-line"> </span>
+<span class="py-lineno">52</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno">53</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="ComplexType.gatherFacets"></a><div id="ComplexType.gatherFacets-def"><span class="py-lineno">54</span> <a class="py-toggle" href="#" id="ComplexType.gatherFacets-toggle" onclick="toggle('ComplexType.gatherFacets'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.elementRepresentatives.complexType.ComplexType-class.html#gatherFacets">gatherFacets</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="ComplexType.gatherFacets-collapsed" style="display:none;" pad="++" indent="++++++++"></div><div id="ComplexType.gatherFacets-expanded"><span class="py-lineno">55</span>  <span class="py-line">        <span class="py-docstring">"""</span> </span>
+<span class="py-lineno">56</span>  <span class="py-line"><span class="py-docstring">        returns a blank dictionary. Needed for SimpleType, so the function can be called for any type without error.</span> </span>
+<span class="py-lineno">57</span>  <span class="py-line"><span class="py-docstring">        """</span> </span>
+<span class="py-lineno">58</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-op">{</span><span class="py-op">}</span> </span>
+</div></div><span class="py-lineno">59</span>  <span class="py-line"> </span><script type="text/javascript">
+<!--
+expandto(location.href);
+// -->
+</script>
+</pre>
+<br />
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table border="0" cellpadding="0" cellspacing="0" width="100%%">
+  <tr>
+    <td align="left" class="footer">Generated by Epydoc
+        3.0alpha3 on Thu Sep 07 21:19:44 2006</td>
+    <td align="right" class="footer">
+      <a href="http://epydoc.sourceforge.net">http://epydoc.sourceforge.net</a>
+    </td>
+  </tr>
+</table>
+
+<script type="text/javascript">
+  <!--
+  // Private objects are initially displayed (because if
+  // javascript is turned off then we want them to be
+  // visible); but by default, we want to hide them.  So hide
+  // them unless we have a cookie that says to show them.
+  checkCookie()
+  // -->
+</script>
+  
+</body>
+</html>

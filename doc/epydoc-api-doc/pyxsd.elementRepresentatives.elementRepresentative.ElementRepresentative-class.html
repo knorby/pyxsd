@@ -1,0 +1,818 @@
+<?xml version="1.0" encoding="ascii"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+          "DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <title>pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative</title>
+  <link rel="stylesheet" href="epydoc.css" type="text/css" />
+  <script type="text/javascript" src="epydoc.js"></script>
+</head>
+
+<body bgcolor="white" text="black" link="blue" vlink="#204080"
+      alink="#204080">
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0">
+  <tr valign="top">
+    <td width="100%">
+      <span class="breadcrumbs">
+        pyxsd ::
+        elementRepresentatives ::
+        elementRepresentative ::
+        ElementRepresentative ::
+        Class&nbsp;ElementRepresentative
+      </span>
+    </td>
+    <td>
+      <table cellpadding="0" cellspacing="0">
+        <!-- hide/show private -->
+        <tr><td align="right"><span class="options">[<a href="javascript: void(0);" class="privatelink"
+    onclick="toggle_private();">hide private</a>]</span></td></tr>
+        <tr><td align="right"><span class="options"
+            >[<a href="frames.html" target="_top">frames</a
+            >]&nbsp;|&nbsp;<a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html"
+            target="_top">no&nbsp;frames</a>]</span></td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<!-- ==================== CLASS DESCRIPTION ==================== -->
+<h1 class="epydoc">Class ElementRepresentative</h1><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative">source&nbsp;code</a></span><br /><br />
+<pre class="base-tree">
+object --+
+         |
+        <strong class="uidshort">ElementRepresentative</strong>
+</pre>
+
+<dl><dt>Known Subclasses:</dt>
+<dd>
+    <a href="pyxsd.elementRepresentatives.enumeration.Enumeration-class.html">enumeration.Enumeration</a>,
+    <a href="pyxsd.elementRepresentatives.length.Length-class.html">length.Length</a>,
+    <a href="pyxsd.elementRepresentatives.maxExclusive.MaxExclusive-class.html">maxExclusive.MaxExclusive</a>,
+    <a href="pyxsd.elementRepresentatives.maxInclusive.MaxInclusive-class.html">maxInclusive.MaxInclusive</a>,
+    <a href="pyxsd.elementRepresentatives.minExclusive.MinExclusive-class.html">minExclusive.MinExclusive</a>,
+    <a href="pyxsd.elementRepresentatives.minInclusive.MinInclusive-class.html">minInclusive.MinInclusive</a>,
+    <a href="pyxsd.elementRepresentatives.pattern.Pattern-class.html">pattern.Pattern</a>
+</dd></dl>
+
+<hr />
+ElementRepresentative is the base class for all of the tag type classes in the
+ElementRepresentative system, and it contains the methods that control movement
+around the tree. This class contains the most general ways to gather information
+from the schema.<br /><br />
+
+<!-- ==================== INSTANCE METHODS ==================== -->
+<a name="section-InstanceMethods"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Instance Methods</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-InstanceMethods"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#__init__" class="summary-sig-name">__init__</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">xsdElement</span>,
+        <span class="summary-sig-arg">parent</span>)</span><br />
+      See the documentation for the ElementRepresentative system at the top of the
+ElementRepresentative module.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#__str__" class="summary-sig-name">__str__</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      sets the str() function to print the ER information for a tag in the form: ClassName[TagName]
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#processChildren" class="summary-sig-name">processChildren</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Calls the <a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#factory" class="link">factory</a> on all of the children of an element.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#describe" class="summary-sig-name">describe</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      A debugging function that prints out the contents of the dictionary.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#findLayerNum" class="summary-sig-name">findLayerNum</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Called by the ER <a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#__init__" class="link">__init__</a>.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#checkTopLevelType" class="summary-sig-name">checkTopLevelType</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Checks to see if an element is at the top-level.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#addSuperClassName" class="summary-sig-name">addSuperClassName</a>(<span class="summary-sig-arg">self</span>,
+        <span class="summary-sig-arg">name</span>)</span><br />
+      Adds a base class name to containing type for a particular element.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#getContainingType" class="summary-sig-name">getContainingType</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Returns the parent's getContainingType() function.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#getSchema" class="summary-sig-name">getSchema</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      This method returns the parent's getSchema() function.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#getContainingTypeName" class="summary-sig-name">getContainingTypeName</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Returns the name of the containingType.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#getName" class="summary-sig-name">getName</a>(<span class="summary-sig-arg">self</span>)</span><br />
+      Returns the name field in the ElementTree element.
+  </td>
+</tr>
+  <tr>
+    <td colspan="2" class="summary">
+    <p class="indent-wrapped-lines"><b>Inherited from <code>object</code></b>:
+      <code>__delattr__</code>,
+      <code>__getattribute__</code>,
+      <code>__hash__</code>,
+      <code>__new__</code>,
+      <code>__reduce__</code>,
+      <code>__reduce_ex__</code>,
+      <code>__repr__</code>,
+      <code>__setattr__</code>
+      </p>
+    </td>
+  </tr>
+</table>
+
+<br />
+<!-- ==================== CLASS METHODS ==================== -->
+<a name="section-ClassMethods"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Class Methods</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-ClassMethods"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#factory" class="summary-sig-name">factory</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">xsdElement</span>,
+        <span class="summary-sig-arg">parent</span>)</span><br />
+      A classmethod.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#typeFromName" class="summary-sig-name">typeFromName</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">xsdTypeName</span>,
+        <span class="summary-sig-arg">pyXSD</span>)</span><br />
+      A classmethod.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#register" class="summary-sig-name">register</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">name</span>,
+        <span class="summary-sig-arg">obj</span>)</span><br />
+      The registry stores all ER objs in a dictionary with their name as a key.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#getFromName" class="summary-sig-name">getFromName</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">name</span>)</span><br />
+      Retrieve an entry in the registry by its name.
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#classNameFor" class="summary-sig-name">classNameFor</a>(<span class="summary-sig-arg">cls</span>,
+        <span class="summary-sig-arg">xsdElement</span>,
+        <span class="summary-sig-arg">parent</span>)</span><br />
+      returns the name of the class that the factory should find.
+  </td>
+</tr>
+</table>
+
+<br />
+<!-- ==================== STATIC METHODS ==================== -->
+<a name="section-StaticMethods"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Static Methods</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-StaticMethods"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+<tr>
+  <td width="15%" align="right" valign="top" class="summary">
+    <code class="summary-type">&nbsp;</code>
+  </td><td class="summary">
+    <span class="summary-sig"><a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#tryConvert" class="summary-sig-name">tryConvert</a>(<span class="summary-sig-arg">variable</span>)</span><br />
+      Tries to convert a variable from a string in the xsd to a python value.
+  </td>
+</tr>
+</table>
+
+<br />
+<!-- ==================== PROPERTIES ==================== -->
+<a name="section-Properties"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Properties</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-Properties"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+  <tr>
+    <td colspan="2" class="summary">
+    <p class="indent-wrapped-lines"><b>Inherited from <code>object</code></b>:
+      <code>__class__</code>
+      </p>
+    </td>
+  </tr>
+</table>
+
+<br />
+<!-- ==================== METHOD DETAILS ==================== -->
+<a name="section-MethodDetails"></a>
+<table class="summary" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr bgcolor="#70b0f0" class="table-header">
+  <td colspan="2" class="table-header">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr valign="top">
+        <td align="left"><span class="table-header">Method Details</span></td>
+        <td align="right" valign="top"
+         ><span class="options">[<a href="#section-MethodDetails"
+         class="privatelink" onclick="toggle_private();"
+         >hide private</a>]</span></td>
+      </tr>
+    </table>
+  </td>
+</tr>
+</table>
+<a name="__init__"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">__init__</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">xsdElement</span>,
+        <span class="sig-arg">parent</span>)</span>
+    <br /><em class="fname">(Constructor)</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.__init__">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  See the documentation for the ElementRepresentative system at the top of the
+ElementRepresentative module.
+  <dl><dt></dt><dd>
+    <dl><dt>Overrides:
+      object.__init__
+    </dt></dl>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="__str__"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">__str__</span>(<span class="sig-arg">self</span>)</span>
+    <br /><em class="fname">(Informal representation operator)</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.__str__">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  sets the str() function to print the ER information for a tag in the form: ClassName[TagName]
+  <dl><dt></dt><dd>
+    <dl><dt>Overrides:
+      object.__str__
+    </dt></dl>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="processChildren"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">processChildren</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.processChildren">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Calls the <a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#factory" class="link">factory</a> on all of the children of an element.</p>
+<p>No parameters.</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="factory"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">factory</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">xsdElement</span>,
+        <span class="sig-arg">parent</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.factory">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A classmethod. Initializes the tag-specific class for a particular ElementTree schema element.
+See the ER system documentation.</p>
+<p>usage: ElementRepresentative.factory(xsdElement, parent)</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The class to operate under (this method is a classmethod). Normally just <a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html" class="link">ElementRepresentative</a>.</li>
+<li><code class="link">xsdElement</code>- the ElementTree element that is being converted to an ER</li>
+<li><code class="link">parent</code>- the parent ER for the tag being processed. 'None' when being called on the root <a href="pyxsd.elementRepresentatives.schema-module.html" class="link">schema</a> element.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="describe"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">describe</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.describe">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A debugging function that prints out the contents of the dictionary.</p>
+<p>No parameters</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="findLayerNum"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">findLayerNum</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.findLayerNum">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  Called by the ER <a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#__init__" class="link">__init__</a>. Returns an integer tha specifies how deep in the tree
+a particular element is. The <a href="pyxsd.elementRepresentatives.schema-module.html" class="link">schema</a> element, which is the root element, is '1'.
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="checkTopLevelType"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">checkTopLevelType</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.checkTopLevelType">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Checks to see if an element is at the top-level. Returns True if it is, False if
+it is not. The top level elements are all the children of the root <a href="pyxsd.elementRepresentatives.schema.Schema-class.html" class="link">Schema</a> tag.</p>
+<p>No parameters</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="typeFromName"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">typeFromName</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">xsdTypeName</span>,
+        <span class="sig-arg">pyXSD</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.typeFromName">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>A classmethod. Used with the clsFor() function in <code class="link">xsdDataType</code>. Returns a schema type given
+the type's name. Returns data type classes from <em>xsdDataTypes</em> for primitive data types.
+Calls clsFor on ERs.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The class that it is working with (it is a classmethod). Usually <em>ElementRepresentative</em>.</li>
+<li><code class="link">xsdTypeName</code>- the name of the type to be returned</li>
+<li><a href="pyxsd.pyXSD-module.html" class="link">pyXSD</a>- the instance of the <em>PyXSD</em> class. Included so it can be used as an argument with the clsFor() method. See clsFor() in <em>XsdType</em> for more information.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="addSuperClassName"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">addSuperClassName</span>(<span class="sig-arg">self</span>,
+        <span class="sig-arg">name</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.addSuperClassName">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Adds a base class name to containing type for a particular element.
+Calls come from <em>Restiction</em> and <em>Extension</em>.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">name</code>- the name of the base class to add to the base class list</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getContainingType"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getContainingType</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.getContainingType">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Returns the parent's getContainingType() function. If this function is being called from schema,
+an error is returned. This method is one of a few getContaingType() functions. When a function
+is a containing type, the function should return that ER.</p>
+<p>No parameters.</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getSchema"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getSchema</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.getSchema">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>This method returns the parent's getSchema() function. getSchema() should return
+the containing instance when it is a schema tag from the getSchema() function in
+the <a href="pyxsd.elementRepresentatives.schema-module.html" class="link">schema</a> class.</p>
+<p>No parameters</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getContainingTypeName"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getContainingTypeName</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.getContainingTypeName">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Returns the name of the containingType.</p>
+<p>No parameters.</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getName"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getName</span>(<span class="sig-arg">self</span>)</span>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.getName">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Returns the name field in the ElementTree element. One of many getName()
+function.</p>
+<p>No parameters.</p>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="register"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">register</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">name</span>,
+        <span class="sig-arg">obj</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.register">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>The registry stores all ER objs in a dictionary with their name as a key.
+This is why all names must be unique. Helps find objs. A classmethod, but
+could be changed to staticmethod.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The class that is being used (classmethod). Usually Element Representative</li>
+<li><code class="link">name</code>- The name of the ER obj.</li>
+<li><code class="link">obj</code>- The ER obj.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="getFromName"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">getFromName</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">name</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.getFromName">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Retrieve an entry in the registry by its name. A classmethod, but could be staticmethod.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The class that is being used (classmethod). Usually Element Representative</li>
+<li><code class="link">name</code>- The name of the ER obj.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="tryConvert"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">tryConvert</span>(<span class="sig-arg">variable</span>)</span>
+    <br /><em class="fname">Static Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.tryConvert">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>Tries to convert a variable from a string in the xsd to a python value.
+Returns the entry if it cannot be converted.</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">variable</code>- the value of a variable that the method is trying to convert.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<a name="classNameFor"></a>
+<div>
+<table class="details" border="1" cellpadding="3"
+       cellspacing="0" width="100%" bgcolor="white">
+<tr><td>
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top"><td>
+  <h3 class="epydoc"><span class="sig"><span class="sig-name">classNameFor</span>(<span class="sig-arg">cls</span>,
+        <span class="sig-arg">xsdElement</span>,
+        <span class="sig-arg">parent</span>)</span>
+    <br /><em class="fname">Class Method</em>
+  </h3>
+  </td><td align="right" valign="top"
+    ><span class="codelink"><a href="pyxsd.elementRepresentatives.elementRepresentative-pysrc.html#ElementRepresentative.classNameFor">source&nbsp;code</a></span>&nbsp;</span
+    ></td>
+  </table>
+  
+  <p>returns the name of the class that the factory should find. A classmethod.</p>
+<p>usage: ElementRepresentative.classNameFor(xsdElement, parent)</p>
+<p>Parameters:</p>
+<ul class="rst-simple">
+<li><code class="link">cls</code>- The class to operate under (this method is a classmethod). Comes from <a href="pyxsd.elementRepresentatives.elementRepresentative.ElementRepresentative-class.html#factory" class="link">factory</a></li>
+<li><code class="link">xsdElement</code>- the ElementTree element that is being converted to an ER</li>
+<li><code class="link">parent</code>- the parent ER for the tag being processed. 'None' when being called on the root <a href="pyxsd.elementRepresentatives.schema-module.html" class="link">schema</a> element.</li>
+</ul>
+  <dl><dt></dt><dd>
+  </dd></dl>
+</td></tr></table>
+</div>
+<br />
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table border="0" cellpadding="0" cellspacing="0" width="100%%">
+  <tr>
+    <td align="left" class="footer">Generated by Epydoc
+        3.0alpha3 on Thu Sep 07 21:19:38 2006</td>
+    <td align="right" class="footer">
+      <a href="http://epydoc.sourceforge.net">http://epydoc.sourceforge.net</a>
+    </td>
+  </tr>
+</table>
+
+<script type="text/javascript">
+  <!--
+  // Private objects are initially displayed (because if
+  // javascript is turned off then we want them to be
+  // visible); but by default, we want to hide them.  So hide
+  // them unless we have a cookie that says to show them.
+  checkCookie()
+  // -->
+</script>
+  
+</body>
+</html>

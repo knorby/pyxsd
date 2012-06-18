@@ -1,0 +1,265 @@
+<?xml version="1.0" encoding="ascii"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+          "DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+  <title>pyxsd.transforms.cellSizer</title>
+  <link rel="stylesheet" href="epydoc.css" type="text/css" />
+  <script type="text/javascript" src="epydoc.js"></script>
+</head>
+
+<body bgcolor="white" text="black" link="blue" vlink="#204080"
+      alink="#204080">
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0">
+  <tr valign="top">
+    <td width="100%">
+      <span class="breadcrumbs">
+        <a href="pyxsd-module.html">Package&nbsp;pyxsd</a> ::
+        <a href="pyxsd.transforms-module.html">Package&nbsp;transforms</a> ::
+        Module&nbsp;cellSizer
+      </span>
+    </td>
+    <td>
+      <table cellpadding="0" cellspacing="0">
+        <!-- hide/show private -->
+        <tr><td align="right"><span class="options">[<a href="javascript: void(0);" class="privatelink"
+    onclick="toggle_private();">hide private</a>]</span></td></tr>
+        <tr><td align="right"><span class="options"
+            >[<a href="frames.html" target="_top">frames</a
+            >]&nbsp;|&nbsp;<a href="pyxsd.transforms.cellSizer-pysrc.html"
+            target="_top">no&nbsp;frames</a>]</span></td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<h1 class="epydoc">Source Code for <a href="pyxsd.transforms.cellSizer-module.html">Module pyxsd.transforms.cellSizer</a></h1>
+<pre class="py-src">
+<span class="py-lineno">  1</span>  <span class="py-line"><span class="py-keyword">from</span> <span id="link-0" class="py-name"><a title="pyxsd.pyXSD.PyXSD.transform
+pyxsd.transforms.transform" class="py-name" href="#" onclick="doclink('link-0', 'transform', 'Method pyxsd.pyXSD.PyXSD.transform()=pyxsd.pyXSD.PyXSD-class.html#transform,Module pyxsd.transforms.transform=pyxsd.transforms.transform-module.html'); return false;">transform</a></span></span>      <span class="py-keyword">import</span> <span id="link-1" class="py-name"><a title="pyxsd.transforms.transform.Transform" class="py-name" href="#" onclick="doclink('link-1', 'Transform', 'Class pyxsd.transforms.transform.Transform=pyxsd.transforms.transform.Transform-class.html'); return false;">Transform</a></span></span> </span>
+<span class="py-lineno">  2</span>  <span class="py-line"><span class="py-keyword">from</span> <span id="link-2" class="py-name"><a title="pyxsd.transforms.atom" class="py-name" href="#" onclick="doclink('link-2', 'atom', 'Module pyxsd.transforms.atom=pyxsd.transforms.atom-module.html'); return false;">atom</a></span></span>           <span class="py-keyword">import</span> <span id="link-3" class="py-name"><a title="pyxsd.transforms.atom.Atom" class="py-name" href="#" onclick="doclink('link-3', 'Atom', 'Class pyxsd.transforms.atom.Atom=pyxsd.transforms.atom.Atom-class.html'); return false;">Atom</a></span></span> </span>
+<span class="py-lineno">  3</span>  <span class="py-line"><span class="py-keyword">from</span> <span id="link-4" class="py-name"><a title="pyxsd.transforms.vector" class="py-name" href="#" onclick="doclink('link-4', 'vector', 'Module pyxsd.transforms.vector=pyxsd.transforms.vector-module.html'); return false;">vector</a></span></span>         <span class="py-keyword">import</span> <span id="link-5" class="py-name"><a title="pyxsd.transforms.vector.Vector" class="py-name" href="#" onclick="doclink('link-5', 'Vector', 'Class pyxsd.transforms.vector.Vector=pyxsd.transforms.vector.Vector-class.html'); return false;">Vector</a></span></span> </span>
+<span class="py-lineno">  4</span>  <span class="py-line"><span class="py-keyword">from</span> <span id="link-6" class="py-name"><a title="pyxsd.transforms.bravaisLattice" class="py-name" href="#" onclick="doclink('link-6', 'bravaisLattice', 'Module pyxsd.transforms.bravaisLattice=pyxsd.transforms.bravaisLattice-module.html'); return false;">bravaisLattice</a></span></span> <span class="py-keyword">import</span> <span id="link-7" class="py-name"><a title="pyxsd.transforms.bravaisLattice.BravaisLattice" class="py-name" href="#" onclick="doclink('link-7', 'BravaisLattice', 'Class pyxsd.transforms.bravaisLattice.BravaisLattice=pyxsd.transforms.bravaisLattice.BravaisLattice-class.html'); return false;">BravaisLattice</a></span></span> </span>
+<span class="py-lineno">  5</span>  <span class="py-line"> </span>
+<span class="py-lineno">  6</span>  <span class="py-line"><span class="py-string">"""</span> </span>
+<span class="py-lineno">  7</span>  <span class="py-line"><span class="py-string">============================</span> </span>
+<span class="py-lineno">  8</span>  <span class="py-line"><span class="py-string">Transform Library: CellSizer</span> </span>
+<span class="py-lineno">  9</span>  <span class="py-line"><span class="py-string">============================</span> </span>
+<span class="py-lineno"> 10</span>  <span class="py-line"><span class="py-string"></span> </span>
+<span class="py-lineno"> 11</span>  <span class="py-line"><span class="py-string">:Author: Kali Norby &lt;kali.norby@gmail.com&gt;</span> </span>
+<span class="py-lineno"> 12</span>  <span class="py-line"><span class="py-string">:Date: Fri, 1 Sept 2006</span> </span>
+<span class="py-lineno"> 13</span>  <span class="py-line"><span class="py-string">:Category: Computational Materials Science</span> </span>
+<span class="py-lineno"> 14</span>  <span class="py-line"><span class="py-string">:Description: Library containing functions to change the size and shape of a crystal lattice structure</span> </span>
+<span class="py-lineno"> 15</span>  <span class="py-line"><span class="py-string">:Copyright: pyXSD License</span> </span>
+<span class="py-lineno"> 16</span>  <span class="py-line"><span class="py-string"></span> </span>
+<span class="py-lineno"> 17</span>  <span class="py-line"><span class="py-string">Includes as part of the CellSizer Library:</span> </span>
+<span class="py-lineno"> 18</span>  <span class="py-line"><span class="py-string"></span> </span>
+<span class="py-lineno"> 19</span>  <span class="py-line"><span class="py-string">- Atom</span> </span>
+<span class="py-lineno"> 20</span>  <span class="py-line"><span class="py-string">- Vector</span> </span>
+<span class="py-lineno"> 21</span>  <span class="py-line"><span class="py-string">- BravaisLattice</span> </span>
+<span class="py-lineno"> 22</span>  <span class="py-line"><span class="py-string"></span> </span>
+<span class="py-lineno"> 23</span>  <span class="py-line"><span class="py-string">"""</span> </span>
+<span class="py-lineno"> 24</span>  <span class="py-line"> </span>
+<a name="CellSizer"></a><div id="CellSizer-def"><span class="py-lineno"> 25</span> <a class="py-toggle" href="#" id="CellSizer-toggle" onclick="toggle('CellSizer'); return false;">-</a><span class="py-line"><span class="py-keyword">class</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html">CellSizer</a> <span class="py-op">(</span><span class="py-base-class">Transform</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer-collapsed" style="display:none;" pad="+++" indent="++++"></div><div id="CellSizer-expanded"><span class="py-lineno"> 26</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 27</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno"> 28</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.cellSizerInit"></a><div id="CellSizer.cellSizerInit-def"><span class="py-lineno"> 29</span> <a class="py-toggle" href="#" id="CellSizer.cellSizerInit-toggle" onclick="toggle('CellSizer.cellSizerInit'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#cellSizerInit">cellSizerInit</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.cellSizerInit-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.cellSizerInit-expanded"><span class="py-lineno"> 30</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">atoms</span>          <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 31</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">bravaisVectors</span> <span class="py-op">=</span> <span class="py-op">{</span><span class="py-op">}</span> </span>
+<span class="py-lineno"> 32</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">vectorOrder</span>    <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+</div><span class="py-lineno"> 33</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 34</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno"> 35</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.getBravaisVectors"></a><div id="CellSizer.getBravaisVectors-def"><span class="py-lineno"> 36</span> <a class="py-toggle" href="#" id="CellSizer.getBravaisVectors-toggle" onclick="toggle('CellSizer.getBravaisVectors'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#getBravaisVectors">getBravaisVectors</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.getBravaisVectors-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.getBravaisVectors-expanded"><span class="py-lineno"> 37</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">bravaisVectors</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 38</span>  <span class="py-line">            <span class="py-keyword">return</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">bravaisVectors</span> </span>
+<span class="py-lineno"> 39</span>  <span class="py-line">        <span class="py-name">vectorNumCount</span> <span class="py-op">=</span> <span class="py-number">1</span> </span>
+<span class="py-lineno"> 40</span>  <span class="py-line">        <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">vectorOrder</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 41</span>  <span class="py-line">        <span class="py-name">vectorsInXml</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-8" class="py-name"><a title="pyxsd.transforms.transform.Transform.getElementsByName" class="py-name" href="#" onclick="doclink('link-8', 'getElementsByName', 'Method pyxsd.transforms.transform.Transform.getElementsByName()=pyxsd.transforms.transform.Transform-class.html#getElementsByName'); return false;">getElementsByName</a></span></span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">root</span><span class="py-op">,</span> <span class="py-string">'bravaisVector'</span><span class="py-op">)</span>  </span>
+<span class="py-lineno"> 42</span>  <span class="py-line">        <span class="py-keyword">for</span> <span id="link-9" class="py-name"><a title="pyxsd.transforms.vector" class="py-name" href="#" onclick="doclink('link-9', 'vector', 'Module pyxsd.transforms.vector=pyxsd.transforms.vector-module.html'); return false;">vector</a></span></span> <span class="py-keyword">in</span> <span class="py-name">vectorsInXml</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 43</span>  <span class="py-line">            <span class="py-name">vectorDef</span> <span class="py-op">=</span> <span id="link-10" class="py-name"><a title="pyxsd.transforms.vector" class="py-name" href="#" onclick="doclink('link-10', 'vector', 'Module pyxsd.transforms.vector=pyxsd.transforms.vector-module.html'); return false;">vector</a></span></span><span class="py-op">.</span><span class="py-name">_value_</span> </span>
+<span class="py-lineno"> 44</span>  <span class="py-line">            <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">vectorDef</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">3</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 45</span>  <span class="py-line">                <span class="py-keyword">raise</span> <span class="py-string">"For now, the getBravaisVectors() method is only meant for 3D vectors"</span> </span>
+<span class="py-lineno"> 46</span>  <span class="py-line">            <span class="py-name">i</span> <span class="py-op">=</span> <span class="py-name">float</span><span class="py-op">(</span><span class="py-name">vectorDef</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 47</span>  <span class="py-line">            <span class="py-name">j</span> <span class="py-op">=</span> <span class="py-name">float</span><span class="py-op">(</span><span class="py-name">vectorDef</span><span class="py-op">[</span><span class="py-number">1</span><span class="py-op">]</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 48</span>  <span class="py-line">            <span class="py-name">k</span> <span class="py-op">=</span> <span class="py-name">float</span><span class="py-op">(</span><span class="py-name">vectorDef</span><span class="py-op">[</span><span class="py-number">2</span><span class="py-op">]</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 49</span>  <span class="py-line">            <span class="py-name">obj</span> <span class="py-op">=</span> <span id="link-11" class="py-name"><a title="pyxsd.transforms.vector.Vector" class="py-name" href="#" onclick="doclink('link-11', 'Vector', 'Class pyxsd.transforms.vector.Vector=pyxsd.transforms.vector.Vector-class.html'); return false;">Vector</a></span></span><span class="py-op">(</span><span class="py-op">(</span><span class="py-name">i</span><span class="py-op">,</span> <span class="py-name">j</span><span class="py-op">,</span> <span class="py-name">k</span><span class="py-op">)</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 50</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">bravaisVectors</span><span class="py-op">[</span><span class="py-string">'a%i'</span> <span class="py-op">%</span> <span class="py-name">vectorNumCount</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">obj</span> </span>
+<span class="py-lineno"> 51</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">vectorOrder</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-string">'a%i'</span> <span class="py-op">%</span> <span class="py-name">vectorNumCount</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 52</span>  <span class="py-line">            <span class="py-name">vectorNumCount</span><span class="py-op">+=</span><span class="py-number">1</span> </span>
+<span class="py-lineno"> 53</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">bravaisVectors</span> </span>
+</div><span class="py-lineno"> 54</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 55</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno"> 56</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.getVectorList"></a><div id="CellSizer.getVectorList-def"><span class="py-lineno"> 57</span> <a class="py-toggle" href="#" id="CellSizer.getVectorList-toggle" onclick="toggle('CellSizer.getVectorList'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#getVectorList">getVectorList</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.getVectorList-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.getVectorList-expanded"><span class="py-lineno"> 58</span>  <span class="py-line">        <span class="py-name">vectorDict</span>  <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-12" class="py-name"><a title="pyxsd.transforms.cellSizer.CellSizer.getBravaisVectors" class="py-name" href="#" onclick="doclink('link-12', 'getBravaisVectors', 'Method pyxsd.transforms.cellSizer.CellSizer.getBravaisVectors()=pyxsd.transforms.cellSizer.CellSizer-class.html#getBravaisVectors'); return false;">getBravaisVectors</a></span></span><span class="py-op">(</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 59</span>  <span class="py-line">        <span class="py-name">vectors</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 60</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">vectorName</span> <span class="py-keyword">in</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">vectorOrder</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 61</span>  <span class="py-line">           <span class="py-name">vectors</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">vectorDict</span><span class="py-op">[</span><span class="py-name">vectorName</span><span class="py-op">]</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 62</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">vectors</span> </span>
+</div><span class="py-lineno"> 63</span>  <span class="py-line">                         </span>
+<span class="py-lineno"> 64</span>  <span class="py-line">     </span>
+<span class="py-lineno"> 65</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno"> 66</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.getAtoms"></a><div id="CellSizer.getAtoms-def"><span class="py-lineno"> 67</span> <a class="py-toggle" href="#" id="CellSizer.getAtoms-toggle" onclick="toggle('CellSizer.getAtoms'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#getAtoms">getAtoms</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.getAtoms-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.getAtoms-expanded"><span class="py-lineno"> 68</span>  <span class="py-line">        <span class="py-keyword">if</span> <span class="py-keyword">not</span> <span class="py-name">len</span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">atoms</span><span class="py-op">)</span> <span class="py-op">==</span> <span class="py-number">0</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 69</span>  <span class="py-line">            <span class="py-keyword">return</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">atoms</span> </span>
+<span class="py-lineno"> 70</span>  <span class="py-line">        <span class="py-name">atomsInXml</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-13" class="py-name"><a title="pyxsd.transforms.transform.Transform.getElementsByName" class="py-name" href="#" onclick="doclink('link-13', 'getElementsByName', 'Method pyxsd.transforms.transform.Transform.getElementsByName()=pyxsd.transforms.transform.Transform-class.html#getElementsByName'); return false;">getElementsByName</a></span></span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">root</span><span class="py-op">,</span> <span class="py-string">'site'</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 71</span>  <span class="py-line">        <span class="py-keyword">for</span> <span id="link-14" class="py-name"><a title="pyxsd.transforms.atom" class="py-name" href="#" onclick="doclink('link-14', 'atom', 'Module pyxsd.transforms.atom=pyxsd.transforms.atom-module.html'); return false;">atom</a></span></span> <span class="py-keyword">in</span> <span class="py-name">atomsInXml</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 72</span>  <span class="py-line">            <span class="py-name">atomDict</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-15" class="py-name"><a title="pyxsd.transforms.transform.Transform.getAllSubElements" class="py-name" href="#" onclick="doclink('link-15', 'getAllSubElements', 'Method pyxsd.transforms.transform.Transform.getAllSubElements()=pyxsd.transforms.transform.Transform-class.html#getAllSubElements'); return false;">getAllSubElements</a></span></span><span class="py-op">(</span><span id="link-16" class="py-name"><a title="pyxsd.transforms.atom" class="py-name" href="#" onclick="doclink('link-16', 'atom', 'Module pyxsd.transforms.atom=pyxsd.transforms.atom-module.html'); return false;">atom</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 73</span>  <span class="py-line">            <span class="py-name">position</span> <span class="py-op">=</span> <span class="py-name">atomDict</span><span class="py-op">[</span><span class="py-string">'position'</span><span class="py-op">]</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span><span class="py-op">.</span><span class="py-name">_value_</span> </span>
+<span class="py-lineno"> 74</span>  <span class="py-line">            <span class="py-name">atomType</span> <span class="py-op">=</span> <span class="py-name">atomDict</span><span class="py-op">[</span><span class="py-string">'atom'</span><span class="py-op">]</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span><span class="py-op">.</span><span class="py-name">_attribs_</span><span class="py-op">[</span><span class="py-string">'ref'</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 75</span>  <span class="py-line">            <span class="py-name">obj</span> <span class="py-op">=</span> <span id="link-17" class="py-name"><a title="pyxsd.transforms.atom.Atom" class="py-name" href="#" onclick="doclink('link-17', 'Atom', 'Class pyxsd.transforms.atom.Atom=pyxsd.transforms.atom.Atom-class.html'); return false;">Atom</a></span></span><span class="py-op">(</span><span class="py-name">position</span><span class="py-op">,</span> <span class="py-name">atomType</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 76</span>  <span class="py-line">            <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">atoms</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">obj</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 77</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">atoms</span> </span>
+</div><span class="py-lineno"> 78</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 79</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno"> 80</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.makeNewXml"></a><div id="CellSizer.makeNewXml-def"><span class="py-lineno"> 81</span> <a class="py-toggle" href="#" id="CellSizer.makeNewXml-toggle" onclick="toggle('CellSizer.makeNewXml'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#makeNewXml">makeNewXml</a> <span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">bravaisLattice</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.makeNewXml-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.makeNewXml-expanded"><span class="py-lineno"> 82</span>  <span class="py-line">        <span class="py-name">vectors</span> <span class="py-op">=</span> <span id="link-18" class="py-name"><a title="pyxsd.transforms.bravaisLattice" class="py-name" href="#" onclick="doclink('link-18', 'bravaisLattice', 'Module pyxsd.transforms.bravaisLattice=pyxsd.transforms.bravaisLattice-module.html'); return false;">bravaisLattice</a></span></span><span class="py-op">.</span><span class="py-name">vectors</span> </span>
+<span class="py-lineno"> 83</span>  <span class="py-line">        <span class="py-name">basis</span>   <span class="py-op">=</span> <span id="link-19" class="py-name"><a title="pyxsd.transforms.bravaisLattice" class="py-name" href="#" onclick="doclink('link-19', 'bravaisLattice', 'Module pyxsd.transforms.bravaisLattice=pyxsd.transforms.bravaisLattice-module.html'); return false;">bravaisLattice</a></span></span><span class="py-op">.</span><span class="py-name">basis</span> </span>
+<span class="py-lineno"> 84</span>  <span class="py-line">        <span class="py-name">xmlCrystalBasis</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-20" class="py-name"><a title="pyxsd.transforms.transform.Transform.getElementsByName" class="py-name" href="#" onclick="doclink('link-20', 'getElementsByName', 'Method pyxsd.transforms.transform.Transform.getElementsByName()=pyxsd.transforms.transform.Transform-class.html#getElementsByName'); return false;">getElementsByName</a></span></span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">root</span><span class="py-op">,</span> <span class="py-string">'crystalBasis'</span><span class="py-op">)</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 85</span>  <span class="py-line">        <span class="py-name">xmlCrystalBasis</span><span class="py-op">.</span><span class="py-name">_children_</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 86</span>  <span class="py-line">        <span class="py-keyword">for</span> <span id="link-21" class="py-name"><a title="pyxsd.transforms.atom" class="py-name" href="#" onclick="doclink('link-21', 'atom', 'Module pyxsd.transforms.atom=pyxsd.transforms.atom-module.html'); return false;">atom</a></span></span> <span class="py-keyword">in</span> <span class="py-name">basis</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 87</span>  <span class="py-line">            <span class="py-name">newAtomElement</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-22" class="py-name"><a title="pyxsd.transforms.cellSizer.CellSizer.makeNewXmlAtomElements" class="py-name" href="#" onclick="doclink('link-22', 'makeNewXmlAtomElements', 'Method pyxsd.transforms.cellSizer.CellSizer.makeNewXmlAtomElements()=pyxsd.transforms.cellSizer.CellSizer-class.html#makeNewXmlAtomElements'); return false;">makeNewXmlAtomElements</a></span></span><span class="py-op">(</span><span id="link-23" class="py-name"><a title="pyxsd.transforms.atom" class="py-name" href="#" onclick="doclink('link-23', 'atom', 'Module pyxsd.transforms.atom=pyxsd.transforms.atom-module.html'); return false;">atom</a></span></span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 88</span>  <span class="py-line">            <span class="py-name">xmlCrystalBasis</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">newAtomElement</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 89</span>  <span class="py-line">        <span class="py-name">xmlBravaisLattice</span> <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-24" class="py-name"><a title="pyxsd.transforms.transform.Transform.getElementsByName" class="py-name" href="#" onclick="doclink('link-24', 'getElementsByName', 'Method pyxsd.transforms.transform.Transform.getElementsByName()=pyxsd.transforms.transform.Transform-class.html#getElementsByName'); return false;">getElementsByName</a></span></span><span class="py-op">(</span><span class="py-name">self</span><span class="py-op">.</span><span class="py-name">root</span><span class="py-op">,</span> <span class="py-string">'bravaisLattice'</span><span class="py-op">)</span><span class="py-op">[</span><span class="py-number">0</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 90</span>  <span class="py-line">        <span class="py-name">xmlBravaisLattice</span><span class="py-op">.</span><span class="py-name">_children_</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 91</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">vectorName</span> <span class="py-keyword">in</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">vectorOrder</span><span class="py-op">:</span> </span>
+<span class="py-lineno"> 92</span>  <span class="py-line">            <span id="link-25" class="py-name"><a title="pyxsd.transforms.vector" class="py-name" href="#" onclick="doclink('link-25', 'vector', 'Module pyxsd.transforms.vector=pyxsd.transforms.vector-module.html'); return false;">vector</a></span></span> <span class="py-op">=</span> <span class="py-name">vectors</span><span class="py-op">[</span><span class="py-name">vectorName</span><span class="py-op">]</span> </span>
+<span class="py-lineno"> 93</span>  <span class="py-line">            <span class="py-name">bravaisVector</span>         <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-26" class="py-name"><a title="pyxsd.transforms.transform.Transform.makeElemObj" class="py-name" href="#" onclick="doclink('link-26', 'makeElemObj', 'Method pyxsd.transforms.transform.Transform.makeElemObj()=pyxsd.transforms.transform.Transform-class.html#makeElemObj'); return false;">makeElemObj</a></span></span><span class="py-op">(</span><span class="py-string">'bravaisVector'</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 94</span>  <span class="py-line">            <span class="py-name">bravaisVector</span><span class="py-op">.</span><span class="py-name">_value_</span> <span class="py-op">=</span> <span id="link-27" class="py-name"><a title="pyxsd.transforms.vector" class="py-name" href="#" onclick="doclink('link-27', 'vector', 'Module pyxsd.transforms.vector=pyxsd.transforms.vector-module.html'); return false;">vector</a></span></span> </span>
+<span class="py-lineno"> 95</span>  <span class="py-line">            <span class="py-name">xmlBravaisLattice</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">bravaisVector</span><span class="py-op">)</span> </span>
+<span class="py-lineno"> 96</span>  <span class="py-line">            <span class="py-keyword">continue</span> </span>
+<span class="py-lineno"> 97</span>  <span class="py-line"> </span>
+<span class="py-lineno"> 98</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">self</span><span class="py-op">.</span><span class="py-name">root</span> </span>
+</div><span class="py-lineno"> 99</span>  <span class="py-line"> </span>
+<span class="py-lineno">100</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno">101</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.makeNewXmlAtomElements"></a><div id="CellSizer.makeNewXmlAtomElements-def"><span class="py-lineno">102</span> <a class="py-toggle" href="#" id="CellSizer.makeNewXmlAtomElements-toggle" onclick="toggle('CellSizer.makeNewXmlAtomElements'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#makeNewXmlAtomElements">makeNewXmlAtomElements</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">atom</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.makeNewXmlAtomElements-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.makeNewXmlAtomElements-expanded"><span class="py-lineno">103</span>  <span class="py-line">         </span>
+<span class="py-lineno">104</span>  <span class="py-line">        <span class="py-name">position</span>                 <span class="py-op">=</span> <span id="link-28" class="py-name"><a title="pyxsd.transforms.atom" class="py-name" href="#" onclick="doclink('link-28', 'atom', 'Module pyxsd.transforms.atom=pyxsd.transforms.atom-module.html'); return false;">atom</a></span></span><span class="py-op">.</span><span class="py-name">position</span> </span>
+<span class="py-lineno">105</span>  <span class="py-line">        <span class="py-name">atomType</span>                 <span class="py-op">=</span> <span id="link-29" class="py-name"><a title="pyxsd.transforms.atom" class="py-name" href="#" onclick="doclink('link-29', 'atom', 'Module pyxsd.transforms.atom=pyxsd.transforms.atom-module.html'); return false;">atom</a></span></span><span class="py-op">.</span><span class="py-name">atomType</span> </span>
+<span class="py-lineno">106</span>  <span class="py-line">        <span class="py-name">siteObj</span>                  <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-30" class="py-name"><a title="pyxsd.transforms.transform.Transform.makeElemObj" class="py-name" href="#" onclick="doclink('link-30', 'makeElemObj', 'Method pyxsd.transforms.transform.Transform.makeElemObj()=pyxsd.transforms.transform.Transform-class.html#makeElemObj'); return false;">makeElemObj</a></span></span><span class="py-op">(</span><span class="py-string">'site'</span><span class="py-op">)</span> </span>
+<span class="py-lineno">107</span>  <span class="py-line">        <span class="py-name">positionObj</span>              <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-31" class="py-name"><a title="pyxsd.transforms.transform.Transform.makeElemObj" class="py-name" href="#" onclick="doclink('link-31', 'makeElemObj', 'Method pyxsd.transforms.transform.Transform.makeElemObj()=pyxsd.transforms.transform.Transform-class.html#makeElemObj'); return false;">makeElemObj</a></span></span><span class="py-op">(</span><span class="py-string">'position'</span><span class="py-op">)</span> </span>
+<span class="py-lineno">108</span>  <span class="py-line">        <span class="py-name">positionObj</span><span class="py-op">.</span><span class="py-name">_value_</span>      <span class="py-op">=</span> <span class="py-name">position</span> </span>
+<span class="py-lineno">109</span>  <span class="py-line">        <span class="py-name">occupantObj</span>              <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-32" class="py-name"><a title="pyxsd.transforms.transform.Transform.makeElemObj" class="py-name" href="#" onclick="doclink('link-32', 'makeElemObj', 'Method pyxsd.transforms.transform.Transform.makeElemObj()=pyxsd.transforms.transform.Transform-class.html#makeElemObj'); return false;">makeElemObj</a></span></span><span class="py-op">(</span><span class="py-string">'occupant'</span><span class="py-op">)</span> </span>
+<span class="py-lineno">110</span>  <span class="py-line">        <span class="py-name">atomObj</span>                  <span class="py-op">=</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-33" class="py-name"><a title="pyxsd.transforms.transform.Transform.makeElemObj" class="py-name" href="#" onclick="doclink('link-33', 'makeElemObj', 'Method pyxsd.transforms.transform.Transform.makeElemObj()=pyxsd.transforms.transform.Transform-class.html#makeElemObj'); return false;">makeElemObj</a></span></span><span class="py-op">(</span><span class="py-string">'atom'</span><span class="py-op">)</span> </span>
+<span class="py-lineno">111</span>  <span class="py-line">        <span class="py-name">atomObj</span><span class="py-op">.</span><span class="py-name">_attribs_</span><span class="py-op">[</span><span class="py-string">'ref'</span><span class="py-op">]</span> <span class="py-op">=</span> <span class="py-name">atomType</span> </span>
+<span class="py-lineno">112</span>  <span class="py-line"> </span>
+<span class="py-lineno">113</span>  <span class="py-line">        <span class="py-name">occupantObj</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">atomObj</span><span class="py-op">)</span> </span>
+<span class="py-lineno">114</span>  <span class="py-line">        <span class="py-name">siteObj</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">occupantObj</span><span class="py-op">)</span> </span>
+<span class="py-lineno">115</span>  <span class="py-line">        <span class="py-name">siteObj</span><span class="py-op">.</span><span class="py-name">_children_</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">positionObj</span><span class="py-op">)</span> </span>
+<span class="py-lineno">116</span>  <span class="py-line"> </span>
+<span class="py-lineno">117</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">siteObj</span> </span>
+</div><span class="py-lineno">118</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno">119</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.makeAtom"></a><div id="CellSizer.makeAtom-def"><span class="py-lineno">120</span> <a class="py-toggle" href="#" id="CellSizer.makeAtom-toggle" onclick="toggle('CellSizer.makeAtom'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#makeAtom">makeAtom</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">position</span><span class="py-op">,</span> <span class="py-param">atomType</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.makeAtom-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.makeAtom-expanded"><span class="py-lineno">121</span>  <span class="py-line">        <span class="py-keyword">return</span> <span id="link-34" class="py-name"><a title="pyxsd.transforms.atom.Atom" class="py-name" href="#" onclick="doclink('link-34', 'Atom', 'Class pyxsd.transforms.atom.Atom=pyxsd.transforms.atom.Atom-class.html'); return false;">Atom</a></span></span><span class="py-op">(</span><span class="py-name">position</span><span class="py-op">,</span> <span class="py-name">atomType</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">122</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno">123</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.makeBravaisLattice"></a><div id="CellSizer.makeBravaisLattice-def"><span class="py-lineno">124</span> <a class="py-toggle" href="#" id="CellSizer.makeBravaisLattice-toggle" onclick="toggle('CellSizer.makeBravaisLattice'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#makeBravaisLattice">makeBravaisLattice</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">newVectors</span><span class="py-op">,</span> <span class="py-param">newAtoms</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.makeBravaisLattice-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.makeBravaisLattice-expanded"><span class="py-lineno">125</span>  <span class="py-line">        <span class="py-keyword">return</span>  <span id="link-35" class="py-name"><a title="pyxsd.transforms.bravaisLattice.BravaisLattice" class="py-name" href="#" onclick="doclink('link-35', 'BravaisLattice', 'Class pyxsd.transforms.bravaisLattice.BravaisLattice=pyxsd.transforms.bravaisLattice.BravaisLattice-class.html'); return false;">BravaisLattice</a></span></span><span class="py-op">(</span><span class="py-name">newVectors</span><span class="py-op">,</span> <span class="py-name">newAtoms</span><span class="py-op">)</span> </span>
+</div><span class="py-lineno">126</span>  <span class="py-line"> </span>
+<span class="py-lineno">127</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno">128</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.getCartesianCoords"></a><div id="CellSizer.getCartesianCoords-def"><span class="py-lineno">129</span> <a class="py-toggle" href="#" id="CellSizer.getCartesianCoords-toggle" onclick="toggle('CellSizer.getCartesianCoords'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#getCartesianCoords">getCartesianCoords</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">vectors</span><span class="py-op">,</span> <span class="py-param">position</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.getCartesianCoords-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.getCartesianCoords-expanded"><span class="py-lineno">130</span>  <span class="py-line">        <span class="py-name">coords</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-op">]</span> </span>
+<span class="py-lineno">131</span>  <span class="py-line">        <span class="py-keyword">for</span> <span class="py-name">g</span> <span class="py-keyword">in</span> <span class="py-name">range</span><span class="py-op">(</span><span class="py-number">0</span><span class="py-op">,</span> <span class="py-number">3</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+<span class="py-lineno">132</span>  <span class="py-line">            <span class="py-name">total</span> <span class="py-op">=</span> <span class="py-number">0</span> </span>
+<span class="py-lineno">133</span>  <span class="py-line">            <span class="py-name">currentPos</span> <span class="py-op">=</span> <span class="py-name">position</span><span class="py-op">[</span><span class="py-name">g</span><span class="py-op">]</span> </span>
+<span class="py-lineno">134</span>  <span class="py-line">            <span class="py-keyword">for</span> <span id="link-36" class="py-name"><a title="pyxsd.transforms.vector" class="py-name" href="#" onclick="doclink('link-36', 'vector', 'Module pyxsd.transforms.vector=pyxsd.transforms.vector-module.html'); return false;">vector</a></span></span> <span class="py-keyword">in</span> <span class="py-name">vectors</span><span class="py-op">:</span> </span>
+<span class="py-lineno">135</span>  <span class="py-line">                <span class="py-name">total</span><span class="py-op">+=</span> <span class="py-name">currentPos</span> <span class="py-op">*</span> <span id="link-37" class="py-name"><a title="pyxsd.transforms.vector" class="py-name" href="#" onclick="doclink('link-37', 'vector', 'Module pyxsd.transforms.vector=pyxsd.transforms.vector-module.html'); return false;">vector</a></span></span><span class="py-op">[</span><span class="py-name">g</span><span class="py-op">]</span> </span>
+<span class="py-lineno">136</span>  <span class="py-line">            <span class="py-name">coords</span><span class="py-op">.</span><span class="py-name">append</span><span class="py-op">(</span><span class="py-name">total</span><span class="py-op">)</span> </span>
+<span class="py-lineno">137</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">coords</span> </span>
+</div><span class="py-lineno">138</span>  <span class="py-line"> </span>
+<span class="py-lineno">139</span>  <span class="py-line">    <span class="py-comment">#============================================================</span> </span>
+<span class="py-lineno">140</span>  <span class="py-line"><span class="py-comment"></span>    <span class="py-comment">#</span> </span>
+<a name="CellSizer.findCenter"></a><div id="CellSizer.findCenter-def"><span class="py-lineno">141</span> <a class="py-toggle" href="#" id="CellSizer.findCenter-toggle" onclick="toggle('CellSizer.findCenter'); return false;">-</a><span class="py-line"><span class="py-comment"></span>    <span class="py-keyword">def</span> <a class="py-def-name" href="pyxsd.transforms.cellSizer.CellSizer-class.html#findCenter">findCenter</a><span class="py-op">(</span><span class="py-param">self</span><span class="py-op">,</span> <span class="py-param">vectors</span><span class="py-op">)</span><span class="py-op">:</span> </span>
+</div><div id="CellSizer.findCenter-collapsed" style="display:none;" pad="+++" indent="++++++++"></div><div id="CellSizer.findCenter-expanded"><span class="py-lineno">142</span>  <span class="py-line">        <span class="py-name">centerPos</span> <span class="py-op">=</span> <span class="py-op">[</span><span class="py-number">.5</span><span class="py-op">,</span> <span class="py-number">.5</span><span class="py-op">,</span> <span class="py-number">.5</span><span class="py-op">]</span> <span class="py-comment">#in terms of vector</span> </span>
+<span class="py-lineno">143</span>  <span class="py-line">        <span class="py-keyword">return</span> <span class="py-name">self</span><span class="py-op">.</span><span id="link-38" class="py-name"><a title="pyxsd.transforms.cellSizer.CellSizer.getCartesianCoords" class="py-name" href="#" onclick="doclink('link-38', 'getCartesianCoords', 'Method pyxsd.transforms.cellSizer.CellSizer.getCartesianCoords()=pyxsd.transforms.cellSizer.CellSizer-class.html#getCartesianCoords'); return false;">getCartesianCoords</a></span></span><span class="py-op">(</span><span class="py-name">vectors</span><span class="py-op">,</span> <span class="py-name">centerPos</span><span class="py-op">)</span> <span class="py-comment">#centerPos</span> </span>
+</div></div><span class="py-lineno">144</span>  <span class="py-line"> </span><script type="text/javascript">
+<!--
+expandto(location.href);
+// -->
+</script>
+</pre>
+<br />
+<!-- ==================== NAVIGATION BAR ==================== -->
+<table class="navbar" border="0" width="100%" cellpadding="0"
+       bgcolor="#a0c0ff" cellspacing="0">
+  <tr valign="middle">
+  <!-- Home link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="pyxsd-module.html">Home</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Tree link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="module-tree.html">Trees</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Index link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="identifier-index.html">Indices</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Help link -->
+      <th>&nbsp;&nbsp;&nbsp;<a
+        href="help.html">Help</a>&nbsp;&nbsp;&nbsp;</th>
+
+  <!-- Project homepage -->
+      <th class="navbar" align="right" width="100%">
+        <table border="0" cellpadding="0" cellspacing="0">
+          <tr><th class="navbar" align="center"
+            ><a class="navbar" target="_top" href="http://pyxsd.org/">pyxsd</a></th>
+          </tr></table></th>
+  </tr>
+</table>
+<table border="0" cellpadding="0" cellspacing="0" width="100%%">
+  <tr>
+    <td align="left" class="footer">Generated by Epydoc
+        3.0alpha3 on Thu Sep 07 21:19:44 2006</td>
+    <td align="right" class="footer">
+      <a href="http://epydoc.sourceforge.net">http://epydoc.sourceforge.net</a>
+    </td>
+  </tr>
+</table>
+
+<script type="text/javascript">
+  <!--
+  // Private objects are initially displayed (because if
+  // javascript is turned off then we want them to be
+  // visible); but by default, we want to hide them.  So hide
+  // them unless we have a cookie that says to show them.
+  checkCookie()
+  // -->
+</script>
+  
+</body>
+</html>
