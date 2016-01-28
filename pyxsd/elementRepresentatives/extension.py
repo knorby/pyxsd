@@ -4,6 +4,8 @@ from elementRepresentative import ElementRepresentative
 
 #============================================================
 #
+
+
 class Extension(ElementRepresentative):
     """
     The class for the Extension tag. Subclass of *ElementRepresentative*.
@@ -14,9 +16,8 @@ class Extension(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-        
-        self.addSuperClassName(self.tagAttributes['base'])
 
+        self.addSuperClassName(self.tagAttributes['base'])
 
     #============================================================
     #
@@ -25,7 +26,7 @@ class Extension(ElementRepresentative):
         Makes a name like this- `ContainingTypeName`|restiction. 
         The name on this class is used for almost nothing.
         """
-        
+
         contName = self.getContainingTypeName()
 
         name = contName + '|extension'
@@ -41,4 +42,3 @@ class Extension(ElementRepresentative):
         baseType = self.getFromName(self.tagAttributes['base'])
         if not baseType:
             print self.name, self.base
-

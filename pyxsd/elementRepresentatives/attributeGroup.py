@@ -2,6 +2,8 @@ from elementRepresentative import ElementRepresentative
 
 #============================================================
 #
+
+
 class AttributeGroup(ElementRepresentative):
     """
     The class for the Extension tag. Subclass of *ElementRepresentative*.
@@ -27,6 +29,7 @@ class AttributeGroup(ElementRepresentative):
         self.getSchema().attributeGroups[self.name] = self
     #============================================================
     #
+
     def getContainingType(self):
         """
         Returns self, because Attribute groups are containg types.
@@ -34,4 +37,3 @@ class AttributeGroup(ElementRepresentative):
         No parameters
         """
         return self
-    

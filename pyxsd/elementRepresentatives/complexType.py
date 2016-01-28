@@ -3,12 +3,14 @@ from xsdType import XsdType
 #============================================================
 #
 
+
 class ComplexType(XsdType):
     """
     The class for the complexType tag. Subclass of *XsdType*.
     """
     #============================================================
     #
+
     def __init__(self, xsdElement, parent):
         """
         Keeps a list of sequences and choices that are children of it.
@@ -17,9 +19,9 @@ class ComplexType(XsdType):
          See *ElementRepresentative* for more documentation.
         """
         self.sequencesOrChoices = []
-        
+
         XsdType.__init__(self, xsdElement, parent)
-        
+
         self.getSchema().complexTypes[self.name] = self
 
     #============================================================
@@ -33,10 +35,10 @@ class ComplexType(XsdType):
         No parameters.
         """
         elements = getattr(self, 'elements_', None)
-        
+
         if not elements == None:
             return elements
-        
+
         self.elements_ = []
         itemInfo = None
         for item in self.sequencesOrChoices:

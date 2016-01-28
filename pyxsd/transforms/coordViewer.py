@@ -13,10 +13,11 @@ Transform: CoordViewer
 :Copyright: pyXSD License
 """
 
+
 class CoordViewer (CellSizer, Displayer):
 
     #============================================================
-    #   
+    #
     def __init__(self, root):
         self.root = root
         self.cellSizerInit()
@@ -36,6 +37,3 @@ class CoordViewer (CellSizer, Displayer):
             coords = self.getCartesianCoords(vectors, atom.position)
             coords = tuple(coords)
             print >> file, coords
-        
-            
-    

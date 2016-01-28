@@ -2,10 +2,13 @@ from elementRepresentative import ElementRepresentative
 
 #============================================================
 #
+
+
 class Enumeration(ElementRepresentative):
     """
     The class for the Enumeration tag. Subclass of *ElementRepresentative*.
     """
+
     def __init__(self, xsdElement, parent):
         """
         See *ElementRepresentative* for documentation.
@@ -15,7 +18,7 @@ class Enumeration(ElementRepresentative):
         self.value = self.xsdElement.get('value')
 
         self.getContainingType().enumerations.append(self.value)
-        
+
     #============================================================
     #
     def getName(self):
@@ -25,4 +28,4 @@ class Enumeration(ElementRepresentative):
         """
         enumNum = len(self.getContainingType().enumerations) + 1
         return "%s|enumeration|%i" % (self.getContainingTypeName(),
-                                     enumNum)
+                                      enumNum)

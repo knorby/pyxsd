@@ -1,6 +1,7 @@
 from transform import Transform
 from pyxsd.writers.xmlTreeWriter import XmlTreeWriter
-import sys, tempfile
+import sys
+import tempfile
 
 """
 
@@ -16,11 +17,12 @@ Transform Library: Displayer
 
 """
 
+
 class Displayer(Transform):
 
     #============================================================
     #
-    def openFile(self, fileName=None): #uses stdout if filename is None
+    def openFile(self, fileName=None):  # uses stdout if filename is None
         if fileName == None or fileName == 'stdout':
             return sys.stdout
         return open(fileName, 'w')
@@ -36,4 +38,3 @@ class Displayer(Transform):
         newTree = tempfile.TemporaryFile()
         self.writeTree(newTree)
         return newTree
-    

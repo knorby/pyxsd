@@ -1,5 +1,5 @@
 from elementRepresentative import ElementRepresentative
-from pyxsd.xsdDataTypes    import *
+from pyxsd.xsdDataTypes import *
 
 
 #============================================================
@@ -22,7 +22,8 @@ class Element(ElementRepresentative):
     of code; however, these functions are almost invisible unless they
     raise an error, so developers should bear in mind these methods
     when modifying the program.
-    """    
+    """
+
     def __init__(self, xsdElement, parent):
         """
         Adds itself to the element list in its parent.
@@ -49,7 +50,7 @@ class Element(ElementRepresentative):
 
         if self.type in self.pyXSD.classes.keys():
             return self.pyXSD.classes[self.type]
-        
+
         return ElementRepresentative.typeFromName(self.type, self.pyXSD)
 
     #============================================================
@@ -64,10 +65,11 @@ class Element(ElementRepresentative):
 
         No parameters.
         """
-        children         = self.xsdElement.getchildren()
+        children = self.xsdElement.getchildren()
 
-        if len(children) == 0: return None
-        
+        if len(children) == 0:
+            return None
+
         for child in children:
 
             processedChild = ElementRepresentative.factory(child, self)
@@ -79,7 +81,7 @@ class Element(ElementRepresentative):
             self.tagAttributes['type'] = self.type
 
             processedChild.processChildren()
-            
+
     #============================================================
     #
     def __str__(self):
@@ -88,11 +90,11 @@ class Element(ElementRepresentative):
         of an element, without needing a bulky name that does not
         match the name used.
         """
-        return "%s|%s|%s" % (ElementRepresentative.getContainingTypeName(self), \
+        return "%s|%s|%s" % (ElementRepresentative.getContainingTypeName(self),
                              self.__class__.__name__, self.name)
 
     #============================================================ Descriptor Protocol
-    #============================================================ 
+    #============================================================
     #
     def __get__(self, obj, mystery=None):
         """
@@ -122,7 +124,7 @@ class Element(ElementRepresentative):
         default = getattr(self, 'default', None)
         return default
 
-    #============================================================ 
+    #============================================================
     #
     def __set__(self, obj, value):
         """
@@ -138,7 +140,7 @@ class Element(ElementRepresentative):
         if not isinstance(value, self.getType()):
             raise Exception()
 
-        value = obj.__dict__.get(self.name,None)
+        value = obj.__dict__.get(self.name, None)
 
         if self.isList():
             if value == None:
@@ -151,10 +153,10 @@ class Element(ElementRepresentative):
                 obj.__dict__[self.name] = {}
                 obj.__dict__[self.name][obj.id] = value
                 return
-            
+
         obj.__dict__[self.name] = value
 
-    #============================================================ 
+    #============================================================
     #
     def __delete__(self, obj):
         """
@@ -167,9 +169,9 @@ class Element(ElementRepresentative):
 
         del obj.__dict__[self.name]
 
-    #============================================================ 
+    #============================================================
     #
-    def isDict (self):
+    def isDict(self):
         """
         Returns false. Placeholder function for possible future
         addition of case where the an element could best be
@@ -179,9 +181,9 @@ class Element(ElementRepresentative):
         """
         return False
 
-    #============================================================ 
+    #============================================================
     #
-    def isList (self):
+    def isList(self):
         """
         Returns true if maxOccurs is greater than one. If it is
         true, treats all of the elements that are from the schema
@@ -190,16 +192,16 @@ class Element(ElementRepresentative):
         No parameters.
         """
         minOccurs = self.getMinOccurs()
-        
-	maxOccurs = self.getMaxOccurs()
 
-	if maxOccurs > 1:
+        maxOccurs = self.getMaxOccurs()
 
-	   return True
-       
+        if maxOccurs > 1:
+
+            return True
+
         return False
 
-    #============================================================ 
+    #============================================================
     #
     def getMinOccurs(self):
         """
@@ -208,10 +210,10 @@ class Element(ElementRepresentative):
 
         No parameters
         """
-        return int(getattr(self, 'minOccurs', 1)) 
+        return int(getattr(self, 'minOccurs', 1))
 
-    #============================================================ 
-    # 
+    #============================================================
+    #
     def getMaxOccurs(self):
         """
         Returns an integer value for the `maxOccurs`. If no `maxOccurs`
@@ -225,4 +227,3 @@ class Element(ElementRepresentative):
         if maxOccurs == 'unbounded':
             return 99999
         return int(maxOccurs)
-        

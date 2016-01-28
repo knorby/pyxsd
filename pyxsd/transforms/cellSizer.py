@@ -1,6 +1,6 @@
-from transform      import Transform
-from atom           import Atom
-from vector         import Vector
+from transform import Transform
+from atom import Atom
+from vector import Vector
 from bravaisLattice import BravaisLattice
 
 """
@@ -22,14 +22,15 @@ Includes as part of the CellSizer Library:
 
 """
 
+
 class CellSizer (Transform):
 
     #============================================================
     #
     def cellSizerInit(self):
-        self.atoms          = []
+        self.atoms = []
         self.bravaisVectors = {}
-        self.vectorOrder    = []
+        self.vectorOrder = []
 
     #============================================================
     #
@@ -38,7 +39,7 @@ class CellSizer (Transform):
             return self.bravaisVectors
         vectorNumCount = 1
         self.vectorOrder = []
-        vectorsInXml = self.getElementsByName(self.root, 'bravaisVector') 
+        vectorsInXml = self.getElementsByName(self.root, 'bravaisVector')
         for vector in vectorsInXml:
             vectorDef = vector._value_
             if not len(vectorDef) == 3:
@@ -49,19 +50,18 @@ class CellSizer (Transform):
             obj = Vector((i, j, k))
             self.bravaisVectors['a%i' % vectorNumCount] = obj
             self.vectorOrder.append('a%i' % vectorNumCount)
-            vectorNumCount+=1
+            vectorNumCount += 1
         return self.bravaisVectors
 
     #============================================================
     #
     def getVectorList(self):
-        vectorDict  = self.getBravaisVectors()
+        vectorDict = self.getBravaisVectors()
         vectors = []
         for vectorName in self.vectorOrder:
-           vectors.append(vectorDict[vectorName])
+            vectors.append(vectorDict[vectorName])
         return vectors
-                        
-    
+
     #============================================================
     #
     def getAtoms(self):
@@ -78,19 +78,20 @@ class CellSizer (Transform):
 
     #============================================================
     #
-    def makeNewXml (self, bravaisLattice):
+    def makeNewXml(self, bravaisLattice):
         vectors = bravaisLattice.vectors
-        basis   = bravaisLattice.basis
+        basis = bravaisLattice.basis
         xmlCrystalBasis = self.getElementsByName(self.root, 'crystalBasis')[0]
         xmlCrystalBasis._children_ = []
         for atom in basis:
             newAtomElement = self.makeNewXmlAtomElements(atom)
             xmlCrystalBasis._children_.append(newAtomElement)
-        xmlBravaisLattice = self.getElementsByName(self.root, 'bravaisLattice')[0]
+        xmlBravaisLattice = self.getElementsByName(
+            self.root, 'bravaisLattice')[0]
         xmlBravaisLattice._children_ = []
         for vectorName in self.vectorOrder:
             vector = vectors[vectorName]
-            bravaisVector         = self.makeElemObj('bravaisVector')
+            bravaisVector = self.makeElemObj('bravaisVector')
             bravaisVector._value_ = vector
             xmlBravaisLattice._children_.append(bravaisVector)
             continue
@@ -100,14 +101,14 @@ class CellSizer (Transform):
     #============================================================
     #
     def makeNewXmlAtomElements(self, atom):
-        
-        position                 = atom.position
-        atomType                 = atom.atomType
-        siteObj                  = self.makeElemObj('site')
-        positionObj              = self.makeElemObj('position')
-        positionObj._value_      = position
-        occupantObj              = self.makeElemObj('occupant')
-        atomObj                  = self.makeElemObj('atom')
+
+        position = atom.position
+        atomType = atom.atomType
+        siteObj = self.makeElemObj('site')
+        positionObj = self.makeElemObj('position')
+        positionObj._value_ = position
+        occupantObj = self.makeElemObj('occupant')
+        atomObj = self.makeElemObj('atom')
         atomObj._attribs_['ref'] = atomType
 
         occupantObj._children_.append(atomObj)
@@ -117,12 +118,14 @@ class CellSizer (Transform):
         return siteObj
     #============================================================
     #
+
     def makeAtom(self, position, atomType):
         return Atom(position, atomType)
     #============================================================
     #
+
     def makeBravaisLattice(self, newVectors, newAtoms):
-        return  BravaisLattice(newVectors, newAtoms)
+        return BravaisLattice(newVectors, newAtoms)
 
     #============================================================
     #
@@ -132,13 +135,12 @@ class CellSizer (Transform):
             total = 0
             currentPos = position[g]
             for vector in vectors:
-                total+= currentPos * vector[g]
+                total += currentPos * vector[g]
             coords.append(total)
         return coords
 
     #============================================================
     #
     def findCenter(self, vectors):
-        centerPos = [.5, .5, .5] #in terms of vector
-        return self.getCartesianCoords(vectors, centerPos) #centerPos
-           
+        centerPos = [.5, .5, .5]  # in terms of vector
+        return self.getCartesianCoords(vectors, centerPos)  # centerPos

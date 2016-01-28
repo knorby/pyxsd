@@ -1,9 +1,11 @@
 from cellSizer import CellSizer
 from displayer import Displayer
 
+
 class FormatForVisit (CellSizer, Displayer):
     #============================================================
-    #   
+    #
+
     def __init__(self, root):
         self.root = root
         self.cellSizerInit()
@@ -24,4 +26,5 @@ class FormatForVisit (CellSizer, Displayer):
             print >> file, vector[0], vector[1], vector[2]
         print >> file, len(atoms)
         for atom in atoms:
-            print >> file, atom.atomType[4:], atom.position[0], atom.position[1], atom.position[2]
+            print >> file, atom.atomType[4:], atom.position[
+                0], atom.position[1], atom.position[2]
