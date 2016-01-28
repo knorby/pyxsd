@@ -46,6 +46,7 @@ Variable Quick Reference:
 +------------+-----------------+
 """
 
+
 class XmlTreeWriter(object):
 
     #=======================================================
@@ -55,23 +56,21 @@ class XmlTreeWriter(object):
         Initialize the writer.
 
         Parameters:
-        
+
         - `root`: The root instance of a tree. Must be formatted in program's tree structure.
         - `output`: The file object to write the tree to.
 
         """
 
-        self.output       = output
+        self.output = output
 
         self.writeHeaderInfo()
 
         XmlTreeWriter.passTagToTagWriter(root, 0, self.output)
-        
 
     #=======================================================
     #
-    def passTagToTagWriter (element, tabs, output):
-
+    def passTagToTagWriter(element, tabs, output):
         """
         Extracts element variables and initializes the tag writer for the element.
         Recursively calls itself on its element children. Writes the ending tag if it has any values or any children.        
@@ -82,14 +81,13 @@ class XmlTreeWriter(object):
         - `output`: The file object to write the tree to.
         """
 
-        
-        name        = element._name_
-       
-        children    = element._children_
+        name = element._name_
 
-        attribs     = element._attribs_
+        children = element._children_
 
-        value       = element._value_
+        attribs = element._attribs_
+
+        value = element._value_
 
         hasChildren = len(children) > 0
 
@@ -97,11 +95,12 @@ class XmlTreeWriter(object):
             if children[0]._name_ == '_comment_':
                 hasChildren = False
 
-        hasValue     = (not value == None)
+        hasValue = (not value == None)
 
-        tagWriter = XmlTagWriter(name, attribs, value, hasChildren, hasValue, tabs, output)
+        tagWriter = XmlTagWriter(name, attribs, value,
+                                 hasChildren, hasValue, tabs, output)
 
-        tabs+=1
+        tabs += 1
 
         for child in children:
 
@@ -111,17 +110,16 @@ class XmlTreeWriter(object):
 
             tagWriter.writeEndTag()
 
-
     passTagToTagWriter = staticmethod(passTagToTagWriter)
-        
+
     #=======================================================
     #
-    def writeHeaderInfo (self):
+    def writeHeaderInfo(self):
         """
         Writes a comment at the top of the file with the creation information. Includes data and time information.
 
         Takes no arguments
         """
 
-        print >>self.output, "<!--File created by PyXSD at %s on %s-->" % (time.strftime('%X'), time.strftime('%x'))
-
+        print >>self.output, "<!--File created by PyXSD at %s on %s-->" % (
+            time.strftime('%X'), time.strftime('%x'))

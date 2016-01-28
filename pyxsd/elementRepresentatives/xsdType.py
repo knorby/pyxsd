@@ -3,12 +3,15 @@ from elementRepresentative import ElementRepresentative
 
 #============================================================
 #
+
+
 class XsdType(ElementRepresentative):
     """
     This class is the base class for *SimpleType* and *ComplexType*
     Subclass of *ElementRepresentative*. In this class, the classes
     for all of the types are generated.
     """
+
     def __init__(self, xsdElement, parent):
         """
         The `__init__` for this class' subclasses.
@@ -18,10 +21,9 @@ class XsdType(ElementRepresentative):
         """
         self.enumerations = []
 
-        self.attributes  = {}
-        
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        self.attributes = {}
 
+        ElementRepresentative.__init__(self, xsdElement, parent)
 
     #============================================================
     #
@@ -37,7 +39,7 @@ class XsdType(ElementRepresentative):
             self.name = self.getName()
 
         return self.name
-    
+
     #============================================================
     #
     def getContainingType(self):
@@ -48,7 +50,7 @@ class XsdType(ElementRepresentative):
         No parameters.
         """
         return self
-    
+
     #============================================================
     #
     def getName(self):
@@ -62,16 +64,17 @@ class XsdType(ElementRepresentative):
         No parameters
         """
         name = ElementRepresentative.getName(self)
-        
-        if not name == None:    return name
+
+        if not name == None:
+            return name
 
         # We are implicitly defined in an element
-        element  = self.parent
-        
-        name = '%s|%s' % (element.name, self.tagType) 
-        
+        element = self.parent
+
+        name = '%s|%s' % (element.name, self.tagType)
+
         element.typeName = name
-        
+
         return name
 
     #============================================================
@@ -84,17 +87,18 @@ class XsdType(ElementRepresentative):
         Parameters:
 
         - `bases`- the list of bases for the class that will be created
-        
+
         """
         for base in bases:
 
-            if issubclass(base,SchemaBase):
+            if issubclass(base, SchemaBase):
                 return True
-        
+
         return False
     #============================================================
     #
-    def getBaseList(self, pyXSD): 
+
+    def getBaseList(self, pyXSD):
         """
         Creates blank list for the base classes. It goes through
         the list of super classes to be added (all type classes),
@@ -105,18 +109,18 @@ class XsdType(ElementRepresentative):
         Parameters:
 
         - `pyXSD`- The *PyXSD* instance.
-        
+
         """
         baseList = []
 
         for superClassName in self.superClassNames:
-            baseList.append(ElementRepresentative.typeFromName \
+            baseList.append(ElementRepresentative.typeFromName
                             (superClassName, pyXSD))
-            
+
         if not self.containsSchemaBase(baseList):
 
             baseList.append(SchemaBase)
-                
+
         return tuple(baseList)
 
     #============================================================
@@ -130,7 +134,7 @@ class XsdType(ElementRepresentative):
         No parameters.
         """
         return []
-    
+
     #============================================================
     #
     def clsFor(self, pyXSD):
@@ -152,12 +156,13 @@ class XsdType(ElementRepresentative):
 
         bases = self.getBaseList(pyXSD)
 
-        #arrange base so that it always inherits from SchemaBase (SchemaBase inherits from object)
-        clsDict = dict([('pyXSD', pyXSD), ('name', self.name), \
+        # arrange base so that it always inherits from SchemaBase (SchemaBase
+        # inherits from object)
+        clsDict = dict([('pyXSD', pyXSD), ('name', self.name),
                         ('__doc__', self.__doc__)])
 
         _elementNames_ = []
-        
+
         for element in self.getElements():
             element.pyXSD = pyXSD
             _elementNames_.append(element.name)
@@ -192,17 +197,17 @@ class XsdType(ElementRepresentative):
 
         try:
             cls = type(self.name, bases, clsDict)
-            
+
         except Exception, e:
             print e
             self.describe()
             print "baseList %s" % repr(self.superClassNames)
             print "baseList %s" % repr(baseList)
-            raise  
+            raise
             return None
 
         return cls
 
 #======================================================================
 #
-from pyxsd.schemaBase      import SchemaBase
+from pyxsd.schemaBase import SchemaBase

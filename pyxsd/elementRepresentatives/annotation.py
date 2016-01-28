@@ -4,10 +4,13 @@ from elementRepresentative import ElementRepresentative
 
 #============================================================
 #
+
+
 class Annotation(ElementRepresentative):
     """
     The class for the Annotation tag. Subclass of ElementRepresentative.
     """
+
     def __init__(self, xsdElement, parent):
         """
         See *ElementRepresentative* for documentation.
@@ -24,7 +27,3 @@ class Annotation(ElementRepresentative):
         contName = self.getContainingTypeName()
 
         return "%s|%s" % (contName, self.__class__.__name__)
-
-
-
-

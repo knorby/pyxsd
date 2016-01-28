@@ -1,8 +1,10 @@
 from elementRepresentative import ElementRepresentative
-from pyxsd.xsdDataTypes    import *
+from pyxsd.xsdDataTypes import *
 
 #============================================================
 #
+
+
 class Attribute(ElementRepresentative):
     """
     The class for the attribute tag. Subclass of *ElementRepresentative*.
@@ -22,6 +24,7 @@ class Attribute(ElementRepresentative):
     raise an error, so developers should bear in mind these methods
     when modifying the program.
     """
+
     def __init__(self, xsdElement, parent):
         """
         Adds itself to the attribute dictionary in its containing
@@ -43,7 +46,6 @@ class Attribute(ElementRepresentative):
                              self.__class__.__name__,
                              ElementRepresentative.getName(self))
 
-
     #============================================================
     #
     def processChildren(self):
@@ -56,10 +58,11 @@ class Attribute(ElementRepresentative):
 
         No parameters.
         """
-        children         = self.xsdElement.getchildren()
+        children = self.xsdElement.getchildren()
 
-        if len(children) == 0: return None
-        
+        if len(children) == 0:
+            return None
+
         for child in children:
 
             processedChild = ElementRepresentative.factory(child, self)
@@ -70,8 +73,7 @@ class Attribute(ElementRepresentative):
 
             self.tagAttributes['type'] = self.type
 
-            processedChild.processChildren()        
-
+            processedChild.processChildren()
 
     #============================================================
     #
@@ -89,13 +91,11 @@ class Attribute(ElementRepresentative):
 
         if self.type in self.pyXSD.classes.keys():
             return self.pyXSD.classes[self.type]
-        
+
         return ElementRepresentative.typeFromName(self.type, self.pyXSD)
 
-
-
     #============================================================ Descriptor Protocol
-    #============================================================ 
+    #============================================================
     #
     def __get__(self, obj, mystery=None):
         """
@@ -125,7 +125,7 @@ class Attribute(ElementRepresentative):
         default = getattr(self, 'default', None)
         return default
 
-    #============================================================ 
+    #============================================================
     #
     def __set__(self, obj, value):
         """
@@ -144,7 +144,7 @@ class Attribute(ElementRepresentative):
 
                         value = 1
 
-                    elif value =='False' or value =='false':
+                    elif value == 'False' or value == 'false':
 
                         value = 0
             try:
@@ -157,12 +157,12 @@ class Attribute(ElementRepresentative):
                 print "The program will attempt to continue, but may experience errors."
                 print
         elif not isinstance(obj, self.getType()):
-           
+
             raise Exception()
-        
+
         obj.__dict__[self.name] = value
 
-    #============================================================ 
+    #============================================================
     #
     def __delete__(self, obj):
         """
@@ -174,7 +174,7 @@ class Attribute(ElementRepresentative):
         """
         del obj.__dict__[self.name]
 
-    #============================================================ 
+    #============================================================
     #
     def getUse(self):
         """
@@ -184,4 +184,3 @@ class Attribute(ElementRepresentative):
         if not 'use' in self.__dict__.keys():
             self.use = 'optional'
         return self.use
-    

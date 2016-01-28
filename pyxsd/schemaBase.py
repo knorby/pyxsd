@@ -1,5 +1,6 @@
 import sets
 
+
 class SchemaBase(object):
     """
     Serves as the base class for all schema type classes created. The pythonic instance tree is built from this class.
@@ -17,9 +18,9 @@ class SchemaBase(object):
 
         No parameters
         """
-        self._children_  = []
+        self._children_ = []
 
-        self._value_     = None
+        self._value_ = None
 
     #=======================================================
     #
@@ -36,25 +37,24 @@ class SchemaBase(object):
 
         - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
         - `elementTag`- The xml element that correspond to `cls` 
-        
+
         """
 
-        instance           = cls()
-        
-        instance._name_    = elementTag.tag.split('}')[-1]
-        
+        instance = cls()
+
+        instance._name_ = elementTag.tag.split('}')[-1]
+
         cls.addAttributesTo(instance, elementTag)
-        cls.addElementsTo  (instance, elementTag)
-        cls.addValueTo     (instance, elementTag)
+        cls.addElementsTo(instance, elementTag)
+        cls.addValueTo(instance, elementTag)
 
         return instance
 
     makeInstanceFromTag = classmethod(makeInstanceFromTag)
-        
+
     #=======================================================
     #
     def addAttributesTo(cls, instance, elementTag):
-
         """
         A classmethod. Called by `makeInstanceFromTag()`. Adds attributes according to the schema by calling
         `getAttributesFromTag()`. The attributes are then checked.
@@ -73,11 +73,9 @@ class SchemaBase(object):
 
     addAttributesTo = classmethod(addAttributesTo)
 
-
     #=======================================================
     #
     def getAttributesFromTag(self, elementTag):
-
         """
         Adds attributes to the *_attribs_* dictionary in the instance. Only attributes in
         the type classes are added. All of the attribute values are validated against
@@ -88,19 +86,17 @@ class SchemaBase(object):
         Parameters:
 
         - `elementTag`: the xml element that the instance represents
-        
+
         """
 
         self._attribs_ = {}
 
         usedAttributes = []
 
-                
-        
         for attr in elementTag.attrib.keys():
             if 'xmlns' in attr or 'xsi:' in attr:
 
-                setattr(self,attr,elementTag.attrib[attr])
+                setattr(self, attr, elementTag.attrib[attr])
 
                 usedAttributes.append(attr)
 
@@ -110,7 +106,7 @@ class SchemaBase(object):
 
             if name in elementTag.attrib.keys():
 
-                setattr(self,name,elementTag.attrib[name])
+                setattr(self, name, elementTag.attrib[name])
 
                 usedAttributes.append(name)
 
@@ -121,7 +117,6 @@ class SchemaBase(object):
     #=======================================================
     #
     def addElementsTo(cls, instance, elementTag):
-
         """
         A classmethod. Checks order on the child elements, with different functions for `sequences` and `choices`.
         Iterates through all the elements specified in the class of the schema, and matches these elements with the
@@ -133,7 +128,7 @@ class SchemaBase(object):
         - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
         - `instance` - The instance of `cls` that is having elements added to it.
         - `elementTag`- The xml element that correspond to `cls`
-        
+
         """
 
         subElements = elementTag.getchildren()
@@ -142,7 +137,7 @@ class SchemaBase(object):
 
         elemDescriptors = instance._getElements()
 
-        if len(subElements) == 0: # This element has no children
+        if len(subElements) == 0:  # This element has no children
             return
 
         if elemDescriptors[0].sOrC == "sequence":
@@ -152,9 +147,9 @@ class SchemaBase(object):
         if elemDescriptors[0].sOrC == "choice":
 
             cls.checkElementOrderInChoice(elemDescriptors[0], subElements)
-            
+
         #-----------------------------
-        
+
         for descriptor in elemDescriptors:
 
             descriptorName = descriptor.name
@@ -162,41 +157,41 @@ class SchemaBase(object):
             for subElement in subElements:
 
                 subElementName = getSubElementName(subElement)
-                
+
                 if descriptorName == subElementName:
 
-                    subElCls    = descriptor.getType()
-                    
-                    if subElCls == None: #An Error Message
+                    subElCls = descriptor.getType()
+
+                    if subElCls == None:  # An Error Message
                         print "Parser Error: There is no type in the schema that corresponds to the type stated in the %s element" \
-                              % descriptorName 
+                              % descriptorName
                         continue
-                    
+
                     #-----------------------------
-                    #for elements with primitive types
+                    # for elements with primitive types
 
                     if not issubclass(subElCls, SchemaBase):
-                        subInstance        = cls.primitiveValueFor(subElCls, subElement)
+                        subInstance = cls.primitiveValueFor(
+                            subElCls, subElement)
                         subInstance._name_ = subElementName
                         instance._children_.append(subInstance)
                         setattr(instance, subElementName, subInstance)
                         continue
 
                     #-----------------------------
-                    
-                    subInstance        = subElCls.makeInstanceFromTag(subElement)
+
+                    subInstance = subElCls.makeInstanceFromTag(subElement)
                     subInstance._name_ = subElementName
                     instance._children_.append(subInstance)
                     continue
-                
+
         return instance
-    
+
     addElementsTo = classmethod(addElementsTo)
-            
+
     #=======================================================
     #
     def addValueTo(cls, instance, elementTag):
-
         """
         Checks to see if the tag has a value, and assigns it to the element instance if it does.
         Uses the ElementTree function `.text` to retrieve this information from the tag.
@@ -209,7 +204,7 @@ class SchemaBase(object):
 
         """
 
-        lineStrip = lambda x: x.strip().strip('\n').strip('\t') 
+        lineStrip = lambda x: x.strip().strip('\n').strip('\t')
 
         if elementTag.text:
 
@@ -222,13 +217,13 @@ class SchemaBase(object):
                 dataEntry = elementTag.text.split('\n')
 
                 for line in dataEntry:
-                    
+
                     line = lineStrip(line)
 
                     if len(line) == 0:
 
-                            continue
-                        
+                        continue
+
                     instance._value_.append(line)
 
             if len(instance._value_) == 0:
@@ -250,14 +245,13 @@ class SchemaBase(object):
         - `subElements`- All of the children of an element that is being processed in addElementsTo().
 
         """
-        
+
         minOccurs = elemDescriptor.getMinOccurs()
         if minOccurs < 0:
             print "Parser Error: the value of 'minOccurs' in %s must be greater than or equal to zero." % cls.name
             print "The program will assign minOccurs the default vaule of 1 and attempt to proceed."
             print
             minOccurs = 1
-            
 
         maxOccurs = elemDescriptor.getMaxOccurs()
         if minOccurs < 0:
@@ -265,7 +259,6 @@ class SchemaBase(object):
             print "The program will assign minOccurs the default vaule of 1 and attempt to proceed."
             print
             maxOccurs = 1
-        
 
         if len(subElements) < minOccurs:
 
@@ -277,50 +270,47 @@ class SchemaBase(object):
             print "Parser Error: the parser found too many elements for a choice element in %s." % cls.name
             print "This choice element can only have one element in it."
             print
-        
 
         return
-            
+
     checkElementOrderInChoice = classmethod(checkElementOrderInChoice)
 
     #=======================================================
     #
     def checkElementOrderInSequence(cls, descriptors, subElements):
-
         """
         A classmethodChecks the element order in sequence fields to make sure that the order specified in the schema is preserved
         in the xml. Raises non-fatal errors when a problem is found. Checks minOccurs and maxOccurs on each element as well.
 
         Parameters:
-        
+
         - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
         - `descriptors`- a list of schema-specified elements that define parameters for an element. Called `descriptors` because the program takes advantage of descriptors in python to help check the data. These descriptors are in the Element class in elementRepresentatives. 
         - `subElements`- All of the children of an element that is being processed in addElementsTo(). Correspond to elements in `descriptors`
-        
+
         """
 
         descriptorNames = map(lambda x: x.name, descriptors)
         subElementNames = map(lambda x: x.tag.split('}')[1], subElements)
         if not len(descriptorNames) == len(descriptors):
             print "Name descriptor mismatch"
-            
+
         for index in range(0, len(descriptors)):
             descriptor = descriptors[index]
-            dname      = descriptorNames[index]
-            
-            
+            dname = descriptorNames[index]
+
             count, subElementNames = cls.consume(dname, subElementNames)
 
             if count == 0:
                 if descriptor.getMinOccurs() == 0:
-                    if  not dname in subElementNames:
+                    if not dname in subElementNames:
                         continue
-                print "Parser Error: Order Error - Expected element name '%s' in different position." % dname  
+                print "Parser Error: Order Error - Expected element name '%s' in different position." % dname
                 print
                 continue
-            
+
             if count < descriptor.getMinOccurs():
-                #complain
+                # complain
                 print "Parser Error: The Element '%s' in '%s' occurs less" % (dname, cls.name)
                 print "than the specified number of minOccurs (%i) in the schema." % descriptor.getMinOccurs()
                 print "Note: it is possible that there is a problem with the order of"
@@ -329,15 +319,15 @@ class SchemaBase(object):
                 continue
 
             if count > descriptor.getMaxOccurs():
-                #complain
+                # complain
                 print "Parser Error: The element '%s' in '%s' occurs more" % (dname, cls.name)
                 print " than the specified number of maxOccurs in the schema."
-                if descriptor.getMaxOccurs()==1:
+                if descriptor.getMaxOccurs() == 1:
                     print "Your maxOccurs value is 1, which is the default value."
                     print "Perhaps you meant to assign this vairablea different value?"
                 print
                 continue
-            
+
     checkElementOrderInSequence = classmethod(checkElementOrderInSequence)
 
     #=======================================================
@@ -351,12 +341,12 @@ class SchemaBase(object):
         - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
         - `dname`- The name of the descriptor that is currently being checked.
         - `subElements`- the list of subElements being checked.
-        
+
         """
         count = 0
         while len(subElements) > 0 and subElements[0] == dname:
             subElements = subElements[1:]
-            count+=1
+            count += 1
 
         return count, subElements
 
@@ -372,48 +362,48 @@ class SchemaBase(object):
         this error and the appropiate correction on the `pyXSD website <http://pyxsd.org>`_. 
 
         Parameters:
-        
+
         - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
         - `subElCls`- the schema type class that corresponds to the subElement that is being processed.
         - `subElement`- The subElement that has a primitive data type.
-        
+
         """
-        
+
         dataTypeChildren = subElement.getchildren()
 
-        dataTypeText   =  subElement.text
-        
+        dataTypeText = subElement.text
+
         dataTypeAttrib = subElement.items()
-        
+
         if dataTypeText == None and len(dataTypeAttrib) == 0 \
-               and len(dataTypeChildren) == 0:
-            
+                and len(dataTypeChildren) == 0:
+
             dataTypeVal = True
-            
+
         elif dataTypeText:
-            
+
             dataTypeVal = dataTypeText
-            
+
         elif len(dataTypeAttrib) == 1:
 
             dataTypeVal = dataTypeAttrib[0][1]
-            
+
         elif len(dataTypeChildren) == 1:
-            
+
             dataTypeVal = dataTypeChildren[0]
-            
+
         else:
-            
+
             print "An error occured while reading the data in the %s element." \
                   % subElementName
 
             return
-                   
+
         dataTypeValInst = subElCls(dataTypeVal)
 
         dataTypeValInst._attribs_ = subElement.attrib
 
-        dataTypeValInst._value_   = dataTypeText
+        dataTypeValInst._value_ = dataTypeText
 
         dataTypeValInst._children_ = dataTypeChildren
 
@@ -424,7 +414,8 @@ class SchemaBase(object):
     primitiveValueFor = classmethod(primitiveValueFor)
     #=======================================================
     #
-    def addBaseDescriptors (cls):
+
+    def addBaseDescriptors(cls):
         """
         Adds attribute descriptors from classes that are bases to the current class.
         Does this recursively down the list of bases. Everything returned as a dictionary.
@@ -442,7 +433,7 @@ class SchemaBase(object):
                 descriptors[key] = value
 
         for bcls in cls.__bases__:
-            if hasattr(bcls,'addBaseDescriptors'):
+            if hasattr(bcls, 'addBaseDescriptors'):
                 bclsDescriptors = bcls.addBaseDescriptors()
                 for key, value in bclsDescriptors.iteritems():
                     if key in descriptors.keys():
@@ -453,6 +444,7 @@ class SchemaBase(object):
     addBaseDescriptors = classmethod(addBaseDescriptors)
     #=======================================================
     #
+
     def descAttributes(self):
         """
         Returns a dictionary of the  descriptor attributes. These attributes are from the schema and use descriptors,
@@ -476,9 +468,9 @@ class SchemaBase(object):
                     if key in attrs.keys():
                         continue
                     attrs[key] = value
-                
+
         self.__dict__['_descAttrs_'] = attrs
-                        
+
         return attrs
 
     #=======================================================
@@ -489,7 +481,7 @@ class SchemaBase(object):
         that dictionary.
         """
         return self.descAttributes().keys()
-        
+
     #=======================================================
     #
     def checkAttributes(self, usedAttrs, elementTag):
@@ -501,10 +493,10 @@ class SchemaBase(object):
 
         - `usedAttrs`- a list containing the names of attributes that were put into the instance.
         - `elementTag`- The ElementTree tag for the instance that is being checked.
-        
+
         """
 
-        descriptorAttributes     = self.descAttributes()
+        descriptorAttributes = self.descAttributes()
 
         descriptorAttributeNames = self.descAttributeNames()
 
@@ -512,12 +504,12 @@ class SchemaBase(object):
 
         if len(usedAttrs) > len(attrInElementTag):
             print "Parser Error: For an unknown reason, in %s, the program parsed more attributes than there are in the XML file." \
-                  %self.__class__.__name__
+                  % self.__class__.__name__
         elif len(usedAttrs) < len(attrInElementTag):
-            print "Parser Error: Not all attributes in the XML file in %s were parsed." %self.__class__.__name__
-            print "Attributes not processed:" 
-            for attrET in attrInElementTag:   
-                if not attrET in usedAttrs:   
+            print "Parser Error: Not all attributes in the XML file in %s were parsed." % self.__class__.__name__
+            print "Attributes not processed:"
+            for attrET in attrInElementTag:
+                if not attrET in usedAttrs:
                     print "   ", attrET
         for descriptorAttrName in descriptorAttributeNames:
             found = False
@@ -527,27 +519,24 @@ class SchemaBase(object):
                     found = True
             if attrUse == 'required' and not found:
                 print "Parser Error: the %s in the %s element is required but was not found."\
-                      %  (self.descriptorAttrName, self.tagName)
-                
-
+                      % (self.descriptorAttrName, self.tagName)
 
     #=======================================================
     #
     def dumpCls(cls):
-
         """
         For debugging purposes only. Prints out the contents of a class. A staticmethod.
 
         parameters:
 
         - `cls`- The class to dump the contents of. NOTE: this is the only arguement, since it is a staticmethod.
-        
+
         """
 
         print " In dumpCls[%s] bases = %s " % \
               (cls.__name__, cls.__bases__)
-        
-        for key,value in cls.__dict__.iteritems():
+
+        for key, value in cls.__dict__.iteritems():
             print "   %s - %s" % (key, repr(value))
 
     dumpCls = staticmethod(dumpCls)
@@ -555,12 +544,5 @@ class SchemaBase(object):
     #=======================================================
     #
 
-import elementRepresentatives.elementRepresentative 
+import elementRepresentatives.elementRepresentative
 from elementRepresentatives.attribute import Attribute
-
-                             
-
-    
-
-
-

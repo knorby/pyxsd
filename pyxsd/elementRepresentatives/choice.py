@@ -2,6 +2,8 @@ from elementRepresentative import ElementRepresentative
 
 #============================================================
 #
+
+
 class Choice(ElementRepresentative):
     """
     The class for the choice tag. Subclass of *ElementRepresentative*.
@@ -15,11 +17,11 @@ class Choice(ElementRepresentative):
         See *ElementRepresentative* for more documentation.
         """
         self.elements = []
-        
+
         ElementRepresentative.__init__(self, xsdElement, parent)
 
         self.getContainingType().sequencesOrChoices.append(self)
-        
+
     #============================================================
     #
     def getName(self):
@@ -27,14 +29,14 @@ class Choice(ElementRepresentative):
         Makes a name like this- choice`some id number`. 
         """
         choiceNum = len(self.getContainingType().sequencesOrChoices) + 1
-        
+
         contName = self.getContainingTypeName()
 
         name = "choice%i" % (choiceNum)
 
         return name
 
-    #============================================================ 
+    #============================================================
     #
     def getMinOccurs(self):
         """
@@ -44,10 +46,10 @@ class Choice(ElementRepresentative):
         No parameters.
         """
 
-        return int(getattr(self, 'minOccurs', 1)) 
+        return int(getattr(self, 'minOccurs', 1))
 
-    #============================================================ 
-    # 
+    #============================================================
+    #
     def getMaxOccurs(self):
         """
         retrieves the maxOccurs value for elements in the choice.
@@ -61,6 +63,3 @@ class Choice(ElementRepresentative):
         if maxOccurs == 'unbounded':
             return 99999
         return int(maxOccurs)
-
-
-        

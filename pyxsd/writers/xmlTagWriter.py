@@ -5,11 +5,9 @@ class XmlTagWriter(object):
     information. This class should only be initialized by XmlTreeWriter.
     """
 
-    
     #=======================================================
     #
-    def __init__ (self, name, attribs, value, hasChildren, hasValue, tabs, output):
-
+    def __init__(self, name, attribs, value, hasChildren, hasValue, tabs, output):
         """
         Initializes the tag writer
 
@@ -22,32 +20,32 @@ class XmlTagWriter(object):
         - `hasValue`: a boolean to indicate if the tag any value
         - `tabs`: an integer that indicates the number of tabs over the element is in the document
         - `output`: the file object to write to
-        
+
         """
 
-        self.name              = name
+        self.name = name
 
-        self.attribs           = attribs
+        self.attribs = attribs
 
-        self.sortedKeyList     = self.attribs.keys()
+        self.sortedKeyList = self.attribs.keys()
 
         self.sortedKeyList.sort()
-        
-        self.value             = value
 
-        self.hasValue          = hasValue
+        self.value = value
 
-        self.hasChildren       = hasChildren
+        self.hasValue = hasValue
 
-        self.tabs              = tabs
+        self.hasChildren = hasChildren
 
-        self.output            = output
+        self.tabs = tabs
+
+        self.output = output
 
         self.writeTag()
-        
+
     #=======================================================
     #
-    def writeTag (self):
+    def writeTag(self):
         """
         Writes the tag. Called from the init function. All its non-necessary formatting is standard
         and is not dependant apon specifics of the format of the data.
@@ -60,11 +58,11 @@ class XmlTagWriter(object):
         if self.name == '_comment_':
             self.writeComment()
             return
-            
+
         self.output.write('<%s' % self.name)
 
         openingTagLen = 1 + len(self.name)
-    
+
         longestNameLen = 0
 
         for attrKey in self.sortedKeyList:
@@ -75,28 +73,28 @@ class XmlTagWriter(object):
 
                 longestNameLen = nameLen
 
-        longestNameLen+=1
+        longestNameLen += 1
 
         for key in self.sortedKeyList:
 
             value = self.attribs[key]
-                          
+
             value = str(value)
 
             self.output.write('\n')
-            
+
             self.writeTabs(7)
 
             self.output.write(key)
 
             nameLen = len(key)
 
-            spaces  = longestNameLen - nameLen
+            spaces = longestNameLen - nameLen
 
             self.writeTabs(spaces, 0)
 
             self.output.write('= "%s"' % value)
-                
+
         if not self.hasChildren and not self.hasValue:
 
             self.output.write('/>\n')
@@ -136,7 +134,8 @@ class XmlTagWriter(object):
         self.output.write('<!--%s-->' % self.value)
     #=======================================================
     #
-    def writeEndTag (self):
+
+    def writeEndTag(self):
         """
         Writes the ending tag for an element. Called by the tree writer if the element has children.
         It is called only after the other children have been written.
@@ -150,8 +149,7 @@ class XmlTagWriter(object):
 
     #=======================================================
     #
-    def writeTabs (self, tabSpec=None, tabs = None):
-
+    def writeTabs(self, tabSpec=None, tabs=None):
         """
         Writes out the tabs before an element. Can also write a certain number
         of spaces after the tabs have been written, if `tabSpec` is specified.
@@ -169,17 +167,17 @@ class XmlTagWriter(object):
             tabs = self.tabs
 
         tab = ""
-        
+
         x = 0
 
         while x < tabs:
 
             tab = tab + '    '
-            
-            x+=1
+
+            x += 1
 
             continue
-       
+
         if tabSpec:
 
             y = 0
@@ -188,8 +186,8 @@ class XmlTagWriter(object):
 
                 tab = tab + ' '
 
-                y+=1
+                y += 1
 
                 continue
-            
+
         self.output.write(tab)

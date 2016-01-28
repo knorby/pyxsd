@@ -2,10 +2,13 @@ from elementRepresentative import ElementRepresentative
 
 #============================================================
 #
+
+
 class Sequence(ElementRepresentative):
     """
     The class for the sequence tag. Subclass of *ElementRepresentative*.
     """
+
     def __init__(self, xsdElement, parent):
         """
         Adds itself to the sequencesOrChoices list in its containing complexType.
@@ -30,4 +33,3 @@ class Sequence(ElementRepresentative):
         name = "sequence%i" % choiceNum
 
         return name
-

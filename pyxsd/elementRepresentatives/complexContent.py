@@ -2,17 +2,19 @@ from elementRepresentative import ElementRepresentative
 
 #============================================================
 #
+
+
 class ComplexContent(ElementRepresentative):
     """
     The class for the complexContent tag. Subclass of *ElementRepresentative*.
     """
+
     def __init__(self, xsdElement, parent):
         """
         See *ElementRepresentative* for documentation.
         """
-        
-        ElementRepresentative.__init__(self, xsdElement, parent)
 
+        ElementRepresentative.__init__(self, xsdElement, parent)
 
     #============================================================
     #
@@ -26,6 +28,3 @@ class ComplexContent(ElementRepresentative):
         name = contName + '|complexContent'
 
         return name
-
-
-    

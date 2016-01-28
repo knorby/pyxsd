@@ -10,6 +10,8 @@ In the transform manual:
 - Documentation on included transform libraries
 
 """
+
+
 class Transform (object):
     """
     The base abstract class for all transforms. All methods should
@@ -18,13 +20,13 @@ class Transform (object):
     """
     #=======================================================
     #
+
     def __init__(self):
         """
         Cannot Initialize a true abstact class!
         """
         raise TypeError, "an abstract class cannot be instantiated"
 
-    
     #=======================================================
     #
     def makeElemObj(self, name):
@@ -32,11 +34,12 @@ class Transform (object):
         Creates a new element that contains the proper tree stucture
         """
         class ElemObjClass(object):
+
             def __init__(self, name):
                 self._children_ = []
-                self._attribs_  = {}
-                self._name_     = name
-                self._value_    = None
+                self._attribs_ = {}
+                self._name_ = name
+                self._value_ = None
 
         return ElemObjClass(name)
 
@@ -45,6 +48,7 @@ class Transform (object):
     """
     Makes a comment element
     """
+
     def makeCommentElem(self, comment):
         obj = self.makeElemObj('_comment_')
         obj._value_ = comment
@@ -57,6 +61,7 @@ class Transform (object):
     The *walk* function walks through the tree structure, and
     runs a provided visitor function on all elements.
     """
+
     def walk(self, instance, visitor, *args, **kwargs):
 
         if isinstance(instance, list):
@@ -67,8 +72,10 @@ class Transform (object):
             for item in instance.values():
                 self.walk(item, visitor, *args, **kwargs)
 
-        if not hasattr(instance, '_children_'):   return
-        if not hasattr(instance, '_attribs_'): return
+        if not hasattr(instance, '_children_'):
+            return
+        if not hasattr(instance, '_attribs_'):
+            return
 
         getName = lambda x: x.name
 
@@ -80,7 +87,7 @@ class Transform (object):
         for el in instance._children_:
 
             self.walk(el, visitor, *args, **kwargs)
-        
+
     #=======================================================
     #
     def classCollector(self, instance, attrNames, elemNames, collectorDict):
@@ -90,15 +97,15 @@ class Transform (object):
         of associated instances. SEE *getInstancesByClassName*
         """
         className = instance.__class__.__name__
-        
+
         collection = collectorDict.get(className, None)
-        
+
         if collection == None:
             collection = []
             collectorDict[className] = collection
-            
+
         collection.append[instance]
-    
+
     #=======================================================
     #
     def tagCollector(self, instance, attrNames, elemNames, collectorDict):
@@ -109,18 +116,17 @@ class Transform (object):
 
         for i, tagName in list(enumerate(elemNames)):
             obj = instance._children_[i]
-            if obj == None: continue
-
+            if obj == None:
+                continue
 
             collection = collectorDict.get(tagName, None)
-        
+
             if collection == None:
-                
+
                 collection = []
                 collectorDict[tagName] = collection
 
             collection.append(obj)
-            
 
     #=======================================================
     #
@@ -132,7 +138,7 @@ class Transform (object):
         for i, tagName in list(enumerate(elemNames)):
             if name == tagName:
                 obj = instance._children_[i]
-                if not obj==None:
+                if not obj == None:
                     collection.append(obj)
 
     #=======================================================
@@ -178,8 +184,6 @@ class Transform (object):
         return collection
 
     #=======================================================
-        
-
 
     #=======================================================
     #
@@ -187,6 +191,7 @@ class Transform (object):
     or returns None. This function is an alternative to the walk/vistor functions.
     SEE *getElementsByName*
     """
+
     def find(self, tagName, baseElem):
 
         if baseElem._name_ == tagName:
@@ -212,6 +217,7 @@ class Transform (object):
     This function is an alternative to the walk/vistor functions.
     SEE *getElementsByName*
     """
+
     def findAll(self, tagName, baseElem):
 
         found = []
@@ -230,8 +236,7 @@ class Transform (object):
 
             continue
 
-
         if len(found) > 0:
             return found
-        
-        return None  
+
+        return None
