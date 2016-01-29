@@ -115,5 +115,5 @@ class XmlTreeWriter(object):
         Takes no arguments
         """
 
-        print >>self.output, "<!--File created by PyXSD at %s on %s-->" % (
+        print >> self.output, "<!--File created by PyXSD at %s on %s-->" % (
             time.strftime('%X'), time.strftime('%x'))

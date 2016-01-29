@@ -1,7 +1,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class Choice(ElementRepresentative):
     """
     The class for the choice tag. Subclass of *ElementRepresentative*.

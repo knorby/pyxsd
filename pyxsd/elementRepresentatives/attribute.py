@@ -2,7 +2,6 @@ from elementRepresentative import ElementRepresentative
 from pyxsd.xsdDataTypes import *
 
 
-
 class Attribute(ElementRepresentative):
     """
     The class for the attribute tag. Subclass of *ElementRepresentative*.

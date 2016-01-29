@@ -1,7 +1,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class Sequence(ElementRepresentative):
     """
     The class for the sequence tag. Subclass of *ElementRepresentative*.

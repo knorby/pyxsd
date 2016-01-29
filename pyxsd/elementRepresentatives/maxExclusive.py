@@ -1,7 +1,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class MaxExclusive(ElementRepresentative):
     """
     The class for the MaxInclusive tag. Subclass of *ElementRepresentative*.

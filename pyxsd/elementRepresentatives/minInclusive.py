@@ -1,7 +1,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class MinInclusive(ElementRepresentative):
     """
     The class for the MinInclusive tag. Subclass of *ElementRepresentative*.

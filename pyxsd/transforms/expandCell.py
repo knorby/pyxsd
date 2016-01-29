@@ -14,7 +14,6 @@ Transform: ExpandCell
 """
 
 
-
 class ExpandCell (CellSizer):
 
     def __init__(self, root):

@@ -75,7 +75,6 @@ except:
             except:
                 raise ImportError, "Your system needs the ElementTree or cElementTree library in order to run this package"
 
-
 from elementRepresentatives.elementRepresentative import ElementRepresentative
 from writers.xmlTreeWriter import XmlTreeWriter
 from schemaBase import SchemaBase
@@ -196,7 +195,6 @@ class PyXSD(object):
             self.writeXML(rootInstance, self.xmlFileOutput)
         return rootInstance
 
-
     def parseXSD(self):
         """
         Reads the given xsd file and creates a set of classes that corespond to the complex and simple type definitions.
@@ -234,7 +232,6 @@ class PyXSD(object):
                 print "Class created for the %s type..." % complexType.name
 
         return
-
 
     def parseXML(self):
         """
@@ -281,7 +278,6 @@ class PyXSD(object):
 
         return subInstance
 
-
     def generateCorrectSchemaTags(self):
         """
         Generates the proper schema information and namespace information for a tag.
@@ -312,7 +308,6 @@ class PyXSD(object):
         self.xmlRoot.attrib['xsi:noNamespaceSchemaLocation'] = schemaLocation
         return
 
-
     def writeXML(self, rootInstance, output):
         """
         Sends a pythonic instance tree to the tree writer.
@@ -328,7 +323,6 @@ class PyXSD(object):
         writeTree = XmlTreeWriter(rootInstance, output)
         if self.verbose:
             print "Data sent to the writer..."
-
 
     def getClasses(self):
         """ 
@@ -397,7 +391,6 @@ class PyXSD(object):
 
         return tree.getroot()
 
-
     def getXmlOutputFileName(self):
         """
         Creates a default name for xml file that is parsed without any transforms.
@@ -434,7 +427,6 @@ class PyXSD(object):
         transformMod = __import__(
             ('transforms' + '.' + fileName), globals(), locals(), [className])
         return transformMod
-
     # See the documentation for further details on this functionality
 
     def transform(self, transforms, root):
@@ -489,7 +481,6 @@ class PyXSD(object):
 
         return currentRoot
 
-
     def getTransformsFileName(self):
         """
         Creates a default name for xml file that is written after all of the transforms.
@@ -521,7 +512,6 @@ class PyXSD(object):
             print "Setting the transformed xml file name to the default:", newName
 
         return newName
-
 
     def getSchemaInfo(self, nameOrLocation):
         """
@@ -604,7 +594,6 @@ class PyXSD(object):
 
         return "{%s}%s" % (ns, text)
 
-
 from optparse import OptionParser
 
 
@@ -622,10 +611,10 @@ def main():
 
     parser.add_option("-i", "--inputXml", type="string", dest="inputXmlFile", default="stdin",
                       help="filename for the xml file to read in. Reads from stdin by default.")
-    parser.add_option("-s", "--inputXsd", "--schema",  type="string", dest="inputXsdFile", default=None,
+    parser.add_option("-s", "--inputXsd", "--schema", type="string", dest="inputXsdFile", default=None,
                       help="filename for the xsd (schema) file to read in. Trys to determine location from the input xml file by default.")
 
-    parser.add_option("-p", "--parsedXml", "--parsedOutput",  type="string", dest="parsedOutputFile", default=None,
+    parser.add_option("-p", "--parsedXml", "--parsedOutput", type="string", dest="parsedOutputFile", default=None,
                       help="filename for the xml file that contains the parsed output of the xml file, which contains no further transformation. By default, the filename is the xml input filename followed by 'Parsed.'")
     parser.add_option("-k", "--ParsedFile", action="store_false", dest="outputParsed", default=True,
                       help="outputs a parsed version of the xml file without transform. Use for debugging. Off by default. If no filename is specified, it will be determined from the xml filename.")

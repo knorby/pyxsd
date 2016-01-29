@@ -1,7 +1,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class Pattern(ElementRepresentative):
     """
     The class for the pattern tag. Subclass of *ElementRepresentative*.
