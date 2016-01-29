@@ -5,8 +5,6 @@ class XmlTagWriter(object):
     information. This class should only be initialized by XmlTreeWriter.
     """
 
-    #=======================================================
-    #
     def __init__(self, name, attribs, value, hasChildren, hasValue, tabs, output):
         """
         Initializes the tag writer
@@ -43,8 +41,6 @@ class XmlTagWriter(object):
 
         self.writeTag()
 
-    #=======================================================
-    #
     def writeTag(self):
         """
         Writes the tag. Called from the init function. All its non-necessary formatting is standard
@@ -121,8 +117,6 @@ class XmlTagWriter(object):
 
         return None
 
-    #=======================================================
-    #
     def writeComment(self):
         """
         If `name` is set to '_comment_' this function is called. A comment can be in the tree only
@@ -132,8 +126,6 @@ class XmlTagWriter(object):
         """
 
         self.output.write('<!--%s-->' % self.value)
-    #=======================================================
-    #
 
     def writeEndTag(self):
         """
@@ -147,8 +139,6 @@ class XmlTagWriter(object):
         self.writeTabs()
         self.output.write('</%s>\n' % self.name)
 
-    #=======================================================
-    #
     def writeTabs(self, tabSpec=None, tabs=None):
         """
         Writes out the tabs before an element. Can also write a certain number

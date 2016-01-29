@@ -1,16 +1,12 @@
 
 from xsdType import XsdType
 
-#============================================================
-#
 
 
 class SimpleType(XsdType):
     """
     The class for the simpleType tag. Subclass of *XsdType*.
     """
-    #============================================================
-    #
 
     def __init__(self, xsdElement, parent):
         """

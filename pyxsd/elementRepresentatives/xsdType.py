@@ -1,8 +1,6 @@
 import sys
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class XsdType(ElementRepresentative):
@@ -25,8 +23,6 @@ class XsdType(ElementRepresentative):
 
         ElementRepresentative.__init__(self, xsdElement, parent)
 
-    #============================================================
-    #
     def getContainingTypeName(self):
         """
         Since all types are containing types, this method returns
@@ -40,8 +36,6 @@ class XsdType(ElementRepresentative):
 
         return self.name
 
-    #============================================================
-    #
     def getContainingType(self):
         """
         All types are containing types, so this works for all of the
@@ -51,8 +45,6 @@ class XsdType(ElementRepresentative):
         """
         return self
 
-    #============================================================
-    #
     def getName(self):
         """
         Mostly normal getName(), except it includes a means to make
@@ -77,8 +69,6 @@ class XsdType(ElementRepresentative):
 
         return name
 
-    #============================================================
-    #
     def containsSchemaBase(self, bases):
         """
         Returns true if *SchemaBase* is in the bases list, false
@@ -95,8 +85,6 @@ class XsdType(ElementRepresentative):
                 return True
 
         return False
-    #============================================================
-    #
 
     def getBaseList(self, pyXSD):
         """
@@ -123,8 +111,6 @@ class XsdType(ElementRepresentative):
 
         return tuple(baseList)
 
-    #============================================================
-    #
     def getElements(self):
         """
         Returns a blank list. Subclasses uses this function to
@@ -135,8 +121,6 @@ class XsdType(ElementRepresentative):
         """
         return []
 
-    #============================================================
-    #
     def clsFor(self, pyXSD):
         """
         Produces a class for a schema type. In this class, because this function
@@ -208,6 +192,4 @@ class XsdType(ElementRepresentative):
 
         return cls
 
-#======================================================================
-#
 from pyxsd.schemaBase import SchemaBase

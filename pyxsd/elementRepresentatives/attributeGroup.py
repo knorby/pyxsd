@@ -1,7 +1,5 @@
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class AttributeGroup(ElementRepresentative):
@@ -12,8 +10,6 @@ class AttributeGroup(ElementRepresentative):
     sure that they are being used correctly.
     """
 
-    #============================================================
-    #
     def __init__(self, xsdElement, parent):
         """
         Creates a dictionary for attributes.
@@ -27,8 +23,6 @@ class AttributeGroup(ElementRepresentative):
         attrGroupContainer = self.parent.getContainingType()
         attrGroupContainer.attributeGroups[self.name] = self
         self.getSchema().attributeGroups[self.name] = self
-    #============================================================
-    #
 
     def getContainingType(self):
         """

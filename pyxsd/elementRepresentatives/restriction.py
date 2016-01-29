@@ -1,8 +1,6 @@
 
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class Restriction(ElementRepresentative):
@@ -18,8 +16,6 @@ class Restriction(ElementRepresentative):
 
         self.addSuperClassName(self.tagAttributes['base'])
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|restiction. 

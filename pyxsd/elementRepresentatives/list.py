@@ -1,8 +1,6 @@
 from elementRepresentative import ElementRepresentative
 from pyxsd.xsdDataTypes import *
 
-#============================================================
-#
 
 
 class List(ElementRepresentative):
@@ -24,8 +22,6 @@ class List(ElementRepresentative):
         # data type later on
         self.type = 'xs:list'
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|minExclusive.

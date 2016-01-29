@@ -16,20 +16,14 @@ Transform: CoordViewer
 
 class CoordViewer (CellSizer, Displayer):
 
-    #============================================================
-    #
     def __init__(self, root):
         self.root = root
         self.cellSizerInit()
 
-    #============================================================
-    #
     def __call__(self, fileName=None):
         self.displayCoords(self.openFile(fileName))
         return self.root
 
-    #============================================================
-    #
     def displayCoords(self, file):
         atoms = self.getAtoms()
         vectors = self.getVectorList()

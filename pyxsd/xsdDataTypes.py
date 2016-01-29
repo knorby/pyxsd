@@ -27,8 +27,6 @@ This module contains the following classes:
 - *Base64Binary*
 
 """
-#============================================================
-#
 
 
 class XsdDataType (object):
@@ -38,8 +36,6 @@ class XsdDataType (object):
     """
     pass
 
-#============================================================
-#
 
 
 class Integer(int, XsdDataType):
@@ -53,8 +49,6 @@ class Integer(int, XsdDataType):
 
         int.__init__(self, val)
 
-#============================================================
-#
 
 
 class PositiveInteger(Integer):
@@ -71,8 +65,6 @@ class PositiveInteger(Integer):
 
         Integer.__init__(self, val)
 
-#============================================================
-#
 
 
 class NonNegativeInteger(Integer):
@@ -89,8 +81,6 @@ class NonNegativeInteger(Integer):
 
         Integer.__init__(self, val)
 
-#============================================================
-#
 
 
 class NegativeInteger(Integer):
@@ -108,8 +98,6 @@ class NegativeInteger(Integer):
         Integer.__init__(self, val)
 
 
-#============================================================
-#
 class NonPositiveInteger(Integer):
     """
     Integers with values less than or equal to zero. Has *Integer* as a base class.
@@ -124,8 +112,6 @@ class NonPositiveInteger(Integer):
 
         Integer.__init__(self, val)
 
-#============================================================
-#
 
 
 class Double(float, XsdDataType):
@@ -138,8 +124,6 @@ class Double(float, XsdDataType):
 
         float.__init__(self, val)
 
-#============================================================
-#
 
 
 class TypeList(list, XsdDataType):
@@ -151,8 +135,6 @@ class TypeList(list, XsdDataType):
     def __init__(self, val):
 
         list.__init__(self, val)
-#============================================================
-#
 
 
 class Boolean(Integer):
@@ -198,8 +180,6 @@ class Boolean(Integer):
         if val == 0:
             return False
 
-#============================================================
-#
 
 
 class String(str, XsdDataType):
@@ -214,8 +194,6 @@ class String(str, XsdDataType):
         str.__init__(self, val)
 
 
-#============================================================
-#
 class ID(String):
     """
     Used for ID attributes in xml and xsd files. Uses *String* as a base class, and makes no changes to it.
@@ -226,8 +204,6 @@ class ID(String):
 
         String.__init__(self, val)
 
-#============================================================
-#
 
 
 class IDREF(String):
@@ -240,8 +216,6 @@ class IDREF(String):
 
         String.__init__(self, val)
 
-#============================================================
-#
 
 
 class Base64Binary(String):

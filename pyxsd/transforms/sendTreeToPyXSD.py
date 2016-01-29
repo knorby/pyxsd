@@ -12,14 +12,10 @@ class SendTreeToPyXSD(Displayer):
     :Copyright: pyXSD License
 
     """
-    #============================================================
-    #
 
     def __init__(self, root):
         self.root = root
 
-    #============================================================
-    #
     def __call__(self, xsdFile=None, xmlFileOutput='_No_Output_', transformOutputName=None, transforms=[], transformFile=None, classFile=None, verbose=False, quiet=False):
         xmlInput = self.makeTempFileOfTree()
         if not xmlFileOutput:

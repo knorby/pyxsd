@@ -1,7 +1,5 @@
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class Sequence(ElementRepresentative):
@@ -22,8 +20,6 @@ class Sequence(ElementRepresentative):
 
         self.getContainingType().sequencesOrChoices.append(self)
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- sequence`some id number`. 

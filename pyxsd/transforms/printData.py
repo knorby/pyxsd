@@ -15,14 +15,10 @@ Transform: PrintData
 
 
 class PrintData(Displayer):
-    #============================================================
-    #
 
     def __init__(self, root):
         self.root = root
 
-    #============================================================
-    #
     def __call__(self, fileName=None):
         self.writeTree(self.openFile(fileName))
         return self.root

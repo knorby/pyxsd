@@ -2,8 +2,6 @@ from elementRepresentative import ElementRepresentative
 from pyxsd.xsdDataTypes import *
 
 
-#============================================================
-#
 class Element(ElementRepresentative):
     """
     The class for the element tag. Subclass of *ElementRepresentative*.
@@ -34,8 +32,6 @@ class Element(ElementRepresentative):
 
         parent.elements.append(self)
 
-    #============================================================
-    #
     def getType(self):
         """
         Returns its type from the class dictionary in *PyXSD*. The
@@ -53,8 +49,6 @@ class Element(ElementRepresentative):
 
         return ElementRepresentative.typeFromName(self.type, self.pyXSD)
 
-    #============================================================
-    #
     def processChildren(self):
         """
         There is a special processChildren() here to handle special types,
@@ -82,8 +76,6 @@ class Element(ElementRepresentative):
 
             processedChild.processChildren()
 
-    #============================================================
-    #
     def __str__(self):
         """
         Prints its name in a form that allows for quick identification
@@ -93,9 +85,6 @@ class Element(ElementRepresentative):
         return "%s|%s|%s" % (ElementRepresentative.getContainingTypeName(self),
                              self.__class__.__name__, self.name)
 
-    #============================================================ Descriptor Protocol
-    #============================================================
-    #
     def __get__(self, obj, mystery=None):
         """
         Gets an element value from the obj's dictionary. Returns
@@ -124,8 +113,6 @@ class Element(ElementRepresentative):
         default = getattr(self, 'default', None)
         return default
 
-    #============================================================
-    #
     def __set__(self, obj, value):
         """
         Sets an element's name to the element in the obj's dictionary.
@@ -156,8 +143,6 @@ class Element(ElementRepresentative):
 
         obj.__dict__[self.name] = value
 
-    #============================================================
-    #
     def __delete__(self, obj):
         """
         Deletes an entry from the dictionary.
@@ -169,8 +154,6 @@ class Element(ElementRepresentative):
 
         del obj.__dict__[self.name]
 
-    #============================================================
-    #
     def isDict(self):
         """
         Returns false. Placeholder function for possible future
@@ -181,8 +164,6 @@ class Element(ElementRepresentative):
         """
         return False
 
-    #============================================================
-    #
     def isList(self):
         """
         Returns true if maxOccurs is greater than one. If it is
@@ -201,8 +182,6 @@ class Element(ElementRepresentative):
 
         return False
 
-    #============================================================
-    #
     def getMinOccurs(self):
         """
         Returns an integer value for the `minOccurs`. If no `minOccurs`
@@ -212,8 +191,6 @@ class Element(ElementRepresentative):
         """
         return int(getattr(self, 'minOccurs', 1))
 
-    #============================================================
-    #
     def getMaxOccurs(self):
         """
         Returns an integer value for the `maxOccurs`. If no `maxOccurs`

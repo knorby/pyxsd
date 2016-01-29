@@ -2,8 +2,6 @@
 
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class Annotation(ElementRepresentative):
@@ -17,8 +15,6 @@ class Annotation(ElementRepresentative):
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|annotation. 

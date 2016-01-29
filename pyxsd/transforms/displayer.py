@@ -20,20 +20,14 @@ Transform Library: Displayer
 
 class Displayer(Transform):
 
-    #============================================================
-    #
     def openFile(self, fileName=None):  # uses stdout if filename is None
         if fileName == None or fileName == 'stdout':
             return sys.stdout
         return open(fileName, 'w')
 
-    #============================================================
-    #
     def writeTree(self, file):
         XmlTreeWriter(self.root, file)
 
-    #============================================================
-    #
     def makeTempFileOfTree(self):
         newTree = tempfile.TemporaryFile()
         self.writeTree(newTree)

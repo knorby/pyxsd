@@ -2,8 +2,6 @@
 
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class Documentation(ElementRepresentative):
@@ -21,8 +19,6 @@ class Documentation(ElementRepresentative):
 
         self.contType.__doc__ = xsdElement.text.strip()
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|documentation. 

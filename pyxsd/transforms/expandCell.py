@@ -13,25 +13,17 @@ Transform: ExpandCell
 
 """
 
-#============================================================
-#
 
 
 class ExpandCell (CellSizer):
 
-    #============================================================
-    #
     def __init__(self, root):
         self.root = root
         self.cellSizerInit()
 
-    #============================================================
-    #
     def __call__(self, a1Expand, a2Expand, a3Expand):
         return self.expand(a1Expand, a2Expand, a3Expand)
 
-    #============================================================
-    #
     def expand(self, a1Expand, a2Expand, a3Expand):
         atoms = self.getAtoms()
         newAtoms = []
