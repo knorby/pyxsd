@@ -1,8 +1,6 @@
 from elementRepresentative import ElementRepresentative
 from pyxsd.xsdDataTypes import *
 
-#============================================================
-#
 
 
 class Attribute(ElementRepresentative):
@@ -34,8 +32,6 @@ class Attribute(ElementRepresentative):
 
         self.getContainingType().attributes[self.name] = self
 
-    #============================================================
-    #
     def __str__(self):
         """
         Prints its name in a form that allows for quick identification
@@ -46,8 +42,6 @@ class Attribute(ElementRepresentative):
                              self.__class__.__name__,
                              ElementRepresentative.getName(self))
 
-    #============================================================
-    #
     def processChildren(self):
         """
         There is a special processChildren() here to handle special types,
@@ -75,8 +69,6 @@ class Attribute(ElementRepresentative):
 
             processedChild.processChildren()
 
-    #============================================================
-    #
     def getType(self):
         """
         Returns its type from the class dictionary in *PyXSD*. The
@@ -94,9 +86,6 @@ class Attribute(ElementRepresentative):
 
         return ElementRepresentative.typeFromName(self.type, self.pyXSD)
 
-    #============================================================ Descriptor Protocol
-    #============================================================
-    #
     def __get__(self, obj, mystery=None):
         """
         Gets an attribute value from the obj's dictionary. Returns
@@ -125,8 +114,6 @@ class Attribute(ElementRepresentative):
         default = getattr(self, 'default', None)
         return default
 
-    #============================================================
-    #
     def __set__(self, obj, value):
         """
         Sets values to attributes. Converts text Boolean values to
@@ -162,8 +149,6 @@ class Attribute(ElementRepresentative):
 
         obj.__dict__[self.name] = value
 
-    #============================================================
-    #
     def __delete__(self, obj):
         """
         Deletes an entry from the dictionary.
@@ -174,8 +159,6 @@ class Attribute(ElementRepresentative):
         """
         del obj.__dict__[self.name]
 
-    #============================================================
-    #
     def getUse(self):
         """
         Returns the 'use' value, which says if the attribute is required

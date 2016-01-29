@@ -1,7 +1,5 @@
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class MinExclusive(ElementRepresentative):
@@ -18,8 +16,6 @@ class MinExclusive(ElementRepresentative):
         self.value = self.xsdElement.get('value')
         self.getContainingType().minExclusive = self.value
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|minExclusive.

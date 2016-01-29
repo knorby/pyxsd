@@ -1,4 +1,3 @@
-#!python
 from optparse import OptionParser
 from pyxsd.pyXSD import PyXSD
 import sys

@@ -1,7 +1,5 @@
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class Enumeration(ElementRepresentative):
@@ -19,8 +17,6 @@ class Enumeration(ElementRepresentative):
 
         self.getContainingType().enumerations.append(self.value)
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|enuneration|`an id number`. 

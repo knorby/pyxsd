@@ -1,15 +1,11 @@
 
 from xsdType import XsdType
-#============================================================
-#
 
 
 class ComplexType(XsdType):
     """
     The class for the complexType tag. Subclass of *XsdType*.
     """
-    #============================================================
-    #
 
     def __init__(self, xsdElement, parent):
         """
@@ -24,8 +20,6 @@ class ComplexType(XsdType):
 
         self.getSchema().complexTypes[self.name] = self
 
-    #============================================================
-    #
     def getElements(self):
         """
         Returns a list of elements. Uses lazy evaluation. Goes through the `sequencesOrChoices` list,
@@ -51,8 +45,6 @@ class ComplexType(XsdType):
                 self.elements_.append(element)
         return self.elements_
 
-    #============================================================
-    #
     def gatherFacets(self):
         """
         returns a blank dictionary. Needed for SimpleType, so the function can be called for any type without error.

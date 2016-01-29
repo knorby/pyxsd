@@ -2,8 +2,6 @@
 
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class Extension(ElementRepresentative):
@@ -19,8 +17,6 @@ class Extension(ElementRepresentative):
 
         self.addSuperClassName(self.tagAttributes['base'])
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|restiction. 
@@ -33,8 +29,6 @@ class Extension(ElementRepresentative):
 
         return name
 
-    #============================================================
-    #
     def addBaseToComplexType(self):
         """
         Used by complexContent. Adds its base to the complexType.

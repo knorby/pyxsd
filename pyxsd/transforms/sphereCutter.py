@@ -3,21 +3,15 @@ from cellSizer import CellSizer
 
 class SphereCutter(CellSizer):
 
-    #============================================================
-    #
     def __init__(self, root):
         self.root = root
         self.cellSizerInit()
-    #============================================================
-    #
 
     def __call__(self, rad, sphereCenter=None):
         # sphereCenter is the center of the material if left None,
         # and it is (x, y, z) in Cartesian Coords if it is not.
         return self.cut(rad, sphereCenter)
 
-    #============================================================
-    #
     def testSphereMembership(self, coords, sphereCenter, rad):
         calc = 0.0
         for f in range(0, 3):
@@ -26,8 +20,6 @@ class SphereCutter(CellSizer):
         test = (self.radSquared >= calc)
         return test
 
-    #============================================================
-    #
     def cut(self, rad, sphereCenter=None):
         vectorDict = self.getBravaisVectors()
         vectors = []

@@ -18,8 +18,6 @@ class Transform (object):
     mix into the usable transform classes. Contains methods to
     retrieve elements from the tree. 
     """
-    #=======================================================
-    #
 
     def __init__(self):
         """
@@ -27,8 +25,6 @@ class Transform (object):
         """
         raise TypeError, "an abstract class cannot be instantiated"
 
-    #=======================================================
-    #
     def makeElemObj(self, name):
         """
         Creates a new element that contains the proper tree stucture
@@ -43,8 +39,6 @@ class Transform (object):
 
         return ElemObjClass(name)
 
-    #=======================================================
-    #
     """
     Makes a comment element
     """
@@ -54,9 +48,6 @@ class Transform (object):
         obj._value_ = comment
         return obj
 
-    #=======================================================
-    #
-    #
     """
     The *walk* function walks through the tree structure, and
     runs a provided visitor function on all elements.
@@ -88,8 +79,6 @@ class Transform (object):
 
             self.walk(el, visitor, *args, **kwargs)
 
-    #=======================================================
-    #
     def classCollector(self, instance, attrNames, elemNames, collectorDict):
         """
         Visitor function to make a dictionary that associates a class with
@@ -106,8 +95,6 @@ class Transform (object):
 
         collection.append[instance]
 
-    #=======================================================
-    #
     def tagCollector(self, instance, attrNames, elemNames, collectorDict):
         """
         A visitor function that is used to make a dictionary that associates
@@ -128,8 +115,6 @@ class Transform (object):
 
             collection.append(obj)
 
-    #=======================================================
-    #
     def tagFinder(self, instance, attrNames, elemNames, collection, name):
         """
         A visitor function to collect all tags with a particular name, and
@@ -141,8 +126,6 @@ class Transform (object):
                 if not obj == None:
                     collection.append(obj)
 
-    #=======================================================
-    #
     def getInstancesByClassName(self, root):
         """
         Function to use the *walk* function with the *classCollector*
@@ -155,8 +138,6 @@ class Transform (object):
 
         return collectorDict
 
-    #=======================================================
-    #
     def getAllSubElements(self, root):
         """
         Function to use the *walk* function with the *tagCollector*
@@ -169,8 +150,6 @@ class Transform (object):
 
         return collectorDict
 
-    #=======================================================
-    #
     def getElementsByName(self, root, name):
         """
         Function to use the *walk* function with the *tagFinder*
@@ -183,10 +162,7 @@ class Transform (object):
 
         return collection
 
-    #=======================================================
 
-    #=======================================================
-    #
     """Finds an element from a given tagName. Returns the first one found,
     or returns None. This function is an alternative to the walk/vistor functions.
     SEE *getElementsByName*
@@ -210,8 +186,6 @@ class Transform (object):
 
         return None
 
-    #=======================================================
-    #
     """
     Finds all elements with a given tagName. Returns a list of elements or None.
     This function is an alternative to the walk/vistor functions.

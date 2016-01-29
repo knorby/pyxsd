@@ -52,7 +52,6 @@ __module__ = "pyXSD"
 __version__ = "0.1"
 __author__ = "Kali Norby and Mike Summers"
 
-#=====Imports======
 import sets
 import sys
 import traceback
@@ -148,7 +147,6 @@ class PyXSD(object):
         self.transformOutputName = transformOutputName
         self.executeAndWriteTransforms(rootInstance)
 
-    #========================================
     def executeAndWriteTransforms(self, rootInstance):
         if len(self.transforms) > 0:
             if self.verbose:
@@ -172,7 +170,6 @@ class PyXSD(object):
                     print "Sending transformed tree to the writer..."
                 self.writeXML(transformedRoot, transformOutput)
 
-    #========================================
     def getSchemaFile(self):
         try:
             self.xsdFile, messages = urllib.urlretrieve(self.xsdFile)
@@ -184,7 +181,6 @@ class PyXSD(object):
                     print e
         return
 
-    #========================================
     def writeParsedXMLFile(self, rootInstance):
         """
         Function to write the xml output after it is parsed. Called from the __init__.
@@ -200,7 +196,6 @@ class PyXSD(object):
             self.writeXML(rootInstance, self.xmlFileOutput)
         return rootInstance
 
-    #========================================
 
     def parseXSD(self):
         """
@@ -240,7 +235,6 @@ class PyXSD(object):
 
         return
 
-    #========================================
 
     def parseXML(self):
         """
@@ -287,7 +281,6 @@ class PyXSD(object):
 
         return subInstance
 
-    #========================================
 
     def generateCorrectSchemaTags(self):
         """
@@ -319,7 +312,6 @@ class PyXSD(object):
         self.xmlRoot.attrib['xsi:noNamespaceSchemaLocation'] = schemaLocation
         return
 
-    #========================================
 
     def writeXML(self, rootInstance, output):
         """
@@ -337,7 +329,6 @@ class PyXSD(object):
         if self.verbose:
             print "Data sent to the writer..."
 
-    #========================================
 
     def getClasses(self):
         """ 
@@ -347,7 +338,6 @@ class PyXSD(object):
         """
         return self.classes
 
-    #========================================
     def loadClassFromFile(self, classFile):
         """
         Loads a file with overlay classes into the class dictionary.
@@ -384,7 +374,6 @@ class PyXSD(object):
                     if self.self.verbose:
                         print "Loaded the %s class" % className
         self.classes.update(newClasses)
-    #========================================
 
     def getXmlTree(self):
         """
@@ -408,7 +397,6 @@ class PyXSD(object):
 
         return tree.getroot()
 
-    #========================================
 
     def getXmlOutputFileName(self):
         """
@@ -430,7 +418,6 @@ class PyXSD(object):
 
         return os.path.join(path, (nonExtensionName + '.xml'))
 
-    #========================================
     def getTransformModuleAndLoad(self, className):
         """
         Loads a transform class from its class name.
@@ -448,7 +435,6 @@ class PyXSD(object):
             ('transforms' + '.' + fileName), globals(), locals(), [className])
         return transformMod
 
-    #========================================
     # See the documentation for further details on this functionality
 
     def transform(self, transforms, root):
@@ -503,7 +489,6 @@ class PyXSD(object):
 
         return currentRoot
 
-    #========================================
 
     def getTransformsFileName(self):
         """
@@ -537,7 +522,6 @@ class PyXSD(object):
 
         return newName
 
-    #========================================
 
     def getSchemaInfo(self, nameOrLocation):
         """
@@ -607,8 +591,6 @@ class PyXSD(object):
 
             return self.makeFullName(xsiNS, 'schemaLocation')
 
-    #=======================================================
-    #
     def makeFullName(self, ns, text):
         """
         Makes a string that looks similar to some of the names in ElementTree when it contains namespace information.

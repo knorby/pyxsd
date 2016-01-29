@@ -1,7 +1,5 @@
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class MinInclusive(ElementRepresentative):
@@ -19,8 +17,6 @@ class MinInclusive(ElementRepresentative):
 
         self.getContainingType().minInclusive = self.value
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|minInclusive.

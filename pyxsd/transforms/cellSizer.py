@@ -25,15 +25,11 @@ Includes as part of the CellSizer Library:
 
 class CellSizer (Transform):
 
-    #============================================================
-    #
     def cellSizerInit(self):
         self.atoms = []
         self.bravaisVectors = {}
         self.vectorOrder = []
 
-    #============================================================
-    #
     def getBravaisVectors(self):
         if not len(self.bravaisVectors) == 0:
             return self.bravaisVectors
@@ -53,8 +49,6 @@ class CellSizer (Transform):
             vectorNumCount += 1
         return self.bravaisVectors
 
-    #============================================================
-    #
     def getVectorList(self):
         vectorDict = self.getBravaisVectors()
         vectors = []
@@ -62,8 +56,6 @@ class CellSizer (Transform):
             vectors.append(vectorDict[vectorName])
         return vectors
 
-    #============================================================
-    #
     def getAtoms(self):
         if not len(self.atoms) == 0:
             return self.atoms
@@ -76,8 +68,6 @@ class CellSizer (Transform):
             self.atoms.append(obj)
         return self.atoms
 
-    #============================================================
-    #
     def makeNewXml(self, bravaisLattice):
         vectors = bravaisLattice.vectors
         basis = bravaisLattice.basis
@@ -98,8 +88,6 @@ class CellSizer (Transform):
 
         return self.root
 
-    #============================================================
-    #
     def makeNewXmlAtomElements(self, atom):
 
         position = atom.position
@@ -116,19 +104,13 @@ class CellSizer (Transform):
         siteObj._children_.append(positionObj)
 
         return siteObj
-    #============================================================
-    #
 
     def makeAtom(self, position, atomType):
         return Atom(position, atomType)
-    #============================================================
-    #
 
     def makeBravaisLattice(self, newVectors, newAtoms):
         return BravaisLattice(newVectors, newAtoms)
 
-    #============================================================
-    #
     def getCartesianCoords(self, vectors, position):
         coords = []
         for g in range(0, 3):
@@ -139,8 +121,6 @@ class CellSizer (Transform):
             coords.append(total)
         return coords
 
-    #============================================================
-    #
     def findCenter(self, vectors):
         centerPos = [.5, .5, .5]  # in terms of vector
         return self.getCartesianCoords(vectors, centerPos)  # centerPos

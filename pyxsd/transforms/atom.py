@@ -14,8 +14,6 @@ class Atom (object):
     Included as part of the CellSizer Library
 
     """
-    #=======================================================
-    #
 
     def __init__(self, position, atomType):
 

@@ -1,8 +1,6 @@
 
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class Length(ElementRepresentative):
@@ -20,8 +18,6 @@ class Length(ElementRepresentative):
 
         self.getContainingType().length = self.value
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|length. 

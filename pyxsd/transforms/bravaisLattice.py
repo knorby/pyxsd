@@ -12,8 +12,6 @@ class BravaisLattice (object):
 
     Included as part of the CellSizer Library
     """
-    #=======================================================
-    #
 
     def __init__(self, vectors, basis):
 

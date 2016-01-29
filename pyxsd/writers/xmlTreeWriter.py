@@ -49,8 +49,6 @@ Variable Quick Reference:
 
 class XmlTreeWriter(object):
 
-    #=======================================================
-    #
     def __init__(self, root, output):
         """
         Initialize the writer.
@@ -68,8 +66,6 @@ class XmlTreeWriter(object):
 
         XmlTreeWriter.passTagToTagWriter(root, 0, self.output)
 
-    #=======================================================
-    #
     def passTagToTagWriter(element, tabs, output):
         """
         Extracts element variables and initializes the tag writer for the element.
@@ -112,8 +108,6 @@ class XmlTreeWriter(object):
 
     passTagToTagWriter = staticmethod(passTagToTagWriter)
 
-    #=======================================================
-    #
     def writeHeaderInfo(self):
         """
         Writes a comment at the top of the file with the creation information. Includes data and time information.

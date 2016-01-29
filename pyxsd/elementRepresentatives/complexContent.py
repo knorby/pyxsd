@@ -1,7 +1,5 @@
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class ComplexContent(ElementRepresentative):
@@ -16,8 +14,6 @@ class ComplexContent(ElementRepresentative):
 
         ElementRepresentative.__init__(self, xsdElement, parent)
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|complexContent. 

@@ -10,8 +10,6 @@ class SchemaBase(object):
     building/checking must be started in the same location the method `makeInstanceFromTag` is called in this class.
     """
 
-    #=======================================================
-    #
     def __init__(self):
         """
         Creates the instances that are in the tree. These objects are initialized from within SchemaBase. 
@@ -22,8 +20,6 @@ class SchemaBase(object):
 
         self._value_ = None
 
-    #=======================================================
-    #
     def makeInstanceFromTag(cls, elementTag):
         """
         A classmethod. It takes in a schema type class and its corresponding xml element.
@@ -52,8 +48,6 @@ class SchemaBase(object):
 
     makeInstanceFromTag = classmethod(makeInstanceFromTag)
 
-    #=======================================================
-    #
     def addAttributesTo(cls, instance, elementTag):
         """
         A classmethod. Called by `makeInstanceFromTag()`. Adds attributes according to the schema by calling
@@ -73,8 +67,6 @@ class SchemaBase(object):
 
     addAttributesTo = classmethod(addAttributesTo)
 
-    #=======================================================
-    #
     def getAttributesFromTag(self, elementTag):
         """
         Adds attributes to the *_attribs_* dictionary in the instance. Only attributes in
@@ -114,8 +106,6 @@ class SchemaBase(object):
 
         return usedAttributes
 
-    #=======================================================
-    #
     def addElementsTo(cls, instance, elementTag):
         """
         A classmethod. Checks order on the child elements, with different functions for `sequences` and `choices`.
@@ -148,7 +138,6 @@ class SchemaBase(object):
 
             cls.checkElementOrderInChoice(elemDescriptors[0], subElements)
 
-        #-----------------------------
 
         for descriptor in elemDescriptors:
 
@@ -167,7 +156,6 @@ class SchemaBase(object):
                               % descriptorName
                         continue
 
-                    #-----------------------------
                     # for elements with primitive types
 
                     if not issubclass(subElCls, SchemaBase):
@@ -178,7 +166,6 @@ class SchemaBase(object):
                         setattr(instance, subElementName, subInstance)
                         continue
 
-                    #-----------------------------
 
                     subInstance = subElCls.makeInstanceFromTag(subElement)
                     subInstance._name_ = subElementName
@@ -189,8 +176,6 @@ class SchemaBase(object):
 
     addElementsTo = classmethod(addElementsTo)
 
-    #=======================================================
-    #
     def addValueTo(cls, instance, elementTag):
         """
         Checks to see if the tag has a value, and assigns it to the element instance if it does.
@@ -231,8 +216,6 @@ class SchemaBase(object):
 
     addValueTo = classmethod(addValueTo)
 
-    #=======================================================
-    #
     def checkElementOrderInChoice(cls, elemDescriptor, subElements):
         """
         A classmethod. Checks to see that elements in a choice field, which is specified in the schema, follow
@@ -275,8 +258,6 @@ class SchemaBase(object):
 
     checkElementOrderInChoice = classmethod(checkElementOrderInChoice)
 
-    #=======================================================
-    #
     def checkElementOrderInSequence(cls, descriptors, subElements):
         """
         A classmethodChecks the element order in sequence fields to make sure that the order specified in the schema is preserved
@@ -330,8 +311,6 @@ class SchemaBase(object):
 
     checkElementOrderInSequence = classmethod(checkElementOrderInSequence)
 
-    #=======================================================
-    #
     def consume(cls, dname, subElements):
         """
         A classmethod. Used to check the number of times an element type in the schema is used with the xml elements.  Used by checkElementOrderInSequence().
@@ -352,8 +331,6 @@ class SchemaBase(object):
 
     consume = classmethod(consume)
 
-    #=======================================================
-    #
     def primitiveValueFor(cls, subElCls, subElement):
         """
         A classmethod. Used to check and assign primitive values to an instance. called by addElementsTo().
@@ -412,8 +389,6 @@ class SchemaBase(object):
         return dataTypeValInst
 
     primitiveValueFor = classmethod(primitiveValueFor)
-    #=======================================================
-    #
 
     def addBaseDescriptors(cls):
         """
@@ -442,8 +417,6 @@ class SchemaBase(object):
 
         return descriptors
     addBaseDescriptors = classmethod(addBaseDescriptors)
-    #=======================================================
-    #
 
     def descAttributes(self):
         """
@@ -473,8 +446,6 @@ class SchemaBase(object):
 
         return attrs
 
-    #=======================================================
-    #
     def descAttributeNames(self):
         """
         Returns a list that has all of the names of attribute descriptors. Calls descAttributes(), and returns a list of the keys from
@@ -482,8 +453,6 @@ class SchemaBase(object):
         """
         return self.descAttributes().keys()
 
-    #=======================================================
-    #
     def checkAttributes(self, usedAttrs, elementTag):
         """
         Checks to see that required attributes are used in the xml, and does other such checks on the attributes.
@@ -521,8 +490,6 @@ class SchemaBase(object):
                 print "Parser Error: the %s in the %s element is required but was not found."\
                       % (self.descriptorAttrName, self.tagName)
 
-    #=======================================================
-    #
     def dumpCls(cls):
         """
         For debugging purposes only. Prints out the contents of a class. A staticmethod.
@@ -541,8 +508,6 @@ class SchemaBase(object):
 
     dumpCls = staticmethod(dumpCls)
 
-    #=======================================================
-    #
 
 import elementRepresentatives.elementRepresentative
 from elementRepresentatives.attribute import Attribute

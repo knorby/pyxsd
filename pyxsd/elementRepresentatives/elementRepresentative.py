@@ -126,8 +126,6 @@ class ElementRepresentative(object):
 
         self.processChildren()
 
-    #============================================================
-    #
     def __str__(self):
         """
         sets the str() function to print the ER information for a tag in the form: ClassName[TagName]
@@ -135,8 +133,6 @@ class ElementRepresentative(object):
 
         return "%s[%s]" % (self.__class__.__name__, self.__dict__.get('name', '???'))
 
-    #============================================================
-    #
     def processChildren(self):
         """
         Calls the `factory` on all of the children of an element.
@@ -155,8 +151,6 @@ class ElementRepresentative(object):
 
             self.processedChildren.append(processedChild)
 
-    #============================================================
-    #
     def factory(cls, xsdElement, parent):
         """
         A classmethod. Initializes the tag-specific class for a particular ElementTree schema element.
@@ -187,8 +181,6 @@ class ElementRepresentative(object):
 
     factory = classmethod(factory)
 
-    #============================================================
-    #
     def describe(self):
         """
         A debugging function that prints out the contents of the dictionary.
@@ -200,8 +192,6 @@ class ElementRepresentative(object):
 
             print " %s -> %s " % (attrName, value)
 
-    #============================================================
-    #
     def findLayerNum(self):
         """
         Called by the ER `__init__`. Returns an integer tha specifies how deep in the tree
@@ -216,8 +206,6 @@ class ElementRepresentative(object):
 
         return currentLayerNum
 
-    #============================================================
-    #
     def checkTopLevelType(self):
         """
         Checks to see if an element is at the top-level. Returns True if it is, False if
@@ -231,8 +219,6 @@ class ElementRepresentative(object):
 
         return False
 
-    #============================================================
-    #
     def typeFromName(cls, xsdTypeName, pyXSD):
         """
         A classmethod. Used with the clsFor() function in `xsdDataType`. Returns a schema type given
@@ -292,8 +278,6 @@ class ElementRepresentative(object):
 
     typeFromName = classmethod(typeFromName)
 
-    #============================================================
-    #
     def addSuperClassName(self, name):
         """
         Adds a base class name to containing type for a particular element.
@@ -313,8 +297,6 @@ class ElementRepresentative(object):
 
         self.getContainingType().superClassNames.append(name)
 
-    #============================================================
-    #
     def getContainingType(self):
         """
         Returns the parent's getContainingType() function. If this function is being called from schema,
@@ -332,8 +314,6 @@ class ElementRepresentative(object):
 
         return None
 
-    #============================================================
-    #
     def getSchema(self):
         """
         This method returns the parent's getSchema() function. getSchema() should return
@@ -344,8 +324,6 @@ class ElementRepresentative(object):
         """
         return self.parent.getSchema()
 
-    #============================================================
-    #
     def getContainingTypeName(self):
         """
         Returns the name of the containingType.
@@ -359,8 +337,6 @@ class ElementRepresentative(object):
 
         return theType.name
 
-    #============================================================
-    #
     def getName(self):
         """
         Returns the name field in the ElementTree element. One of many getName()
@@ -375,8 +351,6 @@ class ElementRepresentative(object):
 
         return None
 
-    #============================================================
-    #
     def register(cls, name, obj):
         """
         The registry stores all ER objs in a dictionary with their name as a key.
@@ -398,8 +372,6 @@ class ElementRepresentative(object):
 
     register = classmethod(register)
 
-    #============================================================
-    #
     def getFromName(cls, name):
         """
         Retrieve an entry in the registry by its name. A classmethod, but could be staticmethod.
@@ -435,8 +407,6 @@ class ElementRepresentative(object):
 
     getFromName = classmethod(getFromName)
 
-    #============================================================
-    #
     def tryConvert(variable):
         """
         Tries to convert a variable from a string in the xsd to a python value.
@@ -463,8 +433,6 @@ class ElementRepresentative(object):
 
     tryConvert = staticmethod(tryConvert)
 
-    #============================================================
-    #
     def classNameFor(cls, xsdElement, parent):
         """
         returns the name of the class that the factory should find. A classmethod.
@@ -493,8 +461,6 @@ class ElementRepresentative(object):
 
     classNameFor = classmethod(classNameFor)
 
-    #============================================================
-    #
 
 # Imports all of the tag-specific classes
 tags = ['element', 'attribute', 'schema', 'xsdType', 'extension', 'simpleType',

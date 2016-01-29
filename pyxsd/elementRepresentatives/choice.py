@@ -1,7 +1,5 @@
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class Choice(ElementRepresentative):
@@ -22,8 +20,6 @@ class Choice(ElementRepresentative):
 
         self.getContainingType().sequencesOrChoices.append(self)
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- choice`some id number`. 
@@ -36,8 +32,6 @@ class Choice(ElementRepresentative):
 
         return name
 
-    #============================================================
-    #
     def getMinOccurs(self):
         """
         retrieves the minOccurs value for elements in the choice.
@@ -48,8 +42,6 @@ class Choice(ElementRepresentative):
 
         return int(getattr(self, 'minOccurs', 1))
 
-    #============================================================
-    #
     def getMaxOccurs(self):
         """
         retrieves the maxOccurs value for elements in the choice.

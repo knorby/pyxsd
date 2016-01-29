@@ -3,21 +3,15 @@ from displayer import Displayer
 
 
 class FormatForVisit (CellSizer, Displayer):
-    #============================================================
-    #
 
     def __init__(self, root):
         self.root = root
         self.cellSizerInit()
 
-    #============================================================
-    #
     def __call__(self, scale=1, fileName=None):
         self.writeFormat(scale, self.openFile(fileName))
         return self.root
 
-    #============================================================
-    #
     def writeFormat(self, scale, file):
         print >> file, scale
         atoms = self.getAtoms()

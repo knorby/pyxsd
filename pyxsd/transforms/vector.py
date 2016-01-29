@@ -19,22 +19,16 @@ class Vector (tuple):
 
     """
 
-    #=======================================================
-    #
     def __init__(self, val):
 
         tuple.__init__(val)
 
-    #=======================================================
-    #
     def __mul__(self, scalar):
         if not isinstance(scalar, int) and not isinstance(scalar, float):
             raise TypeError, "a scalar must be a int or float"
         multiply = lambda x: x * scalar
         return Vector(map(multiply, self))
 
-    #=======================================================
-    #
     def __add__(self, vector):
         if not isinstance(vector, Vector):
             raise TypeError, "a vector can only be added to another vector"
@@ -45,8 +39,6 @@ class Vector (tuple):
             listOfNewValues.append(a + b)
         return Vector(listOfNewValues)
 
-    #=======================================================
-    #
     def __sub__(self, vector):
         if not isinstance(vector, Vector):
             raise TypeError, "vector subtraction must be between two vectors"
@@ -57,8 +49,6 @@ class Vector (tuple):
             listOfNewValues.append(a - b)
         return Vector(listOfNewValues)
 
-    #=======================================================
-    #
     def findDotProduct(self, vector):
         product = 0
         if not isinstance(vector, Vector):
@@ -69,8 +59,6 @@ class Vector (tuple):
             product += (a * b)
         return product
 
-    #=======================================================
-    #
     def distance(self, vector):
         if not isinstance(vector, Vector):
             raise TypeError, "the distance formula for vectors is between two vectors"
@@ -79,7 +67,5 @@ class Vector (tuple):
         subtractedVector = self - vector
         return subtractedVector.findLength()
 
-    #=======================================================
-    #
     def findLength(self):
         return math.sqrt(self.findDotProduct(self))

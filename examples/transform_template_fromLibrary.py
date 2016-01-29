@@ -5,13 +5,11 @@ from yourTransformLibrary import YourTransformLibrary
 
 class myTransform(YourTransformLibrary):
 
-    #============================================================
     # The next two lines MUST remain unchanged in your transform class
 
     def __init__(self, root):
         self.root = root
 
-    #============================================================
     # Just define the call method and specify arguments, and the program
     # will do your transform
 
@@ -22,8 +20,6 @@ class myTransform(YourTransformLibrary):
 
         return self.yourMethod(arg1, arg2, arg3)
 
-    #============================================================
-    #
 
     def yourMethod(self, arg1, arg2, arg3):
         # your transform code

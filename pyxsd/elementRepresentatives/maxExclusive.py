@@ -1,7 +1,5 @@
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class MaxExclusive(ElementRepresentative):
@@ -18,8 +16,6 @@ class MaxExclusive(ElementRepresentative):
         self.value = self.xsdElement.get('value')
         self.getContainingType().maxExclusive = self.value
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|maxExclusive.

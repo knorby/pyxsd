@@ -1,7 +1,5 @@
 from elementRepresentative import ElementRepresentative
 
-#============================================================
-#
 
 
 class Pattern(ElementRepresentative):
@@ -19,8 +17,6 @@ class Pattern(ElementRepresentative):
 
         self.getContainingType().patterns.append(self.value)
 
-    #============================================================
-    #
     def getName(self):
         """
         Makes a name like this- `ContainingTypeName`|pattern|`an id number`. 
