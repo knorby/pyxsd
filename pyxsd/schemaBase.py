@@ -138,7 +138,6 @@ class SchemaBase(object):
 
             cls.checkElementOrderInChoice(elemDescriptors[0], subElements)
 
-
         for descriptor in elemDescriptors:
 
             descriptorName = descriptor.name
@@ -165,7 +164,6 @@ class SchemaBase(object):
                         instance._children_.append(subInstance)
                         setattr(instance, subElementName, subInstance)
                         continue
-
 
                     subInstance = subElCls.makeInstanceFromTag(subElement)
                     subInstance._name_ = subElementName
@@ -487,7 +485,7 @@ class SchemaBase(object):
                 if usedAttr == descriptorAttrName:
                     found = True
             if attrUse == 'required' and not found:
-                print "Parser Error: the %s in the %s element is required but was not found."\
+                print "Parser Error: the %s in the %s element is required but was not found." \
                       % (self.descriptorAttrName, self.tagName)
 
     def dumpCls(cls):
@@ -507,7 +505,6 @@ class SchemaBase(object):
             print "   %s - %s" % (key, repr(value))
 
     dumpCls = staticmethod(dumpCls)
-
 
 import elementRepresentatives.elementRepresentative
 from elementRepresentatives.attribute import Attribute

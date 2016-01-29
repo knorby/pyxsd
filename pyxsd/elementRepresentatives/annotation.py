@@ -1,7 +1,5 @@
 
-
 from elementRepresentative import ElementRepresentative
-
 
 
 class Annotation(ElementRepresentative):

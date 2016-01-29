@@ -1,7 +1,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class SimpleContent(ElementRepresentative):
     """
     The class for the simpleContent tag. Subclass of *ElementRepresentative*.

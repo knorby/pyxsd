@@ -1,7 +1,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class ComplexContent(ElementRepresentative):
     """
     The class for the complexContent tag. Subclass of *ElementRepresentative*.

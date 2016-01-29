@@ -1,7 +1,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class Enumeration(ElementRepresentative):
     """
     The class for the Enumeration tag. Subclass of *ElementRepresentative*.

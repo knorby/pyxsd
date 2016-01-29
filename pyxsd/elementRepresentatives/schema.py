@@ -1,7 +1,6 @@
 from complexType import ComplexType
 
 
-
 class Schema(ComplexType):
     """
     The class for the schema tag. Subclass of *ComplexType*, becuase it is so similar to it.

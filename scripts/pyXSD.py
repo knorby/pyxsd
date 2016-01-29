@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 from optparse import OptionParser
 from pyxsd.pyXSD import PyXSD
 import sys
@@ -7,10 +8,10 @@ parser = OptionParser(usage, version="PyXSD 0.1")
 
 parser.add_option("-i", "--inputXml", type="string", dest="inputXmlFile", default="stdin",
                   help="filename for the xml file to read in. Reads from stdin by default.")
-parser.add_option("-s", "--inputXsd", "--schema",  type="string", dest="inputXsdFile", default=None,
+parser.add_option("-s", "--inputXsd", "--schema", type="string", dest="inputXsdFile", default=None,
                   help="filename for the xsd (schema) file to read in. Trys to determine location from the input xml file by default.")
 
-parser.add_option("-p", "--parsedXml", "--parsedOutput",  type="string", dest="parsedOutputFile", default=None,
+parser.add_option("-p", "--parsedXml", "--parsedOutput", type="string", dest="parsedOutputFile", default=None,
                   help="filename for the xml file that contains the parsed output of the xml file, which contains no further transformation. By default, the filename is the xml input filename followed by 'Parsed.'")
 parser.add_option("-k", "--ParsedFile", action="store_false", dest="outputParsed", default=True,
                   help="outputs a parsed version of the xml file without transform. Use for debugging. Off by default. If no filename is specified, it will be determined from the xml filename.")

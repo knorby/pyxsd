@@ -2,7 +2,6 @@ import sys
 from elementRepresentative import ElementRepresentative
 
 
-
 class XsdType(ElementRepresentative):
     """
     This class is the base class for *SimpleType* and *ComplexType*
@@ -102,8 +101,7 @@ class XsdType(ElementRepresentative):
         baseList = []
 
         for superClassName in self.superClassNames:
-            baseList.append(ElementRepresentative.typeFromName
-                            (superClassName, pyXSD))
+            baseList.append(ElementRepresentative.typeFromName(superClassName, pyXSD))
 
         if not self.containsSchemaBase(baseList):
 

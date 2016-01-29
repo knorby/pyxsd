@@ -2,7 +2,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class Length(ElementRepresentative):
     """
     The class for the Length tag. Subclass of ElementRepresentative.

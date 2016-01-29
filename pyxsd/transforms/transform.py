@@ -29,6 +29,7 @@ class Transform (object):
         """
         Creates a new element that contains the proper tree stucture
         """
+
         class ElemObjClass(object):
 
             def __init__(self, name):
@@ -161,7 +162,6 @@ class Transform (object):
         self.walk(root, self.tagFinder, collection, name)
 
         return collection
-
 
     """Finds an element from a given tagName. Returns the first one found,
     or returns None. This function is an alternative to the walk/vistor functions.

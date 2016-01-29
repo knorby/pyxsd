@@ -79,7 +79,7 @@ class ElementRepresentative(object):
     from the schema.
     """
 
-    def __init__(self, xsdElement,  parent):
+    def __init__(self, xsdElement, parent):
         """
         See the documentation for the ElementRepresentative system at the top of the
         ElementRepresentative module.
@@ -461,7 +461,6 @@ class ElementRepresentative(object):
 
     classNameFor = classmethod(classNameFor)
 
-
 # Imports all of the tag-specific classes
 tags = ['element', 'attribute', 'schema', 'xsdType', 'extension', 'simpleType',
         'complexType', 'annotation', 'attributeGroup', 'documentation', 'restriction', 'sequence',
@@ -471,7 +470,6 @@ tags = ['element', 'attribute', 'schema', 'xsdType', 'extension', 'simpleType',
 for tag in tags:
     tagUpper = tag[:1].upper() + tag[1:]
     exec('from %s import %s' % (tag, tagUpper))
-
 
 theVars = vars()
 registry = {}

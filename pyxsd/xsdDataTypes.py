@@ -37,7 +37,6 @@ class XsdDataType (object):
     pass
 
 
-
 class Integer(int, XsdDataType):
     """
     Identical to the integer type in python. Has *int* and *XsdDataType* as base classes.
@@ -48,7 +47,6 @@ class Integer(int, XsdDataType):
     def __init__(self, val):
 
         int.__init__(self, val)
-
 
 
 class PositiveInteger(Integer):
@@ -66,7 +64,6 @@ class PositiveInteger(Integer):
         Integer.__init__(self, val)
 
 
-
 class NonNegativeInteger(Integer):
     """
     Integers with values greater than or equal to zero. Has *Integer* as a base class.
@@ -80,7 +77,6 @@ class NonNegativeInteger(Integer):
             raise TypeError, "Not a non-negative Integer"
 
         Integer.__init__(self, val)
-
 
 
 class NegativeInteger(Integer):
@@ -113,7 +109,6 @@ class NonPositiveInteger(Integer):
         Integer.__init__(self, val)
 
 
-
 class Double(float, XsdDataType):
     """
     Identical to the float type in python. Has *float* and *XsdDataType* as base classes.
@@ -123,7 +118,6 @@ class Double(float, XsdDataType):
     def __init__(self, val):
 
         float.__init__(self, val)
-
 
 
 class TypeList(list, XsdDataType):
@@ -181,7 +175,6 @@ class Boolean(Integer):
             return False
 
 
-
 class String(str, XsdDataType):
     """
     Identical to the string type in python. Has *str* and *XsdDataType* as base classes.
@@ -205,7 +198,6 @@ class ID(String):
         String.__init__(self, val)
 
 
-
 class IDREF(String):
     """
     Used for IDREF attributes in xml and xsd files. Uses *String* as a base class, and makes no changes to it.
@@ -215,7 +207,6 @@ class IDREF(String):
     def __init__(self, val):
 
         String.__init__(self, val)
-
 
 
 class Base64Binary(String):

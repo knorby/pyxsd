@@ -2,7 +2,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class Restriction(ElementRepresentative):
     """
     The class for the Restiction tag. Subclass of *ElementRepresentative*.

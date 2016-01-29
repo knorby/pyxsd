@@ -4,7 +4,6 @@ from transform import Transform
 # library you are adding to, in which case you do not need to import Transform)
 # Just make sure that the library has access to Transform at some level
 
-
 class YourTransformLibrary (Transform):  # Or a libray that you are adding to
 
     def YourTransformLibraryInit(self):

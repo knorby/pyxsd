@@ -1,7 +1,6 @@
 from elementRepresentative import ElementRepresentative
 
 
-
 class AttributeGroup(ElementRepresentative):
     """
     The class for the Extension tag. Subclass of *ElementRepresentative*.

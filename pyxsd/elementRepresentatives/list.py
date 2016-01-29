@@ -2,7 +2,6 @@ from elementRepresentative import ElementRepresentative
 from pyxsd.xsdDataTypes import *
 
 
-
 class List(ElementRepresentative):
     """
     The class for the list tag. Subclass of *ElementRepresentative*.
