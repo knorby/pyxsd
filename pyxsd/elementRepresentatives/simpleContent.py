@@ -18,7 +18,5 @@ class SimpleContent(ElementRepresentative):
         The name on this class is used for almost nothing.
         """
         contName = self.getContainingTypeName()
-
         name = contName + '|simpleContent'
-
         return name

@@ -31,7 +31,7 @@ class CellSizer (Transform):
         self.vectorOrder = []
 
     def getBravaisVectors(self):
-        if not len(self.bravaisVectors) == 0:
+        if self.bravaisVectors:
             return self.bravaisVectors
         vectorNumCount = 1
         self.vectorOrder = []
@@ -57,7 +57,7 @@ class CellSizer (Transform):
         return vectors
 
     def getAtoms(self):
-        if not len(self.atoms) == 0:
+        if self.atoms:
             return self.atoms
         atomsInXml = self.getElementsByName(self.root, 'site')
         for atom in atomsInXml:

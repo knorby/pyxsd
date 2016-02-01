@@ -15,9 +15,7 @@ class ComplexType(XsdType):
          See *ElementRepresentative* for more documentation.
         """
         self.sequencesOrChoices = []
-
         XsdType.__init__(self, xsdElement, parent)
-
         self.getSchema().complexTypes[self.name] = self
 
     def getElements(self):

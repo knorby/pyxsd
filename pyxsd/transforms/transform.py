@@ -1,5 +1,5 @@
 """
-See the transforms manual on the `pyXSD website <http://pyXSD.org/>`_
+See the transforms manual on the `pyXSD website <http://pyXSD.org/>`
 or in the /doc directory of the installation.
 
 In the transform manual:
@@ -16,14 +16,14 @@ class Transform (object):
     """
     The base abstract class for all transforms. All methods should
     mix into the usable transform classes. Contains methods to
-    retrieve elements from the tree. 
+    retrieve elements from the tree.
     """
 
     def __init__(self):
         """
         Cannot Initialize a true abstact class!
         """
-        raise TypeError, "an abstract class cannot be instantiated"
+        raise TypeError("an abstract class cannot be instantiated")
 
     def makeElemObj(self, name):
         """
@@ -40,44 +40,34 @@ class Transform (object):
 
         return ElemObjClass(name)
 
-    """
-    Makes a comment element
-    """
-
     def makeCommentElem(self, comment):
+        """
+        Makes a comment element
+        """
         obj = self.makeElemObj('_comment_')
         obj._value_ = comment
         return obj
 
-    """
-    The *walk* function walks through the tree structure, and
-    runs a provided visitor function on all elements.
-    """
-
     def walk(self, instance, visitor, *args, **kwargs):
-
+        """
+        The *walk* function walks through the tree structure, and
+        runs a provided visitor function on all elements.
+        """
         if isinstance(instance, list):
             for item in instance:
                 self.walk(item, visitor, *args, **kwargs)
-
         if isinstance(instance, dict):
-            for item in instance.values():
+            for item in instance.viewvalues():
                 self.walk(item, visitor, *args, **kwargs)
-
         if not hasattr(instance, '_children_'):
             return
         if not hasattr(instance, '_attribs_'):
             return
 
-        getName = lambda x: x.name
-
-        elemNames = map(lambda x: x._name_, instance._children_)
+        elemNames = [c._name_ for c in instance._children_]
         attrNames = instance._attribs_.keys()
-
         visitor(instance, attrNames, elemNames, *args, **kwargs)
-
         for el in instance._children_:
-
             self.walk(el, visitor, *args, **kwargs)
 
     def classCollector(self, instance, attrNames, elemNames, collectorDict):
@@ -87,13 +77,10 @@ class Transform (object):
         of associated instances. SEE *getInstancesByClassName*
         """
         className = instance.__class__.__name__
-
         collection = collectorDict.get(className, None)
-
-        if collection == None:
+        if collection is None:
             collection = []
             collectorDict[className] = collection
-
         collection.append[instance]
 
     def tagCollector(self, instance, attrNames, elemNames, collectorDict):
@@ -101,19 +88,14 @@ class Transform (object):
         A visitor function that is used to make a dictionary that associates
         a tag name with its children. SEE *getAllSubElements*
         """
-
         for i, tagName in list(enumerate(elemNames)):
             obj = instance._children_[i]
-            if obj == None:
+            if obj is None:
                 continue
-
             collection = collectorDict.get(tagName, None)
-
-            if collection == None:
-
+            if collection is None:
                 collection = []
                 collectorDict[tagName] = collection
-
             collection.append(obj)
 
     def tagFinder(self, instance, attrNames, elemNames, collection, name):
@@ -121,10 +103,10 @@ class Transform (object):
         A visitor function to collect all tags with a particular name, and
         put them into a list. SEE *getElementsByName*
         """
-        for i, tagName in list(enumerate(elemNames)):
+        for i, tagName in enumerate(elemNames):
             if name == tagName:
                 obj = instance._children_[i]
-                if not obj == None:
+                if obj is not None:
                     collection.append(obj)
 
     def getInstancesByClassName(self, root):
@@ -134,9 +116,7 @@ class Transform (object):
         instances.
         """
         collectorDict = {}
-
         self.walk(root, self.classCollector, collectorDict)
-
         return collectorDict
 
     def getAllSubElements(self, root):
@@ -146,9 +126,7 @@ class Transform (object):
         elements with their sub-Elements.
         """
         collectorDict = {}
-
         self.walk(root, self.tagCollector, collectorDict)
-
         return collectorDict
 
     def getElementsByName(self, root, name):
@@ -158,59 +136,37 @@ class Transform (object):
         with a particular name.
         """
         collection = []
-
         self.walk(root, self.tagFinder, collection, name)
-
         return collection
 
-    """Finds an element from a given tagName. Returns the first one found,
-    or returns None. This function is an alternative to the walk/vistor functions.
-    SEE *getElementsByName*
-    """
-
     def find(self, tagName, baseElem):
-
+        """Finds an element from a given tagName. Returns the first one found,
+        or returns None. This function is an alternative to the walk/vistor
+        functions. SEE *getElementsByName*
+        """
         if baseElem._name_ == tagName:
-
             return baseElem
-
         for child in baseElem._children_:
-
             returnedElement = self.find(tagName, child)
-
-            if not returnedElement == None:
-
+            if returnedElement is not None:
                 return returnedElement
-
             continue
-
         return None
 
-    """
-    Finds all elements with a given tagName. Returns a list of elements or None.
-    This function is an alternative to the walk/vistor functions.
-    SEE *getElementsByName*
-    """
-
     def findAll(self, tagName, baseElem):
-
+        """
+        Finds all elements with a given tagName. Returns a list of elements or
+        None. This function is an alternative to the walk/vistor functions.
+        SEE *getElementsByName*
+    """
         found = []
-
         if baseElem._name_ == tagName:
-
             found.append(baseElem)
-
         for child in baseElem._children_:
-
             returnedElement = self.findAll(tagName, child)
-
-            if not returnedElement == None:
-
+            if returnedElement is not None:
                 found.extend(returnedElement)
-
             continue
-
-        if len(found) > 0:
+        if found:
             return found
-
         return None

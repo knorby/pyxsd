@@ -1,4 +1,3 @@
-
 from elementRepresentative import ElementRepresentative
 
 
@@ -19,5 +18,4 @@ class Annotation(ElementRepresentative):
         The name on this class is used for almost nothing.
         """
         contName = self.getContainingTypeName()
-
         return "%s|%s" % (contName, self.__class__.__name__)

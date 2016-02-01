@@ -12,11 +12,8 @@ class List(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.itemType = self.xsdElement.get('itemType')
-
         self.getContainingType().listItemType = self.itemType
-
         # the 'xs' is used so that it can be properly identified as a primitive
         # data type later on
         self.type = 'xs:list'
@@ -27,7 +24,5 @@ class List(ElementRepresentative):
         The name on this class is used for almost nothing.
         """
         contName = self.getContainingTypeName()
-
         name = contName + '|list'
-
         return name

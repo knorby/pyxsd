@@ -66,6 +66,7 @@ class XmlTreeWriter(object):
 
         XmlTreeWriter.passTagToTagWriter(root, 0, self.output)
 
+    @staticmethod
     def passTagToTagWriter(element, tabs, output):
         """
         Extracts element variables and initializes the tag writer for the element.
@@ -78,35 +79,25 @@ class XmlTreeWriter(object):
         """
 
         name = element._name_
-
         children = element._children_
-
         attribs = element._attribs_
-
         value = element._value_
-
-        hasChildren = len(children) > 0
+        hasChildren = bool(children)
 
         if len(children) == 1:
             if children[0]._name_ == '_comment_':
                 hasChildren = False
 
-        hasValue = (not value == None)
-
+        hasValue = value is not None
         tagWriter = XmlTagWriter(name, attribs, value,
                                  hasChildren, hasValue, tabs, output)
-
         tabs += 1
 
         for child in children:
-
             XmlTreeWriter.passTagToTagWriter(child, tabs, output)
-
+            
         if hasChildren:
-
             tagWriter.writeEndTag()
-
-    passTagToTagWriter = staticmethod(passTagToTagWriter)
 
     def writeHeaderInfo(self):
         """

@@ -16,18 +16,18 @@ class SendTreeToPyXSD(Displayer):
     def __init__(self, root):
         self.root = root
 
-    def __call__(self, xsdFile=None, xmlFileOutput='_No_Output_', transformOutputName=None, transforms=[], transformFile=None, classFile=None, verbose=False, quiet=False):
+    def __call__(self, xsdFile=None, xmlFileOutput='_No_Output_',
+                 transformOutputName=None, transforms=[], transformFile=None,
+                 classFile=None, verbose=False, quiet=False):
         xmlInput = self.makeTempFileOfTree()
         if not xmlFileOutput:
             xmlFileOutput = "tempFileParsed.xml"
-        if transformOutputName == None:
+        if transformOutputName is None:
             xmlFileOutput = "tempFileTransformed.xml"
-        linestrip = lambda x: x.strip('>').strip('\n').strip()
         if transformFile:
-            transformFile = open(transformFile, 'r')
-            transforms = transformFile.readlines()
-            transformFile.close()
-            transforms = map(linestrip, transforms)
+            with open(transformFile, 'r') as fd:
+                transforms = [line.strip('>').strip()
+                              for line in fd.readlines()]
         PyXSD(xmlInput, xsdFile, xmlFileOutput, transformOutputName,
               transforms, classFile, verbose, quiet)
         return self.root

@@ -11,9 +11,7 @@ class Pattern(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.value = self.xsdElement.get('value')
-
         self.getContainingType().patterns.append(self.value)
 
     def getName(self):
@@ -22,5 +20,4 @@ class Pattern(ElementRepresentative):
         The name on this class is used for almost nothing.
         """
         patNum = len(self.getContainingType().patterns) + 1
-        return "%s|pattern|%i" % (self.getContainingTypeName(),
-                                  patNum)
+        return "%s|pattern|%i" % (self.getContainingTypeName(), patNum)

@@ -31,20 +31,23 @@ class SphereCutter(CellSizer):
         if not isinstance(rad, float):
             try:
                 rad = float(rad)
-            except:
-                raise TypeError, "the radius of a sphere must be expressed as a number"
+            except (TypeError, ValueError):
+                raise TypeError(
+                    "the radius of a sphere must be expressed as a number")
         if not sphereCenter:
             sphereCenter = self.findCenter(vectors)
         else:
             if not len(sphereCenter) == 3 or not isinstance(sphereCenter, tuple):
-                raise TypeError, "there must be three coords for the center of a sphere and they must be in a tuple"
+                raise TypeError(
+                    "there must be three coords for the center of a sphere "
+                    "and they must be in a tuple")
         for atom in atoms:
             atomPos = atom.position
             atomCoords = self.getCartesianCoords(vectors, atomPos)
             if self.testSphereMembership(atomCoords, sphereCenter, rad):
                 newAtoms.append(atom)
 
-        if len(newAtoms) == 0:
+        if not newAtoms:
             print "Sphere Cutter Error: no atoms remain after the cut. Please check the data."
         elif len(newAtoms) == len(atoms):
             print "Sphere Cutter Error: no atoms were removed. Please check your data."

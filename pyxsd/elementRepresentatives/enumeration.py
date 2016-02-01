@@ -11,9 +11,7 @@ class Enumeration(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.value = self.xsdElement.get('value')
-
         self.getContainingType().enumerations.append(self.value)
 
     def getName(self):

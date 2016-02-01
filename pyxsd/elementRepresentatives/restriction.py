@@ -1,4 +1,3 @@
-
 from elementRepresentative import ElementRepresentative
 
 
@@ -12,7 +11,6 @@ class Restriction(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.addSuperClassName(self.tagAttributes['base'])
 
     def getName(self):
@@ -21,7 +19,5 @@ class Restriction(ElementRepresentative):
         The name on this class is used for almost nothing.
         """
         contName = self.getContainingTypeName()
-
         name = contName + '|restriction'
-
         return name

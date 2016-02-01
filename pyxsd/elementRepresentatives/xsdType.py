@@ -1,4 +1,5 @@
 import sys
+
 from elementRepresentative import ElementRepresentative
 
 
@@ -17,9 +18,7 @@ class XsdType(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         self.enumerations = []
-
         self.attributes = {}
-
         ElementRepresentative.__init__(self, xsdElement, parent)
 
     def getContainingTypeName(self):
@@ -29,10 +28,8 @@ class XsdType(ElementRepresentative):
 
         No parameters.
         """
-        if self.name == None:
-
+        if self.name is None:
             self.name = self.getName()
-
         return self.name
 
     def getContainingType(self):
@@ -55,17 +52,12 @@ class XsdType(ElementRepresentative):
         No parameters
         """
         name = ElementRepresentative.getName(self)
-
-        if not name == None:
+        if name is not None:
             return name
-
         # We are implicitly defined in an element
         element = self.parent
-
         name = '%s|%s' % (element.name, self.tagType)
-
         element.typeName = name
-
         return name
 
     def containsSchemaBase(self, bases):
@@ -79,10 +71,8 @@ class XsdType(ElementRepresentative):
 
         """
         for base in bases:
-
             if issubclass(base, SchemaBase):
                 return True
-
         return False
 
     def getBaseList(self, pyXSD):
@@ -99,14 +89,11 @@ class XsdType(ElementRepresentative):
 
         """
         baseList = []
-
         for superClassName in self.superClassNames:
-            baseList.append(ElementRepresentative.typeFromName(superClassName, pyXSD))
-
+            baseList.append(ElementRepresentative.typeFromName(
+                superClassName, pyXSD))
         if not self.containsSchemaBase(baseList):
-
             baseList.append(SchemaBase)
-
         return tuple(baseList)
 
     def getElements(self):
@@ -135,21 +122,16 @@ class XsdType(ElementRepresentative):
 
         - `pyXSD`- The *PyXSD* instance.
         """
-
         bases = self.getBaseList(pyXSD)
-
         # arrange base so that it always inherits from SchemaBase (SchemaBase
         # inherits from object)
         clsDict = dict([('pyXSD', pyXSD), ('name', self.name),
                         ('__doc__', self.__doc__)])
-
         _elementNames_ = []
-
         for element in self.getElements():
             element.pyXSD = pyXSD
             _elementNames_.append(element.name)
             clsDict[element.name] = element
-
         clsDict['_elementNames_'] = _elementNames_
 
         def _getElements(cls):
@@ -160,9 +142,7 @@ class XsdType(ElementRepresentative):
             return elements
 
         clsDict['_getElements'] = _getElements
-
         _attributeNames_ = self.attributes.keys()
-
         clsDict['_attributeNames_'] = _attributeNames_
 
         def _getAttributes(cls):
@@ -179,8 +159,7 @@ class XsdType(ElementRepresentative):
 
         try:
             cls = type(self.name, bases, clsDict)
-
-        except Exception, e:
+        except Exception as e:
             print e
             self.describe()
             print "baseList %s" % repr(self.superClassNames)

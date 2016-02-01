@@ -27,9 +27,7 @@ class Element(ElementRepresentative):
         Adds itself to the element list in its parent.
         See *ElementRepresentative* for documentation.
         """
-
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         parent.elements.append(self)
 
     def getType(self):
@@ -39,8 +37,7 @@ class Element(ElementRepresentative):
         while the classes for the schema types are being built. Clearly,
         this function is used after the main ER run.
         """
-        if not 'type' in self.__dict__:
-
+        if 'type' not in self.__dict__:
             raise "Element.getType() Error: type is not in %s's dictionary."
             return None
 
@@ -61,19 +58,14 @@ class Element(ElementRepresentative):
         """
         children = self.xsdElement.getchildren()
 
-        if len(children) == 0:
+        if not children:
             return None
 
         for child in children:
-
             processedChild = ElementRepresentative.factory(child, self)
-
             self.processedChildren.append(processedChild)
-
             self.type = processedChild.name
-
             self.tagAttributes['type'] = self.type
-
             processedChild.processChildren()
 
     def __str__(self):
@@ -106,7 +98,6 @@ class Element(ElementRepresentative):
         descriptors. Some links should be included on the
         `pyXSD website <http://pyxsd.org>`_.
         """
-
         if self.name in obj.__dict__:
             return obj.__dict__[self.name]
 
@@ -130,17 +121,16 @@ class Element(ElementRepresentative):
         value = obj.__dict__.get(self.name, None)
 
         if self.isList():
-            if value == None:
+            if value is None:
                 obj.__dict__[self.name] = []
             obj.__dict__[self.name].append(value)
             return
 
         if self.isDict():
-            if value == None:
+            if value is None:
                 obj.__dict__[self.name] = {}
                 obj.__dict__[self.name][obj.id] = value
                 return
-
         obj.__dict__[self.name] = value
 
     def __delete__(self, obj):
@@ -151,7 +141,6 @@ class Element(ElementRepresentative):
         descriptors. Some links should be included on the
         `pyXSD website <http://pyxsd.org>`_.
         """
-
         del obj.__dict__[self.name]
 
     def isDict(self):
@@ -173,13 +162,9 @@ class Element(ElementRepresentative):
         No parameters.
         """
         minOccurs = self.getMinOccurs()
-
         maxOccurs = self.getMaxOccurs()
-
         if maxOccurs > 1:
-
             return True
-
         return False
 
     def getMinOccurs(self):

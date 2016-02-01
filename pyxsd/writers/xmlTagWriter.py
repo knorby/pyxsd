@@ -78,43 +78,27 @@ class XmlTagWriter(object):
             value = str(value)
 
             self.output.write('\n')
-
             self.writeTabs(7)
-
             self.output.write(key)
-
             nameLen = len(key)
-
             spaces = longestNameLen - nameLen
-
             self.writeTabs(spaces, 0)
-
             self.output.write('= "%s"' % value)
 
         if not self.hasChildren and not self.hasValue:
-
             self.output.write('/>\n')
-
             return None
 
         self.output.write('>\n')
-
+        
         if self.hasValue:
-
             if not isinstance(self.value, list):
-
                 self.value = list(self.value)
-
             for line in self.value:
-
                 self.writeTabs(3)
-
                 self.output.write('%s\n' % line)
-
             if not self.hasChildren:
-
                 self.writeEndTag()
-
         return None
 
     def writeComment(self):
@@ -124,7 +108,6 @@ class XmlTagWriter(object):
 
         No parameters
         """
-
         self.output.write('<!--%s-->' % self.value)
 
     def writeEndTag(self):
@@ -153,31 +136,21 @@ class XmlTagWriter(object):
         """
 
         if not tabs:
-
             tabs = self.tabs
 
         tab = ""
-
         x = 0
 
         while x < tabs:
-
             tab = tab + '    '
-
             x += 1
-
             continue
 
         if tabSpec:
-
             y = 0
-
             while y < tabSpec:
-
                 tab = tab + ' '
-
                 y += 1
-
                 continue
 
         self.output.write(tab)

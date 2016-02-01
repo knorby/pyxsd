@@ -1,4 +1,3 @@
-
 from elementRepresentative import ElementRepresentative
 
 
@@ -12,9 +11,7 @@ class Documentation(ElementRepresentative):
         See *ElementRepresentative* for documentation. Adds its documentation to the __doc__ field for the ER.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.contType = self.getContainingType()
-
         self.contType.__doc__ = xsdElement.text.strip()
 
     def getName(self):

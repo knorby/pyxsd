@@ -12,20 +12,18 @@ class AttributeGroup(ElementRepresentative):
     def __init__(self, xsdElement, parent):
         """
         Creates a dictionary for attributes.
-        Adds itself to the attribute group dictionary in schema.        
+        Adds itself to the attribute group dictionary in schema.
         See *ElementRepresentative* for more documentation.
         """
         self.attributes = {}
-
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         attrGroupContainer = self.parent.getContainingType()
         attrGroupContainer.attributeGroups[self.name] = self
         self.getSchema().attributeGroups[self.name] = self
 
     def getContainingType(self):
         """
-        Returns self, because Attribute groups are containg types.
+        Returns self, because Attribute groups are containing types.
 
         No parameters
         """
