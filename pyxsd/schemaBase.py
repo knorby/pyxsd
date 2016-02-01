@@ -1,5 +1,6 @@
 import os
 
+
 class SchemaBase(object):
     """Serves as the base class for all schema type classes created. The
     pythonic instance tree is built from this class.  This class also
