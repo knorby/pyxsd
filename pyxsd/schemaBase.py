@@ -1,37 +1,46 @@
 import os
 
 class SchemaBase(object):
-    """
-    Serves as the base class for all schema type classes created. The pythonic instance tree is built from this class.
-    This class also contains the means to do non-fatal parser error checking. A little bit of the work this class does
-    is also done in pyXSD. The schema and xml file do not line up perfectly. The top level element in the schema and the
-    schema tag both contain information relevent to the top-level tag in the XML. For this reason, the tree
-    building/checking must be started in the same location the method `makeInstanceFromTag` is called in this class.
+    """Serves as the base class for all schema type classes created. The
+    pythonic instance tree is built from this class.  This class also
+    contains the means to do non-fatal parser error checking. A little
+    bit of the work this class does is also done in pyXSD. The schema
+    and xml file do not line up perfectly. The top level element in
+    the schema and the schema tag both contain information relevent to
+    the top-level tag in the XML. For this reason, the tree
+    building/checking must be started in the same location the method
+    `makeInstanceFromTag` is called in this class.
+
     """
 
     def __init__(self):
-        """
-        Creates the instances that are in the tree. These objects are initialized from within SchemaBase. 
+        """Creates the instances that are in the tree. These objects are
+        initialized from within SchemaBase.
 
-        No parameters
+        No parameters.
+
         """
         self._children_ = []
         self._value_ = None
 
     @classmethod
     def makeInstanceFromTag(cls, elementTag):
-        """
-        A classmethod. It takes in a schema type class and its corresponding xml element.
-        It then instanciates the class. It adds a name from the name in the xml element,
-        and then it hands the instance and the element to other methods to add attributes,
-        elements, and values to this instance. It adds these according to the schema classes,
-        and not the element. A non-fatal (when possible) error is raised when the xml element
+        """A classmethod. It takes in a schema type class and its
+        corresponding xml element.  It then instanciates the class. It
+        adds a name from the name in the xml element, and then it
+        hands the instance and the element to other methods to add
+        attributes, elements, and values to this instance. It adds
+        these according to the schema classes, and not the element. A
+        non-fatal (when possible) error is raised when the xml element
         does not correspond to the schema class.
 
         Parameters:
 
-        - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
-        - `elementTag`- The xml element that correspond to `cls` 
+        - `cls`- The schema type class to use. NOTE: since this
+          function is a classmethod, `cls` is the first argument, not
+          the instance of the class.
+
+        - `elementTag`- The xml element that correspond to `cls`
 
         """
         instance = cls()
@@ -44,32 +53,37 @@ class SchemaBase(object):
 
     @classmethod
     def addAttributesTo(cls, instance, elementTag):
-        """
-        A classmethod. Called by `makeInstanceFromTag()`. Adds attributes according to the schema by calling
+        """A classmethod. Called by `makeInstanceFromTag()`. Adds attributes
+        according to the schema by calling
         `getAttributesFromTag()`. The attributes are then checked.
 
         parameters:
 
-        - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
-        - `instance` - The instance of `cls` that is having attributes added to it.
-        - `elementTag`- The xml element that correspond to `cls` 
+        - `cls`- The schema type class to use. NOTE: since this
+          function is a classmethod, `cls` is the first argument, not
+          the instance of the class.
+
+        - `instance` - The instance of `cls` that is having attributes
+          added to it.
+
+        - `elementTag`- The xml element that correspond to `cls`
 
         """
         tagsUsed = instance.getAttributesFromTag(elementTag)
         instance.checkAttributes(tagsUsed, elementTag)
 
     def getAttributesFromTag(self, elementTag):
-        """
-        Adds attributes to the *_attribs_* dictionary in the instance. Only attributes in
-        the type classes are added. All of the attribute values are validated against
-        descriptors in the Attribute class in ElementRepresentatives. The only exception
-        to this proceedure is for namespace and schemaLocation tags, as the program
-        currently does not have any mechanism to actually check these.
+        """Adds attributes to the *_attribs_* dictionary in the
+        instance. Only attributes in the type classes are added. All
+        of the attribute values are validated against descriptors in
+        the Attribute class in ElementRepresentatives. The only
+        exception to this proceedure is for namespace and
+        schemaLocation tags, as the program currently does not have
+        any mechanism to actually check these.
 
         Parameters:
 
         - `elementTag`: the xml element that the instance represents
-
         """
         self._attribs_ = {}
         usedAttributes = []
@@ -87,18 +101,24 @@ class SchemaBase(object):
 
     @classmethod
     def addElementsTo(cls, instance, elementTag):
-        """
-        A classmethod. Checks order on the child elements, with different functions for `sequences` and `choices`.
-        Iterates through all the elements specified in the class of the schema, and matches these elements with the
-        elements from the xml. Redirects elements that are primitive types (integer, double, string, and so on) to another function.
-        Calls makeInstanceFromTag() on all the children.
+        """A classmethod. Checks order on the child elements, with different
+        functions for `sequences` and `choices`.  Iterates through all
+        the elements specified in the class of the schema, and matches
+        these elements with the elements from the xml. Redirects
+        elements that are primitive types (integer, double, string,
+        and so on) to another function.  Calls makeInstanceFromTag()
+        on all the children.
 
         Parameters:
 
-        - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
-        - `instance` - The instance of `cls` that is having elements added to it.
-        - `elementTag`- The xml element that correspond to `cls`
+        - `cls`- The schema type class to use. NOTE: since this
+          function is a classmethod, `cls` is the first argument, not
+          the instance of the class.
 
+        - `instance` - The instance of `cls` that is having elements
+          added to it.
+
+        - `elementTag`- The xml element that correspond to `cls`
         """
 
         subElements = elementTag.getchildren()
@@ -143,14 +163,19 @@ class SchemaBase(object):
 
     @classmethod
     def addValueTo(cls, instance, elementTag):
-        """
-        Checks to see if the tag has a value, and assigns it to the element instance if it does.
-        Uses the ElementTree function `.text` to retrieve this information from the tag.
+        """Checks to see if the tag has a value, and assigns it to the element
+        instance if it does.  Uses the ElementTree function `.text` to
+        retrieve this information from the tag.
 
         Parameters:
 
-        - `cls`- The schema type class to use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
-        - `instance` - The instance of `cls` that is having values added to it.
+        - `cls`- The schema type class to use. NOTE: since this
+          function is a classmethod, `cls` is the first argument, not
+          the instance of the class.
+
+        - `instance` - The instance of `cls` that is having values
+          added to it.
+
         - `elementTag`- The xml element that correspond to `cls`
 
         """
@@ -167,16 +192,19 @@ class SchemaBase(object):
 
     @classmethod
     def checkElementOrderInChoice(cls, elemDescriptor, subElements):
-        """
-        A classmethod. Checks to see that elements in a choice field, which is specified in the schema, follow
-        the rules of such a field. Gets minOccurs and maxOccurs from the choice element in the schema, and
-        checks the number of elements from there.
+        """A classmethod. Checks to see that elements in a choice field,
+        which is specified in the schema, follow the rules of such a
+        field. Gets minOccurs and maxOccurs from the choice element in
+        the schema, and checks the number of elements from there.
 
         Parameters:
 
-        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
-        - `subElements`- All of the children of an element that is being processed in addElementsTo().
+        - `cls`- The schema type class in use. NOTE: since this
+          function is a classmethod, `cls` is the first argument, not
+          the instance of the class.
 
+        - `subElements`- All of the children of an element that is
+          being processed in addElementsTo().
         """
 
         minOccurs = elemDescriptor.getMinOccurs()
@@ -208,27 +236,35 @@ class SchemaBase(object):
 
     @classmethod
     def checkElementOrderInSequence(cls, descriptors, subElements):
-        """
-        A classmethodChecks the element order in sequence fields to make sure that the order specified in the schema is preserved
-        in the xml. Raises non-fatal errors when a problem is found. Checks minOccurs and maxOccurs on each element as well.
+        """Classmethod. Checks the element order in sequence fields to make
+        sure that the order specified in the schema is preserved in
+        the xml. Raises non-fatal errors when a problem is
+        found. Checks minOccurs and maxOccurs on each element as well.
 
         Parameters:
 
-        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
-        - `descriptors`- a list of schema-specified elements that define parameters for an element. Called `descriptors` because the program takes advantage of descriptors in python to help check the data. These descriptors are in the Element class in elementRepresentatives. 
-        - `subElements`- All of the children of an element that is being processed in addElementsTo(). Correspond to elements in `descriptors`
+        - `cls`- The schema type class in use. NOTE: since this
+          function is a classmethod, `cls` is the first argument, not
+          the instance of the class.
 
+        - `descriptors`- a list of schema-specified elements that
+          define parameters for an element. Called `descriptors`
+          because the program takes advantage of descriptors in python
+          to help check the data. These descriptors are in the Element
+          class in elementRepresentatives.
+
+        - `subElements`- All of the children of an element that is
+          being processed in addElementsTo(). Correspond to elements
+          in `descriptors`
         """
 
-        descriptorNames = map(lambda x: x.name, descriptors)
-        subElementNames = map(lambda x: x.tag.split('}')[1], subElements)
+        descriptorNames = [d.name for d in descriptors]
+        subElementNames = [elem.tag.split('}'}[1] for elem in subElements]
         if not len(descriptorNames) == len(descriptors):
             print "Name descriptor mismatch"
-
         for index in range(0, len(descriptors)):
             descriptor = descriptors[index]
             dname = descriptorNames[index]
-
             count, subElementNames = cls.consume(dname, subElementNames)
 
             if count == 0:
@@ -260,13 +296,19 @@ class SchemaBase(object):
 
     @classmethod
     def consume(cls, dname, subElements):
-        """
-        A classmethod. Used to check the number of times an element type in the schema is used with the xml elements.  Used by checkElementOrderInSequence().
+        """A classmethod. Used to check the number of times an element
+        type in the schema is used with the xml elements.  Used by
+        checkElementOrderInSequence().
 
         Parameters:
 
-        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
-        - `dname`- The name of the descriptor that is currently being checked.
+        - `cls`- The schema type class in use. NOTE: since this
+          function is a classmethod, `cls` is the first argument, not
+          the instance of the class.
+        
+        - `dname`- The name of the descriptor that is currently being
+          checked.
+
         - `subElements`- the list of subElements being checked.
 
         """
@@ -279,18 +321,23 @@ class SchemaBase(object):
 
     @classmethod
     def primitiveValueFor(cls, subElCls, subElement):
-        """
-        A classmethod. Used to check and assign primitive values to an instance. called by addElementsTo().
-        NOTE: this class may not work correctly for all elements with primitive data types.
-        If you find an error in this method or any other error in the program, please submit
-        this error and the appropiate correction on the `pyXSD website <http://pyxsd.org>`_. 
+        """A classmethod. Used to check and assign primitive values to an
+        instance. called by addElementsTo().  NOTE: this class may not
+        work correctly for all elements with primitive data types.  If
+        you find an error in this method or any other error in the
+        program, please submit this error and the appropiate
+        correction on the `pyXSD website <http://pyxsd.org>`_.
 
         Parameters:
 
-        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
-        - `subElCls`- the schema type class that corresponds to the subElement that is being processed.
-        - `subElement`- The subElement that has a primitive data type.
+        - `cls`- The schema type class in use. NOTE: since this
+          function is a classmethod, `cls` is the first argument, not
+          the instance of the class.
 
+        - `subElCls`- the schema type class that corresponds to the
+          subElement that is being processed.
+
+        - `subElement`- The subElement that has a primitive data type.
         """
 
         dataTypeChildren = subElement.getchildren()
@@ -325,15 +372,15 @@ class SchemaBase(object):
 
     @classmethod
     def addBaseDescriptors(cls):
-        """
-        Adds attribute descriptors from classes that are bases to the current class.
-        Does this recursively down the list of bases. Everything returned as a dictionary.
-        A classmethod.
+        """Adds attribute descriptors from classes that are bases to the
+        current class.  Does this recursively down the list of
+        bases. Everything returned as a dictionary.  A classmethod.
 
         Parameters:
 
-        - `cls`- The schema type class in use. NOTE: since this function is a classmethod, `cls` is the first argument, not the instance of the class.
-
+        - `cls`- The schema type class in use. NOTE: since this
+          function is a classmethod, `cls` is the first argument, not
+          the instance of the class.
         """
 
         descriptors = {}
@@ -351,11 +398,12 @@ class SchemaBase(object):
         return descriptors
 
     def descAttributes(self):
-        """
-        Returns a dictionary of the  descriptor attributes. These attributes are from the schema and use descriptors,
-        which are specified in the Attribute class in elementReprsentatives, that help check element attribute values.
-        Uses lazy evulation by storing the descriptor attributes in a variable  called '_descAttrs_', which it returns
-        if this variable is specified.
+        """Returns a dictionary of the descriptor attributes. These
+        attributes are from the schema and use descriptors, which are
+        specified in the Attribute class in elementReprsentatives,
+        that help check element attribute values.  Uses lazy evulation
+        by storing the descriptor attributes in a variable called
+        '_descAttrs_', which it returns if this variable is specified.
 
         No parameters.
         """
@@ -379,22 +427,24 @@ class SchemaBase(object):
         return attrs
 
     def descAttributeNames(self):
-        """
-        Returns a list that has all of the names of attribute descriptors. Calls descAttributes(), and returns a list of the keys from
-        that dictionary.
+        """Returns a list that has all of the names of attribute
+        descriptors. Calls descAttributes(), and returns a list of the
+        keys from that dictionary.
         """
         return self.descAttributes().keys()
 
     def checkAttributes(self, usedAttrs, elementTag):
-        """
-        Checks to see that required attributes are used in the xml, and does other such checks on the attributes.
-        Note: the attribute descriptors check the values in element attributes.
+        """Checks to see that required attributes are used in the xml, and
+        does other such checks on the attributes.  Note: the attribute
+        descriptors check the values in element attributes.
 
         Parameters:
 
-        - `usedAttrs`- a list containing the names of attributes that were put into the instance.
-        - `elementTag`- The ElementTree tag for the instance that is being checked.
+        - `usedAttrs`- a list containing the names of attributes that
+          were put into the instance.
 
+        - `elementTag`- The ElementTree tag for the instance that is
+          being checked.
         """
 
         descriptorAttributes = self.descAttributes()
@@ -424,13 +474,13 @@ class SchemaBase(object):
 
     @staticmethod
     def dumpCls(cls):
-        """
-        For debugging purposes only. Prints out the contents of a class. A staticmethod.
+        """For debugging purposes only. Prints out the contents of a class. A
+        staticmethod.
 
         parameters:
 
-        - `cls`- The class to dump the contents of. NOTE: this is the only arguement, since it is a staticmethod.
-
+        - `cls`- The class to dump the contents of. NOTE: this is the
+          only arguement, since it is a staticmethod.
         """
 
         print " In dumpCls[%s] bases = %s " % \

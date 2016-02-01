@@ -52,7 +52,7 @@ class ExpandCell (CellSizer):
                 for z in range(0, a3Expand):
                     for atom in atoms:
                         position = atom.position
-                        position = map(lambda x: float(x), position)
+                        position = [float(p) for p in position]
                         newPosition = []
                         newPosition.append(
                             ((position[0] + x) * a1Length) / newA1Length)

@@ -3,15 +3,15 @@ from atom import Atom
 from vector import Vector
 from bravaisLattice import BravaisLattice
 
-"""
-============================
+"""============================
 Transform Library: CellSizer
 ============================
 
 :Author: Kali Norby <kali.norby@gmail.com>
 :Date: Fri, 1 Sept 2006
 :Category: Computational Materials Science
-:Description: Library containing functions to change the size and shape of a crystal lattice structure
+:Description: Library containing functions to change the size and
+shape of a crystal lattice structure
 :Copyright: pyXSD License
 
 Includes as part of the CellSizer Library:
