@@ -77,7 +77,6 @@ __module__ = "pyXSD"
 __version__ = "0.1"
 __author__ = "Kali Norby and Mike Summers"
 
-import sets
 import sys
 import traceback
 import imp
@@ -698,7 +697,7 @@ def main():
     transforms = []
 
     if options.transformCall:
-        if '>' in sets.Set(options.transformCall):
+        if '>' in set(options.transformCall):
             transforms = options.transformCall.split('>')
             transforms = [t.strip() for t in transforms]
         else:

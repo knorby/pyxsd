@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 from optparse import OptionParser
-from pyxsd.pyXSD import PyXSD
 import sys
+
+from pyxsd.pyXSD import PyXSD
+
 
 usage = "usage: ./pyXSD.py [options] arg"
 parser = OptionParser(usage, version="PyXSD 0.1")
@@ -59,7 +61,7 @@ linestrip = lambda x: x.strip('>').strip('\n').strip()
 transforms = []
 
 if options.transformCall:
-    if '>' in sets.Set(options.transformCall):
+    if '>' in set(options.transformCall):
         transforms = options.transformCall.split('>')
         transforms = map(linestrip, transforms)
     else:
