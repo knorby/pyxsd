@@ -1,4 +1,3 @@
-
 from elementRepresentative import ElementRepresentative
 
 
@@ -12,9 +11,7 @@ class Length(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.value = self.xsdElement.get('value')
-
         self.getContainingType().length = self.value
 
     def getName(self):

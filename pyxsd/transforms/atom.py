@@ -16,6 +16,5 @@ class Atom (object):
     """
 
     def __init__(self, position, atomType):
-
         self.position = position
         self.atomType = atomType

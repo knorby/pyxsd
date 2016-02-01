@@ -14,9 +14,7 @@ class Sequence(ElementRepresentative):
         See *ElementRepresentative* for more documentation.
         """
         self. elements = []
-
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.getContainingType().sequencesOrChoices.append(self)
 
     def getName(self):
@@ -24,7 +22,5 @@ class Sequence(ElementRepresentative):
         Makes a name like this- sequence`some id number`. 
         """
         choiceNum = len(self.getContainingType().sequencesOrChoices) + 1
-
         name = "sequence%i" % choiceNum
-
         return name

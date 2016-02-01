@@ -11,9 +11,7 @@ class MinInclusive(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.value = self.xsdElement.get('value')
-
         self.getContainingType().minInclusive = self.value
 
     def getName(self):
@@ -21,5 +19,4 @@ class MinInclusive(ElementRepresentative):
         Makes a name like this- `ContainingTypeName`|minInclusive.
         The name on this class is used for almost nothing.
         """
-
         return "%s|minInclusive" % self.getContainingTypeName()

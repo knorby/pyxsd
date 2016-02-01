@@ -10,7 +10,6 @@ class ComplexContent(ElementRepresentative):
         """
         See *ElementRepresentative* for documentation.
         """
-
         ElementRepresentative.__init__(self, xsdElement, parent)
 
     def getName(self):
@@ -19,7 +18,5 @@ class ComplexContent(ElementRepresentative):
         The name on this class is used for almost nothing.
         """
         contName = self.getContainingTypeName()
-
         name = contName + '|complexContent'
-
         return name

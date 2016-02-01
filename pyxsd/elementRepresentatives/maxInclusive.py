@@ -11,7 +11,6 @@ class MaxInclusive(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.value = self.xsdElement.get('value')
         self.getContainingType().maxInclusive = self.value
 
@@ -20,5 +19,4 @@ class MaxInclusive(ElementRepresentative):
         Makes a name like this- `ContainingTypeName`|maxInclusive.
         The name on this class is used for almost nothing.
         """
-
         return "%s|maxInclusive" % self.getContainingTypeName()

@@ -28,7 +28,6 @@ class Attribute(ElementRepresentative):
         type. See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.getContainingType().attributes[self.name] = self
 
     def __str__(self):
@@ -53,19 +52,14 @@ class Attribute(ElementRepresentative):
         """
         children = self.xsdElement.getchildren()
 
-        if len(children) == 0:
+        if not children:
             return None
 
         for child in children:
-
             processedChild = ElementRepresentative.factory(child, self)
-
             self.processedChildren.append(processedChild)
-
             self.type = processedChild.name
-
             self.tagAttributes['type'] = self.type
-
             processedChild.processChildren()
 
     def getType(self):
@@ -109,7 +103,6 @@ class Attribute(ElementRepresentative):
 
         if self.name in obj.__dict__:
             return obj.__dict__[self.name]
-
         default = getattr(self, 'default', None)
         return default
 
@@ -125,13 +118,9 @@ class Attribute(ElementRepresentative):
         if issubclass(self.getType(), XsdDataType):
             if self.getType() == Boolean:
                 if isinstance(value, basestring):
-
                     if value == 'true' or value == 'True':
-
                         value = 1
-
                     elif value == 'False' or value == 'false':
-
                         value = 0
             try:
                 value = self.getType()(value)
@@ -143,7 +132,6 @@ class Attribute(ElementRepresentative):
                 print "The program will attempt to continue, but may experience errors."
                 print
         elif not isinstance(obj, self.getType()):
-
             raise Exception()
 
         obj.__dict__[self.name] = value
@@ -163,6 +151,6 @@ class Attribute(ElementRepresentative):
         Returns the 'use' value, which says if the attribute is required
         or the default optional. 
         """
-        if not 'use' in self.__dict__.keys():
+        if 'use' not in self.__dict__:
             self.use = 'optional'
         return self.use

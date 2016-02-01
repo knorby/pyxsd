@@ -14,6 +14,5 @@ class BravaisLattice (object):
     """
 
     def __init__(self, vectors, basis):
-
         self.vectors = vectors
         self.basis = basis

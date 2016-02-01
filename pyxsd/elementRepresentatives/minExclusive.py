@@ -11,7 +11,6 @@ class MinExclusive(ElementRepresentative):
         See *ElementRepresentative* for documentation.
         """
         ElementRepresentative.__init__(self, xsdElement, parent)
-
         self.value = self.xsdElement.get('value')
         self.getContainingType().minExclusive = self.value
 

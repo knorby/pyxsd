@@ -29,9 +29,13 @@ Overview:
 =========
 
 - Creates python classes for all types defined in an XSD schema file (xml)
-- Reads in a xml file and builds a new pythonic tree according to classes. This tree of instances maintains the same overall structure of the original xml document.
-- Provides some xml/schema parsing with non-fatal errors in order to help the user write a valid xml document, without requiring it
-- Transforms the pythonic reprsentation according to built-in and add-on 'transform' classes that the user specifies
+- Reads in a xml file and builds a new pythonic tree according to classes.
+  This tree of instances maintains the same overall structure of the original
+  xml document.
+- Provides some xml/schema parsing with non-fatal errors in order to help the
+  user write a valid xml document, without requiring it
+- Transforms the pythonic reprsentation according to built-in and add-on
+  'transform' classes that the user specifies
 - Sends data to a writer to write the pythonic tree back into an xml file
 
 
@@ -39,11 +43,18 @@ Features:
 =========
 
 - Transforms allow users to easily adapt pyXSD to vast number of applications
-        + Provides a framework and libraries to write transform so the user can more easily write these transform functions
-        + Allows the user to specify the desired transform classes with arguments and the order in a file so the user can create a sort of custom tool
-        + Allows for transforms that can export to other formats, giving pyXSD powerful flexibility
-- The pythonic data tree format uses a very simple structure that allows for an easily understood API, so that users can easily manipute this tree in transforms and use the writer in other programs
-- Can be used as a standalone program at the command line or as a library in other programs
+        + Provides a framework and libraries to write transform so the user can
+          more easily write these transform functions
+        + Allows the user to specify the desired transform classes with
+          arguments and the order in a file so the user can create a sort of
+          custom tool
+        + Allows for transforms that can export to other formats, giving pyXSD
+          powerful flexibility
+- The pythonic data tree format uses a very simple structure that allows for
+  an easily understood API, so that users can easily manipute this tree in
+  transforms and use the writer in other programs
+- Can be used as a standalone program at the command line or as a library in
+  other programs
 - uses the cElementTree library for fast reading of the xml and xsd files
 
 """
@@ -73,7 +84,9 @@ except:
             try:
                 import elementtree.ElementTree as ET
             except:
-                raise ImportError, "Your system needs the ElementTree or cElementTree library in order to run this package"
+                raise ImportError(
+                    "Your system needs the ElementTree or cElementTree library"
+                    " in order to ""run this package")
 
 from elementRepresentatives.elementRepresentative import ElementRepresentative
 from writers.xmlTreeWriter import XmlTreeWriter
@@ -85,19 +98,30 @@ class PyXSD(object):
     """main class of the program that is in charge of data flow.
     Has command line support when it is called as a script."""
 
-    def __init__(self, xmlFileInput, xsdFile=None, xmlFileOutput=False, transformOutputName=None, transforms=[], classFile=None, verbose=False, quiet=False):
-        """This class is init'ed from the command line normally. Use this information for uses of pyXSD as a library.
+    def __init__(self, xmlFileInput, xsdFile=None, xmlFileOutput=False,
+                 transformOutputName=None, transforms=[], classFile=None,
+                 verbose=False, quiet=False):
+        """This class is init'ed from the command line normally. Use this
+        information for uses of pyXSD as a library.
 
         Parameters:
 
-        `- xmlFileInput`- The filename of the xml file to input. Can include path information. Will raise an error if not specified.
-        `- xsdFile`- The filename/path information for the schema file. Will attempt to use the schemaLocation tag in the xml if not specified.
-        `- xmlFileOutput`- location for xml output to be sent after it is parsed. Will use a default name if not specified. Will not output if value is set to _No_Output_
-        `- transformOutputName`- location of the xml output after transform. Will make default filename if not specified.
-        `- transforms`- A list containing the transform calls in the order they will be performed.
+        `- xmlFileInput`- The filename of the xml file to input. Can include
+           path information. Will raise an error if not specified.
+        `- xsdFile`- The filename/path information for the schema file. Will
+           attempt to use the schemaLocation tag in the xml if not specified.
+        `- xmlFileOutput`- location for xml output to be sent after it is
+           parsed. Will use a default name if not specified. Will not output
+           if value is set to _No_Output_
+        `- transformOutputName`- location of the xml output after transform.
+           Will make default filename if not specified.
+        `- transforms`- A list containing the transform calls in the order they
+           will be performed.
         `- classFile`- The location of the overlay class file. Experimental.
-        `- verbose`- A boolean value. If set to true, will output more information.
-        `- quiet`- A boolean value. If set to true, will output less information and errors than normal.
+        `- verbose`- A boolean value. If set to true, will output more
+           information.
+        `- quiet`- A boolean value. If set to true, will output less
+           information and errors than normal.
 
         """
 
@@ -128,9 +152,7 @@ class PyXSD(object):
         if xsdFile == None:
             self.xsdFile = self.getSchemaInfo('l')
         self.getSchemaFile()
-
         self.nameSpace = self.getSchemaInfo('n')
-
         self.parseXSD()
 
         if classFile:
@@ -147,7 +169,7 @@ class PyXSD(object):
         self.executeAndWriteTransforms(rootInstance)
 
     def executeAndWriteTransforms(self, rootInstance):
-        if len(self.transforms) > 0:
+        if self.transforms:
             if self.verbose:
                 print "Loading the transforms..."
             if not self.transformOutputName:
@@ -182,11 +204,13 @@ class PyXSD(object):
 
     def writeParsedXMLFile(self, rootInstance):
         """
-        Function to write the xml output after it is parsed. Called from the __init__.
+        Function to write the xml output after it is parsed. Called from
+        the __init__.
 
         Parameters:
 
-        -`rootInstance`: The root instance of a tree. Must be formatted in program's tree structure.
+        -`rootInstance`: The root instance of a tree. Must be formatted in
+        program's tree structure.
 
         """
         if isinstance(self.xmlFileOutput, basestring):
@@ -197,7 +221,8 @@ class PyXSD(object):
 
     def parseXSD(self):
         """
-        Reads the given xsd file and creates a set of classes that corespond to the complex and simple type definitions.
+        Reads the given xsd file and creates a set of classes that corespond
+        to the complex and simple type definitions.
 
         No parameters.
         """
@@ -205,29 +230,20 @@ class PyXSD(object):
             print "Sending the schema file to the ElementTree Parser..."
 
         tree = ET.parse(self.xsdFile)
-
         root = tree.getroot()
-
         if self.verbose:
             print "Sending the schema ElementTree to the ElementRepresntative module..."
 
         schemaER = ElementRepresentative.factory(root, None)
 
         for simpleType in schemaER.simpleTypes.values():
-
             cls = simpleType.clsFor(self)
-
             self.classes[simpleType.name] = cls
-
             if self.verbose:
                 print "Class created for the %s type..." % simpleType.name
-
         for complexType in schemaER.complexTypes.values():
-
             cls = complexType.clsFor(self)
-
             self.classes[complexType.name] = cls
-
             if self.verbose:
                 print "Class created for the %s type..." % complexType.name
 
@@ -263,7 +279,7 @@ class PyXSD(object):
                 print "The parser will proceed and attempt to parse only %s" % repr(topLevelDescriptors[0].name)
                 print
 
-        if len(topLevelDescriptors) == 0:
+        if not topLevelDescriptors:
             raise "Error: Invalid XML Schema-the parser could not find any root elements in the schema"
             return None
 
@@ -314,7 +330,8 @@ class PyXSD(object):
 
         parameters:
 
-        - `rootInstance`: The root instance of a tree. Must be formatted in program's tree structure.
+        - `rootInstance`: The root instance of a tree. Must be formatted in
+          program's tree structure.
         - `output`: The file object to write the tree to.
 
         """
@@ -326,7 +343,8 @@ class PyXSD(object):
 
     def getClasses(self):
         """ 
-        Returns the dictionary of classes created by ElementRepresentative for each type specified in the schema.
+        Returns the dictionary of classes created by ElementRepresentative
+        for each type specified in the schema.
 
         no parameters
         """
@@ -335,7 +353,9 @@ class PyXSD(object):
     def loadClassFromFile(self, classFile):
         """
         Loads a file with overlay classes into the class dictionary.
-        Overlay classes add to and override the schema type classes to allow for a user to create their own types without changing the schema file itself.
+        Overlay classes add to and override the schema type classes to allow
+        for a user to create their own types without changing the schema file
+        itself.
         **Consider this functionality experimental.**
 
         parameters:
@@ -346,7 +366,9 @@ class PyXSD(object):
         try:
             fp, pathname, description = imp.find_module(classFile)
         except ImportError:
-            raise ImportError, "the file '%s' was not found. Please check your spelling." % classFile
+            raise ImportError(
+                "the file '%s' was not found. Please check your spelling."
+                % classFile)
         module = imp.load_module(classFile, fp, pathname, description)
         newClasses = {}
         for var in vars(module):
@@ -375,7 +397,6 @@ class PyXSD(object):
 
         No parameters.
         """
-
         try:
 
             tree = ET.parse(self.xmlFileInput)
@@ -398,17 +419,11 @@ class PyXSD(object):
 
         no parameters
         """
-
         inputName = self.xmlFileInput
-
         path, inputName = os.path.split(inputName)
-
         inputNameSplit = inputName.split('.')
-
         nonExtensionName = inputNameSplit[-2]
-
         nonExtensionName = nonExtensionName + 'Parsed'
-
         return os.path.join(path, (nonExtensionName + '.xml'))
 
     def getTransformModuleAndLoad(self, className):
@@ -457,7 +472,7 @@ class PyXSD(object):
 
         for transform in transforms:
 
-            if not '(' in sets.Set(transform):
+            if not '(' in set(transform):
                 raise "Transform Call Error: the transform call '%s' does not use correct syntax." % transform
 
             transformSplit = transform.split('(')
@@ -465,7 +480,7 @@ class PyXSD(object):
             transformer = self.getTransformModuleAndLoad(transformSplit[0])
             argString = str(args)
 
-            if not len(kwargs) == 0:
+            if kwargs:
 
                 keywordArgString = ""
                 for key, value in kwargs.iteritems():
@@ -488,29 +503,17 @@ class PyXSD(object):
 
         no parameters
         """
-
         inputName = self.xmlFileInputName
-
-        if '.' in sets.Set(self.xmlFileInputName):
-
+        if '.' in set(self.xmlFileInputName):
             inputNameSplit = self.xmlFileInputName.split('.')
-
             nonExtensionName = inputNameSplit[-2]
-
         else:
-
             nonExtensionName = self.xmlFileInputName
-
         nonExtensionName = nonExtensionName + 'Transformed'
-
         newName = nonExtensionName + '.xml'
-
         newName = os.path.join(self.xmlPath, self.xmlFileInputName)
-
         if self.verbose:
-
             print "Setting the transformed xml file name to the default:", newName
-
         return newName
 
     def getSchemaInfo(self, nameOrLocation):
@@ -529,19 +532,15 @@ class PyXSD(object):
         """
 
         xsiNS = 'http://www.w3.org/2001/XMLSchema-instance'
-
         if self.makeFullName(xsiNS, 'schemaLocation') in self.xmlRoot.attrib:
-
             schemaLocationTag = self.xmlRoot.attrib[
                 self.makeFullName(xsiNS, 'schemaLocation')]
-
-            if '\n' in sets.Set(schemaLocationTag):
+            if os.linesep in set(schemaLocationTag):
                 schemaLocationSplit = schemaLocationTag.split('\n')
             else:
                 schemaLocationSplit = schemaLocationTag.split(' ')
 
             if not len(schemaLocationSplit) == 2:
-
                 print "Parser Error: the 'schemaLocation' tag must be a pair of values seperated by a space or line break"
                 print "with the namespace stated first, followed by the location of the schema."
                 print "The program will attempt to use the 'noNamespaceSchemaLocation' tag instead."
@@ -551,34 +550,26 @@ class PyXSD(object):
                 self.xmlRoot.attrib[self.makeFullName(
                     xsiNS, 'noNamespaceSchemaLocation')] = schemaLocationTag
 
-        if self.makeFullName(xsiNS, 'noNamespaceSchemaLocation') in self.xmlRoot.attrib:
+        if (self.makeFullName(xsiNS, 'noNamespaceSchemaLocation')
+                in self.xmlRoot.attrib):
 
             if nameOrLocation == 't':
-
                 return self.makeFullName(xsiNS, 'noNamespaceSchemaLocation')
-
             if nameOrLocation == 'n':
-
                 return None
-
             if nameOrLocation == 'l':
-
-                return self.xmlRoot.attrib[self.makeFullName(xsiNS, 'noNamespaceSchemaLocation')]
+                return self.xmlRoot.attrib[
+                    self.makeFullName(xsiNS, 'noNamespaceSchemaLocation')]
 
         schemaNS = schemaLocationSplit[0]
-
         if nameOrLocation == 'n':
-
             return schemaNS
 
         schemaLocation = schemaLocationSplit[-1]
-
         if nameOrLocation == 'l':
-
             return schemaLocation
 
         if nameOrLocation == 't':
-
             return self.makeFullName(xsiNS, 'schemaLocation')
 
     def makeFullName(self, ns, text):

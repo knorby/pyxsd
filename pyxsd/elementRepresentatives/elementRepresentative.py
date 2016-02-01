@@ -84,44 +84,27 @@ class ElementRepresentative(object):
         See the documentation for the ElementRepresentative system at the top of the
         ElementRepresentative module.
         """
-
         self.xsdElement = xsdElement
-
         self.parent = parent
-
         self.tagParts = self.xsdElement.tag.split("}")
-
         self.tagType = self.tagParts[1]
-
         self.name = self.getName()
-
         self.register(self.name, self)
-
         self.superClassNames = []
-
         self.subClassNames = []
-
         self.references = []
-
         self.referToMe = []
-
         self.tagAttributes = {}
-
         self.processedChildren = []
-
         self.layerNum = self.findLayerNum()
-
         self.clsName = self.name
         self.clsName = self.clsName[0].upper() + self.clsName[1:]
 
-        for name in xsdElement.keys():
+        for name in xsdElement.viewkeys():
             if name == 'name':
                 continue
-
             setattr(self, name, xsdElement.get(name))
-
             self.tagAttributes[name] = xsdElement.get(name)
-
             continue
 
         self.processChildren()
@@ -130,8 +113,8 @@ class ElementRepresentative(object):
         """
         sets the str() function to print the ER information for a tag in the form: ClassName[TagName]
         """
-
-        return "%s[%s]" % (self.__class__.__name__, self.__dict__.get('name', '???'))
+        return "%s[%s]" % (
+            self.__class__.__name__, self.__dict__.get('name', '???'))
 
     def processChildren(self):
         """
@@ -139,18 +122,14 @@ class ElementRepresentative(object):
 
         No parameters.
         """
-
         children = self.xsdElement.getchildren()
-
-        if len(children) == 0:
+        if not children:
             return None
-
         for child in children:
-
             processedChild = ElementRepresentative.factory(child, self)
-
             self.processedChildren.append(processedChild)
 
+    @classmethod
     def factory(cls, xsdElement, parent):
         """
         A classmethod. Initializes the tag-specific class for a particular ElementTree schema element.
@@ -165,21 +144,13 @@ class ElementRepresentative(object):
         - `parent`- the parent ER for the tag being processed. 'None' when being called on the root `schema` element.
 
         """
-
         clsName = cls.classNameFor(xsdElement, parent)
-
         if clsName in theVars.keys():
-
             cls = theVars[clsName]
-
             return cls(xsdElement, parent)
-
         # Complain
         print "ElementRepresentative %s is not defined!" % clsName
-
         return None
-
-    factory = classmethod(factory)
 
     def describe(self):
         """
@@ -187,9 +158,7 @@ class ElementRepresentative(object):
 
         No parameters
         """
-
-        for attrName, value in vars(self).iteritems():
-
+        for attrName, value in vars(self).viewitems():
             print " %s -> %s " % (attrName, value)
 
     def findLayerNum(self):
@@ -197,13 +166,10 @@ class ElementRepresentative(object):
         Called by the ER `__init__`. Returns an integer tha specifies how deep in the tree
         a particular element is. The `schema` element, which is the root element, is '1'.
         """
-        if self.parent == None:
+        if self.parent is None:
             return 1
-
         parentLayerNum = self.parent.findLayerNum()
-
         currentLayerNum = parentLayerNum + 1
-
         return currentLayerNum
 
     def checkTopLevelType(self):
@@ -213,12 +179,11 @@ class ElementRepresentative(object):
 
         No parameters
         """
-
         if isinstance(self.parent, Schema):
             return True
-
         return False
 
+    @classmethod
     def typeFromName(cls, xsdTypeName, pyXSD):
         """
         A classmethod. Used with the clsFor() function in `xsdDataType`. Returns a schema type given
@@ -232,51 +197,34 @@ class ElementRepresentative(object):
         - `pyXSD`- the instance of the *PyXSD* class. Included so it can be used as an argument with the clsFor() method. See clsFor() in *XsdType* for more information.
 
         """
-
         if not xsdTypeName[:3] == 'xs:':
             getFromNameReturned = cls.getFromName(xsdTypeName)
             if getFromNameReturned:
                 return getFromNameReturned.clsFor(pyXSD)
             print "typeFromName() error: getFromName() is returning None for", xsdTypeName
             return None
-
         xsdTypeNameSplit = xsdTypeName.split(':')
         xsdTypeName = xsdTypeNameSplit[1]
-
         if xsdTypeName == 'string':
             return String
-
-        if xsdTypeName == 'double':
+        elif xsdTypeName == 'double':
             return Double
-
-        if xsdTypeName == 'int' or xsdTypeName == 'integer':
-
+        elif xsdTypeName == 'int' or xsdTypeName == 'integer':
             return Integer
-
-        if xsdTypeName == 'boolean':
-
+        elif xsdTypeName == 'boolean':
             return Boolean
-
-        if xsdTypeName == 'positiveInteger':
-
+        elif xsdTypeName == 'positiveInteger':
             return PositiveInteger
-
-        if xsdTypeName == 'ID':
-
+        elif xsdTypeName == 'ID':
             return ID
-
-        if xsdTypeName == 'IDREF':
-
+        elif xsdTypeName == 'IDREF':
             return IDREF
-
-        if xsdTypeName == 'base64Binary':
-
+        elif xsdTypeName == 'base64Binary':
             return Base64Binary
-
-        print "XsdTypeName Error: %s does not correspond to a class" % xsdTypeName
-        return None
-
-    typeFromName = classmethod(typeFromName)
+        else:
+            print ("XsdTypeName Error: %s does not correspond to a class"
+                   % xsdTypeName)
+            return None
 
     def addSuperClassName(self, name):
         """
@@ -288,13 +236,12 @@ class ElementRepresentative(object):
         - `name`- the name of the base class to add to the base class list
 
         """
-        if name == None:
-            return
-
-        for superClassName in self.getContainingType().superClassNames:  # Prevent Duplicates
+        if name is None:
+            return None
+        # Prevent Duplicates
+        for superClassName in self.getContainingType().superClassNames:
             if superClassName == name:
-                return
-
+                return None
         self.getContainingType().superClassNames.append(name)
 
     def getContainingType(self):
@@ -305,13 +252,11 @@ class ElementRepresentative(object):
 
         No parameters.
         """
-        if not self.parent == None:
+        if self.parent is not None:
             return self.parent.getContainingType()
-
         print "ElementRepresentative Error: the program encountered an unknown error in getContainingType()"
         print "The class dictionary is as follows:"
         self.describe()
-
         return None
 
     def getSchema(self):
@@ -331,10 +276,8 @@ class ElementRepresentative(object):
         No parameters.
         """
         theType = self.getContainingType()
-
-        if theType == None:
+        if theType is None:
             return None
-
         return theType.name
 
     def getName(self):
@@ -345,12 +288,11 @@ class ElementRepresentative(object):
         No parameters.
         """
         name = self.xsdElement.get("name")
-
-        if not name == None:
+        if name is not None:
             return name
-
         return None
 
+    @classmethod
     def register(cls, name, obj):
         """
         The registry stores all ER objs in a dictionary with their name as a key.
@@ -364,14 +306,11 @@ class ElementRepresentative(object):
         - `obj`- The ER obj.
 
         """
-        if not name in registry:
-
+        if name not in registry:
             registry[name] = []
-
             registry[name].append(obj)
 
-    register = classmethod(register)
-
+    @classmethod
     def getFromName(cls, name):
         """
         Retrieve an entry in the registry by its name. A classmethod, but could be staticmethod.
@@ -382,31 +321,22 @@ class ElementRepresentative(object):
         - `name`- The name of the ER obj.
 
         """
+        # XXX: improve this
         l = registry.get(name, [])
-
         if l == []:
-
             try:
-
                 l = registry[name]
-
             except:
                 print "getFromName Error: %s is not a key in the registry" % name
                 return None
-
         if len(l) == 1:
-
             m = l[0]
-
             return m
-
         # Complain
         print "ElementRepresentative Error: %s" % repr(l)
-
         return None
 
-    getFromName = classmethod(getFromName)
-
+    @staticmethod
     def tryConvert(variable):
         """
         Tries to convert a variable from a string in the xsd to a python value.
@@ -419,20 +349,19 @@ class ElementRepresentative(object):
         """
         try:
             return int(variable)
-        except:
+        except (TypeError, ValueError):
             pass
         try:
             return float(variable)
-        except:
+        except (TypeError, ValueError):
             pass
         if variable == 'false':
             return False
-        if variable == 'true':
+        elif variable == 'true':
             return True
         return variable
 
-    tryConvert = staticmethod(tryConvert)
-
+    @classmethod
     def classNameFor(cls, xsdElement, parent):
         """
         returns the name of the class that the factory should find. A classmethod.
@@ -448,18 +377,11 @@ class ElementRepresentative(object):
         """
 
         clsName = xsdElement.tag
-
         tagParts = xsdElement.tag.split("}")
-
         if len(tagParts) == 2:
-
             clsName = tagParts[1]
-
             clsName = clsName[0].upper() + clsName[1:]
-
         return clsName
-
-    classNameFor = classmethod(classNameFor)
 
 # Imports all of the tag-specific classes
 tags = ['element', 'attribute', 'schema', 'xsdType', 'extension', 'simpleType',

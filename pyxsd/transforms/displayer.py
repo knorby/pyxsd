@@ -1,7 +1,9 @@
-from transform import Transform
-from pyxsd.writers.xmlTreeWriter import XmlTreeWriter
 import sys
 import tempfile
+
+from transform import Transform
+from pyxsd.writers.xmlTreeWriter import XmlTreeWriter
+
 
 """
 
@@ -21,7 +23,7 @@ Transform Library: Displayer
 class Displayer(Transform):
 
     def openFile(self, fileName=None):  # uses stdout if filename is None
-        if fileName == None or fileName == 'stdout':
+        if fileName is None or fileName == 'stdout':
             return sys.stdout
         return open(fileName, 'w')
 

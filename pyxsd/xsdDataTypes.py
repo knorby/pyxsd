@@ -71,11 +71,8 @@ class NonNegativeInteger(Integer):
     name = 'NonNegativeInteger'
 
     def __init__(self, val):
-
         if val < 0:
-
-            raise TypeError, "Not a non-negative Integer"
-
+            raise TypeError("Not a non-negative Integer")
         Integer.__init__(self, val)
 
 
@@ -86,11 +83,8 @@ class NegativeInteger(Integer):
     name = 'NegativeInteger'
 
     def __init__(self, val):
-
         if val >= 0:
-
-            raise TypeError, "Not a negative Integer"
-
+            raise TypeError("Not a negative Integer")
         Integer.__init__(self, val)
 
 
@@ -101,11 +95,8 @@ class NonPositiveInteger(Integer):
     name = 'NonPostiveInteger'
 
     def __init__(self, val):
-
         if val > 0:
-
-            raise TypeError, "Not a non-postive Integer"
-
+            raise TypeError("Not a non-postive Integer")
         Integer.__init__(self, val)
 
 
@@ -113,10 +104,9 @@ class Double(float, XsdDataType):
     """
     Identical to the float type in python. Has *float* and *XsdDataType* as base classes.
     """
-    name = 'Float'  # Should this be 'Double' instead?
+    name = 'Float'  # XXX: Should this be 'Double' instead?
 
     def __init__(self, val):
-
         float.__init__(self, val)
 
 
@@ -127,7 +117,6 @@ class TypeList(list, XsdDataType):
     name = "List"
 
     def __init__(self, val):
-
         list.__init__(self, val)
 
 
@@ -147,11 +136,8 @@ class Boolean(Integer):
     def __init__(self, val):
 
         self.val = val
-
         if val < 0 or val > 1:
-
-            raise TypeError, "Invalid Boolean Value %i" % val
-
+            raise TypeError("Invalid Boolean Value %i" % val)
         Integer.__init__(self, val)
 
     def __str__(self):
@@ -183,7 +169,6 @@ class String(str, XsdDataType):
     name = 'String'
 
     def __init__(self, val):
-
         str.__init__(self, val)
 
 
@@ -194,7 +179,6 @@ class ID(String):
     name = 'ID'
 
     def __init__(self, val):
-
         String.__init__(self, val)
 
 
@@ -205,7 +189,6 @@ class IDREF(String):
     name = 'IDREF'
 
     def __init__(self, val):
-
         String.__init__(self, val)
 
 
@@ -222,8 +205,7 @@ class Base64Binary(String):
         try:
             valTestDe = base64.decodestring(val)
             valTestEn = base64.encodestring(valTestDe)
-
         except:
-            raise TypeError, "Not a valid Base64 Binary"
-
+            raise TypeError("Not a valid Base64 Binary")
         String.__init__(self, val)
+        
