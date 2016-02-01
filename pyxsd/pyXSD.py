@@ -1,61 +1,75 @@
 #! /usr/bin/python
 
-"""
-=================
-pyXSD Version 0.1
-=================
+"""PyXSD was developed in order to map XML and the related schema
+(XSD) files into the programming language Python. The program builds a
+Pythonic representation of the XML tree according to the
+specifications in the schema and raises non-fatal parser errors
+whenever possible in order to help the user validate their XML
+document. The program allows the user to specify *transform* classes,
+which manipulate and transform the XML tree in various ways. The
+program then writes the tree back out into XML. This program was
+written in order to replace many of the old tools that were written in
+FORTRAN with the more modern XML format and the more modern and
+powerful Python programming language. PyXSD allows users to create
+their own transform classes with the help of a transform
+library. These classes are fairly simple to write, making the system
+highly adaptable to very specific uses, as one might find in many
+scientific applications; however, the program has potential uses in
+other fields, since XML is widely used. The program allows the user to
+specify the desired transform classes, along with their arguments and
+sequence of application, so the user can create customised tools. The
+program can be used either as a standalone command line program or as
+a library in other programs.
 
-PyXSD was developed in order to map XML and the related schema (XSD) files into the
-programming language Python. The program builds a Pythonic representation of the XML 
-tree according to the specifications in the schema and raises non-fatal parser errors 
-whenever possible in order to help the user validate their XML document. The program 
-allows the user to specify *transform* classes, which manipulate and transform the 
-XML tree in various ways. The program then writes the tree back out into XML. This 
-program was written in order to replace many of the old tools that were written in 
-FORTRAN with the more modern XML format and the more modern and powerful Python 
-programming language. PyXSD allows users to create their own transform classes with 
-the help of a transform library. These classes are fairly simple to write, making the 
-system highly adaptable to very specific uses, as one might find in many scientific 
-applications; however, the program has potential uses in other fields, since XML is 
-widely used. The program allows the user to specify the desired transform classes, 
-along with their arguments and sequence of application, so the user can create 
-customised tools. The program can be used either as a standalone command line program 
-or as a library in other programs.
-
-For more information on pyXSD, see the `pyXSD website <http://pyxsd.org>`_
-if you haven't already.
+For more information on pyXSD, see the `pyXSD website
+<http://pyxsd.org>`_ if you haven't already.
 
 Overview:
 =========
 
-- Creates python classes for all types defined in an XSD schema file (xml)
-- Reads in a xml file and builds a new pythonic tree according to classes.
-  This tree of instances maintains the same overall structure of the original
-  xml document.
-- Provides some xml/schema parsing with non-fatal errors in order to help the
-  user write a valid xml document, without requiring it
-- Transforms the pythonic reprsentation according to built-in and add-on
-  'transform' classes that the user specifies
-- Sends data to a writer to write the pythonic tree back into an xml file
+- Creates python classes for all types defined in an XSD schema file
+  (xml)
+
+- Reads in a xml file and builds a new pythonic tree according to
+  classes.  This tree of instances maintains the same overall
+  structure of the original xml document.
+
+- Provides some xml/schema parsing with non-fatal errors in order to
+  help the user write a valid xml document, without requiring it
+
+- Transforms the pythonic reprsentation according to built-in and
+  add-on 'transform' classes that the user specifies
+
+- Sends data to a writer to write the pythonic tree back into an xml
+  file
 
 
 Features:
 =========
 
-- Transforms allow users to easily adapt pyXSD to vast number of applications
-        + Provides a framework and libraries to write transform so the user can
-          more easily write these transform functions
-        + Allows the user to specify the desired transform classes with
-          arguments and the order in a file so the user can create a sort of
-          custom tool
-        + Allows for transforms that can export to other formats, giving pyXSD
-          powerful flexibility
-- The pythonic data tree format uses a very simple structure that allows for
-  an easily understood API, so that users can easily manipute this tree in
-  transforms and use the writer in other programs
-- Can be used as a standalone program at the command line or as a library in
-  other programs
-- uses the cElementTree library for fast reading of the xml and xsd files
+- Transforms allow users to easily adapt pyXSD to vast number of
+  applications
+
+        + Provides a framework and libraries to write transform so the
+          user can more easily write these transform functions
+
+        + Allows the user to specify the desired transform classes
+          with arguments and the order in a file so the user can
+          create a sort of custom tool
+
+        + Allows for transforms that can export to other formats,
+          giving pyXSD powerful flexibility
+
+- The pythonic data tree format uses a very simple structure that
+  allows for an easily understood API, so that users can easily
+  manipute this tree in transforms and use the writer in other
+  programs
+
+- Can be used as a standalone program at the command line or as a
+  library in other programs
+
+- uses the cElementTree library for fast reading of the xml and xsd
+  files
 
 """
 
@@ -95,8 +109,10 @@ from schemaBase import SchemaBase
 
 class PyXSD(object):
 
-    """main class of the program that is in charge of data flow.
-    Has command line support when it is called as a script."""
+    """main class of the program that is in charge of data flow.  Has
+    command line support when it is called as a script.
+
+    """
 
     def __init__(self, xmlFileInput, xsdFile=None, xmlFileOutput=False,
                  transformOutputName=None, transforms=[], classFile=None,
@@ -106,21 +122,31 @@ class PyXSD(object):
 
         Parameters:
 
-        `- xmlFileInput`- The filename of the xml file to input. Can include
-           path information. Will raise an error if not specified.
-        `- xsdFile`- The filename/path information for the schema file. Will
-           attempt to use the schemaLocation tag in the xml if not specified.
-        `- xmlFileOutput`- location for xml output to be sent after it is
-           parsed. Will use a default name if not specified. Will not output
-           if value is set to _No_Output_
-        `- transformOutputName`- location of the xml output after transform.
-           Will make default filename if not specified.
-        `- transforms`- A list containing the transform calls in the order they
-           will be performed.
-        `- classFile`- The location of the overlay class file. Experimental.
-        `- verbose`- A boolean value. If set to true, will output more
+        `- `xmlFileInput`- The filename of the xml file to input. Can
+           include path information. Will raise an error if not
+           specified.
+
+        - `xsdFile`- The filename/path information for the schema
+           file. Will attempt to use the schemaLocation tag in the xml
+           if not specified.
+
+        - `xmlFileOutput`- location for xml output to be sent after it
+           is parsed. Will use a default name if not specified. Will
+           not output if value is set to _No_Output_
+
+        - `transformOutputName`- location of the xml output after
+           transform.  Will make default filename if not specified.
+
+        - `transforms`- A list containing the transform calls in the
+           order they will be performed.
+
+        - `classFile`- The location of the overlay class
+          file. Experimental.
+
+        - `verbose`- A boolean value. If set to true, will output more
            information.
-        `- quiet`- A boolean value. If set to true, will output less
+
+        - `quiet`- A boolean value. If set to true, will output less
            information and errors than normal.
 
         """
@@ -203,14 +229,13 @@ class PyXSD(object):
         return
 
     def writeParsedXMLFile(self, rootInstance):
-        """
-        Function to write the xml output after it is parsed. Called from
+        """Function to write the xml output after it is parsed. Called from
         the __init__.
 
         Parameters:
 
-        -`rootInstance`: The root instance of a tree. Must be formatted in
-        program's tree structure.
+        -`rootInstance`: The root instance of a tree. Must be
+          formatted in program's tree structure.
 
         """
         if isinstance(self.xmlFileOutput, basestring):
@@ -250,13 +275,12 @@ class PyXSD(object):
         return
 
     def parseXML(self):
-        """
-        Reads the given xml file in the context of the xsd file.
-        Produces instances of the above classes.
-        Does validation.
-        returns a a schema instance object.
+        """Reads the given xml file in the context of the xsd file.  Produces
+        instances of the above classes.  Does validation.  returns a a
+        schema instance object.
 
         no parameters
+
         """
 
         if self.verbose:
@@ -295,12 +319,12 @@ class PyXSD(object):
         return subInstance
 
     def generateCorrectSchemaTags(self):
-        """
-        Generates the proper schema information and namespace information for a tag.
-        ElementTree leaves the schema information in a form that is not valid XML
-        on its own. 
+        """Generates the proper schema information and namespace information
+        for a tag.  ElementTree leaves the schema information in a
+        form that is not valid XML on its own.
 
         No parameters
+
         """
 
         locationTagName = self.getSchemaInfo('t')
@@ -325,13 +349,13 @@ class PyXSD(object):
         return
 
     def writeXML(self, rootInstance, output):
-        """
-        Sends a pythonic instance tree to the tree writer.
+        """Sends a pythonic instance tree to the tree writer.
 
         parameters:
 
-        - `rootInstance`: The root instance of a tree. Must be formatted in
-          program's tree structure.
+        - `rootInstance`: The root instance of a tree. Must be
+          formatted in program's tree structure.
+
         - `output`: The file object to write the tree to.
 
         """
@@ -351,16 +375,17 @@ class PyXSD(object):
         return self.classes
 
     def loadClassFromFile(self, classFile):
-        """
-        Loads a file with overlay classes into the class dictionary.
-        Overlay classes add to and override the schema type classes to allow
-        for a user to create their own types without changing the schema file
-        itself.
+        """Loads a file with overlay classes into the class dictionary.
+        Overlay classes add to and override the schema type classes to
+        allow for a user to create their own types without changing
+        the schema file itself.
+
         **Consider this functionality experimental.**
 
         parameters:
 
-        - `classFile`: A string that specifies the location of a user-created overlay class file
+        - `classFile`: A string that specifies the location of a
+          user-created overlay class file
 
         """
         try:
@@ -392,10 +417,12 @@ class PyXSD(object):
         self.classes.update(newClasses)
 
     def getXmlTree(self):
-        """
-        Sends the xml file into the ElementTree library's parser. Allows for the program to get the schemaLocation before parsing the xml against the schema.
+        """Sends the xml file into the ElementTree library's parser. Allows
+        for the program to get the schemaLocation before parsing the
+        xml against the schema.
 
         No parameters.
+
         """
         try:
 
@@ -413,11 +440,11 @@ class PyXSD(object):
         return tree.getroot()
 
     def getXmlOutputFileName(self):
-        """
-        Creates a default name for xml file that is parsed without any transforms.
-        Uses the name from the inputed xml file.
+        """Creates a default name for xml file that is parsed without any
+        transforms.  Uses the name from the inputed xml file.
 
         no parameters
+
         """
         inputName = self.xmlFileInput
         path, inputName = os.path.split(inputName)
@@ -427,16 +454,18 @@ class PyXSD(object):
         return os.path.join(path, (nonExtensionName + '.xml'))
 
     def getTransformModuleAndLoad(self, className):
-        """
-        Loads a transform class from its class name.
-        The file that it is located in must be the same as the className, except the first
-        letter in the filename must be lowercase. The transform must be located in a
-        directory called `transforms` that is in the installation folder of pyXSD, the
-        directory you called the program from, or in the directory where the xml file is.
+        """Loads a transform class from its class name.  The file that it is
+        located in must be the same as the className, except the first
+        letter in the filename must be lowercase. The transform must
+        be located in a directory called `transforms` that is in the
+        installation folder of pyXSD, the directory you called the
+        program from, or in the directory where the xml file is.
 
         parameters:
 
-        - `className`: A string of the transform class name being called
+        - `className`: A string of the transform class name being
+          called
+
         """
         fileName = className[:1].lower() + className[1:]
         transformMod = __import__(
@@ -445,24 +474,31 @@ class PyXSD(object):
     # See the documentation for further details on this functionality
 
     def transform(self, transforms, root):
-        """
-        Calls the transforms specified by the user. Each transform is loaded into memory by
-        getTransformModuleAndLoad(). The transform class is passed the instance of the root
-        element when it is initialized. The transform object is called with the specified
-        arguements and the new root instance is set to whatever the transform returns,
-        which is usually the root, but it is not required. Any user who uses a transform
-        that does not return the root tree instance should be aware that any transform
-        that uses the root instance will fail to work and raise a fatal error. Transforms
-        add a great amount of power to the program, but users might need to tweak their
-        transform calls and any user-written classes in order to get them to work correctly.
+        """Calls the transforms specified by the user. Each transform is
+        loaded into memory by getTransformModuleAndLoad(). The
+        transform class is passed the instance of the root element
+        when it is initialized. The transform object is called with
+        the specified arguements and the new root instance is set to
+        whatever the transform returns, which is usually the root, but
+        it is not required. Any user who uses a transform that does
+        not return the root tree instance should be aware that any
+        transform that uses the root instance will fail to work and
+        raise a fatal error. Transforms add a great amount of power to
+        the program, but users might need to tweak their transform
+        calls and any user-written classes in order to get them to
+        work correctly.
 
-        Further documentation is located in the doc/ directory and on the `pyXSD website <http://pyxsd.org>`_.
-        These documents can help users write transform classes and calls.
+        Further documentation is located in the doc/ directory and on
+        the `pyXSD website <http://pyxsd.org>`_.  These documents can
+        help users write transform classes and calls.
 
         Parameters:
 
-        - `transforms`: a list containing the transform calls in the order that they should be called.
-        - `root`: the root instance of a tree. Must be formatted in program's tree structure.
+        - `transforms`: a list containing the transform calls in the
+          order that they should be called.
+
+        - `root`: the root instance of a tree. Must be formatted in
+          program's tree structure.
 
         """
         currentRoot = root
@@ -497,11 +533,11 @@ class PyXSD(object):
         return currentRoot
 
     def getTransformsFileName(self):
-        """
-        Creates a default name for xml file that is written after all of the transforms.
-        Uses the name from the inputed xml file.
+        """Creates a default name for xml file that is written after all of
+        the transforms.  Uses the name from the inputed xml file.
 
         no parameters
+
         """
         inputName = self.xmlFileInputName
         if '.' in set(self.xmlFileInputName):
@@ -517,17 +553,20 @@ class PyXSD(object):
         return newName
 
     def getSchemaInfo(self, nameOrLocation):
-        """
-        Extracts information from the *schemaLocation* tag or the *noNamespaceSchemaLocation* tag.
-        Depending on the value of parameter `nameOrLocation`, the function outputs the namespace,
-        schema location, or the tag type. This function is meant for use with other functions
-        to easily grab bits of data that are used in various locations in the program.
+        """Extracts information from the *schemaLocation* tag or the
+        *noNamespaceSchemaLocation* tag.  Depending on the value of
+        parameter `nameOrLocation`, the function outputs the
+        namespace, schema location, or the tag type. This function is
+        meant for use with other functions to easily grab bits of data
+        that are used in various locations in the program.
 
         parameters:
 
-        - `nameOrLocation`: a one letter string that is either 'l', 'n', or 't'. If the variable is
-        'l', the location of the schema is returned. If it is 'n', the namespace is returned, if there
-        is one. 't' returns the tag name to indicate if the xml uses *schemaLocation* or *noNamespaceSchemaLocation*
+        - `nameOrLocation`: a one letter string that is either 'l',
+          'n', or 't'. If the variable is 'l', the location of the
+          schema is returned. If it is 'n', the namespace is returned,
+          if there is one. 't' returns the tag name to indicate if the
+          xml uses *schemaLocation* or *noNamespaceSchemaLocation*
 
         """
 
@@ -573,13 +612,16 @@ class PyXSD(object):
             return self.makeFullName(xsiNS, 'schemaLocation')
 
     def makeFullName(self, ns, text):
-        """
-        Makes a string that looks similar to some of the names in ElementTree when it contains namespace information.
+        """Makes a string that looks similar to some of the names in
+        ElementTree when it contains namespace information.
 
         parameters:
 
-        - `ns`: a string of the namespace used. For this function, this variable is usually set to a url.
-        - `text`: a string of the name of the tag that the full name is being created for.
+        - `ns`: a string of the namespace used. For this function,
+          this variable is usually set to a url.
+
+        - `text`: a string of the name of the tag that the full name
+          is being created for.
 
         """
 
@@ -589,13 +631,14 @@ from optparse import OptionParser
 
 
 def main():
-    """
-    This function is called when pyXSD is being called from the command line.
-    It runs the OptionParser found under optparse in the standard library. Some
-    checks are performed on the data collected, and if these checks pass, it initializes
-    the pyXSD class.
+    """This function is called when pyXSD is being called from the
+    command line.  It runs the OptionParser found under optparse in
+    the standard library. Some checks are performed on the data
+    collected, and if these checks pass, it initializes the pyXSD
+    class.
 
     No parameters
+
     """
     usage = "usage: ./pyXSD.py [options] arg"
     parser = OptionParser(usage, version="PyXSD 0.1")
@@ -628,7 +671,8 @@ def main():
 
     if len(args) > 0:
         parser.error(
-            "The arguement(s) '%s' is/are not valid. See the syntax help under -h." % args)
+            "The arguement(s) '%s' is/are not valid. See the syntax help "
+            "under -h." % args)
 
     if options.transformDefaultOutput:
         if options.transformOutputFile == 'stdout':
@@ -637,7 +681,8 @@ def main():
     if options.inputXmlFile == "stdin":
         if sys.stdin.isatty():
             parser.error(
-                "if no input xml file is specified, the xml must\n\t\t  be fed in through the stdin (i.e. pipes)")
+                "if no input xml file is specified, the xml must\n\t\t be fed in"
+                " through the stdin (i.e. pipes)")
         inputXmlFile = 'stdin.xml'
         newFile = open(inputXmlFile, 'w')
         newFile.write(sys.stdin.read())
@@ -649,30 +694,31 @@ def main():
         parser.error(
             "A transform file and a transform call cannot both be specified.")
 
-    linestrip = lambda x: x.strip('>').strip('\n').strip()
+
     transforms = []
 
     if options.transformCall:
         if '>' in sets.Set(options.transformCall):
             transforms = options.transformCall.split('>')
-            transforms = map(linestrip, transforms)
+            transforms = [t.strip() for t in transforms]
         else:
             transforms.append(options.transformCall)
     if options.transformFile:
-        transformFile = open(options.transformFile, 'r')
-        transforms = transformFile.readlines()
-        transformFile.close()
-        transforms = map(linestrip, transforms)
+        with open(options.transformFile, 'r') as fd:
+            transforms = [t.strip('>').strip() for t in fd]
 
     if options.outputParsed:
         options.parsedOutputFile = "_No_Output_"
 
     if options.quiet and options.verbose:
         parser.error(
-            "Both the verbose mode and the quiet mode cannot be on at the same time")
-    xmlParser = PyXSD(inputXmlFile, options.inputXsdFile, options.parsedOutputFile,
-                      options.transformOutputFile, transforms, options.classFile, options.verbose, options.quiet)
+            "Both the verbose mode and the quiet mode cannot be on at "
+            "the same time")
+    xmlParser = PyXSD(
+        inputXmlFile, options.inputXsdFile, options.parsedOutputFile,
+        options.transformOutputFile, transforms, options.classFile,
+        options.verbose, options.quiet)
 
+    
 if __name__ == '__main__':
-
     main()

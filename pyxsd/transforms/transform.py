@@ -1,33 +1,35 @@
-"""
-See the transforms manual on the `pyXSD website <http://pyXSD.org/>`
-or in the /doc directory of the installation.
+"""See the transforms manual on the `pyXSD website
+<http://pyXSD.org/>` or in the /doc directory of the installation.
 
 In the transform manual:
 
 - Basic and advanced tutorials on writing transfomers
+
 - An overview of this class
+
 - Basic use instructions
+
 - Documentation on included transform libraries
 
 """
 
 
 class Transform (object):
-    """
-    The base abstract class for all transforms. All methods should
-    mix into the usable transform classes. Contains methods to
-    retrieve elements from the tree.
+    """The base abstract class for all transforms. All methods should mix
+    into the usable transform classes. Contains methods to retrieve
+    elements from the tree.
+
     """
 
     def __init__(self):
-        """
-        Cannot Initialize a true abstact class!
+        """Cannot Initialize a true abstact class!
+
         """
         raise TypeError("an abstract class cannot be instantiated")
 
     def makeElemObj(self, name):
-        """
-        Creates a new element that contains the proper tree stucture
+        """Creates a new element that contains the proper tree stucture
+
         """
 
         class ElemObjClass(object):
@@ -41,17 +43,17 @@ class Transform (object):
         return ElemObjClass(name)
 
     def makeCommentElem(self, comment):
-        """
-        Makes a comment element
+        """Makes a comment element
+
         """
         obj = self.makeElemObj('_comment_')
         obj._value_ = comment
         return obj
 
     def walk(self, instance, visitor, *args, **kwargs):
-        """
-        The *walk* function walks through the tree structure, and
-        runs a provided visitor function on all elements.
+        """The *walk* function walks through the tree structure, and runs a
+        provided visitor function on all elements.
+
         """
         if isinstance(instance, list):
             for item in instance:
@@ -71,10 +73,10 @@ class Transform (object):
             self.walk(el, visitor, *args, **kwargs)
 
     def classCollector(self, instance, attrNames, elemNames, collectorDict):
-        """
-        Visitor function to make a dictionary that associates a class with
-        its instances. The class name is the key, and the value is the list
-        of associated instances. SEE *getInstancesByClassName*
+        """Visitor function to make a dictionary that associates a class with
+        its instances. The class name is the key, and the value is the
+        list of associated instances. SEE *getInstancesByClassName*
+
         """
         className = instance.__class__.__name__
         collection = collectorDict.get(className, None)
@@ -84,9 +86,10 @@ class Transform (object):
         collection.append[instance]
 
     def tagCollector(self, instance, attrNames, elemNames, collectorDict):
-        """
-        A visitor function that is used to make a dictionary that associates
-        a tag name with its children. SEE *getAllSubElements*
+        """A visitor function that is used to make a dictionary that
+        associates a tag name with its children. SEE
+        *getAllSubElements*
+
         """
         for i, tagName in list(enumerate(elemNames)):
             obj = instance._children_[i]
@@ -99,9 +102,9 @@ class Transform (object):
             collection.append(obj)
 
     def tagFinder(self, instance, attrNames, elemNames, collection, name):
-        """
-        A visitor function to collect all tags with a particular name, and
+        """A visitor function to collect all tags with a particular name, and
         put them into a list. SEE *getElementsByName*
+
         """
         for i, tagName in enumerate(elemNames):
             if name == tagName:
@@ -110,30 +113,30 @@ class Transform (object):
                     collection.append(obj)
 
     def getInstancesByClassName(self, root):
-        """
-        Function to use the *walk* function with the *classCollector*
-        visitor function. Used to associate a class name with the class'
-        instances.
+        """Function to use the *walk* function with the *classCollector*
+        visitor function. Used to associate a class name with the
+        class' instances.
+
         """
         collectorDict = {}
         self.walk(root, self.classCollector, collectorDict)
         return collectorDict
 
     def getAllSubElements(self, root):
-        """
-        Function to use the *walk* function with the *tagCollector*
+        """Function to use the *walk* function with the *tagCollector*
         visitor function to make a dictionary that associates all
         elements with their sub-Elements.
+
         """
         collectorDict = {}
         self.walk(root, self.tagCollector, collectorDict)
         return collectorDict
 
     def getElementsByName(self, root, name):
-        """
-        Function to use the *walk* function with the *tagFinder*
-        visitor function to make a list containing all elements
-        with a particular name.
+        """Function to use the *walk* function with the *tagFinder* visitor
+        function to make a list containing all elements with a
+        particular name.
+
         """
         collection = []
         self.walk(root, self.tagFinder, collection, name)
@@ -141,8 +144,9 @@ class Transform (object):
 
     def find(self, tagName, baseElem):
         """Finds an element from a given tagName. Returns the first one found,
-        or returns None. This function is an alternative to the walk/vistor
-        functions. SEE *getElementsByName*
+        or returns None. This function is an alternative to the
+        walk/vistor functions. SEE *getElementsByName*
+
         """
         if baseElem._name_ == tagName:
             return baseElem
@@ -154,11 +158,11 @@ class Transform (object):
         return None
 
     def findAll(self, tagName, baseElem):
+        """Finds all elements with a given tagName. Returns a list of
+        elements or None. This function is an alternative to the
+        walk/vistor functions.  SEE *getElementsByName*
+
         """
-        Finds all elements with a given tagName. Returns a list of elements or
-        None. This function is an alternative to the walk/vistor functions.
-        SEE *getElementsByName*
-    """
         found = []
         if baseElem._name_ == tagName:
             found.append(baseElem)

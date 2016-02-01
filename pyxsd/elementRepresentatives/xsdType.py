@@ -4,52 +4,52 @@ from elementRepresentative import ElementRepresentative
 
 
 class XsdType(ElementRepresentative):
-    """
-    This class is the base class for *SimpleType* and *ComplexType*
+    """This class is the base class for *SimpleType* and *ComplexType*
     Subclass of *ElementRepresentative*. In this class, the classes
     for all of the types are generated.
+
     """
 
     def __init__(self, xsdElement, parent):
-        """
-        The `__init__` for this class' subclasses.
-        Creates a blank list for enumerations.
-        Creates a blank dictionary for attributes.
+        """The `__init__` for this class' subclasses.  Creates a blank list
+        for enumerations.  Creates a blank dictionary for attributes.
+
         See *ElementRepresentative* for documentation.
+
         """
         self.enumerations = []
         self.attributes = {}
         ElementRepresentative.__init__(self, xsdElement, parent)
 
     def getContainingTypeName(self):
-        """
-        Since all types are containing types, this method returns
-        its own name.
+        """Since all types are containing types, this method returns its own
+        name.
 
         No parameters.
+
         """
         if self.name is None:
             self.name = self.getName()
         return self.name
 
     def getContainingType(self):
-        """
-        All types are containing types, so this works for all of the
-        XSD types.
+        """All types are containing types, so this works for all of the XSD
+        types.
 
         No parameters.
+
         """
         return self
 
     def getName(self):
-        """
-        Mostly normal getName(), except it includes a means to make
-        a type name if the type is the child of an element or
-        some other tag. That name should look like this:
+        """Mostly normal getName(), except it includes a means to make a type
+        name if the type is the child of an element or some other
+        tag. That name should look like this:
 
         `elementName`|`type tag type`
 
         No parameters
+
         """
         name = ElementRepresentative.getName(self)
         if name is not None:
@@ -61,9 +61,8 @@ class XsdType(ElementRepresentative):
         return name
 
     def containsSchemaBase(self, bases):
-        """
-        Returns true if *SchemaBase* is in the bases list, false
-        if it is not. Used by getBaseList()
+        """Returns true if *SchemaBase* is in the bases list, false if it is
+        not. Used by getBaseList()
 
         Parameters:
 
@@ -76,12 +75,11 @@ class XsdType(ElementRepresentative):
         return False
 
     def getBaseList(self, pyXSD):
-        """
-        Creates blank list for the base classes. It goes through
-        the list of super classes to be added (all type classes),
-        and adds them. Adds SchemaBase, if it is not already added.
-        Returns the list as a tuple, since the type factory must
-        have the bases stored in a tuple, not a list.
+        """Creates blank list for the base classes. It goes through the list
+        of super classes to be added (all type classes), and adds
+        them. Adds SchemaBase, if it is not already added.  Returns
+        the list as a tuple, since the type factory must have the
+        bases stored in a tuple, not a list.
 
         Parameters:
 
@@ -107,20 +105,22 @@ class XsdType(ElementRepresentative):
         return []
 
     def clsFor(self, pyXSD):
-        """
-        Produces a class for a schema type. In this class, because this function
-        is only makes classes for tag types that are subclasses of *XsdType*.
-        Adds functions to the class dictionary to get elements and attributes
-        later on. Calls getBaseList() to generate the list of bases. SchemaBase
-        is in every base list, which will come into play after the class generation.
-        Adds the name and the doc string to the dictionary. Adds the instance of
-        *PyXSD* to all attributes, elements, and the class dictionary, so it can
-        be accessed later on. In future versions, hopefully this operation will
-        be done in a metaclass.
+        """Produces a class for a schema type. In this class, because this
+        function is only makes classes for tag types that are
+        subclasses of *XsdType*.  Adds functions to the class
+        dictionary to get elements and attributes later on. Calls
+        getBaseList() to generate the list of bases. SchemaBase is in
+        every base list, which will come into play after the class
+        generation.  Adds the name and the doc string to the
+        dictionary. Adds the instance of *PyXSD* to all attributes,
+        elements, and the class dictionary, so it can be accessed
+        later on. In future versions, hopefully this operation will be
+        done in a metaclass.
 
         Parameters:
 
         - `pyXSD`- The *PyXSD* instance.
+
         """
         bases = self.getBaseList(pyXSD)
         # arrange base so that it always inherits from SchemaBase (SchemaBase
