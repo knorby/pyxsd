@@ -4,8 +4,8 @@ from transform import Transform
 # library you are adding to, in which case you do not need to import Transform)
 # Just make sure that the library has access to Transform at some level
 
-class YourTransformLibrary (Transform):  # Or a libray that you are adding to
 
+class YourTransformLibrary(Transform):  # Or a libray that you are adding to
     def YourTransformLibraryInit(self):
         self.somevar = None
         # If you need to use vars that are specific to your library, then
@@ -13,7 +13,7 @@ class YourTransformLibrary (Transform):  # Or a libray that you are adding to
 
     def yourFunction(self, arg1, arg2):
         # You will always have access
-        self.getElementsByName(self.root, 'someTag')
+        self.getElementsByName(self.root, "someTag")
         # your code
         return
 

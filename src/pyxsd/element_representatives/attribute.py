@@ -1,0 +1,134 @@
+from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.xsd_data_types import Boolean, XsdDataType
+
+
+class Attribute(ElementRepresentative):
+    """The class for the attribute tag.
+
+    The element tag and the attribute tag are the most important in the
+    xml and in the program, so this class contains some machinery that
+    many of the other classes do not have. The element and attribute
+    classes contain descriptor methods. By specifying ``__get__``,
+    ``__set__``, and ``__delete__`` (with ``__get__`` and ``__set__``
+    being the most important), these methods specify how a variable is
+    set and how it is retrieved. Any modification of these methods
+    should be made under extreme caution! Both Element and Attribute,
+    primarily Attribute, use these descriptors to add a level of
+    checking to the program. If some variable is set to some value that
+    does not match the specifications in the schema, an error will be
+    raised. These methods add a powerful layer of functionality with a
+    small amount of code; however, these functions are almost invisible
+    unless they raise an error, so developers should bear in mind these
+    methods when modifying the program.
+    """
+
+    def __init__(self, xsdElement, parent):
+        """Adds itself to the attribute dictionary in its containing
+        type. See ElementRepresentative for documentation.
+        """
+        ElementRepresentative.__init__(self, xsdElement, parent)
+        self.getContainingType().attributes[self.name] = self
+
+    def __str__(self):
+        """Prints its name in a form that allows for quick identification
+        of an attribute, without needing a bulky name that does not
+        match the name used.
+        """
+        return f"{self.getContainingTypeName()}|{self.__class__.__name__}|{ElementRepresentative.getName(self)}"
+
+    def processChildren(self):
+        """There is a special ``processChildren()`` here to handle special
+        types, which can be declared as a child of an attribute. If an
+        attribute child can exist that is not a type, then this
+        function will screw it up; however, as far as the developers
+        knew at the time of writing this program, they cannot.
+        """
+        children = list(self.xsdElement)
+
+        if not children:
+            return None
+
+        for child in children:
+            processedChild = ElementRepresentative.factory(child, self)
+            self.processedChildren.append(processedChild)
+            self.type = processedChild.name
+            self.tagAttributes["type"] = self.type
+            # NOTE: the factory call above already processed the child's
+            # children inside ElementRepresentative.__init__; the old
+            # code's extra processedChild.processChildren() call here
+            # constructed every grandchild ER twice.
+        return None
+
+    def getType(self):
+        """Returns its type from the class dictionary in PyXSD.
+
+        The instance of PyXSD is attached to every element and attribute
+        while the classes for the schema types are being built.
+        Clearly, this function is used after the main ER run.
+        """
+        if "type" not in self.__dict__:
+            raise TypeError(f"Attribute.getType() Error: type is not in {self.name}'s dictionary.")
+
+        if self.type in self.pyXSD.classes:
+            return self.pyXSD.classes[self.type]
+
+        return ElementRepresentative.typeFromName(self.type, self.pyXSD)
+
+    def __get__(self, obj, objtype=None):
+        """Gets an attribute value from the obj's dictionary.
+
+        Returns its value if it has one; returns the default value if
+        it does not.
+
+        See the Python documentation for full documentation on
+        descriptors.
+        """
+        if self.name in obj.__dict__:
+            return obj.__dict__[self.name]
+        default = getattr(self, "default", None)
+        return default
+
+    def __set__(self, obj, value):
+        """Sets values to attributes.
+
+        Converts text Boolean values to binary values (integers 0 and
+        1), and validates the value against the attribute's type.
+
+        See the Python documentation for full documentation on
+        descriptors.
+        """
+        if issubclass(self.getType(), XsdDataType):
+            if self.getType() is Boolean and isinstance(value, str):
+                if value in ("true", "True"):
+                    value = 1
+                elif value in ("False", "false"):
+                    value = 0
+            try:
+                value = self.getType()(value)
+            except Exception as e:
+                print()
+                print("Parser Error: One of your attributes is invalid.")
+                print("The program's error message is as follows:")
+                print(f"   {e}")
+                print("The program will attempt to continue, but may experience errors.")
+                print()
+        elif not isinstance(obj, self.getType()):
+            raise TypeError(f"{obj!r} is not an instance of the attribute's type")
+
+        obj.__dict__[self.name] = value
+
+    def __delete__(self, obj):
+        """Deletes an entry from the dictionary.
+
+        See the Python documentation for full documentation on
+        descriptors.
+        """
+        del obj.__dict__[self.name]
+
+    def getUse(self):
+        """Returns the 'use' value, which says if the attribute is
+        required or optional (the default).
+        """
+        if "use" not in self.__dict__:
+            self.use = "optional"
+        return self.use
