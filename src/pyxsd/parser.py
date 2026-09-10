@@ -207,6 +207,10 @@ class PyXSD:
         logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")
 
         schemaER = ElementRepresentative.factory(root, None)
+        # Attach the parser to the schema ER so class building can
+        # record schema-reference problems (group/attributeGroup
+        # references) on the validation report.
+        schemaER.pyXSD = self
 
         for simpleType in schemaER.simpleTypes.values():
             cls = simpleType.clsFor(self)

@@ -5,7 +5,10 @@ Each module in this package handles one XSD tag type; the factory in
 """
 
 __all__ = [
+    "all",
     "annotation",
+    "any",
+    "any_attribute",
     "attribute",
     "attribute_group",
     "choice",
@@ -16,6 +19,7 @@ __all__ = [
     "element_representative",
     "enumeration",
     "extension",
+    "group",
     "length",
     "list",
     "max_exclusive",
@@ -28,5 +32,6 @@ __all__ = [
     "sequence",
     "simple_content",
     "simple_type",
+    "union",
     "xsd_type",
 ]

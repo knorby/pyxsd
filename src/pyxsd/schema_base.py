@@ -195,6 +195,17 @@ class SchemaBase:
                 setattr(self, name, elementTag.attrib[name])
                 usedAttributes.append(name)
                 self._attribs_[name] = elementTag.attrib[name]
+        # Attribute wildcard (xs:anyAttribute) pass-through: attributes
+        # the schema does not declare are stored raw instead of being
+        # left out and reported as unexpected.
+        if getattr(self, "hasWildcardAttributes_", False):
+            for attr, value in elementTag.attrib.items():
+                if "xmlns" in attr or "xsi:" in attr:
+                    continue
+                if attr in usedAttributes:
+                    continue
+                self._attribs_[attr] = value
+                usedAttributes.append(attr)
         return usedAttributes
 
     @classmethod
@@ -223,43 +234,71 @@ class SchemaBase:
         if not subElements:  # This element has no children
             return None
 
-        if elemDescriptors[0].sOrC == "sequence":
-            cls.checkElementOrderInSequence(elemDescriptors, subElements)
+        # Wildcard (xs:any) pass-through: children the schema does not
+        # declare are accepted and parsed generically when the type
+        # declares a wildcard. Order checking only sees declared
+        # children in that case.
+        hasWildcard = getattr(instance, "hasWildcardElements_", False)
+        if hasWildcard:
+            declaredNames = {descriptor.name for descriptor in elemDescriptors}
+            declaredChildren = [
+                subElement
+                for subElement in subElements
+                if getSubElementName(subElement) in declaredNames
+            ]
+        else:
+            declaredChildren = subElements
 
-        if elemDescriptors[0].sOrC == "choice":
-            cls.checkElementOrderInChoice(elemDescriptors[0], subElements)
+        sOrC = getattr(elemDescriptors[0], "sOrC", None) if elemDescriptors else None
 
-        for descriptor in elemDescriptors:
-            descriptorName = descriptor.name
-            for subElement in subElements:
-                subElementName = getSubElementName(subElement)
-                if descriptorName == subElementName:
-                    subElCls = descriptor.getType()
+        if sOrC == "sequence":
+            cls.checkElementOrderInSequence(elemDescriptors, declaredChildren)
 
-                    if subElCls is None:  # An Error Message
-                        cls._report_error(
-                            "no type in the schema corresponds to the type "
-                            f"stated in the '{descriptorName}' element",
-                            code="unknown-type",
-                            element=cls.__name__,
-                        )
-                        continue
+        elif sOrC == "choice":
+            cls.checkElementOrderInChoice(elemDescriptors[0], declaredChildren)
 
-                    # for elements with primitive types
-                    if not issubclass(subElCls, SchemaBase):
-                        subInstance = cls.primitiveValueFor(subElCls, subElement)
-                        if subInstance is None:
-                            # invalid value; the error is already in
-                            # the report, so skip the child
-                            continue
+        elif sOrC == "all":
+            cls.checkElementOrderInAll(elemDescriptors, declaredChildren)
+
+        # Children are matched (and recorded) in document order so the
+        # instance tree preserves the xml's layout.
+        for subElement in subElements:
+            subElementName = getSubElementName(subElement)
+            matched = False
+            for descriptor in elemDescriptors:
+                if descriptor.name != subElementName:
+                    continue
+                matched = True
+                subElCls = descriptor.getType()
+
+                if subElCls is None:  # An Error Message
+                    cls._report_error(
+                        "no type in the schema corresponds to the type "
+                        f"stated in the '{subElementName}' element",
+                        code="unknown-type",
+                        element=cls.__name__,
+                    )
+                    break
+
+                # for elements with primitive types
+                if not issubclass(subElCls, SchemaBase):
+                    subInstance = cls.primitiveValueFor(subElCls, subElement)
+                    if subInstance is not None:
+                        # invalid values are skipped; the error is
+                        # already in the report
                         subInstance._name_ = subElementName
                         instance._children_.append(subInstance)
                         setattr(instance, subElementName, subInstance)
-                        continue
+                    break
 
-                    subInstance = subElCls.makeInstanceFromTag(subElement)
-                    subInstance._name_ = subElementName
-                    instance._children_.append(subInstance)
+                subInstance = subElCls.makeInstanceFromTag(subElement)
+                subInstance._name_ = subElementName
+                instance._children_.append(subInstance)
+                break
+
+            if not matched and hasWildcard:
+                wildcardInstance = cls.makeGenericInstance(subElement)
+                instance._children_.append(wildcardInstance)
         return instance
 
     @classmethod
@@ -331,6 +370,41 @@ class SchemaBase:
             )
 
         return None
+
+    @classmethod
+    def checkElementOrderInAll(cls, descriptors, subElements):
+        """Checks the occurrence counts in an ``all`` content model.
+
+        Unlike ``sequence``, ``all`` does not constrain the order of
+        children, so each element's occurrence count is checked
+        against its ``minOccurs``/``maxOccurs`` limits regardless of
+        position. Children that match no declared element are ignored
+        here (wildcard pass-through handles them upstream).
+
+        - ``descriptors`` - the schema-specified elements of the
+          ``all`` compositor.
+
+        - ``subElements`` - the declared children of an element being
+          processed in ``addElementsTo()``.
+        """
+        subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        for descriptor in descriptors:
+            count = subElementNames.count(descriptor.name)
+            if count < descriptor.getMinOccurs():
+                cls._report_error(
+                    f"element '{descriptor.name}' occurs fewer times than "
+                    f"minOccurs ({descriptor.getMinOccurs()}) requires",
+                    code="occurrence-min",
+                    element=cls.__name__,
+                )
+                continue
+            if count > descriptor.getMaxOccurs():
+                cls._report_error(
+                    f"element '{descriptor.name}' occurs more times than "
+                    f"maxOccurs ({descriptor.getMaxOccurs()}) allows",
+                    code="occurrence-max",
+                    element=cls.__name__,
+                )
 
     @classmethod
     def checkElementOrderInSequence(cls, descriptors, subElements):
@@ -459,6 +533,26 @@ class SchemaBase:
         dataTypeValInst._children_ = dataTypeChildren
 
         return dataTypeValInst
+
+    @classmethod
+    def makeGenericInstance(cls, elementTag):
+        """Builds a pass-through instance for wildcard (``xs:any``)
+        content.
+
+        Undeclared children permitted by a wildcard are stored raw:
+        attributes keep their lexical values, text is split like
+        untyped data (see ``addValueTo``), and children are recursed
+        generically. Called by ``addElementsTo()`` when the
+        instance's type declares a wildcard.
+
+        - ``elementTag`` - the undeclared xml element to store raw.
+        """
+        instance = SchemaBase()
+        instance._name_ = elementTag.tag.split("}")[-1]
+        instance._attribs_ = dict(elementTag.attrib)
+        cls.addValueTo(instance, elementTag)
+        instance._children_ = [cls.makeGenericInstance(child) for child in elementTag]
+        return instance
 
     # ------------------------------------------------------------------
     # Descriptor access

@@ -12,13 +12,15 @@ class Schema(ComplexType):
     def __init__(self, xsdElement, parent):
         """Stores all the attributeGroups, complexTypes, and simpleTypes
         in the document in dictionaries. Also has a list of top-level
-        elements (should be only one).
+        elements (should be only one) and a dictionary of top-level
+        groups.
 
         See ElementRepresentative for more documentation.
         """
         self.attributeGroups = {}
         self.complexTypes = {}
         self.simpleTypes = {}
+        self.groups = {}
         self.elements = []
         self._elements = None
         super().__init__(xsdElement, parent)

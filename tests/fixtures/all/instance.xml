@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Children of an xs:all compositor may appear in any order. -->
+<flags id="set-1">
+  <blue>deep</blue>
+  <red>bright</red>
+</flags>

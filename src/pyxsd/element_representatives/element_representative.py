@@ -330,7 +330,10 @@ registry = {}
 # Import all of the tag-specific classes after the ER class definition
 # (the tag modules import this module's ElementRepresentative).  This
 # replaces the old exec-based import loop.
+from pyxsd.element_representatives.all import All  # noqa: E402
 from pyxsd.element_representatives.annotation import Annotation  # noqa: E402
+from pyxsd.element_representatives.any import Any  # noqa: E402
+from pyxsd.element_representatives.any_attribute import AnyAttribute  # noqa: E402
 from pyxsd.element_representatives.attribute import Attribute  # noqa: E402
 from pyxsd.element_representatives.attribute_group import AttributeGroup  # noqa: E402
 from pyxsd.element_representatives.choice import Choice  # noqa: E402
@@ -340,6 +343,7 @@ from pyxsd.element_representatives.documentation import Documentation  # noqa: E
 from pyxsd.element_representatives.element import Element  # noqa: E402
 from pyxsd.element_representatives.enumeration import Enumeration  # noqa: E402
 from pyxsd.element_representatives.extension import Extension  # noqa: E402
+from pyxsd.element_representatives.group import Group  # noqa: E402
 from pyxsd.element_representatives.length import Length  # noqa: E402
 from pyxsd.element_representatives.list import List  # noqa: E402
 from pyxsd.element_representatives.max_exclusive import MaxExclusive  # noqa: E402
@@ -352,6 +356,7 @@ from pyxsd.element_representatives.schema import Schema  # noqa: E402
 from pyxsd.element_representatives.sequence import Sequence  # noqa: E402
 from pyxsd.element_representatives.simple_content import SimpleContent  # noqa: E402
 from pyxsd.element_representatives.simple_type import SimpleType  # noqa: E402
+from pyxsd.element_representatives.union import Union  # noqa: E402
 from pyxsd.element_representatives.xsd_type import XsdType  # noqa: E402
 
 TAG_CLASSES = {
@@ -368,6 +373,11 @@ TAG_CLASSES = {
     "Restriction": Restriction,
     "Sequence": Sequence,
     "Choice": Choice,
+    "All": All,
+    "Union": Union,
+    "Group": Group,
+    "Any": Any,
+    "AnyAttribute": AnyAttribute,
     "List": List,
     "SimpleContent": SimpleContent,
     "ComplexContent": ComplexContent,

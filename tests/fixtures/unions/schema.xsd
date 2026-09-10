@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="unqualified">
+  <xs:simpleType name="sizeOrName">
+    <xs:union memberTypes="xs:integer xs:string"/>
+  </xs:simpleType>
+  <xs:simpleType name="tokenOrCount">
+    <xs:union>
+      <xs:simpleType>
+        <xs:restriction base="xs:token"/>
+      </xs:simpleType>
+      <xs:simpleType>
+        <xs:restriction base="xs:integer"/>
+      </xs:simpleType>
+    </xs:union>
+  </xs:simpleType>
+  <xs:complexType name="record">
+    <xs:sequence>
+      <xs:element name="size" type="sizeOrName"/>
+      <xs:element name="tag" type="tokenOrCount"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="record" type="record"/>
+</xs:schema>

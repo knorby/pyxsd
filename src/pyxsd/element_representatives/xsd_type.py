@@ -2,6 +2,7 @@ import logging
 import types
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,14 @@ class XsdType(ElementRepresentative):
     def __init__(self, xsdElement, parent):
         """The ``__init__`` for this class' subclasses.  Creates a blank
         list for enumerations.  Creates a blank dictionary for
-        attributes.
+        attributes.  Creates a blank list for attributeGroup reference
+        sites.
 
         See ElementRepresentative for documentation.
         """
         self.enumerations = []
         self.attributes = {}
+        self.attributeGroupRefs = []
         super().__init__(xsdElement, parent)
 
     def getContainingTypeName(self):
@@ -51,6 +54,17 @@ class XsdType(ElementRepresentative):
         # We are implicitly defined in an element
         element = self.parent
         name = f"{element.name}|{self.tagType}"
+        # Sibling anonymous types under the same parent (for example
+        # the inline simpleType members of a union) would otherwise
+        # collide; only colliding candidates get a numeric suffix.
+        from pyxsd.element_representatives.element_representative import registry
+
+        candidate = name
+        counter = 0
+        while candidate in registry:
+            counter += 1
+            candidate = f"{name}|{counter}"
+        name = candidate
         element.typeName = name
         return name
 
@@ -83,6 +97,135 @@ class XsdType(ElementRepresentative):
         """
         return []
 
+    def resolveAttributeGroupRefs(self, pyXSD):
+        """Merges referenced attributeGroups into this type's
+        attributes.
+
+        Each attributeGroup reference site recorded on this type is
+        resolved against the schema's ``attributeGroups`` dictionary;
+        the named group's attribute descriptors are added to this
+        type's attribute dictionary (local declarations win over
+        referenced ones on a name conflict). Unresolvable references
+        are recorded on the validation report.
+        """
+        for refSite in self.attributeGroupRefs:
+            groupName = refSite.ref
+            group = self.getSchema().attributeGroups.get(groupName)
+            if group is None:
+                message = (
+                    f"attributeGroup reference '{groupName}' in type "
+                    f"'{self.name}' could not be resolved"
+                )
+                self._report_ref_error(message, code="unknown-attributeGroup")
+                continue
+            for attrName, attr in group.attributes.items():
+                if attrName in self.attributes:
+                    logger.debug(
+                        "attribute %r from attributeGroup %r is already "
+                        "declared on %r; keeping the local declaration",
+                        attrName,
+                        groupName,
+                        self.name,
+                    )
+                    continue
+                attr.pyXSD = pyXSD
+                self.attributes[attrName] = attr
+
+    def _report_ref_error(self, message, *, code):
+        """Records a schema-reference problem on the parser's report.
+
+        Falls back to logging when no parser is attached (for example
+        when classes are built in isolation).
+        """
+        parser = getattr(self.getSchema(), "pyXSD", None)
+        if parser is not None:
+            parser.report.add_error(message, code=code, element=self.name)
+        else:
+            logger.error("%s[%s] %s", self.name, code, message)
+
+    def makeUnionClass(self, pyXSD):
+        """Produces the class for a union simple type.
+
+        Member classes are resolved in order: named members first
+        (``memberTypes``), then inline ``simpleType`` children; members
+        that are themselves unions are flattened. The resulting class
+        validates a value by trying each member type in order; a value
+        that matches no member raises ``TypeError``.
+
+        Validated instances are union-class instances wrapping the
+        first successfully validated member value in ``memberValue``,
+        so ``isinstance`` checks against the union class succeed and
+        ``str``/``repr``/``==``/``hash`` delegate to the wrapped value.
+
+        Note: members are validated through ``__new__`` (skipping
+        ``__init__``), because schema-derived member classes also
+        inherit ``SchemaBase.__init__``, which takes no value.
+        """
+        memberNames = list(self.unionSpec) + list(getattr(self, "unionInline", ()))
+        members = []
+        for memberName in memberNames:
+            if memberName in pyXSD.classes:
+                resolved = pyXSD.classes[memberName]
+            else:
+                resolved = ElementRepresentative.typeFromName(memberName, pyXSD)
+            if resolved is None:
+                logger.warning(
+                    "union member type %r of %r could not be resolved and was skipped",
+                    memberName,
+                    self.name,
+                )
+                continue
+            if hasattr(resolved, "_unionMembers"):
+                # A union member that is itself a union: flatten.
+                members.extend(resolved._unionMembers)
+            else:
+                members.append(resolved)
+
+        def __new__(cls, value):
+            for member in members:
+                try:
+                    validated = member.__new__(member, value)
+                except (TypeError, ValueError):
+                    continue
+                instance = object.__new__(cls)
+                instance.memberValue = validated
+                return instance
+            raise TypeError(f"invalid {self.name} value: {value!r} matches no member type")
+
+        def __repr__(self):
+            return repr(self.memberValue)
+
+        def __str__(self):
+            return str(self.memberValue)
+
+        def __eq__(self, other):
+            if other.__class__ is type(self):
+                return self.memberValue == other.memberValue
+            return self.memberValue == other
+
+        def __hash__(self):
+            return hash(self.memberValue)
+
+        union = types.new_class(
+            self.name,
+            (XsdDataType,),
+            {},
+            lambda ns: ns.update(
+                {
+                    "__new__": __new__,
+                    "__repr__": __repr__,
+                    "__str__": __str__,
+                    "__eq__": __eq__,
+                    "__hash__": __hash__,
+                    "_unionMembers": members,
+                    "name": self.name,
+                    "pyXSD": pyXSD,
+                    "__doc__": self.__doc__,
+                }
+            ),
+        )
+        return union
+
     def clsFor(self, pyXSD):
         """Produces a class for a schema type.
 
@@ -96,18 +239,36 @@ class XsdType(ElementRepresentative):
         bookkeeping (``_elementNames_``/``_attributeNames_``) without
         any manual registration here.
 
+        Union simple types take a different route: ``makeUnionClass``
+        builds a validating class that tries each member type in
+        order.
+
+        AttributeGroup reference sites are resolved (and their
+        descriptors merged) before the namespace is assembled.
+        Wildcards on the type are recorded as class flags so the
+        instance machinery can open pass-through slots.
+
         Calls ``getBaseList()`` to generate the tuple of bases;
         SchemaBase is in every base list, which is what runs the
         ``__init_subclass__`` hook. Adds the name and the doc string to
         the namespace. Adds the instance of PyXSD to all attributes,
         elements, and the namespace, so it can be accessed later on.
         """
+        if getattr(self, "unionSpec", None) is not None:
+            return self.makeUnionClass(pyXSD)
+
+        self.resolveAttributeGroupRefs(pyXSD)
+
         bases = self.getBaseList(pyXSD)
         namespace = {
             "pyXSD": pyXSD,
             "name": self.name,
             "__doc__": self.__doc__,
         }
+        if getattr(self, "hasWildcardElements", False):
+            namespace["hasWildcardElements_"] = True
+        if getattr(self, "hasWildcardAttributes", False):
+            namespace["hasWildcardAttributes_"] = True
         for element in self.getElements():
             element.pyXSD = pyXSD
             namespace[element.name] = element
