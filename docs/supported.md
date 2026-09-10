@@ -2,8 +2,9 @@
 
 pyxsd 1.0 implements a substantial, honest subset of XSD 1.0. This page
 summarizes what is validated, with pointers to the regression corpus that
-backing every claim (54 manifest-driven cases derived from the W3C
-XMLSchema1TestSuite and NIST datatype test areas — run
+backing every claim (54 independently authored manifest-driven cases
+inspired by the W3C XMLSchema1TestSuite and NIST datatype feature areas —
+run
 `uv run python tests/report_conformance.py` for the live pass-rate report).
 
 ## Built-in type lattice
@@ -68,7 +69,7 @@ Non-fatal, code-tagged issue reporting via `PyXSD.report` (see
 * - Facets on user simpleTypes
   - `enumeration`, `pattern`, `length`, …
   - ignored
-  - Built-in type lexical validation is complete, but facets declared on user-defined simpleTypes are not enforced.
+  - Every built-in type's own lexical rules and whitespace mode are enforced, but facets declared on user-defined simpleTypes are not. `xs:QName` checks the lexical form only; prefixes are not resolved against a namespace context.
 * - Wildcard namespace filtering
   - `processContents`, namespace lists
   - partial

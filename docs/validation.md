@@ -38,6 +38,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | Code | Severity | Meaning |
 | ---- | -------- | ------- |
 | `order` | ERROR | Child order violates the sequence content model. |
+| `unexpected-element` | ERROR | Element is not declared in the content model and no wildcard allows it. |
 | `occurrence-min` | ERROR | Fewer occurrences than `minOccurs` allows. |
 | `occurrence-max` | ERROR | More occurrences than `maxOccurs` allows. |
 | `missing-attribute` | ERROR | A required attribute is absent. |
@@ -53,7 +54,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `abstract-element` | ERROR | Instance of an abstract element declaration. |
 | `abstract-type` | ERROR | Direct instance of an abstract type (allowed only via `xsi:type`). |
 | `blocked` | ERROR | Substitution-group member blocked by the head's `block`. |
-| `xsi-type` | ERROR | `xsi:type` value could not be resolved. |
+| `xsi-type` | ERROR | `xsi:type` could not be resolved, is not validly derived from the declared type, or is blocked. |
 | `unknown-root` | ERROR | Document root matches no global element declaration. |
 | `multiple-roots` | ERROR | More than one global element matches the document root. |
 | `identity-key` | ERROR | Key field missing or duplicate key value. |
@@ -63,13 +64,14 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `unknown-group` | ERROR | Referenced `xs:group` missing. |
 | `circular-group` | ERROR | Group reference cycle. |
 | `unknown-attributeGroup` | ERROR | Referenced `xs:attributeGroup` missing. |
+| `circular-attributeGroup` | ERROR | Nested attributeGroup reference cycle. |
 | `unknown-substitution-head` | ERROR | Substitution group references a missing head. |
 | `unknown-elementRef` | ERROR | Element `ref` points to a missing global element. |
 | `final` | ERROR | Derivation violates the base type's `final` attribute. |
 | `schema` | ERROR | The schema file itself is malformed or unreadable. |
 | `schema-hint` | WARNING | Malformed schemaLocation hint in the instance document. |
 | `schema-compose` | ERROR | Missing or malformed included/imported schema file. |
-| `compose-cycle` | ERROR | Include/import cycle. |
+| `compose-cycle` | WARNING | A repeated include/redefine was deduplicated. |
 | `compose-namespace` | ERROR | Include target namespace mismatch. |
 | `internal` | WARNING | Parser internal inconsistency — please report. |
 

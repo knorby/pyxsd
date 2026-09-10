@@ -1,21 +1,29 @@
 # pyxsd conformance corpus
 #
 # Each case is a self-contained schema (+ optional instance) pair exercising
-# one claimed XSD 1.0 feature, derived from the feature areas of the W3C
-# XML Schema Test Suite (XMLSchema1TestSuite) and the NIST XML Schema
-# Datatypes Test Suite. Case expectations are enforced by
-# tests/test_conformance.py and reported by tests/report_conformance.py.
+# one claimed XSD 1.0 feature. The cases are independently authored regression
+# tests for pyxsd; `derived_from` records the feature area / invalid-instance
+# pattern that inspired the case (W3C XMLSchema1TestSuite or the NIST XML
+# Schema Datatypes Test Suite), not a copied upstream case. Case expectations
+# are enforced by tests/test_conformance.py and reported by
+# tests/report_conformance.py.
 #
 # Case fields:
 #   id              "area/name" (unique)
 #   description     what the case covers
-#   derived_from    W3C/NIST suite area the case is derived from
+#   derived_from    W3C/NIST feature area that inspired the case
 #   schema          the schema document (written as schema.xsd)
 #   schema_valid    false => parseXSD must report errors (default: true)
 #   instance        the instance document (written as instance.xml)
 #   instance_valid  false => parsing the instance must report errors (default: true)
 #   expected_codes  report codes that must appear in the failing step
+#   expected_values dotted paths whose mapped values must equal the manifest
 #   [case.files]    auxiliary schema files, keyed by name relative to schema.xsd
+
+[provenance]
+authorship = "Independently authored pyxsd regression cases"
+inspiration = "W3C XMLSchema1TestSuite and NIST XML Schema Datatypes Test Suite feature areas"
+note = "Not copied from the upstream suites; see per-case derived_from."
 
 [[case]]
 id = "types/scalars-valid"
@@ -737,7 +745,7 @@ schema = '''
   <xs:element name="parcel">
     <xs:complexType>
       <xs:sequence>
-        <xs:element name="box" type="xs:string" minOccurs="2"/>
+        <xs:element name="box" type="xs:string" minOccurs="2" maxOccurs="3"/>
       </xs:sequence>
     </xs:complexType>
   </xs:element>
@@ -935,7 +943,7 @@ schema = '''
 <?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="marker" type="xs:string"/>
-  <xs:element name="dot" type="xs:integer" substitutionGroup="marker"/>
+  <xs:element name="dot" type="xs:token" substitutionGroup="marker"/>
   <xs:element name="shape">
     <xs:complexType>
       <xs:sequence>
@@ -960,7 +968,7 @@ schema = '''
 <?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="marker" type="xs:string" abstract="true"/>
-  <xs:element name="dot" type="xs:integer" substitutionGroup="marker"/>
+  <xs:element name="dot" type="xs:token" substitutionGroup="marker"/>
   <xs:element name="shape">
     <xs:complexType>
       <xs:sequence>
@@ -987,7 +995,7 @@ schema = '''
 <?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="marker" type="xs:string" block="substitution"/>
-  <xs:element name="dot" type="xs:integer" substitutionGroup="marker"/>
+  <xs:element name="dot" type="xs:token" substitutionGroup="marker"/>
   <xs:element name="shape">
     <xs:complexType>
       <xs:sequence>
