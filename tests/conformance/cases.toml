@@ -1296,7 +1296,7 @@ expected_codes = ["schema-compose"]
 
 [[case]]
 id = "composition/include-cycle"
-description = "Include cycle between two schemas is detected with code compose-cycle"
+description = "Include cycle between two schemas is tolerated by deduplicating documents"
 derived_from = "W3C XMLSchema1TestSuite, group 'include' (cycles)"
 schema = '''
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1305,8 +1305,7 @@ schema = '''
   <xs:element name="root"/>
 </xs:schema>
 '''
-schema_valid = false
-expected_codes = ["compose-cycle"]
+schema_valid = true
 
 [case.files]
 "common.xsd" = '''

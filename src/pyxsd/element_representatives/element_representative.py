@@ -77,6 +77,125 @@ from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
 
+# XSD component kinds whose declarations live in separate symbol
+# spaces: an element and a type may legally share a name, and a type
+# lookup must not resolve to the element.  ER classes not listed here
+# are bookkeeping nodes (compositors, facets, wildcards) that share a
+# single anonymous namespace.
+_COMPONENT_KINDS = {
+    "Schema": "schema",
+    "Element": "element",
+    "Attribute": "attribute",
+    "Group": "group",
+    "AttributeGroup": "attributeGroup",
+    "ComplexType": "type",
+    "SimpleType": "type",
+}
+
+
+def componentKind(obj):
+    """Returns the XSD component kind for a representative, or ``None``."""
+    return _COMPONENT_KINDS.get(type(obj).__name__)
+
+
+class ComponentTable(dict):
+    """A parser-owned table of element representatives by name.
+
+    Values are lists because one name may be declared once per
+    component kind (for example a global element and a complex type
+    both named ``T``). It behaves as a plain ``{name: [ER, ...]}``
+    mapping for compatibility while ``getFromName`` filters by kind.
+    """
+
+    def getFromName(self, name, kind=None):
+        """Returns the unique representative named ``name``.
+
+        When ``kind`` is given, only representatives of that component
+        kind are considered, so a type lookup ignores a same-named
+        element. Ambiguous or missing lookups warn and return ``None``.
+        """
+        entries = self.get(name)
+        if not entries:
+            logger.warning("getFromName Error: %s is not a key in the registry", name)
+            return None
+        if kind is not None:
+            entries = [entry for entry in entries if componentKind(entry) == kind]
+        if len(entries) == 1:
+            return entries[0]
+        if not entries:
+            logger.warning("getFromName Error: %s has no %r declaration", name, kind)
+            return None
+        logger.warning("ElementRepresentative Error: %r", entries)
+        return None
+
+
+_ACTIVE_TABLE = ComponentTable()
+
+
+class _RegistryProxy:
+    """Stable module-level alias that forwards to the active table.
+
+    ``from ... import registry`` binds this object permanently, so it
+    cannot be a plain dict that gets replaced per parse. It delegates
+    every mapping operation to the table the most recent parser
+    installed, preserving the historical module-level view.
+    """
+
+    def _active(self) -> ComponentTable:
+        return _ACTIVE_TABLE
+
+    def __getitem__(self, key):
+        return self._active()[key]
+
+    def __setitem__(self, key, value):
+        self._active()[key] = value
+
+    def __contains__(self, key):
+        return key in self._active()
+
+    def __iter__(self):
+        return iter(self._active())
+
+    def __len__(self):
+        return len(self._active())
+
+    def get(self, key, default=None):
+        return self._active().get(key, default)
+
+    def setdefault(self, key, default=None):
+        return self._active().setdefault(key, default)
+
+    def keys(self):
+        return self._active().keys()
+
+    def values(self):
+        return self._active().values()
+
+    def items(self):
+        return self._active().items()
+
+    def clear(self):
+        self._active().clear()
+
+    def getFromName(self, name, kind=None):
+        return self._active().getFromName(name, kind)
+
+
+def _schemaOf(obj):
+    """Returns the schema ER owning ``obj``, or ``None`` when detached."""
+    try:
+        return obj.getSchema()
+    except (AttributeError, RuntimeError):
+        return None
+
+
+def _tableFor(obj):
+    """Returns the component table ``obj`` should register into."""
+    table = getattr(_schemaOf(obj), "components", None)
+    if isinstance(table, ComponentTable):
+        return table
+    return _ACTIVE_TABLE
+
 
 class ElementRepresentative:
     """Base class for all of the tag type classes in the
@@ -183,11 +302,14 @@ class ElementRepresentative:
         fallback on the local name so default-namespace schemas
         (``type="string"``) still resolve.
         """
+        table = getattr(pyXSD, "components", None)
+        if not isinstance(table, ComponentTable):
+            table = registry
         if not xsdTypeName.startswith(("xs:", "xsd:")):
-            getFromNameReturned = cls.getFromName(xsdTypeName)
+            getFromNameReturned = table.getFromName(xsdTypeName, kind="type")
             if not getFromNameReturned:
                 local = xsdTypeName.split(":", 1)[-1]
-                getFromNameReturned = cls.getFromName(local)
+                getFromNameReturned = table.getFromName(local, kind="type")
             if getFromNameReturned:
                 return getFromNameReturned.clsFor(pyXSD)
             local = xsdTypeName.split(":", 1)[-1]
@@ -255,32 +377,36 @@ class ElementRepresentative:
 
     @classmethod
     def register(cls, name, obj):
-        """Stores ER objects in a registry keyed by name.
+        """Stores ER objects in this parser's component table.
 
-        This is why all names must be unique; it helps find objects.
-        Only the first ER registered under a given name is kept
-        (duplicates are dropped).
+        Each parser owns a :class:`ComponentTable` (created by the
+        schema ER), so a later parser cannot see or overwrite earlier
+        declarations. Declarations are keyed by name and kind: the
+        first declaration of a given (kind, name) wins, while a
+        different kind may register the same name.
         """
-        if name not in registry:
-            registry[name] = [obj]
-        else:
+        table = _tableFor(obj)
+        entries = table.setdefault(name, [])
+        kind = componentKind(obj)
+        if any(componentKind(entry) == kind for entry in entries):
             logger.debug(
-                "an element representative named %r is already registered; keeping the first one",
+                "an element representative named %r (kind %r) is already "
+                "registered; keeping the first one",
                 name,
+                kind,
             )
+            return
+        entries.append(obj)
 
     @classmethod
-    def getFromName(cls, name):
-        """Retrieve an entry in the registry by its name."""
-        entries = registry.get(name)
-        if not entries:
-            logger.warning("getFromName Error: %s is not a key in the registry", name)
-            return None
-        if len(entries) == 1:
-            return entries[0]
-        # Complain
-        logger.warning("ElementRepresentative Error: %r", entries)
-        return None
+    def getFromName(cls, name, kind=None):
+        """Retrieve an entry in this parser's component table.
+
+        ``kind`` restricts the lookup to one XSD component kind (for
+        example ``"type"``), which is how a type lookup ignores a
+        same-named element declaration.
+        """
+        return registry.getFromName(name, kind)
 
     @staticmethod
     def tryConvert(variable):
@@ -329,10 +455,12 @@ _PRIMITIVE_TYPES = {
     and "name" in klass.__dict__
     and klass is not xsd_data_types.TypeList
 }
-# Registry of all ER objects, keyed by name. Multiple ERs may share a
-# name (e.g. same-named globals across composed schema documents), so
-# values are lists; lookups that expect uniqueness warn when ambiguous.
-registry: dict[str, list[ElementRepresentative]] = {}
+# The active parser's component table, keyed by name. Each ``PyXSD``
+# parse installs its own :class:`ComponentTable` here so registrations
+# during class building and detached lookups (``getFromName``) see the
+# right parser's declarations. Multiple ERs may share a name and are
+# disambiguated by component kind (see ``ComponentTable.getFromName``).
+registry = _RegistryProxy()
 
 # Import all of the tag-specific classes after the ER class definition
 # (the tag modules import this module's ElementRepresentative).  This

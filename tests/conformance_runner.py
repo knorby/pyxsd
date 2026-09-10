@@ -5,9 +5,8 @@ Shared by ``tests/test_conformance.py`` (pytest) and
 
 Each case is materialized into a scratch directory as ``schema.xsd``,
 ``instance.xml`` (when present), and any auxiliary files, then run
-through the real PyXSD pipeline. The module-level element
-representative registry is cleared before every case so runs are
-independent, matching the behavior of the pytest fixture.
+through the real PyXSD pipeline. Each parser owns its component table,
+so cases are independent without any global-state reset.
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pyxsd.element_representatives.element_representative import registry
 from pyxsd.parser import PyXSD
 from pyxsd.validation import IssueSeverity, ValidationIssue
 
@@ -73,7 +71,6 @@ def run_case(case: dict[str, Any], directory: Path) -> tuple[bool, str]:
     """
     directory = _materialize(case, directory)
     has_instance = "instance" in case
-    registry.clear()
 
     if has_instance:
         instance_input: str | io.StringIO = str(directory / "instance.xml")

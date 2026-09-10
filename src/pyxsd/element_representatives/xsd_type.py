@@ -62,11 +62,17 @@ class XsdType(ElementRepresentative):
         # Sibling anonymous types under the same parent (for example
         # the inline simpleType members of a union) would otherwise
         # collide; only colliding candidates get a numeric suffix.
-        from pyxsd.element_representatives.element_representative import registry
+        from pyxsd.element_representatives.element_representative import (
+            ComponentTable,
+            registry,
+        )
 
+        table = getattr(self.getSchema(), "components", None)
+        if not isinstance(table, ComponentTable):
+            table = registry
         candidate = name
         counter = 0
-        while candidate in registry:
+        while candidate in table:
             counter += 1
             candidate = f"{name}|{counter}"
         name = candidate
@@ -143,7 +149,7 @@ class XsdType(ElementRepresentative):
         # The base class's ``name`` attribute is unreliable (an element
         # named 'name' can replace the metadata string), so resolve the
         # base ER by the base reference's local name instead.
-        baseER = ElementRepresentative.getFromName(superClassName.split(":")[-1])
+        baseER = ElementRepresentative.getFromName(superClassName.split(":")[-1], kind="type")
         final = getattr(baseER, "final", None) if baseER is not None else None
         if final is None:
             return
@@ -181,7 +187,7 @@ class XsdType(ElementRepresentative):
         are recorded on the validation report.
         """
         for refSite in self.attributeGroupRefs:
-            groupName = refSite.ref
+            groupName = refSite.ref.split(":")[-1]
             group = self.getSchema().attributeGroups.get(groupName)
             if group is None:
                 message = (
@@ -190,7 +196,9 @@ class XsdType(ElementRepresentative):
                 )
                 self._report_ref_error(message, code="unknown-attributeGroup")
                 continue
-            for attrName, attr in group.attributes.items():
+            for attrName, attr in self._collectAttributeGroup(
+                group, frozenset({groupName})
+            ).items():
                 if attrName in self.attributes:
                     logger.debug(
                         "attribute %r from attributeGroup %r is already "
@@ -202,6 +210,37 @@ class XsdType(ElementRepresentative):
                     continue
                 attr.pyXSD = pyXSD
                 self.attributes[attrName] = attr
+
+    def _collectAttributeGroup(self, group, visited):
+        """Returns a group's attributes including nested group refs.
+
+        Direct declarations win over those pulled in from a nested
+        ``attributeGroup`` reference. Circular references are skipped
+        rather than recursed into.
+        """
+        collected = dict(group.attributes)
+        for refSite in getattr(group, "attributeGroupRefs", []):
+            nestedName = refSite.ref.split(":")[-1]
+            if nestedName in visited:
+                message = (
+                    f"circular attributeGroup reference chain involving "
+                    f"'{nestedName}' (reached from '{self.name}')"
+                )
+                self._report_ref_error(message, code="circular-attributeGroup")
+                continue
+            nested = self.getSchema().attributeGroups.get(nestedName)
+            if nested is None:
+                message = (
+                    f"attributeGroup reference '{nestedName}' in group "
+                    f"'{group.name}' could not be resolved"
+                )
+                self._report_ref_error(message, code="unknown-attributeGroup")
+                continue
+            for attrName, attr in self._collectAttributeGroup(
+                nested, visited | {nestedName}
+            ).items():
+                collected.setdefault(attrName, attr)
+        return collected
 
     def _report_ref_error(self, message, *, code):
         """Records a schema-reference problem on the parser's report.

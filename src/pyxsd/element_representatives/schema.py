@@ -1,6 +1,7 @@
 import copy
 
 from pyxsd.element_representatives.complex_type import ComplexType
+from pyxsd.element_representatives.element_representative import ComponentTable
 
 
 class Schema(ComplexType):
@@ -17,6 +18,9 @@ class Schema(ComplexType):
 
         See ElementRepresentative for more documentation.
         """
+        # Every ER in this parse registers into this parser-owned
+        # table, so declarations cannot leak between parsers.
+        self.components = ComponentTable()
         self.attributeGroups = {}
         self.complexTypes = {}
         self.simpleTypes = {}

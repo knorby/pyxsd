@@ -124,6 +124,11 @@ class ComplexType(XsdType):
             if getattr(element, "isRefSite", False):
                 contributed.extend(self._flattenGroupRef(element, visited | {groupName}))
             else:
+                if getattr(element, "isElementRef", False):
+                    # ``<xs:element ref="..."/>`` inside a named group
+                    # must resolve to its global declaration exactly as
+                    # it would directly inside the type.
+                    self._resolveElementRef(element)
                 element.sOrC = compInfo
                 contributed.append(element)
         self._foldRefOccurrences(refSite, contributed)

@@ -244,6 +244,10 @@ class PyXSD:
         logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")
 
         baseDir, visited = self._schemaCompositionContext()
+        # Documents already fully composed; their components must not be
+        # spliced twice (diamond includes) and a repeat encounter is not
+        # an error.
+        self._composedDocuments: set[str] = set(visited)
         self._spliceComposedSchemas(root, baseDir, visited)
 
         schemaER = ElementRepresentative.factory(root, None)
@@ -251,6 +255,14 @@ class PyXSD:
         # record schema-reference problems (group/attributeGroup
         # references) on the validation report.
         schemaER.pyXSD = self
+        # This parser owns the component table the ER run registered
+        # into; expose it on the parser and as the module-level active
+        # table so later lookups (xsi:type dispatch, tests) use this
+        # parser's declarations rather than a previous parser's.
+        self.components = schemaER.components
+        import pyxsd.element_representatives.element_representative as ermod
+
+        ermod._ACTIVE_TABLE = self.components
 
         for simpleType in schemaER.simpleTypes.values():
             cls = simpleType.clsFor(self)
@@ -351,22 +363,34 @@ class PyXSD:
         """
         location = tag.get("schemaLocation")
         if not location:
+            if isImport:
+                # ``schemaLocation`` is optional on xs:import: a
+                # namespace-only import is a hint with no document to
+                # load, so it is not an error.
+                logger.debug("namespace-only xs:import with no schemaLocation; skipping")
+                return None
             self.report.add_error(
-                f"an {'import' if isImport else 'include'} tag has no "
-                "schemaLocation; the schema could not be composed",
+                "an include tag has no schemaLocation; the schema could not be composed",
                 code="schema-compose",
+            )
+            return None
+        includedPath = (baseDir / location).resolve()
+        key = str(includedPath)
+        if key in self._composedDocuments:
+            logger.debug("the schema '%s' is already composed; skipping", location)
+            return None
+        if key in visited:
+            # A legal include cycle: the document is already being
+            # composed, so this repetition is skipped rather than
+            # treated as a fatal error.
+            self.report.add_warning(
+                f"the schema '{location}' is already being composed; "
+                "the circular include is skipped",
+                code="compose-cycle",
             )
             return None
         includedRoot = self._parseIncludedSchema(location, baseDir)
         if includedRoot is None:
-            return None
-        includedPath = (baseDir / location).resolve()
-        if str(includedPath) in visited:
-            self.report.add_error(
-                f"the schema '{location}' is already being composed; "
-                "circular include/import relationships are not allowed",
-                code="compose-cycle",
-            )
             return None
         mainNS = schemaRoot.get("targetNamespace")
         includedNS = includedRoot.get("targetNamespace")
@@ -389,6 +413,7 @@ class PyXSD:
             includedRoot, includedPath.parent, visited | {str(includedPath)}
         )
         self._appendNamedComponents(includedRoot, schemaRoot)
+        self._composedDocuments.add(key)
         return None
 
     def _parseIncludedSchema(self, location: str, baseDir: Path) -> Any | None:
@@ -451,21 +476,26 @@ class PyXSD:
             return None
         includedPath = (baseDir / location).resolve()
         if str(includedPath) in visited:
-            self.report.add_error(
+            self.report.add_warning(
                 f"the schema '{location}' is already being composed; "
-                "circular include/redefine relationships are not allowed",
+                "the circular redefine is skipped",
                 code="compose-cycle",
             )
             return None
         redefinedNames = set()
         for child in list(redefineTag):
             local = child.tag.split("}")[-1]
-            if local in ("complexType", "simpleType", "group") and child.get("name"):
+            if local in ("complexType", "simpleType", "group", "attributeGroup") and child.get(
+                "name"
+            ):
                 redefinedNames.add(child.get("name"))
         for component in list(includedRoot):
             local = component.tag.split("}")[-1]
             name = component.get("name")
-            if local in ("complexType", "simpleType", "group") and name in redefinedNames:
+            if (
+                local in ("complexType", "simpleType", "group", "attributeGroup")
+                and name in redefinedNames
+            ):
                 component.set("name", f"{name}|base")
         self._spliceComposedSchemas(
             includedRoot, includedPath.parent, visited | {str(includedPath)}
@@ -476,6 +506,17 @@ class PyXSD:
                 base = element.get("base")
                 if base and base.split(":")[-1] in redefinedNames:
                     element.set("base", f"{base.split(':')[-1]}|base")
+                # Inside a redefine block a reference to the redefined
+                # group/attributeGroup means the *original*, so rebind it
+                # to the renamed |base definition instead of the new one
+                # (which would be a circular reference).
+                localRef = element.get("ref")
+                if (
+                    element.tag.split("}")[-1] in ("group", "attributeGroup")
+                    and localRef
+                    and localRef.split(":")[-1] in redefinedNames
+                ):
+                    element.set("ref", f"{localRef.split(':')[-1]}|base")
             schemaRoot.append(child)
         return None
 
