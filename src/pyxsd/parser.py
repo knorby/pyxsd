@@ -218,6 +218,11 @@ class PyXSD:
         """
         logger.debug("Sending the schema file to the ElementTree Parser...")
 
+        # Everything reported until the instance document is parsed is a
+        # schema-compilation problem: composition, ER building, and class
+        # generation.
+        self.report.phase = "schema"
+
         if isinstance(self.xsdFile, (str, os.PathLike)):
             try:
                 with open(self.xsdFile, "rb") as schemaFile:
@@ -491,6 +496,9 @@ class PyXSD:
         """
         logger.debug("Starting to parse the xml file.")
 
+        # Binding diagnostics from here on belong to the instance phase.
+        self.report.phase = "instance"
+
         schemaClass = self.getClasses()["schema"]
 
         schemaClassInstance = schemaClass()
@@ -512,6 +520,7 @@ class PyXSD:
                 "invalid schema: there is more than one global element named "
                 f"'{rootName}' ({elementNames}); parsing only '{matching[0].name}'",
                 code="multiple-roots",
+                phase="schema",
             )
 
         if not matching:

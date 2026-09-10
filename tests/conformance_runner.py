@@ -19,6 +19,7 @@ from typing import Any
 
 from pyxsd.element_representatives.element_representative import registry
 from pyxsd.parser import PyXSD
+from pyxsd.validation import IssueSeverity, ValidationIssue
 
 HERE = Path(__file__).parent
 CASES_PATH = HERE / "conformance" / "cases.toml"
@@ -50,6 +51,11 @@ def _materialize(case: dict[str, Any], directory: Path) -> Path:
     return directory
 
 
+def _errors(issues: list[ValidationIssue]) -> list[ValidationIssue]:
+    """Filter a phase's issues down to error severity."""
+    return [i for i in issues if i.severity is IssueSeverity.ERROR]
+
+
 def run_case(case: dict[str, Any], directory: Path) -> tuple[bool, str]:
     """Run one conformance case.
 
@@ -58,9 +64,12 @@ def run_case(case: dict[str, Any], directory: Path) -> tuple[bool, str]:
 
     ``PyXSD.__init__`` runs the whole pipeline eagerly, so a single
     construction executes the schema step and (when present) the
-    instance step. Schema-only cases feed an in-memory dummy instance;
-    the extra ``unknown-root`` report entry it produces is harmless
-    because expectations match by subset of report codes.
+    instance step. Schema and instance diagnostics are checked
+    **separately** (issues carry a ``phase``): a case marked
+    ``schema_valid`` never passes if the schema produced errors, even
+    when the instance step also failed. Schema-only cases get an
+    in-memory dummy instance whose ``unknown-root`` issue belongs to the
+    instance phase and so cannot mask a schema failure.
     """
     directory = _materialize(case, directory)
     has_instance = "instance" in case
@@ -82,27 +91,37 @@ def run_case(case: dict[str, Any], directory: Path) -> tuple[bool, str]:
         return False, f"parse raised {type(exc).__name__}: {exc}"
 
     report = parser.report
+    schema_issues = report.for_phase("schema")
+    schema_errors = _errors(schema_issues)
+
     if not case.get("schema_valid", True):
-        if not report.has_errors:
-            return False, f"schema errors expected, report was clean: {report}"
-        return _check_codes(case, report, "schema")
+        if not schema_errors:
+            return False, f"schema errors expected, schema phase was clean: {report}"
+        return _check_codes(case, schema_errors, "schema")
+
+    if schema_errors:
+        return False, f"schema unexpectedly invalid: {schema_errors}"
 
     if not has_instance:
         return True, ""
 
+    instance_issues = report.for_phase("instance")
     if case.get("instance_valid", True):
-        if report.issues:
-            return False, f"clean parse expected, got report: {report}"
+        if instance_issues:
+            return False, f"clean parse expected, got instance issues: {instance_issues}"
         return True, ""
-    if not report.has_errors:
-        return False, f"instance errors expected, report was clean: {report}"
-    return _check_codes(case, report, "instance")
+    instance_errors = _errors(instance_issues)
+    if not instance_errors:
+        return False, f"instance errors expected, instance phase was clean: {report}"
+    return _check_codes(case, instance_errors, "instance")
 
 
-def _check_codes(case: dict[str, Any], report: Any, step: str) -> tuple[bool, str]:
-    """Verify all expected_codes appear in the report of *step*."""
+def _check_codes(
+    case: dict[str, Any], issues: list[ValidationIssue], step: str
+) -> tuple[bool, str]:
+    """Verify all expected_codes appear in the issues of *step*."""
     expected = case.get("expected_codes") or []
-    codes = {issue.code for issue in report.issues}
+    codes = {issue.code for issue in issues}
     missing = [code for code in expected if code not in codes]
     if missing:
         actual = sorted(codes)
