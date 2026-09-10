@@ -1,6 +1,7 @@
 import logging
 import types
 
+from pyxsd.content_model import compile_content_model
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.xsd_data_types import XsdDataType
 
@@ -100,6 +101,29 @@ class XsdType(ElementRepresentative):
             baseList.append(SchemaBase)
         return tuple(baseList)
 
+    def getDerivation(self) -> str | None:
+        """Returns ``"extension"``, ``"restriction"`` or ``None``.
+
+        The method is read from this type's own content: an
+        ``Extension`` child (possibly below a ``ComplexContent``
+        wrapper) means extension, a ``Restriction`` means restriction.
+        """
+        derivation = None
+        for child in getattr(self, "processedChildren", []):
+            childName = child.__class__.__name__ if child is not None else ""
+            if childName == "Extension":
+                derivation = "extension"
+            elif childName == "Restriction":
+                derivation = derivation or "restriction"
+            elif childName == "ComplexContent":
+                for grandchild in getattr(child, "processedChildren", []):
+                    grandName = grandchild.__class__.__name__ if grandchild is not None else ""
+                    if grandName == "Extension":
+                        derivation = "extension"
+                    elif grandName == "Restriction":
+                        derivation = derivation or "restriction"
+        return derivation
+
     def _checkFinal(self, base, superClassName):
         """Reports a ``final`` violation against a derivation base.
 
@@ -123,23 +147,10 @@ class XsdType(ElementRepresentative):
         final = getattr(baseER, "final", None) if baseER is not None else None
         if final is None:
             return
-        derivation = None
-        for child in self.processedChildren:
-            childName = child.__class__.__name__ if child is not None else ""
-            if childName == "Extension":
-                derivation = "extension"
-            elif childName == "Restriction":
-                derivation = derivation or "restriction"
-            elif childName == "ComplexContent":
-                # The extension/restriction sits one level below the
-                # complexContent wrapper.
-                for grandchild in getattr(child, "processedChildren", []):
-                    grandName = grandchild.__class__.__name__ if grandchild is not None else ""
-                    if grandName == "Extension":
-                        derivation = "extension"
-                    elif grandName == "Restriction":
-                        derivation = derivation or "restriction"
-        if final == "#all" or derivation == final:
+        derivation = self.getDerivation()
+        finalTokens = str(final).split()
+        violates = "#all" in finalTokens or (derivation is not None and derivation in finalTokens)
+        if violates:
             message = (
                 f"type '{self.name}' derives by {derivation or 'extension/restriction'} "
                 f"from '{superClassName}', whose final value is '{final}'"
@@ -332,6 +343,11 @@ class XsdType(ElementRepresentative):
             namespace["hasWildcardAttributes_"] = True
         if self.tagAttributes.get("abstract") == "true":
             namespace["abstract_"] = True
+        # Compile the particle tree before getElements() flattens and
+        # folds group-reference occurrences onto the shared descriptors.
+        contentModel = compile_content_model(self, pyXSD)
+        if contentModel is not None:
+            namespace["_contentModel_"] = contentModel
         for element in self.getElements():
             element.pyXSD = pyXSD
             existing = namespace.get(element.name)

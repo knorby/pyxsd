@@ -2,6 +2,7 @@ import logging
 from typing import ClassVar
 
 from pyxsd import xsi
+from pyxsd.content_model import first_required_name, match_content, particle_names
 from pyxsd.validation import IssueSeverity
 from pyxsd.xsd_data_types import XsdDataType, xsd_value_key
 
@@ -297,16 +298,56 @@ class SchemaBase:
         else:
             declaredChildren = subElements
 
-        sOrC = getattr(elemDescriptors[0], "sOrC", None) if elemDescriptors else None
+        model = getattr(instance, "_contentModel_", None)
+        if model is not None:
+            complete, leftover = match_content(model, declaredChildren, memberHeadMap)
+        else:
+            complete, leftover = False, None
 
-        if sOrC == "sequence":
-            cls.checkElementOrderInSequence(elemDescriptors, declaredChildren, memberHeadMap)
+        if model is None or not complete:
+            sOrC = getattr(elemDescriptors[0], "sOrC", None) if elemDescriptors else None
 
-        elif sOrC == "choice":
-            cls.checkElementOrderInChoice(elemDescriptors, declaredChildren, memberHeadMap)
+            if sOrC == "sequence":
+                cls.checkElementOrderInSequence(elemDescriptors, declaredChildren, memberHeadMap)
 
-        elif sOrC == "all":
-            cls.checkElementOrderInAll(elemDescriptors, declaredChildren, memberHeadMap)
+            elif sOrC == "choice":
+                cls.checkElementOrderInChoice(elemDescriptors, declaredChildren, memberHeadMap)
+
+            elif sOrC == "all":
+                cls.checkElementOrderInAll(elemDescriptors, declaredChildren, memberHeadMap)
+
+            if model is not None and leftover:
+                # The compiled model rejected some children the legacy
+                # checkers do not cover (a closed model must consume
+                # every child).
+                declared = particle_names(model)
+                for subElement in leftover:
+                    subElementName = getSubElementName(subElement)
+                    head = memberHeadMap.get(subElementName, subElementName)
+                    if head in declared:
+                        cls._report_error(
+                            f"element '{subElementName}' is not allowed in this "
+                            "position in the content model",
+                            code="order",
+                            element=cls.__name__,
+                        )
+                    elif not hasWildcard:
+                        cls._report_error(
+                            f"element '{subElementName}' is not declared in the "
+                            "content model and no wildcard allows it",
+                            code="unexpected-element",
+                            element=cls.__name__,
+                        )
+
+            if model is not None and not leftover:
+                missing = first_required_name(model)
+                if missing is not None:
+                    cls._report_error(
+                        f"the content model requires element '{missing}', "
+                        "which is missing from the xml",
+                        code="occurrence-min",
+                        element=cls.__name__,
+                    )
 
         # Children are matched (and recorded) in document order so the
         # instance tree preserves the xml's layout.
