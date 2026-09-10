@@ -1,27 +1,30 @@
-*.py[co]
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
 
-# Packages
-*.egg
-*.egg-info
-dist
-build
-eggs
-parts
-bin
-var
-sdist
-develop-eggs
-.installed.cfg
+# Virtual environments
+.venv/
+venv/
 
-# Installer logs
-pip-log.txt
-
-# Unit test / coverage reports
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .coverage
-.tox
+.coverage.*
+htmlcov/
+coverage.xml
 
-#Translations
-*.mo
+# Local agent / code-index tooling
+.codegraph/
+.serena/
 
-#Mr Developer
-.mr.developer.cfg
+# Docs build output
+docs/_build/
+
+# OS noise
+.DS_Store

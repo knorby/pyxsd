@@ -1,0 +1,100 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyxsd"
+version = "1.0.0.dev0"
+description = "Schema-guided XML-to-Python object mapping with a transform pipeline"
+readme = "README.rst"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Kali Norby", email = "kali.norby@gmail.com" }]
+maintainers = [{ name = "Kali Norby", email = "kali.norby@gmail.com" }]
+requires-python = ">=3.11"
+keywords = ["xml", "xsd", "schema", "parser", "transform", "validation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Text Processing :: Markup :: XML",
+]
+
+[project.urls]
+Homepage = "https://github.com/knorby/pyxsd"
+Repository = "https://github.com/knorby/pyxsd"
+Issues = "https://github.com/knorby/pyxsd/issues"
+Changelog = "https://github.com/knorby/pyxsd/blob/develop/CHANGELOG.md"
+
+[project.scripts]
+pyxsd = "pyxsd.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "pytest-cov>=7",
+    "hypothesis>=6.140",
+    "mypy>=1.18",
+    "ruff==0.16.6",
+    "pre-commit>=4.6",
+]
+docs = [
+    "sphinx>=8.2",
+    "myst-parser>=4.1",
+    "furo>=2025.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pyxsd"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/pyxsd",
+    "tests",
+    "docs",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.rst",
+    "pyproject.toml",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific rules
+]
+ignore = [
+    "E501", # line length is enforced by the formatter where it can split
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["pyxsd"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+precision = 1
+# Raised to 90 once the Phase 2 suite lands.
+fail_under = 0
