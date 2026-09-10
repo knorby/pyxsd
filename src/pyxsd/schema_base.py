@@ -1,7 +1,9 @@
 import logging
 from typing import ClassVar
 
+from pyxsd import xsi
 from pyxsd.validation import IssueSeverity
+from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
 
@@ -150,10 +152,20 @@ class SchemaBase:
         not the element. A non-fatal (when possible) error is raised
         when the xml element does not correspond to the schema class.
 
+        Types declared ``abstract`` may not be instantiated directly
+        (derived classes may); the violation is recorded on the
+        validation report and parsing continues.
+
         - ``elementTag`` - the xml element that corresponds to ``cls``
         """
         instance = cls()
         instance._name_ = elementTag.tag.split("}")[-1]
+        if cls.__dict__.get("abstract_"):
+            cls._report_error(
+                f"type '{cls.__name__}' is declared abstract and may not be instantiated directly",
+                code="abstract-type",
+                element=instance._name_,
+            )
         cls.addAttributesTo(instance, elementTag)
         cls.addElementsTo(instance, elementTag)
         cls.addValueTo(instance, elementTag)
@@ -185,11 +197,17 @@ class SchemaBase:
         """
         self._attribs_ = {}
         usedAttributes = []
+        xsiPrefix = f"{{{xsi.XSI_NAMESPACE}}}"
+        # XSI-namespace attributes (xsi:nil, xsi:type, ...) are stored
+        # under their conventional display spelling so the writers emit
+        # valid xml (the document's own xmlns:xsi declaration, a plain
+        # attribute here, keeps the output reparseable).
         for attr in elementTag.attrib:
-            if "xmlns" in attr or "xsi:" in attr:
-                setattr(self, attr, elementTag.attrib[attr])
-                usedAttributes.append(attr)
-                self._attribs_[attr] = elementTag.attrib[attr]
+            if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
+                displayKey = xsi.xsi_attr_key(attr)
+                setattr(self, displayKey, elementTag.attrib[attr])
+                usedAttributes.append(displayKey)
+                self._attribs_[displayKey] = elementTag.attrib[attr]
         for name in self.descAttributeNames():
             if name in elementTag.attrib:
                 setattr(self, name, elementTag.attrib[name])
@@ -200,7 +218,7 @@ class SchemaBase:
         # left out and reported as unexpected.
         if getattr(self, "hasWildcardAttributes_", False):
             for attr, value in elementTag.attrib.items():
-                if "xmlns" in attr or "xsi:" in attr:
+                if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
                     continue
                 if attr in usedAttributes:
                     continue
@@ -211,13 +229,18 @@ class SchemaBase:
     @classmethod
     def addElementsTo(cls, instance, elementTag):
         """Checks order on the child elements, with different functions
-        for ``sequence`` and ``choice``.
+        for ``sequence``, ``choice``, and ``all``.
 
         Iterates through all the elements specified in the class of the
         schema, and matches these elements with the elements from the
         xml. Redirects elements that are primitive types (integer,
         double, string, and so on) to another function. Calls
         ``makeInstanceFromTag()`` on all the children.
+
+        Children may also match as ``substitutionGroup`` members of a
+        declared element: a member element is parsed with its own type
+        wherever its head element is declared, unless the head blocks
+        substitution.
 
         - ``instance`` - the instance of ``cls`` that is having
           elements added to it.
@@ -234,6 +257,15 @@ class SchemaBase:
         if not subElements:  # This element has no children
             return None
 
+        # Substitution-group dispatch: member xml children may appear
+        # wherever their head element is declared.
+        substitutionGroups = cls._schemaSubstitutionGroups(elemDescriptors)
+        memberHeadMap = {
+            member.name: headName
+            for headName, members in substitutionGroups.items()
+            for member in members
+        }
+
         # Wildcard (xs:any) pass-through: children the schema does not
         # declare are accepted and parsed generically when the type
         # declares a wildcard. Order checking only sees declared
@@ -241,6 +273,7 @@ class SchemaBase:
         hasWildcard = getattr(instance, "hasWildcardElements_", False)
         if hasWildcard:
             declaredNames = {descriptor.name for descriptor in elemDescriptors}
+            declaredNames.update(memberHeadMap)
             declaredChildren = [
                 subElement
                 for subElement in subElements
@@ -252,13 +285,13 @@ class SchemaBase:
         sOrC = getattr(elemDescriptors[0], "sOrC", None) if elemDescriptors else None
 
         if sOrC == "sequence":
-            cls.checkElementOrderInSequence(elemDescriptors, declaredChildren)
+            cls.checkElementOrderInSequence(elemDescriptors, declaredChildren, memberHeadMap)
 
         elif sOrC == "choice":
-            cls.checkElementOrderInChoice(elemDescriptors[0], declaredChildren)
+            cls.checkElementOrderInChoice(elemDescriptors, declaredChildren, memberHeadMap)
 
         elif sOrC == "all":
-            cls.checkElementOrderInAll(elemDescriptors, declaredChildren)
+            cls.checkElementOrderInAll(elemDescriptors, declaredChildren, memberHeadMap)
 
         # Children are matched (and recorded) in document order so the
         # instance tree preserves the xml's layout.
@@ -269,9 +302,15 @@ class SchemaBase:
                 if descriptor.name != subElementName:
                     continue
                 matched = True
-                subElCls = descriptor.getType()
-
-                if subElCls is None:  # An Error Message
+                if descriptor.isAbstract():
+                    cls._report_error(
+                        f"element '{subElementName}' is declared abstract; "
+                        "only its substitution group members may appear in the xml",
+                        code="abstract-element",
+                        element=cls.__name__,
+                    )
+                subElCls = cls._classForChild(descriptor, subElement)
+                if subElCls is None:
                     cls._report_error(
                         "no type in the schema corresponds to the type "
                         f"stated in the '{subElementName}' element",
@@ -279,27 +318,242 @@ class SchemaBase:
                         element=cls.__name__,
                     )
                     break
-
-                # for elements with primitive types
-                if not issubclass(subElCls, SchemaBase):
-                    subInstance = cls.primitiveValueFor(subElCls, subElement)
-                    if subInstance is not None:
-                        # invalid values are skipped; the error is
-                        # already in the report
-                        subInstance._name_ = subElementName
-                        instance._children_.append(subInstance)
-                        setattr(instance, subElementName, subInstance)
-                    break
-
-                subInstance = subElCls.makeInstanceFromTag(subElement)
-                subInstance._name_ = subElementName
-                instance._children_.append(subInstance)
+                cls._addChildInstance(instance, subElement, subElCls, descriptor)
                 break
+
+            if not matched and substitutionGroups:
+                matched = cls._addSubstitutionMember(instance, subElement, elemDescriptors)
 
             if not matched and hasWildcard:
                 wildcardInstance = cls.makeGenericInstance(subElement)
                 instance._children_.append(wildcardInstance)
         return instance
+
+    @classmethod
+    def _classForChild(cls, descriptor, subElement):
+        """Resolves the class used to build one matched child element.
+
+        Uses the declared type by default; ``xsi:type`` on the xml
+        element dispatches to another schema type. Unresolvable
+        ``xsi:type`` values are recorded on the validation report and
+        the declared type is kept. Returns ``None`` when no type can
+        be resolved.
+        """
+        subElCls = descriptor.getType() if descriptor is not None else None
+        xsiTypeName = xsi.xsi_type_name(subElement)
+        if xsiTypeName is None:
+            return subElCls
+        pyXSD = getattr(cls, "pyXSD", None)
+        resolved = ElementRepresentative.typeFromName(xsiTypeName, pyXSD)
+        if resolved is not None:
+            logger.debug(
+                "Element %r dispatched via xsi:type to %s", subElement.tag, resolved.__name__
+            )
+            return resolved
+        cls._report_error(
+            f"xsi:type '{xsiTypeName}' on element "
+            f"'{subElement.tag.split('}')[-1]}' does not correspond to a "
+            "type in the schema",
+            code="xsi-type",
+            element=cls.__name__,
+        )
+        return subElCls
+
+    @classmethod
+    def _addChildInstance(cls, instance, subElement, subElCls, descriptor):
+        """Builds and stores the instance for one matched child element.
+
+        Handles ``xsi:nil`` (nillable elements carry no content to
+        validate), ``fixed`` value checking on simple content, and the
+        primitive/complex split. Appends the built instance to the
+        parent's ``_children_`` and, for primitive content, exposes it
+        as an instance attribute.
+        """
+        subElementName = subElement.tag.split("}")[-1]
+        nilled = xsi.xsi_nil_is_true(subElement)
+        if nilled and not descriptor.isNillable():
+            cls._report_error(
+                f"element '{subElementName}' carries xsi:nil but its declaration is not nillable",
+                code="nil",
+                element=cls.__name__,
+            )
+            nilled = False
+
+        # for elements with primitive types
+        if not issubclass(subElCls, SchemaBase):
+            if nilled:
+                subInstance = cls._nilPrimitive(subElCls, subElement)
+            else:
+                subInstance = cls._primitiveForElement(subElCls, subElement, descriptor)
+            if subInstance is not None:
+                # invalid values are skipped; the error is
+                # already in the report
+                subInstance._name_ = subElementName
+                instance._children_.append(subInstance)
+                setattr(instance, subElementName, subInstance)
+                if not nilled:
+                    cls._checkFixedElement(descriptor, subElCls, subInstance, subElementName)
+            return None
+
+        subInstance = subElCls.makeInstanceFromTag(subElement)
+        subInstance._name_ = subElementName
+        instance._children_.append(subInstance)
+        return None
+
+    @classmethod
+    def _primitiveForElement(cls, subElCls, subElement, descriptor):
+        """Builds a typed instance for a primitive-typed child element.
+
+        An empty element (no text, no children) takes its declared
+        ``default`` value, or its ``fixed`` value when there is no
+        default; otherwise the lexical content is validated normally
+        (see ``primitiveValueFor``). Invalid values yield ``None``
+        with the error already on the validation report.
+        """
+        emptyContent = subElement.text is None and not list(subElement)
+        if emptyContent:
+            forced = descriptor.getDefault()
+            if forced is None:
+                forced = descriptor.getFixed()
+            if forced is not None:
+                return cls._valueForcedPrimitive(subElCls, subElement, forced, "default")
+        return cls.primitiveValueFor(subElCls, subElement)
+
+    @classmethod
+    def _valueForcedPrimitive(cls, subElCls, subElement, forcedValue, code):
+        """Builds a typed instance for a forced (default/fixed) value.
+
+        The forced value must be valid for the element's type; a
+        violation is a schema problem and is recorded with the given
+        report code (``default`` or ``fixed-element``).
+        """
+        try:
+            instance = subElCls(forcedValue)
+        except (TypeError, ValueError) as e:
+            cls._report_error(
+                f"the forced value {forcedValue!r} of the "
+                f"'{subElement.tag.split('}')[-1]}' element is not valid "
+                f"for its type: {e}",
+                code=code,
+                element=cls.__name__,
+            )
+            return None
+        instance._attribs_ = {
+            xsi.xsi_attr_key(key): value for key, value in subElement.attrib.items()
+        }
+        instance._value_ = None
+        instance._children_ = list(subElement)
+        return instance
+
+    @classmethod
+    def _nilPrimitive(cls, subElCls, subElement):
+        """Builds an unvalidated instance for a nillable primitive element.
+
+        A nillable element may carry no content, so no lexical form is
+        available; the bare instance keeps the raw attributes (which
+        include ``xsi:nil``) for the writers.
+        """
+        try:
+            subInstance = subElCls._unvalidated()
+        except Exception:
+            cls._report_error(
+                f"could not build a nil instance for the '{subElement.tag.split('}')[-1]}' element",
+                code="value",
+                element=cls.__name__,
+            )
+            return None
+        subInstance._attribs_ = {
+            xsi.xsi_attr_key(key): value for key, value in subElement.attrib.items()
+        }
+        subInstance._value_ = None
+        subInstance._children_ = list(subElement)
+        return subInstance
+
+    @classmethod
+    def _checkFixedElement(cls, descriptor, subElCls, subInstance, subElementName):
+        """Validates a primitive element's value against ``fixed``."""
+        fixed = descriptor.getFixed()
+        if fixed is None:
+            return None
+        try:
+            fixedInstance = subElCls(fixed)
+        except Exception:
+            cls._report_error(
+                f"fixed value {fixed!r} of element '{subElementName}' is not valid for its type",
+                code="fixed-element",
+                element=cls.__name__,
+            )
+            return None
+        if subInstance != fixedInstance:
+            cls._report_error(
+                f"element '{subElementName}' has a value that conflicts "
+                f"with its fixed value {fixed!r}",
+                code="fixed-element",
+                element=cls.__name__,
+            )
+        return None
+
+    @classmethod
+    def _addSubstitutionMember(cls, instance, subElement, elemDescriptors):
+        """Parses a child as a substitution-group member, if it is one.
+
+        Matches the xml child name against the members registered
+        under each declared element (the head). Returns True when the
+        child was handled. Members blocked by the head's ``block``
+        attribute are reported and rejected.
+        """
+        subElementName = subElement.tag.split("}")[-1]
+        declared = {descriptor.name: descriptor for descriptor in elemDescriptors}
+        for headName, members in cls._schemaSubstitutionGroups(elemDescriptors).items():
+            headDescriptor = declared.get(headName)
+            if headDescriptor is None:
+                continue
+            for memberER in members:
+                if memberER.name != subElementName:
+                    continue
+                block = headDescriptor.getBlock()
+                if block and ("substitution" in block.split() or block == "#all"):
+                    cls._report_error(
+                        f"substitution-group member '{subElementName}' is "
+                        f"blocked by head element '{headName}' (block={block!r})",
+                        code="blocked",
+                        element=cls.__name__,
+                    )
+                    return False
+                if memberER.tagAttributes.get("type"):
+                    subElCls = memberER.getType()
+                else:
+                    subElCls = headDescriptor.getType()
+                if subElCls is None:
+                    return False
+                # An xsi:type on the member overrides both the member's
+                # and the head's declared type.
+                xsiTypeName = xsi.xsi_type_name(subElement)
+                if xsiTypeName is not None:
+                    override = ElementRepresentative.typeFromName(
+                        xsiTypeName, getattr(cls, "pyXSD", None)
+                    )
+                    if override is not None:
+                        subElCls = override
+                cls._addChildInstance(instance, subElement, subElCls, headDescriptor)
+                return True
+        return False
+
+    @staticmethod
+    def _schemaSubstitutionGroups(elemDescriptors):
+        """Returns the substitution-group map of the owning schema.
+
+        Used by both the dispatch path and the declared-name
+        computation. Overlay classes without ER ancestry get an empty
+        map.
+        """
+        if not elemDescriptors:
+            return {}
+        try:
+            schemaER = elemDescriptors[0].getSchema()
+        except Exception:
+            return {}
+        return getattr(schemaER, "substitutionGroups", None) or {}
 
     @classmethod
     def addValueTo(cls, instance, elementTag):
@@ -324,17 +578,45 @@ class SchemaBase:
             instance._value_ = instance._value_ if instance._value_ else None
 
     @classmethod
-    def checkElementOrderInChoice(cls, elemDescriptor, subElements):
+    def checkElementOrderInChoice(cls, descriptors, subElements, memberHeadMap):
         """Checks to see that elements in a choice field follow the rules
         of such a field.
 
-        Gets minOccurs and maxOccurs from the choice element in the
-        schema, and checks the number of elements from there.
+        Finds the ``choice`` compositor that owns the descriptors and
+        checks the total child count against the choice's own
+        ``minOccurs``/``maxOccurs``. Each element in the choice is then
+        checked against its own ``maxOccurs`` (``minOccurs`` is not
+        applicable to individual branches: any branch may be the one
+        that does not appear).
 
-        - ``subElements`` - all of the children of an element that is
-          being processed in ``addElementsTo()``.
+        - ``descriptors`` - the schema-specified elements that make up
+          the choice.
+
+        - ``subElements`` - the declared children of an element being
+          processed in ``addElementsTo()``.
+
+        - ``memberHeadMap`` - substitution-group member name to head
+          name, so member children count toward the head's limits.
         """
-        minOccurs = elemDescriptor.getMinOccurs()
+        subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        subElementNames = [memberHeadMap.get(name, name) for name in subElementNames]
+
+        choiceER = None
+        for descriptor in descriptors:
+            parent = getattr(descriptor, "parent", None)
+            if parent is not None and parent.__class__.__name__ == "Choice":
+                choiceER = parent
+                break
+
+        if choiceER is not None:
+            minOccurs = choiceER.getMinOccurs()
+            maxOccurs = choiceER.getMaxOccurs()
+        else:
+            # Defensive fallback: derive the limits from the first
+            # descriptor (the pre-phase-8 behavior).
+            minOccurs = descriptors[0].getMinOccurs()
+            maxOccurs = descriptors[0].getMaxOccurs()
+
         if minOccurs < 0:
             cls._report_warning(
                 "the value of 'minOccurs' must be greater than or equal to "
@@ -344,7 +626,6 @@ class SchemaBase:
             )
             minOccurs = 1
 
-        maxOccurs = elemDescriptor.getMaxOccurs()
         if maxOccurs < 0:
             cls._report_warning(
                 "the value of 'maxOccurs' must be greater than or equal to "
@@ -354,7 +635,7 @@ class SchemaBase:
             )
             maxOccurs = 1
 
-        if len(subElements) < minOccurs:
+        if len(subElementNames) < minOccurs:
             cls._report_error(
                 "the xml does not contain enough elements for the choice "
                 f"(minOccurs is {minOccurs})",
@@ -362,17 +643,29 @@ class SchemaBase:
                 element=cls.__name__,
             )
 
-        elif len(subElements) > maxOccurs:
+        elif len(subElementNames) > maxOccurs:
             cls._report_error(
                 f"the xml contains too many elements for the choice (maxOccurs is {maxOccurs})",
                 code="occurrence-max",
                 element=cls.__name__,
             )
 
+        if choiceER is not None:
+            for descriptor in descriptors:
+                count = subElementNames.count(descriptor.name)
+                if count > descriptor.getMaxOccurs():
+                    cls._report_error(
+                        f"element '{descriptor.name}' occurs more times than "
+                        f"maxOccurs ({descriptor.getMaxOccurs()}) allows "
+                        "within the choice",
+                        code="occurrence-max",
+                        element=cls.__name__,
+                    )
+
         return None
 
     @classmethod
-    def checkElementOrderInAll(cls, descriptors, subElements):
+    def checkElementOrderInAll(cls, descriptors, subElements, memberHeadMap):
         """Checks the occurrence counts in an ``all`` content model.
 
         Unlike ``sequence``, ``all`` does not constrain the order of
@@ -386,8 +679,12 @@ class SchemaBase:
 
         - ``subElements`` - the declared children of an element being
           processed in ``addElementsTo()``.
+
+        - ``memberHeadMap`` - substitution-group member name to head
+          name, so member children count toward the head's limits.
         """
         subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        subElementNames = [memberHeadMap.get(name, name) for name in subElementNames]
         for descriptor in descriptors:
             count = subElementNames.count(descriptor.name)
             if count < descriptor.getMinOccurs():
@@ -407,7 +704,7 @@ class SchemaBase:
                 )
 
     @classmethod
-    def checkElementOrderInSequence(cls, descriptors, subElements):
+    def checkElementOrderInSequence(cls, descriptors, subElements, memberHeadMap):
         """Checks the element order in sequence fields to make sure that
         the order specified in the schema is preserved in the xml.
 
@@ -423,9 +720,13 @@ class SchemaBase:
         - ``subElements`` - all of the children of an element that is
           being processed in ``addElementsTo()``. Correspond to
           elements in ``descriptors``.
+
+        - ``memberHeadMap`` - substitution-group member name to head
+          name, so member children are validated in place of the head.
         """
         descriptorNames = [d.name for d in descriptors]
         subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        subElementNames = [memberHeadMap.get(name, name) for name in subElementNames]
         for index in range(0, len(descriptors)):
             descriptor = descriptors[index]
             dname = descriptorNames[index]
@@ -561,21 +862,19 @@ class SchemaBase:
     def _getElements(self):
         """Returns the element descriptors visible to this instance.
 
-        Walks the MRO of the instance's class, most-derived first, and
-        collects each class's own ``Element`` descriptors in
-        declaration order. A subclass declaration shadows an inherited
-        element with the same name. (For schemas that derive types with
-        ``extension``, this makes base elements reachable from the
-        derived class; the base's own instances are unaffected.)
+        Walks the MRO of the instance's class collecting each class's
+        own ``Element`` descriptors, least-derived first, so an
+        extension's content model comes out in XSD order: base
+        elements before extension elements. A derived declaration
+        shadows an inherited element with the same name (later,
+        more-derived assignments overwrite earlier ones while keeping
+        the original position).
         """
-        elements = []
-        seen = set()
-        for klass in type(self).__mro__:
+        ordered = {}
+        for klass in reversed(type(self).__mro__):
             for name in klass.__dict__.get("_elementNames_", ()):
-                if name not in seen:
-                    seen.add(name)
-                    elements.append(klass.__dict__[name])
-        return elements
+                ordered[name] = klass.__dict__[name]
+        return list(ordered.values())
 
     def descAttributes(self):
         """Returns a dictionary of the attribute descriptors.
@@ -625,7 +924,7 @@ class SchemaBase:
 
         descriptorAttributeNames = self.descAttributeNames()
 
-        attrInElementTag = list(elementTag.attrib.keys())
+        attrInElementTag = [xsi.xsi_attr_key(attr) for attr in elementTag.attrib]
 
         elementName = getattr(self, "_name_", None) or self.__class__.__name__
 
@@ -655,6 +954,68 @@ class SchemaBase:
                     code="missing-attribute",
                     element=elementName,
                 )
+            if found and attrUse == "prohibited":
+                self._report_error(
+                    f"attribute '{descriptorAttrName}' is prohibited and "
+                    "must not appear in the xml",
+                    code="prohibited-attribute",
+                    element=elementName,
+                )
+            attributeDescriptor = descriptorAttributes[descriptorAttrName]
+            if found:
+                self._checkFixedAttribute(attributeDescriptor, self, elementName)
+            else:
+                self._applyAttributeDefault(attributeDescriptor, self, elementName)
+
+    def _checkFixedAttribute(self, attributeDescriptor, instance, elementName):
+        """Validates a present attribute's value against ``fixed``.
+
+        Both values are compared as typed values (through the
+        attribute's type), so boolean spellings like 'true'/'1' agree.
+        """
+        fixed = attributeDescriptor.getFixed()
+        if fixed is None:
+            return None
+        attributeType = attributeDescriptor.getType()
+        if not issubclass(attributeType, XsdDataType):
+            return None  # complex-typed attributes have no lexical fixed value
+        stored = instance.__dict__.get(attributeDescriptor.name)
+        try:
+            fixedInstance = attributeType(fixed)
+        except Exception:
+            self._report_error(
+                f"fixed value {fixed!r} of attribute '{attributeDescriptor.name}' "
+                "is not valid for its type",
+                code="fixed-attribute",
+                element=elementName,
+            )
+            return None
+        if stored != fixedInstance:
+            self._report_error(
+                f"attribute '{attributeDescriptor.name}' has a value that "
+                f"conflicts with its fixed value {fixed!r}",
+                code="fixed-attribute",
+                element=elementName,
+            )
+        return None
+
+    def _applyAttributeDefault(self, attributeDescriptor, instance, elementName):
+        """Applies ``default``/``fixed`` values for an absent attribute.
+
+        Per XSD 1.0, an absent attribute whose declaration carries a
+        default (or a fixed value) takes that value. The value is
+        applied through the attribute descriptor, so it is validated
+        and stored typed; it is deliberately not added to the raw
+        ``_attribs_`` container, keeping xml output faithful to the
+        input document.
+        """
+        default = attributeDescriptor.getDefault()
+        fixed = attributeDescriptor.getFixed()
+        value = default if default is not None else fixed
+        if value is None:
+            return None
+        setattr(instance, attributeDescriptor.name, value)
+        return None
 
     @staticmethod
     def dumpCls(cls):
@@ -671,3 +1032,6 @@ class SchemaBase:
 
 from pyxsd.element_representatives.attribute import Attribute  # noqa: E402
 from pyxsd.element_representatives.element import Element  # noqa: E402
+from pyxsd.element_representatives.element_representative import (  # noqa: E402
+    ElementRepresentative,
+)

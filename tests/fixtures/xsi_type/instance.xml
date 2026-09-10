@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<container xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <item xsi:type="specialValueType">
+    <num>2</num>
+    <tag>bonus</tag>
+  </item>
+  <item>
+    <num>7</num>
+  </item>
+</container>

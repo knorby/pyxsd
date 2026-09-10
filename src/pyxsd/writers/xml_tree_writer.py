@@ -35,6 +35,7 @@ dictionary the following variables:
 
 import time
 
+from pyxsd import xsi
 from pyxsd.writers.xml_tag_writer import XmlTagWriter
 
 
@@ -51,7 +52,19 @@ class XmlTreeWriter:
 
         self.writeHeaderInfo()
 
+        rootAttribs = {xsi.xsi_attr_key(key): value for key, value in root._attribs_.items()}
+        if "xmlns:xsi" not in rootAttribs and XmlTreeWriter._tree_uses_xsi(root):
+            root._attribs_ = {**root._attribs_, "xmlns:xsi": xsi.XSI_NAMESPACE}
+
         XmlTreeWriter.passTagToTagWriter(root, 0, self.output)
+
+    @staticmethod
+    def _tree_uses_xsi(element):
+        """Returns True when any element in the tree carries an
+        XSI-namespace attribute (``xsi:nil``, ``xsi:type``, ...)."""
+        if any(xsi.xsi_attr_key(key).startswith("xsi:") for key in element._attribs_):
+            return True
+        return any(XmlTreeWriter._tree_uses_xsi(child) for child in element._children_)
 
     @staticmethod
     def passTagToTagWriter(element, tabs, output):
@@ -71,7 +84,16 @@ class XmlTreeWriter:
         """
         name = element._name_
         children = element._children_
-        attribs = element._attribs_
+        attribs = {xsi.xsi_attr_key(key): value for key, value in element._attribs_.items()}
+        if (
+            tabs == 0
+            and "xmlns:xsi" not in attribs
+            and any(key.startswith("xsi:") for key in attribs)
+        ):
+            # The tree carries XSI-namespace attributes (xsi:nil,
+            # xsi:type, ...); the root must declare their namespace so
+            # the output parses as xml.
+            attribs["xmlns:xsi"] = xsi.XSI_NAMESPACE
         value = element._value_
         hasChildren = bool(children)
 

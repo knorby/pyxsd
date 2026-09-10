@@ -160,3 +160,19 @@ class Attribute(ElementRepresentative):
         if "use" not in self.__dict__:
             self.use = "optional"
         return self.use
+
+    def getDefault(self):
+        """Returns the attribute's schema ``default`` value, or ``None``.
+
+        When the attribute is absent from an instance document, the
+        default supplies its value.
+        """
+        return self.tagAttributes.get("default")
+
+    def getFixed(self):
+        """Returns the attribute's schema ``fixed`` value, or ``None``.
+
+        A ``fixed`` attribute must either be absent (in which case it
+        takes the fixed value) or carry exactly that value.
+        """
+        return self.tagAttributes.get("fixed")

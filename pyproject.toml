@@ -97,6 +97,5 @@ branch = true
 [tool.coverage.report]
 show_missing = true
 precision = 1
-# Ratcheted upward each phase (sci transforms leave the package in
-# Phase 5). The 1.0.0 release gate is 90.
-fail_under = 85
+# Ratcheted upward each phase. The 1.0.0 release gate is 90.
+fail_under = 86

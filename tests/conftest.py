@@ -23,6 +23,10 @@ ALL_FIXTURES = [
     "groups",
     "unions",
     "wildcards",
+    "defaults",
+    "nillable",
+    "substitution",
+    "xsi_type",
 ]
 
 

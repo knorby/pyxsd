@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:complexType name="readingType">
+    <xs:sequence>
+      <xs:element name="value" type="xs:integer" nillable="true"/>
+      <xs:element name="unit" type="xs:string"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <xs:element name="reading" type="readingType"/>
+
+</xs:schema>

@@ -21,6 +21,7 @@ class Schema(ComplexType):
         self.complexTypes = {}
         self.simpleTypes = {}
         self.groups = {}
+        self.substitutionGroups = {}
         self.elements = []
         self._elements = None
         super().__init__(xsdElement, parent)

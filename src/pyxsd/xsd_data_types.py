@@ -89,6 +89,27 @@ __all__ = [
 class XsdDataType:
     """Common base class for all of the XSD data type classes."""
 
+    @classmethod
+    def _unvalidated(cls):
+        """Returns a bare instance of the type without lexical validation.
+
+        Used for ``xsi:nil`` elements: a nillable element may carry no
+        content at all, so no lexical form is available to validate.
+        The instance is built through the nearest immutable base type's
+        ``__new__`` (str/int/Decimal/float), which bypasses the
+        validating ``__new__`` each datatype class defines.
+        """
+        for base in cls.__mro__:
+            if base is str:
+                return str.__new__(cls)
+            if base is int:
+                return int.__new__(cls)
+            if base is float:
+                return float.__new__(cls)
+            if base is decimal.Decimal:
+                return decimal.Decimal.__new__(cls)
+        return object.__new__(cls)
+
 
 # ---------------------------------------------------------------------------
 # String and string-derived types

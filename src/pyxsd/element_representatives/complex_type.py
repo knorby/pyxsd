@@ -50,6 +50,8 @@ class ComplexType(XsdType):
                 if getattr(element, "isRefSite", False):
                     self.elements_.extend(self._flattenGroupRef(element, frozenset()))
                     continue
+                if getattr(element, "isElementRef", False):
+                    self._resolveElementRef(element)
                 element.sOrC = itemInfo
                 self.elements_.append(element)
             if itemInfo is Compositor.ALL:
@@ -126,6 +128,31 @@ class ComplexType(XsdType):
                 contributed.append(element)
         self._foldRefOccurrences(refSite, contributed)
         return contributed
+
+    def _resolveElementRef(self, refSite):
+        """Resolves an element reference site to its global declaration.
+
+        The referenced global element declaration supplies the content
+        model and the value constraints (type, nillable, fixed,
+        default, abstract); the reference site keeps its own
+        occurrence limits. The site's ``name`` becomes the referred
+        element's name so instance matching works, and the site's
+        ``referredElement`` attribute records the declaration for
+        ``Element.getType`` and the value accessors.
+
+        Unresolvable references are recorded on the validation report
+        and leave the site nameless (matching then fails with the
+        usual unknown-element handling).
+        """
+        refName = refSite.ref.split(":", 1)[-1]
+        for candidate in self.getSchema().elements:
+            if candidate.name == refName:
+                refSite.referredElement = candidate
+                refSite.name = candidate.name
+                return None
+        message = f"element reference '{refSite.ref}' in type '{self.name}' could not be resolved"
+        self._report_ref_error(message, code="unknown-elementRef")
+        return None
 
     def _foldRefOccurrences(self, refSite, elements):
         """Folds a group reference site's occurrence limits onto the

@@ -51,7 +51,7 @@ import warnings
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from pyxsd import __version__
+from pyxsd import __version__, xsi
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.schema_base import SchemaBase
@@ -221,7 +221,35 @@ class PyXSD:
             self.classes[complexType.name] = cls
             logger.debug("Class created for the %s type...", complexType.name)
 
+        self._buildSubstitutionGroups(schemaER)
+
         return None
+
+    def _buildSubstitutionGroups(self, schemaER):
+        """Maps substitution-group heads to their member elements.
+
+        XSD 1.0 declares substitution groups on global element
+        declarations: a member element carries ``substitutionGroup``
+        naming its head. After the ER run, every member is recorded
+        under its head's local name so instance parsing can dispatch
+        member elements wherever the head is allowed. Heads that name
+        no global element are recorded as schema errors.
+        """
+        declaredNames = {element.name for element in schemaER.elements}
+        for element in schemaER.elements:
+            head = element.getSubstitutionGroupHead()
+            if head is None:
+                continue
+            if head not in declaredNames:
+                self.report.add_error(
+                    f"element '{element.name}' declares substitutionGroup "
+                    f"'{head}', but no global element with that name exists",
+                    code="unknown-substitution-head",
+                    element=element.name,
+                )
+                continue
+            schemaER.substitutionGroups.setdefault(head, []).append(element)
+        logger.debug("Substitution groups built: %s", list(schemaER.substitutionGroups))
 
     def parseXML(self):
         """Reads the given xml file in the context of the xsd file.
@@ -239,31 +267,76 @@ class PyXSD:
 
         topLevelDescriptors = schemaClassInstance._getElements()
 
-        if len(topLevelDescriptors) > 1:
-            elementNames = ", ".join(element.name for element in topLevelDescriptors)
-            self.report.add_error(
-                "invalid schema: there is more than one root element in "
-                f"this document ({elementNames}); parsing only "
-                f"'{topLevelDescriptors[0].name}'",
-                code="multiple-roots",
-            )
-
         if not topLevelDescriptors:
             raise PyXSDError(
                 "invalid XML Schema - the parser could not find any root elements in the schema"
             )
 
-        rootElement = topLevelDescriptors[0]
+        matching = [descriptor for descriptor in topLevelDescriptors if descriptor.name == rootName]
+
+        if len(matching) > 1:
+            elementNames = ", ".join(element.name for element in matching)
+            self.report.add_error(
+                "invalid schema: there is more than one global element named "
+                f"'{rootName}' ({elementNames}); parsing only '{matching[0].name}'",
+                code="multiple-roots",
+            )
+
+        if not matching:
+            self.report.add_error(
+                f"the xml root element '{rootName}' does not correspond to any "
+                "global element declaration in the schema",
+                code="unknown-root",
+            )
+            return None
+
+        rootElement = matching[0]
         rootElementName = rootElement.name
 
         subInstance = None
         if rootElementName == rootName:
-            subCls = rootElement.getType()
+            subCls = self._classForRoot(rootElement)
             self.generateCorrectSchemaTags()
             subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
-            setattr(schemaClassInstance, rootElementName, subInstance)
+            # xsi:type may replace the declared root type, so the root
+            # instance is stored directly instead of validated against
+            # the declared element type.
+            schemaClassInstance.__dict__[rootElementName] = subInstance
 
         return subInstance
+
+    def _classForRoot(self, rootElement):
+        """Resolves the class used to instantiate the root element.
+
+        Honors ``xsi:type`` on the root element (dispatch to another
+        schema type) and rejects abstract root element declarations,
+        recording problems on the validation report.
+        """
+        if rootElement.isAbstract():
+            self.report.add_error(
+                f"root element '{rootElement.name}' is declared abstract; "
+                "abstract elements may not appear in instance documents",
+                code="abstract-element",
+                element=rootElement.name,
+            )
+
+        subCls = rootElement.getType()
+
+        xsiTypeName = xsi.xsi_type_name(self.xmlRoot)
+        if xsiTypeName is None:
+            return subCls
+
+        resolved = ElementRepresentative.typeFromName(xsiTypeName, self)
+        if resolved is None:
+            self.report.add_error(
+                f"xsi:type '{xsiTypeName}' on the root element does not "
+                "correspond to a type in the schema",
+                code="xsi-type",
+                element=rootElement.name,
+            )
+            return subCls
+        logger.debug("Root element dispatched via xsi:type to %s", resolved.__name__)
+        return resolved
 
     def generateCorrectSchemaTags(self):
         """Generates the proper schema information and namespace

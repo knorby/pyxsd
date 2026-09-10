@@ -178,11 +178,16 @@ class ElementRepresentative:
         types.  Calls ``clsFor`` on ERs for user-defined types.  The
         schema-namespace prefixes ``xs:`` and ``xsd:`` always denote
         built-ins; any other qualified name is looked up in the
-        registry first, with a built-in fallback on the local name so
-        default-namespace schemas (``type="string"``) still resolve.
+        registry first (by full name, then by local name so prefixed
+        references like ``my:customType`` resolve), with a built-in
+        fallback on the local name so default-namespace schemas
+        (``type="string"``) still resolve.
         """
         if not xsdTypeName.startswith(("xs:", "xsd:")):
             getFromNameReturned = cls.getFromName(xsdTypeName)
+            if not getFromNameReturned:
+                local = xsdTypeName.split(":", 1)[-1]
+                getFromNameReturned = cls.getFromName(local)
             if getFromNameReturned:
                 return getFromNameReturned.clsFor(pyXSD)
             local = xsdTypeName.split(":", 1)[-1]

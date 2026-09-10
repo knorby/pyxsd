@@ -31,10 +31,77 @@ class Element(ElementRepresentative):
     def __init__(self, xsdElement, parent):
         """Adds itself to the element list in its parent.
 
+        Reference sites (``<xs:element ref="..."/>``) are detected
+        before the base run so name assignment can account for them;
+        their content model comes from the referenced global element
+        declaration (see
+        ``ComplexType._resolveElementRef``).
+
         See ElementRepresentative for documentation.
         """
+        self.isElementRef = xsdElement.get("ref") is not None
+        if self.isElementRef:
+            self.ref = xsdElement.get("ref")
         super().__init__(xsdElement, parent)
         parent.elements.append(self)
+
+    def getName(self):
+        """Returns the element's schema name.
+
+        Reference sites make a unique bookkeeping name like
+        ``ContainingTypeName``|elementRef|``ref``; the resolved
+        reference later adopts the referred declaration's name for
+        matching (see ``_resolveElementRef``).
+        """
+        if getattr(self, "isElementRef", False):
+            contName = self.getContainingTypeName()
+            return f"{contName}|elementRef|{self.ref}"
+        return self.xsdElement.get("name")
+
+    def processChildren(self):
+        """Processes children of a non-reference element.
+
+        Reference elements carry no content model of their own (only
+        annotations, which carry no parse-relevant information), so
+        their children are not made into ERs.
+        """
+        if getattr(self, "isElementRef", False):
+            return None
+        children = list(self.xsdElement)
+
+        if not children:
+            return None
+
+        for child in children:
+            processedChild = ElementRepresentative.factory(child, self)
+            self.processedChildren.append(processedChild)
+            self.type = processedChild.name
+            self.tagAttributes["type"] = self.type
+            # NOTE: the factory call above already processed the child's
+            # children inside ElementRepresentative.__init__; do not
+            # call processedChild.processChildren() again here (the old
+            # code did, which constructed every grandchild ER twice and
+            # double-registered sequences/elements).
+        return None
+
+    def getType(self):
+        """Returns its type from the class dictionary in PyXSD.
+
+        Reference sites use the referenced declaration's type. The
+        instance of PyXSD is attached to every element and attribute
+        while the classes for the schema types are being built.
+        Clearly, this function is used after the main ER run.
+        """
+        if getattr(self, "isElementRef", False):
+            return self.referredElement.getType()
+
+        if "type" not in self.__dict__:
+            raise TypeError(f"Element.getType() Error: type is not in {self.name}'s dictionary.")
+
+        if self.type in self.pyXSD.classes:
+            return self.pyXSD.classes[self.type]
+
+        return self.typeFromName(self.type, self.pyXSD)
 
     def __set_name__(self, owner, name):
         """Called when this descriptor is bound as ``name`` on ``owner``.
@@ -52,45 +119,6 @@ class Element(ElementRepresentative):
                 name,
                 owner.__name__,
             )
-
-    def getType(self):
-        """Returns its type from the class dictionary in PyXSD.
-
-        The instance of PyXSD is attached to every element and attribute
-        while the classes for the schema types are being built.
-        Clearly, this function is used after the main ER run.
-        """
-        if "type" not in self.__dict__:
-            raise TypeError(f"Element.getType() Error: type is not in {self.name}'s dictionary.")
-
-        if self.type in self.pyXSD.classes:
-            return self.pyXSD.classes[self.type]
-
-        return self.typeFromName(self.type, self.pyXSD)
-
-    def processChildren(self):
-        """There is a special ``processChildren()`` here to handle special
-        types, which can be declared as a child of an element. If an
-        element child can exist that is not a type, then this function
-        will screw it up; however, as far as the developers knew at the
-        time of writing this program, they cannot.
-        """
-        children = list(self.xsdElement)
-
-        if not children:
-            return None
-
-        for child in children:
-            processedChild = ElementRepresentative.factory(child, self)
-            self.processedChildren.append(processedChild)
-            self.type = processedChild.name
-            self.tagAttributes["type"] = self.type
-            # NOTE: the factory call above already processed the child's
-            # children inside ElementRepresentative.__init__; do not
-            # call processedChild.processChildren() again here (the old
-            # code did, which constructed every grandchild ER twice and
-            # double-registered sequences/elements).
-        return None
 
     def __str__(self):
         """Prints its name in a form that allows for quick identification
@@ -177,3 +205,66 @@ class Element(ElementRepresentative):
         if maxOccurs == "unbounded":
             return 99999
         return int(maxOccurs)
+
+    def getDefault(self):
+        """Returns the element's schema ``default`` value, or ``None``.
+
+        Per XSD 1.0 a ``default`` value only applies to simple (or
+        mixed) content: when the element is empty in the instance, the
+        default supplies its value. Reference sites use the
+        referenced declaration's value.
+        """
+        if getattr(self, "isElementRef", False):
+            return self.referredElement.getDefault()
+        return self.tagAttributes.get("default")
+
+    def getFixed(self):
+        """Returns the element's schema ``fixed`` value, or ``None``.
+
+        A ``fixed`` element must either be absent or carry exactly
+        that value (simple content only, per XSD 1.0). Reference
+        sites use the referenced declaration's value.
+        """
+        if getattr(self, "isElementRef", False):
+            return self.referredElement.getFixed()
+        return self.tagAttributes.get("fixed")
+
+    def isNillable(self):
+        """Returns True when the element declaration is ``nillable``.
+
+        Reference sites use the referenced declaration's setting.
+        """
+        if getattr(self, "isElementRef", False):
+            return self.referredElement.isNillable()
+        return self.tagAttributes.get("nillable") == "true"
+
+    def isAbstract(self):
+        """Returns True when the element declaration is ``abstract``.
+
+        Abstract elements may not appear in instance documents
+        directly; only their substitution group members can.
+        Reference sites use the referenced declaration's setting.
+        """
+        if getattr(self, "isElementRef", False):
+            return self.referredElement.isAbstract()
+        return self.tagAttributes.get("abstract") == "true"
+
+    def getBlock(self):
+        """Returns the element's ``block`` attribute value, or ``None``.
+
+        Reference sites use the referenced declaration's value.
+        """
+        if getattr(self, "isElementRef", False):
+            return self.referredElement.getBlock()
+        return self.tagAttributes.get("block")
+
+    def getSubstitutionGroupHead(self):
+        """Returns the local name of the ``substitutionGroup`` head.
+
+        Namespace prefixes are stripped, matching the parser's
+        schema-name lookups.
+        """
+        head = self.tagAttributes.get("substitutionGroup")
+        if head is None:
+            return None
+        return head.split(":", 1)[-1]

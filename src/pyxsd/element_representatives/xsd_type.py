@@ -81,13 +81,53 @@ class XsdType(ElementRepresentative):
         classes), and adds them. Adds SchemaBase, if it is not already
         added.  Returns the list as a tuple, since the type factory
         must have the bases stored in a tuple, not a list.
+
+        Honors ``final`` on the base type: if the base declares
+        ``final="#all"`` (or the specific derivation method used
+        here), the derivation is recorded as a validation error and
+        the base is still used so parsing can continue.
         """
         baseList = []
         for superClassName in self.superClassNames:
-            baseList.append(ElementRepresentative.typeFromName(superClassName, pyXSD))
+            base = ElementRepresentative.typeFromName(superClassName, pyXSD)
+            self._checkFinal(base, superClassName)
+            baseList.append(base)
         if not self.containsSchemaBase(baseList):
             baseList.append(SchemaBase)
         return tuple(baseList)
+
+    def _checkFinal(self, base, superClassName):
+        """Reports a ``final`` violation against a derivation base.
+
+        ``final="#all"`` forbids any further derivation; the specific
+        spellings (``extension``/``restriction``) forbid that method.
+        The derivation method is detected from this type's own
+        content: an ``Extension`` child means extension, a
+        ``Restriction`` child means restriction.
+        """
+        if base is None:
+            return
+        baseER = ElementRepresentative.getFromName(getattr(base, "name", superClassName))
+        final = getattr(baseER, "final", None) if baseER is not None else None
+        if final is None:
+            return
+        derivation = None
+        for child in self.processedChildren:
+            childName = child.__class__.__name__ if child is not None else ""
+            if childName == "Extension":
+                derivation = "extension"
+            elif childName == "Restriction":
+                derivation = derivation or "restriction"
+        if final == "#all" or derivation == final:
+            message = (
+                f"type '{self.name}' derives by {derivation or 'extension/restriction'} "
+                f"from '{superClassName}', whose final value is '{final}'"
+            )
+            parser = getattr(self.getSchema(), "pyXSD", None)
+            if parser is not None:
+                parser.report.add_error(message, code="final", element=self.name)
+            else:
+                logger.error("%s[%s] %s", self.name, "final", message)
 
     def getElements(self):
         """Returns a blank list.
@@ -269,9 +309,26 @@ class XsdType(ElementRepresentative):
             namespace["hasWildcardElements_"] = True
         if getattr(self, "hasWildcardAttributes", False):
             namespace["hasWildcardAttributes_"] = True
+        if self.tagAttributes.get("abstract") == "true":
+            namespace["abstract_"] = True
         for element in self.getElements():
             element.pyXSD = pyXSD
-            namespace[element.name] = element
+            existing = namespace.get(element.name)
+            if existing is not None and not isinstance(existing, str):
+                # A repeated declaration or reference to the same
+                # element name: keep both descriptors, disambiguating
+                # only the class-attribute key (instance access and
+                # xml matching keep using the element's real name).
+                counter = 2
+                key = f"{element.name}|{counter}"
+                while key in namespace:
+                    counter += 1
+                    key = f"{element.name}|{counter}"
+                namespace[key] = element
+            else:
+                # The plain-string case is the historical quirk where
+                # an element named 'name' replaces the name metadata.
+                namespace[element.name] = element
         for attr in self.attributes.values():
             attr.pyXSD = pyXSD
             namespace[attr.name] = attr
