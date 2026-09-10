@@ -33,6 +33,23 @@ class Attribute(ElementRepresentative):
         super().__init__(xsdElement, parent)
         self.getContainingType().attributes[self.name] = self
 
+    def __set_name__(self, owner, name):
+        """Called when this descriptor is bound as ``name`` on ``owner``.
+
+        Stores the owning generated class so error messages can name
+        it, and warns if the class attribute name does not match the
+        schema attribute name (they are normally identical; a mismatch
+        means a descriptor was rebound under a different name).
+        """
+        self.owner = owner
+        if name != self.name:
+            logger.warning(
+                "attribute descriptor for %r was bound as %r on %s",
+                self.name,
+                name,
+                owner.__name__,
+            )
+
     def __str__(self):
         """Prints its name in a form that allows for quick identification
         of an attribute, without needing a bulky name that does not
@@ -82,11 +99,14 @@ class Attribute(ElementRepresentative):
         """Gets an attribute value from the obj's dictionary.
 
         Returns its value if it has one; returns the default value if
-        it does not.
+        it does not. When accessed through the class itself, returns
+        the descriptor, per the descriptor protocol.
 
         See the Python documentation for full documentation on
         descriptors.
         """
+        if obj is None:
+            return self
         if self.name in obj.__dict__:
             return obj.__dict__[self.name]
         default = getattr(self, "default", None)

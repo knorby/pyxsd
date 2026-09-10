@@ -97,6 +97,5 @@ branch = true
 show_missing = true
 precision = 1
 # Ratcheted upward each phase (sci transforms leave the package in
-# Phase 5; descriptor paths are reworked in Phase 4). The 1.0.0
-# release gate is 90.
-fail_under = 69
+# Phase 5). The 1.0.0 release gate is 90.
+fail_under = 70

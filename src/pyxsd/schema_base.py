@@ -1,4 +1,5 @@
 import logging
+from typing import ClassVar
 
 from pyxsd.validation import IssueSeverity
 
@@ -18,6 +19,16 @@ class SchemaBase:
     location the method ``makeInstanceFromTag`` is called in this
     class.
 
+    Class creation is wired through ``__init_subclass__``: when a class
+    is generated from the schema (see
+    :meth:`pyxsd.element_representatives.xsd_type.XsdType.clsFor`),
+    every :class:`~pyxsd.element_representatives.element.Element` and
+    :class:`~pyxsd.element_representatives.attribute.Attribute`
+    descriptor placed in the class body is registered under its element
+    name in the class's ``_elementNames_``/``_attributeNames_`` lists.
+    The descriptors themselves learn their owning class through the
+    standard ``__set_name__`` protocol.
+
     Recoverable validation problems are recorded on the
     :class:`~pyxsd.validation.ValidationReport` owned by the running
     :class:`~pyxsd.parser.PyXSD` instance (which every generated class
@@ -26,6 +37,34 @@ class SchemaBase:
     hierarchy.
     """
 
+    #: Default element bookkeeping for subclasses that declare no
+    #: element descriptors of their own (overridden per subclass by
+    #: ``__init_subclass__``).
+    _elementNames_: ClassVar[list[str]] = []
+
+    #: Default attribute bookkeeping, like ``_elementNames_``.
+    _attributeNames_: ClassVar[list[str]] = []
+
+    def __init_subclass__(cls, **kwargs):
+        """Collects the descriptor bookkeeping for a new subclass.
+
+        Every ``Element``/``Attribute`` descriptor in the new class
+        body is recorded, in declaration order, so the instance-tree
+        machinery can find them without per-class closures. Rebinding
+        a descriptor inherited from a base class has no effect on the
+        base's own bookkeeping.
+        """
+        super().__init_subclass__(**kwargs)
+        elementNames = []
+        attributeNames = []
+        for attrName, value in cls.__dict__.items():
+            if isinstance(value, Element):
+                elementNames.append(attrName)
+            elif isinstance(value, Attribute):
+                attributeNames.append(attrName)
+        cls._elementNames_ = elementNames
+        cls._attributeNames_ = attributeNames
+
     def __init__(self):
         """Creates the instances that are in the tree.
 
@@ -33,6 +72,31 @@ class SchemaBase:
         """
         self._children_ = []
         self._value_ = None
+
+    def __getattr__(self, name):
+        """Provides a helpful error for attributes normal lookup misses.
+
+        ``__getattr__`` is only consulted when regular lookup (the
+        class descriptors, the instance dictionary, and the class
+        hierarchy) has already failed, so declaring this hook cannot
+        change any successful lookup. Internal names keep a plain
+        ``AttributeError`` so that copy/pickle/introspection probing
+        behaves as usual.
+        """
+        # Dunder probes from copy, pickle, and introspection: fail plainly.
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        try:
+            elements = [descriptor.name for descriptor in self._getElements()]
+            attributes = list(self.descAttributes())
+        except Exception:  # never mask the original lookup failure
+            raise AttributeError(name) from None
+        raise AttributeError(
+            f"{type(self).__name__!r} instance has no attribute {name!r}; "
+            f"the schema declares elements {elements} and attributes {attributes}. "
+            "Only schema-declared names are available as attributes; use "
+            "_children_/_attribs_ for the raw containers."
+        )
 
     # ------------------------------------------------------------------
     # Validation issue plumbing
@@ -379,50 +443,48 @@ class SchemaBase:
 
         return dataTypeValInst
 
-    @classmethod
-    def addBaseDescriptors(cls):
-        """Adds attribute descriptors from classes that are bases to the
-        current class.  Does this recursively down the list of bases.
-        Everything returned as a dictionary.
-        """
-        descriptors = {}
-        for key, value in vars(cls).items():
-            if isinstance(value, Attribute):
-                descriptors[key] = value
+    # ------------------------------------------------------------------
+    # Descriptor access
+    # ------------------------------------------------------------------
 
-        for bcls in cls.__bases__:
-            if hasattr(bcls, "addBaseDescriptors"):
-                bclsDescriptors = bcls.addBaseDescriptors()
-                for key, value in bclsDescriptors.items():
-                    if key in descriptors:
-                        continue
-                    descriptors[key] = value
-        return descriptors
+    def _getElements(self):
+        """Returns the element descriptors visible to this instance.
+
+        Walks the MRO of the instance's class, most-derived first, and
+        collects each class's own ``Element`` descriptors in
+        declaration order. A subclass declaration shadows an inherited
+        element with the same name. (For schemas that derive types with
+        ``extension``, this makes base elements reachable from the
+        derived class; the base's own instances are unaffected.)
+        """
+        elements = []
+        seen = set()
+        for klass in type(self).__mro__:
+            for name in klass.__dict__.get("_elementNames_", ()):
+                if name not in seen:
+                    seen.add(name)
+                    elements.append(klass.__dict__[name])
+        return elements
 
     def descAttributes(self):
-        """Returns a dictionary of the descriptor attributes.
+        """Returns a dictionary of the attribute descriptors.
 
         These attributes are from the schema and use descriptors, which
         are specified in the Attribute class in
         element_representatives, that help check element attribute
-        values. Uses lazy evaluation by storing the descriptor
-        attributes in a variable called ``_descAttrs_``, which it
-        returns if this variable is set.
+        values. Walks the MRO collecting each class's own attribute
+        descriptors (derived classes shadow bases by name). Uses lazy
+        evaluation by storing the descriptor attributes in a variable
+        called ``_descAttrs_``, which it returns if this variable is
+        set.
         """
         if "_descAttrs_" in self.__dict__:
             return self._descAttrs_
         attrs = {}
-        for key, value in vars(self.__class__).items():
-            if isinstance(value, Attribute):
-                attrs[key] = value
-
-        for base in self.__class__.__bases__:
-            if hasattr(base, "addBaseDescriptors"):
-                bclsDescriptors = base.addBaseDescriptors()
-                for key, value in bclsDescriptors.items():
-                    if key in attrs:
-                        continue
-                    attrs[key] = value
+        for klass in type(self).__mro__:
+            for name in klass.__dict__.get("_attributeNames_", ()):
+                if name not in attrs:
+                    attrs[name] = klass.__dict__[name]
 
         self.__dict__["_descAttrs_"] = attrs
 
@@ -497,3 +559,4 @@ class SchemaBase:
 
 
 from pyxsd.element_representatives.attribute import Attribute  # noqa: E402
+from pyxsd.element_representatives.element import Element  # noqa: E402

@@ -1,4 +1,8 @@
+import logging
+
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+
+logger = logging.getLogger(__name__)
 
 
 class Element(ElementRepresentative):
@@ -17,6 +21,11 @@ class Element(ElementRepresentative):
     functionality with a small amount of code; however, these functions
     are almost invisible unless they raise an error, so developers
     should bear in mind these methods when modifying the program.
+
+    When a generated class is created, ``__set_name__`` binds this
+    descriptor to the class that declares it, and
+    ``SchemaBase.__init_subclass__`` records the binding in the class's
+    ``_elementNames_`` bookkeeping.
     """
 
     def __init__(self, xsdElement, parent):
@@ -26,6 +35,23 @@ class Element(ElementRepresentative):
         """
         super().__init__(xsdElement, parent)
         parent.elements.append(self)
+
+    def __set_name__(self, owner, name):
+        """Called when this descriptor is bound as ``name`` on ``owner``.
+
+        Stores the owning generated class so error messages can name
+        it, and warns if the class attribute name does not match the
+        schema element name (they are normally identical; a mismatch
+        means a descriptor was rebound under a different name).
+        """
+        self.owner = owner
+        if name != self.name:
+            logger.warning(
+                "element descriptor for %r was bound as %r on %s",
+                self.name,
+                name,
+                owner.__name__,
+            )
 
     def getType(self):
         """Returns its type from the class dictionary in PyXSD.
@@ -77,11 +103,14 @@ class Element(ElementRepresentative):
         """Gets an element value from the obj's dictionary.
 
         Returns its value if it has one; returns the default value if
-        it does not.
+        it does not. When accessed through the class itself, returns
+        the descriptor, per the descriptor protocol.
 
         See the Python documentation for full documentation on
         descriptors.
         """
+        if obj is None:
+            return self
         if self.name in obj.__dict__:
             return obj.__dict__[self.name]
 
@@ -89,31 +118,26 @@ class Element(ElementRepresentative):
         return default
 
     def __set__(self, obj, value):
-        """Sets an element's name to the element in the obj's dictionary.
+        """Sets an element's value in the obj's dictionary.
 
-        If multiple elements exist, sets it to a list. If it is not an
-        element, raises an error. Has code for the case when it is a
-        dictionary, but there is no case in which a dictionary would be
-        used.
+        The value must be an instance of the element's type (or the
+        assignment raises ``TypeError``). If the element may occur more
+        than once (``maxOccurs`` greater than one), the value is
+        appended to a list; otherwise it is stored directly.
 
         See the Python documentation for full documentation on
         descriptors.
         """
         if not isinstance(value, self.getType()):
-            raise TypeError(f"{value!r} is not an instance of the element's type")
-
-        value = obj.__dict__.get(self.name, None)
+            raise TypeError(
+                f"{value!r} is not an instance of the type of element "
+                f"{self.name!r} ({self.getType().__name__})"
+            )
 
         if self.isList():
-            if value is None:
-                obj.__dict__[self.name] = []
-            obj.__dict__[self.name].append(value)
+            obj.__dict__.setdefault(self.name, []).append(value)
             return None
 
-        if self.isDict() and value is None:
-            obj.__dict__[self.name] = {}
-            obj.__dict__[self.name][obj.id] = value
-            return None
         obj.__dict__[self.name] = value
         return None
 
@@ -124,13 +148,6 @@ class Element(ElementRepresentative):
         descriptors.
         """
         del obj.__dict__[self.name]
-
-    def isDict(self):
-        """Returns false. Placeholder function for possible future
-        addition of the case where an element could best be expressed
-        as a dictionary.
-        """
-        return False
 
     def isList(self):
         """Returns true if maxOccurs is greater than one.

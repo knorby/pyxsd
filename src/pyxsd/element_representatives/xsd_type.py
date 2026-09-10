@@ -1,4 +1,5 @@
 import logging
+import types
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 
@@ -86,53 +87,36 @@ class XsdType(ElementRepresentative):
         """Produces a class for a schema type.
 
         This function only makes classes for tag types that are
-        subclasses of XsdType.  Adds functions to the class dictionary
-        to get elements and attributes later on.  Calls
-        ``getBaseList()`` to generate the list of bases. SchemaBase is
-        in every base list, which will come into play after the class
-        generation.  Adds the name and the doc string to the
-        dictionary.  Adds the instance of PyXSD to all attributes,
-        elements, and the class dictionary, so it can be accessed later
-        on.
+        subclasses of XsdType. The class is created with
+        ``types.new_class``, which resolves the correct metaclass and
+        prepares the namespace properly. The lifecycle wiring happens
+        automatically as the class is built: ``__set_name__`` binds
+        each element and attribute descriptor to the new class, and
+        ``SchemaBase.__init_subclass__`` records the descriptor
+        bookkeeping (``_elementNames_``/``_attributeNames_``) without
+        any manual registration here.
+
+        Calls ``getBaseList()`` to generate the tuple of bases;
+        SchemaBase is in every base list, which is what runs the
+        ``__init_subclass__`` hook. Adds the name and the doc string to
+        the namespace. Adds the instance of PyXSD to all attributes,
+        elements, and the namespace, so it can be accessed later on.
         """
         bases = self.getBaseList(pyXSD)
-        clsDict = {
+        namespace = {
             "pyXSD": pyXSD,
             "name": self.name,
             "__doc__": self.__doc__,
         }
-        _elementNames_ = []
         for element in self.getElements():
             element.pyXSD = pyXSD
-            _elementNames_.append(element.name)
-            clsDict[element.name] = element
-        clsDict["_elementNames_"] = _elementNames_
-
-        def _getElements(cls):
-            elements = []
-            for elemName in cls._elementNames_:
-                element = cls.__class__.__dict__[elemName]
-                elements.append(element)
-            return elements
-
-        clsDict["_getElements"] = _getElements
-        _attributeNames_ = list(self.attributes.keys())
-        clsDict["_attributeNames_"] = _attributeNames_
-
-        def _getAttributes(cls):
-            attrs = []
-            for attrName in cls._attributeNames_:
-                attr = cls.__dict__[attrName]
-                attrs.append(attr)
-            return attrs
-
-        clsDict["_getAttributes"] = _getAttributes
+            namespace[element.name] = element
         for attr in self.attributes.values():
             attr.pyXSD = pyXSD
-        clsDict.update(self.attributes)
+            namespace[attr.name] = attr
 
         try:
-            cls = type(self.name, bases, clsDict)
+            cls = types.new_class(self.name, bases, {}, lambda ns: ns.update(namespace))
         except Exception:
             logger.exception(
                 "class creation failed for %s (superClassNames=%r, bases=%r)",

@@ -61,8 +61,13 @@ Class construction
 
 The classes are constructed in the XsdType class (the base class for
 SimpleType and ComplexType) via ``clsFor()``, which builds new classes
-with ``type()`` by supplying a dictionary, tuple of bases, and a name.
-The classes are stored in a dictionary in the PyXSD instance.
+with ``types.new_class()`` by supplying a namespace, tuple of bases,
+and a name. As each class is created, the standard Python protocols do
+the wiring: ``__set_name__`` binds every element and attribute
+descriptor to the new class, and ``SchemaBase.__init_subclass__``
+collects the descriptor bookkeeping (``_elementNames_`` and
+``_attributeNames_``) automatically. The classes are stored in a
+dictionary in the PyXSD instance.
 """
 
 import logging
