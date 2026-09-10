@@ -1,6 +1,7 @@
 """Unit and property tests for the XSD primitive data types."""
 
 import base64
+import math
 
 import pytest
 from hypothesis import given
@@ -332,6 +333,7 @@ from pyxsd.xsd_data_types import (  # noqa: E402
     UnsignedInt,
     UnsignedLong,
     UnsignedShort,
+    xsd_value_key,
 )
 
 LATTICE = [
@@ -345,11 +347,8 @@ LATTICE = [
             "relative/path",
             "",
             "urn:x:1",
-            # XSD anyURI maps spaces through escaping; it is not a
-            # whitespace-free type. Currently rejected -> known defect.
-            pytest.param(
-                "a b", marks=pytest.mark.xfail(strict=True, reason="R13: anyURI permits spaces")
-            ),
+            # XSD anyURI allows spaces (mapped through escaping).
+            "a b",
         ],
         [],
     ),
@@ -369,10 +368,7 @@ LATTICE = [
             "2006-08-30T14:30:00Z",
             "2006-08-30T23:59:59",
             # End-of-day is legal when minutes and seconds are zero.
-            pytest.param(
-                "2006-08-30T24:00:00",
-                marks=pytest.mark.xfail(strict=True, reason="R13: 24:00:00 is legal end-of-day"),
-            ),
+            "2006-08-30T24:00:00",
         ],
         ["2006-08-30 14:30:00", "2006-08-30T14:30", "2006-08-30T14:30:60"],
     ),
@@ -394,9 +390,7 @@ LATTICE = [
         ["e1 e2", "e1"],
         [
             "e1 1x",
-            pytest.param(
-                "", marks=pytest.mark.xfail(strict=True, reason="R13: ENTITIES requires >=1 item")
-            ),
+            "",
         ],
     ),
     (Float, ["1.5", "INF", "NaN"], ["foo"]),
@@ -414,9 +408,7 @@ LATTICE = [
         [
             "a 1!",
             "a b!",
-            pytest.param(
-                "", marks=pytest.mark.xfail(strict=True, reason="R13: IDREFS requires >=1 item")
-            ),
+            "",
         ],
     ),
     (Int, ["2147483647", "-2147483648", "0"], ["2147483648", "-2147483649"]),
@@ -436,9 +428,7 @@ LATTICE = [
         [
             "a b!",
             "a,b",
-            pytest.param(
-                "", marks=pytest.mark.xfail(strict=True, reason="R13: NMTOKENS requires >=1 item")
-            ),
+            "",
         ],
     ),
     (NegativeInteger, ["-1", "-99999"], ["0", "5"]),
@@ -450,13 +440,9 @@ LATTICE = [
             "hello world",
             "",
             # These are folded to spaces, not rejected.
-            pytest.param(
-                "a\nb", marks=pytest.mark.xfail(strict=True, reason="R13: newline normalizes")
-            ),
-            pytest.param(
-                "a\tb", marks=pytest.mark.xfail(strict=True, reason="R13: tab normalizes")
-            ),
-            pytest.param("a\rb", marks=pytest.mark.xfail(strict=True, reason="R13: CR normalizes")),
+            "a\nb",
+            "a\tb",
+            "a\rb",
         ],
         [],
     ),
@@ -471,10 +457,7 @@ LATTICE = [
             "23:59:59.999",
             "00:00:00Z",
             "09:15:00-08:00",
-            pytest.param(
-                "24:00:00",
-                marks=pytest.mark.xfail(strict=True, reason="R13: 24:00:00 is legal end-of-day"),
-            ),
+            "24:00:00",
         ],
         ["14:30", "14:30:61"],
     ),
@@ -550,6 +533,93 @@ class TestWhitespaceCollapse:
 
     def test_normalized_string_preserves_spaces(self):
         assert NormalizedString("  padded  ") == "  padded  "
+
+
+class TestXsdLexicalCorrectness:
+    """Regression tests for the corrected built-in lexical rules (R13)."""
+
+    def test_normalized_string_folds_xml_whitespace(self):
+        assert NormalizedString("a\tb\nc\rd") == "a b c d"
+
+    def test_normalized_string_keeps_nbsp(self):
+        assert NormalizedString("a\u00a0b") == "a\u00a0b"
+
+    def test_token_collapses(self):
+        assert Token("  a   b  ") == "a b"
+
+    def test_nbsp_is_not_xsd_whitespace(self):
+        with pytest.raises(TypeError):
+            Integer("\u00a01\u00a0")
+
+    def test_float_is_binary32(self):
+        assert Float("16777217") == 16777216.0
+        assert math.isinf(Float("1e39"))
+        assert Float("1e-50") == 0.0
+
+    def test_float_rejects_plus_inf(self):
+        with pytest.raises(TypeError):
+            Float("+INF")
+        # The unadorned spelling remains legal.
+        assert math.isinf(Double("INF"))
+
+    def test_base64_rejects_nonzero_pad_bits(self):
+        with pytest.raises(TypeError):
+            Base64Binary("AB==")
+        with pytest.raises(TypeError):
+            Base64Binary("AAB=")
+        assert Base64Binary("AA==") == "AA=="
+
+    def test_base64_rejects_nbsp(self):
+        with pytest.raises(TypeError):
+            Base64Binary("AA\u00a0==")
+
+    def test_list_types_require_one_item(self):
+        for cls in (IDREFS, ENTITIES, NMTOKENS):
+            with pytest.raises(TypeError):
+                cls("")
+            with pytest.raises(TypeError):
+                cls(" \t ")
+
+    def test_lists_do_not_split_on_nbsp(self):
+        with pytest.raises(TypeError):
+            NMTOKENS("a\u00a0b")
+
+    def test_xml_name_ranges(self):
+        assert NCName("a\u0301") == "a\u0301"
+        assert NCName("a\u00b7b") == "a\u00b7b"
+        with pytest.raises(TypeError):
+            NCName("\u00b2x")
+        with pytest.raises(TypeError):
+            NCName("1x")
+
+    def test_temporal_bounds(self):
+        assert Time("24:00:00") == "24:00:00"
+        assert DateTime("2006-08-30T24:00:00") == "2006-08-30T24:00:00"
+        with pytest.raises(TypeError):
+            Date("2006-08-30+99:99")
+        with pytest.raises(TypeError):
+            GYear("0000")
+        with pytest.raises(TypeError):
+            GYear("02006")
+        with pytest.raises(TypeError):
+            GYear("\u0662\u0660\u0660\u0666")
+        assert GYear("-0044") == "-0044"
+
+    def test_anyuri_allows_spaces(self):
+        assert AnyURI("a b") == "a b"
+        assert AnyURI("  a b  ") == "a b"
+
+    def test_duration_collapses_whitespace(self):
+        assert Duration(" P1D ") == "P1D"
+
+    def test_value_key_normalises_equivalent_spellings(self):
+        assert xsd_value_key(HexBinary("FF")) == xsd_value_key(HexBinary("ff"))
+        assert xsd_value_key(NMTOKENS("a  b")) == xsd_value_key(NMTOKENS("a b"))
+        assert xsd_value_key(Date("2006-08-30+00:00")) == xsd_value_key(Date("2006-08-30Z"))
+        assert xsd_value_key(DateTime("1999-12-31T19:00:00-05:00")) == xsd_value_key(
+            DateTime("2000-01-01T00:00:00Z")
+        )
+        assert xsd_value_key(Date("2006-08-30")) != xsd_value_key(Date("2006-08-31"))
 
 
 class TestListTypes:

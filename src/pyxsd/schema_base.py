@@ -3,7 +3,7 @@ from typing import ClassVar
 
 from pyxsd import xsi
 from pyxsd.validation import IssueSeverity
-from pyxsd.xsd_data_types import XsdDataType
+from pyxsd.xsd_data_types import XsdDataType, xsd_value_key
 
 logger = logging.getLogger(__name__)
 
@@ -503,7 +503,7 @@ class SchemaBase:
                 element=cls.__name__,
             )
             return None
-        if subInstance != fixedInstance:
+        if xsd_value_key(subInstance) != xsd_value_key(fixedInstance):
             cls._report_error(
                 f"element '{subElementName}' has a value that conflicts "
                 f"with its fixed value {fixed!r}",
@@ -1009,7 +1009,7 @@ class SchemaBase:
                 element=elementName,
             )
             return None
-        if stored != fixedInstance:
+        if xsd_value_key(stored) != xsd_value_key(fixedInstance):
             self._report_error(
                 f"attribute '{attributeDescriptor.name}' has a value that "
                 f"conflicts with its fixed value {fixed!r}",

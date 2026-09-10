@@ -134,6 +134,59 @@ class TestElementFixed:
         assert str(volume) == "9"
 
 
+class TestFixedValueSpaceEquality:
+    """Fixed checks compare XSD values, not lexical spellings (R10)."""
+
+    def _codes(self, parser):
+        return [issue.code for issue in parser.report.issues]
+
+    def test_hex_case_is_equivalent(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r"><xs:complexType>'
+            '<xs:attribute name="h" type="xs:hexBinary" fixed="FF"/>'
+            "</xs:complexType></xs:element></xs:schema>",
+            '<r h="ff"/>',
+            tmp_path,
+        )
+        assert "fixed-attribute" not in self._codes(parser)
+
+    def test_list_whitespace_is_equivalent(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element name="n" type="xs:NMTOKENS" fixed="a b"/>'
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            "<r><n>a  b</n></r>",
+            tmp_path,
+        )
+        assert "fixed-element" not in self._codes(parser)
+
+    def test_timezone_equivalent_datetimes(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element name="t" type="xs:dateTime" '
+            'fixed="1999-12-31T19:00:00-05:00"/>'
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            "<r><t>2000-01-01T00:00:00Z</t></r>",
+            tmp_path,
+        )
+        assert "fixed-element" not in self._codes(parser)
+
+    def test_genuine_conflict_still_reported(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element name="t" type="xs:dateTime" '
+            'fixed="1999-12-31T19:00:00-05:00"/>'
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            "<r><t>2000-01-01T00:00:01Z</t></r>",
+            tmp_path,
+        )
+        assert "fixed-element" in self._codes(parser)
+
+
 # ---------------------------------------------------------------------------
 # nillable / xsi:nil
 # ---------------------------------------------------------------------------
