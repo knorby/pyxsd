@@ -407,6 +407,7 @@ class SchemaBase:
                 # Identity constraints are checked against this
                 # descriptor after the tree is fully bound.
                 subInstance._descriptor_ = descriptor
+                subInstance._nil_ = nilled
                 instance._children_.append(subInstance)
                 setattr(instance, subElementName, subInstance)
                 if not nilled:
@@ -416,6 +417,7 @@ class SchemaBase:
         subInstance = subElCls.makeInstanceFromTag(subElement)
         subInstance._name_ = subElementName
         subInstance._descriptor_ = descriptor
+        subInstance._nil_ = nilled
         instance._children_.append(subInstance)
         return None
 

@@ -828,3 +828,17 @@ def xsd_value_key(value: Any) -> tuple:
     if isinstance(value, Time):
         return ("time", _time_key(str(value)))
     return (getattr(value, "name", type(value).__name__), str(value))
+
+
+def xsd_comparable_key(value: Any) -> Any:
+    """The type-independent XSD value used to compare two values.
+
+    Identity constraints compare field values across declarations whose
+    types may differ in name but share a value space (e.g. ``xs:ID`` and
+    ``xs:string``, or two string-derived token types), so the type tag
+    from :func:`xsd_value_key` is dropped here.
+    """
+    key = xsd_value_key(value)
+    if isinstance(key, tuple) and len(key) == 2:
+        return key[1]
+    return key
