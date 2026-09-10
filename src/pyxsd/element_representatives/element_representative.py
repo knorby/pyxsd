@@ -349,6 +349,13 @@ from pyxsd.element_representatives.element import Element  # noqa: E402
 from pyxsd.element_representatives.enumeration import Enumeration  # noqa: E402
 from pyxsd.element_representatives.extension import Extension  # noqa: E402
 from pyxsd.element_representatives.group import Group  # noqa: E402
+from pyxsd.element_representatives.identity import (  # noqa: E402
+    Field,
+    Key,
+    Keyref,
+    Selector,
+    Unique,
+)
 from pyxsd.element_representatives.length import Length  # noqa: E402
 from pyxsd.element_representatives.list import List  # noqa: E402
 from pyxsd.element_representatives.max_exclusive import MaxExclusive  # noqa: E402
@@ -383,6 +390,11 @@ TAG_CLASSES = {
     "Group": Group,
     "Any": Any,
     "AnyAttribute": AnyAttribute,
+    "Key": Key,
+    "Keyref": Keyref,
+    "Unique": Unique,
+    "Selector": Selector,
+    "Field": Field,
     "List": List,
     "SimpleContent": SimpleContent,
     "ComplexContent": ComplexContent,

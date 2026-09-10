@@ -67,10 +67,17 @@ class SchemaBase:
         cls._elementNames_ = elementNames
         cls._attributeNames_ = attributeNames
 
-    def __init__(self):
+    def __init__(self, *args):
         """Creates the instances that are in the tree.
 
         These objects are initialized from within SchemaBase.
+
+        The signature accepts (and ignores) a positional value so the
+        generated classes for schema-defined simple types - which
+        carry SchemaBase in their method resolution order for the
+        ``__init_subclass__`` bookkeeping - can be instantiated with
+        the value being validated. Lexical validation happens in the
+        data-type ``__new__`` before ``__init__`` is reached.
         """
         self._children_ = []
         self._value_ = None
@@ -389,6 +396,9 @@ class SchemaBase:
                 # invalid values are skipped; the error is
                 # already in the report
                 subInstance._name_ = subElementName
+                # Identity constraints are checked against this
+                # descriptor after the tree is fully bound.
+                subInstance._descriptor_ = descriptor
                 instance._children_.append(subInstance)
                 setattr(instance, subElementName, subInstance)
                 if not nilled:
@@ -397,6 +407,7 @@ class SchemaBase:
 
         subInstance = subElCls.makeInstanceFromTag(subElement)
         subInstance._name_ = subElementName
+        subInstance._descriptor_ = descriptor
         instance._children_.append(subInstance)
         return None
 

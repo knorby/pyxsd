@@ -107,7 +107,15 @@ class XsdType(ElementRepresentative):
         """
         if base is None:
             return
-        baseER = ElementRepresentative.getFromName(getattr(base, "name", superClassName))
+        if not issubclass(base, SchemaBase):
+            # Built-in types cannot declare ``final``; only
+            # user-defined types (which carry SchemaBase in their mro)
+            # can.
+            return
+        # The base class's ``name`` attribute is unreliable (an element
+        # named 'name' can replace the metadata string), so resolve the
+        # base ER by the base reference's local name instead.
+        baseER = ElementRepresentative.getFromName(superClassName.split(":")[-1])
         final = getattr(baseER, "final", None) if baseER is not None else None
         if final is None:
             return

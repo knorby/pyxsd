@@ -149,6 +149,9 @@ class ComplexType(XsdType):
             if candidate.name == refName:
                 refSite.referredElement = candidate
                 refSite.name = candidate.name
+                # Identity constraints declared on the global element
+                # apply wherever the element is referenced.
+                refSite.identities = list(candidate.identities)
                 return None
         message = f"element reference '{refSite.ref}' in type '{self.name}' could not be resolved"
         self._report_ref_error(message, code="unknown-elementRef")

@@ -27,6 +27,8 @@ ALL_FIXTURES = [
     "nillable",
     "substitution",
     "xsi_type",
+    "compose",
+    "identity",
 ]
 
 

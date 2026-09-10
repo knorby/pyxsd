@@ -42,6 +42,9 @@ class Element(ElementRepresentative):
         self.isElementRef = xsdElement.get("ref") is not None
         if self.isElementRef:
             self.ref = xsdElement.get("ref")
+        # Identity constraints (xs:key/xs:unique/xs:keyref) declared
+        # inside this element record themselves here.
+        self.identities = []
         super().__init__(xsdElement, parent)
         parent.elements.append(self)
 
@@ -75,8 +78,10 @@ class Element(ElementRepresentative):
         for child in children:
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
-            self.type = processedChild.name
-            self.tagAttributes["type"] = self.type
+            childClassName = processedChild.__class__.__name__ if processedChild is not None else ""
+            if childClassName in ("SimpleType", "ComplexType"):
+                self.type = processedChild.name
+                self.tagAttributes["type"] = self.type
             # NOTE: the factory call above already processed the child's
             # children inside ElementRepresentative.__init__; do not
             # call processedChild.processChildren() again here (the old
@@ -96,7 +101,16 @@ class Element(ElementRepresentative):
             return self.referredElement.getType()
 
         if "type" not in self.__dict__:
-            raise TypeError(f"Element.getType() Error: type is not in {self.name}'s dictionary.")
+            # An element with no type attribute and no inline type
+            # declaration defaults to anyType, which accepts any
+            # content; SchemaBase instances parse generically.
+            logger.debug(
+                "element '%s' declares no type; treating it as anyType",
+                self.name,
+            )
+            from pyxsd.schema_base import SchemaBase
+
+            return SchemaBase
 
         if self.type in self.pyXSD.classes:
             return self.pyXSD.classes[self.type]

@@ -1,0 +1,15 @@
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <!-- Chameleon include: no targetNamespace of its own. -->
+  <xs:simpleType name="unitType">
+    <xs:restriction base="xs:token"/>
+  </xs:simpleType>
+
+  <xs:complexType name="commonType">
+    <xs:sequence>
+      <xs:element name="label" type="xs:string"/>
+    </xs:sequence>
+    <xs:attribute name="unit" type="unitType" default="pcs"/>
+  </xs:complexType>
+
+</xs:schema>

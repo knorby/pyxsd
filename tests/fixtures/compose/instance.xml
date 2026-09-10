@@ -1,0 +1,9 @@
+<kit>
+  <part unit="box">
+    <label>gear</label>
+  </part>
+  <widget>
+    <name>spanner</name>
+    <count>3</count>
+  </widget>
+</kit>

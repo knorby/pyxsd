@@ -60,6 +60,10 @@ from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 
 logger = logging.getLogger(__name__)
 
+# Schema components that may be spliced in from included/imported
+# schemas before the ElementRepresentative run.
+_COMPOSABLE_TAGS = {"element", "complexType", "simpleType", "group", "attributeGroup"}
+
 
 class PyXSD:
     """Main class of the program that is in charge of data flow.
@@ -206,6 +210,9 @@ class PyXSD:
         root = tree.getroot()
         logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")
 
+        baseDir, visited = self._schemaCompositionContext()
+        self._spliceComposedSchemas(root, baseDir, visited)
+
         schemaER = ElementRepresentative.factory(root, None)
         # Attach the parser to the schema ER so class building can
         # record schema-reference problems (group/attributeGroup
@@ -250,6 +257,191 @@ class PyXSD:
                 continue
             schemaER.substitutionGroups.setdefault(head, []).append(element)
         logger.debug("Substitution groups built: %s", list(schemaER.substitutionGroups))
+
+    def _schemaCompositionContext(self):
+        """Returns the (baseDir, visited) context for schema composition.
+
+        ``baseDir`` is the directory relative to which include/import
+        locations resolve; ``visited`` starts with the main schema file
+        itself so include cycles are detected.
+        """
+        if isinstance(self.xsdFile, (str, os.PathLike)):
+            mainPath = Path(self.xsdFile).resolve()
+            return mainPath.parent, {str(mainPath)}
+        return Path.cwd(), set()
+
+    def _spliceComposedSchemas(self, schemaRoot, baseDir, visited):
+        """Merges composed schemas into ``schemaRoot`` before class building.
+
+        ``xs:include`` (same target namespace or none - the chameleon
+        case), ``xs:redefine`` (an included schema whose named
+        components may be redefined) and ``xs:import`` (a foreign
+        namespace) all splice their named components into the main
+        schema tree so the ordinary ER run sees one schema. The parser
+        matches names by local name, so imported components are merged
+        the same way and namespace differences are recorded as
+        warnings rather than hard errors.
+
+        The composition tags are removed from the tree afterwards so
+        the ER factory does not warn about them.
+        """
+        for child in list(schemaRoot):
+            local = child.tag.split("}")[-1]
+            if local == "include":
+                schemaRoot.remove(child)
+                self._spliceIncludedSchema(child, schemaRoot, baseDir, visited, isImport=False)
+            elif local == "redefine":
+                schemaRoot.remove(child)
+                self._spliceRedefine(child, schemaRoot, baseDir, visited)
+            elif local == "import":
+                schemaRoot.remove(child)
+                if child.get("namespace") == "http://www.w3.org/2001/XMLSchema":
+                    # Importing the schema-for-schemas namespace is the
+                    # conventional spelling; the built-in types are
+                    # always available here.
+                    continue
+                self._spliceIncludedSchema(child, schemaRoot, baseDir, visited, isImport=True)
+        return None
+
+    def _spliceIncludedSchema(self, tag, schemaRoot, baseDir, visited, isImport):
+        """Splices the named components of one included/imported schema.
+
+        Handles locating and parsing the file, cycle detection and the
+        namespace checks; the actual splicing is shared with redefine.
+        """
+        location = tag.get("schemaLocation")
+        if not location:
+            self.report.add_error(
+                f"an {'import' if isImport else 'include'} tag has no "
+                "schemaLocation; the schema could not be composed",
+                code="schema-compose",
+            )
+            return None
+        includedRoot = self._parseIncludedSchema(location, baseDir)
+        if includedRoot is None:
+            return None
+        includedPath = (baseDir / location).resolve()
+        if str(includedPath) in visited:
+            self.report.add_error(
+                f"the schema '{location}' is already being composed; "
+                "circular include/import relationships are not allowed",
+                code="compose-cycle",
+            )
+            return None
+        mainNS = schemaRoot.get("targetNamespace")
+        includedNS = includedRoot.get("targetNamespace")
+        if not isImport and includedNS not in (None, mainNS):
+            self.report.add_error(
+                f"the schema '{location}' declares targetNamespace "
+                f"'{includedNS}', which does not match the including "
+                f"schema's namespace ({mainNS or 'none'})",
+                code="compose-namespace",
+            )
+        if isImport and mainNS and includedNS != mainNS:
+            logger.warning(
+                "imported schema '%s' declares targetNamespace '%s'; pyxsd "
+                "matches names by local name, so its components are merged "
+                "regardless of the namespace difference",
+                location,
+                includedNS or "none",
+            )
+        self._spliceComposedSchemas(
+            includedRoot, includedPath.parent, visited | {str(includedPath)}
+        )
+        self._appendNamedComponents(includedRoot, schemaRoot)
+        return None
+
+    def _parseIncludedSchema(self, location, baseDir):
+        """Parses one included schema file; returns its root or ``None``.
+
+        Failures (unreadable file, malformed xml) are recorded as
+        ``schema-compose`` errors and the composition proceeds without
+        the missing file.
+        """
+        includedPath = baseDir / location
+        try:
+            with open(includedPath, "rb") as includedFile:
+                tree = ET.parse(includedFile)
+        except OSError as e:
+            self.report.add_error(
+                f"the schema '{location}' could not be opened: {e}",
+                code="schema-compose",
+            )
+            return None
+        except ET.ParseError as e:
+            self.report.add_error(
+                f"the schema '{location}' is not well-formed XML: {e}",
+                code="schema-compose",
+            )
+            return None
+        return tree.getroot()
+
+    def _appendNamedComponents(self, includedRoot, schemaRoot):
+        """Appends the named components of an included schema to the main tree."""
+        for component in list(includedRoot):
+            if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
+                schemaRoot.append(component)
+        return None
+
+    def _spliceRedefine(self, redefineTag, schemaRoot, baseDir, visited):
+        """Splices an ``xs:redefine`` block.
+
+        The referenced schema's named components are spliced in first;
+        components redefined in the block are renamed to
+        ``Name|base`` so the redefining definition can legally derive
+        from the original (the standard internal-name trick). ``base``
+        attributes inside the block that name the redefined component
+        are rewritten to the renamed original.
+        """
+        location = redefineTag.get("schemaLocation")
+        if not location:
+            self.report.add_error(
+                "a redefine tag has no schemaLocation; the schema could not be composed",
+                code="schema-compose",
+            )
+            return None
+        includedRoot = self._parseIncludedSchema(location, baseDir)
+        if includedRoot is None:
+            return None
+        includedPath = (baseDir / location).resolve()
+        if str(includedPath) in visited:
+            self.report.add_error(
+                f"the schema '{location}' is already being composed; "
+                "circular include/redefine relationships are not allowed",
+                code="compose-cycle",
+            )
+            return None
+        redefinedNames = set()
+        for child in list(redefineTag):
+            local = child.tag.split("}")[-1]
+            if local in ("complexType", "simpleType", "group") and child.get("name"):
+                redefinedNames.add(child.get("name"))
+        for component in list(includedRoot):
+            local = component.tag.split("}")[-1]
+            name = component.get("name")
+            if local in ("complexType", "simpleType", "group") and name in redefinedNames:
+                component.set("name", f"{name}|base")
+        self._spliceComposedSchemas(
+            includedRoot, includedPath.parent, visited | {str(includedPath)}
+        )
+        self._appendNamedComponents(includedRoot, schemaRoot)
+        for child in list(redefineTag):
+            for element in child.iter():
+                base = element.get("base")
+                if base and base.split(":")[-1] in redefinedNames:
+                    element.set("base", f"{base.split(':')[-1]}|base")
+            schemaRoot.append(child)
+        return None
+
+    def _checkIdentityConstraints(self, rootInstance):
+        """Runs the identity-constraint check over the bound tree."""
+        # Imported lazily: importing pyxsd.identity before
+        # element_representative (above) triggers a circular import
+        # (identity -> schema_base -> element_representative -> attribute).
+        from pyxsd.identity import check_identity_constraints
+
+        check_identity_constraints(rootInstance, self.report)
+        return None
 
     def parseXML(self):
         """Reads the given xml file in the context of the xsd file.
@@ -302,6 +494,8 @@ class PyXSD:
             # instance is stored directly instead of validated against
             # the declared element type.
             schemaClassInstance.__dict__[rootElementName] = subInstance
+            subInstance._descriptor_ = rootElement
+            self._checkIdentityConstraints(subInstance)
 
         return subInstance
 
