@@ -6,7 +6,7 @@ class Restriction(ElementRepresentative):
 
     def __init__(self, xsdElement, parent):
         """See ElementRepresentative for documentation."""
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
         self.addSuperClassName(self.tagAttributes["base"])
 
     def getName(self):

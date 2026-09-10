@@ -11,7 +11,7 @@ class Sequence(ElementRepresentative):
         documentation.
         """
         self.elements = []
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
         self.getContainingType().sequencesOrChoices.append(self)
 
     def getName(self):

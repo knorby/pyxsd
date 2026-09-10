@@ -15,7 +15,7 @@ class AttributeGroup(ElementRepresentative):
         for more documentation.
         """
         self.attributes = {}
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
         attrGroupContainer = self.parent.getContainingType()
         attrGroupContainer.attributeGroups[self.name] = self
         self.getSchema().attributeGroups[self.name] = self

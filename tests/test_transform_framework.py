@@ -59,6 +59,10 @@ class TestTransformBase:
         with pytest.raises(TypeError, match="abstract"):
             Transform()
 
+    def test_displayer_cannot_be_instantiated(self):
+        with pytest.raises(TypeError, match="abstract"):
+            Displayer()
+
     def test_make_elem_obj_shape(self, walker):
         obj = walker.makeElemObj("thing")
         assert obj._name_ == "thing"
@@ -87,6 +91,32 @@ class TestTransformBase:
         visited = []
         walker.walk([1, "two", None], lambda inst, attrs, elems: visited.append(inst))
         assert visited == []
+
+    def test_iter_tree_yields_pre_order(self, walker):
+        root = make_tree()
+        names = [node._name_ for node in walker.iter_tree(root)]
+        assert names == ["root", "alpha", "beta", "alpha"]
+
+    def test_iter_tree_descends_into_containers(self, walker):
+        root = make_tree()
+        names = [node._name_ for node in walker.iter_tree({"k": [root, root]})]
+        assert names == ["root", "alpha", "beta", "alpha"] * 2
+
+    def test_iter_tree_skips_non_tree_objects(self, walker):
+        assert list(walker.iter_tree([1, "two", None])) == []
+
+    def test_iter_tree_is_a_generator(self, walker):
+        root = make_tree()
+        gen = walker.iter_tree(root)
+        first = next(gen)
+        assert first is root
+        assert next(gen)._name_ == "alpha"
+
+    def test_walk_and_iter_tree_agree(self, walker):
+        root = make_tree()
+        walked = []
+        walker.walk(root, lambda inst, attrs, elems: walked.append(inst))
+        assert walked == list(walker.iter_tree(root))
 
     def test_get_instances_by_class_name(self, walker):
         root = make_tree()

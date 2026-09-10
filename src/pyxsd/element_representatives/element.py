@@ -24,7 +24,7 @@ class Element(ElementRepresentative):
 
         See ElementRepresentative for documentation.
         """
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
         parent.elements.append(self)
 
     def getType(self):
@@ -40,7 +40,7 @@ class Element(ElementRepresentative):
         if self.type in self.pyXSD.classes:
             return self.pyXSD.classes[self.type]
 
-        return ElementRepresentative.typeFromName(self.type, self.pyXSD)
+        return self.typeFromName(self.type, self.pyXSD)
 
     def processChildren(self):
         """There is a special ``processChildren()`` here to handle special
@@ -71,7 +71,7 @@ class Element(ElementRepresentative):
         of an element, without needing a bulky name that does not match
         the name used.
         """
-        return f"{ElementRepresentative.getContainingTypeName(self)}|{self.__class__.__name__}|{self.name}"
+        return f"{self.getContainingTypeName()}|{self.__class__.__name__}|{self.name}"
 
     def __get__(self, obj, objtype=None):
         """Gets an element value from the obj's dictionary.

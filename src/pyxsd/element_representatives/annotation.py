@@ -6,7 +6,7 @@ class Annotation(ElementRepresentative):
 
     def __init__(self, xsdElement, parent):
         """See ElementRepresentative for documentation."""
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
 
     def getName(self):
         """Makes a name like this- ``ContainingTypeName``|Annotation.  The

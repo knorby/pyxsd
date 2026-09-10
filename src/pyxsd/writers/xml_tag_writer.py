@@ -120,17 +120,8 @@ class XmlTagWriter:
         if not tabs:
             tabs = self.tabs
 
-        tab = ""
-        x = 0
-
-        while x < tabs:
-            tab += "    "
-            x += 1
-
+        tab = "    " * tabs
         if tabSpec:
-            y = 0
-            while y < tabSpec:
-                tab += " "
-                y += 1
+            tab += " " * tabSpec
 
         self.output.write(tab)

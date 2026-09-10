@@ -1,4 +1,8 @@
+import logging
+
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+
+logger = logging.getLogger(__name__)
 
 
 class XsdType(ElementRepresentative):
@@ -17,7 +21,7 @@ class XsdType(ElementRepresentative):
         """
         self.enumerations = []
         self.attributes = {}
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
 
     def getContainingTypeName(self):
         """Since all types are containing types, this method returns its
@@ -129,11 +133,13 @@ class XsdType(ElementRepresentative):
 
         try:
             cls = type(self.name, bases, clsDict)
-        except Exception as e:
-            print(e)
-            self.describe()
-            print(f"superClassNames {self.superClassNames!r}")
-            print(f"baseList {bases!r}")
+        except Exception:
+            logger.exception(
+                "class creation failed for %s (superClassNames=%r, bases=%r)",
+                self.name,
+                self.superClassNames,
+                bases,
+            )
             raise
 
         return cls

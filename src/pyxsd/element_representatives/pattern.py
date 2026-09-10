@@ -6,7 +6,7 @@ class Pattern(ElementRepresentative):
 
     def __init__(self, xsdElement, parent):
         """See ElementRepresentative for documentation."""
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
         self.value = self.xsdElement.get("value")
         self.getContainingType().patterns.append(self.value)
 

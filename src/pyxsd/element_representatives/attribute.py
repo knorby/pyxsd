@@ -1,5 +1,9 @@
+import logging
+
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.xsd_data_types import Boolean, XsdDataType
+
+logger = logging.getLogger(__name__)
 
 
 class Attribute(ElementRepresentative):
@@ -26,7 +30,7 @@ class Attribute(ElementRepresentative):
         """Adds itself to the attribute dictionary in its containing
         type. See ElementRepresentative for documentation.
         """
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
         self.getContainingType().attributes[self.name] = self
 
     def __str__(self):
@@ -34,7 +38,7 @@ class Attribute(ElementRepresentative):
         of an attribute, without needing a bulky name that does not
         match the name used.
         """
-        return f"{self.getContainingTypeName()}|{self.__class__.__name__}|{ElementRepresentative.getName(self)}"
+        return f"{self.getContainingTypeName()}|{self.__class__.__name__}|{self.getName()}"
 
     def processChildren(self):
         """There is a special ``processChildren()`` here to handle special
@@ -72,7 +76,7 @@ class Attribute(ElementRepresentative):
         if self.type in self.pyXSD.classes:
             return self.pyXSD.classes[self.type]
 
-        return ElementRepresentative.typeFromName(self.type, self.pyXSD)
+        return self.typeFromName(self.type, self.pyXSD)
 
     def __get__(self, obj, objtype=None):
         """Gets an attribute value from the obj's dictionary.
@@ -106,12 +110,16 @@ class Attribute(ElementRepresentative):
             try:
                 value = self.getType()(value)
             except Exception as e:
-                print()
-                print("Parser Error: One of your attributes is invalid.")
-                print("The program's error message is as follows:")
-                print(f"   {e}")
-                print("The program will attempt to continue, but may experience errors.")
-                print()
+                message = f"attribute '{self.name}' has an invalid value: {e}"
+                parser = getattr(self, "pyXSD", None)
+                if parser is not None:
+                    parser.report.add_error(
+                        message,
+                        code="invalid-attribute",
+                        element=getattr(obj, "_name_", None),
+                    )
+                else:
+                    logger.error(message)
         elif not isinstance(obj, self.getType()):
             raise TypeError(f"{obj!r} is not an instance of the attribute's type")
 

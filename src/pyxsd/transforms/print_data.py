@@ -1,3 +1,5 @@
+import sys
+
 from pyxsd.transforms.displayer import Displayer
 
 """
@@ -14,5 +16,11 @@ class PrintData(Displayer):
         self.root = root
 
     def __call__(self, fileName=None):
-        self.writeTree(self.openFile(fileName))
+        output = self.openFile(fileName)
+        try:
+            self.writeTree(output)
+        finally:
+            # stdout is shared; files opened for this write are ours to close.
+            if output is not sys.stdout:
+                output.close()
         return self.root

@@ -1,4 +1,8 @@
-import os
+import logging
+
+from pyxsd.validation import IssueSeverity
+
+logger = logging.getLogger(__name__)
 
 
 class SchemaBase:
@@ -13,6 +17,13 @@ class SchemaBase:
     reason, the tree building/checking must be started in the same
     location the method ``makeInstanceFromTag`` is called in this
     class.
+
+    Recoverable validation problems are recorded on the
+    :class:`~pyxsd.validation.ValidationReport` owned by the running
+    :class:`~pyxsd.parser.PyXSD` instance (which every generated class
+    carries as its ``pyXSD`` attribute) instead of being printed. When
+    no parser is attached, issues fall back to the ``pyxsd`` logging
+    hierarchy.
     """
 
     def __init__(self):
@@ -22,6 +33,47 @@ class SchemaBase:
         """
         self._children_ = []
         self._value_ = None
+
+    # ------------------------------------------------------------------
+    # Validation issue plumbing
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _report_issue(cls, severity, message, *, code, element=None):
+        """Record a validation issue on the owning parser's report.
+
+        Falls back to logging when the class has no attached parser
+        (for example hand-written overlay classes that subclass
+        SchemaBase directly).
+        """
+        parser = getattr(cls, "pyXSD", None)
+        if parser is not None:
+            if severity is IssueSeverity.ERROR:
+                parser.report.add_error(message, code=code, element=element)
+            else:
+                parser.report.add_warning(message, code=code, element=element)
+        else:
+            logger.log(
+                logging.ERROR if severity is IssueSeverity.ERROR else logging.WARNING,
+                "%s[%s] %s",
+                element or cls.__name__,
+                code,
+                message,
+            )
+
+    @classmethod
+    def _report_error(cls, message, *, code, element=None):
+        """Record an error-severity validation issue."""
+        cls._report_issue(IssueSeverity.ERROR, message, code=code, element=element)
+
+    @classmethod
+    def _report_warning(cls, message, *, code, element=None):
+        """Record a warning-severity validation issue."""
+        cls._report_issue(IssueSeverity.WARNING, message, code=code, element=element)
+
+    # ------------------------------------------------------------------
+    # Instance tree construction
+    # ------------------------------------------------------------------
 
     @classmethod
     def makeInstanceFromTag(cls, elementTag):
@@ -121,9 +173,11 @@ class SchemaBase:
                     subElCls = descriptor.getType()
 
                     if subElCls is None:  # An Error Message
-                        print(
-                            "Parser Error: There is no type in the schema that "
-                            f"corresponds to the type stated in the {descriptorName} element"
+                        cls._report_error(
+                            "no type in the schema corresponds to the type "
+                            f"stated in the '{descriptorName}' element",
+                            code="unknown-type",
+                            element=cls.__name__,
                         )
                         continue
 
@@ -150,7 +204,7 @@ class SchemaBase:
         """
         if elementTag.text:
             instance._value_ = []
-            if os.linesep in elementTag.text.rstrip(os.linesep):
+            if "\n" in elementTag.text.rstrip("\n"):
                 dataEntry = elementTag.text.splitlines()
                 for line in dataEntry:
                     line = line.strip()
@@ -175,42 +229,38 @@ class SchemaBase:
         """
         minOccurs = elemDescriptor.getMinOccurs()
         if minOccurs < 0:
-            print(
-                f"Parser Error: the value of 'minOccurs' in {cls.name} must be greater "
-                "than or equal to zero."
+            cls._report_warning(
+                "the value of 'minOccurs' must be greater than or equal to "
+                "zero; continuing with the default value of 1",
+                code="schema",
+                element=cls.__name__,
             )
-            print(
-                "The program will assign minOccurs the default value of 1 and attempt to proceed."
-            )
-            print()
             minOccurs = 1
 
         maxOccurs = elemDescriptor.getMaxOccurs()
         if maxOccurs < 0:
-            print(
-                f"Parser Error: the value of 'maxOccurs' in {cls.name} must be greater "
-                "than or equal to zero."
+            cls._report_warning(
+                "the value of 'maxOccurs' must be greater than or equal to "
+                "zero; continuing with the default value of 1",
+                code="schema",
+                element=cls.__name__,
             )
-            print(
-                "The program will assign maxOccurs the default value of 1 and attempt to proceed."
-            )
-            print()
             maxOccurs = 1
 
         if len(subElements) < minOccurs:
-            print(
-                "Parser Error: the program cannot find enough elements in the "
-                "xml that are specified in the choice field for",
-                cls.name,
+            cls._report_error(
+                "the xml does not contain enough elements for the choice "
+                f"(minOccurs is {minOccurs})",
+                code="occurrence-min",
+                element=cls.__name__,
             )
-            print()
 
         elif len(subElements) > maxOccurs:
-            print(
-                f"Parser Error: the parser found too many elements for a choice element in {cls.name}."
+            cls._report_error(
+                f"the xml contains too many elements for the choice (maxOccurs is {maxOccurs})",
+                code="occurrence-max",
+                element=cls.__name__,
             )
-            print("This choice element can only have one element in it.")
-            print()
 
         return None
 
@@ -219,7 +269,7 @@ class SchemaBase:
         """Checks the element order in sequence fields to make sure that
         the order specified in the schema is preserved in the xml.
 
-        Raises non-fatal errors when a problem is found. Checks
+        Records non-fatal issues when a problem is found. Checks
         minOccurs and maxOccurs on each element as well.
 
         - ``descriptors`` - a list of schema-specified elements that
@@ -242,31 +292,30 @@ class SchemaBase:
             if count == 0:
                 if descriptor.getMinOccurs() == 0 and dname not in subElementNames:
                     continue
-                print(
-                    f"Parser Error: Order Error - Expected element name '{dname}' in different position."
+                cls._report_error(
+                    f"order error - expected element '{dname}' in a different position",
+                    code="order",
+                    element=cls.__name__,
                 )
-                print()
                 continue
 
             if count < descriptor.getMinOccurs():
-                # complain
-                print(f"Parser Error: The Element '{dname}' in '{cls.name}' occurs less")
-                print(
-                    f"than the specified number of minOccurs ({descriptor.getMinOccurs()}) in the schema."
+                cls._report_error(
+                    f"element '{dname}' occurs fewer times than minOccurs "
+                    f"({descriptor.getMinOccurs()}) requires; this may also "
+                    "indicate an ordering problem",
+                    code="occurrence-min",
+                    element=cls.__name__,
                 )
-                print("Note: it is possible that there is a problem with the order of")
-                print("elements and not the minOccurs value.")
-                print()
                 continue
 
             if count > descriptor.getMaxOccurs():
-                # complain
-                print(f"Parser Error: The element '{dname}' in '{cls.name}' occurs more")
-                print(" than the specified number of maxOccurs in the schema.")
-                if descriptor.getMaxOccurs() == 1:
-                    print("Your maxOccurs value is 1, which is the default value.")
-                    print("Perhaps you meant to assign this variable a different value?")
-                print()
+                cls._report_error(
+                    f"element '{dname}' occurs more times than maxOccurs "
+                    f"({descriptor.getMaxOccurs()}) allows",
+                    code="occurrence-max",
+                    element=cls.__name__,
+                )
                 continue
 
     @classmethod
@@ -313,7 +362,12 @@ class SchemaBase:
         elif len(dataTypeChildren) == 1:
             dataTypeVal = dataTypeChildren[0]
         else:
-            print(f"An error occurred while reading the data in the {subElement.tag} element.")
+            cls._report_error(
+                "an error occurred while reading the data in the "
+                f"'{subElement.tag.split('}')[-1]}' element",
+                code="value",
+                element=cls.__name__,
+            )
             return None
 
         dataTypeValInst = subElCls(dataTypeVal)
@@ -400,19 +454,22 @@ class SchemaBase:
 
         attrInElementTag = list(elementTag.attrib.keys())
 
+        elementName = getattr(self, "_name_", None) or self.__class__.__name__
+
         if len(usedAttrs) > len(attrInElementTag):
-            print(
-                f"Parser Error: For an unknown reason, in {self.__class__.__name__}, the program "
-                "parsed more attributes than there are in the XML file."
+            self._report_warning(
+                "the parser recorded more attributes than the xml file contains",
+                code="internal",
+                element=elementName,
             )
         elif len(usedAttrs) < len(attrInElementTag):
-            print(
-                f"Parser Error: Not all attributes in the XML file in {self.__class__.__name__} were parsed."
-            )
-            print("Attributes not processed:")
             for attrET in attrInElementTag:
                 if attrET not in usedAttrs:
-                    print("   ", attrET)
+                    self._report_warning(
+                        f"attribute '{attrET}' is not declared in the schema and was not parsed",
+                        code="unexpected-attribute",
+                        element=elementName,
+                    )
         for descriptorAttrName in descriptorAttributeNames:
             found = False
             attrUse = descriptorAttributes[descriptorAttrName].getUse()
@@ -420,21 +477,23 @@ class SchemaBase:
                 if usedAttr == descriptorAttrName:
                     found = True
             if attrUse == "required" and not found:
-                print(
-                    f"Parser Error: the {descriptorAttrName} in the {self.__class__.__name__} element is required but was not found."
+                self._report_error(
+                    f"attribute '{descriptorAttrName}' is required but was not found",
+                    code="missing-attribute",
+                    element=elementName,
                 )
 
     @staticmethod
     def dumpCls(cls):
-        """For debugging purposes only. Prints out the contents of a
-        class.
+        """For debugging purposes only. Logs the contents of a class at
+        debug level.
 
         - ``cls`` - the class to dump the contents of.
         """
-        print(f" In dumpCls[{cls.__name__}] bases = {cls.__bases__} ")
+        logger.debug("In dumpCls[%s] bases = %s", cls.__name__, cls.__bases__)
 
         for key, value in cls.__dict__.items():
-            print(f"   {key} - {value!r}")
+            logger.debug("  %s - %r", key, value)
 
 
 from pyxsd.element_representatives.attribute import Attribute  # noqa: E402

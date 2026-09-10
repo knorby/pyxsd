@@ -108,11 +108,13 @@ def test_explicit_schema_flag(tmp_path, monkeypatch):
     assert parsed.exists()
 
 
-def test_missing_schema_raises(tmp_path, monkeypatch):
+def test_missing_schema_raises(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     _instance_without_hints(tmp_path, "inventory")
-    with pytest.raises(ValueError, match="no schema file"):
+    with pytest.raises(SystemExit) as excinfo:
         main(["-i", "instance.xml", "-o", "/dev/null"])
+    assert excinfo.value.code == 1
+    assert "no schema file" in capsys.readouterr().err
 
 
 def test_transform_call_and_file_conflict(tmp_path, monkeypatch):
@@ -136,6 +138,142 @@ def test_unknown_transform_module_raises(tmp_path, monkeypatch):
     stage_fixture(tmp_path, "inventory")
     with pytest.raises(ImportError, match="NoSuchTransform"):
         main(["-i", "instance.xml", "-t", "NoSuchTransform()"])
+
+
+# ---------------------------------------------------------------------------
+# Validation reporting and exit codes
+# ---------------------------------------------------------------------------
+
+
+def _invalid_instance(tmp_path, fixture="nested"):
+    """Stage a fixture instance with its required attribute removed."""
+    stage_fixture(tmp_path, fixture)
+    instance = tmp_path / "instance.xml"
+    instance.write_text(instance.read_text().replace(' id="p-1"', ""))
+    return instance
+
+
+def test_validation_report_goes_to_stderr(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _invalid_instance(tmp_path)
+    main(["-i", "instance.xml", "-o", "/dev/null"])
+    err = capsys.readouterr().err
+    assert "missing-attribute" in err
+    assert "required but was not found" in err
+
+
+def test_strict_flag_exits_nonzero_on_errors(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _invalid_instance(tmp_path)
+    with pytest.raises(SystemExit) as excinfo:
+        main(["-i", "instance.xml", "-o", "/dev/null", "--strict"])
+    assert excinfo.value.code == 1
+    assert "missing-attribute" in capsys.readouterr().err
+
+
+def test_strict_flag_passes_valid_instance(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    main(["-i", "instance.xml", "-o", "/dev/null", "--strict"])
+
+
+def test_valid_instance_prints_no_report(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    main(["-i", "instance.xml", "-o", "/dev/null"])
+    assert capsys.readouterr().err == ""
+
+
+# ---------------------------------------------------------------------------
+# Stdin input
+# ---------------------------------------------------------------------------
+
+
+class _FakeStdin:
+    def __init__(self, text, tty=False):
+        self._text = text
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+    def read(self):
+        return self._text
+
+
+def test_stdin_input_without_temporary_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    xml = fixture_dir("inventory").joinpath("instance.xml").read_text()
+    monkeypatch.setattr("sys.stdin", _FakeStdin(xml))
+    main(["-s", str(fixture_dir("inventory") / "schema.xsd"), "-o", "/dev/null"])
+    # The historical behavior wrote a 'stdin.xml' temporary file to the
+    # working directory; nothing may be created now.
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_stdin_tty_is_rejected(monkeypatch):
+    monkeypatch.setattr("sys.stdin", _FakeStdin("", tty=True))
+    with pytest.raises(SystemExit) as excinfo:
+        main([])
+    assert excinfo.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# Overlay classes (experimental)
+# ---------------------------------------------------------------------------
+
+
+def test_overlay_class_file_loads(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    overlay = tmp_path / "overlay.py"
+    overlay.write_text(
+        "from pyxsd.schema_base import SchemaBase\n"
+        "\n"
+        "\n"
+        "class ExtraType(SchemaBase):\n"
+        "    name = 'unusedType'\n"
+    )
+    rc = main(["-i", "instance.xml", "-c", "overlay.py", "-o", "/dev/null"])
+    assert rc is None
+    # The overlay module is loaded by name from the working directory.
+    assert overlay.exists()
+
+
+def test_overlay_class_without_name_warns(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    overlay = tmp_path / "overlay.py"
+    overlay.write_text(
+        "from pyxsd.schema_base import SchemaBase\n\n\nclass Nameless(SchemaBase):\n    pass\n"
+    )
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        main(["-i", "instance.xml", "-c", "overlay.py", "-o", "/dev/null"])
+    assert any(issubclass(w.category, UserWarning) for w in caught)
+
+
+def test_missing_overlay_file_raises(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    with pytest.raises(ImportError, match="was not found"):
+        main(["-i", "instance.xml", "-c", "nope.py", "-o", "/dev/null"])
+
+
+def test_malformed_schema_location_warns(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    instance = tmp_path / "instance.xml"
+    content = instance.read_text().replace(
+        'xsi:noNamespaceSchemaLocation="schema.xsd"',
+        'xmlns:test="http://example.com/ns" xsi:schemaLocation="http://example.com/ns"',
+    )
+    instance.write_text(content)
+    main(["-i", "instance.xml", "-s", "schema.xsd", "-o", "/dev/null"])
+    err = capsys.readouterr().err
+    assert "schema-hint" in err
 
 
 # ---------------------------------------------------------------------------
@@ -204,11 +342,16 @@ class TestTransformModuleNames:
 class TestDefaultFileNames:
     def test_parsed_output_name(self, tmp_path):
         parser = run_parser("inventory")
-        assert parser.getXmlOutputFileName().endswith("instanceParsed.xml")
+        assert parser.getXmlOutputFileName().name == "instanceParsed.xml"
 
     def test_transforms_output_name(self, tmp_path):
         parser = run_parser("inventory")
-        assert parser.getTransformsFileName().endswith("instanceTransformed.xml")
+        assert parser.getTransformsFileName().name == "instanceTransformed.xml"
+
+    def test_transforms_output_name_without_file_input(self):
+        parser = run_parser("inventory")
+        parser.xmlFileInputName = None
+        assert parser.getTransformsFileName().name == "output.xml"
 
 
 def _unparsed_root(xml_text, tmp_path):

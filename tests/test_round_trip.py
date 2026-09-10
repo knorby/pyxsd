@@ -58,8 +58,8 @@ def test_multi_line_text_is_preserved(tmp_path):
     assert "third line of notes" in text
 
 
-def test_missing_required_attribute_is_reported(tmp_path, capsys):
-    """A required attribute absent from the instance is flagged."""
+def test_missing_required_attribute_is_reported(tmp_path):
+    """A required attribute absent from the instance is flagged on the report."""
     directory = fixture_dir("nested")
     instance = directory / "instance.xml"
     stripped = tmp_path / "instance.xml"
@@ -69,18 +69,21 @@ def test_missing_required_attribute_is_reported(tmp_path, capsys):
 
     from pyxsd.parser import PyXSD
 
-    PyXSD(
+    parser = PyXSD(
         str(stripped),
         str(tmp_path / "schema.xsd"),
         xmlFileOutput=False,
         transformOutputName=None,
     )
-    captured = capsys.readouterr()
-    assert "required but was not found" in captured.out
+    codes = [issue.code for issue in parser.report]
+    assert "missing-attribute" in codes
+    assert parser.report.has_errors
+    matching = [i for i in parser.report if i.code == "missing-attribute"]
+    assert any("required but was not found" in i.message for i in matching)
 
 
-def test_wrong_element_order_is_reported(tmp_path, capsys):
-    """Sequence order violations are flagged by the parser."""
+def test_wrong_element_order_is_reported(tmp_path):
+    """Sequence order violations are flagged on the report."""
     directory = fixture_dir("inventory")
     instance = directory / "instance.xml"
     swapped = tmp_path / "instance.xml"
@@ -95,11 +98,14 @@ def test_wrong_element_order_is_reported(tmp_path, capsys):
 
     from pyxsd.parser import PyXSD
 
-    PyXSD(
+    parser = PyXSD(
         str(swapped),
         str(tmp_path / "schema.xsd"),
         xmlFileOutput=False,
         transformOutputName=None,
     )
-    captured = capsys.readouterr()
-    assert "Order Error" in captured.out
+    codes = [issue.code for issue in parser.report]
+    assert "order" in codes
+    assert parser.report.has_errors
+    matching = [i for i in parser.report if i.code == "order"]
+    assert any("order error" in i.message for i in matching)

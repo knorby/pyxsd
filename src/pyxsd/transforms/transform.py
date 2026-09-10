@@ -5,17 +5,28 @@ on writing transformers, an overview of this class, basic use
 instructions, and documentation on the included transform libraries.
 """
 
+import abc
 
-class Transform:
+
+class Transform(abc.ABC):
     """The base abstract class for all transforms.
 
     All methods should mix into the usable transform classes. Contains
     methods to retrieve elements from the tree.
+
+    Subclasses must accept the tree root in their ``__init__``; that
+    makes the class abstract until it does, so framework-only
+    subclasses (like :class:`~pyxsd.transforms.displayer.Displayer`)
+    cannot be instantiated by accident.
     """
 
-    def __init__(self):
-        """Cannot initialize a true abstract class!"""
-        raise TypeError("an abstract class cannot be instantiated")
+    @abc.abstractmethod
+    def __init__(self, root):
+        """Initialize the transform with the root of the instance tree.
+
+        Concrete transforms must override this and store the root (or
+        whatever subset of the tree they operate on).
+        """
 
     def makeElemObj(self, name):
         """Creates a new element that contains the proper tree
@@ -37,29 +48,45 @@ class Transform:
         obj._value_ = comment
         return obj
 
+    def iter_tree(self, instance):
+        """Yield every tree node at or below ``instance``, depth-first.
+
+        Lists (and tuples) are descended into item by item and
+        dictionaries by value; anything without both ``_children_`` and
+        ``_attribs_`` is skipped. Each yielded node is visited before
+        its children (pre-order). This generator powers :meth:`walk`
+        and is also the supported way to iterate a tree directly::
+
+            for node in transform.iter_tree(root):
+                ...
+
+        - ``instance``: a tree node, or a list/dict of them.
+        """
+        if isinstance(instance, (list, tuple)):
+            for item in instance:
+                yield from self.iter_tree(item)
+        elif isinstance(instance, dict):
+            for item in instance.values():
+                yield from self.iter_tree(item)
+        elif hasattr(instance, "_children_") and hasattr(instance, "_attribs_"):
+            yield instance
+            for child in instance._children_:
+                yield from self.iter_tree(child)
+
     def walk(self, instance, visitor, *args, **kwargs):
         """Walks through the tree structure and runs a provided visitor
         function on all elements.
-        """
-        if isinstance(instance, list):
-            for item in instance:
-                self.walk(item, visitor, *args, **kwargs)
-            return None
-        if isinstance(instance, dict):
-            for item in instance.values():
-                self.walk(item, visitor, *args, **kwargs)
-            return None
-        if not hasattr(instance, "_children_"):
-            return None
-        if not hasattr(instance, "_attribs_"):
-            return None
 
-        elemNames = [c._name_ for c in instance._children_]
-        attrNames = list(instance._attribs_.keys())
-        visitor(instance, attrNames, elemNames, *args, **kwargs)
-        for el in instance._children_:
-            self.walk(el, visitor, *args, **kwargs)
-        return None
+        The visitor is called as ``visitor(node, attrNames, elemNames,
+        *args, **kwargs)`` where ``node`` is the tree node being
+        visited, ``attrNames`` is the list of its attribute names, and
+        ``elemNames`` is the list of its children's names. Traversal is
+        driven by :meth:`iter_tree`.
+        """
+        for node in self.iter_tree(instance):
+            elemNames = [c._name_ for c in node._children_]
+            attrNames = list(node._attribs_.keys())
+            visitor(node, attrNames, elemNames, *args, **kwargs)
 
     def classCollector(self, instance, attrNames, elemNames, collectorDict):
         """Visitor function to make a dictionary that associates a class

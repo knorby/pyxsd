@@ -21,7 +21,7 @@ class Schema(ComplexType):
         self.simpleTypes = {}
         self.elements = []
         self._elements = None
-        ComplexType.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
 
     def getName(self):
         """Returns 'schema'."""

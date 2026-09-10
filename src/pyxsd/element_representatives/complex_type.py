@@ -1,3 +1,4 @@
+from pyxsd.compositors import Compositor
 from pyxsd.element_representatives.xsd_type import XsdType
 
 
@@ -11,7 +12,7 @@ class ComplexType(XsdType):
         documentation.
         """
         self.sequencesOrChoices = []
-        XsdType.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
         self.getSchema().complexTypes[self.name] = self
 
     def getElements(self):
@@ -27,12 +28,11 @@ class ComplexType(XsdType):
             return elements
 
         self.elements_ = []
-        itemInfo = None
         for item in self.sequencesOrChoices:
-            if item.tagType == "sequence":
-                itemInfo = "sequence"
-            if item.tagType == "choice":
-                itemInfo = "choice"
+            try:
+                itemInfo = Compositor(item.tagType)
+            except ValueError:
+                itemInfo = None
             for element in item.elements:
                 element.sOrC = itemInfo
                 self.elements_.append(element)

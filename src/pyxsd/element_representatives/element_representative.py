@@ -65,6 +65,8 @@ with ``type()`` by supplying a dictionary, tuple of bases, and a name.
 The classes are stored in a dictionary in the PyXSD instance.
 """
 
+import logging
+
 from pyxsd.xsd_data_types import (
     ID,
     IDREF,
@@ -75,6 +77,8 @@ from pyxsd.xsd_data_types import (
     PositiveInteger,
     String,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ElementRepresentative:
@@ -144,15 +148,14 @@ class ElementRepresentative:
             tagCls = TAG_CLASSES[clsName]
             return tagCls(xsdElement, parent)
         # Complain
-        print(f"ElementRepresentative {clsName} is not defined!")
+        logger.warning("ElementRepresentative %s is not defined!", clsName)
         return None
 
     def describe(self):
-        """A debugging function that prints out the contents of the
-        dictionary.
+        """Returns a multi-line description of this ER's attributes for
+        debugging.
         """
-        for attrName, value in vars(self).items():
-            print(f" {attrName} -> {value} ")
+        return "\n".join(f" {attrName} -> {value} " for attrName, value in vars(self).items())
 
     def findLayerNum(self):
         """Returns an integer that specifies how deep in the tree a
@@ -181,15 +184,16 @@ class ElementRepresentative:
             getFromNameReturned = cls.getFromName(xsdTypeName)
             if getFromNameReturned:
                 return getFromNameReturned.clsFor(pyXSD)
-            print("typeFromName() error: getFromName() is returning None for", xsdTypeName)
+            logger.warning(
+                "typeFromName() error: getFromName() is returning None for %s", xsdTypeName
+            )
             return None
         primitive = _PRIMITIVE_TYPES.get(xsdTypeName.split(":", 1)[1])
         if primitive is not None:
             return primitive
-        print(
-            "XsdTypeName Error: {} does not correspond to a class".format(
-                xsdTypeName.split(":", 1)[1]
-            )
+        logger.warning(
+            "XsdTypeName Error: %s does not correspond to a class",
+            xsdTypeName.split(":", 1)[1],
         )
         return None
 
@@ -215,11 +219,11 @@ class ElementRepresentative:
         """
         if self.parent is not None:
             return self.parent.getContainingType()
-        print(
-            "ElementRepresentative Error: the program encountered an unknown error in getContainingType()"
+        logger.error(
+            "ElementRepresentative Error: the program encountered an unknown "
+            "error in getContainingType()"
         )
-        print("The class dictionary is as follows:")
-        self.describe()
+        logger.error("The class dictionary is as follows:\n%s", self.describe())
         return None
 
     def getSchema(self):
@@ -251,18 +255,23 @@ class ElementRepresentative:
         """
         if name not in registry:
             registry[name] = [obj]
+        else:
+            logger.debug(
+                "an element representative named %r is already registered; keeping the first one",
+                name,
+            )
 
     @classmethod
     def getFromName(cls, name):
         """Retrieve an entry in the registry by its name."""
         entries = registry.get(name)
         if not entries:
-            print(f"getFromName Error: {name} is not a key in the registry")
+            logger.warning("getFromName Error: %s is not a key in the registry", name)
             return None
         if len(entries) == 1:
             return entries[0]
         # Complain
-        print(f"ElementRepresentative Error: {entries!r}")
+        logger.warning("ElementRepresentative Error: %r", entries)
         return None
 
     @staticmethod

@@ -19,5 +19,5 @@ class SimpleType(XsdType):
         self.maxInclusive = None
         self.minExclusive = None
         self.maxExclusive = None
-        XsdType.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
         self.getSchema().simpleTypes[self.name] = self

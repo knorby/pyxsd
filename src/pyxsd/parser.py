@@ -3,19 +3,20 @@
 PyXSD was developed in order to map XML and the related schema (XSD)
 files into the Python language. The program builds a pythonic
 representation of the XML tree according to the specifications in the
-schema and raises non-fatal parser errors whenever possible in order
-to help the user validate their XML document. The program allows the
-user to specify *transform* classes, which manipulate and transform
-the XML tree in various ways. The program then writes the tree back
-out to XML. PyXSD allows users to create their own transform classes
-with the help of a transform library. These classes are fairly simple
-to write, making the system highly adaptable to very specific uses, as
-one might find in many scientific applications; however, the program
-has potential uses in other fields, since XML is widely used. The
-program allows the user to specify the desired transform classes,
-along with their arguments and sequence of application, so the user
-can create customized tools. The program can be used either as a
-standalone command line program or as a library in other programs.
+schema and records non-fatal validation issues in a
+:class:`~pyxsd.validation.ValidationReport` in order to help the user
+validate their XML document. The program allows the user to specify
+*transform* classes, which manipulate and transform the XML tree in
+various ways. The program then writes the tree back out to XML. PyXSD
+allows users to create their own transform classes with the help of a
+transform library. These classes are fairly simple to write, making
+the system highly adaptable to very specific uses, as one might find
+in many scientific applications; however, the program has potential
+uses in other fields, since XML is widely used. The program allows the
+user to specify the desired transform classes, along with their
+arguments and sequence of application, so the user can create
+customized tools. The program can be used either as a standalone
+command line program or as a library in other programs.
 
 Overview:
 
@@ -26,8 +27,9 @@ Overview:
   classes. This tree of instances maintains the same overall structure
   of the original xml document.
 
-- Provides some xml/schema parsing with non-fatal errors in order to
-  help the user write a valid xml document, without requiring it
+- Provides some xml/schema validation with non-fatal issues recorded
+  in a validation report, in order to help the user write a valid xml
+  document, without requiring it
 
 - Transforms the pythonic representation according to built-in and
   add-on 'transform' classes that the user specifies
@@ -39,17 +41,24 @@ Overview:
 import ast
 import importlib
 import importlib.util
+import io
+import logging
 import os.path
 import pkgutil
 import re
 import sys
+import warnings
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from pyxsd import __version__
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.schema_base import SchemaBase
+from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 
-__version__ = "1.0.0.dev0"
+logger = logging.getLogger(__name__)
 
 
 class PyXSD:
@@ -69,11 +78,11 @@ class PyXSD:
         verbose=False,
         quiet=False,
     ):
-        """Initialize the parser.
+        """Initialize the parser and run the whole pipeline.
 
-        - ``xmlFileInput`` - the filename of the xml file to input. Can
-          include path information. Will raise an error if not
-          specified.
+        - ``xmlFileInput`` - the filename of the xml file to input (a
+          string or path); a file object open for reading is also
+          accepted. Will raise an error if not specified.
 
         - ``xsdFile`` - the filename/path information for the schema
           file. Will attempt to use the schemaLocation tag in the xml
@@ -81,10 +90,11 @@ class PyXSD:
 
         - ``xmlFileOutput`` - location for xml output to be sent after
           it is parsed. Will use a default name if not specified. Will
-          not output if the value is set to ``'_No_Output_'``.
+          not output if the value is falsy or ``'_No_Output_'``.
 
         - ``transformOutputName`` - location of the xml output after
-          the transform. Will make a default filename if not specified.
+          the transform, or ``'stdout'``. Will make a default filename
+          if not specified.
 
         - ``transforms`` - a list containing the transform calls in the
           order they will be performed.
@@ -92,32 +102,36 @@ class PyXSD:
         - ``classFile`` - the location of the overlay class file.
           Experimental.
 
-        - ``verbose`` - a boolean value. If set to true, will output
-          more information.
+        - ``verbose`` - a boolean value. If set to true, logs more
+          information (the CLI maps this to the DEBUG log level).
 
-        - ``quiet`` - a boolean value. If set to true, will output less
-          information and errors than normal.
+        - ``quiet`` - a boolean value. If set to true, logs less
+          information (the CLI maps this to the CRITICAL log level).
+
+        After construction, ``self.report`` holds the
+        :class:`~pyxsd.validation.ValidationReport` collected while the
+        instance document was bound.
         """
         self.verbose = verbose
         self.quiet = quiet
         self.classes = {}
+        self.report = ValidationReport()
 
-        if isinstance(xmlFileInput, str):
-            self.xmlFileInput = os.path.abspath(xmlFileInput)
-            self.xmlPath, self.xmlFileInputName = os.path.split(self.xmlFileInput)
+        if isinstance(xmlFileInput, (str, os.PathLike)):
+            self.xmlFileInput = Path(xmlFileInput).resolve()
+            self.xmlPath = self.xmlFileInput.parent
+            self.xmlFileInputName = self.xmlFileInput.name
         else:
             self.xmlFileInput = xmlFileInput
+            self.xmlPath = Path.cwd()
+            self.xmlFileInputName = None
 
         self.xsdFile = xsdFile
         self.xmlFileOutput = xmlFileOutput
 
         self.xmlRoot = self.getXmlTree()
 
-        if (
-            self.xmlFileOutput != "_No_Output_"
-            and self.xmlFileOutput is None
-            and isinstance(xmlFileInput, str)
-        ):
+        if self.xmlFileOutput is None and isinstance(xmlFileInput, (str, os.PathLike)):
             self.xmlFileOutput = self.getXmlOutputFileName()
 
         self.transforms = transforms if transforms is not None else []
@@ -125,22 +139,23 @@ class PyXSD:
         if xsdFile is None:
             self.xsdFile = self.getSchemaInfo("l")
             if self.xsdFile is None:
-                raise ValueError(
-                    "Error: no schema file was given and the xml file has no "
+                raise PyXSDError(
+                    "no schema file was given and the xml file has no "
                     "schemaLocation or noNamespaceSchemaLocation tag"
                 )
-        self.getSchemaFile()
         self.nameSpace = self.getSchemaInfo("n")
         self.parseXSD()
 
         if classFile:
-            if self.verbose:
-                print(f"Attempting to load overlay classes from the file '{classFile}'...")
+            logger.debug(
+                "Attempting to load overlay classes from the file '%s'...",
+                classFile,
+            )
             self.loadClassFromFile(classFile)
 
         rootInstance = self.parseXML()
 
-        if self.xmlFileOutput != "_No_Output_":
+        if self.xmlFileOutput and self.xmlFileOutput != "_No_Output_":
             rootInstance = self.writeParsedXMLFile(rootInstance)
 
         self.transformOutputName = transformOutputName
@@ -150,78 +165,57 @@ class PyXSD:
         """Runs each transform in order and writes the transformed tree to
         the transform output, if one was requested.
         """
-        if self.transforms:
-            if self.verbose:
-                print("Loading the transforms...")
-            transformOutput = None
-            if not self.transformOutputName:
-                self.transformOutputName = self.getTransformsFileName()
-                if self.verbose:
-                    print(
-                        f"Loading the file '{self.transformOutputName}' for the transformed XML output..."
-                    )
-                transformOutput = open(self.transformOutputName, "w")  # noqa: SIM115 - held open for the writer pipeline
-            elif self.transformOutputName == "stdout":
-                transformOutput = sys.stdout
+        if not self.transforms:
+            return
+        logger.debug("Loading the transforms...")
+        transformOutput = self.transformOutputName
+        if not transformOutput:
+            transformOutput = self.getTransformsFileName()
+            logger.debug(
+                "Loading the file '%s' for the transformed XML output...",
+                transformOutput,
+            )
+        transformedRoot = self.transform(self.transforms, rootInstance)
+        if transformedRoot:
+            logger.debug("Sending transformed tree to the writer...")
+            if transformOutput == "stdout":
+                self.writeXML(transformedRoot, sys.stdout)
             else:
-                if self.verbose:
-                    print(
-                        f"Loading the file '{self.transformOutputName}' for the transformed XML output..."
-                    )
-                transformOutput = open(self.transformOutputName, "w")  # noqa: SIM115 - closed after the write below
-            transformedRoot = self.transform(self.transforms, rootInstance)
-            if transformedRoot:
-                if self.verbose:
-                    print("Sending transformed tree to the writer...")
-                self.writeXML(transformedRoot, transformOutput)
-            if transformOutput is not None and transformOutput is not sys.stdout:
-                transformOutput.close()
-
-    def getSchemaFile(self):
-        """Opens the schema file for reading."""
-        try:
-            if isinstance(self.xsdFile, str):
-                self.xsdFile = open(self.xsdFile)  # noqa: SIM115 - held open for the writer pipeline
-        except OSError as e:
-            print("Program Error: the schema file could not be opened.")
-            print("The program's error message is as follows:")
-            print(f"   {e}")
-            raise
-
-    def writeParsedXMLFile(self, rootInstance):
-        """Writes the parsed (pre-transform) xml file, if requested."""
-        if isinstance(self.xmlFileOutput, str):
-            self.xmlFileOutput = open(self.xmlFileOutput, "w")  # noqa: SIM115 - closed after the write below
-        if self.xmlFileOutput:
-            self.writeXML(rootInstance, self.xmlFileOutput)
-            if self.xmlFileOutput is not sys.stdout:
-                self.xmlFileOutput.close()
-        return rootInstance
+                with open(transformOutput, "w") as output:
+                    self.writeXML(transformedRoot, output)
 
     def parseXSD(self):
         """Reads the given xsd file and creates a set of classes that
         correspond to the complex and simple type definitions.
         """
-        if self.verbose:
-            print("Sending the schema file to the ElementTree Parser...")
+        logger.debug("Sending the schema file to the ElementTree Parser...")
 
-        tree = ET.parse(self.xsdFile)
+        if isinstance(self.xsdFile, (str, os.PathLike)):
+            try:
+                with open(self.xsdFile, "rb") as schemaFile:
+                    tree = ET.parse(schemaFile)
+            except OSError as e:
+                raise PyXSDError(f"the schema file could not be opened: {e}") from e
+            except ET.ParseError as e:
+                raise PyXSDError(f"the schema file is not well-formed XML: {e}") from e
+        else:
+            try:
+                tree = ET.parse(self.xsdFile)
+            except ET.ParseError as e:
+                raise PyXSDError(f"the schema file is not well-formed XML: {e}") from e
         root = tree.getroot()
-        if self.verbose:
-            print("Sending the schema ElementTree to the ElementRepresentative module...")
+        logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")
 
         schemaER = ElementRepresentative.factory(root, None)
 
         for simpleType in schemaER.simpleTypes.values():
             cls = simpleType.clsFor(self)
             self.classes[simpleType.name] = cls
-            if self.verbose:
-                print(f"Class created for the {simpleType.name} type...")
+            logger.debug("Class created for the %s type...", simpleType.name)
         for complexType in schemaER.complexTypes.values():
             cls = complexType.clsFor(self)
             self.classes[complexType.name] = cls
-            if self.verbose:
-                print(f"Class created for the {complexType.name} type...")
+            logger.debug("Class created for the %s type...", complexType.name)
 
         return None
 
@@ -231,8 +225,7 @@ class PyXSD:
         Produces instances of the above classes. Does validation.
         Returns a schema instance object.
         """
-        if self.verbose:
-            print("Starting to parse the xml file.")
+        logger.debug("Starting to parse the xml file.")
 
         schemaClass = self.getClasses()["schema"]
 
@@ -242,20 +235,18 @@ class PyXSD:
 
         topLevelDescriptors = schemaClassInstance._getElements()
 
-        if len(topLevelDescriptors) > 1 and not self.quiet:
-            print("Error: Invalid XML Schema-there is more than one root element in this document.")
-            print(f"There are {len(topLevelDescriptors)!r} root elements in this document:")
-            for element in topLevelDescriptors:
-                print(element.name)
-            print(
-                f"The parser will proceed and attempt to parse only {topLevelDescriptors[0].name!r}"
+        if len(topLevelDescriptors) > 1:
+            elementNames = ", ".join(element.name for element in topLevelDescriptors)
+            self.report.add_error(
+                "invalid schema: there is more than one root element in "
+                f"this document ({elementNames}); parsing only "
+                f"'{topLevelDescriptors[0].name}'",
+                code="multiple-roots",
             )
-            print()
 
         if not topLevelDescriptors:
-            raise ValueError(
-                "Error: Invalid XML Schema-the parser could not find any root "
-                "elements in the schema"
+            raise PyXSDError(
+                "invalid XML Schema - the parser could not find any root elements in the schema"
             )
 
         rootElement = topLevelDescriptors[0]
@@ -300,20 +291,35 @@ class PyXSD:
         self.xmlRoot.attrib["xsi:noNamespaceSchemaLocation"] = schemaLocation
         return None
 
+    def writeParsedXMLFile(self, rootInstance):
+        """Writes the parsed (pre-transform) xml file, if requested."""
+        output = self.xmlFileOutput
+        if not output or output == "_No_Output_":
+            return rootInstance
+        if isinstance(output, (str, os.PathLike)):
+            with open(output, "w") as outputFile:
+                self.writeXML(rootInstance, outputFile)
+        else:
+            self.writeXML(rootInstance, output)
+        return rootInstance
+
     def writeXML(self, rootInstance, output):
         """Sends a pythonic instance tree to the tree writer.
 
         - ``rootInstance``: the root instance of a tree. Must be
           formatted in the program's tree structure.
 
-        - ``output``: the file object to write the tree to.
+        - ``output``: the file object (or path) to write the tree to.
+          Paths are opened and closed here; file objects passed by the
+          caller are flushed but left open.
         """
-        if isinstance(output, str):
-            output = open(output, "w")  # noqa: SIM115 - flushed below
-        XmlTreeWriter(rootInstance, output)
-        output.flush()
-        if self.verbose:
-            print("Data sent to the writer...")
+        if isinstance(output, (str, os.PathLike)):
+            with open(output, "w") as outputFile:
+                XmlTreeWriter(rootInstance, outputFile)
+        else:
+            XmlTreeWriter(rootInstance, output)
+            output.flush()
+        logger.debug("Data sent to the writer...")
 
     def getClasses(self):
         """Returns the dictionary of classes created by
@@ -333,18 +339,18 @@ class PyXSD:
         - ``classFile``: a string that specifies the location of a
           user-created overlay class file
         """
-        filePath = classFile
-        if not os.path.isfile(filePath):
+        filePath = Path(classFile)
+        if not filePath.is_file():
             # Fall back to the historical behavior of resolving a
             # module name against the xml file's directory.
-            candidate = os.path.join(getattr(self, "xmlPath", ""), classFile + ".py")
-            if os.path.isfile(candidate):
+            candidate = self.xmlPath / (classFile + ".py")
+            if candidate.is_file():
                 filePath = candidate
             else:
                 raise ImportError(
                     f"the file '{classFile}' was not found. Please check your spelling."
                 )
-        module_name = os.path.splitext(os.path.basename(filePath))[0]
+        module_name = filePath.stem
         spec = importlib.util.spec_from_file_location(module_name, filePath)
         if spec is None or spec.loader is None:
             raise ImportError(f"the file '{classFile}' could not be loaded.")
@@ -355,15 +361,14 @@ class PyXSD:
             if isinstance(var, type) and issubclass(var, SchemaBase) and var is not SchemaBase:
                 className = getattr(var, "name", None)
                 if className is None:
-                    if not self.quiet:
-                        print(
-                            f"Load Error: the class {var} must have a 'name' "
-                            "attribute. Will attempt to use '__name__' instead."
-                        )
+                    warnings.warn(
+                        f"the class {var} must have a 'name' attribute; using '__name__' instead",
+                        PyXSDWarning,
+                        stacklevel=2,
+                    )
                     className = var.__name__
                 newClasses[className] = var
-                if self.verbose:
-                    print(f"Loaded the {className} class")
+                logger.debug("Loaded the %s class", className)
         self.classes.update(newClasses)
 
     def getXmlTree(self):
@@ -372,22 +377,20 @@ class PyXSD:
         Allows for the program to get the schemaLocation before parsing
         the xml against the schema.
         """
-        if self.verbose:
-            print("The XML file is being parsed by the ElementTree library...")
-        tree = ET.parse(self.xmlFileInput)
-        if self.verbose:
-            print("XML file parsed by the ElementTree library successfully...")
+        logger.debug("The XML file is being parsed by the ElementTree library...")
+        try:
+            tree = ET.parse(self.xmlFileInput)
+        except ET.ParseError as e:
+            raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
+        logger.debug("XML file parsed by the ElementTree library successfully...")
         return tree.getroot()
 
     def getXmlOutputFileName(self):
         """Creates a default name for the xml file that is parsed without
         any transforms.  Uses the name from the input xml file.
         """
-        inputName = self.xmlFileInput
-        path, inputName = os.path.split(inputName)
-        nonExtensionName = inputName.rsplit(".", 1)[0] if "." in inputName else inputName
-        nonExtensionName += "Parsed"
-        return os.path.join(path, nonExtensionName + ".xml")
+        inputPath = Path(self.xmlFileInput)
+        return inputPath.parent / (inputPath.stem + "Parsed.xml")
 
     def getTransformModuleAndLoad(self, className):
         """Loads a transform class from its class name.
@@ -415,20 +418,14 @@ class PyXSD:
         module = _loadTransformModuleByNormalizedName(className)
         if module is not None:
             return module
-        searchPaths = [os.getcwd()]
-        xmlPath = getattr(self, "xmlPath", None)
-        if xmlPath:
-            searchPaths.append(xmlPath)
+        searchPaths = [Path.cwd()]
+        if self.xmlPath != searchPaths[0]:
+            searchPaths.append(self.xmlPath)
         for directory in searchPaths:
             for fileName in candidates:
-                candidate = os.path.join(directory, fileName + ".py")
-                if os.path.isfile(candidate):
-                    spec = importlib.util.spec_from_file_location(fileName, candidate)
-                    if spec is None or spec.loader is None:
-                        continue
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
-                    return module
+                candidate = directory / (fileName + ".py")
+                if candidate.is_file():
+                    return _loadModuleFromFile(fileName, candidate)
             module = _loadTransformFileByNormalizedName(className, directory)
             if module is not None:
                 return module
@@ -465,8 +462,11 @@ class PyXSD:
             argDesc = repr(args)
             if kwargs:
                 argDesc += " " + repr(kwargs)
-            if self.verbose:
-                print(f"Starting the transform '{class_name}' with the following args: {argDesc}")
+            logger.debug(
+                "Starting the transform '%s' with the following args: %s",
+                class_name,
+                argDesc,
+            )
             transformCls = getattr(transformer, class_name)
             currentRoot = transformCls(currentRoot)(*args, **kwargs)
 
@@ -476,18 +476,11 @@ class PyXSD:
         """Creates a default name for the xml file that is written after
         all of the transforms.  Uses the name from the input xml file.
         """
-        inputName = self.xmlFileInputName
-        if inputName is None:
-            inputName = "output"
-            path = os.getcwd()
+        if self.xmlFileInputName is None:
+            newName = Path.cwd() / "output.xml"
         else:
-            path = self.xmlPath
-            nonExtensionName = inputName.rsplit(".", 1)[0] if "." in inputName else inputName
-            inputName = nonExtensionName + "Transformed"
-        newName = inputName + ".xml"
-        newName = os.path.join(path, newName)
-        if self.verbose:
-            print("Setting the transformed xml file name to the default:", newName)
+            newName = self.xmlPath / (Path(self.xmlFileInputName).stem + "Transformed.xml")
+        logger.debug("Setting the transformed xml file name to the default: %s", newName)
         return newName
 
     def getSchemaInfo(self, nameOrLocation):
@@ -510,20 +503,24 @@ class PyXSD:
         schemaLocationSplit = None
         if self.makeFullName(xsiNS, "schemaLocation") in self.xmlRoot.attrib:
             schemaLocationTag = self.xmlRoot.attrib[self.makeFullName(xsiNS, "schemaLocation")]
-            if os.linesep in schemaLocationTag:
+            if "\n" in schemaLocationTag:
                 schemaLocationSplit = schemaLocationTag.split("\n")
             else:
                 schemaLocationSplit = schemaLocationTag.split(" ")
 
             if len(schemaLocationSplit) != 2:
-                print(
-                    "Parser Error: the 'schemaLocation' tag must be a pair of values separated by a space or line break"
+                report = getattr(self, "report", None)
+                message = (
+                    "the 'schemaLocation' tag must be a pair of values "
+                    "separated by a space or line break, with the namespace "
+                    "stated first, followed by the location of the schema; "
+                    "attempting to use the 'noNamespaceSchemaLocation' tag "
+                    "instead"
                 )
-                print("with the namespace stated first, followed by the location of the schema.")
-                print(
-                    "The program will attempt to use the 'noNamespaceSchemaLocation' tag instead."
-                )
-                print()
+                if report is not None:
+                    report.add_warning(message, code="schema-hint")
+                else:
+                    logger.warning(message)
                 del self.xmlRoot.attrib[self.makeFullName(xsiNS, "schemaLocation")]
                 self.xmlRoot.attrib[self.makeFullName(xsiNS, "noNamespaceSchemaLocation")] = (
                     schemaLocationTag
@@ -588,6 +585,16 @@ def _normalizedModuleName(name):
     return name.replace("_", "").lower()
 
 
+def _loadModuleFromFile(moduleName, path):
+    """Import a transform module from an explicit file path."""
+    spec = importlib.util.spec_from_file_location(moduleName, path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _loadTransformModuleByNormalizedName(className):
     """Find a shipped transform module whose name matches the class.
 
@@ -608,19 +615,13 @@ def _loadTransformFileByNormalizedName(className, directory):
     """Find a transform file in ``directory`` matching the class name."""
     target = _normalizedModuleName(className)
     try:
-        entries = os.listdir(directory)
+        entries = list(Path(directory).iterdir())
     except OSError:
         return None
     for entry in entries:
-        stem, ext = os.path.splitext(entry)
-        if ext != ".py" or _normalizedModuleName(stem) != target:
+        if entry.suffix != ".py" or _normalizedModuleName(entry.stem) != target:
             continue
-        spec = importlib.util.spec_from_file_location(stem, os.path.join(directory, entry))
-        if spec is None or spec.loader is None:
-            continue
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        return _loadModuleFromFile(entry.stem, entry)
     return None
 
 
@@ -649,6 +650,17 @@ def parseTransformCall(call):
     args = [ast.literal_eval(arg) for arg in tree.body.args]
     kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in tree.body.keywords}
     return class_name, args, kwargs
+
+
+def _configure_logging(verbose, quiet):
+    """Set the root logging level according to the CLI flags."""
+    if verbose:
+        level = logging.DEBUG
+    elif quiet:
+        level = logging.CRITICAL
+    else:
+        level = logging.WARNING
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
 
 def main(argv=None):
@@ -752,7 +764,7 @@ def main(argv=None):
         action="store_true",
         dest="verbose",
         default=False,
-        help="use verbose mode. Experts only. (limited functionality)",
+        help="use verbose mode: log progress details (DEBUG level).",
     )
     parser.add_argument(
         "-q",
@@ -760,13 +772,29 @@ def main(argv=None):
         action="store_true",
         dest="quiet",
         default=False,
-        help="use quiet mode. Fewer errors reported. (limited functionality)",
+        help="use quiet mode: suppress log output (CRITICAL level). "
+        "Validation issues are still reported.",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        dest="strict",
+        default=False,
+        help="exit with status 1 if the xml file has validation errors.",
     )
 
     options = parser.parse_args(argv)
 
+    if options.quiet and options.verbose:
+        parser.error("Both verbose mode and quiet mode cannot be on at the same time")
+
+    _configure_logging(options.verbose, options.quiet)
+
     if options.transformDefaultOutput and options.transformOutputFile == "stdout":
         options.transformOutputFile = None
+
+    if options.transformCall and options.transformFile:
+        parser.error("A transform file and a transform call cannot both be specified.")
 
     if options.inputXmlFile == "stdin":
         if sys.stdin.isatty():
@@ -774,14 +802,9 @@ def main(argv=None):
                 "if no input xml file is specified, the xml must be fed in "
                 "through stdin (i.e. pipes)"
             )
-        inputXmlFile = "stdin.xml"
-        with open(inputXmlFile, "w") as newFile:
-            newFile.write(sys.stdin.read())
+        inputXmlFile = io.StringIO(sys.stdin.read())
     else:
         inputXmlFile = options.inputXmlFile
-
-    if options.transformCall and options.transformFile:
-        parser.error("A transform file and a transform call cannot both be specified.")
 
     transforms = []
 
@@ -798,19 +821,25 @@ def main(argv=None):
     if not options.outputParsed:
         parsedOutputFile = "_No_Output_"
 
-    if options.quiet and options.verbose:
-        parser.error("Both verbose mode and quiet mode cannot be on at the same time")
+    try:
+        app = PyXSD(
+            inputXmlFile,
+            options.inputXsdFile,
+            parsedOutputFile,
+            options.transformOutputFile,
+            transforms,
+            options.classFile,
+            options.verbose,
+            options.quiet,
+        )
+    except (PyXSDError, OSError) as e:
+        print(f"pyxsd: error: {e}", file=sys.stderr)
+        raise SystemExit(1) from e
 
-    PyXSD(
-        inputXmlFile,
-        options.inputXsdFile,
-        parsedOutputFile,
-        options.transformOutputFile,
-        transforms,
-        options.classFile,
-        options.verbose,
-        options.quiet,
-    )
+    if app.report:
+        print(str(app.report), file=sys.stderr)
+    if options.strict and app.report.has_errors:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

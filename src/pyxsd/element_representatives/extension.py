@@ -1,4 +1,8 @@
+import logging
+
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+
+logger = logging.getLogger(__name__)
 
 
 class Extension(ElementRepresentative):
@@ -6,7 +10,7 @@ class Extension(ElementRepresentative):
 
     def __init__(self, xsdElement, parent):
         """See ElementRepresentative for documentation."""
-        ElementRepresentative.__init__(self, xsdElement, parent)
+        super().__init__(xsdElement, parent)
         self.addSuperClassName(self.tagAttributes["base"])
 
     def getName(self):
@@ -20,4 +24,10 @@ class Extension(ElementRepresentative):
         """Used by complexContent. Adds its base to the complexType."""
         baseType = self.getFromName(self.tagAttributes["base"])
         if not baseType:
-            print(self.name, self.tagAttributes.get("base"))
+            logger.warning(
+                "could not resolve the base %r for the extension of %s",
+                self.tagAttributes.get("base"),
+                self.name,
+            )
+            return None
+        return None
