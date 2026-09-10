@@ -175,7 +175,7 @@ class Language(_PatternString):
 class Name(_PatternString):
     """``xs:Name``: an XML name (letters, digits, ``.``, ``-``, ``_``, ``:``)."""
 
-    name = "name"
+    name = "Name"
     _pattern = re.compile(rf"(?:{_LETTER}|:)[\w.\-:]*")
 
 

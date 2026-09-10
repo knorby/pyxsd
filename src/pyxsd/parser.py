@@ -489,7 +489,12 @@ class PyXSD:
         if rootElementName == rootName:
             subCls = self._classForRoot(rootElement)
             self.generateCorrectSchemaTags()
-            subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
+            if issubclass(subCls, SchemaBase):
+                subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
+            else:
+                # The root element's declared type is a primitive
+                # (simple) data type: build a typed instance directly.
+                subInstance = self._primitiveRootInstance(subCls, rootElement)
             # xsi:type may replace the declared root type, so the root
             # instance is stored directly instead of validated against
             # the declared element type.
@@ -498,6 +503,44 @@ class PyXSD:
             self._checkIdentityConstraints(subInstance)
 
         return subInstance
+
+    def _primitiveRootInstance(self, dataTypeClass, rootElement):
+        """Builds a typed instance for a root element whose declared
+        type is a primitive data type rather than a complex type.
+
+        Honors ``xsi:nil`` (rejected on non-nillable elements with code
+        ``nil``). The document's text is validated through the data
+        type's constructor; an invalid lexical value is reported (code
+        ``value``) and the value is dropped so parsing can continue.
+        """
+        rootName = self.xmlRoot.tag.split("}")[-1]
+        if xsi.xsi_nil_is_true(self.xmlRoot) and not rootElement.isNillable():
+            self.report.add_error(
+                f"the root element '{rootName}' is not nillable but carries xsi:nil",
+                code="nil",
+                element=rootName,
+            )
+            text = ""
+        else:
+            text = "".join(self.xmlRoot.itertext()).strip()
+        try:
+            value = dataTypeClass(text) if text else None
+        except (TypeError, ValueError) as exc:
+            self.report.add_error(
+                f"the root element '{rootName}' has an invalid "
+                f"{getattr(dataTypeClass, 'name', dataTypeClass.__name__)} value: {exc}",
+                code="value",
+                element=rootName,
+            )
+            value = None
+        instance = dataTypeClass._unvalidated() if value is None else value
+        instance._name_ = rootName
+        instance._attribs_ = {
+            xsi.xsi_attr_key(key): val for key, val in self.xmlRoot.attrib.items()
+        }
+        instance._value_ = [text] if text else None
+        instance._children_ = []
+        return instance
 
     def _classForRoot(self, rootElement):
         """Resolves the class used to instantiate the root element.

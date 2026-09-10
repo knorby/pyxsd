@@ -126,6 +126,15 @@ class XsdType(ElementRepresentative):
                 derivation = "extension"
             elif childName == "Restriction":
                 derivation = derivation or "restriction"
+            elif childName == "ComplexContent":
+                # The extension/restriction sits one level below the
+                # complexContent wrapper.
+                for grandchild in getattr(child, "processedChildren", []):
+                    grandName = grandchild.__class__.__name__ if grandchild is not None else ""
+                    if grandName == "Extension":
+                        derivation = "extension"
+                    elif grandName == "Restriction":
+                        derivation = derivation or "restriction"
         if final == "#all" or derivation == final:
             message = (
                 f"type '{self.name}' derives by {derivation or 'extension/restriction'} "

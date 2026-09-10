@@ -1,0 +1,1547 @@
+# pyxsd conformance corpus
+#
+# Each case is a self-contained schema (+ optional instance) pair exercising
+# one claimed XSD 1.0 feature, derived from the feature areas of the W3C
+# XML Schema Test Suite (XMLSchema1TestSuite) and the NIST XML Schema
+# Datatypes Test Suite. Case expectations are enforced by
+# tests/test_conformance.py and reported by tests/report_conformance.py.
+#
+# Case fields:
+#   id              "area/name" (unique)
+#   description     what the case covers
+#   derived_from    W3C/NIST suite area the case is derived from
+#   schema          the schema document (written as schema.xsd)
+#   schema_valid    false => parseXSD must report errors (default: true)
+#   instance        the instance document (written as instance.xml)
+#   instance_valid  false => parsing the instance must report errors (default: true)
+#   expected_codes  report codes that must appear in the failing step
+#   [case.files]    auxiliary schema files, keyed by name relative to schema.xsd
+
+[[case]]
+id = "types/scalars-valid"
+description = "Core scalar built-ins: string, integer, decimal, double, date, boolean attribute"
+derived_from = "NISTXMLSchemaDatatypesTestSuite (built-in types)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="scalars">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="label" type="xs:string"/>
+        <xs:element name="count" type="xs:integer"/>
+        <xs:element name="ratio" type="xs:decimal"/>
+        <xs:element name="measure" type="xs:double"/>
+        <xs:element name="when" type="xs:date"/>
+      </xs:sequence>
+      <xs:attribute name="active" type="xs:boolean" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<scalars active="true">
+  <label>Widget</label>
+  <count>12</count>
+  <ratio>19.95</ratio>
+  <measure>1.5e3</measure>
+  <when>2024-06-30</when>
+</scalars>
+'''
+
+[[case]]
+id = "types/integer-family-valid"
+description = "Integer family boundaries: long, int, short, byte, unsignedLong, unsignedByte"
+derived_from = "NISTXMLSchemaDatatypesTestSuite (integer family)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="numbers">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="big" type="xs:long"/>
+        <xs:element name="reg" type="xs:int"/>
+        <xs:element name="small" type="xs:short"/>
+        <xs:element name="tiny" type="xs:byte"/>
+        <xs:element name="ubig" type="xs:unsignedLong"/>
+        <xs:element name="usmall" type="xs:unsignedByte"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<numbers>
+  <big>9223372036854775807</big>
+  <reg>2147483647</reg>
+  <small>32767</small>
+  <tiny>127</tiny>
+  <ubig>18446744073709551615</ubig>
+  <usmall>255</usmall>
+</numbers>
+'''
+
+[[case]]
+id = "types/string-derived-valid"
+description = "String derivatives: NCName, Name, NMTOKEN, token, language, anyURI, QName, NMTOKENS list"
+derived_from = "NISTXMLSchemaDatatypesTestSuite (string types)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="names">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="handle" type="xs:NCName"/>
+        <xs:element name="formal" type="xs:Name"/>
+        <xs:element name="tag" type="xs:NMTOKEN"/>
+        <xs:element name="note" type="xs:token"/>
+        <xs:element name="locale" type="xs:language"/>
+        <xs:element name="uri" type="xs:anyURI"/>
+        <xs:element name="qual" type="xs:QName"/>
+        <xs:element name="tags" type="xs:NMTOKENS"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<names>
+  <handle>first_name</handle>
+  <formal>my.name-2</formal>
+  <tag>abc-123</tag>
+  <note>trimmed text</note>
+  <locale>en-US</locale>
+  <uri>https://example.org/schema</uri>
+  <qual>xs:string</qual>
+  <tags>alpha beta gamma</tags>
+</names>
+'''
+
+[[case]]
+id = "types/time-derived-valid"
+description = "Temporal built-ins: gYear, gYearMonth, date, dateTime, time, duration"
+derived_from = "NISTXMLSchemaDatatypesTestSuite (date/time types)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="moments">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="year" type="xs:gYear"/>
+        <xs:element name="month" type="xs:gYearMonth"/>
+        <xs:element name="day" type="xs:date"/>
+        <xs:element name="stamp" type="xs:dateTime"/>
+        <xs:element name="clock" type="xs:time"/>
+        <xs:element name="span" type="xs:duration"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<moments>
+  <year>2024</year>
+  <month>2024-06</month>
+  <day>2024-06-30</day>
+  <stamp>2024-06-30T12:00:00Z</stamp>
+  <clock>23:59:59</clock>
+  <span>PT10M</span>
+</moments>
+'''
+
+[[case]]
+id = "types/binary-valid"
+description = "Binary encodings: base64Binary and hexBinary lexical forms"
+derived_from = "NISTXMLSchemaDatatypesTestSuite (binary types)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="blob">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="payload" type="xs:base64Binary"/>
+        <xs:element name="digest" type="xs:hexBinary"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<blob>
+  <payload>SGVsbG8=</payload>
+  <digest>deadbeef</digest>
+</blob>
+'''
+
+[[case]]
+id = "types/invalid-integer"
+description = "Non-numeric lexical value for xs:integer is rejected with code value"
+derived_from = "NISTXMLSchemaDatatypesTestSuite (invalid datatype instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="count" type="xs:integer"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<count>abc</count>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "types/invalid-range-short"
+description = "xs:short value beyond the 16-bit range is rejected with code value"
+derived_from = "NISTXMLSchemaDatatypesTestSuite (range violations)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="limit" type="xs:short"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<limit>40000</limit>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "types/invalid-date"
+description = "Out-of-range calendar components in xs:date are rejected with code value"
+derived_from = "NISTXMLSchemaDatatypesTestSuite (date validation)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="day" type="xs:date"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<day>2024-13-45</day>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "types/invalid-base64"
+description = "Base64 payload with an impossible length is rejected with code value"
+derived_from = "NISTXMLSchemaDatatypesTestSuite (binary validation)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="blob">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="payload" type="xs:base64Binary"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<blob>
+  <payload>abc</payload>
+</blob>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "structure/sequence-valid"
+description = "xs:sequence with all children in declaration order"
+derived_from = "W3C XMLSchema1TestSuite, group 'sequence'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="shipment">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="origin" type="xs:string"/>
+        <xs:element name="destination" type="xs:string"/>
+        <xs:element name="weight" type="xs:decimal"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<shipment>
+  <origin>Here</origin>
+  <destination>There</destination>
+  <weight>3.2</weight>
+</shipment>
+'''
+
+[[case]]
+id = "structure/sequence-order-invalid"
+description = "Children out of xs:sequence order are reported with code order"
+derived_from = "W3C XMLSchema1TestSuite, group 'sequence' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="shipment">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="origin" type="xs:string"/>
+        <xs:element name="destination" type="xs:string"/>
+        <xs:element name="weight" type="xs:decimal"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<shipment>
+  <weight>3.2</weight>
+  <origin>Here</origin>
+  <destination>There</destination>
+</shipment>
+'''
+instance_valid = false
+expected_codes = ["order"]
+
+[[case]]
+id = "structure/choice-valid"
+description = "One member of an xs:choice present"
+derived_from = "W3C XMLSchema1TestSuite, group 'choice'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="payload">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="text" type="xs:string"/>
+        <xs:element name="binary" type="xs:base64Binary"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<payload>
+  <binary>AAAA</binary>
+</payload>
+'''
+
+[[case]]
+id = "structure/choice-missing-member"
+description = "Empty mandatory xs:choice is reported with code occurrence-min"
+derived_from = "W3C XMLSchema1TestSuite, group 'choice' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="payload">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="text" type="xs:string"/>
+        <xs:element name="binary" type="xs:base64Binary"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<payload/>
+'''
+instance_valid = false
+expected_codes = ["occurrence-min"]
+
+[[case]]
+id = "structure/all-order-agnostic"
+description = "xs:all accepts children in any order (order-agnostic count check)"
+derived_from = "W3C XMLSchema1TestSuite, group 'all'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="flagSet">
+    <xs:all>
+      <xs:element name="red" type="xs:string"/>
+      <xs:element name="green" type="xs:string" minOccurs="0"/>
+      <xs:element name="blue" type="xs:string" minOccurs="0"/>
+    </xs:all>
+    <xs:attribute name="id" type="xs:ID" use="required"/>
+  </xs:complexType>
+  <xs:element name="flags" type="flagSet"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<flags id="f1">
+  <blue>on</blue>
+  <red>hot</red>
+</flags>
+'''
+
+[[case]]
+id = "structure/all-required-missing"
+description = "Missing required member of xs:all is reported with code occurrence-min"
+derived_from = "W3C XMLSchema1TestSuite, group 'all' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="flagSet">
+    <xs:all>
+      <xs:element name="red" type="xs:string"/>
+      <xs:element name="green" type="xs:string" minOccurs="0"/>
+      <xs:element name="blue" type="xs:string" minOccurs="0"/>
+    </xs:all>
+    <xs:attribute name="id" type="xs:ID" use="required"/>
+  </xs:complexType>
+  <xs:element name="flags" type="flagSet"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<flags id="f1">
+  <blue>on</blue>
+</flags>
+'''
+instance_valid = false
+expected_codes = ["occurrence-min"]
+
+[[case]]
+id = "structure/group-ref-valid"
+description = "xs:group reference flattened into a sequence plus attributeGroup reference"
+derived_from = "W3C XMLSchema1TestSuite, groups 'group' and 'attributeGroup'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="coordinates">
+    <xs:sequence>
+      <xs:element name="x" type="xs:decimal"/>
+      <xs:element name="y" type="xs:decimal"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:attributeGroup name="audit">
+    <xs:attribute name="by" type="xs:string" use="required"/>
+    <xs:attribute name="note" type="xs:string"/>
+  </xs:attributeGroup>
+  <xs:element name="point">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="when" type="xs:date"/>
+        <xs:group ref="coordinates"/>
+      </xs:sequence>
+      <xs:attributeGroup ref="audit"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<point by="kali">
+  <when>2024-06-30</when>
+  <x>1.0</x>
+  <y>2.0</y>
+</point>
+'''
+
+[[case]]
+id = "structure/group-nested-valid"
+description = "Group referencing another group flattens recursively"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (nested references)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="inner">
+    <xs:sequence>
+      <xs:element name="x" type="xs:integer"/>
+      <xs:element name="y" type="xs:integer"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="outer">
+    <xs:sequence>
+      <xs:element name="label" type="xs:string"/>
+      <xs:group ref="inner"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="plot">
+    <xs:complexType>
+      <xs:group ref="outer"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<plot>
+  <label>origin</label>
+  <x>0</x>
+  <y>0</y>
+</plot>
+'''
+
+[[case]]
+id = "structure/group-circular"
+description = "Mutually recursive group references are detected with code circular-group"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (recursive definitions)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="a">
+    <xs:sequence>
+      <xs:group ref="b"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="b">
+    <xs:sequence>
+      <xs:group ref="a"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:group ref="a"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["circular-group"]
+
+[[case]]
+id = "structure/unknown-group-ref"
+description = "Reference to an undeclared group is reported with code unknown-group"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (unresolvable references)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:group ref="missing"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["unknown-group"]
+
+[[case]]
+id = "structure/any-wildcard-valid"
+description = "xs:any wildcard lets undeclared children pass through as generic instances"
+derived_from = "W3C XMLSchema1TestSuite, group 'any'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="metadata">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="title" type="xs:string"/>
+        <xs:any maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <title>Report</title>
+  <extra units="m">3.5</extra>
+  <extra/>
+</metadata>
+'''
+
+[[case]]
+id = "structure/anyAttribute-valid"
+description = "xs:anyAttribute lets undeclared attributes pass through"
+derived_from = "W3C XMLSchema1TestSuite, group 'anyAttribute'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="observation">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="value" type="xs:decimal"/>
+      </xs:sequence>
+      <xs:anyAttribute/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<observation source="probe">
+  <value>2.5</value>
+</observation>
+'''
+
+[[case]]
+id = "structure/extension-valid"
+description = "complexContent extension adds elements after the base content model"
+derived_from = "W3C XMLSchema1TestSuite, group 'extension'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="channelType">
+    <xs:sequence>
+      <xs:element name="name" type="xs:string"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:ID" use="required"/>
+  </xs:complexType>
+  <xs:complexType name="logChannelType">
+    <xs:complexContent>
+      <xs:extension base="channelType">
+        <xs:sequence>
+          <xs:element name="level" type="xs:string"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="channel" type="logChannelType"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<channel id="c1">
+  <name>main</name>
+  <level>info</level>
+</channel>
+'''
+
+[[case]]
+id = "structure/restriction-valid"
+description = "complexContent restriction may drop optional base elements (inherited model is honored)"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="wideType">
+    <xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+      <xs:element name="b" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="narrowType">
+    <xs:complexContent>
+      <xs:restriction base="wideType">
+        <xs:sequence>
+          <xs:element name="a" type="xs:string"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="leaf" type="narrowType"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<leaf>
+  <a>ok</a>
+</leaf>
+'''
+
+[[case]]
+id = "structure/anonymous-inline-valid"
+description = "Anonymous inline complexType beside a named type"
+derived_from = "W3C XMLSchema1TestSuite, group 'complextype' (anonymous definitions)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="addressType">
+    <xs:sequence>
+      <xs:element name="street" type="xs:string"/>
+      <xs:element name="city" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="contact">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="home" type="addressType"/>
+        <xs:element name="nick" minOccurs="0">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="value" type="xs:string"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:ID" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<contact id="c1">
+  <home>
+    <street>1 Main St</street>
+    <city>Springfield</city>
+  </home>
+</contact>
+'''
+
+[[case]]
+id = "structure/empty-content-attrs-valid"
+description = "Complex type carrying only attributes; empty element content"
+derived_from = "W3C XMLSchema1TestSuite, group 'complextype' (empty content)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="metaType">
+    <xs:attribute name="source" type="xs:string" use="required"/>
+  </xs:complexType>
+  <xs:element name="meta" type="metaType"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<meta source="w3"/>
+'''
+
+[[case]]
+id = "occurrence/maxoccurs-exceeded"
+description = "More occurrences than maxOccurs are reported with code occurrence-max"
+derived_from = "W3C XMLSchema1TestSuite, group 'maxOccurs' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="parcel">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="box" type="xs:string" maxOccurs="3"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<parcel>
+  <box>one</box>
+  <box>two</box>
+  <box>three</box>
+  <box>four</box>
+</parcel>
+'''
+instance_valid = false
+expected_codes = ["occurrence-max"]
+
+[[case]]
+id = "occurrence/minoccurs-unmet"
+description = "Fewer occurrences than minOccurs are reported with code occurrence-min"
+derived_from = "W3C XMLSchema1TestSuite, group 'minOccurs' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="parcel">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="box" type="xs:string" minOccurs="2"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<parcel>
+  <box>only</box>
+</parcel>
+'''
+instance_valid = false
+expected_codes = ["occurrence-min"]
+
+[[case]]
+id = "occurrence/attr-required-missing"
+description = "Absent required attribute is reported with code missing-attribute"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="record">
+    <xs:complexType>
+      <xs:attribute name="id" type="xs:ID" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<record/>
+'''
+instance_valid = false
+expected_codes = ["missing-attribute"]
+
+[[case]]
+id = "occurrence/attr-default-applied"
+description = "Absent attribute with a default is filled with the declared default"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (defaults)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="record">
+    <xs:complexType>
+      <xs:attribute name="mode" type="xs:string" default="standard"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<record/>
+'''
+
+[[case]]
+id = "occurrence/element-default-applied"
+description = "Empty element with a default takes the declared default value"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (defaults)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="settings">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="volume" type="xs:integer" default="5"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+  <volume></volume>
+</settings>
+'''
+
+[[case]]
+id = "occurrence/element-fixed-mismatch"
+description = "Element value disagreeing with fixed is reported with code fixed-element"
+derived_from = "W3C XMLSchema1TestSuite, group 'fixed'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="settings">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="label" type="xs:string" fixed="fixture"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+  <label>other</label>
+</settings>
+'''
+instance_valid = false
+expected_codes = ["fixed-element"]
+
+[[case]]
+id = "occurrence/attr-fixed-mismatch"
+description = "Attribute value disagreeing with fixed is reported with code fixed-attribute"
+derived_from = "W3C XMLSchema1TestSuite, group 'fixed' (attributes)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="record">
+    <xs:complexType>
+      <xs:attribute name="key" type="xs:string" fixed="k-1"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<record key="wrong"/>
+'''
+instance_valid = false
+expected_codes = ["fixed-attribute"]
+
+[[case]]
+id = "occurrence/attr-prohibited"
+description = "Attribute declared use=prohibited and present in the instance is rejected"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (prohibited)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="record">
+    <xs:complexType>
+      <xs:attribute name="legacy" type="xs:string" use="prohibited"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<record legacy="old"/>
+'''
+instance_valid = false
+expected_codes = ["prohibited-attribute"]
+
+[[case]]
+id = "occurrence/nillable-valid"
+description = "xsi:nil on a nillable element is accepted and the value stays nil"
+derived_from = "W3C XMLSchema1TestSuite, group 'nillable'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="reading">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="value" type="xs:decimal" nillable="true"/>
+        <xs:element name="unit" type="xs:string"/>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:ID" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<reading id="r1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <value xsi:nil="true"/>
+  <unit>Pa</unit>
+</reading>
+'''
+
+[[case]]
+id = "occurrence/nil-non-nillable"
+description = "xsi:nil on a non-nillable element is reported with code nil"
+derived_from = "W3C XMLSchema1TestSuite, group 'nillable' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="value" type="xs:string"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<value xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/>
+'''
+instance_valid = false
+expected_codes = ["nil"]
+
+[[case]]
+id = "occurrence/substitution-valid"
+description = "Substitution group member replaces the head inside an element reference"
+derived_from = "W3C XMLSchema1TestSuite, group 'substitutionGroup'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="marker" type="xs:string"/>
+  <xs:element name="dot" type="xs:integer" substitutionGroup="marker"/>
+  <xs:element name="shape">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="marker" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<shape>
+  <dot>1</dot>
+</shape>
+'''
+
+[[case]]
+id = "occurrence/substitution-abstract-direct"
+description = "Using an abstract head element directly is reported with code abstract-element"
+derived_from = "W3C XMLSchema1TestSuite, group 'abstract' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="marker" type="xs:string" abstract="true"/>
+  <xs:element name="dot" type="xs:integer" substitutionGroup="marker"/>
+  <xs:element name="shape">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="marker" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<shape>
+  <marker>x</marker>
+</shape>
+'''
+instance_valid = false
+expected_codes = ["abstract-element"]
+
+[[case]]
+id = "occurrence/substitution-blocked"
+description = "Head with block=substitution rejects members with code blocked"
+derived_from = "W3C XMLSchema1TestSuite, group 'block' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="marker" type="xs:string" block="substitution"/>
+  <xs:element name="dot" type="xs:integer" substitutionGroup="marker"/>
+  <xs:element name="shape">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="marker" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<shape>
+  <dot>1</dot>
+</shape>
+'''
+instance_valid = false
+expected_codes = ["blocked"]
+
+[[case]]
+id = "occurrence/xsi-type-child-valid"
+description = "xsi:type dispatches a child element to a derived type"
+derived_from = "W3C XMLSchema1TestSuite, group 'xsi'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="baseValueType">
+    <xs:sequence>
+      <xs:element name="num" type="xs:integer"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="specialValueType">
+    <xs:sequence>
+      <xs:element name="num" type="xs:integer"/>
+      <xs:element name="tag" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="container">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" type="baseValueType" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<container>
+  <item xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="specialValueType">
+    <num>1</num>
+    <tag>first</tag>
+  </item>
+  <item>
+    <num>2</num>
+  </item>
+</container>
+'''
+
+[[case]]
+id = "occurrence/xsi-type-root-valid"
+description = "xsi:type dispatches the document root element to a derived type"
+derived_from = "W3C XMLSchema1TestSuite, group 'xsi' (root dispatch)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="baseValueType">
+    <xs:sequence>
+      <xs:element name="num" type="xs:integer"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="specialValueType">
+    <xs:sequence>
+      <xs:element name="num" type="xs:integer"/>
+      <xs:element name="tag" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="holder" type="baseValueType"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<holder xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="specialValueType">
+  <num>7</num>
+  <tag>prime</tag>
+</holder>
+'''
+
+[[case]]
+id = "occurrence/xsi-type-unknown"
+description = "Unresolvable xsi:type is reported with code xsi-type and the declared type is used"
+derived_from = "W3C XMLSchema1TestSuite, group 'xsi' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="baseValueType">
+    <xs:sequence>
+      <xs:element name="num" type="xs:integer"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="container">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" type="baseValueType"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<container>
+  <item xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ghostType">
+    <num>1</num>
+  </item>
+</container>
+'''
+instance_valid = false
+expected_codes = ["xsi-type"]
+
+[[case]]
+id = "occurrence/abstract-type-used"
+description = "Instantiating an abstract complexType directly is reported with code abstract-type"
+derived_from = "W3C XMLSchema1TestSuite, group 'abstract' (type level)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="abstractBase" abstract="true">
+    <xs:sequence>
+      <xs:element name="v" type="xs:integer"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="abstractBase"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root>
+  <v>1</v>
+</root>
+'''
+instance_valid = false
+expected_codes = ["abstract-type"]
+
+[[case]]
+id = "occurrence/final-blocks-restriction"
+description = "Deriving by restriction from a base with final=restriction is reported with code final"
+derived_from = "W3C XMLSchema1TestSuite, group 'final'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="finalBase" final="restriction">
+    <xs:sequence>
+      <xs:element name="v" type="xs:integer"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:restriction base="finalBase">
+        <xs:sequence>
+          <xs:element name="v" type="xs:integer"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="root" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["final"]
+
+[[case]]
+id = "composition/include-valid"
+description = "Chameleon include shares simple and complex types into the including schema"
+derived_from = "W3C XMLSchema1TestSuite, group 'include'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="common.xsd"/>
+  <xs:element name="kit">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="part" type="commonType"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<kit>
+  <part unit="m"/>
+</kit>
+'''
+[case.files]
+"common.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="unitType">
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+  <xs:complexType name="commonType">
+    <xs:sequence>
+      <xs:element name="note" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="unit" type="unitType" default="m"/>
+  </xs:complexType>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/import-valid"
+description = "Namespaced import is spliced in without disturbing the main schema"
+derived_from = "W3C XMLSchema1TestSuite, group 'import'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:import namespace="urn:pyxsd:test:extra" schemaLocation="extra.xsd"/>
+  <xs:element name="kit">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="label" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<kit>
+  <label>ok</label>
+</kit>
+'''
+[case.files]
+"extra.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:pyxsd:test:extra">
+  <xs:complexType name="extraType">
+    <xs:sequence>
+      <xs:element name="detail" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-valid"
+description = "xs:redefine derives a new type from the original definition"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:redefine schemaLocation="redefined.xsd">
+    <xs:complexType name="widgetType">
+      <xs:complexContent>
+        <xs:extension base="widgetType">
+          <xs:sequence>
+            <xs:element name="count" type="xs:integer"/>
+          </xs:sequence>
+        </xs:extension>
+      </xs:complexContent>
+    </xs:complexType>
+  </xs:redefine>
+  <xs:element name="kit">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="widget" type="widgetType"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<kit>
+  <widget>
+    <name>spanner</name>
+    <count>2</count>
+  </widget>
+</kit>
+'''
+[case.files]
+"redefined.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="widgetType">
+    <xs:sequence>
+      <xs:element name="name" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/include-missing"
+description = "Include pointing at a missing file is reported with code schema-compose"
+derived_from = "W3C XMLSchema1TestSuite, group 'include' (unresolvable)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="absent.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["schema-compose"]
+
+[[case]]
+id = "composition/include-cycle"
+description = "Include cycle between two schemas is detected with code compose-cycle"
+derived_from = "W3C XMLSchema1TestSuite, group 'include' (cycles)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="common.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-cycle"]
+
+[case.files]
+"common.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="schema.xsd"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/include-namespace-mismatch"
+description = "Including a namespaced schema from a schema without a target namespace is rejected"
+derived_from = "W3C XMLSchema1TestSuite, group 'include' (namespace errors)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="common.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-namespace"]
+
+[case.files]
+"common.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:pyxsd:test:other">
+  <xs:complexType name="commonType"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "identity/all-constraints-valid"
+description = "key, unique, and keyref constraints all satisfied"
+derived_from = "W3C XMLSchema1TestSuite, groups 'key', 'unique', 'keyref'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="catalog">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="code" type="xs:token"/>
+            </xs:sequence>
+            <xs:attribute name="id" type="xs:ID" use="required"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="order" minOccurs="0" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="line" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:attribute name="ref" type="xs:string" use="required"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+    <xs:key name="itemKey">
+      <xs:selector xpath="item"/>
+      <xs:field xpath="@id"/>
+    </xs:key>
+    <xs:unique name="itemCode">
+      <xs:selector xpath="item"/>
+      <xs:field xpath="code"/>
+    </xs:unique>
+    <xs:keyref name="orderRef" refer="itemKey">
+      <xs:selector xpath="order/line"/>
+      <xs:field xpath="@ref"/>
+    </xs:keyref>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog>
+  <item id="i1"><code>c-1</code></item>
+  <item id="i2"><code>c-2</code></item>
+  <order>
+    <line ref="i1"/>
+  </order>
+</catalog>
+'''
+
+[[case]]
+id = "identity/key-duplicate"
+description = "Duplicate key field values are reported with code identity-key"
+derived_from = "W3C XMLSchema1TestSuite, group 'key' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="catalog">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="code" type="xs:token"/>
+            </xs:sequence>
+            <xs:attribute name="id" type="xs:ID" use="required"/>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+    <xs:key name="itemKey">
+      <xs:selector xpath="item"/>
+      <xs:field xpath="@id"/>
+    </xs:key>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog>
+  <item id="i1"><code>c-1</code></item>
+  <item id="i1"><code>c-2</code></item>
+</catalog>
+'''
+instance_valid = false
+expected_codes = ["identity-key"]
+
+[[case]]
+id = "identity/unique-duplicate"
+description = "Duplicate unique field values are reported with code identity-unique"
+derived_from = "W3C XMLSchema1TestSuite, group 'unique' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="catalog">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="code" type="xs:token"/>
+            </xs:sequence>
+            <xs:attribute name="id" type="xs:ID" use="required"/>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+    <xs:unique name="itemCode">
+      <xs:selector xpath="item"/>
+      <xs:field xpath="code"/>
+    </xs:unique>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog>
+  <item id="i1"><code>c-1</code></item>
+  <item id="i2"><code>c-1</code></item>
+</catalog>
+'''
+instance_valid = false
+expected_codes = ["identity-unique"]
+
+[[case]]
+id = "identity/keyref-unmatched"
+description = "keyref pointing at no key value is reported with code identity-keyref"
+derived_from = "W3C XMLSchema1TestSuite, group 'keyref' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="catalog">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="code" type="xs:token"/>
+            </xs:sequence>
+            <xs:attribute name="id" type="xs:ID" use="required"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="order" minOccurs="0" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="line" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:attribute name="ref" type="xs:string" use="required"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+    <xs:key name="itemKey">
+      <xs:selector xpath="item"/>
+      <xs:field xpath="@id"/>
+    </xs:key>
+    <xs:keyref name="orderRef" refer="itemKey">
+      <xs:selector xpath="order/line"/>
+      <xs:field xpath="@ref"/>
+    </xs:keyref>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog>
+  <item id="i1"><code>c-1</code></item>
+  <order>
+    <line ref="nope"/>
+  </order>
+</catalog>
+'''
+instance_valid = false
+expected_codes = ["identity-keyref"]
+
+[[case]]
+id = "documents/unknown-root"
+description = "Instance whose root matches no global declaration is reported with code unknown-root"
+derived_from = "W3C XMLSchema1TestSuite (root element selection)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="known">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="v" type="xs:integer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<unknown>
+  <v>1</v>
+</unknown>
+'''
+instance_valid = false
+expected_codes = ["unknown-root"]

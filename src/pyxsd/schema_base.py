@@ -261,8 +261,9 @@ class SchemaBase:
 
         elemDescriptors = instance._getElements()
 
-        if not subElements:  # This element has no children
-            return None
+        # No early return on childless elements: the order checkers
+        # still run with an empty child list so that required content
+        # (e.g. a choice with minOccurs=1) is reported when absent.
 
         # Substitution-group dispatch: member xml children may appear
         # wherever their head element is declared.
