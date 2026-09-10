@@ -338,7 +338,21 @@ LATTICE = [
     # (class, [valid], [invalid])
     (AnySimpleType, ["anything", "", "  spaced  "], []),
     (AnyType, ["<any><content/>", "text"], []),
-    (AnyURI, ["https://example.com/a?b=c", "relative/path", "", "urn:x:1"], ["a b"]),
+    (
+        AnyURI,
+        [
+            "https://example.com/a?b=c",
+            "relative/path",
+            "",
+            "urn:x:1",
+            # XSD anyURI maps spaces through escaping; it is not a
+            # whitespace-free type. Currently rejected -> known defect.
+            pytest.param(
+                "a b", marks=pytest.mark.xfail(strict=True, reason="R13: anyURI permits spaces")
+            ),
+        ],
+        [],
+    ),
     (Base64Binary, ["aGVsbG8=", "", "aGVs bG8="], ["not*base64!", "a"]),
     (Boolean, ["true", "false", "1", "0"], ["True", "FALSE", "2", "yes"]),
     (Byte, ["127", "-128", "0"], ["128", "-129"]),
@@ -354,8 +368,13 @@ LATTICE = [
             "2006-08-30T14:30:00.123456",
             "2006-08-30T14:30:00Z",
             "2006-08-30T23:59:59",
+            # End-of-day is legal when minutes and seconds are zero.
+            pytest.param(
+                "2006-08-30T24:00:00",
+                marks=pytest.mark.xfail(strict=True, reason="R13: 24:00:00 is legal end-of-day"),
+            ),
         ],
-        ["2006-08-30 14:30:00", "2006-08-30T24:00:00", "2006-08-30T14:30", "2006-08-30T14:30:60"],
+        ["2006-08-30 14:30:00", "2006-08-30T14:30", "2006-08-30T14:30:60"],
     ),
     (Decimal, ["19.95", "-0.5", "+3", ".5", "3.", "0"], ["1e5", "abc", "1.5.5", "-"]),
     (
@@ -369,7 +388,17 @@ LATTICE = [
         ["P", "1Y", "PT", "P1S", "X1D"],
     ),
     (ENTITY, ["e1", "_x"], ["1x", "a:b"]),
-    (ENTITIES, ["e1 e2", "e1", ""], ["e1 1x"]),
+    # The built-in list types require at least one item; empty is invalid.
+    (
+        ENTITIES,
+        ["e1 e2", "e1"],
+        [
+            "e1 1x",
+            pytest.param(
+                "", marks=pytest.mark.xfail(strict=True, reason="R13: ENTITIES requires >=1 item")
+            ),
+        ],
+    ),
     (Float, ["1.5", "INF", "NaN"], ["foo"]),
     (GDay, ["---31", "---01Z", "---15+05:00"], ["---32", "--31", "31"]),
     (GMonth, ["--08", "--01Z", "--12"], ["--13", "--8", "---08"]),
@@ -379,7 +408,17 @@ LATTICE = [
     (HexBinary, ["00FF10", "", "0F"], ["0FG", "0FF"]),
     (ID, ["a1", "_x", "S-001"], ["1x", "a b", "a:b"]),
     (IDREF, ["r1"], ["1x"]),
-    (IDREFS, ["a b c", "a", ""], ["a 1!", "a b!"]),
+    (
+        IDREFS,
+        ["a b c", "a"],
+        [
+            "a 1!",
+            "a b!",
+            pytest.param(
+                "", marks=pytest.mark.xfail(strict=True, reason="R13: IDREFS requires >=1 item")
+            ),
+        ],
+    ),
     (Int, ["2147483647", "-2147483648", "0"], ["2147483648", "-2147483649"]),
     (Integer, ["42", "-7", "0", "+9", " 5 "], ["1_000", "3.5", "abc"]),
     (Language, ["en", "en-US", "x-1"], ["toolonglanguage", "-en", "en_US"]),
@@ -391,19 +430,53 @@ LATTICE = [
     (Name, ["a", "a:b", "_x1", ":a:b:"], ["1a", "a b"]),
     (NCName, ["a", "_x1", "S-001"], ["1x", "a:b"]),
     (NMTOKEN, ["a", "1a", "a:b", "-"], ["", "a b"]),
-    (NMTOKENS, ["a 1a b:c", "a", ""], ["a b!", "a,b"]),
+    (
+        NMTOKENS,
+        ["a 1a b:c", "a"],
+        [
+            "a b!",
+            "a,b",
+            pytest.param(
+                "", marks=pytest.mark.xfail(strict=True, reason="R13: NMTOKENS requires >=1 item")
+            ),
+        ],
+    ),
     (NegativeInteger, ["-1", "-99999"], ["0", "5"]),
     (NonNegativeInteger, ["0", "5"], ["-1"]),
     (NonPositiveInteger, ["0", "-5"], ["1"]),
-    (NormalizedString, ["hello world", ""], ["a\nb", "a\tb", "a\rb"]),
+    (
+        NormalizedString,
+        [
+            "hello world",
+            "",
+            # These are folded to spaces, not rejected.
+            pytest.param(
+                "a\nb", marks=pytest.mark.xfail(strict=True, reason="R13: newline normalizes")
+            ),
+            pytest.param(
+                "a\tb", marks=pytest.mark.xfail(strict=True, reason="R13: tab normalizes")
+            ),
+            pytest.param("a\rb", marks=pytest.mark.xfail(strict=True, reason="R13: CR normalizes")),
+        ],
+        [],
+    ),
     (PositiveInteger, ["1", "99999"], ["0", "-3"]),
     (QName, ["xs:string", "local", "_a:b9"], [":x", "a:", "1:b"]),
     (Short, ["32767", "-32768"], ["32768", "-32769"]),
     (String, ["anything", ""], []),
     (
         Time,
-        ["14:30:00", "23:59:59.999", "00:00:00Z", "09:15:00-08:00"],
-        ["24:00:00", "14:30", "14:30:61"],
+        [
+            "14:30:00",
+            "23:59:59.999",
+            "00:00:00Z",
+            "09:15:00-08:00",
+            pytest.param(
+                "24:00:00",
+                marks=pytest.mark.xfail(strict=True, reason="R13: 24:00:00 is legal end-of-day"),
+            ),
+        ],
+        ["14:30", "14:30:61"],
     ),
     (Token, ["hello", "  padded  "], []),
     (UnsignedByte, ["0", "255"], ["256", "-1"]),
@@ -413,10 +486,30 @@ LATTICE = [
 ]
 
 
+def _lattice_id(v):
+    """Param id helper that understands ``pytest.param`` wrappers."""
+    if hasattr(v, "values"):
+        v = v.values[0]
+    if isinstance(v, str):
+        return v
+    return getattr(v, "__name__", repr(v))
+
+
+def _expand(cls, values):
+    """Preserve ``pytest.param`` marks when flattening the lattice."""
+    rows = []
+    for value in values:
+        if hasattr(value, "values"):  # pytest.param wrapper
+            rows.append(pytest.param(cls, value.values[0], marks=value.marks, id=value.id))
+        else:
+            rows.append((cls, value))
+    return rows
+
+
 @pytest.mark.parametrize(
     "cls,value",
-    [item for cls, valid, _ in LATTICE for item in [(cls, v) for v in valid]],
-    ids=lambda v: v if isinstance(v, str) else v.__name__,
+    [row for cls, valid, _ in LATTICE for row in _expand(cls, valid)],
+    ids=_lattice_id,
 )
 def test_lattice_valid(cls, value):
     instance = cls(value)
@@ -425,8 +518,8 @@ def test_lattice_valid(cls, value):
 
 @pytest.mark.parametrize(
     "cls,value",
-    [item for cls, _, invalid in LATTICE for item in [(cls, v) for v in invalid]],
-    ids=lambda v: repr(v) if isinstance(v, str) else v.__name__,
+    [row for cls, _, invalid in LATTICE for row in _expand(cls, invalid)],
+    ids=_lattice_id,
 )
 def test_lattice_invalid(cls, value):
     with pytest.raises(TypeError):

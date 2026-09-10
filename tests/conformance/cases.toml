@@ -791,6 +791,7 @@ instance = '''
 <?xml version="1.0" encoding="UTF-8"?>
 <record/>
 '''
+expected_values = { mode = "standard" }
 
 [[case]]
 id = "occurrence/element-default-applied"
@@ -814,6 +815,7 @@ instance = '''
   <volume></volume>
 </settings>
 '''
+expected_values = { volume = "5" }
 
 [[case]]
 id = "occurrence/element-fixed-mismatch"

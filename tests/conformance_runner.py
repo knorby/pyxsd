@@ -109,11 +109,45 @@ def run_case(case: dict[str, Any], directory: Path) -> tuple[bool, str]:
     if case.get("instance_valid", True):
         if instance_issues:
             return False, f"clean parse expected, got instance issues: {instance_issues}"
-        return True, ""
+        return _check_values(case, parser)
     instance_errors = _errors(instance_issues)
     if not instance_errors:
         return False, f"instance errors expected, instance phase was clean: {report}"
     return _check_codes(case, instance_errors, "instance")
+
+
+def _check_values(case: dict[str, Any], parser: Any) -> tuple[bool, str]:
+    """Verify manifest ``expected_values`` against the bound instance tree.
+
+    A clean report only proves the parser found nothing wrong; it does
+    not prove defaults, fixed values, or folds were actually applied.
+    Expected values are dotted attribute paths from the root instance,
+    e.g. ``{"mode": "standard", "nested.volume": "5"}``. Comparison is on
+    the string form so manifest integers/floats need no special casing.
+    """
+    expected = case.get("expected_values") or {}
+    root = parser.schemaRootInstance
+    for path, want in expected.items():
+        obj: Any = root
+        try:
+            for part in path.split("."):
+                if isinstance(obj, dict):
+                    obj = obj[part]
+                elif part in getattr(obj, "__dict__", {}):
+                    obj = obj.__dict__[part]
+                else:
+                    obj = getattr(obj, part)
+        except (AttributeError, KeyError):
+            return False, f"expected value path '{path}' not present in instance"
+        got = obj
+        # Scalar datatype instances carry a ``_value_`` slot that may be
+        # None; only unwrap it when it holds the content we want.
+        inner = getattr(obj, "_value_", None)
+        if inner is not None:
+            got = inner
+        if str(got) != str(want):
+            return False, f"value '{path}': expected {want!r}, got {got!r}"
+    return True, ""
 
 
 def _check_codes(
