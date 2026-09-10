@@ -674,3 +674,29 @@ class TestPrimitiveRootValues:
             tmp_path,
         )
         assert not parser.report.has_errors
+
+
+class TestPrimitiveChildValues:
+    """An attribute value must not stand in for a simple element's text."""
+
+    _SCHEMA = (
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:element name="r"><xs:complexType><xs:sequence>'
+        '<xs:element name="a" type="xs:int"/>'
+        "</xs:sequence></xs:complexType></xs:element>"
+        "</xs:schema>"
+    )
+
+    def test_attribute_is_not_the_element_value(self, tmp_path):
+        parser = _parse(self._SCHEMA, '<r><a stray="7"/></r>', tmp_path)
+        # The empty lexical form is invalid for xs:int; the stray
+        # attribute does not supply the value 7.
+        assert any(issue.code == "value" for issue in parser.report.issues)
+
+    def test_text_value_still_binds(self, tmp_path):
+        parser = _parse(self._SCHEMA, "<r><a>7</a></r>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_child_elements_on_simple_type_are_rejected(self, tmp_path):
+        parser = _parse(self._SCHEMA, "<r><a>7<b/></a></r>", tmp_path)
+        assert any(issue.code == "unexpected-element" for issue in parser.report.issues)

@@ -887,28 +887,24 @@ class SchemaBase:
         """
         dataTypeChildren = list(subElement)
         dataTypeText = subElement.text
-        dataTypeAttrib = subElement.items()
 
-        if dataTypeText is None and not dataTypeAttrib and not dataTypeChildren:
-            # empty simple content: the empty lexical form is valid for
-            # string types and invalid for everything else (XSD has no
-            # 'empty element means true' convention, though 0.1 built
-            # True here, making <x/> silently read as the string 'True')
-            dataTypeVal = ""
-        elif dataTypeText:
-            dataTypeVal = dataTypeText
-        elif len(dataTypeAttrib) == 1:
-            dataTypeVal = dataTypeAttrib[0][1]
-        elif len(dataTypeChildren) == 1:
-            dataTypeVal = dataTypeChildren[0]
-        else:
+        if dataTypeChildren:
+            # A simple-typed element cannot contain child elements, and
+            # an undeclared attribute must never stand in for its text
+            # value.
             cls._report_error(
-                "an error occurred while reading the data in the "
-                f"'{subElement.tag.split('}')[-1]}' element",
-                code="value",
+                f"the '{subElement.tag.split('}')[-1]}' element has a "
+                "simple type but contains child elements",
+                code="unexpected-element",
                 element=cls.__name__,
             )
             return None
+
+        # Empty simple content is the empty lexical form: valid for
+        # string types and invalid for everything else (XSD has no
+        # 'empty element means true' convention, though 0.1 built
+        # True here, making <x/> silently read as the string 'True').
+        dataTypeVal = dataTypeText if dataTypeText is not None else ""
 
         try:
             dataTypeValInst = subElCls(dataTypeVal)
