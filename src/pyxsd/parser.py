@@ -54,6 +54,7 @@ from typing import IO, Any
 from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
+from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.schema_base import SchemaBase
@@ -709,6 +710,15 @@ class PyXSD:
             self.report.add_error(
                 f"xsi:type '{xsiTypeName}' on the root element does not "
                 "correspond to a type in the schema",
+                code="xsi-type",
+                element=rootElement.name,
+            )
+            return subCls
+        blocked = combinedBlock(rootElement.getBlock(), subCls)
+        reason = is_validly_derived(resolved, subCls, blocked)
+        if reason is not None:
+            self.report.add_error(
+                derivationMessage(resolved, subCls, reason),
                 code="xsi-type",
                 element=rootElement.name,
             )

@@ -7,11 +7,16 @@
     </xs:sequence>
   </xs:complexType>
 
+  <!-- Derived from baseValueType by extension: an xsi:type override
+       must be validly derived from the declared type. -->
   <xs:complexType name="specialValueType">
-    <xs:sequence>
-      <xs:element name="num" type="xs:integer"/>
-      <xs:element name="tag" type="xs:string"/>
-    </xs:sequence>
+    <xs:complexContent>
+      <xs:extension base="baseValueType">
+        <xs:sequence>
+          <xs:element name="tag" type="xs:string"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
   </xs:complexType>
 
   <xs:element name="holder" type="baseValueType"/>

@@ -3,6 +3,7 @@ from typing import ClassVar
 
 from pyxsd import xsi
 from pyxsd.content_model import first_required_name, match_content, particle_names
+from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.validation import IssueSeverity
 from pyxsd.xsd_data_types import XsdDataType, xsd_value_key
 
@@ -402,6 +403,18 @@ class SchemaBase:
         pyXSD = getattr(cls, "pyXSD", None)
         resolved = ElementRepresentative.typeFromName(xsiTypeName, pyXSD)
         if resolved is not None:
+            blocked = combinedBlock(
+                descriptor.getBlock() if descriptor is not None else None,
+                subElCls,
+            )
+            reason = is_validly_derived(resolved, subElCls, blocked)
+            if reason is not None:
+                cls._report_error(
+                    derivationMessage(resolved, subElCls, reason),
+                    code="xsi-type",
+                    element=cls.__name__,
+                )
+                return subElCls
             logger.debug(
                 "Element %r dispatched via xsi:type to %s", subElement.tag, resolved.__name__
             )
@@ -594,16 +607,28 @@ class SchemaBase:
                     subElCls = headDescriptor.getType()
                 if subElCls is None:
                     return False
-                # An xsi:type on the member overrides both the member's
-                # and the head's declared type.
+                # An xsi:type on the member overrides the member's
+                # declared type, provided it is validly derived.
                 xsiTypeName = xsi.xsi_type_name(subElement)
                 if xsiTypeName is not None:
                     override = ElementRepresentative.typeFromName(
                         xsiTypeName, getattr(cls, "pyXSD", None)
                     )
                     if override is not None:
-                        subElCls = override
-                cls._addChildInstance(instance, subElement, subElCls, headDescriptor)
+                        blocked = combinedBlock(memberER.getBlock(), subElCls)
+                        reason = is_validly_derived(override, subElCls, blocked)
+                        if reason is None:
+                            subElCls = override
+                        else:
+                            cls._report_error(
+                                derivationMessage(override, subElCls, reason),
+                                code="xsi-type",
+                                element=cls.__name__,
+                            )
+                # The member declaration supplies the value constraints
+                # (nillable, default, fixed, identity); the head's
+                # particle supplied the occurrence match.
+                cls._addChildInstance(instance, subElement, subElCls, memberER)
                 return True
         return False
 

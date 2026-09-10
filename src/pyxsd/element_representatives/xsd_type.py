@@ -365,8 +365,19 @@ class XsdType(ElementRepresentative):
         the namespace. Adds the instance of PyXSD to all attributes,
         elements, and the namespace, so it can be accessed later on.
         """
+        # One generated class per type ER: a base resolved through
+        # ``typeFromName`` during another type's build is the same
+        # object as the one stored in ``pyXSD.classes``, so
+        # ``issubclass`` and MRO checks for derivation are reliable even
+        # when a derived type is declared before its base.
+        cached = getattr(self, "_generatedClass", None)
+        if cached is not None:
+            return cached
+
         if getattr(self, "unionSpec", None) is not None:
-            return self.makeUnionClass(pyXSD)
+            union = self.makeUnionClass(pyXSD)
+            self._generatedClass = union
+            return union
 
         self.resolveAttributeGroupRefs(pyXSD)
 
@@ -389,6 +400,12 @@ class XsdType(ElementRepresentative):
         namespace["_contentKind_"] = (
             "simple" if self.__class__.__name__ == "SimpleType" else "complex"
         )
+        # Derivation method and block are needed to validate xsi:type
+        # overrides at instance time.
+        namespace["_derivation_"] = self.getDerivation()
+        blockValue = self.tagAttributes.get("block")
+        if blockValue:
+            namespace["_block_"] = blockValue
         # Compile the particle tree before getElements() flattens and
         # folds group-reference occurrences onto the shared descriptors.
         contentModel = compile_content_model(self, pyXSD)
@@ -427,6 +444,7 @@ class XsdType(ElementRepresentative):
             )
             raise
 
+        self._generatedClass = cls
         return cls
 
 

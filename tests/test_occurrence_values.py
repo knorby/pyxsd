@@ -348,6 +348,161 @@ class TestXsiTypeDispatch:
         assert "xsi-type" in codes
 
 
+class TestXsiTypeDerivation:
+    """xsi:type must name a type validly derived from the declared type."""
+
+    _BASE = (
+        '<xs:complexType name="baseValueType"><xs:sequence>'
+        '<xs:element name="num" type="xs:integer"/>'
+        "</xs:sequence></xs:complexType>"
+    )
+    _EXTENDED = (
+        '<xs:complexType name="specialValueType"><xs:complexContent>'
+        '<xs:extension base="baseValueType"><xs:sequence>'
+        '<xs:element name="tag" type="xs:string"/>'
+        "</xs:sequence></xs:extension>"
+        "</xs:complexContent></xs:complexType>"
+    )
+    _UNRELATED = (
+        '<xs:complexType name="otherType"><xs:sequence>'
+        '<xs:element name="num" type="xs:integer"/>'
+        '<xs:element name="tag" type="xs:string"/>'
+        "</xs:sequence></xs:complexType>"
+    )
+
+    def _schema(self, extra_decl=""):
+        return (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            + self._BASE
+            + extra_decl
+            + '<xs:element name="holder" type="baseValueType"/>'
+            "</xs:schema>"
+        )
+
+    def test_valid_extension_is_accepted(self, tmp_path):
+        parser = _parse(
+            self._schema(self._EXTENDED),
+            f'<holder {XSI_NS_DECL} xsi:type="specialValueType"><num>1</num><tag>t</tag></holder>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_unrelated_type_is_rejected(self, tmp_path):
+        parser = _parse(
+            self._schema(self._UNRELATED),
+            f'<holder {XSI_NS_DECL} xsi:type="otherType"><num>1</num><tag>t</tag></holder>',
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+    def test_element_block_rejects_extension(self, tmp_path):
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            + self._BASE
+            + self._EXTENDED
+            + '<xs:element name="holder" type="baseValueType" block="extension"/>'
+            "</xs:schema>"
+        )
+        parser = _parse(
+            schema,
+            f'<holder {XSI_NS_DECL} xsi:type="specialValueType"><num>1</num><tag>t</tag></holder>',
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+    def test_type_block_rejects_extension(self, tmp_path):
+        base = self._BASE.replace('name="baseValueType"', 'name="baseValueType" block="extension"')
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            + base
+            + self._EXTENDED
+            + '<xs:element name="holder" type="baseValueType"/>'
+            "</xs:schema>"
+        )
+        parser = _parse(
+            schema,
+            f'<holder {XSI_NS_DECL} xsi:type="specialValueType"><num>1</num><tag>t</tag></holder>',
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+    def test_unrelated_primitive_is_rejected(self, tmp_path):
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="holder" type="xs:int"/>'
+            "</xs:schema>"
+        )
+        parser = _parse(
+            schema,
+            f'<holder xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            f'{XSI_NS_DECL} xsi:type="xs:string">oops</holder>',
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+    def test_child_xsi_type_derivation_is_checked(self, tmp_path):
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            + self._BASE
+            + self._UNRELATED
+            + '<xs:element name="root"><xs:complexType><xs:sequence>'
+            '<xs:element name="item" type="baseValueType"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+            "</xs:schema>"
+        )
+        parser = _parse(
+            schema,
+            f'<root><item {XSI_NS_DECL} xsi:type="otherType">'
+            "<num>1</num><tag>t</tag></item></root>",
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+
+class TestSubstitutionMemberConstraints:
+    """The member declaration, not the head, supplies value constraints."""
+
+    def _schema(self, member_attrs=""):
+        return (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="h" type="xs:int"/>'
+            f'<xs:element name="m" type="xs:int" substitutionGroup="h" {member_attrs}/>'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element ref="h"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+            "</xs:schema>"
+        )
+
+    def test_member_fixed_is_enforced(self, tmp_path):
+        parser = _parse(self._schema('fixed="7"'), "<r><m>8</m></r>", tmp_path)
+        assert any(issue.code == "fixed-element" for issue in parser.report.issues)
+
+    def test_member_fixed_allows_matching_value(self, tmp_path):
+        parser = _parse(self._schema('fixed="7"'), "<r><m>7</m></r>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_head_fixed_does_not_constrain_member(self, tmp_path):
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="h" type="xs:int" fixed="7"/>'
+            '<xs:element name="m" type="xs:int" substitutionGroup="h"/>'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element ref="h"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+            "</xs:schema>"
+        )
+        parser = _parse(schema, "<r><m>8</m></r>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_member_nillable_accepts_nil(self, tmp_path):
+        parser = _parse(
+            self._schema('nillable="true"'),
+            f'<r {XSI_NS_DECL}><m xsi:nil="true"/></r>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+
 # ---------------------------------------------------------------------------
 # abstract / block / final
 # ---------------------------------------------------------------------------
