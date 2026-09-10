@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:element name="sample">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="label" type="xs:string"/>
+        <xs:element name="count" type="xs:int"/>
+        <xs:element name="total" type="xs:integer"/>
+        <xs:element name="weight" type="xs:double"/>
+        <xs:element name="rank" type="xs:positiveInteger"/>
+        <xs:element name="blob" type="xs:base64Binary"/>
+        <xs:element name="notes" type="xs:string"/>
+      </xs:sequence>
+      <xs:attribute name="active" type="xs:boolean"/>
+      <xs:attribute name="serial" type="xs:ID"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>
