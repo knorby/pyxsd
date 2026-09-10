@@ -59,6 +59,7 @@ from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
+from pyxsd.xsd_data_types import xsd_value_key
 
 logger = logging.getLogger(__name__)
 
@@ -567,33 +568,77 @@ class PyXSD:
         ``nil``). The document's text is validated through the data
         type's constructor; an invalid lexical value is reported (code
         ``value``) and the value is dropped so parsing can continue.
+        Empty content takes the element's ``default``/``fixed`` value,
+        and a ``fixed`` value is enforced with code ``fixed-element``.
+        A simple-typed element may not carry child elements.
         """
         rootName = self.xmlRoot.tag.split("}")[-1]
-        if xsi.xsi_nil_is_true(self.xmlRoot) and not rootElement.isNillable():
+        nilled = xsi.xsi_nil_is_true(self.xmlRoot)
+        if nilled and not rootElement.isNillable():
             self.report.add_error(
                 f"the root element '{rootName}' is not nillable but carries xsi:nil",
                 code="nil",
                 element=rootName,
             )
-            text = ""
-        else:
-            text = "".join(self.xmlRoot.itertext()).strip()
-        try:
-            value = dataTypeClass(text) if text else None
-        except (TypeError, ValueError) as exc:
+            nilled = False
+
+        if list(self.xmlRoot):
             self.report.add_error(
-                f"the root element '{rootName}' has an invalid "
-                f"{getattr(dataTypeClass, 'name', dataTypeClass.__name__)} value: {exc}",
-                code="value",
+                f"the root element '{rootName}' has a simple type but contains child elements",
+                code="unexpected-element",
                 element=rootName,
             )
-            value = None
+
+        text = self.xmlRoot.text or ""
+        value = None
+        if not nilled:
+            forced = None
+            if self.xmlRoot.text is None and not list(self.xmlRoot):
+                forced = rootElement.getDefault()
+                if forced is None:
+                    forced = rootElement.getFixed()
+            if forced is not None:
+                try:
+                    value = dataTypeClass(forced)
+                except (TypeError, ValueError) as exc:
+                    self.report.add_error(
+                        f"the root element '{rootName}' has an invalid default value: {exc}",
+                        code="default",
+                        element=rootName,
+                    )
+            else:
+                try:
+                    value = dataTypeClass(text)
+                except (TypeError, ValueError) as exc:
+                    self.report.add_error(
+                        f"the root element '{rootName}' has an invalid "
+                        f"{getattr(dataTypeClass, 'name', dataTypeClass.__name__)} "
+                        f"value: {exc}",
+                        code="value",
+                        element=rootName,
+                    )
+
+        if not nilled and value is not None:
+            fixed = rootElement.getFixed()
+            if fixed is not None:
+                try:
+                    fixedValue = dataTypeClass(fixed)
+                except (TypeError, ValueError):
+                    fixedValue = None
+                if fixedValue is not None and xsd_value_key(value) != xsd_value_key(fixedValue):
+                    self.report.add_error(
+                        f"the root element '{rootName}' has a value that conflicts "
+                        f"with its fixed value {fixed!r}",
+                        code="fixed-element",
+                        element=rootName,
+                    )
+
         instance = dataTypeClass._unvalidated() if value is None else value
         instance._name_ = rootName
         instance._attribs_ = {
             xsi.xsi_attr_key(key): val for key, val in self.xmlRoot.attrib.items()
         }
-        instance._value_ = [text] if text else None
+        instance._value_ = [str(value)] if value is not None else ([text] if text else None)
         instance._children_ = []
         return instance
 

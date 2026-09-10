@@ -11,6 +11,7 @@ from conftest import FIXTURES_DIR
 from pyxsd.parser import PyXSD
 
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
+XSI_NS_DECL = f'xmlns:xsi="{XSI_NS}"'
 
 
 def _parse(schema_text, instance_text, tmp_path):
@@ -468,3 +469,53 @@ def test_root_matching_no_global_element_is_reported(tmp_path):
     parser = _parse(schema, "<root/>", tmp_path)
     codes = [issue.code for issue in parser.report.issues]
     assert "unknown-root" in codes
+
+
+class TestPrimitiveRootValues:
+    """Primitive-typed roots validate like primitive children (R6/R7)."""
+
+    def _codes(self, parser):
+        return [issue.code for issue in parser.report.issues]
+
+    def _parse_int(self, attrs, instance, tmp_path):
+        return _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            f'<xs:element name="r" type="xs:int"{attrs}/>'
+            "</xs:schema>",
+            instance,
+            tmp_path,
+        )
+
+    def test_empty_integer_root_is_invalid(self, tmp_path):
+        parser = self._parse_int("", "<r/>", tmp_path)
+        assert "value" in self._codes(parser)
+
+    def test_empty_integer_root_takes_default(self, tmp_path):
+        parser = self._parse_int(' default="7"', "<r/>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_empty_string_root_is_valid(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r" type="xs:string"/>'
+            "</xs:schema>",
+            "<r/>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_fixed_integer_root_conflict(self, tmp_path):
+        parser = self._parse_int(' fixed="7"', "<r>8</r>", tmp_path)
+        assert "fixed-element" in self._codes(parser)
+
+    def test_child_content_on_integer_root_is_rejected(self, tmp_path):
+        parser = self._parse_int("", "<r><a>7</a></r>", tmp_path)
+        assert "unexpected-element" in self._codes(parser)
+
+    def test_nillable_integer_root_with_nil(self, tmp_path):
+        parser = self._parse_int(
+            ' nillable="true"',
+            f'<r {XSI_NS_DECL} xsi:nil="true"/>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
