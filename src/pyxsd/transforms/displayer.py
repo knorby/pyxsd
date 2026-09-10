@@ -21,6 +21,7 @@ class Displayer(Transform):
 
     def writeTree(self, file):
         XmlTreeWriter(self.root, file)
+        file.flush()
 
     def makeTempFileOfTree(self):
         newTree = tempfile.TemporaryFile(mode="w+")  # noqa: SIM115 - returned to caller

@@ -26,7 +26,7 @@ class SendTreeToPyXSD(Displayer):
         if not xmlFileOutput:
             xmlFileOutput = "tempFileParsed.xml"
         if transformOutputName is None:
-            xmlFileOutput = "tempFileTransformed.xml"
+            transformOutputName = "tempFileTransformed.xml"
         if transformFile:
             with open(transformFile) as fd:
                 transforms = [line.strip().strip(">").strip() for line in fd]

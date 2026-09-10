@@ -40,6 +40,7 @@ import ast
 import importlib
 import importlib.util
 import os.path
+import pkgutil
 import re
 import sys
 from xml.etree import ElementTree as ET
@@ -167,12 +168,14 @@ class PyXSD:
                     print(
                         f"Loading the file '{self.transformOutputName}' for the transformed XML output..."
                     )
-                transformOutput = open(self.transformOutputName, "w")  # noqa: SIM115 - held open for the writer pipeline
+                transformOutput = open(self.transformOutputName, "w")  # noqa: SIM115 - closed after the write below
             transformedRoot = self.transform(self.transforms, rootInstance)
             if transformedRoot:
                 if self.verbose:
                     print("Sending transformed tree to the writer...")
                 self.writeXML(transformedRoot, transformOutput)
+            if transformOutput is not None and transformOutput is not sys.stdout:
+                transformOutput.close()
 
     def getSchemaFile(self):
         """Opens the schema file for reading."""
@@ -188,9 +191,11 @@ class PyXSD:
     def writeParsedXMLFile(self, rootInstance):
         """Writes the parsed (pre-transform) xml file, if requested."""
         if isinstance(self.xmlFileOutput, str):
-            self.xmlFileOutput = open(self.xmlFileOutput, "w")  # noqa: SIM115 - held open for the writer pipeline
+            self.xmlFileOutput = open(self.xmlFileOutput, "w")  # noqa: SIM115 - closed after the write below
         if self.xmlFileOutput:
             self.writeXML(rootInstance, self.xmlFileOutput)
+            if self.xmlFileOutput is not sys.stdout:
+                self.xmlFileOutput.close()
         return rootInstance
 
     def parseXSD(self):
@@ -304,8 +309,9 @@ class PyXSD:
         - ``output``: the file object to write the tree to.
         """
         if isinstance(output, str):
-            output = open(output, "w")  # noqa: SIM115 - passed to the writer
+            output = open(output, "w")  # noqa: SIM115 - flushed below
         XmlTreeWriter(rootInstance, output)
+        output.flush()
         if self.verbose:
             print("Data sent to the writer...")
 
@@ -391,7 +397,11 @@ class PyXSD:
         convention) or in snake_case. The transform is looked up in
         the installed ``pyxsd.transforms`` package, then in the
         directory the program was called from, and then in the
-        directory where the xml file is.
+        directory where the xml file is. If no exact module-name
+        candidate matches, an underscore-insensitive fallback matches
+        the class name against the available modules, so acronym
+        spellings (``SendTreeToPyXSD`` -> ``send_tree_to_pyxsd``)
+        still resolve.
 
         - ``className``: a string of the transform class name being
           called
@@ -402,6 +412,9 @@ class PyXSD:
                 return importlib.import_module("pyxsd.transforms." + fileName)
             except ImportError:
                 pass
+        module = _loadTransformModuleByNormalizedName(className)
+        if module is not None:
+            return module
         searchPaths = [os.getcwd()]
         xmlPath = getattr(self, "xmlPath", None)
         if xmlPath:
@@ -416,6 +429,9 @@ class PyXSD:
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
                     return module
+            module = _loadTransformFileByNormalizedName(className, directory)
+            if module is not None:
+                return module
         raise ImportError(
             f"the transform module for '{className}' could not be found in "
             "pyxsd.transforms or in the search paths"
@@ -556,7 +572,7 @@ def _transformModuleNames(className):
 
     Both the historical camelCase convention (``PrintData`` ->
     ``printData``) and snake_case (``PrintData`` -> ``print_data``,
-    ``SendTreeToPyXSD`` -> ``send_tree_to_pyxsd``) are supported.
+    ``SendTreeToPyXSD`` -> ``send_tree_to_py_xsd``) are supported.
     """
     camel = className[:1].lower() + className[1:]
     snake = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", className)
@@ -565,6 +581,47 @@ def _transformModuleNames(className):
     if snake != camel:
         names.append(snake)
     return names
+
+
+def _normalizedModuleName(name):
+    """Reduce a module or class name for underscore-insensitive match."""
+    return name.replace("_", "").lower()
+
+
+def _loadTransformModuleByNormalizedName(className):
+    """Find a shipped transform module whose name matches the class.
+
+    The exact-name candidates can miss when the camel-to-snake
+    conversion splits acronyms differently than the module file does
+    (``send_tree_to_py_xsd`` vs ``send_tree_to_pyxsd``); comparing
+    underscore-free names resolves those cases.
+    """
+    target = _normalizedModuleName(className)
+    transformsPackage = importlib.import_module("pyxsd.transforms")
+    for moduleInfo in pkgutil.iter_modules(transformsPackage.__path__):
+        if _normalizedModuleName(moduleInfo.name) == target:
+            return importlib.import_module(f"pyxsd.transforms.{moduleInfo.name}")
+    return None
+
+
+def _loadTransformFileByNormalizedName(className, directory):
+    """Find a transform file in ``directory`` matching the class name."""
+    target = _normalizedModuleName(className)
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return None
+    for entry in entries:
+        stem, ext = os.path.splitext(entry)
+        if ext != ".py" or _normalizedModuleName(stem) != target:
+            continue
+        spec = importlib.util.spec_from_file_location(stem, os.path.join(directory, entry))
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    return None
 
 
 def parseTransformCall(call):
