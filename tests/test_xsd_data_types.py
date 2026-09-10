@@ -68,7 +68,7 @@ class TestInteger:
         assert isinstance(Integer("0"), int)
 
     def test_name_attribute(self):
-        assert Integer.name == "Integer"
+        assert Integer.name == "integer"
 
     def test_arithmetic_demotes_to_plain_int(self):
         result = Integer("5") + 1
@@ -89,7 +89,7 @@ class TestPositiveInteger:
             PositiveInteger(-3)
 
     def test_name_attribute(self):
-        assert PositiveInteger.name == "PositiveInteger"
+        assert PositiveInteger.name == "positiveInteger"
 
 
 class TestNonNegativeInteger:
@@ -101,7 +101,7 @@ class TestNonNegativeInteger:
             NonNegativeInteger("-1")
 
     def test_name_attribute(self):
-        assert NonNegativeInteger.name == "NonNegativeInteger"
+        assert NonNegativeInteger.name == "nonNegativeInteger"
 
 
 class TestNegativeInteger:
@@ -113,7 +113,7 @@ class TestNegativeInteger:
             NegativeInteger("0")
 
     def test_name_attribute(self):
-        assert NegativeInteger.name == "NegativeInteger"
+        assert NegativeInteger.name == "negativeInteger"
 
 
 class TestNonPositiveInteger:
@@ -125,7 +125,7 @@ class TestNonPositiveInteger:
             NonPositiveInteger("1")
 
     def test_name_attribute(self):
-        assert NonPositiveInteger.name == "NonPositiveInteger"
+        assert NonPositiveInteger.name == "nonPositiveInteger"
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ class TestDouble:
         assert isinstance(Double("0.1"), float)
 
     def test_name_attribute(self):
-        assert Double.name == "Double"
+        assert Double.name == "double"
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +179,7 @@ class TestBoolean:
         assert Boolean(0).val == 0
 
     def test_name_attribute(self):
-        assert Boolean.name == "Boolean"
+        assert Boolean.name == "boolean"
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ class TestStringTypes:
         assert value.upper() == "HELLO"
 
     def test_names(self):
-        assert String.name == "String"
+        assert String.name == "string"
         assert ID.name == "ID"
         assert IDREF.name == "IDREF"
 
@@ -223,7 +223,7 @@ class TestBase64Binary:
             Base64Binary("a")
 
     def test_name_attribute(self):
-        assert Base64Binary.name == "Base64Binary"
+        assert Base64Binary.name == "base64Binary"
 
 
 # ---------------------------------------------------------------------------
@@ -291,3 +291,223 @@ def test_double_lexical_round_trip(value):
 @given(st.text(max_size=64))
 def test_string_lexical_round_trip(value):
     assert str(String(value)) == value
+
+
+# ---------------------------------------------------------------------------
+# Full lattice: valid and invalid lexical samples for every built-in type
+# ---------------------------------------------------------------------------
+
+from pyxsd.xsd_data_types import (  # noqa: E402
+    ENTITIES,
+    ENTITY,
+    IDREFS,
+    NMTOKEN,
+    NMTOKENS,
+    AnySimpleType,
+    AnyType,
+    AnyURI,
+    Byte,
+    Date,
+    DateTime,
+    Decimal,
+    Duration,
+    Float,
+    GDay,
+    GMonth,
+    GMonthDay,
+    GYear,
+    GYearMonth,
+    HexBinary,
+    Int,
+    Language,
+    Long,
+    Name,
+    NCName,
+    NormalizedString,
+    QName,
+    Short,
+    Time,
+    Token,
+    UnsignedByte,
+    UnsignedInt,
+    UnsignedLong,
+    UnsignedShort,
+)
+
+LATTICE = [
+    # (class, [valid], [invalid])
+    (AnySimpleType, ["anything", "", "  spaced  "], []),
+    (AnyType, ["<any><content/>", "text"], []),
+    (AnyURI, ["https://example.com/a?b=c", "relative/path", "", "urn:x:1"], ["a b"]),
+    (Base64Binary, ["aGVsbG8=", "", "aGVs bG8="], ["not*base64!", "a"]),
+    (Boolean, ["true", "false", "1", "0"], ["True", "FALSE", "2", "yes"]),
+    (Byte, ["127", "-128", "0"], ["128", "-129"]),
+    (
+        Date,
+        ["2006-08-30", "-0001-01-01", "2006-08-30Z", "2006-08-30+05:00"],
+        ["2006-13-01", "2006-08-32", "06-08-30", "2006-8-30"],
+    ),
+    (
+        DateTime,
+        [
+            "2006-08-30T14:30:00",
+            "2006-08-30T14:30:00.123456",
+            "2006-08-30T14:30:00Z",
+            "2006-08-30T23:59:59",
+        ],
+        ["2006-08-30 14:30:00", "2006-08-30T24:00:00", "2006-08-30T14:30", "2006-08-30T14:30:60"],
+    ),
+    (Decimal, ["19.95", "-0.5", "+3", ".5", "3.", "0"], ["1e5", "abc", "1.5.5", "-"]),
+    (
+        Double,
+        ["1.5", "-0.0", "1e30", "1e+30", "INF", "-INF", "NaN"],
+        ["1_0", "foo", "1.5.5", "++1"],
+    ),
+    (
+        Duration,
+        ["P1Y2M3DT10H30M", "P1D", "-P2D", "PT0.5S", "P0Y", "P1M1D"],
+        ["P", "1Y", "PT", "P1S", "X1D"],
+    ),
+    (ENTITY, ["e1", "_x"], ["1x", "a:b"]),
+    (ENTITIES, ["e1 e2", "e1", ""], ["e1 1x"]),
+    (Float, ["1.5", "INF", "NaN"], ["foo"]),
+    (GDay, ["---31", "---01Z", "---15+05:00"], ["---32", "--31", "31"]),
+    (GMonth, ["--08", "--01Z", "--12"], ["--13", "--8", "---08"]),
+    (GMonthDay, ["--08-30", "--12-31Z"], ["--13-01", "--08-32"]),
+    (GYear, ["2006", "-0044", "12006Z"], ["06", "x", "2006-08"]),
+    (GYearMonth, ["2006-08", "-0044-01Z"], ["2006-13", "2006-8"]),
+    (HexBinary, ["00FF10", "", "0F"], ["0FG", "0FF"]),
+    (ID, ["a1", "_x", "S-001"], ["1x", "a b", "a:b"]),
+    (IDREF, ["r1"], ["1x"]),
+    (IDREFS, ["a b c", "a", ""], ["a 1!", "a b!"]),
+    (Int, ["2147483647", "-2147483648", "0"], ["2147483648", "-2147483649"]),
+    (Integer, ["42", "-7", "0", "+9", " 5 "], ["1_000", "3.5", "abc"]),
+    (Language, ["en", "en-US", "x-1"], ["toolonglanguage", "-en", "en_US"]),
+    (
+        Long,
+        ["9223372036854775807", "-9223372036854775808"],
+        ["9223372036854775808", "-9223372036854775809"],
+    ),
+    (Name, ["a", "a:b", "_x1", ":a:b:"], ["1a", "a b"]),
+    (NCName, ["a", "_x1", "S-001"], ["1x", "a:b"]),
+    (NMTOKEN, ["a", "1a", "a:b", "-"], ["", "a b"]),
+    (NMTOKENS, ["a 1a b:c", "a", ""], ["a b!", "a,b"]),
+    (NegativeInteger, ["-1", "-99999"], ["0", "5"]),
+    (NonNegativeInteger, ["0", "5"], ["-1"]),
+    (NonPositiveInteger, ["0", "-5"], ["1"]),
+    (NormalizedString, ["hello world", ""], ["a\nb", "a\tb", "a\rb"]),
+    (PositiveInteger, ["1", "99999"], ["0", "-3"]),
+    (QName, ["xs:string", "local", "_a:b9"], [":x", "a:", "1:b"]),
+    (Short, ["32767", "-32768"], ["32768", "-32769"]),
+    (String, ["anything", ""], []),
+    (
+        Time,
+        ["14:30:00", "23:59:59.999", "00:00:00Z", "09:15:00-08:00"],
+        ["24:00:00", "14:30", "14:30:61"],
+    ),
+    (Token, ["hello", "  padded  "], []),
+    (UnsignedByte, ["0", "255"], ["256", "-1"]),
+    (UnsignedInt, ["0", "4294967295"], ["4294967296", "-1"]),
+    (UnsignedLong, ["0", "18446744073709551615"], ["18446744073709551616", "-1"]),
+    (UnsignedShort, ["0", "65535"], ["65536", "-1"]),
+]
+
+
+@pytest.mark.parametrize(
+    "cls,value",
+    [item for cls, valid, _ in LATTICE for item in [(cls, v) for v in valid]],
+    ids=lambda v: v if isinstance(v, str) else v.__name__,
+)
+def test_lattice_valid(cls, value):
+    instance = cls(value)
+    assert isinstance(instance, cls)
+
+
+@pytest.mark.parametrize(
+    "cls,value",
+    [item for cls, _, invalid in LATTICE for item in [(cls, v) for v in invalid]],
+    ids=lambda v: repr(v) if isinstance(v, str) else v.__name__,
+)
+def test_lattice_invalid(cls, value):
+    with pytest.raises(TypeError):
+        cls(value)
+
+
+class TestWhitespaceCollapse:
+    """Token-derived types collapse whitespace before validating."""
+
+    def test_integer_collapses(self):
+        value = Integer("\n   12\n   ")
+        assert value == 12
+
+    def test_date_collapses(self):
+        assert Date("  2006-08-30  ") == "2006-08-30"
+
+    def test_double_collapses(self):
+        assert Double("  1.5 ") == 1.5
+
+    def test_boolean_collapses(self):
+        assert Boolean(" true ") == 1
+
+    def test_base64_strips_all_whitespace(self):
+        assert Base64Binary("aGVs\n  bG8=") == "aGVsbG8="
+
+    def test_string_preserves(self):
+        assert String("  padded  ") == "  padded  "
+
+    def test_normalized_string_preserves_spaces(self):
+        assert NormalizedString("  padded  ") == "  padded  "
+
+
+class TestListTypes:
+    def test_tokens_property(self):
+        value = IDREFS("r1 r2 r3")
+        assert value.tokens == ["r1", "r2", "r3"]
+
+    def test_nmtokens_tokens(self):
+        assert NMTOKENS("a 1a b:c").tokens == ["a", "1a", "b:c"]
+
+
+class TestBuiltinNameTable:
+    def test_table_covers_every_exported_concrete_type(self):
+        from pyxsd import xsd_data_types
+        from pyxsd.element_representatives.element_representative import _PRIMITIVE_TYPES
+
+        for export in xsd_data_types.__all__:
+            klass = getattr(xsd_data_types, export)
+            if klass in (XsdDataType, xsd_data_types.TypeList):
+                continue
+            assert klass.name in _PRIMITIVE_TYPES, klass.__name__
+            assert _PRIMITIVE_TYPES[klass.name] is klass
+
+    def test_table_has_45_builtins(self):
+        from pyxsd.element_representatives.element_representative import _PRIMITIVE_TYPES
+
+        assert len(_PRIMITIVE_TYPES) == 45
+        # Spot-check XSD spellings.
+        for xsd_name in (
+            "string",
+            "integer",
+            "int",
+            "boolean",
+            "decimal",
+            "double",
+            "float",
+            "dateTime",
+            "date",
+            "time",
+            "duration",
+            "gYearMonth",
+            "gMonthDay",
+            "base64Binary",
+            "hexBinary",
+            "anyURI",
+            "QName",
+            "NCName",
+            "NMTOKENS",
+            "unsignedByte",
+            "positiveInteger",
+            "anySimpleType",
+            "anyType",
+        ):
+            assert xsd_name in _PRIMITIVE_TYPES

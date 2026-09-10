@@ -1,7 +1,5 @@
 """Tests for the classes generated from a schema and their instances."""
 
-import pytest
-
 from conftest import run_parser
 from pyxsd.element_representatives.attribute import Attribute
 from pyxsd.element_representatives.element import Element
@@ -136,21 +134,23 @@ class TestInstanceTree:
         assert child_by_name(emergency, "relation") == "neighbor"
 
 
-@pytest.mark.xfail(
-    reason="element-level boolean lexical values ('true'/'false') are not "
-    "converted before Boolean construction; tracked for the type lattice work",
-    strict=True,
-)
 def test_boolean_element_lexical_value(tmp_path):
-    """Documents a known gap: booleans as element text crash the parse."""
+    """Element-level booleans accept XSD lexical forms since the type
+    lattice work (0.1 crashed on 'true'/'false')."""
     schema = """<?xml version="1.0"?>
     <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
-      <xs:element name="flag" type="xs:boolean"/>
+      <xs:element name="settings">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="flag" type="xs:boolean"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
     </xs:schema>
     """
     instance = (
-        '<flag xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
-        'xsi:noNamespaceSchemaLocation="schema.xsd">true</flag>'
+        '<settings xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="schema.xsd"><flag>true</flag></settings>'
     )
     (tmp_path / "schema.xsd").write_text(schema)
     (tmp_path / "instance.xml").write_text(instance)
@@ -164,4 +164,7 @@ def test_boolean_element_lexical_value(tmp_path):
         transformOutputName=None,
     )
     root = parser.parseXML()
-    assert root == 1
+    flag = child_by_name(root, "flag")
+    assert flag == 1
+    assert str(flag) == "true"
+    assert repr(flag) == "True"

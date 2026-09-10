@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<record xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="schema.xsd">
+  <when>2006-08-30</when>
+  <moment>2006-08-30T14:30:00</moment>
+  <alarm>09:00:00</alarm>
+  <span>P1Y2M3D</span>
+  <price>19.95</price>
+  <checksum>00FF10</checksum>
+  <population>6700000000</population>
+  <offset>42</offset>
+  <level>7</level>
+  <code>120</code>
+  <quantity>200</quantity>
+  <website>https://example.com/data</website>
+  <debt>-500</debt>
+  <year>2006</year>
+  <title>sample record</title>
+</record>

@@ -72,16 +72,8 @@ dictionary in the PyXSD instance.
 
 import logging
 
-from pyxsd.xsd_data_types import (
-    ID,
-    IDREF,
-    Base64Binary,
-    Boolean,
-    Double,
-    Integer,
-    PositiveInteger,
-    String,
-)
+from pyxsd import xsd_data_types
+from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
 
@@ -182,24 +174,30 @@ class ElementRepresentative:
     def typeFromName(cls, xsdTypeName, pyXSD):
         """Returns a schema type given the type's name.
 
-        Returns data type classes from ``xsd_data_types`` for primitive
-        data types.  Calls ``clsFor`` on ERs.
+        Returns data type classes from ``xsd_data_types`` for built-in
+        types.  Calls ``clsFor`` on ERs for user-defined types.  The
+        schema-namespace prefixes ``xs:`` and ``xsd:`` always denote
+        built-ins; any other qualified name is looked up in the
+        registry first, with a built-in fallback on the local name so
+        default-namespace schemas (``type="string"``) still resolve.
         """
-        if not xsdTypeName.startswith("xs:"):
+        if not xsdTypeName.startswith(("xs:", "xsd:")):
             getFromNameReturned = cls.getFromName(xsdTypeName)
             if getFromNameReturned:
                 return getFromNameReturned.clsFor(pyXSD)
+            local = xsdTypeName.split(":", 1)[-1]
+            primitive = _PRIMITIVE_TYPES.get(local)
+            if primitive is not None:
+                return primitive
             logger.warning(
                 "typeFromName() error: getFromName() is returning None for %s", xsdTypeName
             )
             return None
-        primitive = _PRIMITIVE_TYPES.get(xsdTypeName.split(":", 1)[1])
+        local = xsdTypeName.split(":", 1)[1]
+        primitive = _PRIMITIVE_TYPES.get(local)
         if primitive is not None:
             return primitive
-        logger.warning(
-            "XsdTypeName Error: %s does not correspond to a class",
-            xsdTypeName.split(":", 1)[1],
-        )
+        logger.warning("XsdTypeName Error: %s does not correspond to a class", local)
         return None
 
     def addSuperClassName(self, name):
@@ -313,19 +311,19 @@ class ElementRepresentative:
         return clsName
 
 
-# Primitive type names (after the 'xs:' prefix) to classes.
+# Built-in XSD type names (after any prefix) to classes.  Built from
+# the classes' own declared ``name`` attributes so the table can never
+# drift from the lattice in ``xsd_data_types`` (intermediate helper
+# classes that merely inherit a name are skipped).
 _PRIMITIVE_TYPES = {
-    "string": String,
-    "double": Double,
-    "int": Integer,
-    "integer": Integer,
-    "boolean": Boolean,
-    "positiveInteger": PositiveInteger,
-    "ID": ID,
-    "IDREF": IDREF,
-    "base64Binary": Base64Binary,
+    klass.name: klass
+    for klass in vars(xsd_data_types).values()
+    if isinstance(klass, type)
+    and issubclass(klass, XsdDataType)
+    and klass is not XsdDataType
+    and "name" in klass.__dict__
+    and klass is not xsd_data_types.TypeList
 }
-
 # Registry of all ER objects, keyed by name.
 registry = {}
 

@@ -13,7 +13,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 #: Every fixture corpus shipped with the test suite. Each entry is a
 #: directory containing a ``schema.xsd`` and an ``instance.xml`` that is
 #: valid against that schema.
-ALL_FIXTURES = ["inventory", "primitives", "choice", "nested"]
+ALL_FIXTURES = ["inventory", "primitives", "choice", "nested", "datatypes"]
 
 
 @pytest.fixture(autouse=True)

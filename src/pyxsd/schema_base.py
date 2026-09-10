@@ -248,6 +248,10 @@ class SchemaBase:
                     # for elements with primitive types
                     if not issubclass(subElCls, SchemaBase):
                         subInstance = cls.primitiveValueFor(subElCls, subElement)
+                        if subInstance is None:
+                            # invalid value; the error is already in
+                            # the report, so skip the child
+                            continue
                         subInstance._name_ = subElementName
                         instance._children_.append(subInstance)
                         setattr(instance, subElementName, subInstance)
@@ -418,7 +422,11 @@ class SchemaBase:
         dataTypeAttrib = subElement.items()
 
         if dataTypeText is None and not dataTypeAttrib and not dataTypeChildren:
-            dataTypeVal = True
+            # empty simple content: the empty lexical form is valid for
+            # string types and invalid for everything else (XSD has no
+            # 'empty element means true' convention, though 0.1 built
+            # True here, making <x/> silently read as the string 'True')
+            dataTypeVal = ""
         elif dataTypeText:
             dataTypeVal = dataTypeText
         elif len(dataTypeAttrib) == 1:
@@ -434,7 +442,16 @@ class SchemaBase:
             )
             return None
 
-        dataTypeValInst = subElCls(dataTypeVal)
+        try:
+            dataTypeValInst = subElCls(dataTypeVal)
+        except (TypeError, ValueError) as e:
+            cls._report_error(
+                f"the value of the '{subElement.tag.split('}')[-1]}' element "
+                f"is not valid for its type: {e}",
+                code="value",
+                element=cls.__name__,
+            )
+            return None
         dataTypeValInst._attribs_ = dict(subElement.attrib)
         dataTypeValInst._value_ = (
             [dataTypeText.strip()] if dataTypeText and dataTypeText.strip() else None
