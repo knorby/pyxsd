@@ -11,6 +11,7 @@ and writes the tree back out as XML.
 
 quickstart
 cli
+demo
 architecture
 data-model
 validation

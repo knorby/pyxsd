@@ -14,7 +14,7 @@ Transform: PrintData
 
 class PrintData(Displayer):
     def __init__(self, root: Any) -> None:
-        self.root = root
+        super().__init__(root)
 
     def __call__(self, fileName: str | None = None) -> Any:
         output = self.openFile(fileName)

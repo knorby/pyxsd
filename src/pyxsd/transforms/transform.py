@@ -46,16 +46,18 @@ class Transform(abc.ABC):
     Subclasses must accept the tree root in their ``__init__``; that
     makes the class abstract until it does, so framework-only
     subclasses (like :class:`~pyxsd.transforms.displayer.Displayer`)
-    cannot be instantiated by accident.
+    cannot be instantiated by accident. Subclasses should call
+    ``super().__init__(root)``, which stores the root as ``self.root``.
     """
 
     @abc.abstractmethod
     def __init__(self, root: Any) -> None:
-        """Initialize the transform with the root of the instance tree.
+        """Store the tree root as ``self.root``.
 
-        Concrete transforms must override this and store the root (or
-        whatever subset of the tree they operate on).
+        Kept abstract so the plain ``Transform`` class cannot be
+        instantiated; concrete subclasses call it through ``super()``.
         """
+        self.root = root
 
     def makeElemObj(self, name: str) -> Any:
         """Creates a new element that contains the proper tree

@@ -160,6 +160,12 @@ class PyXSD:
                     "no schema file was given and the xml file has no "
                     "schemaLocation or noNamespaceSchemaLocation tag"
                 )
+            # Schema hints are documented relative to the instance
+            # document, not the caller's working directory.
+            hintPath = Path(self.xsdFile)
+            if not hintPath.is_absolute():
+                hintPath = self.xmlPath / hintPath
+            self.xsdFile = hintPath
         self.nameSpace = self.getSchemaInfo("n")
         self.parseXSD()
 
