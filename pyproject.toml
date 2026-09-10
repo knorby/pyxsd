@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "pyxsd"
 version = "1.0.0.dev0"
 description = "Schema-guided XML-to-Python object mapping with a transform pipeline"
-readme = "README.rst"
+readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [{ name = "Kali Norby", email = "kali.norby@gmail.com" }]
@@ -61,7 +61,7 @@ include = [
     "examples",
     "CHANGELOG.md",
     "LICENSE",
-    "README.rst",
+    "README.md",
     "pyproject.toml",
 ]
 

@@ -10,6 +10,33 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 
+def iter_tree(instance: Any) -> Iterator[Any]:
+    """Yield every tree node at or below ``instance``, depth-first.
+
+    Lists (and tuples) are descended into item by item and
+    dictionaries by value; anything without both ``_children_`` and
+    ``_attribs_`` is skipped. Each yielded node is visited before its
+    children (pre-order). This generator powers
+    :meth:`~pyxsd.transforms.transform.Transform.walk` and is the
+    supported way to iterate a tree directly::
+
+        for node in iter_tree(root):
+            ...
+
+    - ``instance``: a tree node, or a list/dict of them.
+    """
+    if isinstance(instance, (list, tuple)):
+        for item in instance:
+            yield from iter_tree(item)
+    elif isinstance(instance, dict):
+        for item in instance.values():
+            yield from iter_tree(item)
+    elif hasattr(instance, "_children_") and hasattr(instance, "_attribs_"):
+        yield instance
+        for child in instance._children_:
+            yield from iter_tree(child)
+
+
 class Transform(abc.ABC):
     """The base abstract class for all transforms.
 
@@ -53,27 +80,12 @@ class Transform(abc.ABC):
     def iter_tree(self, instance: Any) -> Iterator[Any]:
         """Yield every tree node at or below ``instance``, depth-first.
 
-        Lists (and tuples) are descended into item by item and
-        dictionaries by value; anything without both ``_children_`` and
-        ``_attribs_`` is skipped. Each yielded node is visited before
-        its children (pre-order). This generator powers :meth:`walk`
-        and is also the supported way to iterate a tree directly::
-
-            for node in transform.iter_tree(root):
-                ...
+        Method form of the module-level :func:`iter_tree`; see there
+        for semantics.
 
         - ``instance``: a tree node, or a list/dict of them.
         """
-        if isinstance(instance, (list, tuple)):
-            for item in instance:
-                yield from self.iter_tree(item)
-        elif isinstance(instance, dict):
-            for item in instance.values():
-                yield from self.iter_tree(item)
-        elif hasattr(instance, "_children_") and hasattr(instance, "_attribs_"):
-            yield instance
-            for child in instance._children_:
-                yield from self.iter_tree(child)
+        return iter_tree(instance)
 
     def walk(self, instance: Any, visitor: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
         """Walks through the tree structure and runs a provided visitor

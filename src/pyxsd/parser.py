@@ -82,6 +82,7 @@ class PyXSD:
     xmlPath: Path
     xsdFile: str | Path | os.PathLike[str] | None
     xmlFileOutput: str | Path | bool
+    schemaRootInstance: Any
 
     def __init__(
         self,
@@ -175,6 +176,11 @@ class PyXSD:
             rootInstance = self.writeParsedXMLFile(rootInstance)
 
         self.transformOutputName = transformOutputName
+
+        # Library consumers need the in-memory tree after construction;
+        # the CLI only drives output through files. Kept before
+        # executeAndWriteTransforms so it is set even on transform errors.
+        self.schemaRootInstance = rootInstance
         self.executeAndWriteTransforms(rootInstance)
 
     def executeAndWriteTransforms(self, rootInstance: Any) -> None:
