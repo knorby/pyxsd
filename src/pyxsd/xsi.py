@@ -8,6 +8,7 @@ spelling is also accepted for documents that kept an unbound prefix.
 """
 
 import re
+from typing import Any
 
 XSI_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance"
 
@@ -17,7 +18,7 @@ XSI_NIL = f"{{{XSI_NAMESPACE}}}nil"
 _TRUE = re.compile(r"^(true|1)$", re.IGNORECASE)
 
 
-def xsi_attr_key(attr):
+def xsi_attr_key(attr: str) -> str:
     """Maps an XSI-namespace attribute name to its display spelling.
 
     ElementTree expands ``xsi:nil`` to Clark notation
@@ -33,7 +34,7 @@ def xsi_attr_key(attr):
     return attr
 
 
-def xsi_type_name(elementTag):
+def xsi_type_name(elementTag: Any) -> str | None:
     """Returns the ``xsi:type`` value on an element, or ``None``."""
     value = elementTag.attrib.get(XSI_TYPE)
     if value is None:
@@ -41,7 +42,7 @@ def xsi_type_name(elementTag):
     return value
 
 
-def xsi_nil_is_true(elementTag):
+def xsi_nil_is_true(elementTag: Any) -> bool:
     """Returns True when an element carries ``xsi:nil="true"``.
 
     ``xsi:nil="false"`` (or any other value) counts as no nil marker,

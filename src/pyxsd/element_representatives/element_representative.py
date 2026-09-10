@@ -329,8 +329,10 @@ _PRIMITIVE_TYPES = {
     and "name" in klass.__dict__
     and klass is not xsd_data_types.TypeList
 }
-# Registry of all ER objects, keyed by name.
-registry = {}
+# Registry of all ER objects, keyed by name. Multiple ERs may share a
+# name (e.g. same-named globals across composed schema documents), so
+# values are lists; lookups that expect uniqueness warn when ambiguous.
+registry: dict[str, list[ElementRepresentative]] = {}
 
 # Import all of the tag-specific classes after the ER class definition
 # (the tag modules import this module's ElementRepresentative).  This

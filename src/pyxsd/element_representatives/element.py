@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 
@@ -12,8 +13,8 @@ class Element(ElementRepresentative):
     xml and in the program, so this class contains some machinery that
     many of the other classes do not have. The element and attribute
     classes contain descriptor methods. By specifying ``__get__``,
-    ``__set__``, and ``__delete__`` (with ``__get__`` and ``__set__``
-    being the most important), these methods specify how a variable is
+    ``__set__``, and ``__delete__`` (with ``__get__`` and
+    ``__set__`` being the most important), these methods specify how a variable is
     set and how it is retrieved. Any modification of these methods
     should be made under extreme caution! If some variable is set to
     some value that does not match the specifications in the schema, an
@@ -27,6 +28,12 @@ class Element(ElementRepresentative):
     ``SchemaBase.__init_subclass__`` records the binding in the class's
     ``_elementNames_`` bookkeeping.
     """
+
+    # Set by ComplexType._resolveElementRef for ``ref`` sites; the
+    # owning parser is attached during clsFor.  Annotations only: the
+    # attributes are assigned dynamically.
+    referredElement: Any
+    pyXSD: Any
 
     def __init__(self, xsdElement, parent):
         """Adds itself to the element list in its parent.

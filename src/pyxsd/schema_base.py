@@ -47,6 +47,13 @@ class SchemaBase:
     #: Default attribute bookkeeping, like ``_elementNames_``.
     _attributeNames_: ClassVar[list[str]] = []
 
+    # Per-instance bookkeeping consumed by the writers, the transform
+    # framework, and identity checking. Assigned by the parser and
+    # ``makeInstanceFromTag``; annotations only.
+    _name_: str
+    _attribs_: dict[str, str]
+    _value_: list[str] | None
+
     def __init_subclass__(cls, **kwargs):
         """Collects the descriptor bookkeeping for a new subclass.
 

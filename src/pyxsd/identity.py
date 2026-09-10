@@ -28,17 +28,19 @@ applied schema defaults), element fields use the bound value.
 """
 
 import logging
+from typing import Any
 
 from pyxsd.schema_base import SchemaBase
+from pyxsd.validation import ValidationReport
 from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
 
-_MISSING = object()
-_UNSUPPORTED = object()
+_MISSING: Any = object()
+_UNSUPPORTED: Any = object()
 
 
-def check_identity_constraints(rootInstance, report):
+def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> None:
     """Checks every identity constraint reachable from the root instance.
 
     - ``rootInstance``: the bound root instance (or ``None``).
@@ -51,15 +53,20 @@ def check_identity_constraints(rootInstance, report):
     """
     if rootInstance is None:
         return None
-    keyValues = {}
-    keyrefRecords = []
+    keyValues: dict[str, set[tuple[str, ...]]] = {}
+    keyrefRecords: list[tuple[Any, tuple[str, ...]]] = []
     _walk(rootInstance, keyValues, keyrefRecords, report)
     for constraint, values in keyrefRecords:
         _checkKeyref(constraint, values, keyValues, report)
     return None
 
 
-def _walk(instance, keyValues, keyrefRecords, report):
+def _walk(
+    instance: Any,
+    keyValues: dict[str, set[tuple[str, ...]]],
+    keyrefRecords: list[tuple[Any, tuple[str, ...]]],
+    report: ValidationReport,
+) -> None:
     """Applies the constraints of ``instance`` and recurses downward."""
     descriptor = getattr(instance, "_descriptor_", None)
     if descriptor is not None:
@@ -71,7 +78,13 @@ def _walk(instance, keyValues, keyrefRecords, report):
     return None
 
 
-def _applyConstraint(node, constraint, keyValues, keyrefRecords, report):
+def _applyConstraint(
+    node: Any,
+    constraint: Any,
+    keyValues: dict[str, set[tuple[str, ...]]],
+    keyrefRecords: list[tuple[Any, tuple[str, ...]]],
+    report: ValidationReport,
+) -> None:
     """Evaluates one constraint against the children of one node."""
     kind = constraint.__class__.__name__
     selected = _selectNodes(node, constraint, report)
@@ -103,22 +116,29 @@ def _applyConstraint(node, constraint, keyValues, keyrefRecords, report):
                 )
             # unique and keyref ignore nodes where a field is absent.
             continue
-        values = tuple(values)
+        valueTuple = tuple(values)
         if kind == "Keyref":
-            keyrefRecords.append((constraint, values))
-        elif values in seen:
+            keyrefRecords.append((constraint, valueTuple))
+            continue
+        if seen is not None and valueTuple in seen:
             report.add_error(
                 f"{kind.lower()} '{constraint.constraintName}': duplicate value "
-                f"{_formatValues(values)} on the selected '{_nameOf(selectedNode)}' element",
+                f"{_formatValues(valueTuple)} on the selected '{_nameOf(selectedNode)}' element",
                 code="identity-key" if kind == "Key" else "identity-unique",
                 element=_nameOf(node),
             )
-        else:
-            seen.add(values)
+            continue
+        if seen is not None:
+            seen.add(valueTuple)
     return None
 
 
-def _checkKeyref(constraint, values, keyValues, report):
+def _checkKeyref(
+    constraint: Any,
+    values: tuple[str, ...],
+    keyValues: dict[str, set[tuple[str, ...]]],
+    report: ValidationReport,
+) -> None:
     """Reports a keyref record that matches no collected key or unique."""
     referLocal = constraint.refer.split(":")[-1]
     known = keyValues.get(referLocal)
@@ -140,7 +160,7 @@ def _checkKeyref(constraint, values, keyValues, report):
     return None
 
 
-def _selectNodes(node, constraint, report):
+def _selectNodes(node: Any, constraint: Any, report: ValidationReport) -> list[Any] | None:
     """Returns the nodes a constraint's selector covers, or ``None``.
 
     ``None`` means the selector could not be evaluated (unsupported
@@ -180,7 +200,7 @@ def _selectNodes(node, constraint, report):
     return _evalSteps(node, steps)
 
 
-def _evalField(selectedNode, fieldPath, constraint, report):
+def _evalField(selectedNode: Any, fieldPath: str, constraint: Any, report: ValidationReport) -> Any:
     """Returns the string value of one field of one selected node.
 
     Returns ``_MISSING`` when the field has no value on this node.
@@ -241,7 +261,7 @@ def _evalField(selectedNode, fieldPath, constraint, report):
     return _MISSING
 
 
-def _parsePath(path):
+def _parsePath(path: str) -> tuple[bool, list[str] | None]:
     """Splits an XPath-subset path into (descendant, steps).
 
     Returns ``(descendant, steps)`` where ``steps`` is the list of
@@ -263,7 +283,7 @@ def _parsePath(path):
     return descendant, steps
 
 
-def _evalSteps(node, steps):
+def _evalSteps(node: Any, steps: list[str]) -> list[Any]:
     """Walks child steps from ``node`` and returns the matching nodes."""
     nodes = [node]
     for step in steps:
@@ -277,7 +297,7 @@ def _evalSteps(node, steps):
     return nodes
 
 
-def _descendantOrSelfNodes(node):
+def _descendantOrSelfNodes(node: Any) -> list[Any]:
     """Returns ``node`` and all its bound complex descendants."""
     nodes = [node]
     index = 0
@@ -288,12 +308,12 @@ def _descendantOrSelfNodes(node):
     return nodes
 
 
-def _childrenOf(node):
+def _childrenOf(node: Any) -> list[Any]:
     """Returns the bound child instances of a bound node."""
     return list(getattr(node, "_children_", None) or [])
 
 
-def _nameOf(node):
+def _nameOf(node: Any) -> str:
     """Returns the element name of a bound child instance, if known."""
     name = getattr(node, "_name_", None)
     if name is not None:
@@ -304,7 +324,7 @@ def _nameOf(node):
     return node.__class__.__name__ if not isinstance(node, XsdDataType) else "?"
 
 
-def _attributeValue(node, attributeName):
+def _attributeValue(node: Any, attributeName: str) -> str | None:
     """Returns the bound value of one attribute, or ``None``."""
     attribs = getattr(node, "_attribs_", None)
     if attribs:
@@ -317,7 +337,7 @@ def _attributeValue(node, attributeName):
     return None
 
 
-def _nodeValue(node):
+def _nodeValue(node: Any) -> str | None:
     """Returns the simple-content value of a bound node, or ``None``."""
     if isinstance(node, XsdDataType):
         return str(node)
@@ -328,7 +348,7 @@ def _nodeValue(node):
     return None
 
 
-def _formatValues(values):
+def _formatValues(values: tuple[str, ...]) -> str:
     """Formats a field-value tuple for report messages."""
     if len(values) == 1:
         return repr(values[0])

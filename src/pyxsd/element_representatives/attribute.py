@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.xsd_data_types import Boolean, XsdDataType
@@ -25,6 +26,10 @@ class Attribute(ElementRepresentative):
     unless they raise an error, so developers should bear in mind these
     methods when modifying the program.
     """
+
+    # The owning parser is attached during clsFor.  Annotation only:
+    # the attribute is assigned dynamically.
+    pyXSD: Any
 
     def __init__(self, xsdElement, parent):
         """Adds itself to the attribute dictionary in its containing

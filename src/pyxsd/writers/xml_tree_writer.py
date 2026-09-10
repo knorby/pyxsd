@@ -34,13 +34,14 @@ dictionary the following variables:
 """
 
 import time
+from typing import IO, Any
 
 from pyxsd import xsi
 from pyxsd.writers.xml_tag_writer import XmlTagWriter
 
 
 class XmlTreeWriter:
-    def __init__(self, root, output):
+    def __init__(self, root: Any, output: IO[str]):
         """Initialize the writer.
 
         - ``root``: the root instance of a tree. Must be formatted in
@@ -59,7 +60,7 @@ class XmlTreeWriter:
         XmlTreeWriter.passTagToTagWriter(root, 0, self.output)
 
     @staticmethod
-    def _tree_uses_xsi(element):
+    def _tree_uses_xsi(element: Any) -> bool:
         """Returns True when any element in the tree carries an
         XSI-namespace attribute (``xsi:nil``, ``xsi:type``, ...)."""
         if any(xsi.xsi_attr_key(key).startswith("xsi:") for key in element._attribs_):
@@ -67,7 +68,7 @@ class XmlTreeWriter:
         return any(XmlTreeWriter._tree_uses_xsi(child) for child in element._children_)
 
     @staticmethod
-    def passTagToTagWriter(element, tabs, output):
+    def passTagToTagWriter(element: Any, tabs: int, output: IO[str]) -> None:
         """Extracts element variables and initializes the tag writer for
         the element.
 
@@ -110,7 +111,7 @@ class XmlTreeWriter:
         if hasChildren:
             tagWriter.writeEndTag()
 
-    def writeHeaderInfo(self):
+    def writeHeaderInfo(self) -> None:
         """Writes a comment at the top of the file with the creation
         information. Includes date and time information.
         """

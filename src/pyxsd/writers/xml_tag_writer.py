@@ -1,3 +1,6 @@
+from typing import IO, Any
+
+
 class XmlTagWriter:
     """Writes one element.
 
@@ -24,7 +27,16 @@ class XmlTagWriter:
     - ``output``: the file object to write to
     """
 
-    def __init__(self, name, attribs, value, hasChildren, hasValue, tabs, output):
+    def __init__(
+        self,
+        name: str,
+        attribs: dict[str, str],
+        value: list[Any] | None,
+        hasChildren: bool,
+        hasValue: bool,
+        tabs: int,
+        output: IO[str],
+    ):
         self.name = name
         self.attribs = attribs
         self.sortedKeyList = sorted(self.attribs.keys())
@@ -35,7 +47,7 @@ class XmlTagWriter:
         self.output = output
         self.writeTag()
 
-    def writeTag(self):
+    def writeTag(self) -> None:
         """Writes the tag. Called from the init function. All its
         non-necessary formatting is standard and is not dependent upon
         specifics of the format of the data.
@@ -81,7 +93,7 @@ class XmlTagWriter:
                 self.writeEndTag()
         return None
 
-    def writeComment(self):
+    def writeComment(self) -> None:
         """If ``name`` is set to '_comment_' this function is called.
 
         A comment can be in the tree only if it is included in a
@@ -89,7 +101,7 @@ class XmlTagWriter:
         """
         self.output.write(f"<!--{self.value}-->")
 
-    def writeEndTag(self):
+    def writeEndTag(self) -> None:
         """Writes the ending tag for an element.
 
         Called by the tree writer if the element has children. It is
@@ -102,7 +114,7 @@ class XmlTagWriter:
         self.writeTabs()
         self.output.write(f"</{self.name}>\n")
 
-    def writeTabs(self, tabSpec=None, tabs=None):
+    def writeTabs(self, tabSpec: int | None = None, tabs: int | None = None) -> None:
         """Writes out the tabs before an element.
 
         Can also write a certain number of spaces after the tabs have

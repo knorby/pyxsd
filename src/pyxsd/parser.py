@@ -49,6 +49,8 @@ import re
 import sys
 import warnings
 from pathlib import Path
+from types import ModuleType
+from typing import IO, Any
 from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
@@ -71,16 +73,26 @@ class PyXSD:
     Has command line support when it is called as a script.
     """
 
+    # Depends on the input form: a path stem for files, ``None`` for a
+    # file-like object.
+    xmlFileInputName: str | None
+
+    # Resolved to a Path for file inputs, held as-is for file objects.
+    xmlFileInput: Path | IO[str]
+    xmlPath: Path
+    xsdFile: str | Path | os.PathLike[str] | None
+    xmlFileOutput: str | Path | bool
+
     def __init__(
         self,
-        xmlFileInput,
-        xsdFile=None,
-        xmlFileOutput=False,
-        transformOutputName=None,
-        transforms=None,
-        classFile=None,
-        verbose=False,
-        quiet=False,
+        xmlFileInput: str | Path | os.PathLike[str] | IO[str],
+        xsdFile: str | Path | os.PathLike[str] | None = None,
+        xmlFileOutput: str | bool = False,
+        transformOutputName: str | None = None,
+        transforms: list[str] | None = None,
+        classFile: str | Path | os.PathLike[str] | None = None,
+        verbose: bool = False,
+        quiet: bool = False,
     ):
         """Initialize the parser and run the whole pipeline.
 
@@ -118,7 +130,7 @@ class PyXSD:
         """
         self.verbose = verbose
         self.quiet = quiet
-        self.classes = {}
+        self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
 
         if isinstance(xmlFileInput, (str, os.PathLike)):
@@ -165,14 +177,14 @@ class PyXSD:
         self.transformOutputName = transformOutputName
         self.executeAndWriteTransforms(rootInstance)
 
-    def executeAndWriteTransforms(self, rootInstance):
+    def executeAndWriteTransforms(self, rootInstance: Any) -> None:
         """Runs each transform in order and writes the transformed tree to
         the transform output, if one was requested.
         """
         if not self.transforms:
             return
         logger.debug("Loading the transforms...")
-        transformOutput = self.transformOutputName
+        transformOutput: str | Path = self.transformOutputName  # type: ignore[assignment]
         if not transformOutput:
             transformOutput = self.getTransformsFileName()
             logger.debug(
@@ -188,7 +200,7 @@ class PyXSD:
                 with open(transformOutput, "w") as output:
                     self.writeXML(transformedRoot, output)
 
-    def parseXSD(self):
+    def parseXSD(self) -> None:
         """Reads the given xsd file and creates a set of classes that
         correspond to the complex and simple type definitions.
         """
@@ -203,6 +215,9 @@ class PyXSD:
             except ET.ParseError as e:
                 raise PyXSDError(f"the schema file is not well-formed XML: {e}") from e
         else:
+            # The schema must be a file object here: a ``None`` schema
+            # without a location hint is rejected in ``__init__``.
+            assert self.xsdFile is not None
             try:
                 tree = ET.parse(self.xsdFile)
             except ET.ParseError as e:
@@ -232,7 +247,7 @@ class PyXSD:
 
         return None
 
-    def _buildSubstitutionGroups(self, schemaER):
+    def _buildSubstitutionGroups(self, schemaER: Any) -> None:
         """Maps substitution-group heads to their member elements.
 
         XSD 1.0 declares substitution groups on global element
@@ -258,7 +273,7 @@ class PyXSD:
             schemaER.substitutionGroups.setdefault(head, []).append(element)
         logger.debug("Substitution groups built: %s", list(schemaER.substitutionGroups))
 
-    def _schemaCompositionContext(self):
+    def _schemaCompositionContext(self) -> tuple[Path, set[str]]:
         """Returns the (baseDir, visited) context for schema composition.
 
         ``baseDir`` is the directory relative to which include/import
@@ -270,7 +285,7 @@ class PyXSD:
             return mainPath.parent, {str(mainPath)}
         return Path.cwd(), set()
 
-    def _spliceComposedSchemas(self, schemaRoot, baseDir, visited):
+    def _spliceComposedSchemas(self, schemaRoot: Any, baseDir: Path, visited: set[str]) -> None:
         """Merges composed schemas into ``schemaRoot`` before class building.
 
         ``xs:include`` (same target namespace or none - the chameleon
@@ -303,7 +318,14 @@ class PyXSD:
                 self._spliceIncludedSchema(child, schemaRoot, baseDir, visited, isImport=True)
         return None
 
-    def _spliceIncludedSchema(self, tag, schemaRoot, baseDir, visited, isImport):
+    def _spliceIncludedSchema(
+        self,
+        tag: Any,
+        schemaRoot: Any,
+        baseDir: Path,
+        visited: set[str],
+        isImport: bool,
+    ) -> None:
         """Splices the named components of one included/imported schema.
 
         Handles locating and parsing the file, cycle detection and the
@@ -351,7 +373,7 @@ class PyXSD:
         self._appendNamedComponents(includedRoot, schemaRoot)
         return None
 
-    def _parseIncludedSchema(self, location, baseDir):
+    def _parseIncludedSchema(self, location: str, baseDir: Path) -> Any | None:
         """Parses one included schema file; returns its root or ``None``.
 
         Failures (unreadable file, malformed xml) are recorded as
@@ -376,14 +398,20 @@ class PyXSD:
             return None
         return tree.getroot()
 
-    def _appendNamedComponents(self, includedRoot, schemaRoot):
+    def _appendNamedComponents(self, includedRoot: Any, schemaRoot: Any) -> None:
         """Appends the named components of an included schema to the main tree."""
         for component in list(includedRoot):
             if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
                 schemaRoot.append(component)
         return None
 
-    def _spliceRedefine(self, redefineTag, schemaRoot, baseDir, visited):
+    def _spliceRedefine(
+        self,
+        redefineTag: Any,
+        schemaRoot: Any,
+        baseDir: Path,
+        visited: set[str],
+    ) -> None:
         """Splices an ``xs:redefine`` block.
 
         The referenced schema's named components are spliced in first;
@@ -433,7 +461,7 @@ class PyXSD:
             schemaRoot.append(child)
         return None
 
-    def _checkIdentityConstraints(self, rootInstance):
+    def _checkIdentityConstraints(self, rootInstance: Any) -> None:
         """Runs the identity-constraint check over the bound tree."""
         # Imported lazily: importing pyxsd.identity before
         # element_representative (above) triggers a circular import
@@ -443,7 +471,7 @@ class PyXSD:
         check_identity_constraints(rootInstance, self.report)
         return None
 
-    def parseXML(self):
+    def parseXML(self) -> Any:
         """Reads the given xml file in the context of the xsd file.
 
         Produces instances of the above classes. Does validation.
@@ -504,7 +532,7 @@ class PyXSD:
 
         return subInstance
 
-    def _primitiveRootInstance(self, dataTypeClass, rootElement):
+    def _primitiveRootInstance(self, dataTypeClass: Any, rootElement: Any) -> Any:
         """Builds a typed instance for a root element whose declared
         type is a primitive data type rather than a complex type.
 
@@ -542,7 +570,7 @@ class PyXSD:
         instance._children_ = []
         return instance
 
-    def _classForRoot(self, rootElement):
+    def _classForRoot(self, rootElement: Any) -> type[SchemaBase]:
         """Resolves the class used to instantiate the root element.
 
         Honors ``xsi:type`` on the root element (dispatch to another
@@ -575,7 +603,7 @@ class PyXSD:
         logger.debug("Root element dispatched via xsi:type to %s", resolved.__name__)
         return resolved
 
-    def generateCorrectSchemaTags(self):
+    def generateCorrectSchemaTags(self) -> None:
         """Generates the proper schema information and namespace
         information for a tag.
 
@@ -605,9 +633,11 @@ class PyXSD:
         self.xmlRoot.attrib["xsi:noNamespaceSchemaLocation"] = schemaLocation
         return None
 
-    def writeParsedXMLFile(self, rootInstance):
+    def writeParsedXMLFile(self, rootInstance: Any) -> Any:
         """Writes the parsed (pre-transform) xml file, if requested."""
         output = self.xmlFileOutput
+        if output is True:
+            output = self.getXmlOutputFileName()
         if not output or output == "_No_Output_":
             return rootInstance
         if isinstance(output, (str, os.PathLike)):
@@ -617,7 +647,7 @@ class PyXSD:
             self.writeXML(rootInstance, output)
         return rootInstance
 
-    def writeXML(self, rootInstance, output):
+    def writeXML(self, rootInstance: Any, output: str | Path | os.PathLike[str] | IO[str]) -> None:
         """Sends a pythonic instance tree to the tree writer.
 
         - ``rootInstance``: the root instance of a tree. Must be
@@ -635,13 +665,13 @@ class PyXSD:
             output.flush()
         logger.debug("Data sent to the writer...")
 
-    def getClasses(self):
+    def getClasses(self) -> dict[str, type[SchemaBase]]:
         """Returns the dictionary of classes created by
         ElementRepresentative for each type specified in the schema.
         """
         return self.classes
 
-    def loadClassFromFile(self, classFile):
+    def loadClassFromFile(self, classFile: str | Path | os.PathLike[str]) -> None:
         """Loads a file with overlay classes into the class dictionary.
 
         Overlay classes add to and override the schema type classes to
@@ -657,7 +687,7 @@ class PyXSD:
         if not filePath.is_file():
             # Fall back to the historical behavior of resolving a
             # module name against the xml file's directory.
-            candidate = self.xmlPath / (classFile + ".py")
+            candidate = self.xmlPath / f"{classFile}.py"
             if candidate.is_file():
                 filePath = candidate
             else:
@@ -683,7 +713,7 @@ class PyXSD:
                 logger.debug("Loaded the %s class", className)
         self.classes.update(newClasses)
 
-    def getXmlTree(self):
+    def getXmlTree(self) -> Any:
         """Sends the xml file into the ElementTree library's parser.
 
         Allows for the program to get the schemaLocation before parsing
@@ -697,14 +727,14 @@ class PyXSD:
         logger.debug("XML file parsed by the ElementTree library successfully...")
         return tree.getroot()
 
-    def getXmlOutputFileName(self):
+    def getXmlOutputFileName(self) -> Path:
         """Creates a default name for the xml file that is parsed without
         any transforms.  Uses the name from the input xml file.
         """
-        inputPath = Path(self.xmlFileInput)
+        inputPath = Path(str(self.xmlFileInput))
         return inputPath.parent / (inputPath.stem + "Parsed.xml")
 
-    def getTransformModuleAndLoad(self, className):
+    def getTransformModuleAndLoad(self, className: str) -> ModuleType:
         """Loads a transform class from its class name.
 
         The module it is located in must share the class name, either
@@ -737,7 +767,9 @@ class PyXSD:
             for fileName in candidates:
                 candidate = directory / (fileName + ".py")
                 if candidate.is_file():
-                    return _loadModuleFromFile(fileName, candidate)
+                    module = _loadModuleFromFile(fileName, candidate)
+                    if module is not None:
+                        return module
             module = _loadTransformFileByNormalizedName(className, directory)
             if module is not None:
                 return module
@@ -746,7 +778,7 @@ class PyXSD:
             "pyxsd.transforms or in the search paths"
         )
 
-    def transform(self, transforms, root):
+    def transform(self, transforms: list[str], root: Any) -> Any:
         """Calls the transforms specified by the user.
 
         Each transform is loaded into memory by
@@ -784,7 +816,7 @@ class PyXSD:
 
         return currentRoot
 
-    def getTransformsFileName(self):
+    def getTransformsFileName(self) -> Path:
         """Creates a default name for the xml file that is written after
         all of the transforms.  Uses the name from the input xml file.
         """
@@ -795,7 +827,7 @@ class PyXSD:
         logger.debug("Setting the transformed xml file name to the default: %s", newName)
         return newName
 
-    def getSchemaInfo(self, nameOrLocation):
+    def getSchemaInfo(self, nameOrLocation: str | None) -> str | None:
         """Extracts information from the *schemaLocation* tag or the
         *noNamespaceSchemaLocation* tag.
 
@@ -863,7 +895,7 @@ class PyXSD:
 
         return None
 
-    def makeFullName(self, ns, text):
+    def makeFullName(self, ns: str | None, text: str) -> str:
         """Makes a string that looks similar to some of the names in
         ElementTree when it contains namespace information.
 
@@ -876,7 +908,7 @@ class PyXSD:
         return f"{{{ns}}}{text}"
 
 
-def _transformModuleNames(className):
+def _transformModuleNames(className: str) -> list[str]:
     """Return candidate module names for a transform class name.
 
     Both the historical camelCase convention (``PrintData`` ->
@@ -892,12 +924,12 @@ def _transformModuleNames(className):
     return names
 
 
-def _normalizedModuleName(name):
+def _normalizedModuleName(name: str) -> str:
     """Reduce a module or class name for underscore-insensitive match."""
     return name.replace("_", "").lower()
 
 
-def _loadModuleFromFile(moduleName, path):
+def _loadModuleFromFile(moduleName: str, path: Path) -> ModuleType | None:
     """Import a transform module from an explicit file path.
 
     The module's directory is added to ``sys.path`` while the module
@@ -920,7 +952,7 @@ def _loadModuleFromFile(moduleName, path):
     return module
 
 
-def _loadTransformModuleByNormalizedName(className):
+def _loadTransformModuleByNormalizedName(className: str) -> ModuleType | None:
     """Find a shipped transform module whose name matches the class.
 
     The exact-name candidates can miss when the camel-to-snake
@@ -936,7 +968,7 @@ def _loadTransformModuleByNormalizedName(className):
     return None
 
 
-def _loadTransformFileByNormalizedName(className, directory):
+def _loadTransformFileByNormalizedName(className: str, directory: Path) -> ModuleType | None:
     """Find a transform file in ``directory`` matching the class name."""
     target = _normalizedModuleName(className)
     try:
@@ -950,7 +982,7 @@ def _loadTransformFileByNormalizedName(className, directory):
     return None
 
 
-def parseTransformCall(call):
+def parseTransformCall(call: str) -> tuple[str, list[Any], dict[str, Any]]:
     """Parse a transform call string into its parts.
 
     A transform call looks like ``TransformClass(arg1, arg2, key=value)``
@@ -973,11 +1005,17 @@ def parseTransformCall(call):
         )
     class_name = tree.body.func.id
     args = [ast.literal_eval(arg) for arg in tree.body.args]
-    kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in tree.body.keywords}
+    kwargs: dict[str, Any] = {}
+    for keyword in tree.body.keywords:
+        if keyword.arg is None:
+            raise ValueError(
+                f"Transform Call Error: the transform call '{call}' does not use correct syntax."
+            )
+        kwargs[keyword.arg] = ast.literal_eval(keyword.value)
     return class_name, args, kwargs
 
 
-def _configure_logging(verbose, quiet):
+def _configure_logging(verbose: bool, quiet: bool) -> None:
     """Set the root logging level according to the CLI flags."""
     if verbose:
         level = logging.DEBUG
@@ -988,7 +1026,7 @@ def _configure_logging(verbose, quiet):
     logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     """Run pyxsd from the command line."""
     from argparse import ArgumentParser
 

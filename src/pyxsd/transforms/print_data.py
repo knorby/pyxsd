@@ -1,4 +1,5 @@
 import sys
+from typing import Any
 
 from pyxsd.transforms.displayer import Displayer
 
@@ -12,10 +13,10 @@ Transform: PrintData
 
 
 class PrintData(Displayer):
-    def __init__(self, root):
+    def __init__(self, root: Any) -> None:
         self.root = root
 
-    def __call__(self, fileName=None):
+    def __call__(self, fileName: str | None = None) -> Any:
         output = self.openFile(fileName)
         try:
             self.writeTree(output)

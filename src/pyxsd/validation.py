@@ -9,6 +9,7 @@ after the run; library users inspect the ``report`` attribute of the
 """
 
 import enum
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 
@@ -93,7 +94,7 @@ class ValidationReport:
     def __bool__(self) -> bool:
         return bool(self._issues)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[ValidationIssue]:
         return iter(self._issues)
 
     def __str__(self) -> str:

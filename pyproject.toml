@@ -90,6 +90,34 @@ ignore = [
 testpaths = ["tests"]
 addopts = "-ra"
 
+[tool.mypy]
+python_version = "3.11"
+# Type-check function bodies even when the signature is untyped; this is
+# the pragmatic level for the metaprogramming core (dynamic class
+# factory, descriptor wiring) where full signatures would mislead.
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = false
+
+# Stable modules without metaprogramming must be fully annotated.
+[[tool.mypy.overrides]]
+module = [
+    "pyxsd.parser",
+    "pyxsd.validation",
+    "pyxsd.exceptions",
+    "pyxsd.xsi",
+    "pyxsd.compositors",
+    "pyxsd.nodes",
+    "pyxsd.xsd_data_types",
+    "pyxsd.identity",
+    "pyxsd.writers.*",
+    "pyxsd.transforms.*",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
 [tool.coverage.run]
 source = ["pyxsd"]
 branch = true

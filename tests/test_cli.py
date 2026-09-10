@@ -298,6 +298,10 @@ class TestParseTransformCall:
             {"k": ("a",)},
         )
 
+    def test_kwargs_expansion_is_rejected(self):
+        with pytest.raises(ValueError, match="does not use correct syntax"):
+            parseTransformCall("T(**opts)")
+
     def test_bare_class_name_is_rejected(self):
         with pytest.raises(ValueError, match="correct syntax"):
             parseTransformCall("PrintData")
@@ -352,6 +356,21 @@ class TestDefaultFileNames:
         parser = run_parser("inventory")
         parser.xmlFileInputName = None
         assert parser.getTransformsFileName().name == "output.xml"
+
+    def test_boolean_parsed_output_uses_default_name(self, tmp_path):
+        """``xmlFileOutput=True`` means 'use the default parsed name'."""
+        import shutil
+
+        source = fixture_dir("inventory")
+        for name in ("instance.xml", "schema.xsd"):
+            shutil.copy(source / name, tmp_path / name)
+        PyXSD(
+            str(tmp_path / "instance.xml"),
+            str(tmp_path / "schema.xsd"),
+            xmlFileOutput=True,
+            transformOutputName=None,
+        )
+        assert (tmp_path / "instanceParsed.xml").is_file()
 
 
 def _unparsed_root(xml_text, tmp_path):

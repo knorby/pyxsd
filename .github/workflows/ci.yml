@@ -50,3 +50,17 @@ jobs:
           name: coverage-${{ matrix.python-version }}
           path: .coverage
           include-hidden-files: true
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+
+      - name: Sync environment
+        run: uv sync --group dev --python 3.12
+
+      - name: mypy
+        run: uv run mypy src/pyxsd

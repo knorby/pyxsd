@@ -14,6 +14,10 @@ class XsdType(ElementRepresentative):
     generated.
     """
 
+    # Set by the Union ER for ``xs:union`` members; annotation only
+    # (assigned dynamically, guarded with ``getattr`` at use sites).
+    unionSpec: list[str]
+
     def __init__(self, xsdElement, parent):
         """The ``__init__`` for this class' subclasses.  Creates a blank
         list for enumerations.  Creates a blank dictionary for

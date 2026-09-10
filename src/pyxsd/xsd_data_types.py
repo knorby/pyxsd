@@ -33,7 +33,7 @@ import base64
 import binascii
 import decimal
 import re
-from typing import ClassVar
+from typing import Any, ClassVar, Self
 
 __all__ = [
     "ENTITIES",
@@ -89,8 +89,14 @@ __all__ = [
 class XsdDataType:
     """Common base class for all of the XSD data type classes."""
 
+    # The true XSD spelling of the type (e.g. "string", "base64Binary").
+    # Declared on subclasses only, so that ``"name" in klass.__dict__``
+    # can distinguish the 45 built-ins from intermediate helper classes
+    # that merely inherit a name.
+    name: ClassVar[str]
+
     @classmethod
-    def _unvalidated(cls):
+    def _unvalidated(cls) -> Any:
         """Returns a bare instance of the type without lexical validation.
 
         Used for ``xsi:nil`` elements: a nillable element may carry no
@@ -101,13 +107,15 @@ class XsdDataType:
         """
         for base in cls.__mro__:
             if base is str:
-                return str.__new__(cls)
+                # Deliberately dynamic: construct the concrete subclass
+                # through the immutable base's __new__.
+                return str.__new__(cls)  # type: ignore[type-var]
             if base is int:
-                return int.__new__(cls)
+                return int.__new__(cls)  # type: ignore[type-var]
             if base is float:
-                return float.__new__(cls)
+                return float.__new__(cls)  # type: ignore[type-var]
             if base is decimal.Decimal:
-                return decimal.Decimal.__new__(cls)
+                return decimal.Decimal.__new__(cls)  # type: ignore[type-var]
         return object.__new__(cls)
 
 
@@ -132,7 +140,7 @@ class NormalizedString(String):
 
     name = "normalizedString"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         text = str(val)
         if "\n" in text or "\r" in text or "\t" in text:
             raise TypeError(f"Not a valid normalizedString: {text!r}")
@@ -158,7 +166,7 @@ class _PatternString(String):
 
     _pattern: ClassVar[re.Pattern[str]]
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         text = " ".join(str(val).split())
         if cls._pattern.fullmatch(text) is None:
             raise TypeError(f"Not a valid {cls.name}: {text!r}")
@@ -233,7 +241,7 @@ class _ListString(String):
 
     _token_pattern: ClassVar[re.Pattern[str]]
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         text = str(val)
         for token in text.split():
             if cls._token_pattern.fullmatch(token) is None:
@@ -241,7 +249,7 @@ class _ListString(String):
         return super().__new__(cls, text)
 
     @property
-    def tokens(self):
+    def tokens(self) -> list[str]:
         """The individual tokens of the list as a plain ``list`` of strings."""
         return str(self).split()
 
@@ -297,7 +305,7 @@ class Base64Binary(String):
 
     name = "base64Binary"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         text = "".join(str(val).split())
         try:
             base64.b64decode(text, validate=True)
@@ -393,7 +401,7 @@ class Duration(String):
 
     name = "duration"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         text = str(val)
         if _DURATION_PARTS.fullmatch(text) is None:
             raise TypeError(f"Not a valid Duration: {text!r}")
@@ -412,7 +420,7 @@ class Integer(int, XsdDataType):
 
     name = "integer"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str | int) -> Self:
         if isinstance(val, str):
             # Integer derives from token: collapse whitespace first.
             collapsed = " ".join(val.split())
@@ -428,7 +436,7 @@ class _BoundedInteger(Integer):
     _min: ClassVar[int]
     _max: ClassVar[int]
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         obj = super().__new__(cls, val)
         if not (cls._min <= obj <= cls._max):
             raise TypeError(
@@ -442,7 +450,7 @@ class PositiveInteger(Integer):
 
     name = "positiveInteger"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         if int(val) <= 0:
             raise TypeError(f"Not a valid PositiveInteger: {val!r}")
         return super().__new__(cls, val)
@@ -453,7 +461,7 @@ class NonNegativeInteger(Integer):
 
     name = "nonNegativeInteger"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         if int(val) < 0:
             raise TypeError(f"Not a valid NonNegativeInteger: {val!r}")
         return super().__new__(cls, val)
@@ -464,7 +472,7 @@ class NegativeInteger(Integer):
 
     name = "negativeInteger"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         if int(val) >= 0:
             raise TypeError(f"Not a valid NegativeInteger: {val!r}")
         return super().__new__(cls, val)
@@ -475,7 +483,7 @@ class NonPositiveInteger(Integer):
 
     name = "nonPositiveInteger"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         if int(val) > 0:
             raise TypeError(f"Not a valid NonPositiveInteger: {val!r}")
         return super().__new__(cls, val)
@@ -553,7 +561,7 @@ class Decimal(decimal.Decimal, XsdDataType):
 
     name = "decimal"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         if isinstance(val, str):
             collapsed = " ".join(val.split())
             if _DECIMAL_LEXICAL.fullmatch(collapsed) is None:
@@ -572,7 +580,7 @@ class Double(float, XsdDataType):
 
     name = "double"
 
-    def __new__(cls, val):
+    def __new__(cls, val: str) -> Self:
         if isinstance(val, str):
             collapsed = " ".join(val.split())
             if _FLOAT_LEXICAL.fullmatch(collapsed) is None:
@@ -603,7 +611,10 @@ class Boolean(Integer):
 
     name = "boolean"
 
-    def __new__(cls, val):
+    # The 0/1 numeric form stored for ``.val`` access.
+    val: int
+
+    def __new__(cls, val: str | bool | int) -> Self:
         if isinstance(val, str):
             collapsed = " ".join(val.split())
             if collapsed in ("true", "1"):
@@ -620,7 +631,7 @@ class Boolean(Integer):
         obj.val = numeric
         return obj
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Returns 'true' or 'false', depending on the value.
 
         Use for xml and xsd files.
@@ -629,7 +640,7 @@ class Boolean(Integer):
             return "true"
         return "false"
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """Returns 'True' or 'False', depending on the value.
 
         Use for Python.
