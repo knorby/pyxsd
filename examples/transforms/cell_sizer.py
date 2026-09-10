@@ -1,22 +1,20 @@
-from pyxsd.transforms.atom import Atom
-from pyxsd.transforms.bravais_lattice import BravaisLattice
-from pyxsd.transforms.transform import Transform
-from pyxsd.transforms.vector import Vector
+"""Shared library for the crystallography example transforms.
 
+CellSizer holds the machinery the example transforms build on:
+reading atom positions and Bravais vectors from a parsed instance
+tree, converting to Cartesian coordinates, and cutting/moving atoms.
+The concrete transforms are :class:`ExpandCell`, :class:`SphereCutter`,
+:class:`CoordViewer`, and :class:`FormatForVisit`.
+
+Historical note: these were shipped in ``pyxsd.transforms`` in 0.1;
+they moved to ``examples/transforms/`` in pyxsd 1.0 (breaking change).
 """
-Transform Library: CellSizer
-============================
 
-:Category: Computational Materials Science
-:Description: Library containing functions to change the size and
-              shape of a crystal lattice structure
+from atom import Atom
+from bravais_lattice import BravaisLattice
+from vector import Vector
 
-Included as part of the CellSizer Library:
-
-- Atom
-- Vector
-- BravaisLattice
-"""
+from pyxsd.transforms import Transform
 
 
 class CellSizer(Transform):

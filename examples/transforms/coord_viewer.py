@@ -1,14 +1,12 @@
-from pyxsd.transforms.cell_sizer import CellSizer
-from pyxsd.transforms.displayer import Displayer
+"""Example transform: write atom positions as Cartesian coordinates.
 
+Historical note: shipped in ``pyxsd.transforms`` in 0.1; moved to
+``examples/transforms/`` in pyxsd 1.0 (breaking change).
 """
-Transform: CoordViewer
-======================
 
-:Category: Computational Materials Science
-:Description: Writes out atom positions in cartesian coordinates in
-              order to help write and use transforms
-"""
+from cell_sizer import CellSizer
+
+from pyxsd.transforms import Displayer
 
 
 class CoordViewer(CellSizer, Displayer):

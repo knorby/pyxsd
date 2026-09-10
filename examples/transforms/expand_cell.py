@@ -1,12 +1,10 @@
-from pyxsd.transforms.cell_sizer import CellSizer
+"""Example transform: repeat the unit cell along each axis.
 
+Historical note: shipped in ``pyxsd.transforms`` in 0.1; moved to
+``examples/transforms/`` in pyxsd 1.0 (breaking change).
 """
-Transform: ExpandCell
-=====================
 
-:Category: Computational Materials Science
-:Description: Expands a cell by given parameters
-"""
+from cell_sizer import CellSizer
 
 
 class ExpandCell(CellSizer):

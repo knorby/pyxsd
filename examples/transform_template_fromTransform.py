@@ -1,4 +1,4 @@
-from transform import Transform
+from pyxsd.transforms import Transform
 
 # Import anything else you want, just remember to import Transform (or your
 # custom library)

@@ -351,11 +351,9 @@ class PyXSD:
                     f"the file '{classFile}' was not found. Please check your spelling."
                 )
         module_name = filePath.stem
-        spec = importlib.util.spec_from_file_location(module_name, filePath)
-        if spec is None or spec.loader is None:
+        module = _loadModuleFromFile(module_name, filePath)
+        if module is None:
             raise ImportError(f"the file '{classFile}' could not be loaded.")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
         newClasses = {}
         for _varName, var in vars(module).items():
             if isinstance(var, type) and issubclass(var, SchemaBase) and var is not SchemaBase:
@@ -586,12 +584,25 @@ def _normalizedModuleName(name):
 
 
 def _loadModuleFromFile(moduleName, path):
-    """Import a transform module from an explicit file path."""
+    """Import a transform module from an explicit file path.
+
+    The module's directory is added to ``sys.path`` while the module
+    executes, so sibling modules (transform libraries such as the
+    shipped examples) can be imported by plain name.
+    """
     spec = importlib.util.spec_from_file_location(moduleName, path)
     if spec is None or spec.loader is None:
         return None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    directory = str(Path(path).parent)
+    added = directory not in sys.path
+    if added:
+        sys.path.insert(0, directory)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if added and directory in sys.path:
+            sys.path.remove(directory)
     return module
 
 

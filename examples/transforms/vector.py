@@ -2,14 +2,10 @@ import math
 
 
 class Vector(tuple):
-    """
-    Transform Library: CellSizer: Vector
-    ====================================
+    """A tuple of floats with vector arithmetic, for the CellSizer example library.
 
-    :Category: Computational Materials Science
-    :Description: A class for vectors with some vector functions
-
-    Included as part of the CellSizer Library
+    Historical note: part of the original 0.1 crystallography
+    transform library; moved to ``examples/transforms/`` in pyxsd 1.0.
     """
 
     def __init__(self, val):

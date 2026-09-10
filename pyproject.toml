@@ -58,6 +58,7 @@ include = [
     "src/pyxsd",
     "tests",
     "docs",
+    "examples",
     "CHANGELOG.md",
     "LICENSE",
     "README.rst",
@@ -98,4 +99,4 @@ show_missing = true
 precision = 1
 # Ratcheted upward each phase (sci transforms leave the package in
 # Phase 5). The 1.0.0 release gate is 90.
-fail_under = 70
+fail_under = 82

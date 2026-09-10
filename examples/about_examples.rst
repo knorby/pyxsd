@@ -1,15 +1,25 @@
-=======================
-PyXSD 0.1 Example Files
-=======================
+========================
+PyXSD 1.0 Example Files
+========================
 
 :Author: Kali Norby <kali.norby@gmail.com>
-:Date: Wed, 30 Aug 2006
-:Description: An explaination of the example files in the example directory
+:Description: An explanation of the example files in the example directory
 
 .. contents:: Directory of Files
 
-File Explainations
-==================
+transforms/
+-----------
+
+The crystallography transform library that shipped in ``pyxsd.transforms``
+in pyxsd 0.1 (CellSizer, ExpandCell, SphereCutter, CoordViewer,
+FormatForVisit, and their support classes) now lives in the ``transforms/``
+subdirectory. See ``transforms/README.md`` for what each class does and how
+to run them. This is the headline breaking change of pyxsd 1.0: the package
+itself now ships only the transform framework plus ``PrintData`` and
+``SendTreeToPyXSD``.
+
+File Explanations
+=================
 
 sampleTransformFile
 -------------------
@@ -17,24 +27,25 @@ sampleTransformFile
 This file is an example of a transform call file. Normally, users can enter 
 a list of transforms that the program should perform one of two ways, when
 using the program at the command line. The user can enter the list of
-transforms to perfrom directly at the command line, seperating each
+transforms to perform directly at the command line, separating each
 transform with a **>** symbol. In some cases, the user might find this
 method perfectly acceptable, but often times, a user might want to enter
 in a lengthy list of calls in a place other than the command line. The user
 might also want to save a list of calls for future use. For these reasons,
-the user can also save the list of transform calls in a seperate file. These
-files do not require any quotations or special symbols to seperate calls.
+the user can also save the list of transform calls in a separate file. These
+files do not require any quotations or special symbols to separate calls.
 The user need only place one call per line. In order to use a transform file,
 the user should use the **-T** at the command line, followed by the transform
 filename.
 
 The example file is a simple, but typical, use of transforms for a scientific
 application. The "ExpandCell" and "SphereCutter" classes enable a user to
-expand and change the shape of crystal that he or she is modeling. These two
-classes where written for a particular schema and a particular layout that is
+expand and change the shape of crystal that he or she is modeling (both now
+live in the ``transforms/`` subdirectory; see above). These two
+classes were written for a particular schema and a particular layout that is
 specific to them, so these classes do not have any general use. This example
 includes the class "PrintData" in between the two classes just mentioned. This
-particular class simpily prints out the tree at a particular point to a file
+particular class simply prints out the tree at a particular point to a file
 or to the screen using stdout. This class can be used with any transform. It
 was created to help debug transforms, but it could be used for multiple other
 purposes.
