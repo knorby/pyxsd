@@ -538,7 +538,13 @@ class PyXSD:
         if rootElementName == rootName:
             subCls = self._classForRoot(rootElement)
             self.generateCorrectSchemaTags()
-            if issubclass(subCls, SchemaBase):
+            contentKind = getattr(subCls, "_contentKind_", None)
+            isComplex = (
+                contentKind == "complex"
+                if contentKind is not None
+                else issubclass(subCls, SchemaBase)
+            )
+            if isComplex:
                 subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
             else:
                 # The root element's declared type is a primitive

@@ -154,3 +154,26 @@ class TestComplexRestriction:
     def test_restriction_allows_remaining_particle(self, tmp_path):
         parser = _parse(self.SCHEMA, "<r><a/></r>", tmp_path)
         assert not parser.report.has_errors
+
+
+class TestDerivedSimpleTypeDispatch:
+    """Schema-derived simple types must not take the complex path (R1)."""
+
+    SCHEMA = '<xs:simpleType name="T"><xs:restriction base="xs:int"/></xs:simpleType>' + _element(
+        "r", "T"
+    )
+
+    def test_derived_simple_type_root(self, tmp_path):
+        parser = _parse(self.SCHEMA, "<r>42</r>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_derived_simple_type_as_child(self, tmp_path):
+        schema = '<xs:simpleType name="T"><xs:restriction base="xs:int"/></xs:simpleType>' + _root(
+            '<xs:sequence><xs:element name="c" type="T"/></xs:sequence>'
+        )
+        parser = _parse(schema, "<r><c>42</c></r>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_derived_simple_type_invalid_value(self, tmp_path):
+        parser = _parse(self.SCHEMA, "<r>abc</r>", tmp_path)
+        assert "value" in _codes(parser)

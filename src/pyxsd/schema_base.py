@@ -436,7 +436,13 @@ class SchemaBase:
             nilled = False
 
         # for elements with primitive types
-        if not issubclass(subElCls, SchemaBase):
+        contentKind = getattr(subElCls, "_contentKind_", None)
+        isComplex = (
+            contentKind == "complex"
+            if contentKind is not None
+            else issubclass(subElCls, SchemaBase)
+        )
+        if not isComplex:
             if nilled:
                 subInstance = cls._nilPrimitive(subElCls, subElement)
             else:

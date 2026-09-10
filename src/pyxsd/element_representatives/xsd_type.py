@@ -343,6 +343,13 @@ class XsdType(ElementRepresentative):
             namespace["hasWildcardAttributes_"] = True
         if self.tagAttributes.get("abstract") == "true":
             namespace["abstract_"] = True
+        # Record the XSD content category explicitly. Generated simple
+        # types inherit both a primitive Python type and SchemaBase
+        # (for bookkeeping), so Python inheritance cannot tell a simple
+        # type from a complex one at instance-dispatch time.
+        namespace["_contentKind_"] = (
+            "simple" if self.__class__.__name__ == "SimpleType" else "complex"
+        )
         # Compile the particle tree before getElements() flattens and
         # folds group-reference occurrences onto the shared descriptors.
         contentModel = compile_content_model(self, pyXSD)
