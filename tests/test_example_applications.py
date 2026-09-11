@@ -15,10 +15,15 @@ from pyxsd.parser import PyXSD
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
 DOCX_SCHEMA = EXAMPLES / "docx" / "schemas" / "wml.xsd"
+GPX_SCHEMA = EXAMPLES / "gpx" / "schemas" / "gpx.xsd"
 
 requires_docx_schemas = pytest.mark.skipif(
     not DOCX_SCHEMA.exists(),
     reason="run examples/docx/download_schemas.py to fetch the ECMA-376 schemas",
+)
+requires_gpx_schemas = pytest.mark.skipif(
+    not GPX_SCHEMA.exists(),
+    reason="run examples/gpx/download_schemas.py to fetch the GPX schema",
 )
 
 
@@ -57,21 +62,36 @@ class TestMusicXMLExample:
 
 
 class TestGpxExample:
-    def test_track_validates_cleanly(self, tmp_path):
-        parser, _ = _run("gpx", "TrackStats()", tmp_path)
-        assert parser.report.issues == []
+    """The real example: GPX 1.1 plus Garmin TrackPointExtension.
 
-    def test_track_stats(self, tmp_path):
-        _parser, output = _run("gpx", "TrackStats()", tmp_path)
+    The instance is a real, public-domain ride (200 trackpoints). The
+    extension block lives in a foreign namespace that GPX admits with
+    ``xs:any namespace="##other" processContents="lax"``, so the test
+    also proves wildcard pass-through end to end.
+    """
+
+    @requires_gpx_schemas
+    def test_real_track_validates_and_summarizes(self, tmp_path):
+        output = tmp_path / "track-stats.xml"
+        parser = PyXSD(
+            EXAMPLES / "gpx" / "instance.xml",
+            xsdFile=GPX_SCHEMA,
+            xmlFileOutput="_No_Output_",
+            transformOutputName=str(output),
+            transforms=["TrackStats()"],
+            mode=ParseModes.NAMESPACED,
+        )
+        assert not parser.report.has_errors
+
         root = ET.parse(output).getroot()
         assert root.tag == "trackStats"
-        assert root.attrib["pointCount"] == "5"
-        assert root.attrib["elevationGain"] == "10.0"
-        assert root.attrib["elevationLoss"] == "5.0"
-        assert root.attrib["minElevation"] == "100.0"
-        assert root.attrib["maxElevation"] == "108.0"
-        distance = float(root.attrib["distanceMeters"])
-        assert 250.0 < distance < 320.0
+        assert root.attrib["pointCount"] == "200"
+        assert 6300.0 < float(root.attrib["distanceMeters"]) < 6600.0
+        assert float(root.attrib["elevationGain"]) > 0
+        # Values read from the generically-bound Garmin extension block.
+        assert root.attrib["maxHeartRate"] == "178.0"
+        assert float(root.attrib["avgHeartRate"]) > 0
+        assert float(root.attrib["avgCadence"]) > 0
 
 
 class TestDocxExample:

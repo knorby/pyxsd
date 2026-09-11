@@ -1,11 +1,19 @@
-"""Compute distance and elevation statistics for a GPX track.
+"""Compute distance, elevation, and sensor statistics for a GPX track.
+
+The example instance is a real, public-domain ride recorded near Avignon
+(see ``README.md``). Its ``<extensions>`` block carries Garmin
+TrackPointExtension heart-rate, cadence, and temperature values in a
+foreign namespace that the GPX schema admits with ``xs:any
+namespace="##other" processContents="lax"``; the transform reads those
+generically-bound extension elements to show that pass-through working.
 
 Run from this directory so pyxsd can find the module:
 
-    uv run pyxsd -i instance.xml -s schema.xsd -k -o /dev/null \
-        -t 'TrackStats()' -o track-stats.xml
+    uv run python download_schemas.py
+    uv run pyxsd -i instance.xml -s schemas/gpx.xsd -k --namespaces strict \
+        -o /dev/null -t 'TrackStats()' -o track-stats.xml
 
-The transform replaces the track with a small ``trackStats`` summary
+The transform replaces the document with a small ``trackStats`` summary
 tree.
 """
 
@@ -15,6 +23,7 @@ from itertools import pairwise
 from pyxsd.transforms import Transform
 
 EARTH_RADIUS_M = 6371000.0
+SENSOR_NS = "http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
 
 
 def haversineMeters(lat1, lon1, lat2, lon2):
@@ -25,6 +34,34 @@ def haversineMeters(lat1, lon1, lat2, lon2):
     dLambda = math.radians(lon2 - lon1)
     a = math.sin(dPhi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dLambda / 2) ** 2
     return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(a))
+
+
+def descendantByLocalName(node, localName):
+    """Returns the first descendant whose local name matches.
+
+    Extension content is bound generically, so its ``_name_`` is the
+    Clark form (``{namespace}local``); matching the local part keeps the
+    transform independent of the extension namespace.
+    """
+    for child in getattr(node, "_children_", ()):
+        name = getattr(child, "_name_", "") or ""
+        if name.split("}")[-1] == localName:
+            return child
+        found = descendantByLocalName(child, localName)
+        if found is not None:
+            return found
+    return None
+
+
+def sensorValue(point, localName):
+    """Returns a numeric sensor reading from a trackpoint, or ``None``."""
+    node = descendantByLocalName(point, localName)
+    if node is None or not node._value_:
+        return None
+    try:
+        return float(node._value_[0])
+    except (TypeError, ValueError):
+        return None
 
 
 class TrackStats(Transform):
@@ -59,6 +96,9 @@ class TrackStats(Transform):
                 else:
                     loss -= delta
 
+        heartRates = [hr for hr in (sensorValue(p, "hr") for p in points) if hr is not None]
+        cadences = [cad for cad in (sensorValue(p, "cad") for p in points) if cad is not None]
+
         summary = self.makeElemObj("trackStats")
         summary._attribs_ = {
             "pointCount": str(len(coords)),
@@ -67,5 +107,8 @@ class TrackStats(Transform):
             "elevationLoss": f"{loss:.1f}",
             "minElevation": f"{min(elevations):.1f}" if elevations else "",
             "maxElevation": f"{max(elevations):.1f}" if elevations else "",
+            "avgHeartRate": f"{sum(heartRates) / len(heartRates):.1f}" if heartRates else "",
+            "maxHeartRate": f"{max(heartRates):.1f}" if heartRates else "",
+            "avgCadence": f"{sum(cadences) / len(cadences):.1f}" if cadences else "",
         }
         return summary
