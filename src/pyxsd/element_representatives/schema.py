@@ -34,6 +34,18 @@ class Schema(ComplexType):
         """Returns 'schema'."""
         return "schema"
 
+    def getNamespace(self):
+        """Returns the schema's ``targetNamespace``, or ``None``."""
+        return self.tagAttributes.get("targetNamespace")
+
+    def getElementFormDefault(self):
+        """Returns the schema's ``elementFormDefault`` (default unqualified)."""
+        return self.tagAttributes.get("elementFormDefault", "unqualified")
+
+    def getAttributeFormDefault(self):
+        """Returns the schema's ``attributeFormDefault`` (default unqualified)."""
+        return self.tagAttributes.get("attributeFormDefault", "unqualified")
+
     def getElements(self):
         """Returns a list of elements."""
         if self._elements is None:

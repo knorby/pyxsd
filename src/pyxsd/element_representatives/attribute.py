@@ -98,7 +98,11 @@ class Attribute(ElementRepresentative):
         if self.type in self.pyXSD.classes:
             return self.pyXSD.classes[self.type]
 
-        return self.typeFromName(self.type, self.pyXSD)
+        resolved = self.resolvedTypeName()
+        if resolved is not None and resolved in self.pyXSD.classes:
+            return self.pyXSD.classes[resolved]
+
+        return self.typeFromName(resolved, self.pyXSD)
 
     def __get__(self, obj, objtype=None):
         """Gets an attribute value from the obj's dictionary.

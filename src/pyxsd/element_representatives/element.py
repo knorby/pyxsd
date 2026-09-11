@@ -122,7 +122,11 @@ class Element(ElementRepresentative):
         if self.type in self.pyXSD.classes:
             return self.pyXSD.classes[self.type]
 
-        return self.typeFromName(self.type, self.pyXSD)
+        resolved = self.resolvedTypeName()
+        if resolved is not None and resolved in self.pyXSD.classes:
+            return self.pyXSD.classes[resolved]
+
+        return self.typeFromName(resolved, self.pyXSD)
 
     def __set_name__(self, owner, name):
         """Called when this descriptor is bound as ``name`` on ``owner``.

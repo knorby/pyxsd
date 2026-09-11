@@ -100,7 +100,8 @@ class XsdType(ElementRepresentative):
         the base is still used so parsing can continue.
         """
         baseList = []
-        for superClassName in self.superClassNames:
+        for rawName in self.superClassNames:
+            superClassName = self.resolveSchemaQName(rawName, is_attribute=True, parser=pyXSD)
             base = ElementRepresentative.typeFromName(superClassName, pyXSD)
             self._checkFinal(base, superClassName)
             baseList.append(base)
@@ -150,7 +151,11 @@ class XsdType(ElementRepresentative):
         # The base class's ``name`` attribute is unreliable (an element
         # named 'name' can replace the metadata string), so resolve the
         # base ER by the base reference's local name instead.
-        baseER = ElementRepresentative.getFromName(superClassName.split(":")[-1], kind="type")
+        if superClassName.startswith("{"):
+            lookupName = superClassName.split("}", 1)[1]
+        else:
+            lookupName = superClassName.split(":")[-1]
+        baseER = ElementRepresentative.getFromName(lookupName, kind="type")
         final = getattr(baseER, "final", None) if baseER is not None else None
         if final is None:
             return

@@ -58,6 +58,7 @@ from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
+from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
@@ -144,6 +145,10 @@ class PyXSD:
         self.mode = mode
         self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
+        # Prefix-to-URI bindings captured while parsing the instance and
+        # every schema document; one context accumulates them all so a
+        # component resolves QNames against its own document's scope.
+        self.namespaceContext = NamespaceContext()
 
         if isinstance(xmlFileInput, (str, os.PathLike)):
             self.xmlFileInput = Path(xmlFileInput).resolve()
@@ -237,7 +242,7 @@ class PyXSD:
         if isinstance(self.xsdFile, (str, os.PathLike)):
             try:
                 with open(self.xsdFile, "rb") as schemaFile:
-                    tree = ET.parse(schemaFile)
+                    root = parse_with_namespaces(schemaFile, self.namespaceContext)
             except OSError as e:
                 raise PyXSDError(f"the schema file could not be opened: {e}") from e
             except ET.ParseError as e:
@@ -247,10 +252,9 @@ class PyXSD:
             # without a location hint is rejected in ``__init__``.
             assert self.xsdFile is not None
             try:
-                tree = ET.parse(self.xsdFile)
+                root = parse_with_namespaces(self.xsdFile, self.namespaceContext)
             except ET.ParseError as e:
                 raise PyXSDError(f"the schema file is not well-formed XML: {e}") from e
-        root = tree.getroot()
         logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")
 
         baseDir, visited = self._schemaCompositionContext()
@@ -265,6 +269,9 @@ class PyXSD:
         # record schema-reference problems (group/attributeGroup
         # references) on the validation report.
         schemaER.pyXSD = self
+        # The captured prefix bindings let every declaration resolve the
+        # QNames written in its own document.
+        schemaER.namespaceContext = self.namespaceContext
         # This parser owns the component table the ER run registered
         # into; expose it on the parser and as the module-level active
         # table so later lookups (xsi:type dispatch, tests) use this
@@ -277,10 +284,14 @@ class PyXSD:
         for simpleType in schemaER.simpleTypes.values():
             cls = simpleType.clsFor(self)
             self.classes[simpleType.name] = cls
+            if simpleType.expandedName:
+                self.classes[simpleType.expandedName] = cls
             logger.debug("Class created for the %s type...", simpleType.name)
         for complexType in schemaER.complexTypes.values():
             cls = complexType.clsFor(self)
             self.classes[complexType.name] = cls
+            if complexType.expandedName:
+                self.classes[complexType.expandedName] = cls
             logger.debug("Class created for the %s type...", complexType.name)
 
         self._buildSubstitutionGroups(schemaER)
@@ -436,7 +447,7 @@ class PyXSD:
         includedPath = baseDir / location
         try:
             with open(includedPath, "rb") as includedFile:
-                tree = ET.parse(includedFile)
+                root = parse_with_namespaces(includedFile, self.namespaceContext)
         except OSError as e:
             self.report.add_error(
                 f"the schema '{location}' could not be opened: {e}",
@@ -449,7 +460,7 @@ class PyXSD:
                 code="schema-compose",
             )
             return None
-        return tree.getroot()
+        return root
 
     def _appendNamedComponents(self, includedRoot: Any, schemaRoot: Any) -> None:
         """Appends the named components of an included schema to the main tree."""
@@ -590,6 +601,8 @@ class PyXSD:
         if rootElementName == rootName:
             with whitespace_mode(self.mode.whitespace):
                 subCls = self._classForRoot(rootElement)
+                if subCls is None:
+                    return None
                 self.generateCorrectSchemaTags()
                 contentKind = getattr(subCls, "_contentKind_", None)
                 isComplex = (
@@ -696,7 +709,7 @@ class PyXSD:
         instance._children_ = []
         return instance
 
-    def _classForRoot(self, rootElement: Any) -> type[SchemaBase]:
+    def _classForRoot(self, rootElement: Any) -> type[SchemaBase] | None:
         """Resolves the class used to instantiate the root element.
 
         Honors ``xsi:type`` on the root element (dispatch to another
@@ -712,6 +725,13 @@ class PyXSD:
             )
 
         subCls = rootElement.getType()
+        if subCls is None:
+            self.report.add_error(
+                f"the type of root element '{rootElement.name}' could not be resolved",
+                code="unknown-type",
+                element=rootElement.name,
+            )
+            return None
 
         xsiTypeName = xsi.xsi_type_name(self.xmlRoot)
         if xsiTypeName is None:
@@ -856,11 +876,11 @@ class PyXSD:
         """
         logger.debug("The XML file is being parsed by the ElementTree library...")
         try:
-            tree = ET.parse(self.xmlFileInput)
+            root = parse_with_namespaces(self.xmlFileInput, self.namespaceContext)
         except ET.ParseError as e:
             raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
         logger.debug("XML file parsed by the ElementTree library successfully...")
-        return tree.getroot()
+        return root
 
     def getXmlOutputFileName(self) -> Path:
         """Creates a default name for the xml file that is parsed without
