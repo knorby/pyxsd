@@ -35,12 +35,19 @@ class ValidationIssue:
 
     - ``element``: the name of the element or type the issue was found
       in, when known.
+
+    - ``phase``: the pipeline stage that produced the issue, either
+      ``"schema"`` (reading the XSD, composing included schemas, building
+      the generated classes) or ``"instance"`` (binding the XML document).
+      Tooling and the conformance runner use this to check each stage
+      independently.
     """
 
     severity: IssueSeverity
     code: str
     message: str
     element: str | None = None
+    phase: str = "instance"
 
     def format(self) -> str:
         """Render the issue as one line, as shown by the CLI."""
@@ -59,14 +66,40 @@ class ValidationReport:
 
     def __init__(self) -> None:
         self._issues: list[ValidationIssue] = []
+        #: The phase new issues are attributed to unless one is passed
+        #: explicitly. The parser flips this between schema compilation
+        #: and instance binding.
+        self.phase: str = "instance"
 
-    def add_error(self, message: str, *, code: str, element: str | None = None) -> None:
+    def add_error(
+        self,
+        message: str,
+        *,
+        code: str,
+        element: str | None = None,
+        phase: str | None = None,
+    ) -> None:
         """Record a fatal-severity issue."""
-        self._issues.append(ValidationIssue(IssueSeverity.ERROR, code, message, element))
+        self._issues.append(
+            ValidationIssue(IssueSeverity.ERROR, code, message, element, phase or self.phase)
+        )
 
-    def add_warning(self, message: str, *, code: str, element: str | None = None) -> None:
+    def add_warning(
+        self,
+        message: str,
+        *,
+        code: str,
+        element: str | None = None,
+        phase: str | None = None,
+    ) -> None:
         """Record a recoverable-severity issue."""
-        self._issues.append(ValidationIssue(IssueSeverity.WARNING, code, message, element))
+        self._issues.append(
+            ValidationIssue(IssueSeverity.WARNING, code, message, element, phase or self.phase)
+        )
+
+    def for_phase(self, phase: str) -> list[ValidationIssue]:
+        """Only the issues attributed to *phase* (``"schema"``/``"instance"``)."""
+        return [i for i in self._issues if i.phase == phase]
 
     @property
     def issues(self) -> list[ValidationIssue]:

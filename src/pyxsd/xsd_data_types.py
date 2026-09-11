@@ -32,7 +32,15 @@ from those names.
 import base64
 import binascii
 import decimal
+import math
 import re
+import struct
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import date as _date
+from datetime import datetime as _datetime
+from datetime import timedelta as _timedelta
 from typing import Any, ClassVar, Self
 
 __all__ = [
@@ -123,10 +131,108 @@ class XsdDataType:
 # String and string-derived types
 # ---------------------------------------------------------------------------
 
-# A letter or underscore, but not a digit (the start of an XML Name).
-_LETTER = r"[^\W\d]"
-_NAME_CHAR = r"[\w.\-]"
-_NCNAME = rf"{_LETTER}{_NAME_CHAR}*"
+# ---------------------------------------------------------------------------
+# XSD whitespace processing and XML name primitives
+# ---------------------------------------------------------------------------
+
+# XSD's definition of whitespace is exactly these four characters; Python's
+# str.split()/strip() also fold NBSP and other Unicode spaces, which must be
+# treated as ordinary characters.
+_XSD_WHITESPACE = " \t\n\r"
+_WS_RUN = re.compile(r"[ \t\n\r]+")
+_WS_ANY = re.compile(r"[ \t\n\r]")
+# Compatibility mode folds any Unicode whitespace (NBSP and friends), the
+# way Python's own str.split()/strip() do.
+_COMPAT_WS_RUN = re.compile(r"\s+")
+_COMPAT_WS_ANY = re.compile(r"\s")
+
+# Ambient whitespace handling for datatype construction. The datatype
+# ``__new__`` signatures take only the lexical value, so the parse mode
+# reaches them through a ContextVar set by the parser around instance
+# binding. "xsd" is the default; "compat" additionally folds Unicode
+# whitespace.
+_WHITESPACE_MODE: ContextVar[str] = ContextVar("pyxsd_whitespace_mode", default="xsd")
+
+# Ambient namespace bindings for ``xs:QName`` values. QName construction
+# takes only the lexical value, so the in-scope prefix -> URI map reaches
+# it through a ContextVar set by the parser around instance binding.
+# ``None`` means no context: QName falls back to plain lexical comparison.
+_QNAME_CONTEXT: ContextVar[Mapping[str, str] | None] = ContextVar(
+    "pyxsd_qname_context", default=None
+)
+
+
+@contextmanager
+def whitespace_mode(mode: str) -> Iterator[None]:
+    """Set the ambient whitespace handling for datatype construction."""
+    token = _WHITESPACE_MODE.set(mode)
+    try:
+        yield
+    finally:
+        _WHITESPACE_MODE.reset(token)
+
+
+@contextmanager
+def qname_context(bindings: Mapping[str, str] | None) -> Iterator[None]:
+    """Set the ambient prefix bindings used to resolve ``xs:QName`` values.
+
+    ``bindings`` maps prefixes to namespace URIs; the empty string maps
+    the default namespace. ``None`` disables resolution, so QName values
+    compare by lexical form (the legacy behaviour).
+    """
+    token = _QNAME_CONTEXT.set(bindings)
+    try:
+        yield
+    finally:
+        _QNAME_CONTEXT.reset(token)
+
+
+def _ws_replace(text: str) -> str:
+    """The XSD ``replace`` facet: tab/newline/CR become spaces.
+
+    In ``compat`` mode, other Unicode whitespace also becomes a space.
+    """
+    if _WHITESPACE_MODE.get() == "compat":
+        return _COMPAT_WS_ANY.sub(" ", text)
+    return text.translate({0x09: 0x20, 0x0A: 0x20, 0x0D: 0x20})
+
+
+def _ws_collapse(text: str) -> str:
+    """The XSD ``collapse`` facet: trim and squeeze runs to one space.
+
+    In ``compat`` mode, runs of any Unicode whitespace are collapsed.
+    """
+    if _WHITESPACE_MODE.get() == "compat":
+        return _COMPAT_WS_RUN.sub(" ", text).strip(" ")
+    return _WS_RUN.sub(" ", text).strip(" ")
+
+
+def _ws_remove(text: str) -> str:
+    """Remove whitespace entirely (used by base64Binary).
+
+    In ``compat`` mode, removes any Unicode whitespace.
+    """
+    if _WHITESPACE_MODE.get() == "compat":
+        return _COMPAT_WS_ANY.sub("", text)
+    return _WS_ANY.sub("", text)
+
+
+# XML 1.0 NameStartChar / NameChar ranges (5th edition). Using explicit
+# ranges avoids ``\\w`` (which accepts e.g. superscript two) and the
+# "not a digit" approximation.
+_NAME_START = (
+    "A-Z_a-z"
+    "\\u00c0-\\u00d6\\u00d8-\\u00f6\\u00f8-\\u02ff"
+    "\\u0370-\\u037d\\u037f-\\u1fff\\u200c-\\u200d\\u2070-\\u218f"
+    "\\u2c00-\\u2fef\\u3001-\\ud7ff\\uf900-\\ufdcf\\ufdf0-\\ufffd"
+    "\\U00010000-\\U000effff"
+)
+_NAME_CHAR = _NAME_START + "\\-.0-9\\u00b7\\u0300-\\u036f\\u203f-\\u2040"
+
+# A name character that is not a NameStartChar (used for the start rule).
+_LETTER = rf"[{_NAME_START}]"
+_NAME_CHAR_CLASS = rf"[{_NAME_CHAR}]"
+_NCNAME = rf"{_LETTER}{_NAME_CHAR_CLASS}*"
 
 
 class String(str, XsdDataType):
@@ -136,21 +242,25 @@ class String(str, XsdDataType):
 
 
 class NormalizedString(String):
-    """``xs:normalizedString``: no carriage returns, tabs, or newlines."""
+    """``xs:normalizedString``: tabs/newlines/CRs are replaced by spaces.
+
+    This is the XSD ``replace`` whitespace facet, not a validity
+    constraint, so such characters are folded rather than rejected.
+    """
 
     name = "normalizedString"
 
     def __new__(cls, val: str) -> Self:
-        text = str(val)
-        if "\n" in text or "\r" in text or "\t" in text:
-            raise TypeError(f"Not a valid normalizedString: {text!r}")
-        return super().__new__(cls, text)
+        return super().__new__(cls, _ws_replace(str(val)))
 
 
 class Token(NormalizedString):
-    """``xs:token``: like normalizedString; collapse happens later."""
+    """``xs:token``: ``collapsed`` whitespace, per its XSD facet."""
 
     name = "token"
+
+    def __new__(cls, val: str) -> Self:
+        return String.__new__(cls, _ws_collapse(str(val)))
 
 
 class _PatternString(String):
@@ -167,7 +277,7 @@ class _PatternString(String):
     _pattern: ClassVar[re.Pattern[str]]
 
     def __new__(cls, val: str) -> Self:
-        text = " ".join(str(val).split())
+        text = _ws_collapse(str(val))
         if cls._pattern.fullmatch(text) is None:
             raise TypeError(f"Not a valid {cls.name}: {text!r}")
         return super().__new__(cls, text)
@@ -184,7 +294,7 @@ class Name(_PatternString):
     """``xs:Name``: an XML name (letters, digits, ``.``, ``-``, ``_``, ``:``)."""
 
     name = "Name"
-    _pattern = re.compile(rf"(?:{_LETTER}|:)[\w.\-:]*")
+    _pattern = re.compile(rf"(?:{_LETTER}|:)[{_NAME_CHAR}:]*")
 
 
 class NCName(_PatternString):
@@ -216,21 +326,47 @@ class NMTOKEN(_PatternString):
     """``xs:NMTOKEN``: a single name token (may start with a digit or colon)."""
 
     name = "NMTOKEN"
-    _pattern = re.compile(r"[\w.\-:]+")
+    _pattern = re.compile(rf"[{_NAME_CHAR}:]+")
 
 
-class AnyURI(_PatternString):
-    """``xs:anyURI``: a URI reference. Whitespace is not allowed."""
+class AnyURI(Token):
+    """``xs:anyURI``: a URI reference (collapsed, otherwise unconstrained).
+
+    XSD's lexical space permits spaces and other characters, mapping them
+    through URI escaping, so there is no ``\\S``-style pattern to enforce.
+    """
 
     name = "anyURI"
-    _pattern = re.compile(r"\S*")
 
 
 class QName(_PatternString):
-    """``xs:QName``: optionally prefixed name (``prefix:local``)."""
+    """``xs:QName``: optionally prefixed name (``prefix:local``).
+
+    Resolution against the ambient :func:`qname_context` supplies the
+    value's namespace URI, so two prefixes bound to one URI compare
+    equal. Without a context the value is purely lexical.
+    """
 
     name = "QName"
     _pattern = re.compile(rf"({_NCNAME}:)?{_NCNAME}")
+
+    # Assigned by ``__new__`` from the ambient QName context.
+    _resolved_: bool
+    _uri_: str | None
+    _local_: str
+
+    def __new__(cls, val: str) -> Self:
+        instance: Self = super().__new__(cls, val)
+        text = str(instance)
+        if ":" in text:
+            prefix, local = text.split(":", 1)
+        else:
+            prefix, local = "", text
+        bindings = _QNAME_CONTEXT.get()
+        instance._resolved_ = bindings is not None
+        instance._uri_ = bindings.get(prefix) if bindings is not None else None
+        instance._local_ = local
+        return instance
 
 
 class _ListString(String):
@@ -242,8 +378,12 @@ class _ListString(String):
     _token_pattern: ClassVar[re.Pattern[str]]
 
     def __new__(cls, val: str) -> Self:
-        text = str(val)
-        for token in text.split():
+        text = _ws_collapse(str(val))
+        tokens = text.split(" ") if text else []
+        if not tokens:
+            # XSD list types require at least one item (minLength 1).
+            raise TypeError(f"Not a valid {cls.name}: a list needs at least one item")
+        for token in tokens:
             if cls._token_pattern.fullmatch(token) is None:
                 raise TypeError(f"Not a valid {cls.name}: {text!r}")
         return super().__new__(cls, text)
@@ -251,7 +391,8 @@ class _ListString(String):
     @property
     def tokens(self) -> list[str]:
         """The individual tokens of the list as a plain ``list`` of strings."""
-        return str(self).split()
+        text = str(self)
+        return text.split(" ") if text else []
 
 
 class IDREFS(_ListString):
@@ -306,11 +447,16 @@ class Base64Binary(String):
     name = "base64Binary"
 
     def __new__(cls, val: str) -> Self:
-        text = "".join(str(val).split())
+        text = _ws_remove(str(val))
         try:
-            base64.b64decode(text, validate=True)
+            decoded = base64.b64decode(text, validate=True)
         except (ValueError, TypeError, binascii.Error):
             raise TypeError(f"Not a valid base64Binary: {text!r}") from None
+        # XSD requires the unused bits of the final quantum to be zero;
+        # Python's decoder tolerates non-zero pad bits, so compare against
+        # the canonical encoding of the decoded bytes.
+        if base64.b64encode(decoded).decode("ascii") != text:
+            raise TypeError(f"Not a valid base64Binary: {text!r}")
         return super().__new__(cls, text)
 
 
@@ -325,20 +471,23 @@ class HexBinary(_PatternString):
 # Temporal types (lexical validation)
 # ---------------------------------------------------------------------------
 
-_TIMEZONE = r"(?:Z|[+-]\d{2}:\d{2})?"
-_YEAR = r"-?\d{4,}"
+_TIMEZONE = r"(?:Z|[+-](?:0[0-9]|1[0-3]):[0-5][0-9]|[+-]14:00)?"
+# No leading zeros in an extended year, and 0000 is not a legal year.
+_YEAR = r"-?(?!0000(?:-|T|Z|[+-]|$))(?:[0-9]{4}|[1-9][0-9]{4,})"
 _MONTH = r"(?:0[1-9]|1[0-2])"
-_DAY = r"(?:0[1-9]|[12]\d|3[01])"
-_HOUR = r"(?:[01]\d|2[0-3])"
-_MINUTE = r"(?:[0-5]\d)"
-_SECOND = r"(?:[0-5]\d(?:\.\d+)?)"
+_DAY = r"(?:0[1-9]|[12][0-9]|3[01])"
+_HOUR = r"(?:[01][0-9]|2[0-3])"
+_MINUTE = r"(?:[0-5][0-9])"
+_SECOND = r"(?:[0-5][0-9](?:\.[0-9]+)?)"
+# 24:00:00 is the legal end-of-day spelling (fraction, if any, must be zero).
+_TIME_BODY = rf"(?:{_HOUR}:{_MINUTE}:{_SECOND}|24:00:00(?:\.0+)?)"
 
 
 class DateTime(_PatternString):
     """``xs:dateTime``: e.g. ``2006-08-30T14:30:00`` (optional timezone)."""
 
     name = "dateTime"
-    _pattern = re.compile(rf"{_YEAR}-{_MONTH}-{_DAY}T{_HOUR}:{_MINUTE}:{_SECOND}{_TIMEZONE}")
+    _pattern = re.compile(rf"{_YEAR}-{_MONTH}-{_DAY}T{_TIME_BODY}{_TIMEZONE}")
 
 
 class Date(_PatternString):
@@ -352,7 +501,7 @@ class Time(_PatternString):
     """``xs:time``: e.g. ``14:30:00`` (optional timezone)."""
 
     name = "time"
-    _pattern = re.compile(rf"{_HOUR}:{_MINUTE}:{_SECOND}{_TIMEZONE}")
+    _pattern = re.compile(rf"{_TIME_BODY}{_TIMEZONE}")
 
 
 class GYear(_PatternString):
@@ -402,7 +551,7 @@ class Duration(String):
     name = "duration"
 
     def __new__(cls, val: str) -> Self:
-        text = str(val)
+        text = _ws_collapse(str(val))
         if _DURATION_PARTS.fullmatch(text) is None:
             raise TypeError(f"Not a valid Duration: {text!r}")
         return super().__new__(cls, text)
@@ -423,7 +572,7 @@ class Integer(int, XsdDataType):
     def __new__(cls, val: str | int) -> Self:
         if isinstance(val, str):
             # Integer derives from token: collapse whitespace first.
-            collapsed = " ".join(val.split())
+            collapsed = _ws_collapse(val)
             if _INT_LEXICAL.fullmatch(collapsed) is None:
                 raise TypeError(f"Not a valid integer: {val!r}")
             return super().__new__(cls, collapsed)
@@ -563,16 +712,14 @@ class Decimal(decimal.Decimal, XsdDataType):
 
     def __new__(cls, val: str) -> Self:
         if isinstance(val, str):
-            collapsed = " ".join(val.split())
+            collapsed = _ws_collapse(val)
             if _DECIMAL_LEXICAL.fullmatch(collapsed) is None:
                 raise TypeError(f"Not a valid decimal: {val!r}")
             return super().__new__(cls, collapsed)
         return super().__new__(cls, val)
 
 
-_FLOAT_LEXICAL = re.compile(
-    r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?|[-+]?INF|NaN"
-)
+_FLOAT_LEXICAL = re.compile(r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?|-?INF|NaN")
 
 
 class Double(float, XsdDataType):
@@ -582,7 +729,7 @@ class Double(float, XsdDataType):
 
     def __new__(cls, val: str) -> Self:
         if isinstance(val, str):
-            collapsed = " ".join(val.split())
+            collapsed = _ws_collapse(val)
             if _FLOAT_LEXICAL.fullmatch(collapsed) is None:
                 raise TypeError(f"Not a valid double: {val!r}")
             return super().__new__(cls, collapsed)
@@ -590,9 +737,23 @@ class Double(float, XsdDataType):
 
 
 class Float(Double):
-    """``xs:float``: 32-bit floating point; same lexical space as double."""
+    """``xs:float``: 32-bit floating point; same lexical space as double.
+
+    Python floats are binary64, so the parsed value is rounded to the
+    nearest IEEE binary32 value (overflow becomes an infinity, underflow
+    becomes zero) to match the XSD value space.
+    """
 
     name = "float"
+
+    def __new__(cls, val: str) -> Self:
+        obj = super().__new__(cls, val)
+        number = float(obj)
+        try:
+            rounded = struct.unpack(">f", struct.pack(">f", number))[0]
+        except (OverflowError, struct.error):
+            rounded = math.inf if number > 0 else -math.inf
+        return float.__new__(cls, rounded)
 
 
 # ---------------------------------------------------------------------------
@@ -616,7 +777,7 @@ class Boolean(Integer):
 
     def __new__(cls, val: str | bool | int) -> Self:
         if isinstance(val, str):
-            collapsed = " ".join(val.split())
+            collapsed = _ws_collapse(val)
             if collapsed in ("true", "1"):
                 numeric = 1
             elif collapsed in ("false", "0"):
@@ -663,3 +824,113 @@ class TypeList(list, XsdDataType):
     """
 
     name = "List"
+
+
+# ---------------------------------------------------------------------------
+# XSD value-space comparison
+# ---------------------------------------------------------------------------
+
+_OFFSET = re.compile(r"([+-])(\d{2}):(\d{2})$")
+
+
+def _split_timezone(text: str) -> tuple[int | None, str]:
+    """Returns ``(offset_seconds, lexical_without_timezone)``.
+
+    ``None`` means the lexical form carries no timezone, so the value is
+    not comparable across offsets and callers fall back to the lexical
+    form.
+    """
+    if text.endswith("Z"):
+        return 0, text[:-1]
+    match = _OFFSET.search(text)
+    if match is None:
+        return None, text
+    sign = 1 if match.group(1) == "+" else -1
+    seconds = sign * (int(match.group(2)) * 3600 + int(match.group(3)) * 60)
+    return seconds, text[: match.start()]
+
+
+def _datetime_key(text: str) -> Any:
+    offset, core = _split_timezone(text)
+    if offset is None:
+        return ("lex", text)
+    end_of_day = "T24:00:00" in core
+    if end_of_day:
+        core = core.replace("T24:00:00", "T00:00:00")
+    try:
+        moment = _datetime.fromisoformat(core)
+    except ValueError:
+        return ("lex", text)
+    if end_of_day:
+        moment += _timedelta(days=1)
+    return moment - _timedelta(seconds=offset)
+
+
+def _time_key(text: str) -> Any:
+    offset, core = _split_timezone(text)
+    if offset is None:
+        return ("lex", text)
+    end_of_day = core.startswith("24:00:00")
+    if end_of_day:
+        core = "00:00:00" + core[len("24:00:00") :]
+    try:
+        parsed = _datetime.strptime(core, "%H:%M:%S" if "." not in core else "%H:%M:%S.%f")
+    except ValueError:
+        return ("lex", text)
+    seconds = parsed.hour * 3600 + parsed.minute * 60 + parsed.second
+    if end_of_day:
+        seconds += 24 * 3600
+    return seconds - offset
+
+
+def _date_key(text: str) -> Any:
+    offset, core = _split_timezone(text)
+    if offset is None:
+        return ("lex", text)
+    match = re.match(r"^(-?\d{4,})-(\d{2})-(\d{2})$", core)
+    if match is None:
+        return ("lex", text)
+    try:
+        day = _date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return ("lex", text)
+    return _datetime(day.year, day.month, day.day) - _timedelta(seconds=offset)
+
+
+def xsd_value_key(value: Any) -> tuple:
+    """A comparison key implementing XSD value-space equality.
+
+    Lexical spellings that denote one XSD value compare equal: hex case
+    (``FF``/``ff``), base64 whitespace, list whitespace, and timezone
+    offsets that name the same instant. Types without a specialised key
+    fall back to their lexical form.
+    """
+    if isinstance(value, HexBinary):
+        return ("hexBinary", bytes.fromhex(str(value)))
+    if isinstance(value, Base64Binary):
+        return ("base64Binary", base64.b64decode(_ws_remove(str(value))))
+    if isinstance(value, _ListString):
+        return (value.name, tuple(value.tokens))
+    if isinstance(value, DateTime):
+        return ("dateTime", _datetime_key(str(value)))
+    if isinstance(value, Date):
+        return ("date", _date_key(str(value)))
+    if isinstance(value, Time):
+        return ("time", _time_key(str(value)))
+    if isinstance(value, QName) and getattr(value, "_resolved_", False):
+        return ("QName", (value._uri_, value._local_))
+    return (getattr(value, "name", type(value).__name__), str(value))
+
+
+def xsd_comparable_key(value: Any) -> Any:
+    """The type-independent XSD value used to compare two values.
+
+    Identity constraints compare field values across declarations whose
+    types may differ in name but share a value space (e.g. ``xs:ID`` and
+    ``xs:string``, or two string-derived token types), so the type tag
+    from :func:`xsd_value_key` is dropped here.
+    """
+    key = xsd_value_key(value)
+    if isinstance(key, tuple) and len(key) == 2:
+        return key[1]
+    return key

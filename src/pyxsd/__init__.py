@@ -4,9 +4,10 @@ from typing import TYPE_CHECKING
 
 __version__ = "1.0.0"
 
-__all__ = ["PyXSD", "XMLNode", "__version__"]
+__all__ = ["BindingPolicy", "ParseModes", "PyXSD", "XMLNode", "__version__"]
 
 if TYPE_CHECKING:
+    from pyxsd.binding import BindingPolicy, ParseModes
     from pyxsd.nodes import XMLNode
     from pyxsd.parser import PyXSD
 
@@ -14,6 +15,10 @@ if TYPE_CHECKING:
 def __getattr__(name: str):
     # Lazy imports so that ``import pyxsd`` does not pull the parser
     # stack (and the ER tag registry) unless the API is actually used.
+    if name in ("BindingPolicy", "ParseModes"):
+        from pyxsd import binding
+
+        return getattr(binding, name)
     if name == "PyXSD":
         from pyxsd.parser import PyXSD
 

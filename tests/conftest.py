@@ -3,9 +3,6 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import pytest
-
-from pyxsd.element_representatives.element_representative import registry
 from pyxsd.parser import PyXSD
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -30,19 +27,6 @@ ALL_FIXTURES = [
     "compose",
     "identity",
 ]
-
-
-@pytest.fixture(autouse=True)
-def _clear_element_representative_registry():
-    """Reset the module-level element representative registry.
-
-    The registry maps tag/type names to their first-registered
-    element representative and is never cleared between runs, so
-    state would otherwise leak between tests that parse schemas.
-    """
-    registry.clear()
-    yield
-    registry.clear()
 
 
 def fixture_dir(name):

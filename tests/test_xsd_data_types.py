@@ -1,6 +1,7 @@
 """Unit and property tests for the XSD primitive data types."""
 
 import base64
+import math
 
 import pytest
 from hypothesis import given
@@ -332,13 +333,25 @@ from pyxsd.xsd_data_types import (  # noqa: E402
     UnsignedInt,
     UnsignedLong,
     UnsignedShort,
+    xsd_value_key,
 )
 
 LATTICE = [
     # (class, [valid], [invalid])
     (AnySimpleType, ["anything", "", "  spaced  "], []),
     (AnyType, ["<any><content/>", "text"], []),
-    (AnyURI, ["https://example.com/a?b=c", "relative/path", "", "urn:x:1"], ["a b"]),
+    (
+        AnyURI,
+        [
+            "https://example.com/a?b=c",
+            "relative/path",
+            "",
+            "urn:x:1",
+            # XSD anyURI allows spaces (mapped through escaping).
+            "a b",
+        ],
+        [],
+    ),
     (Base64Binary, ["aGVsbG8=", "", "aGVs bG8="], ["not*base64!", "a"]),
     (Boolean, ["true", "false", "1", "0"], ["True", "FALSE", "2", "yes"]),
     (Byte, ["127", "-128", "0"], ["128", "-129"]),
@@ -354,8 +367,10 @@ LATTICE = [
             "2006-08-30T14:30:00.123456",
             "2006-08-30T14:30:00Z",
             "2006-08-30T23:59:59",
+            # End-of-day is legal when minutes and seconds are zero.
+            "2006-08-30T24:00:00",
         ],
-        ["2006-08-30 14:30:00", "2006-08-30T24:00:00", "2006-08-30T14:30", "2006-08-30T14:30:60"],
+        ["2006-08-30 14:30:00", "2006-08-30T14:30", "2006-08-30T14:30:60"],
     ),
     (Decimal, ["19.95", "-0.5", "+3", ".5", "3.", "0"], ["1e5", "abc", "1.5.5", "-"]),
     (
@@ -369,7 +384,15 @@ LATTICE = [
         ["P", "1Y", "PT", "P1S", "X1D"],
     ),
     (ENTITY, ["e1", "_x"], ["1x", "a:b"]),
-    (ENTITIES, ["e1 e2", "e1", ""], ["e1 1x"]),
+    # The built-in list types require at least one item; empty is invalid.
+    (
+        ENTITIES,
+        ["e1 e2", "e1"],
+        [
+            "e1 1x",
+            "",
+        ],
+    ),
     (Float, ["1.5", "INF", "NaN"], ["foo"]),
     (GDay, ["---31", "---01Z", "---15+05:00"], ["---32", "--31", "31"]),
     (GMonth, ["--08", "--01Z", "--12"], ["--13", "--8", "---08"]),
@@ -379,7 +402,15 @@ LATTICE = [
     (HexBinary, ["00FF10", "", "0F"], ["0FG", "0FF"]),
     (ID, ["a1", "_x", "S-001"], ["1x", "a b", "a:b"]),
     (IDREF, ["r1"], ["1x"]),
-    (IDREFS, ["a b c", "a", ""], ["a 1!", "a b!"]),
+    (
+        IDREFS,
+        ["a b c", "a"],
+        [
+            "a 1!",
+            "a b!",
+            "",
+        ],
+    ),
     (Int, ["2147483647", "-2147483648", "0"], ["2147483648", "-2147483649"]),
     (Integer, ["42", "-7", "0", "+9", " 5 "], ["1_000", "3.5", "abc"]),
     (Language, ["en", "en-US", "x-1"], ["toolonglanguage", "-en", "en_US"]),
@@ -391,19 +422,44 @@ LATTICE = [
     (Name, ["a", "a:b", "_x1", ":a:b:"], ["1a", "a b"]),
     (NCName, ["a", "_x1", "S-001"], ["1x", "a:b"]),
     (NMTOKEN, ["a", "1a", "a:b", "-"], ["", "a b"]),
-    (NMTOKENS, ["a 1a b:c", "a", ""], ["a b!", "a,b"]),
+    (
+        NMTOKENS,
+        ["a 1a b:c", "a"],
+        [
+            "a b!",
+            "a,b",
+            "",
+        ],
+    ),
     (NegativeInteger, ["-1", "-99999"], ["0", "5"]),
     (NonNegativeInteger, ["0", "5"], ["-1"]),
     (NonPositiveInteger, ["0", "-5"], ["1"]),
-    (NormalizedString, ["hello world", ""], ["a\nb", "a\tb", "a\rb"]),
+    (
+        NormalizedString,
+        [
+            "hello world",
+            "",
+            # These are folded to spaces, not rejected.
+            "a\nb",
+            "a\tb",
+            "a\rb",
+        ],
+        [],
+    ),
     (PositiveInteger, ["1", "99999"], ["0", "-3"]),
     (QName, ["xs:string", "local", "_a:b9"], [":x", "a:", "1:b"]),
     (Short, ["32767", "-32768"], ["32768", "-32769"]),
     (String, ["anything", ""], []),
     (
         Time,
-        ["14:30:00", "23:59:59.999", "00:00:00Z", "09:15:00-08:00"],
-        ["24:00:00", "14:30", "14:30:61"],
+        [
+            "14:30:00",
+            "23:59:59.999",
+            "00:00:00Z",
+            "09:15:00-08:00",
+            "24:00:00",
+        ],
+        ["14:30", "14:30:61"],
     ),
     (Token, ["hello", "  padded  "], []),
     (UnsignedByte, ["0", "255"], ["256", "-1"]),
@@ -413,10 +469,30 @@ LATTICE = [
 ]
 
 
+def _lattice_id(v):
+    """Param id helper that understands ``pytest.param`` wrappers."""
+    if hasattr(v, "values"):
+        v = v.values[0]
+    if isinstance(v, str):
+        return v
+    return getattr(v, "__name__", repr(v))
+
+
+def _expand(cls, values):
+    """Preserve ``pytest.param`` marks when flattening the lattice."""
+    rows = []
+    for value in values:
+        if hasattr(value, "values"):  # pytest.param wrapper
+            rows.append(pytest.param(cls, value.values[0], marks=value.marks, id=value.id))
+        else:
+            rows.append((cls, value))
+    return rows
+
+
 @pytest.mark.parametrize(
     "cls,value",
-    [item for cls, valid, _ in LATTICE for item in [(cls, v) for v in valid]],
-    ids=lambda v: v if isinstance(v, str) else v.__name__,
+    [row for cls, valid, _ in LATTICE for row in _expand(cls, valid)],
+    ids=_lattice_id,
 )
 def test_lattice_valid(cls, value):
     instance = cls(value)
@@ -425,8 +501,8 @@ def test_lattice_valid(cls, value):
 
 @pytest.mark.parametrize(
     "cls,value",
-    [item for cls, _, invalid in LATTICE for item in [(cls, v) for v in invalid]],
-    ids=lambda v: repr(v) if isinstance(v, str) else v.__name__,
+    [row for cls, _, invalid in LATTICE for row in _expand(cls, invalid)],
+    ids=_lattice_id,
 )
 def test_lattice_invalid(cls, value):
     with pytest.raises(TypeError):
@@ -457,6 +533,93 @@ class TestWhitespaceCollapse:
 
     def test_normalized_string_preserves_spaces(self):
         assert NormalizedString("  padded  ") == "  padded  "
+
+
+class TestXsdLexicalCorrectness:
+    """Regression tests for the corrected built-in lexical rules (R13)."""
+
+    def test_normalized_string_folds_xml_whitespace(self):
+        assert NormalizedString("a\tb\nc\rd") == "a b c d"
+
+    def test_normalized_string_keeps_nbsp(self):
+        assert NormalizedString("a\u00a0b") == "a\u00a0b"
+
+    def test_token_collapses(self):
+        assert Token("  a   b  ") == "a b"
+
+    def test_nbsp_is_not_xsd_whitespace(self):
+        with pytest.raises(TypeError):
+            Integer("\u00a01\u00a0")
+
+    def test_float_is_binary32(self):
+        assert Float("16777217") == 16777216.0
+        assert math.isinf(Float("1e39"))
+        assert Float("1e-50") == 0.0
+
+    def test_float_rejects_plus_inf(self):
+        with pytest.raises(TypeError):
+            Float("+INF")
+        # The unadorned spelling remains legal.
+        assert math.isinf(Double("INF"))
+
+    def test_base64_rejects_nonzero_pad_bits(self):
+        with pytest.raises(TypeError):
+            Base64Binary("AB==")
+        with pytest.raises(TypeError):
+            Base64Binary("AAB=")
+        assert Base64Binary("AA==") == "AA=="
+
+    def test_base64_rejects_nbsp(self):
+        with pytest.raises(TypeError):
+            Base64Binary("AA\u00a0==")
+
+    def test_list_types_require_one_item(self):
+        for cls in (IDREFS, ENTITIES, NMTOKENS):
+            with pytest.raises(TypeError):
+                cls("")
+            with pytest.raises(TypeError):
+                cls(" \t ")
+
+    def test_lists_do_not_split_on_nbsp(self):
+        with pytest.raises(TypeError):
+            NMTOKENS("a\u00a0b")
+
+    def test_xml_name_ranges(self):
+        assert NCName("a\u0301") == "a\u0301"
+        assert NCName("a\u00b7b") == "a\u00b7b"
+        with pytest.raises(TypeError):
+            NCName("\u00b2x")
+        with pytest.raises(TypeError):
+            NCName("1x")
+
+    def test_temporal_bounds(self):
+        assert Time("24:00:00") == "24:00:00"
+        assert DateTime("2006-08-30T24:00:00") == "2006-08-30T24:00:00"
+        with pytest.raises(TypeError):
+            Date("2006-08-30+99:99")
+        with pytest.raises(TypeError):
+            GYear("0000")
+        with pytest.raises(TypeError):
+            GYear("02006")
+        with pytest.raises(TypeError):
+            GYear("\u0662\u0660\u0660\u0666")
+        assert GYear("-0044") == "-0044"
+
+    def test_anyuri_allows_spaces(self):
+        assert AnyURI("a b") == "a b"
+        assert AnyURI("  a b  ") == "a b"
+
+    def test_duration_collapses_whitespace(self):
+        assert Duration(" P1D ") == "P1D"
+
+    def test_value_key_normalises_equivalent_spellings(self):
+        assert xsd_value_key(HexBinary("FF")) == xsd_value_key(HexBinary("ff"))
+        assert xsd_value_key(NMTOKENS("a  b")) == xsd_value_key(NMTOKENS("a b"))
+        assert xsd_value_key(Date("2006-08-30+00:00")) == xsd_value_key(Date("2006-08-30Z"))
+        assert xsd_value_key(DateTime("1999-12-31T19:00:00-05:00")) == xsd_value_key(
+            DateTime("2000-01-01T00:00:00Z")
+        )
+        assert xsd_value_key(Date("2006-08-30")) != xsd_value_key(Date("2006-08-31"))
 
 
 class TestListTypes:

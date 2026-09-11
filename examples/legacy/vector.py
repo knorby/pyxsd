@@ -5,7 +5,7 @@ class Vector(tuple):
     """A tuple of floats with vector arithmetic, for the CellSizer example library.
 
     Historical note: part of the original 0.1 crystallography
-    transform library; moved to ``examples/transforms/`` in pyxsd 1.0.
+    transform library; moved to ``examples/legacy/`` in pyxsd 1.0.
     """
 
     def __init__(self, val):

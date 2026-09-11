@@ -93,7 +93,7 @@ file.
 
 ## Crystallography examples
 
-The old application transforms live in `examples/transforms/` and are
+The old application transforms live in `examples/legacy/` and are
 used the same way — run from that directory or copy the files next to
-your data. See `examples/transforms/README.md` and the transform docs in
+your data. See `examples/legacy/README.md` and the transform docs in
 {doc}`transforms/using`.

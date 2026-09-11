@@ -21,6 +21,9 @@ class AttributeGroup(ElementRepresentative):
         ElementRepresentative for more documentation.
         """
         self.attributes = {}
+        # Reference sites nested inside a definition (or another
+        # reference) collect here so resolution can recurse.
+        self.attributeGroupRefs = []
         super().__init__(xsdElement, parent)
         self.isRefSite = self.xsdElement.get("ref") is not None
         if self.isRefSite:

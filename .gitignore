@@ -23,8 +23,17 @@ coverage.xml
 .codegraph/
 .serena/
 
+# Local design notes and agent plans (not part of the published project)
+docs/superpowers/
+
 # Docs build output
 docs/_build/
+
+# Downloaded schemas for the docx, gpx, and musicxml examples
+# (fetch with examples/*/download_schemas.py; too large to commit)
+examples/docx/schemas/
+examples/gpx/schemas/
+examples/musicxml/schemas/
 
 # OS noise
 .DS_Store

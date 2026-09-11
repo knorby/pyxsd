@@ -15,6 +15,7 @@ demo
 architecture
 data-model
 validation
+binding
 transforms/index
 supported
 api

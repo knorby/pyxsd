@@ -22,9 +22,12 @@ consistent with the rest of the parser. Predicates (``[...]``) and
 absolute paths (``/``) are not supported and cause the constraint to
 be skipped with a report warning.
 
-Values are compared by their string (lexical) form: attribute values
-come from the bound lexical form or a typed fallback (which covers
-applied schema defaults), element fields use the bound value.
+Identity constraints are scoped to the element occurrence that owns
+them: a repeating element with a key declaration gets an independent
+value table per occurrence, and a keyref resolves against the nearest
+enclosing scope that defines the referenced constraint. Values are
+compared in the XSD value space (see ``xsd_value_key``), so
+lexically different spellings of one value match.
 """
 
 import logging
@@ -32,12 +35,15 @@ from typing import Any
 
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
-from pyxsd.xsd_data_types import XsdDataType
+from pyxsd.xsd_data_types import XsdDataType, xsd_comparable_key
 
 logger = logging.getLogger(__name__)
 
 _MISSING: Any = object()
 _UNSUPPORTED: Any = object()
+_AMBIGUOUS: Any = object()
+
+KeyScopes = tuple[dict[str, set[tuple[Any, ...]]], ...]
 
 
 def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> None:
@@ -47,101 +53,101 @@ def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> N
     - ``report``: the :class:`~pyxsd.validation.ValidationReport` that
       collects the findings.
 
-    Keys and uniques are collected first (over the whole tree), then
-    keyrefs are resolved against the collected values. A keyref whose
-    ``refer`` names no collected key or unique is an error.
+    Constraints are evaluated in scoped passes: keys/uniques are
+    collected for each owning element occurrence and pushed onto the
+    scope chain, then keyrefs on the same occurrence (or a descendant)
+    resolve against the nearest scope that defines the referenced
+    constraint.
     """
     if rootInstance is None:
         return None
-    keyValues: dict[str, set[tuple[str, ...]]] = {}
-    keyrefRecords: list[tuple[Any, tuple[str, ...]]] = []
-    _walk(rootInstance, keyValues, keyrefRecords, report)
-    for constraint, values in keyrefRecords:
-        _checkKeyref(constraint, values, keyValues, report)
+    _walk(rootInstance, (), report)
     return None
 
 
-def _walk(
-    instance: Any,
-    keyValues: dict[str, set[tuple[str, ...]]],
-    keyrefRecords: list[tuple[Any, tuple[str, ...]]],
-    report: ValidationReport,
-) -> None:
+def _walk(instance: Any, scopes: KeyScopes, report: ValidationReport) -> None:
     """Applies the constraints of ``instance`` and recurses downward."""
     descriptor = getattr(instance, "_descriptor_", None)
-    if descriptor is not None:
-        for constraint in getattr(descriptor, "identities", []):
-            _applyConstraint(instance, constraint, keyValues, keyrefRecords, report)
+    identities = list(getattr(descriptor, "identities", []) or []) if descriptor is not None else []
+
+    localKeys: dict[str, set[tuple[Any, ...]]] = {}
+    keyrefs: list[Any] = []
+    for constraint in identities:
+        kind = constraint.__class__.__name__
+        if kind in ("Key", "Unique"):
+            values = _collectKeyValues(instance, constraint, kind, report)
+            if values is not None:
+                localKeys[constraint.constraintName] = values
+        elif kind == "Keyref":
+            keyrefs.append(constraint)
+
+    childScopes = (*scopes, localKeys) if localKeys else scopes
+    for constraint in keyrefs:
+        _checkKeyref(constraint, instance, childScopes, report)
+
     for child in getattr(instance, "_children_", None) or []:
-        if isinstance(child, SchemaBase):
-            _walk(child, keyValues, keyrefRecords, report)
+        _walk(child, childScopes, report)
     return None
 
 
-def _applyConstraint(
+def _collectKeyValues(
     node: Any,
     constraint: Any,
-    keyValues: dict[str, set[tuple[str, ...]]],
-    keyrefRecords: list[tuple[Any, tuple[str, ...]]],
+    kind: str,
     report: ValidationReport,
-) -> None:
-    """Evaluates one constraint against the children of one node."""
-    kind = constraint.__class__.__name__
+) -> set[tuple[Any, ...]] | None:
+    """Collects one key/unique constraint's value tuples for one occurrence.
+
+    Returns ``None`` when the constraint cannot be evaluated (the
+    warning is already on the report).
+    """
     selected = _selectNodes(node, constraint, report)
     if selected is None:
         return None
-    seen = None
-    if kind in ("Key", "Unique"):
-        seen = keyValues.setdefault(constraint.constraintName, set())
+    seen: set[tuple[Any, ...]] = set()
     for selectedNode in selected:
-        values = []
-        missingField = None
-        for fieldPath in constraint.fieldPaths:
-            value = _evalField(selectedNode, fieldPath, constraint, report)
-            if value is _UNSUPPORTED:
-                # The constraint cannot be checked; the warning is
-                # already on the report.
-                return None
-            if value is _MISSING:
-                missingField = fieldPath
-                break
-            values.append(value)
-        if missingField is not None:
+        resolved = _fieldValues(selectedNode, constraint, report)
+        if resolved is _UNSUPPORTED:
+            return None
+        if resolved is _MISSING:
             if kind == "Key":
                 report.add_error(
-                    f"key '{constraint.constraintName}': field '{missingField}' "
-                    f"has no value on the selected '{_nameOf(selectedNode)}' element",
+                    f"key '{constraint.constraintName}': a selected "
+                    f"'{_nameOf(selectedNode)}' element has no value for one of its fields",
                     code="identity-key",
                     element=_nameOf(node),
                 )
-            # unique and keyref ignore nodes where a field is absent.
+            # unique ignores nodes where a field is absent.
             continue
-        valueTuple = tuple(values)
-        if kind == "Keyref":
-            keyrefRecords.append((constraint, valueTuple))
+        if resolved is _AMBIGUOUS:
+            # Already reported by _fieldValues; the constraint fails.
             continue
-        if seen is not None and valueTuple in seen:
+        if resolved in seen:
             report.add_error(
                 f"{kind.lower()} '{constraint.constraintName}': duplicate value "
-                f"{_formatValues(valueTuple)} on the selected '{_nameOf(selectedNode)}' element",
+                f"{_formatValues(resolved)} on the selected "
+                f"'{_nameOf(selectedNode)}' element",
                 code="identity-key" if kind == "Key" else "identity-unique",
                 element=_nameOf(node),
             )
             continue
-        if seen is not None:
-            seen.add(valueTuple)
-    return None
+        seen.add(resolved)
+    return seen
 
 
 def _checkKeyref(
     constraint: Any,
-    values: tuple[str, ...],
-    keyValues: dict[str, set[tuple[str, ...]]],
+    node: Any,
+    scopes: KeyScopes,
     report: ValidationReport,
 ) -> None:
-    """Reports a keyref record that matches no collected key or unique."""
+    """Checks one keyref constraint's records against its key scope."""
     referLocal = constraint.refer.split(":")[-1]
-    known = keyValues.get(referLocal)
+    known = None
+    for scope in reversed(scopes):
+        if referLocal in scope:
+            known = scope[referLocal]
+            break
     if known is None:
         report.add_error(
             f"keyref '{constraint.constraintName}' refers to '{constraint.refer}', "
@@ -150,14 +156,56 @@ def _checkKeyref(
             element=constraint.constraintName,
         )
         return None
-    if values not in known:
-        report.add_error(
-            f"keyref '{constraint.constraintName}': value {_formatValues(values)} "
-            f"does not match any value of the '{constraint.refer}' constraint",
-            code="identity-keyref",
-            element=constraint.constraintName,
-        )
+
+    selected = _selectNodes(node, constraint, report)
+    if selected is None:
+        return None
+    for selectedNode in selected:
+        resolved = _fieldValues(selectedNode, constraint, report)
+        if resolved is _UNSUPPORTED:
+            return None
+        if resolved in (_MISSING, _AMBIGUOUS):
+            # A keyref with a missing/ambiguous field is simply absent.
+            continue
+        if resolved not in known:
+            report.add_error(
+                f"keyref '{constraint.constraintName}': value {_formatValues(resolved)} "
+                f"does not match any value of the '{constraint.refer}' constraint",
+                code="identity-keyref",
+                element=constraint.constraintName,
+            )
     return None
+
+
+def _fieldValues(
+    selectedNode: Any,
+    constraint: Any,
+    report: ValidationReport,
+) -> Any:
+    """Returns the XSD value key for one selected node's fields.
+
+    Returns ``_MISSING`` (no value), ``_AMBIGUOUS`` (a field selects
+    more than one value; reported as an error) or ``_UNSUPPORTED``
+    (path not supported; warning already recorded).
+    """
+    values: list[tuple[Any, ...]] = []
+    for fieldPath in constraint.fieldPaths:
+        result = _evalField(selectedNode, fieldPath, constraint, report)
+        if result is _UNSUPPORTED:
+            return _UNSUPPORTED
+        if not result:
+            return _MISSING
+        if len(result) > 1:
+            report.add_error(
+                f"field '{fieldPath}' of identity constraint "
+                f"'{constraint.constraintName}' selects more than one value on "
+                f"the '{_nameOf(selectedNode)}' element",
+                code="identity-key",
+                element=_nameOf(selectedNode),
+            )
+            return _AMBIGUOUS
+        values.append(xsd_comparable_key(result[0]))
+    return tuple(values)
 
 
 def _selectNodes(node: Any, constraint: Any, report: ValidationReport) -> list[Any] | None:
@@ -201,9 +249,11 @@ def _selectNodes(node: Any, constraint: Any, report: ValidationReport) -> list[A
 
 
 def _evalField(selectedNode: Any, fieldPath: str, constraint: Any, report: ValidationReport) -> Any:
-    """Returns the string value of one field of one selected node.
+    """Returns the values one field selects on one node.
 
-    Returns ``_MISSING`` when the field has no value on this node.
+    A list of zero or more values is returned; ``_UNSUPPORTED`` when the
+    path cannot be evaluated. Fields that select more than one value are
+    diagnosed by the caller via the list length.
     """
     if "[" in fieldPath:
         report.add_warning(
@@ -236,11 +286,12 @@ def _evalField(selectedNode: Any, fieldPath: str, constraint: Any, report: Valid
             )
         else:
             nodes = [selectedNode] if not descendant else list(_descendantOrSelfNodes(selectedNode))
-        for node in nodes:
-            value = _attributeValue(node, attributeName)
-            if value is not None:
-                return value
-        return _MISSING
+        return [
+            value
+            for node in nodes
+            for value in [_attributeValue(node, attributeName)]
+            if value is not None
+        ]
     # A field ending in ``.`` was already reduced to the element steps
     # before it (or nothing at all, meaning the selected node itself)
     # by ``_parsePath``, so the remaining case is a field naming an
@@ -254,11 +305,7 @@ def _evalField(selectedNode: Any, fieldPath: str, constraint: Any, report: Valid
         if descendant
         else _evalSteps(selectedNode, steps)
     )
-    for node in nodes:
-        value = _nodeValue(node)
-        if value is not None:
-            return value
-    return _MISSING
+    return [value for node in nodes for value in [_nodeValue(node)] if value is not None]
 
 
 def _parsePath(path: str) -> tuple[bool, list[str] | None]:
@@ -291,20 +338,21 @@ def _evalSteps(node: Any, steps: list[str]) -> list[Any]:
         for current in nodes:
             for child in _childrenOf(current):
                 childName = _nameOf(child)
-                if step == "*" or childName == step:
+                localName = childName.split("}", 1)[-1] if childName.startswith("{") else childName
+                if step == "*" or childName == step or localName == step:
                     nextNodes.append(child)
         nodes = nextNodes
     return nodes
 
 
 def _descendantOrSelfNodes(node: Any) -> list[Any]:
-    """Returns ``node`` and all its bound complex descendants."""
+    """Returns ``node`` and all its bound descendants."""
     nodes = [node]
     index = 0
     while index < len(nodes):
         current = nodes[index]
         index += 1
-        nodes.extend(child for child in _childrenOf(current) if isinstance(child, SchemaBase))
+        nodes.extend(_childrenOf(current))
     return nodes
 
 
@@ -324,31 +372,40 @@ def _nameOf(node: Any) -> str:
     return node.__class__.__name__ if not isinstance(node, XsdDataType) else "?"
 
 
-def _attributeValue(node: Any, attributeName: str) -> str | None:
-    """Returns the bound value of one attribute, or ``None``."""
+def _attributeValue(node: Any, attributeName: str) -> Any | None:
+    """Returns the bound value of one attribute, or ``None``.
+
+    The typed value stored on the instance is preferred over the raw
+    lexical form, so equality is evaluated in the XSD value space.
+    """
+    value = node.__dict__.get(attributeName)
+    if value is not None:
+        return value
     attribs = getattr(node, "_attribs_", None)
     if attribs:
         value = attribs.get(attributeName)
         if value is not None:
-            return str(value)
-    value = node.__dict__.get(attributeName)
-    if value is not None:
-        return str(value)
+            return value
     return None
 
 
-def _nodeValue(node: Any) -> str | None:
-    """Returns the simple-content value of a bound node, or ``None``."""
+def _nodeValue(node: Any) -> Any | None:
+    """Returns the simple-content value of a bound node, or ``None``.
+
+    Nilled elements carry no value and yield ``None``.
+    """
+    if getattr(node, "_nil_", False):
+        return None
     if isinstance(node, XsdDataType):
-        return str(node)
+        return node
     if isinstance(node, SchemaBase):
         value = getattr(node, "_value_", None)
         if isinstance(value, list):
-            return str(value[0]) if value else None
+            return value[0] if value else None
     return None
 
 
-def _formatValues(values: tuple[str, ...]) -> str:
+def _formatValues(values: tuple[Any, ...]) -> str:
     """Formats a field-value tuple for report messages."""
     if len(values) == 1:
         return repr(values[0])

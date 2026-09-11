@@ -9,6 +9,121 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](docs/migration-1.0.md).
 
+## [Unreleased]
+
+A validation-correctness pass over the 1.0.0 feature set. Public API and
+round-trip output are unchanged except where the previous behavior was
+provably wrong.
+
+### Added
+
+- `pyxsd.derivation`: XSD type-derivation compatibility used by `xsi:type`
+  dispatch, honoring element/type `block` (`#all`, `extension`, `restriction`).
+- `unexpected-element` and `circular-attributeGroup` validation codes.
+- `ValidationIssue.phase` (`"schema"` or `"instance"`) and
+  `ValidationReport.for_phase()`, so schema-compilation diagnostics can no
+  longer be confused with instance diagnostics.
+- Manifest `expected_values` assertions in the conformance corpus (defaults
+  and folds are checked by value, not just by a clean report).
+- Opt-in, non-gating `tests/test_oracle.py` cross-check against the
+  independent `xmlschema` library (dev dependency; skipped unless
+  `PYXSD_RUN_ORACLE=1`).
+- `ParseModes` presets (`STRICT`, `LAX`, `NAMESPACED`) and the
+  `BindingPolicy` dataclass, plus `PyXSD(mode=...)` and CLI
+  `--mode strict|lax` / `--namespaces strict|legacy`. Modes change only what
+  is bound into the tree; the validation report stays strict. See
+  `docs/binding.md`.
+- Opt-in XML Namespaces support (`BindingPolicy.namespaces`, default
+  `legacy`): namespace capture during parsing, expanded-name component
+  identity, `elementFormDefault` / `attributeFormDefault`-aware instance
+  matching, prefixed `type`/`ref`/`xsi:type` resolution, cross-namespace
+  `xs:import` (including `PyXSD(namespace_schemas=...)`), wildcard
+  namespace lists and `processContents`, QName value-space identity, and
+  namespace-aware output writers.
+- Validation codes `unknown-namespace-prefix`, `wildcard-no-declaration`,
+  and `import-unresolved` (namespaced mode).
+- A `namespaces/` category in the conformance corpus (form defaults,
+  cross-namespace type/ref, `xsi:type`, wildcards, QName identity), run in
+  namespaced mode through both the gating suite and the `xmlschema` oracle.
+- `examples/musicxml/`, `examples/gpx/`, and `examples/docx/`: real-format
+  schema/instance/transform examples with end-to-end tests, each validating a
+  genuine document against the official published schema fetched on demand by
+  a local `download_schemas.py` (not committed; the tests skip when absent).
+  `musicxml` validates a public-domain Bach chorale against the MusicXML 4.0
+  schema (which imports the XML and XLink namespaces); `gpx` validates a real
+  ride against the official GPX 1.1 schema, including Garmin extension data
+  admitted by `xs:any processContents="lax"`; `docx` validates a realistic
+  `word/document.xml` against the full ECMA-376 `wml.xsd` and renders
+  style-aware Markdown covering multilevel lists, tables, hyperlinks,
+  breaks/tabs, run properties, and `xml:space="preserve"`. All three run in
+  `ParseModes.NAMESPACED`; the earlier no-namespace `ParseModes.LAX` docx demo
+  is kept under `examples/docx/lax/`.
+
+### Fixed
+
+- Built-in datatypes: XSD whitespace handling (replace/collapse, XML
+  whitespace only), IEEE binary32 semantics for `xs:float`, bounded timezones,
+  `24:00:00`, year `0000`/leading zeros, ASCII-only digits, base64 pad-bit
+  validation, list types requiring at least one item, explicit XML
+  NameStartChar/NameChar ranges, `anyURI` permitting spaces, and value-space
+  equality for `fixed` (hex case, list whitespace, equivalent timezones).
+- Content models: a compiled particle tree now matches sequences, choices,
+  `all`, nested compositors, repeated groups, and substitutions with complete
+  consumption; unmatched and trailing children are reported instead of silently
+  dropped, and complex-content restrictions no longer retain removed particles.
+- Elements whose declared type is a derived simple type are constructed as
+  values instead of crashing; primitive-typed roots share the child path's
+  empty/default/fixed/value validation and `xsi:nil` rules.
+- Identity constraints: tables are scoped to each element occurrence, fields
+  compare XSD typed values (not lexical strings), multi-node fields and nilled
+  fields are handled, and constraints on primitive declarations are walked.
+- Composition: each parser owns its component table (no cross-parser leakage;
+  an element and a type may share a name); element `ref`s inside groups resolve;
+  nested `attributeGroup` references merge; group/attributeGroup single-level
+  `redefine` rebinds inner references; namespace-only `xs:import` is allowed;
+  legal include cycles are deduplicated.
+- `xsi:type` overrides must be validly derived from the declared type and are
+  rejected when blocked; substitution-group members use their own declaration's
+  `nillable`/`default`/`fixed`/identity constraints rather than the head's.
+- `final` is treated as a whitespace-separated token list.
+- `xs:attribute ref="..."` resolves across namespaces, including global
+  attributes declared in imported schemas; an unresolved reference reports
+  `unknown-attributeRef` and an unresolved type base reports `unknown-type`
+  instead of crashing during class construction.
+- Unprefixed QName *values* (`type`, `base`, `ref`, `substitutionGroup`) use
+  the in-scope default namespace, as XSD requires (previously real OOXML
+  types such as `base="CT_Markup"` failed to resolve).
+- `xml:space="preserve"` text keeps its significant leading/trailing and
+  repeated whitespace; string/simple-content values are no longer stripped.
+- Content-model matching is memoized, so large real-world schemas such as
+  WordprocessingML no longer backtrack exponentially.
+- Class generation iterates the parser-owned component table, so types that
+  share a local name across imported namespaces (for example `CT_Color`) no
+  longer shadow each other; type lookup resolves the QName before falling
+  back to the local name.
+- A `ref` site resolves through its target declaration for instance matching,
+  so replacement attributes such as `r:id` and `xml:space` bind in the
+  referring element's namespace.
+
+### Changed
+
+- Compose include/redefine cycles are deduplicated and reported as a
+  `compose-cycle` warning rather than a fatal error.
+- The conformance runner validates the schema and instance phases
+  independently, so an instance error can no longer mask a schema error.
+- The `xsi_type` fixture and `xsi:type` corpus cases now use a genuinely
+  derived type (the previous schemas were not valid XSD).
+- The conformance corpus is described as independently authored, suite-inspired
+  regression cases rather than copied W3C/NIST cases.
+- The corpus now carries an optional `mode` field, and the `xmlschema`
+  oracle runs every case under its declared binding policy so namespace,
+  wildcard, and QName behavior is cross-checked rather than skipped.
+- The crystallography transforms from 0.1 moved from `examples/transforms/`
+  to `examples/legacy/` (their schemas and data are no longer distributed).
+- GitHub Actions are pinned to the latest majors and the Pages deploy steps
+  run only on `main`, so pull requests build docs without requiring Pages.
+- Local design notes under `docs/superpowers/` are no longer tracked.
+
 ## [1.0.0] - 2026-09-10
 
 pyxsd 1.0.0 is a ground-up modernization of the 2006 0.1 release. The library
@@ -40,7 +155,7 @@ XSD 1.0, and placed under a comprehensive test and conformance suite.
   (`_name_`, `_attribs_`, `_children_`, `_value_`).
 - Element and attribute descriptors support `__set_name__`, class-level
   access, and working programmatic assignment.
-- Over 600 tests, including a 54-case W3C-derived conformance corpus with a
+- Over 600 tests, including a 54-case suite-inspired conformance corpus with a
   standalone pass-rate reporter (`tests/report_conformance.py`).
 - Full type annotations; mypy runs in CI.
 - Sphinx documentation site (MyST + furo) with quickstart, CLI reference,

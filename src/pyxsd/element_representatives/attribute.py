@@ -34,9 +34,31 @@ class Attribute(ElementRepresentative):
     def __init__(self, xsdElement, parent):
         """Adds itself to the attribute dictionary in its containing
         type. See ElementRepresentative for documentation.
+
+        Reference sites (``<xs:attribute ref="..."/>``) carry no
+        ``name`` of their own; a bookkeeping name is assigned in
+        ``getName`` and the site is resolved to the referenced global
+        declaration when the generated class is built (see
+        ``XsdType.resolveAttributeRefs``).
         """
+        self.isAttributeRef = xsdElement.get("ref") is not None
+        if self.isAttributeRef:
+            self.ref = xsdElement.get("ref")
         super().__init__(xsdElement, parent)
         self.getContainingType().attributes[self.name] = self
+
+    def getName(self):
+        """Returns the attribute's schema name.
+
+        Reference sites make a unique bookkeeping name like
+        ``ContainingTypeName``|attributeRef|``ref``; the resolved
+        reference later adopts the referred declaration's name so
+        instance matching and Python access work.
+        """
+        if getattr(self, "isAttributeRef", False):
+            contName = self.getContainingTypeName()
+            return f"{contName}|attributeRef|{self.ref}"
+        return self.xsdElement.get("name")
 
     def __set_name__(self, owner, name):
         """Called when this descriptor is bound as ``name`` on ``owner``.
@@ -77,6 +99,17 @@ class Attribute(ElementRepresentative):
         for child in children:
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
+            # An ``xsd:annotation`` is documentation, not the attribute's
+            # type. Schemas commonly attach one to an attribute that
+            # already carries a ``type`` attribute (GPX does this for
+            # every attribute), and taking its bookkeeping name as the
+            # type overwrites the real one.
+            if child.tag.split("}")[-1] == "annotation":
+                continue
+            # An explicit ``type`` attribute wins over any child; a child
+            # is the inline ``xsd:simpleType`` used when there is none.
+            if "type" in self.tagAttributes:
+                continue
             self.type = processedChild.name
             self.tagAttributes["type"] = self.type
             # NOTE: the factory call above already processed the child's
@@ -88,17 +121,28 @@ class Attribute(ElementRepresentative):
     def getType(self):
         """Returns its type from the class dictionary in PyXSD.
 
+        Reference sites use the referenced global declaration's type.
         The instance of PyXSD is attached to every element and attribute
         while the classes for the schema types are being built.
         Clearly, this function is used after the main ER run.
         """
+        if getattr(self, "isAttributeRef", False):
+            referred = getattr(self, "referredAttribute", None)
+            if referred is None:
+                raise TypeError(f"attribute reference {self.ref!r} was not resolved")
+            return referred.getType()
+
         if "type" not in self.__dict__:
             raise TypeError(f"Attribute.getType() Error: type is not in {self.name}'s dictionary.")
 
-        if self.type in self.pyXSD.classes:
-            return self.pyXSD.classes[self.type]
+        # Resolve the QName first so strict mode disambiguates types
+        # that share a local name across namespaces; in legacy mode this
+        # is the same raw-type lookup as before.
+        resolved = self.resolvedTypeName()
+        if resolved is not None and resolved in self.pyXSD.classes:
+            return self.pyXSD.classes[resolved]
 
-        return self.typeFromName(self.type, self.pyXSD)
+        return self.typeFromName(resolved, self.pyXSD)
 
     def __get__(self, obj, objtype=None):
         """Gets an attribute value from the obj's dictionary.
@@ -170,14 +214,28 @@ class Attribute(ElementRepresentative):
         """Returns the attribute's schema ``default`` value, or ``None``.
 
         When the attribute is absent from an instance document, the
-        default supplies its value.
+        default supplies its value. A reference site may override the
+        referenced declaration's default.
         """
-        return self.tagAttributes.get("default")
+        if self.tagAttributes.get("default") is not None:
+            return self.tagAttributes["default"]
+        if getattr(self, "isAttributeRef", False):
+            referred = getattr(self, "referredAttribute", None)
+            if referred is not None:
+                return referred.getDefault()
+        return None
 
     def getFixed(self):
         """Returns the attribute's schema ``fixed`` value, or ``None``.
 
         A ``fixed`` attribute must either be absent (in which case it
-        takes the fixed value) or carry exactly that value.
+        takes the fixed value) or carry exactly that value. A reference
+        site may override the referenced declaration's fixed value.
         """
-        return self.tagAttributes.get("fixed")
+        if self.tagAttributes.get("fixed") is not None:
+            return self.tagAttributes["fixed"]
+        if getattr(self, "isAttributeRef", False):
+            referred = getattr(self, "referredAttribute", None)
+            if referred is not None:
+                return referred.getFixed()
+        return None

@@ -11,6 +11,7 @@ from conftest import FIXTURES_DIR
 from pyxsd.parser import PyXSD
 
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
+XSI_NS_DECL = f'xmlns:xsi="{XSI_NS}"'
 
 
 def _parse(schema_text, instance_text, tmp_path):
@@ -132,6 +133,59 @@ class TestElementFixed:
         )
         volume = _root_instance(parser)._children_[0]
         assert str(volume) == "9"
+
+
+class TestFixedValueSpaceEquality:
+    """Fixed checks compare XSD values, not lexical spellings (R10)."""
+
+    def _codes(self, parser):
+        return [issue.code for issue in parser.report.issues]
+
+    def test_hex_case_is_equivalent(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r"><xs:complexType>'
+            '<xs:attribute name="h" type="xs:hexBinary" fixed="FF"/>'
+            "</xs:complexType></xs:element></xs:schema>",
+            '<r h="ff"/>',
+            tmp_path,
+        )
+        assert "fixed-attribute" not in self._codes(parser)
+
+    def test_list_whitespace_is_equivalent(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element name="n" type="xs:NMTOKENS" fixed="a b"/>'
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            "<r><n>a  b</n></r>",
+            tmp_path,
+        )
+        assert "fixed-element" not in self._codes(parser)
+
+    def test_timezone_equivalent_datetimes(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element name="t" type="xs:dateTime" '
+            'fixed="1999-12-31T19:00:00-05:00"/>'
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            "<r><t>2000-01-01T00:00:00Z</t></r>",
+            tmp_path,
+        )
+        assert "fixed-element" not in self._codes(parser)
+
+    def test_genuine_conflict_still_reported(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element name="t" type="xs:dateTime" '
+            'fixed="1999-12-31T19:00:00-05:00"/>'
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            "<r><t>2000-01-01T00:00:01Z</t></r>",
+            tmp_path,
+        )
+        assert "fixed-element" in self._codes(parser)
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +348,161 @@ class TestXsiTypeDispatch:
         assert "xsi-type" in codes
 
 
+class TestXsiTypeDerivation:
+    """xsi:type must name a type validly derived from the declared type."""
+
+    _BASE = (
+        '<xs:complexType name="baseValueType"><xs:sequence>'
+        '<xs:element name="num" type="xs:integer"/>'
+        "</xs:sequence></xs:complexType>"
+    )
+    _EXTENDED = (
+        '<xs:complexType name="specialValueType"><xs:complexContent>'
+        '<xs:extension base="baseValueType"><xs:sequence>'
+        '<xs:element name="tag" type="xs:string"/>'
+        "</xs:sequence></xs:extension>"
+        "</xs:complexContent></xs:complexType>"
+    )
+    _UNRELATED = (
+        '<xs:complexType name="otherType"><xs:sequence>'
+        '<xs:element name="num" type="xs:integer"/>'
+        '<xs:element name="tag" type="xs:string"/>'
+        "</xs:sequence></xs:complexType>"
+    )
+
+    def _schema(self, extra_decl=""):
+        return (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            + self._BASE
+            + extra_decl
+            + '<xs:element name="holder" type="baseValueType"/>'
+            "</xs:schema>"
+        )
+
+    def test_valid_extension_is_accepted(self, tmp_path):
+        parser = _parse(
+            self._schema(self._EXTENDED),
+            f'<holder {XSI_NS_DECL} xsi:type="specialValueType"><num>1</num><tag>t</tag></holder>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_unrelated_type_is_rejected(self, tmp_path):
+        parser = _parse(
+            self._schema(self._UNRELATED),
+            f'<holder {XSI_NS_DECL} xsi:type="otherType"><num>1</num><tag>t</tag></holder>',
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+    def test_element_block_rejects_extension(self, tmp_path):
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            + self._BASE
+            + self._EXTENDED
+            + '<xs:element name="holder" type="baseValueType" block="extension"/>'
+            "</xs:schema>"
+        )
+        parser = _parse(
+            schema,
+            f'<holder {XSI_NS_DECL} xsi:type="specialValueType"><num>1</num><tag>t</tag></holder>',
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+    def test_type_block_rejects_extension(self, tmp_path):
+        base = self._BASE.replace('name="baseValueType"', 'name="baseValueType" block="extension"')
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            + base
+            + self._EXTENDED
+            + '<xs:element name="holder" type="baseValueType"/>'
+            "</xs:schema>"
+        )
+        parser = _parse(
+            schema,
+            f'<holder {XSI_NS_DECL} xsi:type="specialValueType"><num>1</num><tag>t</tag></holder>',
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+    def test_unrelated_primitive_is_rejected(self, tmp_path):
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="holder" type="xs:int"/>'
+            "</xs:schema>"
+        )
+        parser = _parse(
+            schema,
+            f'<holder xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            f'{XSI_NS_DECL} xsi:type="xs:string">oops</holder>',
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+    def test_child_xsi_type_derivation_is_checked(self, tmp_path):
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            + self._BASE
+            + self._UNRELATED
+            + '<xs:element name="root"><xs:complexType><xs:sequence>'
+            '<xs:element name="item" type="baseValueType"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+            "</xs:schema>"
+        )
+        parser = _parse(
+            schema,
+            f'<root><item {XSI_NS_DECL} xsi:type="otherType">'
+            "<num>1</num><tag>t</tag></item></root>",
+            tmp_path,
+        )
+        assert any(issue.code == "xsi-type" for issue in parser.report.issues)
+
+
+class TestSubstitutionMemberConstraints:
+    """The member declaration, not the head, supplies value constraints."""
+
+    def _schema(self, member_attrs=""):
+        return (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="h" type="xs:int"/>'
+            f'<xs:element name="m" type="xs:int" substitutionGroup="h" {member_attrs}/>'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element ref="h"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+            "</xs:schema>"
+        )
+
+    def test_member_fixed_is_enforced(self, tmp_path):
+        parser = _parse(self._schema('fixed="7"'), "<r><m>8</m></r>", tmp_path)
+        assert any(issue.code == "fixed-element" for issue in parser.report.issues)
+
+    def test_member_fixed_allows_matching_value(self, tmp_path):
+        parser = _parse(self._schema('fixed="7"'), "<r><m>7</m></r>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_head_fixed_does_not_constrain_member(self, tmp_path):
+        schema = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="h" type="xs:int" fixed="7"/>'
+            '<xs:element name="m" type="xs:int" substitutionGroup="h"/>'
+            '<xs:element name="r"><xs:complexType><xs:sequence>'
+            '<xs:element ref="h"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+            "</xs:schema>"
+        )
+        parser = _parse(schema, "<r><m>8</m></r>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_member_nillable_accepts_nil(self, tmp_path):
+        parser = _parse(
+            self._schema('nillable="true"'),
+            f'<r {XSI_NS_DECL}><m xsi:nil="true"/></r>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+
 # ---------------------------------------------------------------------------
 # abstract / block / final
 # ---------------------------------------------------------------------------
@@ -415,3 +624,79 @@ def test_root_matching_no_global_element_is_reported(tmp_path):
     parser = _parse(schema, "<root/>", tmp_path)
     codes = [issue.code for issue in parser.report.issues]
     assert "unknown-root" in codes
+
+
+class TestPrimitiveRootValues:
+    """Primitive-typed roots validate like primitive children (R6/R7)."""
+
+    def _codes(self, parser):
+        return [issue.code for issue in parser.report.issues]
+
+    def _parse_int(self, attrs, instance, tmp_path):
+        return _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            f'<xs:element name="r" type="xs:int"{attrs}/>'
+            "</xs:schema>",
+            instance,
+            tmp_path,
+        )
+
+    def test_empty_integer_root_is_invalid(self, tmp_path):
+        parser = self._parse_int("", "<r/>", tmp_path)
+        assert "value" in self._codes(parser)
+
+    def test_empty_integer_root_takes_default(self, tmp_path):
+        parser = self._parse_int(' default="7"', "<r/>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_empty_string_root_is_valid(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r" type="xs:string"/>'
+            "</xs:schema>",
+            "<r/>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_fixed_integer_root_conflict(self, tmp_path):
+        parser = self._parse_int(' fixed="7"', "<r>8</r>", tmp_path)
+        assert "fixed-element" in self._codes(parser)
+
+    def test_child_content_on_integer_root_is_rejected(self, tmp_path):
+        parser = self._parse_int("", "<r><a>7</a></r>", tmp_path)
+        assert "unexpected-element" in self._codes(parser)
+
+    def test_nillable_integer_root_with_nil(self, tmp_path):
+        parser = self._parse_int(
+            ' nillable="true"',
+            f'<r {XSI_NS_DECL} xsi:nil="true"/>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+
+class TestPrimitiveChildValues:
+    """An attribute value must not stand in for a simple element's text."""
+
+    _SCHEMA = (
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:element name="r"><xs:complexType><xs:sequence>'
+        '<xs:element name="a" type="xs:int"/>'
+        "</xs:sequence></xs:complexType></xs:element>"
+        "</xs:schema>"
+    )
+
+    def test_attribute_is_not_the_element_value(self, tmp_path):
+        parser = _parse(self._SCHEMA, '<r><a stray="7"/></r>', tmp_path)
+        # The empty lexical form is invalid for xs:int; the stray
+        # attribute does not supply the value 7.
+        assert any(issue.code == "value" for issue in parser.report.issues)
+
+    def test_text_value_still_binds(self, tmp_path):
+        parser = _parse(self._SCHEMA, "<r><a>7</a></r>", tmp_path)
+        assert not parser.report.has_errors
+
+    def test_child_elements_on_simple_type_are_rejected(self, tmp_path):
+        parser = _parse(self._SCHEMA, "<r><a>7<b/></a></r>", tmp_path)
+        assert any(issue.code == "unexpected-element" for issue in parser.report.issues)

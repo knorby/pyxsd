@@ -44,6 +44,9 @@ dev = [
     "mypy>=1.18",
     "ruff==0.16.6",
     "pre-commit>=4.6",
+    # Independent XSD oracle, used only by the opt-in
+    # tests/test_oracle.py. It never gates the build.
+    "xmlschema>=4",
 ]
 docs = [
     "sphinx>=8.2",

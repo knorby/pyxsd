@@ -54,17 +54,39 @@ from typing import IO, Any
 from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
-from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.binding import BindingPolicy, ParseModes
+from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
+from pyxsd.element_representatives.element_representative import (
+    ElementRepresentative,
+    componentKind,
+    set_active_namespace_overrides,
+)
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
+from pyxsd.namespaces import (
+    XML_NS,
+    XSD_NS,
+    NamespaceContext,
+    NamespaceError,
+    clark,
+    parse_with_namespaces,
+)
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
+from pyxsd.xsd_data_types import AnySimpleType, qname_context, whitespace_mode, xsd_value_key
 
 logger = logging.getLogger(__name__)
 
 # Schema components that may be spliced in from included/imported
 # schemas before the ElementRepresentative run.
-_COMPOSABLE_TAGS = {"element", "complexType", "simpleType", "group", "attributeGroup"}
+_COMPOSABLE_TAGS = {
+    "element",
+    "complexType",
+    "simpleType",
+    "group",
+    "attributeGroup",
+    "attribute",
+}
 
 
 class PyXSD:
@@ -94,6 +116,8 @@ class PyXSD:
         classFile: str | Path | os.PathLike[str] | None = None,
         verbose: bool = False,
         quiet: bool = False,
+        mode: BindingPolicy = ParseModes.STRICT,
+        namespace_schemas: dict[str, str | Path] | None = None,
     ):
         """Initialize the parser and run the whole pipeline.
 
@@ -125,14 +149,35 @@ class PyXSD:
         - ``quiet`` - a boolean value. If set to true, logs less
           information (the CLI maps this to the CRITICAL log level).
 
+        - ``mode`` - a :class:`~pyxsd.binding.BindingPolicy` (usually a
+          :class:`~pyxsd.binding.ParseModes` preset) controlling how
+          invalid values are bound into the tree. Reporting is always
+          strict; the mode never suppresses a validation issue. Defaults
+          to :attr:`~pyxsd.binding.ParseModes.STRICT`.
+
+        - ``namespace_schemas`` - an optional ``{namespace_uri: path}``
+          mapping supplying schemas for namespaces referenced by
+          ``xs:import`` without a ``schemaLocation``. Only consulted in
+          strict namespace mode.
+
         After construction, ``self.report`` holds the
         :class:`~pyxsd.validation.ValidationReport` collected while the
         instance document was bound.
         """
         self.verbose = verbose
         self.quiet = quiet
+        self.mode = mode
+        self.namespaceSchemas: dict[str, str | Path] = dict(namespace_schemas or {})
+        # Namespace overrides keyed by ``id(xsdElement)`` for components
+        # spliced in from imported schemas; installed before the ER run so
+        # an imported declaration reports its own target namespace.
+        self._namespaceOverrides: dict[int, str | None] = {}
         self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
+        # Prefix-to-URI bindings captured while parsing the instance and
+        # every schema document; one context accumulates them all so a
+        # component resolves QNames against its own document's scope.
+        self.namespaceContext = NamespaceContext()
 
         if isinstance(xmlFileInput, (str, os.PathLike)):
             self.xmlFileInput = Path(xmlFileInput).resolve()
@@ -167,6 +212,7 @@ class PyXSD:
                 hintPath = self.xmlPath / hintPath
             self.xsdFile = hintPath
         self.nameSpace = self.getSchemaInfo("n")
+        self._additionalSchemas = self._collectAdditionalSchemas()
         self.parseXSD()
 
         if classFile:
@@ -212,16 +258,38 @@ class PyXSD:
                 with open(transformOutput, "w") as output:
                     self.writeXML(transformedRoot, output)
 
+    def _injectXmlNamespaceAttributes(self, schemaRoot: Any) -> None:
+        """Registers the implicit XML-namespace attributes.
+
+        The ``xml`` namespace has no schema document, but ``xml:space``,
+        ``xml:lang``, ``xml:base`` and ``xml:id`` may appear on any
+        element. Registering them as global attributes (typed as
+        strings) lets attribute references into the XML namespace
+        resolve without a vendored XML-namespace schema.
+        """
+        for local in ("space", "lang", "base", "id"):
+            attributeElement = ET.Element(
+                clark(XSD_NS, "attribute"),
+                {"name": local, "type": clark(XSD_NS, "string")},
+            )
+            self._namespaceOverrides[id(attributeElement)] = XML_NS
+            schemaRoot.append(attributeElement)
+
     def parseXSD(self) -> None:
         """Reads the given xsd file and creates a set of classes that
         correspond to the complex and simple type definitions.
         """
         logger.debug("Sending the schema file to the ElementTree Parser...")
 
+        # Everything reported until the instance document is parsed is a
+        # schema-compilation problem: composition, ER building, and class
+        # generation.
+        self.report.phase = "schema"
+
         if isinstance(self.xsdFile, (str, os.PathLike)):
             try:
                 with open(self.xsdFile, "rb") as schemaFile:
-                    tree = ET.parse(schemaFile)
+                    root = parse_with_namespaces(schemaFile, self.namespaceContext)
             except OSError as e:
                 raise PyXSDError(f"the schema file could not be opened: {e}") from e
             except ET.ParseError as e:
@@ -231,29 +299,61 @@ class PyXSD:
             # without a location hint is rejected in ``__init__``.
             assert self.xsdFile is not None
             try:
-                tree = ET.parse(self.xsdFile)
+                root = parse_with_namespaces(self.xsdFile, self.namespaceContext)
             except ET.ParseError as e:
                 raise PyXSDError(f"the schema file is not well-formed XML: {e}") from e
-        root = tree.getroot()
         logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")
 
         baseDir, visited = self._schemaCompositionContext()
+        # Documents already fully composed; their components must not be
+        # spliced twice (diamond includes) and a repeat encounter is not
+        # an error.
+        self._composedDocuments: set[str] = set(visited)
         self._spliceComposedSchemas(root, baseDir, visited)
+        self._spliceAdditionalSchemas(root, baseDir, visited)
+        if getattr(self.mode, "namespaces", "legacy") == "strict":
+            self._injectXmlNamespaceAttributes(root)
 
+        import pyxsd.element_representatives.element_representative as ermod
+
+        # Install the per-component namespace overrides before the ER run
+        # so imported declarations report their own target namespace.
+        set_active_namespace_overrides(self._namespaceOverrides)
         schemaER = ElementRepresentative.factory(root, None)
         # Attach the parser to the schema ER so class building can
         # record schema-reference problems (group/attributeGroup
         # references) on the validation report.
         schemaER.pyXSD = self
+        # The captured prefix bindings let every declaration resolve the
+        # QNames written in its own document.
+        schemaER.namespaceContext = self.namespaceContext
+        # This parser owns the component table the ER run registered
+        # into; expose it on the parser and as the module-level active
+        # table so later lookups (xsi:type dispatch, tests) use this
+        # parser's declarations rather than a previous parser's.
+        self.components = schemaER.components
+        ermod._ACTIVE_TABLE = self.components
 
-        for simpleType in schemaER.simpleTypes.values():
-            cls = simpleType.clsFor(self)
-            self.classes[simpleType.name] = cls
-            logger.debug("Class created for the %s type...", simpleType.name)
-        for complexType in schemaER.complexTypes.values():
-            cls = complexType.clsFor(self)
-            self.classes[complexType.name] = cls
-            logger.debug("Class created for the %s type...", complexType.name)
+        # The schema root is itself the instance class used to dispatch
+        # the document root's element declarations.
+        self.classes["schema"] = schemaER.clsFor(self)
+        # Build a generated class for every named type in the
+        # parser-owned component table. The per-schema ``simpleTypes`` /
+        # ``complexTypes`` dicts are keyed by local name, so composed
+        # schemas that reuse a local name in different namespaces (very
+        # common in OOXML) collide there and lose declarations. The
+        # component table keeps one entry per expanded name.
+        built: set[int] = set()
+        for entries in self.components.values():
+            for typeER in entries:
+                if componentKind(typeER) != "type" or id(typeER) in built:
+                    continue
+                built.add(id(typeER))
+                cls = typeER.clsFor(self)
+                self.classes[typeER.name] = cls
+                if typeER.expandedName:
+                    self.classes[typeER.expandedName] = cls
+                logger.debug("Class created for the %s type...", typeER.name)
 
         self._buildSubstitutionGroups(schemaER)
 
@@ -270,14 +370,16 @@ class PyXSD:
         no global element are recorded as schema errors.
         """
         declaredNames = {element.name for element in schemaER.elements}
+        declaredExpanded = {element.expandedName for element in schemaER.elements}
         for element in schemaER.elements:
-            head = element.getSubstitutionGroupHead()
+            head = element.getSubstitutionGroupHead(self)
             if head is None:
                 continue
-            if head not in declaredNames:
+            if head not in declaredNames and head not in declaredExpanded:
                 self.report.add_error(
                     f"element '{element.name}' declares substitutionGroup "
-                    f"'{head}', but no global element with that name exists",
+                    f"'{element.tagAttributes.get('substitutionGroup', head)}', "
+                    "but no global element with that name exists",
                     code="unknown-substitution-head",
                     element=element.name,
                 )
@@ -296,6 +398,51 @@ class PyXSD:
             mainPath = Path(self.xsdFile).resolve()
             return mainPath.parent, {str(mainPath)}
         return Path.cwd(), set()
+
+    def _collectAdditionalSchemas(self) -> list[tuple[str | None, Path]]:
+        """Returns additional ``(namespace, path)`` schemas to load.
+
+        Sources are the explicit ``namespace_schemas`` mapping and, in
+        strict mode, any extra pairs in the instance's
+        ``xsi:schemaLocation`` beyond the main schema.
+        """
+        additions: list[tuple[str | None, Path]] = []
+        seen: set[str] = set()
+        if isinstance(self.xsdFile, (str, os.PathLike)):
+            seen.add(str(Path(self.xsdFile).resolve()))
+        for namespace, location in self.namespaceSchemas.items():
+            path = Path(location)
+            if not path.is_absolute():
+                path = self.xmlPath / path
+            path = path.resolve()
+            if str(path) in seen:
+                continue
+            seen.add(str(path))
+            additions.append((namespace or None, path))
+        if getattr(self.mode, "namespaces", "legacy") == "strict":
+            for pair_namespace, location in self.getSchemaLocationPairs():
+                path = Path(location)
+                if not path.is_absolute():
+                    path = self.xmlPath / path
+                path = path.resolve()
+                if str(path) in seen:
+                    continue
+                seen.add(str(path))
+                additions.append((pair_namespace, path))
+        return additions
+
+    def _spliceAdditionalSchemas(self, schemaRoot: Any, baseDir: Path, visited: set[str]) -> None:
+        """Splices schemas supplied outside the main document.
+
+        These are ``namespace_schemas`` entries and extra
+        ``xsi:schemaLocation`` pairs; each is loaded like an import so
+        its components keep their own target namespace.
+        """
+        for namespace, path in getattr(self, "_additionalSchemas", []):
+            tag = ET.Element(clark(XSD_NS, "import"), {"schemaLocation": str(path)})
+            if namespace:
+                tag.set("namespace", namespace)
+            self._spliceIncludedSchema(tag, schemaRoot, baseDir, visited, isImport=True)
 
     def _spliceComposedSchemas(self, schemaRoot: Any, baseDir: Path, visited: set[str]) -> None:
         """Merges composed schemas into ``schemaRoot`` before class building.
@@ -322,7 +469,7 @@ class PyXSD:
                 self._spliceRedefine(child, schemaRoot, baseDir, visited)
             elif local == "import":
                 schemaRoot.remove(child)
-                if child.get("namespace") == "http://www.w3.org/2001/XMLSchema":
+                if child.get("namespace") == XSD_NS:
                     # Importing the schema-for-schemas namespace is the
                     # conventional spelling; the built-in types are
                     # always available here.
@@ -345,22 +492,54 @@ class PyXSD:
         """
         location = tag.get("schemaLocation")
         if not location:
+            if isImport:
+                # ``schemaLocation`` is optional on xs:import: a
+                # namespace-only import is a hint with no document to
+                # load. In strict mode it is unresolved unless a schema
+                # for the namespace was supplied.
+                namespace = tag.get("namespace")
+                if (
+                    getattr(self.mode, "namespaces", "legacy") == "strict"
+                    and namespace
+                    and namespace != XML_NS
+                    and namespace not in self.namespaceSchemas
+                    and namespace
+                    not in {ns for ns, _ in getattr(self, "_additionalSchemas", []) if ns}
+                ):
+                    self.report.add_error(
+                        f"the import for namespace '{namespace}' has no "
+                        "schemaLocation and no schema was supplied for it",
+                        code="import-unresolved",
+                        phase="schema",
+                    )
+                logger.debug("namespace-only xs:import with no schemaLocation; skipping")
+                return None
             self.report.add_error(
-                f"an {'import' if isImport else 'include'} tag has no "
-                "schemaLocation; the schema could not be composed",
+                "an include tag has no schemaLocation; the schema could not be composed",
                 code="schema-compose",
             )
             return None
-        includedRoot = self._parseIncludedSchema(location, baseDir)
-        if includedRoot is None:
-            return None
         includedPath = (baseDir / location).resolve()
-        if str(includedPath) in visited:
-            self.report.add_error(
+        key = str(includedPath)
+        if key in self._composedDocuments:
+            logger.debug("the schema '%s' is already composed; skipping", location)
+            return None
+        if key in visited:
+            # A legal include cycle: the document is already being
+            # composed, so this repetition is skipped rather than
+            # treated as a fatal error.
+            self.report.add_warning(
                 f"the schema '{location}' is already being composed; "
-                "circular include/import relationships are not allowed",
+                "the circular include is skipped",
                 code="compose-cycle",
             )
+            return None
+        includedRoot = self._parseIncludedSchema(
+            location,
+            baseDir,
+            error_code="import-unresolved" if isImport else "schema-compose",
+        )
+        if includedRoot is None:
             return None
         mainNS = schemaRoot.get("targetNamespace")
         includedNS = includedRoot.get("targetNamespace")
@@ -371,7 +550,12 @@ class PyXSD:
                 f"schema's namespace ({mainNS or 'none'})",
                 code="compose-namespace",
             )
-        if isImport and mainNS and includedNS != mainNS:
+        if (
+            isImport
+            and mainNS
+            and includedNS != mainNS
+            and getattr(self.mode, "namespaces", "legacy") != "strict"
+        ):
             logger.warning(
                 "imported schema '%s' declares targetNamespace '%s'; pyxsd "
                 "matches names by local name, so its components are merged "
@@ -379,41 +563,59 @@ class PyXSD:
                 location,
                 includedNS or "none",
             )
+        if isImport:
+            componentNamespace = includedNS if includedNS is not None else tag.get("namespace")
+        else:
+            componentNamespace = includedNS if includedNS is not None else mainNS
         self._spliceComposedSchemas(
             includedRoot, includedPath.parent, visited | {str(includedPath)}
         )
-        self._appendNamedComponents(includedRoot, schemaRoot)
+        self._appendNamedComponents(includedRoot, schemaRoot, componentNamespace)
+        self._composedDocuments.add(key)
         return None
 
-    def _parseIncludedSchema(self, location: str, baseDir: Path) -> Any | None:
+    def _parseIncludedSchema(
+        self, location: str, baseDir: Path, error_code: str = "schema-compose"
+    ) -> Any | None:
         """Parses one included schema file; returns its root or ``None``.
 
         Failures (unreadable file, malformed xml) are recorded as
-        ``schema-compose`` errors and the composition proceeds without
-        the missing file.
+        ``error_code`` errors and the composition proceeds without the
+        missing file.
         """
         includedPath = baseDir / location
         try:
             with open(includedPath, "rb") as includedFile:
-                tree = ET.parse(includedFile)
+                root = parse_with_namespaces(includedFile, self.namespaceContext)
         except OSError as e:
             self.report.add_error(
                 f"the schema '{location}' could not be opened: {e}",
-                code="schema-compose",
+                code=error_code,
             )
             return None
         except ET.ParseError as e:
             self.report.add_error(
                 f"the schema '{location}' is not well-formed XML: {e}",
-                code="schema-compose",
+                code=error_code,
             )
             return None
-        return tree.getroot()
+        return root
 
-    def _appendNamedComponents(self, includedRoot: Any, schemaRoot: Any) -> None:
-        """Appends the named components of an included schema to the main tree."""
+    def _appendNamedComponents(
+        self, includedRoot: Any, schemaRoot: Any, namespace: str | None
+    ) -> None:
+        """Appends the named components of an included schema to the main tree.
+
+        In strict mode the namespace each component was declared in is
+        recorded so its expanded name reflects the source document
+        rather than the main schema's target namespace.
+        """
+        strict = getattr(self.mode, "namespaces", "legacy") == "strict"
         for component in list(includedRoot):
             if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
+                if strict:
+                    for element in component.iter():
+                        self._namespaceOverrides.setdefault(id(element), namespace)
                 schemaRoot.append(component)
         return None
 
@@ -445,31 +647,47 @@ class PyXSD:
             return None
         includedPath = (baseDir / location).resolve()
         if str(includedPath) in visited:
-            self.report.add_error(
+            self.report.add_warning(
                 f"the schema '{location}' is already being composed; "
-                "circular include/redefine relationships are not allowed",
+                "the circular redefine is skipped",
                 code="compose-cycle",
             )
             return None
         redefinedNames = set()
         for child in list(redefineTag):
             local = child.tag.split("}")[-1]
-            if local in ("complexType", "simpleType", "group") and child.get("name"):
+            if local in ("complexType", "simpleType", "group", "attributeGroup") and child.get(
+                "name"
+            ):
                 redefinedNames.add(child.get("name"))
         for component in list(includedRoot):
             local = component.tag.split("}")[-1]
             name = component.get("name")
-            if local in ("complexType", "simpleType", "group") and name in redefinedNames:
+            if (
+                local in ("complexType", "simpleType", "group", "attributeGroup")
+                and name in redefinedNames
+            ):
                 component.set("name", f"{name}|base")
         self._spliceComposedSchemas(
             includedRoot, includedPath.parent, visited | {str(includedPath)}
         )
-        self._appendNamedComponents(includedRoot, schemaRoot)
+        self._appendNamedComponents(includedRoot, schemaRoot, schemaRoot.get("targetNamespace"))
         for child in list(redefineTag):
             for element in child.iter():
                 base = element.get("base")
                 if base and base.split(":")[-1] in redefinedNames:
                     element.set("base", f"{base.split(':')[-1]}|base")
+                # Inside a redefine block a reference to the redefined
+                # group/attributeGroup means the *original*, so rebind it
+                # to the renamed |base definition instead of the new one
+                # (which would be a circular reference).
+                localRef = element.get("ref")
+                if (
+                    element.tag.split("}")[-1] in ("group", "attributeGroup")
+                    and localRef
+                    and localRef.split(":")[-1] in redefinedNames
+                ):
+                    element.set("ref", f"{localRef.split(':')[-1]}|base")
             schemaRoot.append(child)
         return None
 
@@ -491,6 +709,9 @@ class PyXSD:
         """
         logger.debug("Starting to parse the xml file.")
 
+        # Binding diagnostics from here on belong to the instance phase.
+        self.report.phase = "instance"
+
         schemaClass = self.getClasses()["schema"]
 
         schemaClassInstance = schemaClass()
@@ -504,7 +725,16 @@ class PyXSD:
                 "invalid XML Schema - the parser could not find any root elements in the schema"
             )
 
-        matching = [descriptor for descriptor in topLevelDescriptors if descriptor.name == rootName]
+        if getattr(self.mode, "namespaces", "legacy") == "strict":
+            matching = [
+                descriptor
+                for descriptor in topLevelDescriptors
+                if descriptor.instanceName(parser=self) == self.xmlRoot.tag
+            ]
+        else:
+            matching = [
+                descriptor for descriptor in topLevelDescriptors if descriptor.name == rootName
+            ]
 
         if len(matching) > 1:
             elementNames = ", ".join(element.name for element in matching)
@@ -512,6 +742,7 @@ class PyXSD:
                 "invalid schema: there is more than one global element named "
                 f"'{rootName}' ({elementNames}); parsing only '{matching[0].name}'",
                 code="multiple-roots",
+                phase="schema",
             )
 
         if not matching:
@@ -527,20 +758,29 @@ class PyXSD:
 
         subInstance = None
         if rootElementName == rootName:
-            subCls = self._classForRoot(rootElement)
-            self.generateCorrectSchemaTags()
-            if issubclass(subCls, SchemaBase):
-                subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
-            else:
-                # The root element's declared type is a primitive
-                # (simple) data type: build a typed instance directly.
-                subInstance = self._primitiveRootInstance(subCls, rootElement)
-            # xsi:type may replace the declared root type, so the root
-            # instance is stored directly instead of validated against
-            # the declared element type.
-            schemaClassInstance.__dict__[rootElementName] = subInstance
-            subInstance._descriptor_ = rootElement
-            self._checkIdentityConstraints(subInstance)
+            with whitespace_mode(self.mode.whitespace):
+                subCls = self._classForRoot(rootElement)
+                if subCls is None:
+                    return None
+                self.generateCorrectSchemaTags()
+                contentKind = getattr(subCls, "_contentKind_", None)
+                isComplex = (
+                    contentKind == "complex"
+                    if contentKind is not None
+                    else issubclass(subCls, SchemaBase)
+                )
+                if isComplex:
+                    subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
+                else:
+                    # The root element's declared type is a primitive
+                    # (simple) data type: build a typed instance directly.
+                    subInstance = self._primitiveRootInstance(subCls, rootElement)
+                # xsi:type may replace the declared root type, so the root
+                # instance is stored directly instead of validated against
+                # the declared element type.
+                schemaClassInstance.__dict__[rootElementName] = subInstance
+                subInstance._descriptor_ = rootElement
+                self._checkIdentityConstraints(subInstance)
 
         return subInstance
 
@@ -552,37 +792,119 @@ class PyXSD:
         ``nil``). The document's text is validated through the data
         type's constructor; an invalid lexical value is reported (code
         ``value``) and the value is dropped so parsing can continue.
+        Empty content takes the element's ``default``/``fixed`` value,
+        and a ``fixed`` value is enforced with code ``fixed-element``.
+        A simple-typed element may not carry child elements.
         """
-        rootName = self.xmlRoot.tag.split("}")[-1]
-        if xsi.xsi_nil_is_true(self.xmlRoot) and not rootElement.isNillable():
+        rootName = (
+            self.xmlRoot.tag
+            if getattr(self.mode, "namespaces", "legacy") == "strict"
+            else self.xmlRoot.tag.split("}")[-1]
+        )
+        nilled = xsi.xsi_nil_is_true(self.xmlRoot)
+        if nilled and not rootElement.isNillable():
             self.report.add_error(
                 f"the root element '{rootName}' is not nillable but carries xsi:nil",
                 code="nil",
                 element=rootName,
             )
-            text = ""
-        else:
-            text = "".join(self.xmlRoot.itertext()).strip()
-        try:
-            value = dataTypeClass(text) if text else None
-        except (TypeError, ValueError) as exc:
+            nilled = False
+
+        if list(self.xmlRoot):
             self.report.add_error(
-                f"the root element '{rootName}' has an invalid "
-                f"{getattr(dataTypeClass, 'name', dataTypeClass.__name__)} value: {exc}",
-                code="value",
+                f"the root element '{rootName}' has a simple type but contains child elements",
+                code="unexpected-element",
                 element=rootName,
             )
-            value = None
+
+        text = self.xmlRoot.text or ""
+        value = None
+        with qname_context(self._qname_bindings_for(self.xmlRoot)):
+            if not nilled:
+                forced = None
+                if self.xmlRoot.text is None and not list(self.xmlRoot):
+                    forced = rootElement.getDefault()
+                    if forced is None:
+                        forced = rootElement.getFixed()
+                if forced is not None:
+                    try:
+                        value = dataTypeClass(forced)
+                    except (TypeError, ValueError) as exc:
+                        self.report.add_error(
+                            f"the root element '{rootName}' has an invalid default value: {exc}",
+                            code="default",
+                            element=rootName,
+                        )
+                else:
+                    try:
+                        value = dataTypeClass(text)
+                    except (TypeError, ValueError) as exc:
+                        self.report.add_error(
+                            f"the root element '{rootName}' has an invalid "
+                            f"{getattr(dataTypeClass, 'name', dataTypeClass.__name__)} "
+                            f"value: {exc}",
+                            code="value",
+                            element=rootName,
+                        )
+                        if self.mode.invalid_value == "raw":
+                            value = AnySimpleType(text)
+
+            if not nilled and value is not None:
+                fixed = rootElement.getFixed()
+                if fixed is not None:
+                    try:
+                        fixedValue = dataTypeClass(fixed)
+                    except (TypeError, ValueError):
+                        fixedValue = None
+                    if fixedValue is not None and xsd_value_key(value) != xsd_value_key(fixedValue):
+                        self.report.add_error(
+                            f"the root element '{rootName}' has a value that conflicts "
+                            f"with its fixed value {fixed!r}",
+                            code="fixed-element",
+                            element=rootName,
+                        )
+
         instance = dataTypeClass._unvalidated() if value is None else value
         instance._name_ = rootName
         instance._attribs_ = {
             xsi.xsi_attr_key(key): val for key, val in self.xmlRoot.attrib.items()
         }
-        instance._value_ = [text] if text else None
+        instance._value_ = [str(value)] if value is not None else ([text] if text else None)
         instance._children_ = []
         return instance
 
-    def _classForRoot(self, rootElement: Any) -> type[SchemaBase]:
+    def _qname_bindings_for(self, element: Any) -> dict[str, str] | None:
+        """Prefix bindings in scope at ``element``, or ``None``.
+
+        Only strict namespace mode resolves ``xs:QName`` values; legacy
+        mode keeps lexical comparison (``None`` disables resolution).
+        """
+        if getattr(self.mode, "namespaces", "legacy") != "strict":
+            return None
+        return self.namespaceContext.bindings_for(element)
+
+    def _resolveXsiTypeName(self, value: str, element: Any) -> str | None:
+        """Resolves a lexical ``xsi:type`` QName against the instance scope.
+
+        In ``legacy`` namespace mode the raw value is returned unchanged.
+        In ``strict`` mode the value is expanded through the instance
+        namespace context; an unbound prefix is reported as
+        ``unknown-namespace-prefix`` and ``None`` is returned so the
+        caller keeps the declared type.
+        """
+        if getattr(self.mode, "namespaces", "legacy") != "strict":
+            return value
+        try:
+            return self.namespaceContext.resolve(element, value)
+        except NamespaceError as exc:
+            self.report.add_error(
+                str(exc),
+                code="unknown-namespace-prefix",
+                element=element.tag,
+            )
+            return None
+
+    def _classForRoot(self, rootElement: Any) -> type[SchemaBase] | None:
         """Resolves the class used to instantiate the root element.
 
         Honors ``xsi:type`` on the root element (dispatch to another
@@ -598,16 +920,35 @@ class PyXSD:
             )
 
         subCls = rootElement.getType()
+        if subCls is None:
+            self.report.add_error(
+                f"the type of root element '{rootElement.name}' could not be resolved",
+                code="unknown-type",
+                element=rootElement.name,
+            )
+            return None
 
         xsiTypeName = xsi.xsi_type_name(self.xmlRoot)
         if xsiTypeName is None:
             return subCls
 
-        resolved = ElementRepresentative.typeFromName(xsiTypeName, self)
+        resolvedName = self._resolveXsiTypeName(xsiTypeName, self.xmlRoot)
+        if resolvedName is None:
+            return subCls
+        resolved = ElementRepresentative.typeFromName(resolvedName, self)
         if resolved is None:
             self.report.add_error(
                 f"xsi:type '{xsiTypeName}' on the root element does not "
                 "correspond to a type in the schema",
+                code="xsi-type",
+                element=rootElement.name,
+            )
+            return subCls
+        blocked = combinedBlock(rootElement.getBlock(), subCls)
+        reason = is_validly_derived(resolved, subCls, blocked)
+        if reason is not None:
+            self.report.add_error(
+                derivationMessage(resolved, subCls, reason),
                 code="xsi-type",
                 element=rootElement.name,
             )
@@ -733,11 +1074,11 @@ class PyXSD:
         """
         logger.debug("The XML file is being parsed by the ElementTree library...")
         try:
-            tree = ET.parse(self.xmlFileInput)
+            root = parse_with_namespaces(self.xmlFileInput, self.namespaceContext)
         except ET.ParseError as e:
             raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
         logger.debug("XML file parsed by the ElementTree library successfully...")
-        return tree.getroot()
+        return root
 
     def getXmlOutputFileName(self) -> Path:
         """Creates a default name for the xml file that is parsed without
@@ -859,19 +1200,16 @@ class PyXSD:
         schemaLocationSplit = None
         if self.makeFullName(xsiNS, "schemaLocation") in self.xmlRoot.attrib:
             schemaLocationTag = self.xmlRoot.attrib[self.makeFullName(xsiNS, "schemaLocation")]
-            if "\n" in schemaLocationTag:
-                schemaLocationSplit = schemaLocationTag.split("\n")
-            else:
-                schemaLocationSplit = schemaLocationTag.split(" ")
+            schemaLocationSplit = schemaLocationTag.split()
 
-            if len(schemaLocationSplit) != 2:
+            if not schemaLocationSplit or len(schemaLocationSplit) % 2 != 0:
                 report = getattr(self, "report", None)
                 message = (
-                    "the 'schemaLocation' tag must be a pair of values "
-                    "separated by a space or line break, with the namespace "
-                    "stated first, followed by the location of the schema; "
-                    "attempting to use the 'noNamespaceSchemaLocation' tag "
-                    "instead"
+                    "the 'schemaLocation' tag must be one or more "
+                    "namespace/location pairs separated by whitespace, with "
+                    "each namespace stated first, followed by the location of "
+                    "the schema; attempting to use the "
+                    "'noNamespaceSchemaLocation' tag instead"
                 )
                 if report is not None:
                     report.add_warning(message, code="schema-hint")
@@ -898,7 +1236,7 @@ class PyXSD:
         if nameOrLocation == "n":
             return schemaNS
 
-        schemaLocation = schemaLocationSplit[-1]
+        schemaLocation = schemaLocationSplit[1]
         if nameOrLocation == "l":
             return schemaLocation
 
@@ -906,6 +1244,26 @@ class PyXSD:
             return self.makeFullName(xsiNS, "schemaLocation")
 
         return None
+
+    def getSchemaLocationPairs(self) -> list[tuple[str | None, str]]:
+        """Returns every ``(namespace, location)`` hint in the instance.
+
+        ``xsi:schemaLocation`` may carry multiple namespace/location
+        pairs; ``xsi:noNamespaceSchemaLocation`` yields a single pair
+        with ``None`` for the namespace.
+        """
+        xsiNS = "http://www.w3.org/2001/XMLSchema-instance"
+        pairs: list[tuple[str | None, str]] = []
+        schemaLocationTag = self.xmlRoot.attrib.get(self.makeFullName(xsiNS, "schemaLocation"))
+        if schemaLocationTag:
+            tokens = schemaLocationTag.split()
+            if len(tokens) % 2 == 0:
+                for i in range(0, len(tokens), 2):
+                    pairs.append((tokens[i] or None, tokens[i + 1]))
+        noNamespace = self.xmlRoot.attrib.get(self.makeFullName(xsiNS, "noNamespaceSchemaLocation"))
+        if noNamespace:
+            pairs.append((None, noNamespace))
+        return pairs
 
     def makeFullName(self, ns: str | None, text: str) -> str:
         """Makes a string that looks similar to some of the names in
@@ -1157,6 +1515,25 @@ def main(argv: list[str] | None = None) -> None:
         default=False,
         help="exit with status 1 if the xml file has validation errors.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["strict", "lax"],
+        default="strict",
+        dest="mode",
+        help="binding mode. 'strict' (default) reports invalid values and "
+        "drops them; 'lax' keeps the report strict but binds best-effort "
+        "values (raw strings, generic subtrees) so no data is lost.",
+    )
+    parser.add_argument(
+        "--namespaces",
+        choices=["strict", "legacy"],
+        default="legacy",
+        dest="namespaces",
+        help="namespace handling. 'legacy' (default) matches by local name "
+        "and ignores namespace URIs; 'strict' resolves QNames and matches "
+        "elements and attributes by expanded name, which rejects documents "
+        "that only matched by local name before.",
+    )
 
     options = parser.parse_args(argv)
 
@@ -1197,6 +1574,7 @@ def main(argv: list[str] | None = None) -> None:
         parsedOutputFile = "_No_Output_"
 
     try:
+        baseMode = ParseModes.LAX if options.mode == "lax" else ParseModes.STRICT
         app = PyXSD(
             inputXmlFile,
             options.inputXsdFile,
@@ -1206,6 +1584,7 @@ def main(argv: list[str] | None = None) -> None:
             options.classFile,
             options.verbose,
             options.quiet,
+            mode=baseMode.replace(namespaces=options.namespaces),
         )
     except (PyXSDError, OSError) as e:
         print(f"pyxsd: error: {e}", file=sys.stderr)

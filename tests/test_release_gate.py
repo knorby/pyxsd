@@ -367,7 +367,7 @@ class TestSchemaBaseEdges:
         parser = _parse(schema, "<doc><a/></doc>", tmp_path)
         assert not parser.report.has_errors
 
-    def test_group_ref_occurrences_are_folded(self, tmp_path):
+    def test_group_ref_occurrences_repeat_the_group_as_a_unit(self, tmp_path):
         schema = f"""\
 <xs:schema {XS}>
   <xs:group name="pair">
@@ -383,11 +383,12 @@ class TestSchemaBaseEdges:
   </xs:element>
 </xs:schema>
 """
-        # The folded per-element minimum (2 x's, 2 y's) is satisfied.
-        parser = _parse(schema, "<doc><x/><x/><y/><y/></doc>", tmp_path)
+        # The reference repeats the whole (x, y) group; two repeats are
+        # x, y, x, y, not four independent element occurrences.
+        parser = _parse(schema, "<doc><x/><y/><x/><y/></doc>", tmp_path)
         assert not parser.report.has_errors
 
-        # The reference site carries the folded occurrence attributes.
+        # The reference site carries the occurrence attributes.
         ref_er = next(
             er
             for entries in ermod.registry.values()
@@ -396,7 +397,11 @@ class TestSchemaBaseEdges:
         )
         assert ref_er.maxOccurs == "unbounded"
 
-        # One repeat does not satisfy the folded minimum.
+        # x, x, y, y is not two repeats of the group.
+        misordered = _parse(schema, "<doc><x/><x/><y/><y/></doc>", tmp_path)
+        assert misordered.report.has_errors
+
+        # One repeat does not satisfy the minimum of two.
         bad = _parse(schema, "<doc><x/><y/></doc>", tmp_path)
         assert any(issue.code == "occurrence-min" for issue in bad.report.issues)
 

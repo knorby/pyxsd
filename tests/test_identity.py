@@ -458,3 +458,155 @@ class TestDescendantSelectors:
         parser = _parse(schema, instance, tmp_path)
         codes = [issue.code for issue in parser.report.errors]
         assert "identity-key" in codes
+
+
+# ---------------------------------------------------------------------------
+# Scoping and typed value comparison (R9-R11)
+# ---------------------------------------------------------------------------
+
+_XSI = 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+
+_BOX_SCHEMA = f"""<xs:schema {_xs}>
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="box" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="item" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:attribute name="id" type="xs:int" use="required"/>
+                </xs:complexType>
+              </xs:element>
+              <xs:element name="link" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:attribute name="ref" type="xs:int" use="required"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+          <xs:key name="itemKey">
+            <xs:selector xpath="item"/>
+            <xs:field xpath="@id"/>
+          </xs:key>
+          <xs:keyref name="linkRef" refer="itemKey">
+            <xs:selector xpath="link"/>
+            <xs:field xpath="@ref"/>
+          </xs:keyref>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+
+
+class TestIdentityScoping:
+    def test_sibling_occurrences_have_independent_keys(self, tmp_path):
+        parser = _parse(
+            _BOX_SCHEMA,
+            '<r><box><item id="1"/></box><box><item id="1"/></box></r>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_keyref_does_not_cross_occurrence_scopes(self, tmp_path):
+        parser = _parse(
+            _BOX_SCHEMA,
+            '<r><box><item id="1"/><link ref="2"/></box><box><item id="2"/></box></r>',
+            tmp_path,
+        )
+        assert any(issue.code == "identity-keyref" for issue in parser.report.issues)
+
+
+class TestIdentityTypedValues:
+    def test_numeric_spellings_are_the_same_key(self, tmp_path):
+        parser = _parse(
+            _catalog_schema(
+                _key(),
+                item_attrs='<xs:attribute name="id" type="xs:int" use="required"/>',
+            ),
+            '<catalog><item id="1"/><item id="01"/></catalog>',
+            tmp_path,
+        )
+        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+
+    def test_numeric_keyref_spellings_match(self, tmp_path):
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="catalog">\n'
+            "    <xs:complexType>\n"
+            "      <xs:sequence>\n"
+            '        <xs:element name="item" maxOccurs="unbounded">\n'
+            "          <xs:complexType>\n"
+            '            <xs:attribute name="id" type="xs:int" use="required"/>\n'
+            "          </xs:complexType>\n"
+            "        </xs:element>\n"
+            '        <xs:element name="link" minOccurs="0" maxOccurs="unbounded">\n'
+            "          <xs:complexType>\n"
+            '            <xs:attribute name="ref" type="xs:int" use="required"/>\n'
+            "          </xs:complexType>\n"
+            "        </xs:element>\n"
+            "      </xs:sequence>\n"
+            "    </xs:complexType>\n"
+            f"{_key()}"
+            f"{_keyref('linkRef', 'itemKey', 'link', '@ref')}"
+            "  </xs:element>\n"
+            "</xs:schema>\n"
+        )
+        parser = _parse(
+            schema,
+            '<catalog><item id="1"/><link ref="01"/></catalog>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+
+class TestIdentityFieldCardinality:
+    def test_field_selecting_multiple_nodes_is_rejected(self, tmp_path):
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="r">\n'
+            "    <xs:complexType>\n"
+            "      <xs:sequence>\n"
+            '        <xs:element name="row" maxOccurs="unbounded">\n'
+            "          <xs:complexType>\n"
+            "            <xs:sequence>\n"
+            '              <xs:element name="v" type="xs:string" maxOccurs="2"/>\n'
+            "            </xs:sequence>\n"
+            "          </xs:complexType>\n"
+            "        </xs:element>\n"
+            "      </xs:sequence>\n"
+            "    </xs:complexType>\n"
+            '    <xs:key name="rowKey">\n'
+            '      <xs:selector xpath="row"/>\n'
+            '      <xs:field xpath="v"/>\n'
+            "    </xs:key>\n"
+            "  </xs:element>\n"
+            "</xs:schema>\n"
+        )
+        parser = _parse(schema, "<r><row><v>a</v><v>b</v></row></r>", tmp_path)
+        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+
+    def test_nilled_field_supplies_no_key_value(self, tmp_path):
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="r">\n'
+            "    <xs:complexType>\n"
+            "      <xs:sequence>\n"
+            '        <xs:element name="v" type="xs:string" nillable="true" maxOccurs="unbounded"/>\n'
+            "      </xs:sequence>\n"
+            "    </xs:complexType>\n"
+            '    <xs:key name="vKey">\n'
+            '      <xs:selector xpath="v"/>\n'
+            '      <xs:field xpath="."/>\n'
+            "    </xs:key>\n"
+            "  </xs:element>\n"
+            "</xs:schema>\n"
+        )
+        parser = _parse(
+            schema,
+            f'<r {_XSI}><v xsi:nil="true"/></r>',
+            tmp_path,
+        )
+        assert any(issue.code == "identity-key" for issue in parser.report.issues)
