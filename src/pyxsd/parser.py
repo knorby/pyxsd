@@ -71,7 +71,7 @@ from pyxsd.namespaces import (
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
-from pyxsd.xsd_data_types import AnySimpleType, whitespace_mode, xsd_value_key
+from pyxsd.xsd_data_types import AnySimpleType, qname_context, whitespace_mode, xsd_value_key
 
 logger = logging.getLogger(__name__)
 
@@ -778,49 +778,50 @@ class PyXSD:
 
         text = self.xmlRoot.text or ""
         value = None
-        if not nilled:
-            forced = None
-            if self.xmlRoot.text is None and not list(self.xmlRoot):
-                forced = rootElement.getDefault()
-                if forced is None:
-                    forced = rootElement.getFixed()
-            if forced is not None:
-                try:
-                    value = dataTypeClass(forced)
-                except (TypeError, ValueError) as exc:
-                    self.report.add_error(
-                        f"the root element '{rootName}' has an invalid default value: {exc}",
-                        code="default",
-                        element=rootName,
-                    )
-            else:
-                try:
-                    value = dataTypeClass(text)
-                except (TypeError, ValueError) as exc:
-                    self.report.add_error(
-                        f"the root element '{rootName}' has an invalid "
-                        f"{getattr(dataTypeClass, 'name', dataTypeClass.__name__)} "
-                        f"value: {exc}",
-                        code="value",
-                        element=rootName,
-                    )
-                    if self.mode.invalid_value == "raw":
-                        value = AnySimpleType(text)
+        with qname_context(self._qname_bindings_for(self.xmlRoot)):
+            if not nilled:
+                forced = None
+                if self.xmlRoot.text is None and not list(self.xmlRoot):
+                    forced = rootElement.getDefault()
+                    if forced is None:
+                        forced = rootElement.getFixed()
+                if forced is not None:
+                    try:
+                        value = dataTypeClass(forced)
+                    except (TypeError, ValueError) as exc:
+                        self.report.add_error(
+                            f"the root element '{rootName}' has an invalid default value: {exc}",
+                            code="default",
+                            element=rootName,
+                        )
+                else:
+                    try:
+                        value = dataTypeClass(text)
+                    except (TypeError, ValueError) as exc:
+                        self.report.add_error(
+                            f"the root element '{rootName}' has an invalid "
+                            f"{getattr(dataTypeClass, 'name', dataTypeClass.__name__)} "
+                            f"value: {exc}",
+                            code="value",
+                            element=rootName,
+                        )
+                        if self.mode.invalid_value == "raw":
+                            value = AnySimpleType(text)
 
-        if not nilled and value is not None:
-            fixed = rootElement.getFixed()
-            if fixed is not None:
-                try:
-                    fixedValue = dataTypeClass(fixed)
-                except (TypeError, ValueError):
-                    fixedValue = None
-                if fixedValue is not None and xsd_value_key(value) != xsd_value_key(fixedValue):
-                    self.report.add_error(
-                        f"the root element '{rootName}' has a value that conflicts "
-                        f"with its fixed value {fixed!r}",
-                        code="fixed-element",
-                        element=rootName,
-                    )
+            if not nilled and value is not None:
+                fixed = rootElement.getFixed()
+                if fixed is not None:
+                    try:
+                        fixedValue = dataTypeClass(fixed)
+                    except (TypeError, ValueError):
+                        fixedValue = None
+                    if fixedValue is not None and xsd_value_key(value) != xsd_value_key(fixedValue):
+                        self.report.add_error(
+                            f"the root element '{rootName}' has a value that conflicts "
+                            f"with its fixed value {fixed!r}",
+                            code="fixed-element",
+                            element=rootName,
+                        )
 
         instance = dataTypeClass._unvalidated() if value is None else value
         instance._name_ = rootName
@@ -830,6 +831,16 @@ class PyXSD:
         instance._value_ = [str(value)] if value is not None else ([text] if text else None)
         instance._children_ = []
         return instance
+
+    def _qname_bindings_for(self, element: Any) -> dict[str, str] | None:
+        """Prefix bindings in scope at ``element``, or ``None``.
+
+        Only strict namespace mode resolves ``xs:QName`` values; legacy
+        mode keeps lexical comparison (``None`` disables resolution).
+        """
+        if getattr(self.mode, "namespaces", "legacy") != "strict":
+            return None
+        return self.namespaceContext.bindings_for(element)
 
     def _resolveXsiTypeName(self, value: str, element: Any) -> str | None:
         """Resolves a lexical ``xsi:type`` QName against the instance scope.

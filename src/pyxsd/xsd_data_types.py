@@ -35,7 +35,7 @@ import decimal
 import math
 import re
 import struct
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import date as _date
@@ -153,6 +153,14 @@ _COMPAT_WS_ANY = re.compile(r"\s")
 # whitespace.
 _WHITESPACE_MODE: ContextVar[str] = ContextVar("pyxsd_whitespace_mode", default="xsd")
 
+# Ambient namespace bindings for ``xs:QName`` values. QName construction
+# takes only the lexical value, so the in-scope prefix -> URI map reaches
+# it through a ContextVar set by the parser around instance binding.
+# ``None`` means no context: QName falls back to plain lexical comparison.
+_QNAME_CONTEXT: ContextVar[Mapping[str, str] | None] = ContextVar(
+    "pyxsd_qname_context", default=None
+)
+
 
 @contextmanager
 def whitespace_mode(mode: str) -> Iterator[None]:
@@ -162,6 +170,21 @@ def whitespace_mode(mode: str) -> Iterator[None]:
         yield
     finally:
         _WHITESPACE_MODE.reset(token)
+
+
+@contextmanager
+def qname_context(bindings: Mapping[str, str] | None) -> Iterator[None]:
+    """Set the ambient prefix bindings used to resolve ``xs:QName`` values.
+
+    ``bindings`` maps prefixes to namespace URIs; the empty string maps
+    the default namespace. ``None`` disables resolution, so QName values
+    compare by lexical form (the legacy behaviour).
+    """
+    token = _QNAME_CONTEXT.set(bindings)
+    try:
+        yield
+    finally:
+        _QNAME_CONTEXT.reset(token)
 
 
 def _ws_replace(text: str) -> str:
@@ -317,10 +340,33 @@ class AnyURI(Token):
 
 
 class QName(_PatternString):
-    """``xs:QName``: optionally prefixed name (``prefix:local``)."""
+    """``xs:QName``: optionally prefixed name (``prefix:local``).
+
+    Resolution against the ambient :func:`qname_context` supplies the
+    value's namespace URI, so two prefixes bound to one URI compare
+    equal. Without a context the value is purely lexical.
+    """
 
     name = "QName"
     _pattern = re.compile(rf"({_NCNAME}:)?{_NCNAME}")
+
+    # Assigned by ``__new__`` from the ambient QName context.
+    _resolved_: bool
+    _uri_: str | None
+    _local_: str
+
+    def __new__(cls, val: str) -> Self:
+        instance: Self = super().__new__(cls, val)
+        text = str(instance)
+        if ":" in text:
+            prefix, local = text.split(":", 1)
+        else:
+            prefix, local = "", text
+        bindings = _QNAME_CONTEXT.get()
+        instance._resolved_ = bindings is not None
+        instance._uri_ = bindings.get(prefix) if bindings is not None else None
+        instance._local_ = local
+        return instance
 
 
 class _ListString(String):
@@ -871,6 +917,8 @@ def xsd_value_key(value: Any) -> tuple:
         return ("date", _date_key(str(value)))
     if isinstance(value, Time):
         return ("time", _time_key(str(value)))
+    if isinstance(value, QName) and getattr(value, "_resolved_", False):
+        return ("QName", (value._uri_, value._local_))
     return (getattr(value, "name", type(value).__name__), str(value))
 
 

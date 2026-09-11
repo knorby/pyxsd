@@ -20,6 +20,7 @@ from pyxsd.namespaces import (
     parse_with_namespaces,
 )
 from pyxsd.parser import PyXSD
+from pyxsd.xsd_data_types import QName, qname_context, xsd_comparable_key, xsd_value_key
 
 
 def _parse(xml: str):
@@ -694,3 +695,85 @@ class TestWildcardAttributes:
         decl = '<xs:anyAttribute namespace="##other" processContents="strict"/>'
         parser = self._parse(decl, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="1"/>', tmp_path)
         assert "wildcard-no-declaration" in [i.code for i in parser.report.issues]
+
+
+class TestQNameValueSemantics:
+    """xs:QName values compare in the expanded-name value space."""
+
+    def test_value_key_uses_expanded_name(self):
+        with qname_context({"tns": "urn:t"}):
+            value = QName("tns:a")
+        assert xsd_value_key(value) == ("QName", ("urn:t", "a"))
+
+    def test_prefix_spellings_for_same_uri_compare_equal(self):
+        with qname_context({"p": "urn:t", "q": "urn:t"}):
+            first = QName("p:a")
+            second = QName("q:a")
+        assert xsd_comparable_key(first) == xsd_comparable_key(second)
+
+    def test_unprefixed_qname_uses_default_namespace(self):
+        with qname_context({"": "urn:t"}):
+            value = QName("a")
+        assert xsd_value_key(value) == ("QName", ("urn:t", "a"))
+
+    def test_unprefixed_qname_has_no_namespace_without_default(self):
+        with qname_context({"p": "urn:t"}):
+            value = QName("a")
+        assert xsd_value_key(value) == ("QName", (None, "a"))
+
+    def test_value_without_context_falls_back_to_lexical(self):
+        assert xsd_value_key(QName("p:a")) == ("QName", "p:a")
+
+
+_QNAME_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
+    targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:complexType name="Holder">
+    <xs:sequence>
+      <xs:element name="item" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="ref" type="xs:QName" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="t:Holder">
+    <xs:unique name="refUnique">
+      <xs:selector xpath="item"/>
+      <xs:field xpath="@ref"/>
+    </xs:unique>
+  </xs:element>
+</xs:schema>"""
+
+
+def _qname_parse(instance, tmp_path):
+    schema_path = tmp_path / "schema.xsd"
+    schema_path.write_text(_QNAME_SCHEMA)
+    instance_path = tmp_path / "instance.xml"
+    instance_path.write_text(instance)
+    return PyXSD(
+        instance_path,
+        xsdFile=schema_path,
+        xmlFileOutput="_No_Output_",
+        transformOutputName="_No_Output_",
+        mode=ParseModes.NAMESPACED,
+    )
+
+
+class TestQNameIdentity:
+    """Identity constraints use the QName value space, not the spelling."""
+
+    def test_prefix_spellings_collide(self, tmp_path):
+        parser = _qname_parse(
+            '<root xmlns="urn:t" xmlns:p="urn:t" xmlns:q="urn:t">'
+            '<item ref="p:a"/><item ref="q:a"/></root>',
+            tmp_path,
+        )
+        assert "identity-unique" in [i.code for i in parser.report.issues]
+
+    def test_distinct_names_do_not_collide(self, tmp_path):
+        parser = _qname_parse(
+            '<root xmlns="urn:t" xmlns:p="urn:t"><item ref="p:a"/><item ref="p:b"/></root>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+        assert len(parser.schemaRootInstance._children_) == 2

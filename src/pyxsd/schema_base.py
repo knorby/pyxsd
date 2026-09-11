@@ -8,7 +8,7 @@ from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derive
 from pyxsd.namespaces import NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import WildcardSpec
-from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, xsd_value_key
+from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, qname_context, xsd_value_key
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +180,22 @@ class SchemaBase:
         if name_fn is None:
             return getattr(descriptor, "name", None)
         return name_fn(parser=getattr(cls, "pyXSD", None), is_attribute=is_attribute)
+
+    @classmethod
+    def _qname_bindings(cls, element):
+        """The prefix bindings in scope at ``element``, or ``None``.
+
+        Only strict namespace mode resolves ``xs:QName`` values; legacy
+        mode keeps lexical comparison (returning ``None`` disables
+        resolution for the duration of a binding call).
+        """
+        if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
+            return None
+        parser = getattr(cls, "pyXSD", None)
+        context = getattr(parser, "namespaceContext", None)
+        if context is None:
+            return None
+        return context.bindings_for(element)
 
     @classmethod
     def _wildcard_element_specs(cls, instance) -> list[WildcardSpec]:
@@ -364,47 +380,50 @@ class SchemaBase:
         self._attribs_ = {}
         usedAttributes = []
         xsiPrefix = f"{{{xsi.XSI_NAMESPACE}}}"
-        # XSI-namespace attributes (xsi:nil, xsi:type, ...) are stored
-        # under their conventional display spelling so the writers emit
-        # valid xml (the document's own xmlns:xsi declaration, a plain
-        # attribute here, keeps the output reparseable).
-        for attr in elementTag.attrib:
-            if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
-                displayKey = xsi.xsi_attr_key(attr)
-                setattr(self, displayKey, elementTag.attrib[attr])
-                usedAttributes.append(displayKey)
-                self._attribs_[displayKey] = elementTag.attrib[attr]
-        for name in self.descAttributeNames():
-            descriptor = self.descAttributes()[name]
-            matchName = self._instance_name_of(descriptor, is_attribute=True)
-            if matchName in elementTag.attrib:
-                setattr(self, name, elementTag.attrib[matchName])
-                usedAttributes.append(matchName)
-                self._attribs_[matchName] = elementTag.attrib[matchName]
-        # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
-        # namespace mode every undeclared attribute is accepted raw; in
-        # strict mode the wildcard's namespace constraint must admit the
-        # attribute, and ``processContents`` decides whether a global
-        # declaration is required.
-        if getattr(self, "hasWildcardAttributes_", False):
-            cls = type(self)
-            strict = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
-            specs = self._wildcard_attribute_specs(self) if strict else []
-            targetNamespace = getattr(cls, "_targetNamespace_", None) if strict else None
-            parser = getattr(cls, "pyXSD", None)
-            for attr, value in elementTag.attrib.items():
+        # QName-valued attributes resolve against this element's in-scope
+        # prefix bindings (strict mode only).
+        with qname_context(self._qname_bindings(elementTag)):
+            # XSI-namespace attributes (xsi:nil, xsi:type, ...) are stored
+            # under their conventional display spelling so the writers emit
+            # valid xml (the document's own xmlns:xsi declaration, a plain
+            # attribute here, keeps the output reparseable).
+            for attr in elementTag.attrib:
                 if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
-                    continue
-                if attr in usedAttributes:
-                    continue
-                if strict:
-                    spec = self._wildcard_match(specs, attr, targetNamespace)
-                    if spec is None:
+                    displayKey = xsi.xsi_attr_key(attr)
+                    setattr(self, displayKey, elementTag.attrib[attr])
+                    usedAttributes.append(displayKey)
+                    self._attribs_[displayKey] = elementTag.attrib[attr]
+            for name in self.descAttributeNames():
+                descriptor = self.descAttributes()[name]
+                matchName = self._instance_name_of(descriptor, is_attribute=True)
+                if matchName in elementTag.attrib:
+                    setattr(self, name, elementTag.attrib[matchName])
+                    usedAttributes.append(matchName)
+                    self._attribs_[matchName] = elementTag.attrib[matchName]
+            # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
+            # namespace mode every undeclared attribute is accepted raw; in
+            # strict mode the wildcard's namespace constraint must admit the
+            # attribute, and ``processContents`` decides whether a global
+            # declaration is required.
+            if getattr(self, "hasWildcardAttributes_", False):
+                cls = type(self)
+                strict = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
+                specs = self._wildcard_attribute_specs(self) if strict else []
+                targetNamespace = getattr(cls, "_targetNamespace_", None) if strict else None
+                parser = getattr(cls, "pyXSD", None)
+                for attr, value in elementTag.attrib.items():
+                    if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
                         continue
-                    if not self._checkWildcardAttribute(attr, value, spec, parser):
+                    if attr in usedAttributes:
                         continue
-                self._attribs_[attr] = value
-                usedAttributes.append(attr)
+                    if strict:
+                        spec = self._wildcard_match(specs, attr, targetNamespace)
+                        if spec is None:
+                            continue
+                        if not self._checkWildcardAttribute(attr, value, spec, parser):
+                            continue
+                    self._attribs_[attr] = value
+                    usedAttributes.append(attr)
         return usedAttributes
 
     @classmethod
@@ -766,7 +785,8 @@ class SchemaBase:
         report code (``default`` or ``fixed-element``).
         """
         try:
-            instance = subElCls(forcedValue)
+            with qname_context(cls._qname_bindings(subElement)):
+                instance = subElCls(forcedValue)
         except (TypeError, ValueError) as e:
             cls._report_error(
                 f"the forced value {forcedValue!r} of the "
@@ -1168,7 +1188,8 @@ class SchemaBase:
         dataTypeVal = dataTypeText if dataTypeText is not None else ""
 
         try:
-            dataTypeValInst = subElCls(dataTypeVal)
+            with qname_context(cls._qname_bindings(subElement)):
+                dataTypeValInst = subElCls(dataTypeVal)
         except (TypeError, ValueError) as e:
             cls._report_error(
                 f"the value of the '{subElement.tag.split('}')[-1]}' element "
