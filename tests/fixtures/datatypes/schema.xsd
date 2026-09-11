@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="record">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="when" type="xs:date"/>
+        <xs:element name="moment" type="xs:dateTime"/>
+        <xs:element name="alarm" type="xs:time"/>
+        <xs:element name="span" type="xs:duration"/>
+        <xs:element name="price" type="xs:decimal"/>
+        <xs:element name="checksum" type="xs:hexBinary"/>
+        <xs:element name="population" type="xs:long"/>
+        <xs:element name="offset" type="xs:int"/>
+        <xs:element name="level" type="xs:short"/>
+        <xs:element name="code" type="xs:byte"/>
+        <xs:element name="quantity" type="xs:unsignedByte"/>
+        <xs:element name="website" type="xs:anyURI"/>
+        <xs:element name="debt" type="xs:negativeInteger"/>
+        <xs:element name="year" type="xs:gYear"/>
+        <xs:element name="title" type="xs:token"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

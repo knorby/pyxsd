@@ -1,0 +1,8 @@
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:pyxsd:test:extra">
+
+  <xs:simpleType name="extraType">
+    <xs:restriction base="xs:integer"/>
+  </xs:simpleType>
+
+</xs:schema>

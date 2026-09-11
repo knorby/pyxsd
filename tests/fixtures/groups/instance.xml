@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Uses a group reference (coordinates) and an attributeGroup
+     reference (audit) resolved from their top-level definitions. -->
+<point by="kali" note="first point">
+  <x>3</x>
+  <y>4</y>
+</point>

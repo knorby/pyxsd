@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:complexType name="circleType">
+    <xs:sequence>
+      <xs:element name="radius" type="xs:double"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="squareType">
+    <xs:sequence>
+      <xs:element name="side" type="xs:double"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="shape">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="circle" type="circleType"/>
+        <xs:element name="square" type="squareType"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

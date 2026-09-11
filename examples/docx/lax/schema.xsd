@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <!--
+    A deliberately small, no-namespace stand-in for the WordprocessingML
+    subset this example cares about. Real .docx files use the
+    wordprocessingml/2006/main namespace; pyxsd validates documents in
+    the default/no-namespace style, so the example instance is written
+    without prefixes (see README.md).
+  -->
+
+  <xs:complexType name="rPrType">
+    <xs:sequence>
+      <xs:element name="b" minOccurs="0">
+        <xs:complexType/>
+      </xs:element>
+      <xs:element name="i" minOccurs="0">
+        <xs:complexType/>
+      </xs:element>
+      <xs:element name="u" minOccurs="0">
+        <xs:complexType/>
+      </xs:element>
+      <xs:element name="sz" type="xs:positiveInteger" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="runType">
+    <xs:sequence>
+      <xs:element name="rPr" type="rPrType" minOccurs="0"/>
+      <xs:element name="t" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="pPrType">
+    <xs:sequence>
+      <xs:element name="pStyle" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="pType">
+    <xs:sequence>
+      <xs:element name="pPr" type="pPrType" minOccurs="0"/>
+      <xs:element name="r" type="runType" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="bodyType">
+    <xs:sequence>
+      <xs:element name="p" type="pType" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="document">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="body" type="bodyType"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

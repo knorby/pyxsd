@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document>
+  <body>
+    <p>
+      <pPr><pStyle>Heading1</pStyle></pPr>
+      <r><t>pyxsd report</t></r>
+    </p>
+    <p>
+      <r><rPr><b/></rPr><t>Bold</t></r>
+      <r><t> </t></r>
+      <r><rPr><i/></rPr><t>italic</t></r>
+      <r><t>.</t></r>
+    </p>
+    <p>
+      <pPr><pStyle>ListBullet</pStyle></pPr>
+      <r><t>first item</t></r>
+    </p>
+    <p>
+      <pPr><pStyle>ListBullet</pStyle></pPr>
+      <r><t>second item</t></r>
+    </p>
+    <bookmarkStart name="_top"/>
+    <p>
+      <r><rPr><sz>12</sz></rPr><t>sized text</t></r>
+    </p>
+    <p>
+      <r><rPr><sz>not-a-number</sz></rPr><t>unmodeled size</t></r>
+    </p>
+  </body>
+</document>

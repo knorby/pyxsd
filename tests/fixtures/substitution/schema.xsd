@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <!-- substitution-group head: a global element declaration -->
+  <xs:element name="marker" type="xs:string"/>
+
+  <!-- substitution-group members of 'marker' -->
+  <xs:element name="dot" type="xs:integer" substitutionGroup="marker"/>
+  <xs:element name="peg" substitutionGroup="marker"/>
+
+  <xs:element name="shape">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="marker" maxOccurs="unbounded"/>
+        <xs:element name="weight" type="xs:double" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

@@ -1,0 +1,28 @@
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:include schemaLocation="common.xsd"/>
+
+  <xs:redefine schemaLocation="redefined.xsd">
+    <xs:complexType name="widgetType">
+      <xs:complexContent>
+        <xs:extension base="widgetType">
+          <xs:sequence>
+            <xs:element name="count" type="xs:integer"/>
+          </xs:sequence>
+        </xs:extension>
+      </xs:complexContent>
+    </xs:complexType>
+  </xs:redefine>
+
+  <xs:import namespace="urn:pyxsd:test:extra" schemaLocation="extra.xsd"/>
+
+  <xs:element name="kit">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="part" type="commonType"/>
+        <xs:element name="widget" type="widgetType"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

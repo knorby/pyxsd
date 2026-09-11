@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<inventory
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="schema.xsd">
+  <item id="a1">
+    <name>wrench</name>
+    <quantity>12</quantity>
+    <color>red</color>
+  </item>
+  <item id="a2">
+    <name>hammer</name>
+    <quantity>3</quantity>
+    <color>blue</color>
+    <note>handle broken</note>
+  </item>
+</inventory>

@@ -1,0 +1,11 @@
+<catalog>
+  <item id="a1">
+    <code>c-1</code>
+  </item>
+  <item id="a2">
+    <code>c-2</code>
+  </item>
+  <order>
+    <line ref="a1"/>
+  </order>
+</catalog>

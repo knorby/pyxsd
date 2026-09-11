@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="unqualified">
+  <xs:complexType name="auditPoint">
+    <xs:group ref="coordinates"/>
+    <xs:attributeGroup ref="audit"/>
+  </xs:complexType>
+  <xs:element name="point" type="auditPoint"/>
+  <xs:group name="coordinates">
+    <xs:sequence>
+      <xs:element name="x" type="xs:integer"/>
+      <xs:element name="y" type="xs:integer"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:attributeGroup name="audit">
+    <xs:attribute name="by" type="xs:string" use="required"/>
+    <xs:attribute name="note" type="xs:string"/>
+  </xs:attributeGroup>
+</xs:schema>

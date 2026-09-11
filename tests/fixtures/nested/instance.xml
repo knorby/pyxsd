@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<person
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="schema.xsd"
+    id="p-1">
+  <name>Kim Example</name>
+  <home>
+    <street>123 Main St</street>
+    <city>Springfield</city>
+  </home>
+  <emergency>
+    <phone>555-0100</phone>
+    <relation>neighbor</relation>
+  </emergency>
+</person>

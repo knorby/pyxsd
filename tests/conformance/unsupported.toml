@@ -1,0 +1,71 @@
+# pyxsd unsupported-features table
+#
+# Honest record of XSD 1.0 constructs pyxsd does not fully implement as of
+# version 1.0.0. Rendered into the conformance report and reproduced in the
+# documentation. Status is one of: "unsupported", "partial", "ignored".
+
+[[feature]]
+name = "XML Namespaces"
+construct = "targetNamespace, elementFormDefault/attributeFormDefault, prefixed QNames"
+status = "partial"
+note = "Namespace-aware validation is opt-in via ParseModes.NAMESPACED (CLI --namespaces strict): component identity, form-default-aware instance matching, xsi:type and type/ref QName resolution, cross-namespace imports, wildcard namespace/processContents, and QName value-space identity are honored. Legacy mode (the default) keeps local-name matching for backward compatibility. Namespace-qualified identity-constraint selectors and reporting an unbound prefix in an instance QName value are not implemented."
+
+[[feature]]
+name = "Facet validation on user-defined simpleTypes"
+construct = "enumeration, pattern, length, minLength, maxLength, minInclusive, maxInclusive, fractionDigits, whiteSpace"
+status = "ignored"
+note = "Facets are parsed as annotation data only. Built-in type lexical validation is complete, but facets declared on user-defined simpleTypes are not enforced against instance values."
+
+[[feature]]
+name = "Wildcards with namespace filtering"
+construct = "xs:any / xs:anyAttribute processContents, namespace lists"
+status = "partial"
+note = "In namespaced mode, namespace lists (##any, ##other, ##local, ##targetNamespace, explicit URIs) and processContents (strict, lax, skip) are enforced, including the wildcard-no-declaration error under strict. Legacy mode continues to pass undeclared content through permissively."
+
+[[feature]]
+name = "Full XPath for identity constraints"
+construct = "xs:selector / xs:field xpath expressions"
+status = "partial"
+note = "A subset is supported: child steps, .// descendants, *, ., @attr, and multi-step paths. Predicates ([...]), absolute paths, positional steps, and other axes are skipped with a warning."
+
+[[feature]]
+name = "List type derivation"
+construct = "xs:list with itemType or inline item type"
+status = "unsupported"
+note = "Built-in list types (NMTOKENS, IDREFS) work; user-defined xs:list types are not generated."
+
+[[feature]]
+name = "Union lexical space per member"
+construct = "xs:union with list member types"
+status = "partial"
+note = "Unions of atomic types work, including inline anonymous members; unions whose members are user-defined list types are not supported."
+
+[[feature]]
+name = "Mixed complex content"
+construct = "mixed=\"true\" complexTypes"
+status = "ignored"
+note = "Text interleaved between child elements is not preserved or validated."
+
+[[feature]]
+name = "Schema hints by URL"
+construct = "xsi:schemaLocation with remote/absolute URIs"
+status = "partial"
+note = "Schema locations are resolved relative to the local file system only; no network resolution."
+
+[[feature]]
+name = "xs:notation and NOTATION"
+construct = "xs:NOTATION built-in"
+status = "unsupported"
+note = "Notation declarations are not implemented."
+
+[[feature]]
+name = "Redefine cycles and multiple redefinition"
+construct = "xs:redefine chains redefining an already-redefined component"
+status = "partial"
+note = "A single redefine level is supported; chains of redefinitions are not."
+
+[[feature]]
+name = "Unique particle attribution"
+construct = "UPA ambiguity checking"
+status = "ignored"
+note = "Content models are matched greedily in document order; ambiguous particles are not detected."

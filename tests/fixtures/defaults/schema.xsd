@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:complexType name="settingsType">
+    <xs:sequence>
+      <xs:element name="volume" type="xs:integer" default="5"/>
+      <xs:element name="label" type="xs:string" fixed="fixture"/>
+      <xs:element name="note" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="mode" type="xs:string" default="standard"/>
+    <xs:attribute name="key" type="xs:string" fixed="k-1"/>
+  </xs:complexType>
+
+  <xs:element name="settings" type="settingsType"/>
+
+</xs:schema>

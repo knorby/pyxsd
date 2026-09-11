@@ -1,4 +1,5 @@
 from yourTransformLibrary import YourTransformLibrary
+
 # Import anything else you want, just remember to import Transform (or your
 # custom library)
 
@@ -8,6 +9,7 @@ class myTransform(YourTransformLibrary):
 
     def __init__(self, root):
         self.root = root
+
     # Just define the call method and specify arguments, and the program
     # will do your transform
 

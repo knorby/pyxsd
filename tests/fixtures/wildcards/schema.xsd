@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="unqualified">
+  <xs:complexType name="metadata">
+    <xs:sequence>
+      <xs:element name="title" type="xs:string"/>
+      <xs:any namespace="##any" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:anyAttribute namespace="##any"/>
+  </xs:complexType>
+  <xs:element name="metadata" type="metadata"/>
+</xs:schema>

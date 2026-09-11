@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sample
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="schema.xsd"
+    active="true"
+    serial="S-001">
+  <label>control sample</label>
+  <count>42</count>
+  <total>-7</total>
+  <weight>1.5</weight>
+  <rank>3</rank>
+  <blob>aGVsbG8gd29ybGQ=</blob>
+  <notes>first line of notes
+second line of notes
+third line of notes</notes>
+</sample>

@@ -1,0 +1,19 @@
+from pyxsd.element_representatives.element_representative import ElementRepresentative
+
+
+class Pattern(ElementRepresentative):
+    """The class for the pattern tag."""
+
+    def __init__(self, xsdElement, parent):
+        """See ElementRepresentative for documentation."""
+        super().__init__(xsdElement, parent)
+        self.value = self.xsdElement.get("value")
+        self.getContainingType().patterns.append(self.value)
+
+    def getName(self):
+        """Makes a name like this- ``ContainingTypeName``|Pattern|``an id
+        number``.  The name on this class is used for almost nothing.
+        """
+        patNum = len(self.getContainingType().patterns) + 1
+        name = self.getContainingTypeName()
+        return f"{name}|pattern|{patNum}"

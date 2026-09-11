@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:complexType name="baseValueType">
+    <xs:sequence>
+      <xs:element name="num" type="xs:integer"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Derived from baseValueType by extension: an xsi:type override
+       must be validly derived from the declared type. -->
+  <xs:complexType name="specialValueType">
+    <xs:complexContent>
+      <xs:extension base="baseValueType">
+        <xs:sequence>
+          <xs:element name="tag" type="xs:string"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+
+  <xs:element name="holder" type="baseValueType"/>
+
+  <xs:element name="container">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" type="baseValueType" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>
