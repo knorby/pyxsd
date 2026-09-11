@@ -62,6 +62,7 @@ from pyxsd.element_representatives.element_representative import (
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.namespaces import (
+    XML_NS,
     XSD_NS,
     NamespaceContext,
     NamespaceError,
@@ -77,7 +78,14 @@ logger = logging.getLogger(__name__)
 
 # Schema components that may be spliced in from included/imported
 # schemas before the ElementRepresentative run.
-_COMPOSABLE_TAGS = {"element", "complexType", "simpleType", "group", "attributeGroup"}
+_COMPOSABLE_TAGS = {
+    "element",
+    "complexType",
+    "simpleType",
+    "group",
+    "attributeGroup",
+    "attribute",
+}
 
 
 class PyXSD:
@@ -249,6 +257,23 @@ class PyXSD:
                 with open(transformOutput, "w") as output:
                     self.writeXML(transformedRoot, output)
 
+    def _injectXmlNamespaceAttributes(self, schemaRoot: Any) -> None:
+        """Registers the implicit XML-namespace attributes.
+
+        The ``xml`` namespace has no schema document, but ``xml:space``,
+        ``xml:lang``, ``xml:base`` and ``xml:id`` may appear on any
+        element. Registering them as global attributes (typed as
+        strings) lets attribute references into the XML namespace
+        resolve without a vendored XML-namespace schema.
+        """
+        for local in ("space", "lang", "base", "id"):
+            attributeElement = ET.Element(
+                clark(XSD_NS, "attribute"),
+                {"name": local, "type": clark(XSD_NS, "string")},
+            )
+            self._namespaceOverrides[id(attributeElement)] = XML_NS
+            schemaRoot.append(attributeElement)
+
     def parseXSD(self) -> None:
         """Reads the given xsd file and creates a set of classes that
         correspond to the complex and simple type definitions.
@@ -285,6 +310,8 @@ class PyXSD:
         self._composedDocuments: set[str] = set(visited)
         self._spliceComposedSchemas(root, baseDir, visited)
         self._spliceAdditionalSchemas(root, baseDir, visited)
+        if getattr(self.mode, "namespaces", "legacy") == "strict":
+            self._injectXmlNamespaceAttributes(root)
 
         import pyxsd.element_representatives.element_representative as ermod
 
@@ -465,6 +492,7 @@ class PyXSD:
                 if (
                     getattr(self.mode, "namespaces", "legacy") == "strict"
                     and namespace
+                    and namespace != XML_NS
                     and namespace not in self.namespaceSchemas
                     and namespace
                     not in {ns for ns, _ in getattr(self, "_additionalSchemas", []) if ns}

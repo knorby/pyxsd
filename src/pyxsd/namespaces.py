@@ -24,6 +24,11 @@ XSD_NS = "http://www.w3.org/2001/XMLSchema"
 #: The XML Schema instance namespace.
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 
+#: The XML namespace. Its ``xml`` prefix is bound implicitly by the XML
+#: specification and need not (must not) be declared, so resolution has
+#: to supply it.
+XML_NS = "http://www.w3.org/XML/1998/namespace"
+
 
 class NamespaceError(Exception):
     """A QName used a prefix that is not bound in its scope."""
@@ -114,6 +119,9 @@ class NamespaceContext:
         return None
 
     def _lookup(self, element: ET.Element, prefix: str) -> str | None:
+        # The ``xml`` prefix is implicitly bound by the XML spec.
+        if prefix == "xml":
+            return XML_NS
         return self.bindings_for(element).get(prefix)
 
 

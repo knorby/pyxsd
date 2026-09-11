@@ -120,7 +120,7 @@ def _base_model(type_er: Any, py_xsd: Any) -> tuple[str | None, Particle | None]
 
     base_class = None
     for base_name in base_names:
-        resolved = type_er.resolveSchemaQName(base_name, is_attribute=True, parser=py_xsd)
+        resolved = type_er.resolveSchemaQName(base_name, parser=py_xsd)
         base_class = ElementRepresentative.typeFromName(resolved, py_xsd)
         if base_class is not None:
             break

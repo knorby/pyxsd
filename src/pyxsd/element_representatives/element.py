@@ -304,7 +304,7 @@ class Element(ElementRepresentative):
         head = self.tagAttributes.get("substitutionGroup")
         if head is None:
             return None
-        resolved = self.resolveSchemaQName(head, is_attribute=True, parser=parser)
+        resolved = self.resolveSchemaQName(head, parser=parser)
         if namespace_of(resolved) is None:
             return local_name(resolved)
         return resolved

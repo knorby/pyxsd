@@ -3,7 +3,10 @@ import types
 
 from pyxsd.binding import ParseModes
 from pyxsd.content_model import compile_content_model
-from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.element_representatives.element_representative import (
+    ElementRepresentative,
+    componentKind,
+)
 from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
@@ -101,7 +104,7 @@ class XsdType(ElementRepresentative):
         """
         baseList = []
         for rawName in self.superClassNames:
-            superClassName = self.resolveSchemaQName(rawName, is_attribute=True, parser=pyXSD)
+            superClassName = self.resolveSchemaQName(rawName, parser=pyXSD)
             base = ElementRepresentative.typeFromName(superClassName, pyXSD)
             if base is None:
                 # An unresolved base must not reach issubclass() or
@@ -246,6 +249,33 @@ class XsdType(ElementRepresentative):
             resolved[effective.name] = effective
         self.attributes = resolved
 
+    def _globalAttributeCandidates(self, pyXSD):
+        """Returns the global attribute declarations a ref may resolve to.
+
+        In ``strict`` namespace mode the per-type ``attributes`` mapping
+        is keyed by local name, so two global attributes that share a
+        local name but live in different namespaces (for example
+        ``r:id`` and the injected ``xml:id``) collapse onto one key. The
+        parser-owned component table preserves both by expanded name, so
+        gather the global attribute declarations from it instead. In
+        ``legacy`` mode the historical mapping is used unchanged.
+        """
+        schema = self.getSchema()
+        mode = getattr(pyXSD, "mode", ParseModes.STRICT)
+        if getattr(mode, "namespaces", "legacy") != "strict":
+            return schema.attributes.values()
+        table = getattr(schema, "components", None)
+        if not table:
+            return schema.attributes.values()
+        candidates = []
+        for entries in table.values():
+            for entry in entries:
+                if componentKind(entry) == "attribute" and not getattr(
+                    entry, "isAttributeRef", False
+                ):
+                    candidates.append(entry)
+        return candidates
+
     def _resolveAttributeRef(self, attr, pyXSD):
         """Returns the effective attribute for a reference site.
 
@@ -257,7 +287,7 @@ class XsdType(ElementRepresentative):
         if not getattr(attr, "isAttributeRef", False):
             return attr
         candidate = attr.resolveReference(
-            attr.ref, self.getSchema().attributes.values(), parser=pyXSD
+            attr.ref, self._globalAttributeCandidates(pyXSD), parser=pyXSD
         )
         if candidate is None:
             message = (
@@ -337,8 +367,7 @@ class XsdType(ElementRepresentative):
         inherit ``SchemaBase.__init__``, which takes no value.
         """
         namedMembers = [
-            self.resolveSchemaQName(memberName, is_attribute=True, parser=pyXSD)
-            for memberName in self.unionSpec
+            self.resolveSchemaQName(memberName, parser=pyXSD) for memberName in self.unionSpec
         ]
         memberNames = namedMembers + list(getattr(self, "unionInline", ()))
         members = []

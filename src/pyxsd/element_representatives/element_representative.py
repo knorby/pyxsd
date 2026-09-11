@@ -492,14 +492,18 @@ class ElementRepresentative:
             return clark(uri, local)
         return local
 
-    def resolveSchemaQName(self, value, *, is_attribute=True, parser=None):
+    def resolveSchemaQName(self, value, *, parser=None):
         """Resolves a lexical QName written in this schema element.
 
-        In ``strict`` namespace mode the prefix is resolved through the
-        schema document's captured in-scope bindings; in ``legacy``
-        mode the value is returned unchanged. An unbound prefix is
-        reported as ``unknown-namespace-prefix`` and the raw value is
-        returned so the caller's legacy fallback can still run.
+        This is used for QName *values* (``type``, ``base``, ``ref``,
+        ``substitutionGroup``, ``memberTypes``, ...), so an unprefixed
+        name resolves through the in-scope default namespace exactly as
+        XSD requires. (Unprefixed attribute *names* are never in the
+        default namespace, but that rule does not apply to these
+        attribute values.) In ``legacy`` namespace mode the value is
+        returned unchanged. An unbound prefix is reported as
+        ``unknown-namespace-prefix`` and the raw value is returned so the
+        caller's legacy fallback can still run.
 
         ``parser`` overrides the attached parser, which is needed while
         a class is being built before its descriptors own ``pyXSD``.
@@ -518,7 +522,7 @@ class ElementRepresentative:
         if context is None:
             return value
         try:
-            return context.resolve(self.xsdElement, value, is_attribute=is_attribute)
+            return context.resolve(self.xsdElement, value)
         except NamespaceError as e:
             if parser is not None:
                 parser.report.add_error(
@@ -528,7 +532,7 @@ class ElementRepresentative:
                 )
             return value
 
-    def resolveReference(self, value, candidates, *, is_attribute=True, parser=None):
+    def resolveReference(self, value, candidates, *, parser=None):
         """Returns the component a lexical QName reference names.
 
         ``candidates`` is an iterable of element representatives (for
@@ -542,7 +546,7 @@ class ElementRepresentative:
         """
         if value is None:
             return None
-        resolved = self.resolveSchemaQName(value, is_attribute=is_attribute, parser=parser)
+        resolved = self.resolveSchemaQName(value, parser=parser)
         local = local_name(resolved)
         uri = namespace_of(resolved)
         for candidate in candidates:
@@ -563,7 +567,7 @@ class ElementRepresentative:
         raw = self.__dict__.get("type")
         if raw is None:
             return None
-        return self.resolveSchemaQName(raw, is_attribute=True)
+        return self.resolveSchemaQName(raw)
 
     def getContainingTypeName(self):
         """Returns the name of the containing type."""
