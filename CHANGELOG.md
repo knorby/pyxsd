@@ -46,14 +46,18 @@ provably wrong.
   cross-namespace type/ref, `xsi:type`, wildcards, QName identity), run in
   namespaced mode through both the gating suite and the `xmlschema` oracle.
 - `examples/musicxml/`, `examples/gpx/`, and `examples/docx/`: real-format
-  schema/instance/transform examples with end-to-end tests. The `docx`
-  example validates a realistic `word/document.xml` against the full vendored
-  ECMA-376 `wml.xsd` in `ParseModes.NAMESPACED` (schemas fetched by
-  `examples/docx/download_schemas.py`, not committed; the test skips when
-  absent) and renders style-aware Markdown covering multilevel lists, tables,
-  hyperlinks, breaks/tabs, run properties, and `xml:space="preserve"`. The
-  earlier no-namespace `ParseModes.LAX` demo is kept under
-  `examples/docx/lax/`.
+  schema/instance/transform examples with end-to-end tests, each validating a
+  genuine document against the official published schema fetched on demand by
+  a local `download_schemas.py` (not committed; the tests skip when absent).
+  `musicxml` validates a public-domain Bach chorale against the MusicXML 4.0
+  schema (which imports the XML and XLink namespaces); `gpx` validates a real
+  ride against the official GPX 1.1 schema, including Garmin extension data
+  admitted by `xs:any processContents="lax"`; `docx` validates a realistic
+  `word/document.xml` against the full ECMA-376 `wml.xsd` and renders
+  style-aware Markdown covering multilevel lists, tables, hyperlinks,
+  breaks/tabs, run properties, and `xml:space="preserve"`. All three run in
+  `ParseModes.NAMESPACED`; the earlier no-namespace `ParseModes.LAX` docx demo
+  is kept under `examples/docx/lax/`.
 
 ### Fixed
 

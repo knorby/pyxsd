@@ -16,6 +16,7 @@ from pyxsd.parser import PyXSD
 EXAMPLES = Path(__file__).parent.parent / "examples"
 DOCX_SCHEMA = EXAMPLES / "docx" / "schemas" / "wml.xsd"
 GPX_SCHEMA = EXAMPLES / "gpx" / "schemas" / "gpx.xsd"
+MUSICXML_SCHEMA = EXAMPLES / "musicxml" / "schemas" / "musicxml.xsd"
 
 requires_docx_schemas = pytest.mark.skipif(
     not DOCX_SCHEMA.exists(),
@@ -24,6 +25,10 @@ requires_docx_schemas = pytest.mark.skipif(
 requires_gpx_schemas = pytest.mark.skipif(
     not GPX_SCHEMA.exists(),
     reason="run examples/gpx/download_schemas.py to fetch the GPX schema",
+)
+requires_musicxml_schemas = pytest.mark.skipif(
+    not MUSICXML_SCHEMA.exists(),
+    reason="run examples/musicxml/download_schemas.py to fetch the MusicXML schemas",
 )
 
 
@@ -45,20 +50,36 @@ def _codes(parser):
 
 
 class TestMusicXMLExample:
-    def test_score_validates_cleanly(self, tmp_path):
-        parser, _ = _run("musicxml", "NoteStats()", tmp_path)
-        assert parser.report.issues == []
+    """The real example: a Bach chorale against the official MusicXML 4.0 XSD.
 
-    def test_note_stats(self, tmp_path):
-        _parser, output = _run("musicxml", "NoteStats()", tmp_path)
+    The namespace-less MusicXML schema imports the XML and XLink namespaces,
+    so this also proves cross-namespace import loading. The score is
+    public-domain and taken from the music21 corpus.
+    """
+
+    @requires_musicxml_schemas
+    def test_real_score_validates_and_summarizes(self, tmp_path):
+        output = tmp_path / "note-stats.xml"
+        parser = PyXSD(
+            EXAMPLES / "musicxml" / "instance.xml",
+            xsdFile=MUSICXML_SCHEMA,
+            xmlFileOutput="_No_Output_",
+            transformOutputName=str(output),
+            transforms=["NoteStats()"],
+            mode=ParseModes.NAMESPACED,
+        )
+        assert not parser.report.has_errors
+
         root = ET.parse(output).getroot()
         assert root.tag == "noteStats"
-        assert root.attrib["totalNotes"] == "15"
-        assert root.attrib["totalDuration"] == "16"
-        assert root.attrib["rests"] == "1"
-        # C4 is MIDI 60, G4 is 67.
-        assert root.attrib["lowestPitch"] == "60"
-        assert root.attrib["highestPitch"] == "67"
+        assert root.attrib["parts"] == "4"
+        assert root.attrib["measures"] == "40"
+        assert root.attrib["totalNotes"] == "165"
+        assert root.attrib["totalDuration"] == "288"
+        assert root.attrib["rests"] == "0"
+        # D2 (MIDI 42) to E5 (MIDI 76).
+        assert root.attrib["lowestPitch"] == "42"
+        assert root.attrib["highestPitch"] == "76"
 
 
 class TestGpxExample:

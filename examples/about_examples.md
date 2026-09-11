@@ -12,15 +12,23 @@ covered by an end-to-end test in
 
 | Directory | Format | Transform | Mode |
 | --------- | ------ | --------- | ---- |
-| `musicxml/` | partwise MusicXML subset | `NoteStats` — note/rest counts and sounding range | strict |
-| `gpx/` | GPX 1.1 track subset | `TrackStats` — great-circle distance and elevation gain/loss | strict |
+| `musicxml/` | real MusicXML 4.0 (Bach chorale, BWV 66.6) | `NoteStats` — note/rest counts and sounding range | namespaced |
+| `gpx/` | real GPX 1.1 track with Garmin extensions | `TrackStats` — great-circle distance and elevation gain/loss | namespaced |
 | `docx/` | real `word/document.xml` (ECMA-376) | `ToMarkdown` — style-aware Markdown extraction | namespaced |
 
-The `docx/` example validates a realistic `word/document.xml` against the
-full ECMA-376 `wml.xsd` in `ParseModes.NAMESPACED`, rendering multilevel
-lists, tables, hyperlinks, breaks/tabs, run properties, and
-`xml:space="preserve"`; fetch the schema with
-`examples/docx/download_schemas.py` (the test skips when it is absent).
+The `musicxml/`, `gpx/`, and `docx/` examples each validate a genuine
+document against the **official** published schema, fetched on demand by a
+`download_schemas.py` script and skipped by the tests when it is absent:
+
+- `musicxml/` loads the full MusicXML 4.0 schema (which imports the XML
+  and XLink namespaces) and validates a 51 KB four-part Bach chorale.
+- `gpx/` loads the official GPX 1.1 schema and validates a real
+  public-domain ride whose Garmin heart-rate/cadence data is admitted by
+  `xs:any namespace="##other" processContents="lax"`.
+- `docx/` validates a realistic `word/document.xml` against the full
+  ECMA-376 `wml.xsd`, rendering multilevel lists, tables, hyperlinks,
+  breaks/tabs, run properties, and `xml:space="preserve"`.
+
 `docx/lax/` keeps the earlier no-namespace demo, the worked proof of lax
 binding: the instance is deliberately messy (an unmodeled `bookmarkStart`, an
 invalid run `sz`), the report still lists both problems, and the transform

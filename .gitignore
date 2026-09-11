@@ -29,11 +29,11 @@ docs/superpowers/
 # Docs build output
 docs/_build/
 
-# Downloaded schemas for the docx and gpx examples
-# (fetch with examples/docx/download_schemas.py and
-# examples/gpx/download_schemas.py; too large to commit)
+# Downloaded schemas for the docx, gpx, and musicxml examples
+# (fetch with examples/*/download_schemas.py; too large to commit)
 examples/docx/schemas/
 examples/gpx/schemas/
+examples/musicxml/schemas/
 
 # OS noise
 .DS_Store
