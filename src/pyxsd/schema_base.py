@@ -341,7 +341,7 @@ class SchemaBase:
         - ``elementTag`` - the xml element that corresponds to ``cls``
         """
         instance = cls()
-        instance._name_ = elementTag.tag.split("}")[-1]
+        instance._name_ = cls._node_name(elementTag)
         if cls.__dict__.get("abstract_"):
             cls._report_error(
                 f"type '{cls.__name__}' is declared abstract and may not be instantiated directly",
@@ -676,7 +676,7 @@ class SchemaBase:
         parent's ``_children_`` and, for primitive content, exposes it
         as an instance attribute.
         """
-        subElementName = subElement.tag.split("}")[-1]
+        subElementName = cls._node_name(subElement)
         nilled = xsi.xsi_nil_is_true(subElement)
         if nilled and not descriptor.isNillable():
             cls._report_error(
@@ -1237,7 +1237,7 @@ class SchemaBase:
         - ``elementTag`` - the undeclared xml element to store raw.
         """
         instance = SchemaBase()
-        instance._name_ = elementTag.tag.split("}")[-1]
+        instance._name_ = cls._node_name(elementTag)
         instance._attribs_ = dict(elementTag.attrib)
         cls.addValueTo(instance, elementTag)
         instance._children_ = [cls.makeGenericInstance(child) for child in elementTag]

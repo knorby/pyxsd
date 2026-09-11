@@ -4,6 +4,7 @@ The default policy is ``legacy``; these tests exercise the capture
 machinery directly and the strict-mode behaviour added on top of it.
 """
 
+import xml.etree.ElementTree as ET
 from io import StringIO
 
 import pytest
@@ -20,6 +21,7 @@ from pyxsd.namespaces import (
     parse_with_namespaces,
 )
 from pyxsd.parser import PyXSD
+from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 from pyxsd.xsd_data_types import QName, qname_context, xsd_comparable_key, xsd_value_key
 
 
@@ -777,3 +779,79 @@ class TestQNameIdentity:
         )
         assert not parser.report.has_errors
         assert len(parser.schemaRootInstance._children_) == 2
+
+
+_NS_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
+    targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:complexType name="Holder">
+    <xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+      <xs:element name="note" type="xs:string" nillable="true" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="t:Holder"/>
+</xs:schema>"""
+
+
+def _write_instance(parser):
+    output = StringIO()
+    XmlTreeWriter(parser.schemaRootInstance, output)
+    return output.getvalue()
+
+
+class TestWriterNamespaces:
+    """Writers emit prefixed names and ``xmlns`` declarations in strict mode."""
+
+    def _parse(self, instance, tmp_path, *, mode=ParseModes.NAMESPACED):
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(_NS_SCHEMA)
+        instance_path = tmp_path / "instance.xml"
+        instance_path.write_text(instance)
+        return PyXSD(
+            instance_path,
+            xsdFile=schema_path,
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=mode,
+        )
+
+    def test_strict_round_trip_preserves_expanded_names(self, tmp_path):
+        instance = f'<root xmlns="urn:t" xmlns:xsi="{XSI_NS}"><a>x</a><note xsi:nil="true"/></root>'
+        parser = self._parse(instance, tmp_path)
+        assert not parser.report.has_errors
+        output = _write_instance(parser)
+
+        reparsed = ET.fromstring(output)
+        assert [element.tag for element in reparsed.iter()] == [
+            "{urn:t}root",
+            "{urn:t}a",
+            "{urn:t}note",
+        ]
+        assert reparsed.find("{urn:t}note").get(f"{{{XSI_NS}}}nil") == "true"
+
+    def test_strict_output_declares_namespaces(self, tmp_path):
+        parser = self._parse('<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        output = _write_instance(parser)
+        assert "xmlns:ns0" in output
+        assert "urn:t" in output
+        assert "<ns0:root" in output
+        assert "<ns0:a>" in output
+
+    def test_xsi_prefix_is_bound_when_used(self, tmp_path):
+        instance = f'<root xmlns="urn:t" xmlns:xsi="{XSI_NS}"><note xsi:nil="true"/></root>'
+        parser = self._parse(instance, tmp_path)
+        output = _write_instance(parser)
+        assert "xmlns:xsi" in output
+        assert "xsi:nil" in output
+
+    def test_legacy_output_unchanged(self, tmp_path):
+        parser = self._parse(
+            '<root xmlns="urn:t"><a>x</a></root>',
+            tmp_path,
+            mode=ParseModes.STRICT,
+        )
+        output = _write_instance(parser)
+        assert "ns0:" not in output
+        assert "<root" in output
+        assert "<a" in output
+        assert "</a>" in output

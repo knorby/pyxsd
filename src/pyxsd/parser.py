@@ -759,7 +759,11 @@ class PyXSD:
         and a ``fixed`` value is enforced with code ``fixed-element``.
         A simple-typed element may not carry child elements.
         """
-        rootName = self.xmlRoot.tag.split("}")[-1]
+        rootName = (
+            self.xmlRoot.tag
+            if getattr(self.mode, "namespaces", "legacy") == "strict"
+            else self.xmlRoot.tag.split("}")[-1]
+        )
         nilled = xsi.xsi_nil_is_true(self.xmlRoot)
         if nilled and not rootElement.isNillable():
             self.report.add_error(
