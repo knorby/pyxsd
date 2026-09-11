@@ -28,7 +28,7 @@ contributing
 :maxdepth: 1
 :caption: Project
 
-License <https://github.com/knorby/pyxsd/blob/main/LICENSE>
+License <https://github.com/knorby/pyxsd/blob/develop/LICENSE>
 Source <https://github.com/knorby/pyxsd>
 ```
 
