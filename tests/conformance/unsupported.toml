@@ -5,10 +5,10 @@
 # documentation. Status is one of: "unsupported", "partial", "ignored".
 
 [[feature]]
-name = "Namespace-aware schemas"
-construct = "targetNamespace, elementFormDefault=qualified, attributeFormDefault=qualified"
+name = "XML Namespaces"
+construct = "targetNamespace, elementFormDefault/attributeFormDefault, prefixed QNames"
 status = "partial"
-note = "Schemas and instances are validated in the default/no-namespace style. Composition (include/import) is namespace-aware at the document level, but element/attribute qualification, prefix resolution in xpath and type QNames, and namespace-aware instance matching are not implemented."
+note = "Namespace-aware validation is opt-in via ParseModes.NAMESPACED (CLI --namespaces strict): component identity, form-default-aware instance matching, xsi:type and type/ref QName resolution, cross-namespace imports, wildcard namespace/processContents, and QName value-space identity are honored. Legacy mode (the default) keeps local-name matching for backward compatibility. Namespace-qualified identity-constraint selectors and reporting an unbound prefix in an instance QName value are not implemented."
 
 [[feature]]
 name = "Facet validation on user-defined simpleTypes"
@@ -20,7 +20,7 @@ note = "Facets are parsed as annotation data only. Built-in type lexical validat
 name = "Wildcards with namespace filtering"
 construct = "xs:any / xs:anyAttribute processContents, namespace lists"
 status = "partial"
-note = "Wildcards pass undeclared content through permissively. processContents (strict/lax/skip) and namespace lists (##other, ##targetNamespace, explicit URIs) are not enforced."
+note = "In namespaced mode, namespace lists (##any, ##other, ##local, ##targetNamespace, explicit URIs) and processContents (strict, lax, skip) are enforced, including the wildcard-no-declaration error under strict. Legacy mode continues to pass undeclared content through permissively."
 
 [[feature]]
 name = "Full XPath for identity constraints"

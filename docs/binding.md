@@ -29,6 +29,7 @@ or from the CLI:
 
 ```console
 $ pyxsd -i document.xml -s schema.xsd --mode lax -o out.xml
+$ pyxsd -i document.xml -s schema.xsd --namespaces strict -o out.xml
 ```
 
 `mode` accepts any `BindingPolicy`, so a preset is just a convenient
@@ -43,10 +44,11 @@ app = PyXSD("document.xml", xsdFile="schema.xsd", mode=mode)
 
 ## Presets
 
-| Preset | `invalid_value` | `unresolved_type` | `undeclared_content` | `whitespace` |
-| ------ | --------------- | ----------------- | -------------------- | ------------ |
-| `ParseModes.STRICT` (default) | `drop` | `error` | `error` | `xsd` |
-| `ParseModes.LAX` | `raw` | `generic` | `generic` | `xsd` |
+| Preset | `invalid_value` | `unresolved_type` | `undeclared_content` | `whitespace` | `namespaces` |
+| ------ | --------------- | ----------------- | -------------------- | ------------ | ------------ |
+| `ParseModes.STRICT` (default) | `drop` | `error` | `error` | `xsd` | `legacy` |
+| `ParseModes.LAX` | `raw` | `generic` | `generic` | `xsd` | `legacy` |
+| `ParseModes.NAMESPACED` | `drop` | `error` | `error` | `xsd` | `strict` |
 
 ## Policy fields
 
@@ -75,7 +77,39 @@ app = PyXSD("document.xml", xsdFile="schema.xsd", mode=mode)
   - `xsd` applies XSD 1.0 whitespace processing (space, tab, CR, LF only).
     `compat` additionally folds other Unicode whitespace (for example
     NBSP), matching Python's own `str.strip`.
+* - `namespaces`
+  - `"legacy"` \| `"strict"`
+  - `legacy` keys schema components and instance nodes by local name, the
+    historical no-namespace behavior. `strict` performs namespace-aware
+    validation: expanded-name component identity, form-default-aware
+    instance matching, prefixed `type`/`ref`/`xsi:type` resolution,
+    cross-namespace imports, wildcard namespace + `processContents`
+    enforcement, and QName value-space identity. See `ParseModes.NAMESPACED`.
 :::
+
+## Namespaces
+
+Namespace handling is a policy field, so it composes with the other
+choices:
+
+```python
+# namespace-aware validation, but keep binding lenient
+mode = ParseModes.LAX.replace(namespaces="strict")
+app = PyXSD("document.xml", xsdFile="schema.xsd", mode=mode)
+```
+
+The default remains `legacy` so existing callers and output are
+unchanged. In `legacy` mode a prefixed name is reduced to its local part
+and namespaces are ignored during instance matching. In `strict` mode
+pyxsd records the in-scope namespace bindings while parsing, uses
+expanded names for component identity and instance matching, and honors
+`elementFormDefault` / `attributeFormDefault`. A namespace-only
+`xs:import` can be satisfied with the `PyXSD(..., namespace_schemas=...)`
+mapping or a `schemaLocation`.
+
+See `examples/docx/` for the binding side of a namespaced document and
+the `namespaces/` cases in the conformance corpus for the validation
+side.
 
 ## Why not just loosen the report?
 

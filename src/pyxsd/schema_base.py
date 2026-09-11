@@ -248,7 +248,7 @@ class SchemaBase:
         uri = namespace_of(attr)
         components = getattr(parser, "components", None)
         declaration = (
-            components.getFromName(local, kind="attribute", namespace=uri)
+            components.getFromName(local, kind="attribute", namespace=uri, warn=False)
             if components is not None
             else None
         )
@@ -291,7 +291,7 @@ class SchemaBase:
         uri = namespace_of(subElement.tag)
         components = getattr(parser, "components", None)
         descriptor = (
-            components.getFromName(local, kind="element", namespace=uri)
+            components.getFromName(local, kind="element", namespace=uri, warn=False)
             if components is not None
             else None
         )

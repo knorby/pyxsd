@@ -16,12 +16,28 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.parser import PyXSD
 from pyxsd.validation import IssueSeverity, ValidationIssue
 
 HERE = Path(__file__).parent
 CASES_PATH = HERE / "conformance" / "cases.toml"
 UNSUPPORTED_PATH = HERE / "conformance" / "unsupported.toml"
+
+# Manifest ``mode`` value -> binding policy. ``legacy`` is the default and
+# keeps the historical no-namespace behavior; ``namespaced`` opts into the
+# strict XML Namespaces pipeline.
+MODE_PRESETS: dict[str, BindingPolicy] = {
+    "legacy": ParseModes.STRICT,
+    "lax": ParseModes.LAX,
+    "namespaced": ParseModes.NAMESPACED,
+    "namespaced-lax": ParseModes.LAX.replace(namespaces="strict"),
+}
+
+
+def case_mode(case: dict[str, Any]) -> BindingPolicy:
+    """Return the binding policy a case selects (default: legacy/strict)."""
+    return MODE_PRESETS.get(case.get("mode", "legacy"), ParseModes.STRICT)
 
 
 def load_cases(path: Path | None = None) -> list[dict[str, Any]]:
@@ -83,6 +99,7 @@ def run_case(case: dict[str, Any], directory: Path) -> tuple[bool, str]:
             str(directory / "schema.xsd"),
             xmlFileOutput=False,
             transformOutputName=None,
+            mode=case_mode(case),
         )
     except Exception as exc:
         return False, f"parse raised {type(exc).__name__}: {exc}"

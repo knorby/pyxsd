@@ -58,12 +58,15 @@ All 45 XSD 1.0 built-in types with lexical validation; sequence/choice/all
 content models; groups and attributeGroups (with refs); wildcards;
 unions (including inline members); substitution groups; element refs;
 `xsi:type` dispatch; `xsi:nil`; default/fixed; abstract/final; include /
-import / redefine; `key`/`unique`/`keyref` with an XPath subset. Known
+import / redefine; `key`/`unique`/`keyref` with an XPath subset. Opt-in
+namespace-aware validation (`--namespaces strict` / `ParseModes.NAMESPACED`)
+handles `targetNamespace`, form defaults, cross-namespace imports, wildcard
+namespace/`processContents`, and QName values. Known
 gaps are tabulated in the
 [supported-features page](https://github.com/knorby/pyxsd/blob/main/docs/supported.md)
 — notably, facets on user-defined simpleTypes are parsed but not enforced.
 
-Backed by a 54-case conformance corpus of independently authored,
+Backed by a 66-case conformance corpus of independently authored,
 suite-inspired regression cases (see the
 [supported-features page](https://github.com/knorby/pyxsd/blob/main/docs/supported.md)).
 

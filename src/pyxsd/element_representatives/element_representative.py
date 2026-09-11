@@ -119,7 +119,7 @@ class ComponentTable(dict):
     mapping for compatibility while ``getFromName`` filters by kind.
     """
 
-    def getFromName(self, name, kind=None, namespace=ANY_NAMESPACE):
+    def getFromName(self, name, kind=None, namespace=ANY_NAMESPACE, warn=True):
         """Returns the unique representative named ``name``.
 
         When ``kind`` is given, only representatives of that component
@@ -127,11 +127,13 @@ class ComponentTable(dict):
         element. When ``namespace`` is given, only representatives
         whose expanded name is in that namespace are considered; pass
         ``None`` to select no-namespace declarations. Ambiguous or
-        missing lookups warn and return ``None``.
+        missing lookups warn (unless ``warn`` is false) and return
+        ``None``.
         """
         entries = self.get(name)
         if not entries:
-            logger.warning("getFromName Error: %s is not a key in the registry", name)
+            if warn:
+                logger.warning("getFromName Error: %s is not a key in the registry", name)
             return None
         if kind is not None:
             entries = [entry for entry in entries if componentKind(entry) == kind]
@@ -144,7 +146,8 @@ class ComponentTable(dict):
         if len(entries) == 1:
             return entries[0]
         if not entries:
-            logger.warning("getFromName Error: %s has no %r declaration", name, kind)
+            if warn:
+                logger.warning("getFromName Error: %s has no %r declaration", name, kind)
             return None
         logger.warning("ElementRepresentative Error: %r", entries)
         return None

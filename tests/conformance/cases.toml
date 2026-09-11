@@ -18,6 +18,7 @@
 #   instance_valid  false => parsing the instance must report errors (default: true)
 #   expected_codes  report codes that must appear in the failing step
 #   expected_values dotted paths whose mapped values must equal the manifest
+#   mode            binding policy: legacy (default), lax, namespaced, namespaced-lax
 #   [case.files]    auxiliary schema files, keyed by name relative to schema.xsd
 
 [provenance]
@@ -115,7 +116,7 @@ schema = '''
 '''
 instance = '''
 <?xml version="1.0" encoding="UTF-8"?>
-<names>
+<names xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <handle>first_name</handle>
   <formal>my.name-2</formal>
   <tag>abc-123</tag>
@@ -126,6 +127,7 @@ instance = '''
   <tags>alpha beta gamma</tags>
 </names>
 '''
+mode = "namespaced"
 
 [[case]]
 id = "types/time-derived-valid"
@@ -545,7 +547,7 @@ schema = '''
     <xs:complexType>
       <xs:sequence>
         <xs:element name="title" type="xs:string"/>
-        <xs:any maxOccurs="unbounded"/>
+        <xs:any maxOccurs="unbounded" processContents="lax"/>
       </xs:sequence>
     </xs:complexType>
   </xs:element>
@@ -559,6 +561,7 @@ instance = '''
   <extra/>
 </metadata>
 '''
+mode = "namespaced"
 
 [[case]]
 id = "structure/anyAttribute-valid"
@@ -572,7 +575,7 @@ schema = '''
       <xs:sequence>
         <xs:element name="value" type="xs:decimal"/>
       </xs:sequence>
-      <xs:anyAttribute/>
+      <xs:anyAttribute processContents="lax"/>
     </xs:complexType>
   </xs:element>
 </xs:schema>
@@ -583,6 +586,7 @@ instance = '''
   <value>2.5</value>
 </observation>
 '''
+mode = "namespaced"
 
 [[case]]
 id = "structure/extension-valid"
@@ -1560,3 +1564,329 @@ instance = '''
 '''
 instance_valid = false
 expected_codes = ["unknown-root"]
+
+[[case]]
+id = "namespaces/qualified-element-valid"
+description = "elementFormDefault=qualified matches a local element in the target namespace"
+derived_from = "W3C XMLSchema1TestSuite (namespace qualification)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           targetNamespace="urn:t"
+           elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="a" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t"><a>hi</a></root>
+'''
+
+[[case]]
+id = "namespaces/wrong-namespace-element-invalid"
+description = "A child in the wrong namespace is not matched by a qualified declaration"
+derived_from = "W3C XMLSchema1TestSuite (namespace qualification)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           targetNamespace="urn:t"
+           elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="a" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t"><a xmlns="urn:o">hi</a></root>
+'''
+instance_valid = false
+expected_codes = ["unexpected-element"]
+
+[[case]]
+id = "namespaces/unqualified-local-element-valid"
+description = "elementFormDefault=unqualified matches an unqualified local element"
+derived_from = "W3C XMLSchema1TestSuite (namespace qualification)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           targetNamespace="urn:t">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="a" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<t:root xmlns:t="urn:t"><a>hi</a></t:root>
+'''
+
+[[case]]
+id = "namespaces/cross-namespace-type-valid"
+description = "A type in another namespace imported via schemaLocation resolves and validates"
+derived_from = "W3C XMLSchema1TestSuite (import)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           xmlns:o="urn:o"
+           targetNamespace="urn:t"
+           elementFormDefault="qualified">
+  <xs:import namespace="urn:o" schemaLocation="other.xsd"/>
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="thing" type="o:Thing"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t"><thing><b xmlns="urn:o">x</b></thing></root>
+'''
+[case.files]
+"other.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:o="urn:o"
+           targetNamespace="urn:o"
+           elementFormDefault="qualified">
+  <xs:complexType name="Thing">
+    <xs:sequence>
+      <xs:element name="b" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>
+'''
+
+[[case]]
+id = "namespaces/cross-namespace-element-ref-valid"
+description = "A ref to a global element in another namespace resolves and validates"
+derived_from = "W3C XMLSchema1TestSuite (import, element ref)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           xmlns:o="urn:o"
+           targetNamespace="urn:t"
+           elementFormDefault="qualified">
+  <xs:import namespace="urn:o" schemaLocation="other.xsd"/>
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="o:thing"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t"><thing xmlns="urn:o">x</thing></root>
+'''
+[case.files]
+"other.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:o="urn:o"
+           targetNamespace="urn:o"
+           elementFormDefault="qualified">
+  <xs:element name="thing" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "namespaces/xsi-type-valid"
+description = "xsi:type with a prefixed name resolves through instance namespace bindings"
+derived_from = "W3C XMLSchema1TestSuite (xsi:type)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           targetNamespace="urn:t"
+           elementFormDefault="qualified">
+  <xs:complexType name="B">
+    <xs:sequence/>
+  </xs:complexType>
+  <xs:complexType name="D">
+    <xs:complexContent>
+      <xs:extension base="t:B">
+        <xs:sequence>
+          <xs:element name="b" type="xs:string"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="root" type="t:B"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:t="urn:t"
+      xsi:type="t:D"><b>ok</b></root>
+'''
+
+[[case]]
+id = "namespaces/xsi-type-unbound-prefix-invalid"
+description = "xsi:type using an undeclared prefix is reported as an unknown namespace prefix"
+derived_from = "W3C XMLSchema1TestSuite (xsi:type, invalid prefix)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           targetNamespace="urn:t"
+           elementFormDefault="qualified">
+  <xs:complexType name="B"><xs:sequence/></xs:complexType>
+  <xs:element name="root" type="t:B"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:type="p:B"/>
+'''
+instance_valid = false
+expected_codes = ["unknown-namespace-prefix"]
+
+[[case]]
+id = "namespaces/wildcard-other-valid"
+description = "xs:any namespace=##other admits an element from another namespace"
+derived_from = "W3C XMLSchema1TestSuite (wildcard)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           targetNamespace="urn:t"
+           elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##other" processContents="lax"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t"><thing xmlns="urn:o">x</thing></root>
+'''
+
+[[case]]
+id = "namespaces/wildcard-other-invalid"
+description = "xs:any namespace=##other rejects an element in the target namespace"
+derived_from = "W3C XMLSchema1TestSuite (wildcard)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           targetNamespace="urn:t"
+           elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##other" processContents="lax"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t"><a>x</a></root>
+'''
+instance_valid = false
+expected_codes = ["unexpected-element"]
+
+[[case]]
+id = "namespaces/wildcard-no-declaration-invalid"
+description = "processContents=strict reports an unknown wildcard element with no declaration"
+derived_from = "W3C XMLSchema1TestSuite (wildcard processContents)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:t"
+           targetNamespace="urn:t"
+           elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t"><extra xmlns="urn:o">x</extra></root>
+'''
+instance_valid = false
+expected_codes = ["wildcard-no-declaration"]
+
+[[case]]
+id = "namespaces/qname-identity-invalid"
+description = "xs:unique on an xs:QName attribute treats equal expanded names as duplicates"
+derived_from = "W3C XMLSchema1TestSuite (identity constraint, QName values)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:attribute name="ref" type="xs:QName" use="required"/>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+    <xs:unique name="refUnique">
+      <xs:selector xpath="item"/>
+      <xs:field xpath="@ref"/>
+    </xs:unique>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns:p="urn:t" xmlns:q="urn:t">
+  <item ref="p:a"/>
+  <item ref="q:a"/>
+</root>
+'''
+instance_valid = false
+expected_codes = ["identity-unique"]
