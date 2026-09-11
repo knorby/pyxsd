@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:complexType name="wptType">
+    <xs:sequence>
+      <xs:element name="ele" type="xs:decimal" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="lat" type="xs:decimal" use="required"/>
+    <xs:attribute name="lon" type="xs:decimal" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="trksegType">
+    <xs:sequence>
+      <xs:element name="trkpt" type="wptType" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="trkType">
+    <xs:sequence>
+      <xs:element name="name" type="xs:string" minOccurs="0"/>
+      <xs:element name="trkseg" type="trksegType" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="gpx">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="trk" type="trkType" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="version" type="xs:string"/>
+      <xs:attribute name="creator" type="xs:string"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

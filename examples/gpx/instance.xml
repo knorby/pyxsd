@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="pyxsd example">
+  <trk>
+    <name>Example loop</name>
+    <trkseg>
+      <trkpt lat="39.7400" lon="-104.9900"><ele>100</ele></trkpt>
+      <trkpt lat="39.7405" lon="-104.9895"><ele>103</ele></trkpt>
+      <trkpt lat="39.7410" lon="-104.9890"><ele>101</ele></trkpt>
+      <trkpt lat="39.7415" lon="-104.9885"><ele>108</ele></trkpt>
+      <trkpt lat="39.7420" lon="-104.9880"><ele>105</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:simpleType name="stepType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="A"/>
+      <xs:enumeration value="B"/>
+      <xs:enumeration value="C"/>
+      <xs:enumeration value="D"/>
+      <xs:enumeration value="E"/>
+      <xs:enumeration value="F"/>
+      <xs:enumeration value="G"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="pitchType">
+    <xs:sequence>
+      <xs:element name="step" type="stepType"/>
+      <xs:element name="alter" type="xs:integer" minOccurs="0"/>
+      <xs:element name="octave" type="xs:integer"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="noteType">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="pitch" type="pitchType"/>
+        <xs:element name="rest">
+          <xs:complexType/>
+        </xs:element>
+      </xs:choice>
+      <xs:element name="duration" type="xs:positiveInteger"/>
+      <xs:element name="type" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="measureType">
+    <xs:sequence>
+      <xs:element name="note" type="noteType" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="number" type="xs:positiveInteger" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="partType">
+    <xs:sequence>
+      <xs:element name="measure" type="measureType" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="scorePartType">
+    <xs:sequence>
+      <xs:element name="part-name" type="xs:string"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <xs:element name="score-partwise">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="part-list">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="score-part" type="scorePartType" maxOccurs="unbounded"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="part" type="partType" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="version" type="xs:string"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>
