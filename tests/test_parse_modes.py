@@ -43,6 +43,7 @@ class TestPolicyModel:
         assert policy.unresolved_type == "error"
         assert policy.undeclared_content == "error"
         assert policy.whitespace == "xsd"
+        assert policy.namespaces == "legacy"
 
     def test_lax_preset(self):
         policy = ParseModes.LAX
@@ -50,6 +51,21 @@ class TestPolicyModel:
         assert policy.unresolved_type == "generic"
         assert policy.undeclared_content == "generic"
         assert policy.whitespace == "xsd"
+        assert policy.namespaces == "legacy"
+
+    def test_namespaced_preset_is_strict_binding_with_strict_namespaces(self):
+        policy = ParseModes.NAMESPACED
+        assert policy.namespaces == "strict"
+        # Namespace handling is the only difference from plain strict.
+        assert policy.invalid_value == "drop"
+        assert policy.unresolved_type == "error"
+        assert policy.undeclared_content == "error"
+        assert policy.whitespace == "xsd"
+
+    def test_namespaces_can_be_composed_with_replace(self):
+        policy = ParseModes.LAX.replace(namespaces="strict")
+        assert policy.namespaces == "strict"
+        assert policy.invalid_value == "raw"
 
     def test_replace_returns_a_modified_copy(self):
         base = ParseModes.STRICT
@@ -193,3 +209,14 @@ class TestCliModeFlag:
         self._stage(tmp_path)
         with pytest.raises(SystemExit):
             main(["-i", "instance.xml", "--mode", "bogus", "-o", "/dev/null"])
+
+    def test_strict_namespaces_flag_is_accepted(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        self._stage(tmp_path)
+        main(["-i", "instance.xml", "--namespaces", "strict", "-o", "/dev/null"])
+
+    def test_unknown_namespaces_flag_is_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        self._stage(tmp_path)
+        with pytest.raises(SystemExit):
+            main(["-i", "instance.xml", "--namespaces", "bogus", "-o", "/dev/null"])

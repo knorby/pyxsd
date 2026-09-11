@@ -1289,6 +1289,16 @@ def main(argv: list[str] | None = None) -> None:
         "drops them; 'lax' keeps the report strict but binds best-effort "
         "values (raw strings, generic subtrees) so no data is lost.",
     )
+    parser.add_argument(
+        "--namespaces",
+        choices=["strict", "legacy"],
+        default="legacy",
+        dest="namespaces",
+        help="namespace handling. 'legacy' (default) matches by local name "
+        "and ignores namespace URIs; 'strict' resolves QNames and matches "
+        "elements and attributes by expanded name, which rejects documents "
+        "that only matched by local name before.",
+    )
 
     options = parser.parse_args(argv)
 
@@ -1329,6 +1339,7 @@ def main(argv: list[str] | None = None) -> None:
         parsedOutputFile = "_No_Output_"
 
     try:
+        baseMode = ParseModes.LAX if options.mode == "lax" else ParseModes.STRICT
         app = PyXSD(
             inputXmlFile,
             options.inputXsdFile,
@@ -1338,7 +1349,7 @@ def main(argv: list[str] | None = None) -> None:
             options.classFile,
             options.verbose,
             options.quiet,
-            mode=ParseModes.LAX if options.mode == "lax" else ParseModes.STRICT,
+            mode=baseMode.replace(namespaces=options.namespaces),
         )
     except (PyXSDError, OSError) as e:
         print(f"pyxsd: error: {e}", file=sys.stderr)

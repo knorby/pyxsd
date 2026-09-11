@@ -22,6 +22,7 @@ InvalidValue = Literal["drop", "raw"]
 UnresolvedType = Literal["error", "generic"]
 UndeclaredContent = Literal["error", "generic"]
 WhitespaceHandling = Literal["xsd", "compat"]
+NamespaceHandling = Literal["legacy", "strict"]
 
 
 @dataclass(frozen=True)
@@ -43,12 +44,18 @@ class BindingPolicy:
       (space/tab/CR/LF only); ``"compat"`` additionally folds other
       Unicode whitespace (for example NBSP) the way Python's own
       ``str.strip`` does.
+    - ``namespaces`` - ``"legacy"`` matches elements and attributes by
+      local name, discarding the namespace URI; ``"strict"`` resolves
+      QNames, keys components by expanded name, and matches instances
+      namespace-correctly. ``"strict"`` is opt-in because it rejects
+      documents that previously matched by local name alone.
     """
 
     invalid_value: InvalidValue = "drop"
     unresolved_type: UnresolvedType = "error"
     undeclared_content: UndeclaredContent = "error"
     whitespace: WhitespaceHandling = "xsd"
+    namespaces: NamespaceHandling = "legacy"
 
     def replace(self, **changes: object) -> BindingPolicy:
         """Return a copy with the given fields changed.
@@ -80,3 +87,8 @@ class ParseModes:
         unresolved_type="generic",
         undeclared_content="generic",
     )
+
+    #: Strict binding plus XSD-correct namespace handling. Combine with
+    #: ``.replace()`` for other mixes, for example
+    #: ``ParseModes.LAX.replace(namespaces="strict")``.
+    NAMESPACED = BindingPolicy(namespaces="strict")
