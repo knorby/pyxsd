@@ -31,7 +31,7 @@ Homepage = "https://github.com/knorby/pyxsd"
 Repository = "https://github.com/knorby/pyxsd"
 Documentation = "https://pyxsd.knorby.com/"
 Issues = "https://github.com/knorby/pyxsd/issues"
-Changelog = "https://github.com/knorby/pyxsd/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/knorby/pyxsd/blob/develop/CHANGELOG.md"
 
 [project.scripts]
 pyxsd = "pyxsd.__main__:main"

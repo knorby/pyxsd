@@ -42,7 +42,7 @@ means) you agree that your contribution is provided under the project's
 BSD 3-Clause license, and you confirm you have the right to submit it
 under those terms. The project's BSD license, including its ORNL
 provenance note, is preserved in the
-[LICENSE](https://github.com/knorby/pyxsd/blob/main/LICENSE) file.
+[LICENSE](https://github.com/knorby/pyxsd/blob/develop/LICENSE) file.
 
 ## Project direction
 
