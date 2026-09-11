@@ -309,14 +309,16 @@ class PyXSD:
         no global element are recorded as schema errors.
         """
         declaredNames = {element.name for element in schemaER.elements}
+        declaredExpanded = {element.expandedName for element in schemaER.elements}
         for element in schemaER.elements:
-            head = element.getSubstitutionGroupHead()
+            head = element.getSubstitutionGroupHead(self)
             if head is None:
                 continue
-            if head not in declaredNames:
+            if head not in declaredNames and head not in declaredExpanded:
                 self.report.add_error(
                     f"element '{element.name}' declares substitutionGroup "
-                    f"'{head}', but no global element with that name exists",
+                    f"'{element.tagAttributes.get('substitutionGroup', head)}', "
+                    "but no global element with that name exists",
                     code="unknown-substitution-head",
                     element=element.name,
                 )

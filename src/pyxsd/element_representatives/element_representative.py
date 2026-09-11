@@ -460,6 +460,11 @@ class ElementRepresentative:
         """
         if parser is None:
             parser = getattr(self, "pyXSD", None)
+            if parser is None:
+                # During class building the parser is attached to the
+                # schema rather than to every declaration; fall back to
+                # it so schema-time references resolve in strict mode.
+                parser = getattr(self.getSchema(), "pyXSD", None)
         mode = getattr(parser, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
             return value
@@ -476,6 +481,33 @@ class ElementRepresentative:
                     element=self.name,
                 )
             return value
+
+    def resolveReference(self, value, candidates, *, is_attribute=True, parser=None):
+        """Returns the component a lexical QName reference names.
+
+        ``candidates`` is an iterable of element representatives (for
+        example ``schema.elements`` or ``schema.groups.values()``). In
+        ``legacy`` mode, or when the prefix cannot be resolved, the
+        reference's local name selects the first same-named candidate.
+        In ``strict`` mode the resolved namespace must also match the
+        candidate's namespace, so a reference into another namespace
+        never falls back to a same-named local declaration. Returns
+        ``None`` when nothing matches.
+        """
+        if value is None:
+            return None
+        resolved = self.resolveSchemaQName(value, is_attribute=is_attribute, parser=parser)
+        local = local_name(resolved)
+        uri = namespace_of(resolved)
+        for candidate in candidates:
+            if getattr(candidate, "name", None) != local:
+                continue
+            if uri is not None:
+                getter = getattr(candidate, "getNamespace", None)
+                if getter is None or getter() != uri:
+                    continue
+            return candidate
+        return None
 
     def resolvedTypeName(self):
         """Returns the ``type`` attribute resolved to a Clark name.

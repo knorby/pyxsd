@@ -283,11 +283,16 @@ class SchemaBase:
         # Substitution-group dispatch: member xml children may appear
         # wherever their head element is declared.
         substitutionGroups = cls._schemaSubstitutionGroups(elemDescriptors)
-        memberHeadMap = {
-            member.name: headName
-            for headName, members in substitutionGroups.items()
-            for member in members
+        declaredByName = {descriptor.name: descriptor for descriptor in elemDescriptors}
+        declaredByExpanded = {
+            getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
         }
+        memberHeadMap: dict[str, str] = {}
+        for headName, members in substitutionGroups.items():
+            headDescriptor = declaredByName.get(headName) or declaredByExpanded.get(headName)
+            localHead = headDescriptor.name if headDescriptor is not None else headName
+            for member in members:
+                memberHeadMap[member.name] = localHead
 
         # Wildcard (xs:any) pass-through: children the schema does not
         # declare are accepted and parsed generically when the type
@@ -593,8 +598,11 @@ class SchemaBase:
         """
         subElementName = subElement.tag.split("}")[-1]
         declared = {descriptor.name: descriptor for descriptor in elemDescriptors}
+        declaredExpanded = {
+            getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
+        }
         for headName, members in cls._schemaSubstitutionGroups(elemDescriptors).items():
-            headDescriptor = declared.get(headName)
+            headDescriptor = declared.get(headName) or declaredExpanded.get(headName)
             if headDescriptor is None:
                 continue
             for memberER in members:

@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.namespaces import local_name, namespace_of
 
 logger = logging.getLogger(__name__)
 
@@ -290,13 +291,20 @@ class Element(ElementRepresentative):
             return self.referredElement.getBlock()
         return self.tagAttributes.get("block")
 
-    def getSubstitutionGroupHead(self):
-        """Returns the local name of the ``substitutionGroup`` head.
+    def getSubstitutionGroupHead(self, parser=None):
+        """Returns the head named by the ``substitutionGroup`` attribute.
 
-        Namespace prefixes are stripped, matching the parser's
-        schema-name lookups.
+        In ``legacy`` mode this is the reference's local name. In
+        ``strict`` mode the reference is resolved through the schema
+        document's namespace context and returned as its expanded
+        (Clark) name, so the parser matches it against the head
+        declaration in the correct namespace rather than any same-named
+        local element.
         """
         head = self.tagAttributes.get("substitutionGroup")
         if head is None:
             return None
-        return head.split(":", 1)[-1]
+        resolved = self.resolveSchemaQName(head, is_attribute=True, parser=parser)
+        if namespace_of(resolved) is None:
+            return local_name(resolved)
+        return resolved

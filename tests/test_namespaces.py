@@ -142,3 +142,113 @@ class TestSchemaComponentIdentity:
         schema = f'<xs:schema xmlns:xs="{XSD_NS}"><xs:element name="r" type="p:int"/></xs:schema>'
         parser = _strict_parse(schema, "<r>7</r>", tmp_path)
         assert "unknown-namespace-prefix" in [issue.code for issue in parser.report.issues]
+
+
+def _tns_schema(body: str, *, extra_ns: str = "") -> str:
+    return f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" {extra_ns}
+    targetNamespace="urn:t" elementFormDefault="qualified">
+{body}
+</xs:schema>"""
+
+
+class TestSchemaQNameReferences:
+    """QName-valued schema attributes resolve against the schema scope."""
+
+    def test_element_ref_in_target_namespace_resolves(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:element name="a" type="xs:string"/>'
+            '<xs:complexType name="Foo">'
+            '<xs:sequence><xs:element ref="t:a"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t:Foo"/>'
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        codes = [issue.code for issue in parser.report.issues]
+        assert "unknown-elementRef" not in codes
+        assert not parser.report.has_errors
+
+    def test_element_ref_other_namespace_does_not_fall_back(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:element name="a" type="xs:string"/>'
+            '<xs:complexType name="Foo">'
+            '<xs:sequence><xs:element ref="o:a"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t:Foo"/>',
+            extra_ns='xmlns:o="urn:o"',
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        codes = [issue.code for issue in parser.report.issues]
+        assert "unknown-elementRef" in codes
+
+    def test_unbound_ref_prefix_is_reported(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:element name="a" type="xs:string"/>'
+            '<xs:complexType name="Foo">'
+            '<xs:sequence><xs:element ref="p:a"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t:Foo"/>'
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t"/>', tmp_path)
+        codes = [issue.code for issue in parser.report.issues]
+        assert "unknown-namespace-prefix" in codes
+        assert "unknown-elementRef" in codes
+
+    def test_group_ref_in_target_namespace_resolves(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:element name="a" type="xs:string"/>'
+            "</xs:sequence></xs:group>"
+            '<xs:complexType name="Foo"><xs:group ref="t:g"/></xs:complexType>'
+            '<xs:element name="root" type="t:Foo"/>'
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        codes = [issue.code for issue in parser.report.issues]
+        assert "unknown-group" not in codes
+        assert not parser.report.has_errors
+
+    def test_attribute_group_ref_in_target_namespace_resolves(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:attributeGroup name="ag">'
+            '<xs:attribute name="x" type="xs:int"/>'
+            "</xs:attributeGroup>"
+            '<xs:complexType name="Foo"><xs:attributeGroup ref="t:ag"/></xs:complexType>'
+            '<xs:element name="root" type="t:Foo"/>'
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t" x="5"/>', tmp_path)
+        codes = [issue.code for issue in parser.report.issues]
+        assert "unknown-attributeGroup" not in codes
+        assert not parser.report.has_errors
+
+    def test_substitution_group_in_target_namespace_resolves(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:element name="h" type="xs:int"/>'
+            '<xs:element name="m" type="xs:int" substitutionGroup="t:h"/>'
+            '<xs:complexType name="Foo">'
+            '<xs:sequence><xs:element ref="t:h"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t:Foo"/>'
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t"><m>7</m></root>', tmp_path)
+        codes = [issue.code for issue in parser.report.issues]
+        assert "unknown-substitution-head" not in codes
+        assert not parser.report.has_errors
+
+    def test_union_member_types_resolve_in_target_namespace(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:simpleType name="A"><xs:restriction base="xs:int"/></xs:simpleType>'
+            '<xs:simpleType name="U"><xs:union memberTypes="t:A"/></xs:simpleType>'
+            '<xs:element name="root" type="t:U"/>'
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t">5</root>', tmp_path)
+        assert "U" in parser.classes
+        assert parser.classes["U"]._unionMembers
+        assert not parser.report.has_errors
+
+    def test_union_rejects_value_matching_no_member(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:simpleType name="A"><xs:restriction base="xs:int"/></xs:simpleType>'
+            '<xs:simpleType name="U"><xs:union memberTypes="t:A"/></xs:simpleType>'
+            '<xs:element name="root" type="t:U"/>'
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t">not-an-int</root>', tmp_path)
+        assert "value" in [issue.code for issue in parser.report.issues]

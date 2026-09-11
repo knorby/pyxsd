@@ -194,16 +194,19 @@ class XsdType(ElementRepresentative):
         """
         for refSite in self.attributeGroupRefs:
             groupName = refSite.ref.split(":")[-1]
-            group = self.getSchema().attributeGroups.get(groupName)
+            group = refSite.resolveReference(
+                refSite.ref, self.getSchema().attributeGroups.values(), parser=pyXSD
+            )
             if group is None:
                 message = (
-                    f"attributeGroup reference '{groupName}' in type "
+                    f"attributeGroup reference '{refSite.ref}' in type "
                     f"'{self.name}' could not be resolved"
                 )
                 self._report_ref_error(message, code="unknown-attributeGroup")
                 continue
+            groupKey = getattr(group, "expandedName", None) or groupName
             for attrName, attr in self._collectAttributeGroup(
-                group, frozenset({groupName})
+                group, frozenset({groupKey}), pyXSD
             ).items():
                 if attrName in self.attributes:
                     logger.debug(
@@ -217,7 +220,7 @@ class XsdType(ElementRepresentative):
                 attr.pyXSD = pyXSD
                 self.attributes[attrName] = attr
 
-    def _collectAttributeGroup(self, group, visited):
+    def _collectAttributeGroup(self, group, visited, pyXSD):
         """Returns a group's attributes including nested group refs.
 
         Direct declarations win over those pulled in from a nested
@@ -227,23 +230,26 @@ class XsdType(ElementRepresentative):
         collected = dict(group.attributes)
         for refSite in getattr(group, "attributeGroupRefs", []):
             nestedName = refSite.ref.split(":")[-1]
-            if nestedName in visited:
+            nested = refSite.resolveReference(
+                refSite.ref, self.getSchema().attributeGroups.values(), parser=pyXSD
+            )
+            if nested is None:
+                message = (
+                    f"attributeGroup reference '{refSite.ref}' in group "
+                    f"'{group.name}' could not be resolved"
+                )
+                self._report_ref_error(message, code="unknown-attributeGroup")
+                continue
+            nestedKey = getattr(nested, "expandedName", None) or nestedName
+            if nestedKey in visited:
                 message = (
                     f"circular attributeGroup reference chain involving "
                     f"'{nestedName}' (reached from '{self.name}')"
                 )
                 self._report_ref_error(message, code="circular-attributeGroup")
                 continue
-            nested = self.getSchema().attributeGroups.get(nestedName)
-            if nested is None:
-                message = (
-                    f"attributeGroup reference '{nestedName}' in group "
-                    f"'{group.name}' could not be resolved"
-                )
-                self._report_ref_error(message, code="unknown-attributeGroup")
-                continue
             for attrName, attr in self._collectAttributeGroup(
-                nested, visited | {nestedName}
+                nested, visited | {nestedKey}, pyXSD
             ).items():
                 collected.setdefault(attrName, attr)
         return collected
@@ -278,7 +284,11 @@ class XsdType(ElementRepresentative):
         ``__init__``), because schema-derived member classes also
         inherit ``SchemaBase.__init__``, which takes no value.
         """
-        memberNames = list(self.unionSpec) + list(getattr(self, "unionInline", ()))
+        namedMembers = [
+            self.resolveSchemaQName(memberName, is_attribute=True, parser=pyXSD)
+            for memberName in self.unionSpec
+        ]
+        memberNames = namedMembers + list(getattr(self, "unionInline", ()))
         members = []
         for memberName in memberNames:
             if memberName in pyXSD.classes:
