@@ -11,6 +11,7 @@ import pytest
 from pyxsd.binding import ParseModes
 from pyxsd.namespaces import (
     XSD_NS,
+    XSI_NS,
     NamespaceContext,
     NamespaceError,
     clark,
@@ -322,3 +323,62 @@ class TestInstanceMatching:
             xmlFileOutput="_No_Output_",
         )
         assert not parser.report.has_errors
+
+
+def _xsi_schema(body: str) -> str:
+    return _tns_schema(body)
+
+
+_DERIVED_SCHEMA = _xsi_schema(
+    '<xs:complexType name="B"><xs:sequence/></xs:complexType>'
+    '<xs:complexType name="D"><xs:complexContent>'
+    '<xs:extension base="t:B"><xs:sequence>'
+    '<xs:element name="b" type="xs:string"/>'
+    "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+    '<xs:complexType name="Holder">'
+    '<xs:sequence><xs:element name="item" type="t:B"/></xs:sequence>'
+    "</xs:complexType>"
+    '<xs:element name="root" type="t:Holder"/>'
+)
+
+
+class TestXsiTypeNamespaces:
+    """``xsi:type`` values resolve against the instance namespace scope."""
+
+    def test_prefixed_xsi_type_dispatches_to_derived_type(self, tmp_path):
+        instance = (
+            '<root xmlns="urn:t" xmlns:t="urn:t" '
+            f'xmlns:xsi="{XSI_NS}"><item xsi:type="t:D"><b>y</b></item></root>'
+        )
+        parser = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
+        assert not parser.report.has_errors
+
+    def test_root_xsi_type_dispatches_to_derived_type(self, tmp_path):
+        schema = _xsi_schema(
+            '<xs:complexType name="B"><xs:sequence/></xs:complexType>'
+            '<xs:complexType name="D"><xs:complexContent>'
+            '<xs:extension base="t:B"><xs:sequence>'
+            '<xs:element name="b" type="xs:string"/>'
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+            '<xs:element name="root" type="t:B"/>'
+        )
+        instance = (
+            '<root xmlns="urn:t" xmlns:t="urn:t" '
+            f'xmlns:xsi="{XSI_NS}" xsi:type="t:D"><b>y</b></root>'
+        )
+        parser = _strict_parse(schema, instance, tmp_path)
+        assert not parser.report.has_errors
+        assert type(parser.schemaRootInstance).__name__ == "D"
+
+    def test_unbound_xsi_type_prefix_is_reported(self, tmp_path):
+        instance = f'<root xmlns="urn:t" xmlns:xsi="{XSI_NS}"><item xsi:type="p:D"/></root>'
+        parser = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
+        assert "unknown-namespace-prefix" in [i.code for i in parser.report.issues]
+
+    def test_xsi_type_wrong_namespace_is_rejected(self, tmp_path):
+        instance = (
+            '<root xmlns="urn:t" xmlns:o="urn:o" '
+            f'xmlns:xsi="{XSI_NS}"><item xsi:type="o:D"/></root>'
+        )
+        parser = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
+        assert "xsi-type" in [i.code for i in parser.report.issues]

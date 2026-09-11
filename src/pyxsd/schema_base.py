@@ -5,6 +5,7 @@ from pyxsd import xsi
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import first_required_name, match_content, particle_names
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
+from pyxsd.namespaces import NamespaceError
 from pyxsd.validation import IssueSeverity
 from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, xsd_value_key
 
@@ -423,6 +424,28 @@ class SchemaBase:
         return instance
 
     @classmethod
+    def _resolveXsiTypeName(cls, subElement, value: str, pyXSD) -> str | None:
+        """Resolves a lexical ``xsi:type`` QName against the instance scope.
+
+        In ``legacy`` namespace mode the raw value is returned unchanged.
+        In ``strict`` mode the value is expanded through the instance
+        namespace context; an unbound prefix is reported as
+        ``unknown-namespace-prefix`` and ``None`` is returned so the
+        caller keeps the declared type.
+        """
+        mode = getattr(pyXSD, "mode", None)
+        if getattr(mode, "namespaces", "legacy") != "strict":
+            return value
+        context = getattr(pyXSD, "namespaceContext", None)
+        if context is None:
+            return value
+        try:
+            return context.resolve(subElement, value)
+        except NamespaceError as exc:
+            cls._report_error(str(exc), code="unknown-namespace-prefix", element=cls.__name__)
+            return None
+
+    @classmethod
     def _classForChild(cls, descriptor, subElement):
         """Resolves the class used to build one matched child element.
 
@@ -437,7 +460,10 @@ class SchemaBase:
         if xsiTypeName is None:
             return subElCls
         pyXSD = getattr(cls, "pyXSD", None)
-        resolved = ElementRepresentative.typeFromName(xsiTypeName, pyXSD)
+        resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
+        if resolvedName is None:
+            return subElCls
+        resolved = ElementRepresentative.typeFromName(resolvedName, pyXSD)
         if resolved is not None:
             blocked = combinedBlock(
                 descriptor.getBlock() if descriptor is not None else None,

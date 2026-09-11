@@ -58,7 +58,7 @@ from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
-from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
+from pyxsd.namespaces import NamespaceContext, NamespaceError, parse_with_namespaces
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
@@ -711,6 +711,27 @@ class PyXSD:
         instance._children_ = []
         return instance
 
+    def _resolveXsiTypeName(self, value: str, element: Any) -> str | None:
+        """Resolves a lexical ``xsi:type`` QName against the instance scope.
+
+        In ``legacy`` namespace mode the raw value is returned unchanged.
+        In ``strict`` mode the value is expanded through the instance
+        namespace context; an unbound prefix is reported as
+        ``unknown-namespace-prefix`` and ``None`` is returned so the
+        caller keeps the declared type.
+        """
+        if getattr(self.mode, "namespaces", "legacy") != "strict":
+            return value
+        try:
+            return self.namespaceContext.resolve(element, value)
+        except NamespaceError as exc:
+            self.report.add_error(
+                str(exc),
+                code="unknown-namespace-prefix",
+                element=element.tag,
+            )
+            return None
+
     def _classForRoot(self, rootElement: Any) -> type[SchemaBase] | None:
         """Resolves the class used to instantiate the root element.
 
@@ -739,7 +760,10 @@ class PyXSD:
         if xsiTypeName is None:
             return subCls
 
-        resolved = ElementRepresentative.typeFromName(xsiTypeName, self)
+        resolvedName = self._resolveXsiTypeName(xsiTypeName, self.xmlRoot)
+        if resolvedName is None:
+            return subCls
+        resolved = ElementRepresentative.typeFromName(resolvedName, self)
         if resolved is None:
             self.report.add_error(
                 f"xsi:type '{xsiTypeName}' on the root element does not "

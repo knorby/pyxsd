@@ -120,7 +120,8 @@ def _base_model(type_er: Any, py_xsd: Any) -> tuple[str | None, Particle | None]
 
     base_class = None
     for base_name in base_names:
-        base_class = ElementRepresentative.typeFromName(base_name, py_xsd)
+        resolved = type_er.resolveSchemaQName(base_name, is_attribute=True, parser=py_xsd)
+        base_class = ElementRepresentative.typeFromName(resolved, py_xsd)
         if base_class is not None:
             break
     if base_class is None:
@@ -379,8 +380,10 @@ def _match_repeated(
         advanced: list[tuple[int, list[Any]]] = []
         for start, matched in frontier:
             for end, more in _match_one(particle, nodes, start, member_head_map, depth, name_of):
-                if end == start:
-                    continue
+                # A zero-width match is a real occurrence (for example a
+                # ``minOccurs="1"`` sequence with no children); keep it so
+                # ``min_occurs`` is satisfied. The ``count < maximum``
+                # guard keeps the frontier finite.
                 advanced.append((end, matched + more))
         advanced = _dedup(advanced)
         if count >= particle.min_occurs:
