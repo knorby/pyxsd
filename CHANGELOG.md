@@ -47,8 +47,13 @@ provably wrong.
   namespaced mode through both the gating suite and the `xmlschema` oracle.
 - `examples/musicxml/`, `examples/gpx/`, and `examples/docx/`: real-format
   schema/instance/transform examples with end-to-end tests. The `docx`
-  example renders Markdown under `ParseModes.LAX` from a deliberately messy
-  document.
+  example validates a realistic `word/document.xml` against the full vendored
+  ECMA-376 `wml.xsd` in `ParseModes.NAMESPACED` (schemas fetched by
+  `examples/docx/download_schemas.py`, not committed; the test skips when
+  absent) and renders style-aware Markdown covering multilevel lists, tables,
+  hyperlinks, breaks/tabs, run properties, and `xml:space="preserve"`. The
+  earlier no-namespace `ParseModes.LAX` demo is kept under
+  `examples/docx/lax/`.
 
 ### Fixed
 
@@ -77,6 +82,24 @@ provably wrong.
   rejected when blocked; substitution-group members use their own declaration's
   `nillable`/`default`/`fixed`/identity constraints rather than the head's.
 - `final` is treated as a whitespace-separated token list.
+- `xs:attribute ref="..."` resolves across namespaces, including global
+  attributes declared in imported schemas; an unresolved reference reports
+  `unknown-attributeRef` and an unresolved type base reports `unknown-type`
+  instead of crashing during class construction.
+- Unprefixed QName *values* (`type`, `base`, `ref`, `substitutionGroup`) use
+  the in-scope default namespace, as XSD requires (previously real OOXML
+  types such as `base="CT_Markup"` failed to resolve).
+- `xml:space="preserve"` text keeps its significant leading/trailing and
+  repeated whitespace; string/simple-content values are no longer stripped.
+- Content-model matching is memoized, so large real-world schemas such as
+  WordprocessingML no longer backtrack exponentially.
+- Class generation iterates the parser-owned component table, so types that
+  share a local name across imported namespaces (for example `CT_Color`) no
+  longer shadow each other; type lookup resolves the QName before falling
+  back to the local name.
+- A `ref` site resolves through its target declaration for instance matching,
+  so replacement attributes such as `r:id` and `xml:space` bind in the
+  referring element's namespace.
 
 ### Changed
 

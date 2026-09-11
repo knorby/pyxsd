@@ -14,12 +14,18 @@ covered by an end-to-end test in
 | --------- | ------ | --------- | ---- |
 | `musicxml/` | partwise MusicXML subset | `NoteStats` — note/rest counts and sounding range | strict |
 | `gpx/` | GPX 1.1 track subset | `TrackStats` — great-circle distance and elevation gain/loss | strict |
-| `docx/` | `word/document.xml` subset | `ToMarkdown` — style-aware Markdown extraction | lax |
+| `docx/` | real `word/document.xml` (ECMA-376) | `ToMarkdown` — style-aware Markdown extraction | namespaced |
 
-The `docx/` example is the worked proof of lax binding: the instance is
-deliberately messy (an unmodeled `bookmarkStart`, an invalid run `sz`),
-the report still lists both problems, and the transform still renders the
-full document. See [`docs/binding.md`](../docs/binding.md).
+The `docx/` example validates a realistic `word/document.xml` against the
+full ECMA-376 `wml.xsd` in `ParseModes.NAMESPACED`, rendering multilevel
+lists, tables, hyperlinks, breaks/tabs, run properties, and
+`xml:space="preserve"`; fetch the schema with
+`examples/docx/download_schemas.py` (the test skips when it is absent).
+`docx/lax/` keeps the earlier no-namespace demo, the worked proof of lax
+binding: the instance is deliberately messy (an unmodeled `bookmarkStart`, an
+invalid run `sz`), the report still lists both problems, and the transform
+still renders the full document. See
+[`docs/binding.md`](../docs/binding.md).
 
 ## Transform templates
 
