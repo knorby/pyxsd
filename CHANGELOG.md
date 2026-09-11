@@ -28,6 +28,14 @@ provably wrong.
 - Opt-in, non-gating `tests/test_oracle.py` cross-check against the
   independent `xmlschema` library (dev dependency; skipped unless
   `PYXSD_RUN_ORACLE=1`).
+- `ParseModes` presets (`STRICT`, `LAX`) and the `BindingPolicy` dataclass,
+  plus `PyXSD(mode=...)` and CLI `--mode strict|lax`. Modes change only what
+  is bound into the tree; the validation report stays strict. See
+  `docs/binding.md`.
+- `examples/musicxml/`, `examples/gpx/`, and `examples/docx/`: real-format
+  schema/instance/transform examples with end-to-end tests. The `docx`
+  example renders Markdown under `ParseModes.LAX` from a deliberately messy
+  document.
 
 ### Fixed
 
@@ -67,6 +75,11 @@ provably wrong.
   derived type (the previous schemas were not valid XSD).
 - The conformance corpus is described as independently authored, suite-inspired
   regression cases rather than copied W3C/NIST cases.
+- The crystallography transforms from 0.1 moved from `examples/transforms/`
+  to `examples/legacy/` (their schemas and data are no longer distributed).
+- GitHub Actions are pinned to the latest majors and the Pages deploy steps
+  run only on `main`, so pull requests build docs without requiring Pages.
+- Local design notes under `docs/superpowers/` are no longer tracked.
 
 ## [1.0.0] - 2026-09-10
 

@@ -1,7 +1,25 @@
 # About the examples
 
-The `examples/` directory shows how to use pyxsd's transform system and
-carries the application transforms that shipped with pyxsd 0.1.
+The `examples/` directory shows how to use pyxsd's transform system on
+real document formats, and keeps the application transforms that shipped
+with pyxsd 0.1 as historical reading material.
+
+## Application examples
+
+Each of these is a runnable schema + instance + transform, and each is
+covered by an end-to-end test in
+`tests/test_example_applications.py`:
+
+| Directory | Format | Transform | Mode |
+| --------- | ------ | --------- | ---- |
+| `musicxml/` | partwise MusicXML subset | `NoteStats` — note/rest counts and sounding range | strict |
+| `gpx/` | GPX 1.1 track subset | `TrackStats` — great-circle distance and elevation gain/loss | strict |
+| `docx/` | `word/document.xml` subset | `ToMarkdown` — style-aware Markdown extraction | lax |
+
+The `docx/` example is the worked proof of lax binding: the instance is
+deliberately messy (an unmodeled `bookmarkStart`, an invalid run `sz`),
+the report still lists both problems, and the transform still renders the
+full document. See [`docs/binding.md`](../docs/binding.md).
 
 ## Transform templates
 

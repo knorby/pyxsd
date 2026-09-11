@@ -51,7 +51,9 @@ NMTOKENS/IDREFS/ENTITIES.
 
 Non-fatal, code-tagged issue reporting via `PyXSD.report` (see
 {doc}`validation`), plus `--strict` CI-friendly exit codes and the
-`ValidationReport` API for library users.
+`ValidationReport` API for library users. `PyXSD(mode=...)` / `--mode`
+selects how invalid or unrecognized content is **bound** (strict vs. lax)
+without changing what is **reported** — see {doc}`binding`.
 
 ## Known gaps
 
