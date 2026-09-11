@@ -23,6 +23,9 @@ coverage.xml
 .codegraph/
 .serena/
 
+# Local design notes and agent plans (not part of the published project)
+docs/superpowers/
+
 # Docs build output
 docs/_build/
 
