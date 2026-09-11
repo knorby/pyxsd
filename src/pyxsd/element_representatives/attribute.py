@@ -124,9 +124,9 @@ class Attribute(ElementRepresentative):
         if "type" not in self.__dict__:
             raise TypeError(f"Attribute.getType() Error: type is not in {self.name}'s dictionary.")
 
-        if self.type in self.pyXSD.classes:
-            return self.pyXSD.classes[self.type]
-
+        # Resolve the QName first so strict mode disambiguates types
+        # that share a local name across namespaces; in legacy mode this
+        # is the same raw-type lookup as before.
         resolved = self.resolvedTypeName()
         if resolved is not None and resolved in self.pyXSD.classes:
             return self.pyXSD.classes[resolved]

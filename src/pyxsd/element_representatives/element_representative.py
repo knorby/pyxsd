@@ -467,6 +467,16 @@ class ElementRepresentative:
         default (``elementFormDefault``/``attributeFormDefault``) is
         ``qualified``. A qualified result is a Clark name.
         """
+        # A reference site (``ref="..."``) takes the expanded name of the
+        # declaration it points at. The ref site lives in the referring
+        # schema, so its own namespace is not the attribute's namespace:
+        # ``r:id`` in a WordprocessingML type resolves to a global
+        # attribute in the relationships namespace.
+        referred = getattr(self, "referredAttribute", None)
+        if referred is None:
+            referred = getattr(self, "referredElement", None)
+        if referred is not None and referred is not self:
+            return referred.instanceName(is_attribute=is_attribute, parser=parser)
         local = self.name
         if local is None:
             return None

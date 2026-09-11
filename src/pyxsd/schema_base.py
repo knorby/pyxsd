@@ -5,7 +5,7 @@ from pyxsd import xsi
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import first_required_name, match_content, particle_names
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
-from pyxsd.namespaces import NamespaceError, local_name, namespace_of
+from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import WildcardSpec
 from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, qname_context, xsd_value_key
@@ -936,19 +936,28 @@ class SchemaBase:
         Uses the ElementTree function ``.text`` to retrieve this
         information from the tag.
         """
-        if elementTag.text:
-            instance._value_ = []
-            if "\n" in elementTag.text.rstrip("\n"):
-                dataEntry = elementTag.text.splitlines()
-                for line in dataEntry:
-                    line = line.strip()
-                    if line:
-                        instance._value_.append(line)
-            else:
-                stripped = elementTag.text.strip()
-                if stripped:
-                    instance._value_.append(stripped)
-            instance._value_ = instance._value_ if instance._value_ else None
+        if not elementTag.text:
+            return
+        if elementTag.get(f"{{{XML_NS}}}space") == "preserve":
+            # ``xml:space="preserve"`` asks the parser to keep the
+            # character data exactly, including leading, trailing, and
+            # repeated whitespace.  The default path below strips and
+            # splits lines, which is only appropriate for the untyped
+            # pass-through case.
+            instance._value_ = [elementTag.text]
+            return
+        instance._value_ = []
+        if "\n" in elementTag.text.rstrip("\n"):
+            dataEntry = elementTag.text.splitlines()
+            for line in dataEntry:
+                line = line.strip()
+                if line:
+                    instance._value_.append(line)
+        else:
+            stripped = elementTag.text.strip()
+            if stripped:
+                instance._value_.append(stripped)
+        instance._value_ = instance._value_ if instance._value_ else None
 
     @classmethod
     def checkElementOrderInChoice(cls, descriptors, subElements, memberHeadMap):
@@ -1201,9 +1210,12 @@ class SchemaBase:
                 return cls._rawPrimitiveValue(subElement, dataTypeText)
             return None
         dataTypeValInst._attribs_ = dict(subElement.attrib)
-        dataTypeValInst._value_ = (
-            [dataTypeText.strip()] if dataTypeText and dataTypeText.strip() else None
-        )
+        # Preserve the value as the datatype normalized it: a
+        # whitespace-collapsing type yields the collapsed form, while an
+        # ``xs:string`` (or ``xml:space="preserve"``) content keeps its
+        # significant leading and trailing whitespace.  Do not use
+        # ``str.strip()`` here -- it would discard the preserved spaces.
+        dataTypeValInst._value_ = [str(dataTypeValInst)] if dataTypeText is not None else None
         dataTypeValInst._children_ = dataTypeChildren
 
         return dataTypeValInst
@@ -1219,7 +1231,7 @@ class SchemaBase:
         """
         instance: Any = AnySimpleType(dataTypeText if dataTypeText is not None else "")
         instance._attribs_ = dict(subElement.attrib)
-        instance._value_ = [dataTypeText] if dataTypeText and dataTypeText.strip() else None
+        instance._value_ = [dataTypeText] if dataTypeText is not None else None
         instance._children_ = []
         return instance
 

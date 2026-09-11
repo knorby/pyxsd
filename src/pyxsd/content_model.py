@@ -277,66 +277,15 @@ def _accepts(node_name: str, particle: Particle, member_head_map: dict[str, str]
     return particle.name == head
 
 
-def _dedup(states: list[tuple[int, list[Any]]]) -> list[tuple[int, list[Any]]]:
-    seen: set[int] = set()
-    result: list[tuple[int, list[Any]]] = []
-    for state in states:
-        if state[0] in seen:
-            continue
-        seen.add(state[0])
-        result.append(state)
-    return result
-
-
-def _match_one(
-    particle: Particle,
-    nodes: list[Any],
-    position: int,
-    member_head_map: dict[str, str],
-    depth: int,
-    name_of: Any,
-) -> list[tuple[int, list[Any]]]:
-    if depth > 32:
-        return []
-    if particle.is_element():
-        if position < len(nodes) and _accepts(name_of(nodes[position]), particle, member_head_map):
-            return [(position + 1, [nodes[position]])]
-        return []
-    if particle.kind == "sequence":
-        states: list[tuple[int, list[Any]]] = [(position, [])]
-        for child in particle.children:
-            advanced: list[tuple[int, list[Any]]] = []
-            for start, matched in states:
-                for end, more in _match_repeated(
-                    child, nodes, start, member_head_map, depth + 1, name_of
-                ):
-                    advanced.append((end, matched + more))
-            states = _dedup(advanced)
-            if not states:
-                return []
-        return states
-    if particle.kind == "choice":
-        # One occurrence of a choice is one occurrence of one branch.
-        results: list[tuple[int, list[Any]]] = []
-        for branch in particle.children:
-            results.extend(
-                _match_repeated(branch, nodes, position, member_head_map, depth + 1, name_of)
-            )
-        return _dedup(results)
-    if particle.kind == "all":
-        return _match_all(particle, nodes, position, member_head_map, name_of)
-    return []
-
-
 def _match_all(
     particle: Particle,
     nodes: list[Any],
     position: int,
     member_head_map: dict[str, str],
     name_of: Any,
-) -> list[tuple[int, list[Any]]]:
+) -> int | None:
+    """Greedily match an ``xs:all`` particle; returns the end or ``None``."""
     counts = [0] * len(particle.children)
-    matched: list[Any] = []
     index = position
     while index < len(nodes):
         node_name = name_of(nodes[index])
@@ -351,45 +300,132 @@ def _match_all(
         if chosen is None:
             break
         counts[chosen] += 1
-        matched.append(nodes[index])
         index += 1
     for i, member in enumerate(particle.children):
         if counts[i] < member.min_occurs:
-            return []
-    return [(index, matched)]
+            return None
+    return index
 
 
-def _match_repeated(
+# The matcher returns sets of end positions and memoizes by particle and
+# start position. Real-world schemas (for example WordprocessingML's
+# ``CT_Body``) nest unbounded compositors deeply enough that an unmemoized
+# backtracking search over a document with dozens of children explodes
+# combinatorially. Because a match consumes a contiguous run of nodes,
+# only the end position matters, which makes the result a pure function
+# of ``(particle, position)`` and safe to cache per call.
+
+
+def _ends_one(
     particle: Particle,
     nodes: list[Any],
     position: int,
     member_head_map: dict[str, str],
-    depth: int,
     name_of: Any,
-) -> list[tuple[int, list[Any]]]:
-    results: list[tuple[int, list[Any]]] = []
+    memo: dict[Any, frozenset[int]],
+    depth: int,
+) -> frozenset[int]:
+    """End positions after matching exactly one occurrence of *particle*."""
+    if depth > 32:
+        return frozenset()
+    key = (id(particle), position)
+    cached = memo.get(key)
+    if cached is not None:
+        return cached
+
+    if particle.is_element():
+        if position < len(nodes) and _accepts(name_of(nodes[position]), particle, member_head_map):
+            result = frozenset({position + 1})
+        else:
+            result = frozenset()
+    elif particle.kind == "sequence":
+        current: set[int] = {position}
+        for child in particle.children:
+            advanced: set[int] = set()
+            for start in current:
+                advanced |= _ends_repeated(
+                    child,
+                    nodes,
+                    start,
+                    member_head_map,
+                    name_of,
+                    memo,
+                    depth + 1,
+                )
+            current = advanced
+            if not current:
+                break
+        result = frozenset(current)
+    elif particle.kind == "choice":
+        ends: set[int] = set()
+        for branch in particle.children:
+            ends |= _ends_repeated(
+                branch,
+                nodes,
+                position,
+                member_head_map,
+                name_of,
+                memo,
+                depth + 1,
+            )
+        result = frozenset(ends)
+    elif particle.kind == "all":
+        end = _match_all(particle, nodes, position, member_head_map, name_of)
+        result = frozenset() if end is None else frozenset({end})
+    else:
+        result = frozenset()
+
+    memo[key] = result
+    return result
+
+
+def _ends_repeated(
+    particle: Particle,
+    nodes: list[Any],
+    position: int,
+    member_head_map: dict[str, str],
+    name_of: Any,
+    memo: dict[Any, frozenset[int]],
+    depth: int,
+) -> frozenset[int]:
+    """End positions for a particle repeated between its occurrence bounds."""
+    key = ("rep", id(particle), position)
+    cached = memo.get(key)
+    if cached is not None:
+        return cached
+
+    results: set[int] = set()
     if particle.min_occurs == 0:
-        results.append((position, []))
-    frontier: list[tuple[int, list[Any]]] = [(position, [])]
+        results.add(position)
+    frontier: set[int] = {position}
     count = 0
     maximum = particle.max_occurs
     if maximum is None:
         maximum = len(nodes) + 1
     while frontier and count < maximum:
         count += 1
-        advanced: list[tuple[int, list[Any]]] = []
-        for start, matched in frontier:
-            for end, more in _match_one(particle, nodes, start, member_head_map, depth, name_of):
-                # A zero-width match is a real occurrence (for example a
-                # ``minOccurs="1"`` sequence with no children); keep it so
-                # ``min_occurs`` is satisfied. The ``count < maximum``
-                # guard keeps the frontier finite.
-                advanced.append((end, matched + more))
-        advanced = _dedup(advanced)
+        advanced: set[int] = set()
+        for start in frontier:
+            advanced |= _ends_one(
+                particle,
+                nodes,
+                start,
+                member_head_map,
+                name_of,
+                memo,
+                depth,
+            )
         if count >= particle.min_occurs:
-            results.extend(advanced)
+            results |= advanced
+        if advanced == frontier and count >= particle.min_occurs:
+            # A zero-width particle has reached its fixed point; further
+            # repetitions cannot reach a new position.
+            break
         frontier = advanced
-    return _dedup(results)
+
+    result = frozenset(results)
+    memo[key] = result
+    return result
 
 
 def match_content(
@@ -409,9 +445,8 @@ def match_content(
     unconsumed tail of the best partial match.
     """
     member_head_map = member_head_map or {}
-    states = _match_repeated(model, nodes, 0, member_head_map, 0, name_of)
-    for end, _ in states:
-        if end == len(nodes):
-            return True, []
-    best = max((state[0] for state in states), default=0)
+    ends = _ends_repeated(model, nodes, 0, member_head_map, name_of, {}, 0)
+    if len(nodes) in ends:
+        return True, []
+    best = max(ends, default=0)
     return False, list(nodes[best:])

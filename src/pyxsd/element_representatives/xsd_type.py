@@ -300,6 +300,10 @@ class XsdType(ElementRepresentative):
         if "type" not in attr.__dict__:
             attr.type = candidate.type
         attr.pyXSD = pyXSD
+        # The referred global declaration may not have been reached while
+        # building its containing type's class, so it can lack the
+        # parser binding that ``getType`` needs. Give it one.
+        candidate.pyXSD = pyXSD
         return attr
 
     def _collectAttributeGroup(self, group, visited, pyXSD):

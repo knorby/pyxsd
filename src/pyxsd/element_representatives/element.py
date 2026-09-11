@@ -120,9 +120,12 @@ class Element(ElementRepresentative):
 
             return SchemaBase
 
-        if self.type in self.pyXSD.classes:
-            return self.pyXSD.classes[self.type]
-
+        # Resolve the QName first. In strict namespace mode this yields
+        # an expanded name, which disambiguates types that share a local
+        # name across namespaces (a strict-mode local-name fallback
+        # would silently bind the wrong one). In legacy mode
+        # ``resolvedTypeName`` returns the raw type, so this is the same
+        # lookup as before.
         resolved = self.resolvedTypeName()
         if resolved is not None and resolved in self.pyXSD.classes:
             return self.pyXSD.classes[resolved]

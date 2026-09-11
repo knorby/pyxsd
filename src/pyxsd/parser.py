@@ -58,6 +58,7 @@ from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
+    componentKind,
     set_active_namespace_overrides,
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
@@ -333,18 +334,26 @@ class PyXSD:
         self.components = schemaER.components
         ermod._ACTIVE_TABLE = self.components
 
-        for simpleType in schemaER.simpleTypes.values():
-            cls = simpleType.clsFor(self)
-            self.classes[simpleType.name] = cls
-            if simpleType.expandedName:
-                self.classes[simpleType.expandedName] = cls
-            logger.debug("Class created for the %s type...", simpleType.name)
-        for complexType in schemaER.complexTypes.values():
-            cls = complexType.clsFor(self)
-            self.classes[complexType.name] = cls
-            if complexType.expandedName:
-                self.classes[complexType.expandedName] = cls
-            logger.debug("Class created for the %s type...", complexType.name)
+        # The schema root is itself the instance class used to dispatch
+        # the document root's element declarations.
+        self.classes["schema"] = schemaER.clsFor(self)
+        # Build a generated class for every named type in the
+        # parser-owned component table. The per-schema ``simpleTypes`` /
+        # ``complexTypes`` dicts are keyed by local name, so composed
+        # schemas that reuse a local name in different namespaces (very
+        # common in OOXML) collide there and lose declarations. The
+        # component table keeps one entry per expanded name.
+        built: set[int] = set()
+        for entries in self.components.values():
+            for typeER in entries:
+                if componentKind(typeER) != "type" or id(typeER) in built:
+                    continue
+                built.add(id(typeER))
+                cls = typeER.clsFor(self)
+                self.classes[typeER.name] = cls
+                if typeER.expandedName:
+                    self.classes[typeER.expandedName] = cls
+                logger.debug("Class created for the %s type...", typeER.name)
 
         self._buildSubstitutionGroups(schemaER)
 
