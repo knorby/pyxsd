@@ -10,6 +10,20 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 
+def _nameMatches(nodeName: str, wanted: str) -> bool:
+    """Whether a node name matches a requested tag name.
+
+    In namespaced mode a node's ``_name_`` is the Clark form
+    (``{uri}local``) while transforms normally address elements by their
+    local name. An exact match always counts; otherwise the local part
+    of the node name is compared to the requested name, so
+    ``getElementsByName(root, "trkpt")`` keeps working in either mode.
+    """
+    if nodeName == wanted:
+        return True
+    return nodeName.startswith("{") and nodeName.split("}")[-1] == wanted
+
+
 def iter_tree(instance: Any) -> Iterator[Any]:
     """Yield every tree node at or below ``instance``, depth-first.
 
@@ -160,7 +174,7 @@ class Transform(abc.ABC):
         See ``getElementsByName``.
         """
         for i, tagName in enumerate(elemNames):
-            if name == tagName:
+            if _nameMatches(tagName, name):
                 obj = instance._children_[i]
                 if obj is not None:
                     collection.append(obj)
@@ -199,7 +213,7 @@ class Transform(abc.ABC):
         an alternative to the walk/visitor functions. See
         ``getElementsByName``.
         """
-        if baseElem._name_ == tagName:
+        if _nameMatches(baseElem._name_, tagName):
             return baseElem
         for child in baseElem._children_:
             returnedElement = self.find(tagName, child)
@@ -215,7 +229,7 @@ class Transform(abc.ABC):
         ``getElementsByName``.
         """
         found = []
-        if baseElem._name_ == tagName:
+        if _nameMatches(baseElem._name_, tagName):
             found.append(baseElem)
         for child in baseElem._children_:
             returnedElement = self.findAll(tagName, child)

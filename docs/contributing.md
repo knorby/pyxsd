@@ -46,8 +46,9 @@ provenance note, is preserved in the
 
 ## Project direction
 
-The 1.0 roadmap (XSD coverage tiers, conformance corpus, docs) is tracked
-in `docs/superpowers/plans/2026-09-09-pyxsd-1.0.0-modernization.md` and
-the issue tracker. The 0.1 TODO list is of historical interest only — most
-of it (Python 3, test suite, `metaclass`-style construction, regex
-pattern facets) is now done.
+The 1.0 roadmap (XSD coverage tiers, conformance corpus, docs) has been
+delivered; ongoing direction is tracked in the issue tracker and
+{file}`CHANGELOG.md`. Working design notes are kept outside the published
+docs tree. The 0.1 TODO list is of historical interest only — most of it
+(Python 3, test suite, `metaclass`-style construction, regex pattern
+facets) is now done.

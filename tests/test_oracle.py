@@ -9,9 +9,13 @@ after ``uv sync --group dev``::
 
 ``xmlschema`` is a well-tested independent XSD 1.0 implementation. Where
 the two disagree, the disagreement is printed with the case id and
-direction so the result can be triaged; pyxsd's documented limitations
-(namespaces, wildcards, identity XPath, user facets) are expected to
-produce some differences.
+direction so the result can be triaged. Each case runs under the binding
+policy named by its manifest ``mode`` (``legacy`` by default), so the
+``namespaced`` cases exercise namespace-aware matching alongside the
+oracle. The one remaining expected difference is a schema-composition
+warning/error mismatch; pyxsd's other documented limitations (identity
+XPath predicates, user facets, remote schemas) are not exercised by the
+corpus.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ import os
 
 import pytest
 
-from conformance_runner import _errors, _materialize, load_cases
+from conformance_runner import _errors, _materialize, case_mode, load_cases
 from pyxsd.parser import PyXSD
 
 pytestmark = pytest.mark.skipif(
@@ -33,19 +37,11 @@ xmlschema = pytest.importorskip("xmlschema")
 
 CASES = load_cases()
 
-# Cases where pyxsd intentionally differs from the oracle because of a
-# documented limitation (or an oracle laxness). Listed per case id with
-# the reason so an *unexpected* new disagreement still surfaces.
+# Cases where pyxsd intentionally differs from the oracle. Listed per case
+# id with the reason so an *unexpected* new disagreement still surfaces.
+# Namespace, wildcard, and QName cases were previously listed here; they now
+# run in the manifest's ``namespaced`` mode and agree with the oracle.
 _DOCUMENTED_DIVERGENCES = {
-    "types/string-derived-valid": (
-        "xs:QName prefix resolution needs namespace context, which pyxsd documents as unsupported"
-    ),
-    "structure/any-wildcard-valid": (
-        "wildcard namespace/processContents filtering is a documented pyxsd limitation"
-    ),
-    "structure/anyAttribute-valid": (
-        "wildcard attribute namespace filtering is a documented pyxsd limitation"
-    ),
     "composition/include-missing": (
         "xmlschema downgrades a missing include to a warning; pyxsd reports "
         "the schema-compose error"
@@ -65,6 +61,7 @@ def _pyxsd_verdict(case, directory):
             str(directory / "schema.xsd"),
             xmlFileOutput=False,
             transformOutputName=None,
+            mode=case_mode(case),
         )
     except Exception:
         return False, None

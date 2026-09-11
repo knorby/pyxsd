@@ -6,6 +6,13 @@ finds is recorded as a `ValidationIssue` in a single
 A run can produce a complete object tree and a full error report at the same
 time.
 
+```{note}
+"Lax validator" here means *reporting is non-fatal*. It is separate from
+the **parse mode** (`PyXSD(mode=...)`, `--mode`), which controls what is
+bound into the tree when a document is invalid. The report is always
+strict regardless of mode — see {doc}`binding`.
+```
+
 ```python
 from pyxsd import PyXSD
 
@@ -39,6 +46,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | ---- | -------- | ------- |
 | `order` | ERROR | Child order violates the sequence content model. |
 | `unexpected-element` | ERROR | Element is not declared in the content model and no wildcard allows it. |
+| `wildcard-no-declaration` | ERROR | `processContents="strict"` wildcard matched an element/attribute with no global declaration (namespaced mode). |
 | `occurrence-min` | ERROR | Fewer occurrences than `minOccurs` allows. |
 | `occurrence-max` | ERROR | More occurrences than `maxOccurs` allows. |
 | `missing-attribute` | ERROR | A required attribute is absent. |
@@ -47,6 +55,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `prohibited-attribute` | WARNING | Attribute declared `use="prohibited"` present. |
 | `fixed-attribute` | ERROR | Attribute present with a value differing from `fixed`. |
 | `unknown-type` | ERROR | Referenced type could not be resolved. |
+| `unknown-namespace-prefix` | ERROR | A prefixed name uses a namespace prefix that is not bound in scope (namespaced mode). |
 | `value` | ERROR | Text content failed lexical validation for its type. |
 | `default` | ERROR | Element default value is not valid for the element's type. |
 | `fixed-element` | ERROR | Element content differs from its `fixed` value. |
@@ -71,6 +80,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `schema` | ERROR | The schema file itself is malformed or unreadable. |
 | `schema-hint` | WARNING | Malformed schemaLocation hint in the instance document. |
 | `schema-compose` | ERROR | Missing or malformed included/imported schema file. |
+| `import-unresolved` | ERROR | Namespace-only `xs:import` could not be satisfied from a schemaLocation or `namespace_schemas` (namespaced mode). |
 | `compose-cycle` | WARNING | A repeated include/redefine was deduplicated. |
 | `compose-namespace` | ERROR | Include target namespace mismatch. |
 | `internal` | WARNING | Parser internal inconsistency — please report. |

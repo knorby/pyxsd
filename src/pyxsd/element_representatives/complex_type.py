@@ -2,6 +2,7 @@ import logging
 
 from pyxsd.compositors import Compositor
 from pyxsd.element_representatives.xsd_type import XsdType
+from pyxsd.wildcards import register_wildcard
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +85,10 @@ class ComplexType(XsdType):
         conflicting occurrence limits resolves with the last
         reference's limits.
         """
-        groupName = refSite.ref
-        if groupName in visited:
+        group = refSite.resolveReference(refSite.ref, self.getSchema().groups.values())
+        groupName = refSite.ref.split(":", 1)[-1]
+        groupKey = getattr(group, "expandedName", None) or groupName
+        if groupKey in visited:
             message = (
                 f"circular group reference chain involving '{groupName}' "
                 f"(reached from '{self.name}')"
@@ -93,9 +96,8 @@ class ComplexType(XsdType):
             self._report_ref_error(message, code="circular-group")
             return []
 
-        group = self.getSchema().groups.get(groupName)
         if group is None:
-            message = f"group reference '{groupName}' in type '{self.name}' could not be resolved"
+            message = f"group reference '{refSite.ref}' in type '{self.name}' could not be resolved"
             self._report_ref_error(message, code="unknown-group")
             return []
 
@@ -110,19 +112,15 @@ class ComplexType(XsdType):
         except ValueError:
             compInfo = None
 
-        if not getattr(self, "hasWildcardElements", False) and getattr(
-            group, "hasWildcardElements", False
-        ):
-            self.hasWildcardElements = True
-        if not getattr(self, "hasWildcardAttributes", False) and getattr(
-            group, "hasWildcardAttributes", False
-        ):
-            self.hasWildcardAttributes = True
+        for spec in getattr(group, "wildcardElementSpecs", ()):
+            register_wildcard(self, spec)
+        for spec in getattr(group, "wildcardAttributeSpecs", ()):
+            register_wildcard(self, spec)
 
         contributed = []
         for element in compositor.elements:
             if getattr(element, "isRefSite", False):
-                contributed.extend(self._flattenGroupRef(element, visited | {groupName}))
+                contributed.extend(self._flattenGroupRef(element, visited | {groupKey}))
             else:
                 if getattr(element, "isElementRef", False):
                     # ``<xs:element ref="..."/>`` inside a named group
@@ -149,15 +147,14 @@ class ComplexType(XsdType):
         and leave the site nameless (matching then fails with the
         usual unknown-element handling).
         """
-        refName = refSite.ref.split(":", 1)[-1]
-        for candidate in self.getSchema().elements:
-            if candidate.name == refName:
-                refSite.referredElement = candidate
-                refSite.name = candidate.name
-                # Identity constraints declared on the global element
-                # apply wherever the element is referenced.
-                refSite.identities = list(candidate.identities)
-                return None
+        candidate = refSite.resolveReference(refSite.ref, self.getSchema().elements)
+        if candidate is not None:
+            refSite.referredElement = candidate
+            refSite.name = candidate.name
+            # Identity constraints declared on the global element
+            # apply wherever the element is referenced.
+            refSite.identities = list(candidate.identities)
+            return None
         message = f"element reference '{refSite.ref}' in type '{self.name}' could not be resolved"
         self._report_ref_error(message, code="unknown-elementRef")
         return None

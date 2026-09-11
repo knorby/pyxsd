@@ -1,13 +1,21 @@
 import logging
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pyxsd import xsi
+from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import first_required_name, match_content, particle_names
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
+from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
-from pyxsd.xsd_data_types import XsdDataType, xsd_value_key
+from pyxsd.wildcards import WildcardSpec
+from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, qname_context, xsd_value_key
 
 logger = logging.getLogger(__name__)
+
+
+def _mode_for(cls) -> BindingPolicy:
+    """The binding policy stamped on a generated class (or STRICT)."""
+    return getattr(cls, "_parseMode_", ParseModes.STRICT)
 
 
 class SchemaBase:
@@ -153,6 +161,164 @@ class SchemaBase:
         """Record a warning-severity validation issue."""
         cls._report_issue(IssueSeverity.WARNING, message, code=code, element=element)
 
+    @classmethod
+    def _node_name(cls, node):
+        """The name an instance node is matched under.
+
+        Legacy mode keeps the historical local-name comparison; strict
+        mode uses ElementTree's Clark tag, which is the expanded name
+        for a namespaced node and a plain local name otherwise.
+        """
+        if getattr(_mode_for(cls), "namespaces", "legacy") == "strict":
+            return node.tag
+        return node.tag.split("}")[-1]
+
+    @classmethod
+    def _instance_name_of(cls, descriptor, *, is_attribute=False):
+        """The instance name for a declaration, honoring the active mode."""
+        name_fn = getattr(descriptor, "instanceName", None)
+        if name_fn is None:
+            return getattr(descriptor, "name", None)
+        return name_fn(parser=getattr(cls, "pyXSD", None), is_attribute=is_attribute)
+
+    @classmethod
+    def _qname_bindings(cls, element):
+        """The prefix bindings in scope at ``element``, or ``None``.
+
+        Only strict namespace mode resolves ``xs:QName`` values; legacy
+        mode keeps lexical comparison (returning ``None`` disables
+        resolution for the duration of a binding call).
+        """
+        if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
+            return None
+        parser = getattr(cls, "pyXSD", None)
+        context = getattr(parser, "namespaceContext", None)
+        if context is None:
+            return None
+        return context.bindings_for(element)
+
+    @classmethod
+    def _wildcard_element_specs(cls, instance) -> list[WildcardSpec]:
+        """Element wildcard constraints visible to ``instance``.
+
+        Specs are gathered along the MRO (least-derived first) so a
+        wildcard contributed by an extension base still applies to the
+        derived instance.
+        """
+        specs: list[WildcardSpec] = []
+        for klass in reversed(type(instance).__mro__):
+            specs.extend(klass.__dict__.get("wildcardElementSpecs_", ()))
+        return specs
+
+    @classmethod
+    def _wildcard_attribute_specs(cls, instance) -> list[WildcardSpec]:
+        """Attribute wildcard constraints visible to ``instance``."""
+        specs: list[WildcardSpec] = []
+        for klass in reversed(type(instance).__mro__):
+            specs.extend(klass.__dict__.get("wildcardAttributeSpecs_", ()))
+        return specs
+
+    @classmethod
+    def _wildcard_match(
+        cls, specs: list[WildcardSpec], node_name: str, target_namespace: str | None
+    ) -> WildcardSpec | None:
+        """The first wildcard constraint admitting ``node_name``.
+
+        ``node_name`` must be a Clark/expanded name; ``None`` means no
+        wildcard admits the node.
+        """
+        uri = namespace_of(node_name)
+        for spec in specs:
+            if spec.allows(uri, target_namespace):
+                return spec
+        return None
+
+    @classmethod
+    def _checkWildcardAttribute(cls, attr, value, spec, parser) -> bool:
+        """Checks a wildcard-matched attribute against ``processContents``.
+
+        Returns ``False`` when the attribute should be dropped (an error
+        has been reported). ``skip`` accepts unconditionally; ``lax``
+        validates when a global declaration exists and otherwise
+        accepts; ``strict`` requires a declaration.
+        """
+        if spec.process_contents == "skip":
+            return True
+        local = local_name(attr)
+        uri = namespace_of(attr)
+        components = getattr(parser, "components", None)
+        declaration = (
+            components.getFromName(local, kind="attribute", namespace=uri, warn=False)
+            if components is not None
+            else None
+        )
+        if declaration is None:
+            if spec.process_contents == "strict":
+                cls._report_error(
+                    f"no declaration found for attribute '{local}' required by a strict wildcard",
+                    code="wildcard-no-declaration",
+                    element=cls.__name__,
+                )
+                return False
+            return True
+        try:
+            declaration.pyXSD = parser
+            declaration.getType()(value)
+        except Exception as e:
+            cls._report_error(
+                f"attribute '{local}' has an invalid value: {e}",
+                code="value",
+                element=cls.__name__,
+            )
+            return False
+        return True
+
+    @classmethod
+    def _bindWildcardChild(cls, instance, subElement, spec) -> None:
+        """Binds one child accepted by an element wildcard.
+
+        ``skip`` (and legacy mode) binds generically. ``lax`` validates
+        against a matching global declaration when one exists and binds
+        generically otherwise. ``strict`` reports
+        ``wildcard-no-declaration`` when no declaration matches.
+        """
+        parser = getattr(cls, "pyXSD", None)
+        mode = getattr(parser, "mode", None)
+        if getattr(mode, "namespaces", "legacy") != "strict" or spec.process_contents == "skip":
+            instance._children_.append(cls.makeGenericInstance(subElement))
+            return
+        local = local_name(subElement.tag)
+        uri = namespace_of(subElement.tag)
+        components = getattr(parser, "components", None)
+        descriptor = (
+            components.getFromName(local, kind="element", namespace=uri, warn=False)
+            if components is not None
+            else None
+        )
+        if descriptor is not None:
+            if descriptor.isAbstract():
+                cls._report_error(
+                    f"element '{local}' is declared abstract; "
+                    "only its substitution group members may appear in the xml",
+                    code="abstract-element",
+                    element=cls.__name__,
+                )
+                return
+            descriptor.pyXSD = parser
+            subElCls = cls._classForChild(descriptor, subElement)
+            if subElCls is not None:
+                cls._addChildInstance(instance, subElement, subElCls, descriptor)
+                return
+        if spec.process_contents == "lax":
+            instance._children_.append(cls.makeGenericInstance(subElement))
+            return
+        cls._report_error(
+            f"no declaration found for element '{local}' required by a strict wildcard",
+            code="wildcard-no-declaration",
+            element=cls.__name__,
+        )
+        instance._children_.append(cls.makeGenericInstance(subElement))
+
     # ------------------------------------------------------------------
     # Instance tree construction
     # ------------------------------------------------------------------
@@ -175,7 +341,7 @@ class SchemaBase:
         - ``elementTag`` - the xml element that corresponds to ``cls``
         """
         instance = cls()
-        instance._name_ = elementTag.tag.split("}")[-1]
+        instance._name_ = cls._node_name(elementTag)
         if cls.__dict__.get("abstract_"):
             cls._report_error(
                 f"type '{cls.__name__}' is declared abstract and may not be instantiated directly",
@@ -214,32 +380,50 @@ class SchemaBase:
         self._attribs_ = {}
         usedAttributes = []
         xsiPrefix = f"{{{xsi.XSI_NAMESPACE}}}"
-        # XSI-namespace attributes (xsi:nil, xsi:type, ...) are stored
-        # under their conventional display spelling so the writers emit
-        # valid xml (the document's own xmlns:xsi declaration, a plain
-        # attribute here, keeps the output reparseable).
-        for attr in elementTag.attrib:
-            if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
-                displayKey = xsi.xsi_attr_key(attr)
-                setattr(self, displayKey, elementTag.attrib[attr])
-                usedAttributes.append(displayKey)
-                self._attribs_[displayKey] = elementTag.attrib[attr]
-        for name in self.descAttributeNames():
-            if name in elementTag.attrib:
-                setattr(self, name, elementTag.attrib[name])
-                usedAttributes.append(name)
-                self._attribs_[name] = elementTag.attrib[name]
-        # Attribute wildcard (xs:anyAttribute) pass-through: attributes
-        # the schema does not declare are stored raw instead of being
-        # left out and reported as unexpected.
-        if getattr(self, "hasWildcardAttributes_", False):
-            for attr, value in elementTag.attrib.items():
+        # QName-valued attributes resolve against this element's in-scope
+        # prefix bindings (strict mode only).
+        with qname_context(self._qname_bindings(elementTag)):
+            # XSI-namespace attributes (xsi:nil, xsi:type, ...) are stored
+            # under their conventional display spelling so the writers emit
+            # valid xml (the document's own xmlns:xsi declaration, a plain
+            # attribute here, keeps the output reparseable).
+            for attr in elementTag.attrib:
                 if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
-                    continue
-                if attr in usedAttributes:
-                    continue
-                self._attribs_[attr] = value
-                usedAttributes.append(attr)
+                    displayKey = xsi.xsi_attr_key(attr)
+                    setattr(self, displayKey, elementTag.attrib[attr])
+                    usedAttributes.append(displayKey)
+                    self._attribs_[displayKey] = elementTag.attrib[attr]
+            for name in self.descAttributeNames():
+                descriptor = self.descAttributes()[name]
+                matchName = self._instance_name_of(descriptor, is_attribute=True)
+                if matchName in elementTag.attrib:
+                    setattr(self, name, elementTag.attrib[matchName])
+                    usedAttributes.append(matchName)
+                    self._attribs_[matchName] = elementTag.attrib[matchName]
+            # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
+            # namespace mode every undeclared attribute is accepted raw; in
+            # strict mode the wildcard's namespace constraint must admit the
+            # attribute, and ``processContents`` decides whether a global
+            # declaration is required.
+            if getattr(self, "hasWildcardAttributes_", False):
+                cls = type(self)
+                strict = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
+                specs = self._wildcard_attribute_specs(self) if strict else []
+                targetNamespace = getattr(cls, "_targetNamespace_", None) if strict else None
+                parser = getattr(cls, "pyXSD", None)
+                for attr, value in elementTag.attrib.items():
+                    if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
+                        continue
+                    if attr in usedAttributes:
+                        continue
+                    if strict:
+                        spec = self._wildcard_match(specs, attr, targetNamespace)
+                        if spec is None:
+                            continue
+                        if not self._checkWildcardAttribute(attr, value, spec, parser):
+                            continue
+                    self._attribs_[attr] = value
+                    usedAttributes.append(attr)
         return usedAttributes
 
     @classmethod
@@ -265,9 +449,6 @@ class SchemaBase:
         """
         subElements = list(elementTag)
 
-        def getSubElementName(x):
-            return x.tag.split("}")[-1]
-
         elemDescriptors = instance._getElements()
 
         # No early return on childless elements: the order checkers
@@ -277,31 +458,51 @@ class SchemaBase:
         # Substitution-group dispatch: member xml children may appear
         # wherever their head element is declared.
         substitutionGroups = cls._schemaSubstitutionGroups(elemDescriptors)
-        memberHeadMap = {
-            member.name: headName
-            for headName, members in substitutionGroups.items()
-            for member in members
+        declaredByName = {descriptor.name: descriptor for descriptor in elemDescriptors}
+        declaredByExpanded = {
+            getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
         }
+        memberHeadMap: dict[str, str] = {}
+        for headName, members in substitutionGroups.items():
+            headDescriptor = declaredByName.get(headName) or declaredByExpanded.get(headName)
+            headMatch = (
+                cls._instance_name_of(headDescriptor) if headDescriptor is not None else headName
+            )
+            for member in members:
+                memberHeadMap[cls._instance_name_of(member)] = headMatch
 
-        # Wildcard (xs:any) pass-through: children the schema does not
-        # declare are accepted and parsed generically when the type
-        # declares a wildcard. Order checking only sees declared
+        # Wildcard (xs:any) pass-through. In legacy namespace mode any
+        # undeclared child is wildcard content; in strict mode only
+        # children admitted by a wildcard's namespace constraint are
+        # (the rest are reported). Order checking only sees declared
         # children in that case.
         hasWildcard = getattr(instance, "hasWildcardElements_", False)
+        strictNamespaces = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
+        wildcardSpecs = cls._wildcard_element_specs(instance) if hasWildcard else []
+        targetNamespace = getattr(cls, "_targetNamespace_", None)
         if hasWildcard:
-            declaredNames = {descriptor.name for descriptor in elemDescriptors}
+            declaredNames = {cls._instance_name_of(descriptor) for descriptor in elemDescriptors}
             declaredNames.update(memberHeadMap)
-            declaredChildren = [
-                subElement
-                for subElement in subElements
-                if getSubElementName(subElement) in declaredNames
-            ]
+            declaredChildren = []
+            for subElement in subElements:
+                nodeName = cls._node_name(subElement)
+                if nodeName in declaredNames:
+                    declaredChildren.append(subElement)
+                elif (
+                    strictNamespaces
+                    and cls._wildcard_match(wildcardSpecs, nodeName, targetNamespace) is not None
+                ) or not strictNamespaces:
+                    continue
+                else:
+                    declaredChildren.append(subElement)
         else:
             declaredChildren = subElements
 
         model = getattr(instance, "_contentModel_", None)
         if model is not None:
-            complete, leftover = match_content(model, declaredChildren, memberHeadMap)
+            complete, leftover = match_content(
+                model, declaredChildren, memberHeadMap, name_of=cls._node_name
+            )
         else:
             complete, leftover = False, None
 
@@ -323,7 +524,7 @@ class SchemaBase:
                 # every child).
                 declared = particle_names(model)
                 for subElement in leftover:
-                    subElementName = getSubElementName(subElement)
+                    subElementName = cls._node_name(subElement)
                     head = memberHeadMap.get(subElementName, subElementName)
                     if head in declared:
                         cls._report_error(
@@ -332,7 +533,7 @@ class SchemaBase:
                             code="order",
                             element=cls.__name__,
                         )
-                    elif not hasWildcard:
+                    elif not hasWildcard or strictNamespaces:
                         cls._report_error(
                             f"element '{subElementName}' is not declared in the "
                             "content model and no wildcard allows it",
@@ -353,10 +554,10 @@ class SchemaBase:
         # Children are matched (and recorded) in document order so the
         # instance tree preserves the xml's layout.
         for subElement in subElements:
-            subElementName = getSubElementName(subElement)
+            subElementName = cls._node_name(subElement)
             matched = False
             for descriptor in elemDescriptors:
-                if descriptor.name != subElementName:
+                if cls._instance_name_of(descriptor) != subElementName:
                     continue
                 matched = True
                 if descriptor.isAbstract():
@@ -374,6 +575,8 @@ class SchemaBase:
                         code="unknown-type",
                         element=cls.__name__,
                     )
+                    if _mode_for(cls).unresolved_type == "generic":
+                        instance._children_.append(cls.makeGenericInstance(subElement))
                     break
                 cls._addChildInstance(instance, subElement, subElCls, descriptor)
                 break
@@ -381,10 +584,42 @@ class SchemaBase:
             if not matched and substitutionGroups:
                 matched = cls._addSubstitutionMember(instance, subElement, elemDescriptors)
 
-            if not matched and hasWildcard:
-                wildcardInstance = cls.makeGenericInstance(subElement)
-                instance._children_.append(wildcardInstance)
+            if not matched:
+                wildcardSpec = None
+                if hasWildcard:
+                    if strictNamespaces:
+                        wildcardSpec = cls._wildcard_match(
+                            wildcardSpecs, subElementName, targetNamespace
+                        )
+                    else:
+                        wildcardSpec = WildcardSpec()
+                if wildcardSpec is not None:
+                    cls._bindWildcardChild(instance, subElement, wildcardSpec)
+                elif _mode_for(cls).undeclared_content == "generic":
+                    instance._children_.append(cls.makeGenericInstance(subElement))
         return instance
+
+    @classmethod
+    def _resolveXsiTypeName(cls, subElement, value: str, pyXSD) -> str | None:
+        """Resolves a lexical ``xsi:type`` QName against the instance scope.
+
+        In ``legacy`` namespace mode the raw value is returned unchanged.
+        In ``strict`` mode the value is expanded through the instance
+        namespace context; an unbound prefix is reported as
+        ``unknown-namespace-prefix`` and ``None`` is returned so the
+        caller keeps the declared type.
+        """
+        mode = getattr(pyXSD, "mode", None)
+        if getattr(mode, "namespaces", "legacy") != "strict":
+            return value
+        context = getattr(pyXSD, "namespaceContext", None)
+        if context is None:
+            return value
+        try:
+            return context.resolve(subElement, value)
+        except NamespaceError as exc:
+            cls._report_error(str(exc), code="unknown-namespace-prefix", element=cls.__name__)
+            return None
 
     @classmethod
     def _classForChild(cls, descriptor, subElement):
@@ -401,7 +636,10 @@ class SchemaBase:
         if xsiTypeName is None:
             return subElCls
         pyXSD = getattr(cls, "pyXSD", None)
-        resolved = ElementRepresentative.typeFromName(xsiTypeName, pyXSD)
+        resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
+        if resolvedName is None:
+            return subElCls
+        resolved = ElementRepresentative.typeFromName(resolvedName, pyXSD)
         if resolved is not None:
             blocked = combinedBlock(
                 descriptor.getBlock() if descriptor is not None else None,
@@ -438,7 +676,7 @@ class SchemaBase:
         parent's ``_children_`` and, for primitive content, exposes it
         as an instance attribute.
         """
-        subElementName = subElement.tag.split("}")[-1]
+        subElementName = cls._node_name(subElement)
         nilled = xsi.xsi_nil_is_true(subElement)
         if nilled and not descriptor.isNillable():
             cls._report_error(
@@ -447,6 +685,8 @@ class SchemaBase:
                 element=cls.__name__,
             )
             nilled = False
+
+        accessor, descriptorBound = cls._childAccessor(instance, descriptor, subElement)
 
         # for elements with primitive types
         contentKind = getattr(subElCls, "_contentKind_", None)
@@ -469,7 +709,10 @@ class SchemaBase:
                 subInstance._descriptor_ = descriptor
                 subInstance._nil_ = nilled
                 instance._children_.append(subInstance)
-                setattr(instance, subElementName, subInstance)
+                if descriptorBound:
+                    setattr(instance, accessor, subInstance)
+                else:
+                    instance.__dict__[accessor] = subInstance
                 if not nilled:
                     cls._checkFixedElement(descriptor, subElCls, subInstance, subElementName)
             return None
@@ -480,6 +723,39 @@ class SchemaBase:
         subInstance._nil_ = nilled
         instance._children_.append(subInstance)
         return None
+
+    @classmethod
+    def _childAccessor(cls, instance, descriptor, subElement):
+        """Returns the Python attribute name for a matched child.
+
+        The base name is the declaration's local name, which is also the
+        descriptor's bound name (so ``setattr`` reaches the descriptor).
+        In strict namespace mode two declarations that share a local name
+        but differ in namespace would collide; the second is exposed as
+        ``local_prefix`` (using the instance's in-scope prefix, or a
+        numeric suffix when the namespace is the default). Returns
+        ``(name, descriptor_bound)``.
+        """
+        base = getattr(descriptor, "name", None) or subElement.tag.split("}")[-1]
+        if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
+            return base, True
+        used = instance.__dict__.setdefault("_childAccessors_", {})
+        uri = getattr(descriptor, "getNamespace", lambda: None)()
+        previous = used.get(base)
+        if previous is None or previous == uri:
+            used[base] = uri
+            return base, True
+        prefix = ""
+        parser = getattr(cls, "pyXSD", None)
+        context = getattr(parser, "namespaceContext", None)
+        if context is not None:
+            try:
+                prefix = context.prefix_for(subElement, uri) or ""
+            except Exception:
+                prefix = ""
+        accessor = f"{base}_{prefix}" if prefix else f"{base}_{len(used)}"
+        used[accessor] = uri
+        return accessor, False
 
     @classmethod
     def _primitiveForElement(cls, subElCls, subElement, descriptor):
@@ -509,7 +785,8 @@ class SchemaBase:
         report code (``default`` or ``fixed-element``).
         """
         try:
-            instance = subElCls(forcedValue)
+            with qname_context(cls._qname_bindings(subElement)):
+                instance = subElCls(forcedValue)
         except (TypeError, ValueError) as e:
             cls._report_error(
                 f"the forced value {forcedValue!r} of the "
@@ -583,14 +860,17 @@ class SchemaBase:
         child was handled. Members blocked by the head's ``block``
         attribute are reported and rejected.
         """
-        subElementName = subElement.tag.split("}")[-1]
+        subElementName = cls._node_name(subElement)
         declared = {descriptor.name: descriptor for descriptor in elemDescriptors}
+        declaredExpanded = {
+            getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
+        }
         for headName, members in cls._schemaSubstitutionGroups(elemDescriptors).items():
-            headDescriptor = declared.get(headName)
+            headDescriptor = declared.get(headName) or declaredExpanded.get(headName)
             if headDescriptor is None:
                 continue
             for memberER in members:
-                if memberER.name != subElementName:
+                if cls._instance_name_of(memberER) != subElementName:
                     continue
                 block = headDescriptor.getBlock()
                 if block and ("substitution" in block.split() or block == "#all"):
@@ -656,19 +936,28 @@ class SchemaBase:
         Uses the ElementTree function ``.text`` to retrieve this
         information from the tag.
         """
-        if elementTag.text:
-            instance._value_ = []
-            if "\n" in elementTag.text.rstrip("\n"):
-                dataEntry = elementTag.text.splitlines()
-                for line in dataEntry:
-                    line = line.strip()
-                    if line:
-                        instance._value_.append(line)
-            else:
-                stripped = elementTag.text.strip()
-                if stripped:
-                    instance._value_.append(stripped)
-            instance._value_ = instance._value_ if instance._value_ else None
+        if not elementTag.text:
+            return
+        if elementTag.get(f"{{{XML_NS}}}space") == "preserve":
+            # ``xml:space="preserve"`` asks the parser to keep the
+            # character data exactly, including leading, trailing, and
+            # repeated whitespace.  The default path below strips and
+            # splits lines, which is only appropriate for the untyped
+            # pass-through case.
+            instance._value_ = [elementTag.text]
+            return
+        instance._value_ = []
+        if "\n" in elementTag.text.rstrip("\n"):
+            dataEntry = elementTag.text.splitlines()
+            for line in dataEntry:
+                line = line.strip()
+                if line:
+                    instance._value_.append(line)
+        else:
+            stripped = elementTag.text.strip()
+            if stripped:
+                instance._value_.append(stripped)
+        instance._value_ = instance._value_ if instance._value_ else None
 
     @classmethod
     def checkElementOrderInChoice(cls, descriptors, subElements, memberHeadMap):
@@ -691,7 +980,7 @@ class SchemaBase:
         - ``memberHeadMap`` - substitution-group member name to head
           name, so member children count toward the head's limits.
         """
-        subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        subElementNames = [cls._node_name(elem) for elem in subElements]
         subElementNames = [memberHeadMap.get(name, name) for name in subElementNames]
 
         choiceER = None
@@ -745,7 +1034,7 @@ class SchemaBase:
 
         if choiceER is not None:
             for descriptor in descriptors:
-                count = subElementNames.count(descriptor.name)
+                count = subElementNames.count(cls._instance_name_of(descriptor))
                 if count > descriptor.getMaxOccurs():
                     cls._report_error(
                         f"element '{descriptor.name}' occurs more times than "
@@ -776,10 +1065,10 @@ class SchemaBase:
         - ``memberHeadMap`` - substitution-group member name to head
           name, so member children count toward the head's limits.
         """
-        subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        subElementNames = [cls._node_name(elem) for elem in subElements]
         subElementNames = [memberHeadMap.get(name, name) for name in subElementNames]
         for descriptor in descriptors:
-            count = subElementNames.count(descriptor.name)
+            count = subElementNames.count(cls._instance_name_of(descriptor))
             if count < descriptor.getMinOccurs():
                 cls._report_error(
                     f"element '{descriptor.name}' occurs fewer times than "
@@ -817,19 +1106,20 @@ class SchemaBase:
         - ``memberHeadMap`` - substitution-group member name to head
           name, so member children are validated in place of the head.
         """
-        descriptorNames = [d.name for d in descriptors]
-        subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        descriptorNames = [cls._instance_name_of(d) for d in descriptors]
+        subElementNames = [cls._node_name(elem) for elem in subElements]
         subElementNames = [memberHeadMap.get(name, name) for name in subElementNames]
         for index in range(0, len(descriptors)):
             descriptor = descriptors[index]
             dname = descriptorNames[index]
+            displayName = descriptor.name or dname
             count, subElementNames = cls.consume(dname, subElementNames)
 
             if count == 0:
                 if descriptor.getMinOccurs() == 0 and dname not in subElementNames:
                     continue
                 cls._report_error(
-                    f"order error - expected element '{dname}' in a different position",
+                    f"order error - expected element '{displayName}' in a different position",
                     code="order",
                     element=cls.__name__,
                 )
@@ -837,7 +1127,7 @@ class SchemaBase:
 
             if count < descriptor.getMinOccurs():
                 cls._report_error(
-                    f"element '{dname}' occurs fewer times than minOccurs "
+                    f"element '{displayName}' occurs fewer times than minOccurs "
                     f"({descriptor.getMinOccurs()}) requires; this may also "
                     "indicate an ordering problem",
                     code="occurrence-min",
@@ -847,7 +1137,7 @@ class SchemaBase:
 
             if count > descriptor.getMaxOccurs():
                 cls._report_error(
-                    f"element '{dname}' occurs more times than maxOccurs "
+                    f"element '{displayName}' occurs more times than maxOccurs "
                     f"({descriptor.getMaxOccurs()}) allows",
                     code="occurrence-max",
                     element=cls.__name__,
@@ -907,7 +1197,8 @@ class SchemaBase:
         dataTypeVal = dataTypeText if dataTypeText is not None else ""
 
         try:
-            dataTypeValInst = subElCls(dataTypeVal)
+            with qname_context(cls._qname_bindings(subElement)):
+                dataTypeValInst = subElCls(dataTypeVal)
         except (TypeError, ValueError) as e:
             cls._report_error(
                 f"the value of the '{subElement.tag.split('}')[-1]}' element "
@@ -915,14 +1206,34 @@ class SchemaBase:
                 code="value",
                 element=cls.__name__,
             )
+            if _mode_for(cls).invalid_value == "raw":
+                return cls._rawPrimitiveValue(subElement, dataTypeText)
             return None
         dataTypeValInst._attribs_ = dict(subElement.attrib)
-        dataTypeValInst._value_ = (
-            [dataTypeText.strip()] if dataTypeText and dataTypeText.strip() else None
-        )
+        # Preserve the value as the datatype normalized it: a
+        # whitespace-collapsing type yields the collapsed form, while an
+        # ``xs:string`` (or ``xml:space="preserve"``) content keeps its
+        # significant leading and trailing whitespace.  Do not use
+        # ``str.strip()`` here -- it would discard the preserved spaces.
+        dataTypeValInst._value_ = [str(dataTypeValInst)] if dataTypeText is not None else None
         dataTypeValInst._children_ = dataTypeChildren
 
         return dataTypeValInst
+
+    @classmethod
+    def _rawPrimitiveValue(cls, subElement, dataTypeText):
+        """Binds an invalid lexical value as an unvalidated string.
+
+        Used by the ``raw`` invalid-value policy so a data-mapping user
+        keeps the original text (and the report still records the
+        problem). The stored value keeps the document's exact spelling
+        rather than the stripped lexical form.
+        """
+        instance: Any = AnySimpleType(dataTypeText if dataTypeText is not None else "")
+        instance._attribs_ = dict(subElement.attrib)
+        instance._value_ = [dataTypeText] if dataTypeText is not None else None
+        instance._children_ = []
+        return instance
 
     @classmethod
     def makeGenericInstance(cls, elementTag):
@@ -938,7 +1249,7 @@ class SchemaBase:
         - ``elementTag`` - the undeclared xml element to store raw.
         """
         instance = SchemaBase()
-        instance._name_ = elementTag.tag.split("}")[-1]
+        instance._name_ = cls._node_name(elementTag)
         instance._attribs_ = dict(elementTag.attrib)
         cls.addValueTo(instance, elementTag)
         instance._children_ = [cls.makeGenericInstance(child) for child in elementTag]
@@ -1032,11 +1343,10 @@ class SchemaBase:
                         element=elementName,
                     )
         for descriptorAttrName in descriptorAttributeNames:
-            found = False
-            attrUse = descriptorAttributes[descriptorAttrName].getUse()
-            for usedAttr in usedAttrs:
-                if usedAttr == descriptorAttrName:
-                    found = True
+            descriptor = descriptorAttributes[descriptorAttrName]
+            matchName = self._instance_name_of(descriptor, is_attribute=True)
+            found = matchName in usedAttrs
+            attrUse = descriptor.getUse()
             if attrUse == "required" and not found:
                 self._report_error(
                     f"attribute '{descriptorAttrName}' is required but was not found",
@@ -1050,7 +1360,7 @@ class SchemaBase:
                     code="prohibited-attribute",
                     element=elementName,
                 )
-            attributeDescriptor = descriptorAttributes[descriptorAttrName]
+            attributeDescriptor = descriptor
             if found:
                 self._checkFixedAttribute(attributeDescriptor, self, elementName)
             else:

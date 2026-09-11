@@ -1,7 +1,7 @@
 """Example transform: write atoms in the VisIt visualization format.
 
 Historical note: shipped in ``pyxsd.transforms`` in 0.1; moved to
-``examples/transforms/`` in pyxsd 1.0 (breaking change).
+``examples/legacy/`` in pyxsd 1.0 (breaking change).
 """
 
 from cell_sizer import CellSizer

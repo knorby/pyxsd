@@ -73,6 +73,7 @@ dictionary in the PyXSD instance.
 import logging
 
 from pyxsd import xsd_data_types
+from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, namespace_of
 from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,17 @@ def componentKind(obj):
     return _COMPONENT_KINDS.get(type(obj).__name__)
 
 
+class _AnyNamespace:
+    """Sentinel: a lookup that does not filter by namespace."""
+
+    __slots__ = ()
+
+
+#: Passed as ``namespace`` to :meth:`ComponentTable.getFromName` when the
+#: caller wants the historical namespace-agnostic lookup.
+ANY_NAMESPACE = _AnyNamespace()
+
+
 class ComponentTable(dict):
     """A parser-owned table of element representatives by name.
 
@@ -107,23 +119,35 @@ class ComponentTable(dict):
     mapping for compatibility while ``getFromName`` filters by kind.
     """
 
-    def getFromName(self, name, kind=None):
+    def getFromName(self, name, kind=None, namespace=ANY_NAMESPACE, warn=True):
         """Returns the unique representative named ``name``.
 
         When ``kind`` is given, only representatives of that component
         kind are considered, so a type lookup ignores a same-named
-        element. Ambiguous or missing lookups warn and return ``None``.
+        element. When ``namespace`` is given, only representatives
+        whose expanded name is in that namespace are considered; pass
+        ``None`` to select no-namespace declarations. Ambiguous or
+        missing lookups warn (unless ``warn`` is false) and return
+        ``None``.
         """
         entries = self.get(name)
         if not entries:
-            logger.warning("getFromName Error: %s is not a key in the registry", name)
+            if warn:
+                logger.warning("getFromName Error: %s is not a key in the registry", name)
             return None
         if kind is not None:
             entries = [entry for entry in entries if componentKind(entry) == kind]
+        if namespace is not ANY_NAMESPACE:
+            entries = [
+                entry
+                for entry in entries
+                if getattr(entry, "getNamespace", lambda: None)() == namespace
+            ]
         if len(entries) == 1:
             return entries[0]
         if not entries:
-            logger.warning("getFromName Error: %s has no %r declaration", name, kind)
+            if warn:
+                logger.warning("getFromName Error: %s has no %r declaration", name, kind)
             return None
         logger.warning("ElementRepresentative Error: %r", entries)
         return None
@@ -179,6 +203,9 @@ class _RegistryProxy:
 
     def getFromName(self, name, kind=None):
         return self._active().getFromName(name, kind)
+
+    def getFromNameNS(self, name, kind=None, namespace=ANY_NAMESPACE):
+        return self._active().getFromName(name, kind, namespace)
 
 
 def _schemaOf(obj):
@@ -305,6 +332,9 @@ class ElementRepresentative:
         table = getattr(pyXSD, "components", None)
         if not isinstance(table, ComponentTable):
             table = registry
+        mode = getattr(pyXSD, "mode", None)
+        if getattr(mode, "namespaces", "legacy") == "strict":
+            return cls._typeFromExpandedName(xsdTypeName, table, pyXSD)
         if not xsdTypeName.startswith(("xs:", "xsd:")):
             getFromNameReturned = table.getFromName(xsdTypeName, kind="type")
             if not getFromNameReturned:
@@ -325,6 +355,33 @@ class ElementRepresentative:
         if primitive is not None:
             return primitive
         logger.warning("XsdTypeName Error: %s does not correspond to a class", local)
+        return None
+
+    @classmethod
+    def _typeFromExpandedName(cls, name, table, pyXSD):
+        """Strict-mode type lookup by expanded (Clark) name.
+
+        Built-ins are recognised by the XML Schema namespace URI, so
+        any prefix bound to it works. User types must match both the
+        local name and the namespace of the reference; there is no
+        cross-namespace local-name fallback.
+        """
+        uri = namespace_of(name)
+        local = local_name(name)
+        if uri == XSD_NS:
+            primitive = _PRIMITIVE_TYPES.get(local)
+            if primitive is not None:
+                return primitive
+            logger.warning("XsdTypeName Error: %s does not correspond to a class", local)
+            return None
+        found = table.getFromName(local, kind="type", namespace=uri)
+        if found:
+            return found.clsFor(pyXSD)
+        if uri is None:
+            primitive = _PRIMITIVE_TYPES.get(local)
+            if primitive is not None:
+                return primitive
+        logger.warning("typeFromName() error: getFromName() is returning None for %s", name)
         return None
 
     def addSuperClassName(self, name):
@@ -364,6 +421,164 @@ class ElementRepresentative:
         """
         return self.parent.getSchema()
 
+    def getNamespace(self):
+        """Returns the namespace URI this declaration belongs to.
+
+        Global declarations belong to the schema's ``targetNamespace``;
+        a schema with no ``targetNamespace`` yields ``None``. Local
+        declarations belong to the target namespace or not depending on
+        the relevant form default (handled where declarations are
+        matched).
+        """
+        try:
+            schema = self.getSchema()
+        except AttributeError:
+            # Detached representative (no parent); no namespace.
+            return None
+        if schema is None:
+            return None
+        overrides = getattr(schema, "namespaceOverrides", None)
+        element = getattr(self, "xsdElement", None)
+        if overrides and element is not None and id(element) in overrides:
+            return overrides[id(element)]
+        getter = getattr(schema, "getNamespace", None)
+        if getter is None:
+            return getattr(schema, "targetNamespace", None)
+        return getter()
+
+    def isGlobalDeclaration(self):
+        """Returns True when this declaration is a direct schema child."""
+        return isinstance(self.parent, Schema)
+
+    @property
+    def expandedName(self):
+        """Returns this declaration's Clark name, or its plain name."""
+        if self.name is None:
+            return None
+        return clark(self.getNamespace(), self.name)
+
+    def instanceName(self, *, is_attribute=False, parser=None):
+        """Returns the name an instance node needs to match this declaration.
+
+        In ``legacy`` namespace mode this is always the plain local name
+        (the historical behavior). In ``strict`` mode a global
+        declaration is always namespace-qualified, while a local
+        declaration is qualified only when the schema's relevant form
+        default (``elementFormDefault``/``attributeFormDefault``) is
+        ``qualified``. A qualified result is a Clark name.
+        """
+        # A reference site (``ref="..."``) takes the expanded name of the
+        # declaration it points at. The ref site lives in the referring
+        # schema, so its own namespace is not the attribute's namespace:
+        # ``r:id`` in a WordprocessingML type resolves to a global
+        # attribute in the relationships namespace.
+        referred = getattr(self, "referredAttribute", None)
+        if referred is None:
+            referred = getattr(self, "referredElement", None)
+        if referred is not None and referred is not self:
+            return referred.instanceName(is_attribute=is_attribute, parser=parser)
+        local = self.name
+        if local is None:
+            return None
+        if parser is None:
+            parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
+        mode = getattr(parser, "mode", None)
+        if getattr(mode, "namespaces", "legacy") != "strict":
+            return local
+        uri = self.getNamespace()
+        if uri is None:
+            return local
+        qualified = self.isGlobalDeclaration()
+        if not qualified:
+            schema = self.getSchema()
+            if schema is not None:
+                default = (
+                    schema.getAttributeFormDefault()
+                    if is_attribute
+                    else schema.getElementFormDefault()
+                )
+                qualified = default == "qualified"
+        if qualified:
+            return clark(uri, local)
+        return local
+
+    def resolveSchemaQName(self, value, *, parser=None):
+        """Resolves a lexical QName written in this schema element.
+
+        This is used for QName *values* (``type``, ``base``, ``ref``,
+        ``substitutionGroup``, ``memberTypes``, ...), so an unprefixed
+        name resolves through the in-scope default namespace exactly as
+        XSD requires. (Unprefixed attribute *names* are never in the
+        default namespace, but that rule does not apply to these
+        attribute values.) In ``legacy`` namespace mode the value is
+        returned unchanged. An unbound prefix is reported as
+        ``unknown-namespace-prefix`` and the raw value is returned so the
+        caller's legacy fallback can still run.
+
+        ``parser`` overrides the attached parser, which is needed while
+        a class is being built before its descriptors own ``pyXSD``.
+        """
+        if parser is None:
+            parser = getattr(self, "pyXSD", None)
+            if parser is None:
+                # During class building the parser is attached to the
+                # schema rather than to every declaration; fall back to
+                # it so schema-time references resolve in strict mode.
+                parser = getattr(self.getSchema(), "pyXSD", None)
+        mode = getattr(parser, "mode", None)
+        if getattr(mode, "namespaces", "legacy") != "strict":
+            return value
+        context = getattr(self.getSchema(), "namespaceContext", None)
+        if context is None:
+            return value
+        try:
+            return context.resolve(self.xsdElement, value)
+        except NamespaceError as e:
+            if parser is not None:
+                parser.report.add_error(
+                    str(e),
+                    code="unknown-namespace-prefix",
+                    element=self.name,
+                )
+            return value
+
+    def resolveReference(self, value, candidates, *, parser=None):
+        """Returns the component a lexical QName reference names.
+
+        ``candidates`` is an iterable of element representatives (for
+        example ``schema.elements`` or ``schema.groups.values()``). In
+        ``legacy`` mode, or when the prefix cannot be resolved, the
+        reference's local name selects the first same-named candidate.
+        In ``strict`` mode the resolved namespace must also match the
+        candidate's namespace, so a reference into another namespace
+        never falls back to a same-named local declaration. Returns
+        ``None`` when nothing matches.
+        """
+        if value is None:
+            return None
+        resolved = self.resolveSchemaQName(value, parser=parser)
+        local = local_name(resolved)
+        uri = namespace_of(resolved)
+        for candidate in candidates:
+            if getattr(candidate, "name", None) != local:
+                continue
+            if uri is not None:
+                getter = getattr(candidate, "getNamespace", None)
+                if getter is None or getter() != uri:
+                    continue
+            return candidate
+        return None
+
+    def resolvedTypeName(self):
+        """Returns the ``type`` attribute resolved to a Clark name.
+
+        Returns ``None`` when the declaration carries no ``type``.
+        """
+        raw = self.__dict__.get("type")
+        if raw is None:
+            return None
+        return self.resolveSchemaQName(raw)
+
     def getContainingTypeName(self):
         """Returns the name of the containing type."""
         theType = self.getContainingType()
@@ -388,12 +603,16 @@ class ElementRepresentative:
         table = _tableFor(obj)
         entries = table.setdefault(name, [])
         kind = componentKind(obj)
-        if any(componentKind(entry) == kind for entry in entries):
+        namespace = obj.getNamespace()
+        if any(
+            componentKind(entry) == kind and entry.getNamespace() == namespace for entry in entries
+        ):
             logger.debug(
-                "an element representative named %r (kind %r) is already "
-                "registered; keeping the first one",
+                "an element representative named %r (kind %r, namespace %r) is "
+                "already registered; keeping the first one",
                 name,
                 kind,
+                namespace,
             )
             return
         entries.append(obj)
@@ -461,6 +680,24 @@ _PRIMITIVE_TYPES = {
 # right parser's declarations. Multiple ERs may share a name and are
 # disambiguated by component kind (see ``ComponentTable.getFromName``).
 registry = _RegistryProxy()
+
+# Namespace overrides for components spliced in from imported schemas.
+# Keyed by ``id(xsdElement)`` because ElementTree elements do not allow
+# attribute assignment. The parser installs the map before the ER run so
+# a component can report the namespace of the document it was declared
+# in rather than the main schema's target namespace.
+_ACTIVE_NAMESPACE_OVERRIDES: dict[int, str | None] = {}
+
+
+def set_active_namespace_overrides(overrides: dict[int, str | None]) -> None:
+    """Installs the parser-owned per-component namespace overrides.
+
+    The module-level mapping is mutated in place so modules that
+    imported it by name (``schema``) observe the installed values.
+    """
+    _ACTIVE_NAMESPACE_OVERRIDES.clear()
+    _ACTIVE_NAMESPACE_OVERRIDES.update(overrides)
+
 
 # Import all of the tag-specific classes after the ER class definition
 # (the tag modules import this module's ElementRepresentative).  This

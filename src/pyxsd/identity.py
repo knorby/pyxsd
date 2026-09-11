@@ -338,7 +338,8 @@ def _evalSteps(node: Any, steps: list[str]) -> list[Any]:
         for current in nodes:
             for child in _childrenOf(current):
                 childName = _nameOf(child)
-                if step == "*" or childName == step:
+                localName = childName.split("}", 1)[-1] if childName.startswith("{") else childName
+                if step == "*" or childName == step or localName == step:
                     nextNodes.append(child)
         nodes = nextNodes
     return nodes

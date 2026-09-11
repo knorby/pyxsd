@@ -7,7 +7,7 @@ The concrete transforms are :class:`ExpandCell`, :class:`SphereCutter`,
 :class:`CoordViewer`, and :class:`FormatForVisit`.
 
 Historical note: these were shipped in ``pyxsd.transforms`` in 0.1;
-they moved to ``examples/transforms/`` in pyxsd 1.0 (breaking change).
+they moved to ``examples/legacy/`` in pyxsd 1.0 (breaking change).
 """
 
 from atom import Atom

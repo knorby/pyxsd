@@ -35,6 +35,9 @@ import decimal
 import math
 import re
 import struct
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
@@ -138,16 +141,80 @@ class XsdDataType:
 _XSD_WHITESPACE = " \t\n\r"
 _WS_RUN = re.compile(r"[ \t\n\r]+")
 _WS_ANY = re.compile(r"[ \t\n\r]")
+# Compatibility mode folds any Unicode whitespace (NBSP and friends), the
+# way Python's own str.split()/strip() do.
+_COMPAT_WS_RUN = re.compile(r"\s+")
+_COMPAT_WS_ANY = re.compile(r"\s")
+
+# Ambient whitespace handling for datatype construction. The datatype
+# ``__new__`` signatures take only the lexical value, so the parse mode
+# reaches them through a ContextVar set by the parser around instance
+# binding. "xsd" is the default; "compat" additionally folds Unicode
+# whitespace.
+_WHITESPACE_MODE: ContextVar[str] = ContextVar("pyxsd_whitespace_mode", default="xsd")
+
+# Ambient namespace bindings for ``xs:QName`` values. QName construction
+# takes only the lexical value, so the in-scope prefix -> URI map reaches
+# it through a ContextVar set by the parser around instance binding.
+# ``None`` means no context: QName falls back to plain lexical comparison.
+_QNAME_CONTEXT: ContextVar[Mapping[str, str] | None] = ContextVar(
+    "pyxsd_qname_context", default=None
+)
+
+
+@contextmanager
+def whitespace_mode(mode: str) -> Iterator[None]:
+    """Set the ambient whitespace handling for datatype construction."""
+    token = _WHITESPACE_MODE.set(mode)
+    try:
+        yield
+    finally:
+        _WHITESPACE_MODE.reset(token)
+
+
+@contextmanager
+def qname_context(bindings: Mapping[str, str] | None) -> Iterator[None]:
+    """Set the ambient prefix bindings used to resolve ``xs:QName`` values.
+
+    ``bindings`` maps prefixes to namespace URIs; the empty string maps
+    the default namespace. ``None`` disables resolution, so QName values
+    compare by lexical form (the legacy behaviour).
+    """
+    token = _QNAME_CONTEXT.set(bindings)
+    try:
+        yield
+    finally:
+        _QNAME_CONTEXT.reset(token)
 
 
 def _ws_replace(text: str) -> str:
-    """The XSD ``replace`` facet: tab/newline/CR become spaces."""
+    """The XSD ``replace`` facet: tab/newline/CR become spaces.
+
+    In ``compat`` mode, other Unicode whitespace also becomes a space.
+    """
+    if _WHITESPACE_MODE.get() == "compat":
+        return _COMPAT_WS_ANY.sub(" ", text)
     return text.translate({0x09: 0x20, 0x0A: 0x20, 0x0D: 0x20})
 
 
 def _ws_collapse(text: str) -> str:
-    """The XSD ``collapse`` facet: trim and squeeze runs to one space."""
+    """The XSD ``collapse`` facet: trim and squeeze runs to one space.
+
+    In ``compat`` mode, runs of any Unicode whitespace are collapsed.
+    """
+    if _WHITESPACE_MODE.get() == "compat":
+        return _COMPAT_WS_RUN.sub(" ", text).strip(" ")
     return _WS_RUN.sub(" ", text).strip(" ")
+
+
+def _ws_remove(text: str) -> str:
+    """Remove whitespace entirely (used by base64Binary).
+
+    In ``compat`` mode, removes any Unicode whitespace.
+    """
+    if _WHITESPACE_MODE.get() == "compat":
+        return _COMPAT_WS_ANY.sub("", text)
+    return _WS_ANY.sub("", text)
 
 
 # XML 1.0 NameStartChar / NameChar ranges (5th edition). Using explicit
@@ -273,10 +340,33 @@ class AnyURI(Token):
 
 
 class QName(_PatternString):
-    """``xs:QName``: optionally prefixed name (``prefix:local``)."""
+    """``xs:QName``: optionally prefixed name (``prefix:local``).
+
+    Resolution against the ambient :func:`qname_context` supplies the
+    value's namespace URI, so two prefixes bound to one URI compare
+    equal. Without a context the value is purely lexical.
+    """
 
     name = "QName"
     _pattern = re.compile(rf"({_NCNAME}:)?{_NCNAME}")
+
+    # Assigned by ``__new__`` from the ambient QName context.
+    _resolved_: bool
+    _uri_: str | None
+    _local_: str
+
+    def __new__(cls, val: str) -> Self:
+        instance: Self = super().__new__(cls, val)
+        text = str(instance)
+        if ":" in text:
+            prefix, local = text.split(":", 1)
+        else:
+            prefix, local = "", text
+        bindings = _QNAME_CONTEXT.get()
+        instance._resolved_ = bindings is not None
+        instance._uri_ = bindings.get(prefix) if bindings is not None else None
+        instance._local_ = local
+        return instance
 
 
 class _ListString(String):
@@ -357,7 +447,7 @@ class Base64Binary(String):
     name = "base64Binary"
 
     def __new__(cls, val: str) -> Self:
-        text = _WS_ANY.sub("", str(val))
+        text = _ws_remove(str(val))
         try:
             decoded = base64.b64decode(text, validate=True)
         except (ValueError, TypeError, binascii.Error):
@@ -818,7 +908,7 @@ def xsd_value_key(value: Any) -> tuple:
     if isinstance(value, HexBinary):
         return ("hexBinary", bytes.fromhex(str(value)))
     if isinstance(value, Base64Binary):
-        return ("base64Binary", base64.b64decode(_WS_ANY.sub("", str(value))))
+        return ("base64Binary", base64.b64decode(_ws_remove(str(value))))
     if isinstance(value, _ListString):
         return (value.name, tuple(value.tokens))
     if isinstance(value, DateTime):
@@ -827,6 +917,8 @@ def xsd_value_key(value: Any) -> tuple:
         return ("date", _date_key(str(value)))
     if isinstance(value, Time):
         return ("time", _time_key(str(value)))
+    if isinstance(value, QName) and getattr(value, "_resolved_", False):
+        return ("QName", (value._uri_, value._local_))
     return (getattr(value, "name", type(value).__name__), str(value))
 
 

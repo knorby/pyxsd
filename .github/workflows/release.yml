@@ -19,7 +19,7 @@ jobs:
       - name: Build distributions
         run: uv build
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: distributions
           path: dist/
@@ -33,7 +33,7 @@ jobs:
       id-token: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: distributions
           path: dist/
@@ -50,13 +50,13 @@ jobs:
       contents: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: distributions
           path: dist/
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3.0.3
         with:
           files: dist/*
           generate_release_notes: true

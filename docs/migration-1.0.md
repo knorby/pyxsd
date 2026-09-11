@@ -60,7 +60,7 @@ modern machinery:
 | `pyxsd/elementRepresentatives/` (camelCase modules) | `pyxsd/element_representatives/` (snake_case modules) |
 | `pyxsd/writers/xmlTreeWriter.py` | `pyxsd/writers/xml_tree_writer.py` |
 | `pyxsd/writers/xmlTagWriter.py` | `pyxsd/writers/xml_tag_writer.py` |
-| `pyxsd/transforms/cellSizer.py` etc. | **moved to `examples/transforms/`** |
+| `pyxsd/transforms/cellSizer.py` etc. | **moved to `examples/legacy/`** |
 | `from pyxsd.pyXSD import PyXSD` | `from pyxsd import PyXSD` |
 | `from pyxsd.writers.xmlTreeWriter import XmlTreeWriter` | `from pyxsd.writers.xml_tree_writer import XmlTreeWriter` |
 
@@ -72,11 +72,11 @@ layout change was a `git mv`, so history follows the files.
 The eight application transforms (`CellSizer`, `SphereCutter`,
 `ExpandCell`, `BravaisLattice`, `CoordViewer`, `FormatForVisit`, plus the
 `Atom`/`Vector` helper libraries) moved from the package to
-`examples/transforms/`. Importing `pyxsd.transforms.cellSizer` (or any
+`examples/legacy/`. Importing `pyxsd.transforms.cellSizer` (or any
 snake_case variant) now raises `ImportError`. The installed package keeps
 the framework (`Transform`, `Displayer`, `iter_tree`) and the generic
 built-ins (`PrintData`, `SendTreeToPyXSD`). See
-`examples/transforms/README.md` for how to run them.
+`examples/legacy/README.md` for how to run them.
 
 ### CLI
 
@@ -150,7 +150,7 @@ Your existing invocations mostly work as-is. Check:
 
 1. Transform calls need parentheses: `PrintData()` not `PrintData`.
 2. Crystallography transforms must be run from
-   `examples/transforms/` (or copied next to your data).
+   `examples/legacy/` (or copied next to your data).
 3. Add `--strict` where a CI pipeline needs a failure signal.
 4. Move your log parsing from "grep stdout" to the rendered report on
    stderr (or the JSON/tuple API on `PyXSD.report`).

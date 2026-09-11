@@ -1,7 +1,10 @@
 import copy
 
 from pyxsd.element_representatives.complex_type import ComplexType
-from pyxsd.element_representatives.element_representative import ComponentTable
+from pyxsd.element_representatives.element_representative import (
+    _ACTIVE_NAMESPACE_OVERRIDES,
+    ComponentTable,
+)
 
 
 class Schema(ComplexType):
@@ -21,6 +24,9 @@ class Schema(ComplexType):
         # Every ER in this parse registers into this parser-owned
         # table, so declarations cannot leak between parsers.
         self.components = ComponentTable()
+        # Per-element namespace overrides for components spliced in from
+        # imported schemas (set by the parser before the ER run).
+        self.namespaceOverrides = _ACTIVE_NAMESPACE_OVERRIDES
         self.attributeGroups = {}
         self.complexTypes = {}
         self.simpleTypes = {}
@@ -33,6 +39,22 @@ class Schema(ComplexType):
     def getName(self):
         """Returns 'schema'."""
         return "schema"
+
+    def getNamespace(self):
+        """Returns the schema's ``targetNamespace``, or ``None``.
+
+        Read from the element directly so it is available while the ER
+        is still being registered (before ``tagAttributes`` is filled).
+        """
+        return self.xsdElement.get("targetNamespace")
+
+    def getElementFormDefault(self):
+        """Returns the schema's ``elementFormDefault`` (default unqualified)."""
+        return self.xsdElement.get("elementFormDefault", "unqualified")
+
+    def getAttributeFormDefault(self):
+        """Returns the schema's ``attributeFormDefault`` (default unqualified)."""
+        return self.xsdElement.get("attributeFormDefault", "unqualified")
 
     def getElements(self):
         """Returns a list of elements."""
