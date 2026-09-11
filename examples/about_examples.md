@@ -18,10 +18,12 @@ All import the framework as `from pyxsd.transforms import Transform` —
 pyxsd 1.0 ships the framework in the package; only application transforms
 moved out of it.
 
-## Application transforms (`transforms/`)
+## Legacy application transforms (`legacy/`)
 
-The crystallography transforms from pyxsd 0.1 now live here — they are
-**no longer installed with the package** (see `docs/migration-1.0.md`):
+The crystallography transforms from pyxsd 0.1 live under
+`examples/legacy/` — they are **no longer installed with the package**
+(see `docs/migration-1.0.md`) and their 2006 schemas/data are no longer
+distributed, so they are kept as reading material:
 
 | Transform | What it does |
 | --------- | ------------ |
@@ -35,12 +37,11 @@ The crystallography transforms from pyxsd 0.1 now live here — they are
 Helper libraries: `Atom` (atom objects with Cartesian/fractional
 conversions) and `Vector` (3-vector math).
 
-These expect crystallography-shaped XML data. To use them, run pyxsd from
-`examples/transforms/`, copy the files you need next to your data, or set
-up your transform library accordingly — see
-`transforms/README.md` in that directory.
+These expect crystallography-shaped XML data that is no longer shipped.
+To read them, start in `examples/legacy/` or copy the files you need
+next to your data — see `legacy/README.md` in that directory.
 
 ## Sample transform file
 
-`sampleTransformFile.txt` shows the one-call-per-line format accepted by
-the `-T`/`--transformFile` CLI option.
+`legacy/sampleTransformFile.txt` shows the one-call-per-line format
+accepted by the `-T`/`--transformFile` CLI option.

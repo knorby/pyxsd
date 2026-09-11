@@ -9,7 +9,7 @@ import pytest
 from pyxsd.parser import PyXSD, _loadModuleFromFile
 from pyxsd.transforms import Displayer, Transform
 
-EXAMPLES_TRANSFORMS = Path(__file__).parent.parent / "examples" / "transforms"
+EXAMPLES_TRANSFORMS = Path(__file__).parent.parent / "examples" / "legacy"
 
 MOVED_MODULES = [
     "atom",

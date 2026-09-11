@@ -4,15 +4,23 @@
   schema, instance document, a custom transform (`CountElements`), and
   `demo.py` (library use). The walkthrough lives in
   [`docs/demo.md`](../docs/demo.md).
-- [`transforms/`](transforms/) — the crystallography transforms from
-  pyxsd 0.1 (ExpandCell, SphereCutter, CellSizer, BravaisLattice,
-  CoordViewer, FormatForVisit, plus the Atom/Vector libraries),
-  reorganized as adaptable examples. See [`transforms/README.md`](transforms/README.md).
+- [`musicxml/`](musicxml/) — a real document format: a MusicXML subset
+  schema, a short score, and transforms that report on it (works as a
+  strict-mode example and a conformance test).
+- [`gpx/`](gpx/) — a real geospatial format: a GPX schema subset, a
+  recorded track, and a transform that computes track statistics.
+- [`docx/`](docx/) — a real office format: a `word/document.xml` schema
+  subset and a style-aware Markdown transform, parsed in lax mode to
+  show how messy documents are bound without losing data.
+- [`legacy/`](legacy/) — the crystallography transforms from pyxsd 0.1,
+  kept as reading material under `examples/legacy/` after the
+  crystallography data left the project. See
+  [`legacy/README.md`](legacy/README.md).
 - [Transform templates](#transform-templates) — the three deployment
   patterns for user transforms, described in
   [`about_examples.md`](about_examples.md).
-- [`sampleTransformFile.txt`](sampleTransformFile.txt) — the
-  one-call-per-line format for the `-T` CLI option.
+- [`legacy/sampleTransformFile.txt`](legacy/sampleTransformFile.txt) —
+  the one-call-per-line format for the `-T` CLI option.
 
 ## Running the demo
 

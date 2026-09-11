@@ -38,22 +38,22 @@ ExpandCell()
 PrintData()
 ```
 
-(See `examples/sampleTransformFile.txt`.)
+(See `examples/legacy/sampleTransformFile.txt`.)
 
 ## Bundled application transforms
 
 The crystallography transforms that shipped with pyxsd 0.1 — `ExpandCell`,
 `SphereCutter`, `CellSizer`, `BravaisLattice`, `CoordViewer`,
 `FormatForVisit`, plus the `Atom`/`Vector` helper libraries — now live in
-**`examples/transforms/`** and are **no longer part of the installed
+**`examples/legacy/`** and are **no longer part of the installed
 package**. To use them:
 
-- run pyxsd from that directory (`cd examples/transforms`), or
+- run pyxsd from that directory (`cd examples/legacy`), or
 - copy the transform files you need next to your data, or
 - pass the module file via your transform library setup.
 
 They expect crystallography-shaped data and are meant as adaptable examples.
-See `examples/transforms/README.md`.
+See `examples/legacy/README.md`.
 
 ## Library use
 

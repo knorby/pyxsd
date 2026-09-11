@@ -1,10 +1,16 @@
-# Crystallography example transforms
+# Crystallography example transforms (legacy)
+
+> **Legacy.** These transforms expect the crystallography schemas and
+> instance documents they were written against in 2006. That data is no
+> longer distributed with pyxsd, so they are kept as reading material
+> rather than runnable examples.
 
 The transforms in this directory are the crystallography library that
 shipped inside `pyxsd.transforms` in pyxsd 0.1. In pyxsd 1.0 they moved
-here, to `examples/transforms/` — the package now ships only the
-transform framework plus `PrintData` and `SendTreeToPyXSD`
-(**breaking change**; see the migration guide).
+out of the package — the package now ships only the transform framework
+plus `PrintData` and `SendTreeToPyXSD` (**breaking change**; see the
+migration guide). They live under `examples/legacy/` as historical
+examples.
 
 | Module | Class | What it does |
 | --- | --- | --- |
@@ -22,7 +28,7 @@ the directory holding your XML instance. Run from this directory (or
 copy the files next to your data):
 
 ```console
-$ cd examples/transforms
+$ cd examples/legacy
 $ pyxsd -i your_lattice.xml -t 'ExpandCell(3, 3, 3)' -t 'PrintData()'
 ```
 
