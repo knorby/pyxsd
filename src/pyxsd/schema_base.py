@@ -159,6 +159,26 @@ class SchemaBase:
         """Record a warning-severity validation issue."""
         cls._report_issue(IssueSeverity.WARNING, message, code=code, element=element)
 
+    @classmethod
+    def _node_name(cls, node):
+        """The name an instance node is matched under.
+
+        Legacy mode keeps the historical local-name comparison; strict
+        mode uses ElementTree's Clark tag, which is the expanded name
+        for a namespaced node and a plain local name otherwise.
+        """
+        if getattr(_mode_for(cls), "namespaces", "legacy") == "strict":
+            return node.tag
+        return node.tag.split("}")[-1]
+
+    @classmethod
+    def _instance_name_of(cls, descriptor, *, is_attribute=False):
+        """The instance name for a declaration, honoring the active mode."""
+        name_fn = getattr(descriptor, "instanceName", None)
+        if name_fn is None:
+            return getattr(descriptor, "name", None)
+        return name_fn(parser=getattr(cls, "pyXSD", None), is_attribute=is_attribute)
+
     # ------------------------------------------------------------------
     # Instance tree construction
     # ------------------------------------------------------------------
@@ -231,10 +251,12 @@ class SchemaBase:
                 usedAttributes.append(displayKey)
                 self._attribs_[displayKey] = elementTag.attrib[attr]
         for name in self.descAttributeNames():
-            if name in elementTag.attrib:
-                setattr(self, name, elementTag.attrib[name])
-                usedAttributes.append(name)
-                self._attribs_[name] = elementTag.attrib[name]
+            descriptor = self.descAttributes()[name]
+            matchName = self._instance_name_of(descriptor, is_attribute=True)
+            if matchName in elementTag.attrib:
+                setattr(self, name, elementTag.attrib[matchName])
+                usedAttributes.append(matchName)
+                self._attribs_[matchName] = elementTag.attrib[matchName]
         # Attribute wildcard (xs:anyAttribute) pass-through: attributes
         # the schema does not declare are stored raw instead of being
         # left out and reported as unexpected.
@@ -271,9 +293,6 @@ class SchemaBase:
         """
         subElements = list(elementTag)
 
-        def getSubElementName(x):
-            return x.tag.split("}")[-1]
-
         elemDescriptors = instance._getElements()
 
         # No early return on childless elements: the order checkers
@@ -290,9 +309,11 @@ class SchemaBase:
         memberHeadMap: dict[str, str] = {}
         for headName, members in substitutionGroups.items():
             headDescriptor = declaredByName.get(headName) or declaredByExpanded.get(headName)
-            localHead = headDescriptor.name if headDescriptor is not None else headName
+            headMatch = (
+                cls._instance_name_of(headDescriptor) if headDescriptor is not None else headName
+            )
             for member in members:
-                memberHeadMap[member.name] = localHead
+                memberHeadMap[cls._instance_name_of(member)] = headMatch
 
         # Wildcard (xs:any) pass-through: children the schema does not
         # declare are accepted and parsed generically when the type
@@ -300,19 +321,21 @@ class SchemaBase:
         # children in that case.
         hasWildcard = getattr(instance, "hasWildcardElements_", False)
         if hasWildcard:
-            declaredNames = {descriptor.name for descriptor in elemDescriptors}
+            declaredNames = {cls._instance_name_of(descriptor) for descriptor in elemDescriptors}
             declaredNames.update(memberHeadMap)
             declaredChildren = [
                 subElement
                 for subElement in subElements
-                if getSubElementName(subElement) in declaredNames
+                if cls._node_name(subElement) in declaredNames
             ]
         else:
             declaredChildren = subElements
 
         model = getattr(instance, "_contentModel_", None)
         if model is not None:
-            complete, leftover = match_content(model, declaredChildren, memberHeadMap)
+            complete, leftover = match_content(
+                model, declaredChildren, memberHeadMap, name_of=cls._node_name
+            )
         else:
             complete, leftover = False, None
 
@@ -334,7 +357,7 @@ class SchemaBase:
                 # every child).
                 declared = particle_names(model)
                 for subElement in leftover:
-                    subElementName = getSubElementName(subElement)
+                    subElementName = cls._node_name(subElement)
                     head = memberHeadMap.get(subElementName, subElementName)
                     if head in declared:
                         cls._report_error(
@@ -364,10 +387,10 @@ class SchemaBase:
         # Children are matched (and recorded) in document order so the
         # instance tree preserves the xml's layout.
         for subElement in subElements:
-            subElementName = getSubElementName(subElement)
+            subElementName = cls._node_name(subElement)
             matched = False
             for descriptor in elemDescriptors:
-                if descriptor.name != subElementName:
+                if cls._instance_name_of(descriptor) != subElementName:
                     continue
                 matched = True
                 if descriptor.isAbstract():
@@ -461,6 +484,8 @@ class SchemaBase:
             )
             nilled = False
 
+        accessor, descriptorBound = cls._childAccessor(instance, descriptor, subElement)
+
         # for elements with primitive types
         contentKind = getattr(subElCls, "_contentKind_", None)
         isComplex = (
@@ -482,7 +507,10 @@ class SchemaBase:
                 subInstance._descriptor_ = descriptor
                 subInstance._nil_ = nilled
                 instance._children_.append(subInstance)
-                setattr(instance, subElementName, subInstance)
+                if descriptorBound:
+                    setattr(instance, accessor, subInstance)
+                else:
+                    instance.__dict__[accessor] = subInstance
                 if not nilled:
                     cls._checkFixedElement(descriptor, subElCls, subInstance, subElementName)
             return None
@@ -493,6 +521,39 @@ class SchemaBase:
         subInstance._nil_ = nilled
         instance._children_.append(subInstance)
         return None
+
+    @classmethod
+    def _childAccessor(cls, instance, descriptor, subElement):
+        """Returns the Python attribute name for a matched child.
+
+        The base name is the declaration's local name, which is also the
+        descriptor's bound name (so ``setattr`` reaches the descriptor).
+        In strict namespace mode two declarations that share a local name
+        but differ in namespace would collide; the second is exposed as
+        ``local_prefix`` (using the instance's in-scope prefix, or a
+        numeric suffix when the namespace is the default). Returns
+        ``(name, descriptor_bound)``.
+        """
+        base = getattr(descriptor, "name", None) or subElement.tag.split("}")[-1]
+        if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
+            return base, True
+        used = instance.__dict__.setdefault("_childAccessors_", {})
+        uri = getattr(descriptor, "getNamespace", lambda: None)()
+        previous = used.get(base)
+        if previous is None or previous == uri:
+            used[base] = uri
+            return base, True
+        prefix = ""
+        parser = getattr(cls, "pyXSD", None)
+        context = getattr(parser, "namespaceContext", None)
+        if context is not None:
+            try:
+                prefix = context.prefix_for(subElement, uri) or ""
+            except Exception:
+                prefix = ""
+        accessor = f"{base}_{prefix}" if prefix else f"{base}_{len(used)}"
+        used[accessor] = uri
+        return accessor, False
 
     @classmethod
     def _primitiveForElement(cls, subElCls, subElement, descriptor):
@@ -596,7 +657,7 @@ class SchemaBase:
         child was handled. Members blocked by the head's ``block``
         attribute are reported and rejected.
         """
-        subElementName = subElement.tag.split("}")[-1]
+        subElementName = cls._node_name(subElement)
         declared = {descriptor.name: descriptor for descriptor in elemDescriptors}
         declaredExpanded = {
             getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
@@ -606,7 +667,7 @@ class SchemaBase:
             if headDescriptor is None:
                 continue
             for memberER in members:
-                if memberER.name != subElementName:
+                if cls._instance_name_of(memberER) != subElementName:
                     continue
                 block = headDescriptor.getBlock()
                 if block and ("substitution" in block.split() or block == "#all"):
@@ -707,7 +768,7 @@ class SchemaBase:
         - ``memberHeadMap`` - substitution-group member name to head
           name, so member children count toward the head's limits.
         """
-        subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        subElementNames = [cls._node_name(elem) for elem in subElements]
         subElementNames = [memberHeadMap.get(name, name) for name in subElementNames]
 
         choiceER = None
@@ -761,7 +822,7 @@ class SchemaBase:
 
         if choiceER is not None:
             for descriptor in descriptors:
-                count = subElementNames.count(descriptor.name)
+                count = subElementNames.count(cls._instance_name_of(descriptor))
                 if count > descriptor.getMaxOccurs():
                     cls._report_error(
                         f"element '{descriptor.name}' occurs more times than "
@@ -792,10 +853,10 @@ class SchemaBase:
         - ``memberHeadMap`` - substitution-group member name to head
           name, so member children count toward the head's limits.
         """
-        subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        subElementNames = [cls._node_name(elem) for elem in subElements]
         subElementNames = [memberHeadMap.get(name, name) for name in subElementNames]
         for descriptor in descriptors:
-            count = subElementNames.count(descriptor.name)
+            count = subElementNames.count(cls._instance_name_of(descriptor))
             if count < descriptor.getMinOccurs():
                 cls._report_error(
                     f"element '{descriptor.name}' occurs fewer times than "
@@ -833,19 +894,20 @@ class SchemaBase:
         - ``memberHeadMap`` - substitution-group member name to head
           name, so member children are validated in place of the head.
         """
-        descriptorNames = [d.name for d in descriptors]
-        subElementNames = [elem.tag.split("}")[-1] for elem in subElements]
+        descriptorNames = [cls._instance_name_of(d) for d in descriptors]
+        subElementNames = [cls._node_name(elem) for elem in subElements]
         subElementNames = [memberHeadMap.get(name, name) for name in subElementNames]
         for index in range(0, len(descriptors)):
             descriptor = descriptors[index]
             dname = descriptorNames[index]
+            displayName = descriptor.name or dname
             count, subElementNames = cls.consume(dname, subElementNames)
 
             if count == 0:
                 if descriptor.getMinOccurs() == 0 and dname not in subElementNames:
                     continue
                 cls._report_error(
-                    f"order error - expected element '{dname}' in a different position",
+                    f"order error - expected element '{displayName}' in a different position",
                     code="order",
                     element=cls.__name__,
                 )
@@ -853,7 +915,7 @@ class SchemaBase:
 
             if count < descriptor.getMinOccurs():
                 cls._report_error(
-                    f"element '{dname}' occurs fewer times than minOccurs "
+                    f"element '{displayName}' occurs fewer times than minOccurs "
                     f"({descriptor.getMinOccurs()}) requires; this may also "
                     "indicate an ordering problem",
                     code="occurrence-min",
@@ -863,7 +925,7 @@ class SchemaBase:
 
             if count > descriptor.getMaxOccurs():
                 cls._report_error(
-                    f"element '{dname}' occurs more times than maxOccurs "
+                    f"element '{displayName}' occurs more times than maxOccurs "
                     f"({descriptor.getMaxOccurs()}) allows",
                     code="occurrence-max",
                     element=cls.__name__,
@@ -1065,11 +1127,10 @@ class SchemaBase:
                         element=elementName,
                     )
         for descriptorAttrName in descriptorAttributeNames:
-            found = False
-            attrUse = descriptorAttributes[descriptorAttrName].getUse()
-            for usedAttr in usedAttrs:
-                if usedAttr == descriptorAttrName:
-                    found = True
+            descriptor = descriptorAttributes[descriptorAttrName]
+            matchName = self._instance_name_of(descriptor, is_attribute=True)
+            found = matchName in usedAttrs
+            attrUse = descriptor.getUse()
             if attrUse == "required" and not found:
                 self._report_error(
                     f"attribute '{descriptorAttrName}' is required but was not found",
@@ -1083,7 +1144,7 @@ class SchemaBase:
                     code="prohibited-attribute",
                     element=elementName,
                 )
-            attributeDescriptor = descriptorAttributes[descriptorAttrName]
+            attributeDescriptor = descriptor
             if found:
                 self._checkFixedAttribute(attributeDescriptor, self, elementName)
             else:

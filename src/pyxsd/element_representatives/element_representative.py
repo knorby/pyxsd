@@ -446,6 +446,41 @@ class ElementRepresentative:
             return None
         return clark(self.getNamespace(), self.name)
 
+    def instanceName(self, *, is_attribute=False, parser=None):
+        """Returns the name an instance node needs to match this declaration.
+
+        In ``legacy`` namespace mode this is always the plain local name
+        (the historical behavior). In ``strict`` mode a global
+        declaration is always namespace-qualified, while a local
+        declaration is qualified only when the schema's relevant form
+        default (``elementFormDefault``/``attributeFormDefault``) is
+        ``qualified``. A qualified result is a Clark name.
+        """
+        local = self.name
+        if local is None:
+            return None
+        if parser is None:
+            parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
+        mode = getattr(parser, "mode", None)
+        if getattr(mode, "namespaces", "legacy") != "strict":
+            return local
+        uri = self.getNamespace()
+        if uri is None:
+            return local
+        qualified = self.isGlobalDeclaration()
+        if not qualified:
+            schema = self.getSchema()
+            if schema is not None:
+                default = (
+                    schema.getAttributeFormDefault()
+                    if is_attribute
+                    else schema.getElementFormDefault()
+                )
+                qualified = default == "qualified"
+        if qualified:
+            return clark(uri, local)
+        return local
+
     def resolveSchemaQName(self, value, *, is_attribute=True, parser=None):
         """Resolves a lexical QName written in this schema element.
 

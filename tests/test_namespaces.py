@@ -252,3 +252,73 @@ class TestSchemaQNameReferences:
         )
         parser = _strict_parse(schema, '<root xmlns="urn:t">not-an-int</root>', tmp_path)
         assert "value" in [issue.code for issue in parser.report.issues]
+
+
+class TestInstanceMatching:
+    """Strict mode matches instance nodes by expanded name and form default."""
+
+    def test_qualified_local_element_matches(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:complexType name="Foo">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t:Foo"/>'
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        assert not parser.report.has_errors
+        assert parser.schemaRootInstance._children_
+
+    def test_wrong_namespace_local_element_is_rejected(self, tmp_path):
+        schema = _tns_schema(
+            '<xs:complexType name="Foo">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t:Foo"/>'
+        )
+        parser = _strict_parse(
+            schema,
+            '<root xmlns="urn:t" xmlns:o="urn:o"><o:a>x</o:a></root>',
+            tmp_path,
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "unexpected-element" in codes or "order" in codes
+
+    def test_unqualified_local_element_requires_bare_name(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" targetNamespace="urn:t" '
+            'elementFormDefault="unqualified">'
+            '<xs:complexType name="Foo">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t:Foo"/>'
+            "</xs:schema>"
+        )
+        good = _strict_parse(schema, '<t:root xmlns:t="urn:t"><a>x</a></t:root>', tmp_path)
+        assert not good.report.has_errors
+        bad = _strict_parse(schema, '<t:root xmlns:t="urn:t"><t:a>x</t:a></t:root>', tmp_path)
+        codes = [issue.code for issue in bad.report.issues]
+        assert "unexpected-element" in codes or "order" in codes
+
+    def test_qualified_attribute_matches_form_default(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" targetNamespace="urn:t" '
+            'elementFormDefault="qualified" attributeFormDefault="qualified">'
+            '<xs:complexType name="Foo">'
+            '<xs:attribute name="x" type="xs:int" use="required"/>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t:Foo"/>'
+            "</xs:schema>"
+        )
+        parser = _strict_parse(schema, '<root xmlns="urn:t" xmlns:t="urn:t" t:x="5"/>', tmp_path)
+        assert not parser.report.has_errors
+        parser2 = _strict_parse(schema, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="5"/>', tmp_path)
+        codes = [issue.code for issue in parser2.report.issues]
+        assert "missing-attribute" in codes
+
+    def test_legacy_mode_matches_by_local_name(self, tmp_path):
+        parser = PyXSD(
+            StringIO('<root xmlns="urn:t" xmlns:o="urn:o"><o:a>x</o:a></root>'),
+            xsdFile=StringIO(_TNS_SCHEMA),
+            xmlFileOutput="_No_Output_",
+        )
+        assert not parser.report.has_errors
