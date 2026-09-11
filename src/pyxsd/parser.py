@@ -56,9 +56,18 @@ from xml.etree import ElementTree as ET
 from pyxsd import __version__, xsi
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
-from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.element_representatives.element_representative import (
+    ElementRepresentative,
+    set_active_namespace_overrides,
+)
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
-from pyxsd.namespaces import NamespaceContext, NamespaceError, parse_with_namespaces
+from pyxsd.namespaces import (
+    XSD_NS,
+    NamespaceContext,
+    NamespaceError,
+    clark,
+    parse_with_namespaces,
+)
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
@@ -99,6 +108,7 @@ class PyXSD:
         verbose: bool = False,
         quiet: bool = False,
         mode: BindingPolicy = ParseModes.STRICT,
+        namespace_schemas: dict[str, str | Path] | None = None,
     ):
         """Initialize the parser and run the whole pipeline.
 
@@ -136,6 +146,11 @@ class PyXSD:
           strict; the mode never suppresses a validation issue. Defaults
           to :attr:`~pyxsd.binding.ParseModes.STRICT`.
 
+        - ``namespace_schemas`` - an optional ``{namespace_uri: path}``
+          mapping supplying schemas for namespaces referenced by
+          ``xs:import`` without a ``schemaLocation``. Only consulted in
+          strict namespace mode.
+
         After construction, ``self.report`` holds the
         :class:`~pyxsd.validation.ValidationReport` collected while the
         instance document was bound.
@@ -143,6 +158,11 @@ class PyXSD:
         self.verbose = verbose
         self.quiet = quiet
         self.mode = mode
+        self.namespaceSchemas: dict[str, str | Path] = dict(namespace_schemas or {})
+        # Namespace overrides keyed by ``id(xsdElement)`` for components
+        # spliced in from imported schemas; installed before the ER run so
+        # an imported declaration reports its own target namespace.
+        self._namespaceOverrides: dict[int, str | None] = {}
         self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
         # Prefix-to-URI bindings captured while parsing the instance and
@@ -183,6 +203,7 @@ class PyXSD:
                 hintPath = self.xmlPath / hintPath
             self.xsdFile = hintPath
         self.nameSpace = self.getSchemaInfo("n")
+        self._additionalSchemas = self._collectAdditionalSchemas()
         self.parseXSD()
 
         if classFile:
@@ -263,7 +284,13 @@ class PyXSD:
         # an error.
         self._composedDocuments: set[str] = set(visited)
         self._spliceComposedSchemas(root, baseDir, visited)
+        self._spliceAdditionalSchemas(root, baseDir, visited)
 
+        import pyxsd.element_representatives.element_representative as ermod
+
+        # Install the per-component namespace overrides before the ER run
+        # so imported declarations report their own target namespace.
+        set_active_namespace_overrides(self._namespaceOverrides)
         schemaER = ElementRepresentative.factory(root, None)
         # Attach the parser to the schema ER so class building can
         # record schema-reference problems (group/attributeGroup
@@ -277,8 +304,6 @@ class PyXSD:
         # table so later lookups (xsi:type dispatch, tests) use this
         # parser's declarations rather than a previous parser's.
         self.components = schemaER.components
-        import pyxsd.element_representatives.element_representative as ermod
-
         ermod._ACTIVE_TABLE = self.components
 
         for simpleType in schemaER.simpleTypes.values():
@@ -338,6 +363,51 @@ class PyXSD:
             return mainPath.parent, {str(mainPath)}
         return Path.cwd(), set()
 
+    def _collectAdditionalSchemas(self) -> list[tuple[str | None, Path]]:
+        """Returns additional ``(namespace, path)`` schemas to load.
+
+        Sources are the explicit ``namespace_schemas`` mapping and, in
+        strict mode, any extra pairs in the instance's
+        ``xsi:schemaLocation`` beyond the main schema.
+        """
+        additions: list[tuple[str | None, Path]] = []
+        seen: set[str] = set()
+        if isinstance(self.xsdFile, (str, os.PathLike)):
+            seen.add(str(Path(self.xsdFile).resolve()))
+        for namespace, location in self.namespaceSchemas.items():
+            path = Path(location)
+            if not path.is_absolute():
+                path = self.xmlPath / path
+            path = path.resolve()
+            if str(path) in seen:
+                continue
+            seen.add(str(path))
+            additions.append((namespace or None, path))
+        if getattr(self.mode, "namespaces", "legacy") == "strict":
+            for pair_namespace, location in self.getSchemaLocationPairs():
+                path = Path(location)
+                if not path.is_absolute():
+                    path = self.xmlPath / path
+                path = path.resolve()
+                if str(path) in seen:
+                    continue
+                seen.add(str(path))
+                additions.append((pair_namespace, path))
+        return additions
+
+    def _spliceAdditionalSchemas(self, schemaRoot: Any, baseDir: Path, visited: set[str]) -> None:
+        """Splices schemas supplied outside the main document.
+
+        These are ``namespace_schemas`` entries and extra
+        ``xsi:schemaLocation`` pairs; each is loaded like an import so
+        its components keep their own target namespace.
+        """
+        for namespace, path in getattr(self, "_additionalSchemas", []):
+            tag = ET.Element(clark(XSD_NS, "import"), {"schemaLocation": str(path)})
+            if namespace:
+                tag.set("namespace", namespace)
+            self._spliceIncludedSchema(tag, schemaRoot, baseDir, visited, isImport=True)
+
     def _spliceComposedSchemas(self, schemaRoot: Any, baseDir: Path, visited: set[str]) -> None:
         """Merges composed schemas into ``schemaRoot`` before class building.
 
@@ -363,7 +433,7 @@ class PyXSD:
                 self._spliceRedefine(child, schemaRoot, baseDir, visited)
             elif local == "import":
                 schemaRoot.remove(child)
-                if child.get("namespace") == "http://www.w3.org/2001/XMLSchema":
+                if child.get("namespace") == XSD_NS:
                     # Importing the schema-for-schemas namespace is the
                     # conventional spelling; the built-in types are
                     # always available here.
@@ -389,7 +459,22 @@ class PyXSD:
             if isImport:
                 # ``schemaLocation`` is optional on xs:import: a
                 # namespace-only import is a hint with no document to
-                # load, so it is not an error.
+                # load. In strict mode it is unresolved unless a schema
+                # for the namespace was supplied.
+                namespace = tag.get("namespace")
+                if (
+                    getattr(self.mode, "namespaces", "legacy") == "strict"
+                    and namespace
+                    and namespace not in self.namespaceSchemas
+                    and namespace
+                    not in {ns for ns, _ in getattr(self, "_additionalSchemas", []) if ns}
+                ):
+                    self.report.add_error(
+                        f"the import for namespace '{namespace}' has no "
+                        "schemaLocation and no schema was supplied for it",
+                        code="import-unresolved",
+                        phase="schema",
+                    )
                 logger.debug("namespace-only xs:import with no schemaLocation; skipping")
                 return None
             self.report.add_error(
@@ -412,7 +497,11 @@ class PyXSD:
                 code="compose-cycle",
             )
             return None
-        includedRoot = self._parseIncludedSchema(location, baseDir)
+        includedRoot = self._parseIncludedSchema(
+            location,
+            baseDir,
+            error_code="import-unresolved" if isImport else "schema-compose",
+        )
         if includedRoot is None:
             return None
         mainNS = schemaRoot.get("targetNamespace")
@@ -424,7 +513,12 @@ class PyXSD:
                 f"schema's namespace ({mainNS or 'none'})",
                 code="compose-namespace",
             )
-        if isImport and mainNS and includedNS != mainNS:
+        if (
+            isImport
+            and mainNS
+            and includedNS != mainNS
+            and getattr(self.mode, "namespaces", "legacy") != "strict"
+        ):
             logger.warning(
                 "imported schema '%s' declares targetNamespace '%s'; pyxsd "
                 "matches names by local name, so its components are merged "
@@ -432,19 +526,25 @@ class PyXSD:
                 location,
                 includedNS or "none",
             )
+        if isImport:
+            componentNamespace = includedNS if includedNS is not None else tag.get("namespace")
+        else:
+            componentNamespace = includedNS if includedNS is not None else mainNS
         self._spliceComposedSchemas(
             includedRoot, includedPath.parent, visited | {str(includedPath)}
         )
-        self._appendNamedComponents(includedRoot, schemaRoot)
+        self._appendNamedComponents(includedRoot, schemaRoot, componentNamespace)
         self._composedDocuments.add(key)
         return None
 
-    def _parseIncludedSchema(self, location: str, baseDir: Path) -> Any | None:
+    def _parseIncludedSchema(
+        self, location: str, baseDir: Path, error_code: str = "schema-compose"
+    ) -> Any | None:
         """Parses one included schema file; returns its root or ``None``.
 
         Failures (unreadable file, malformed xml) are recorded as
-        ``schema-compose`` errors and the composition proceeds without
-        the missing file.
+        ``error_code`` errors and the composition proceeds without the
+        missing file.
         """
         includedPath = baseDir / location
         try:
@@ -453,21 +553,32 @@ class PyXSD:
         except OSError as e:
             self.report.add_error(
                 f"the schema '{location}' could not be opened: {e}",
-                code="schema-compose",
+                code=error_code,
             )
             return None
         except ET.ParseError as e:
             self.report.add_error(
                 f"the schema '{location}' is not well-formed XML: {e}",
-                code="schema-compose",
+                code=error_code,
             )
             return None
         return root
 
-    def _appendNamedComponents(self, includedRoot: Any, schemaRoot: Any) -> None:
-        """Appends the named components of an included schema to the main tree."""
+    def _appendNamedComponents(
+        self, includedRoot: Any, schemaRoot: Any, namespace: str | None
+    ) -> None:
+        """Appends the named components of an included schema to the main tree.
+
+        In strict mode the namespace each component was declared in is
+        recorded so its expanded name reflects the source document
+        rather than the main schema's target namespace.
+        """
+        strict = getattr(self.mode, "namespaces", "legacy") == "strict"
         for component in list(includedRoot):
             if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
+                if strict:
+                    for element in component.iter():
+                        self._namespaceOverrides.setdefault(id(element), namespace)
                 schemaRoot.append(component)
         return None
 
@@ -523,7 +634,7 @@ class PyXSD:
         self._spliceComposedSchemas(
             includedRoot, includedPath.parent, visited | {str(includedPath)}
         )
-        self._appendNamedComponents(includedRoot, schemaRoot)
+        self._appendNamedComponents(includedRoot, schemaRoot, schemaRoot.get("targetNamespace"))
         for child in list(redefineTag):
             for element in child.iter():
                 base = element.get("base")
@@ -577,7 +688,16 @@ class PyXSD:
                 "invalid XML Schema - the parser could not find any root elements in the schema"
             )
 
-        matching = [descriptor for descriptor in topLevelDescriptors if descriptor.name == rootName]
+        if getattr(self.mode, "namespaces", "legacy") == "strict":
+            matching = [
+                descriptor
+                for descriptor in topLevelDescriptors
+                if descriptor.instanceName(parser=self) == self.xmlRoot.tag
+            ]
+        else:
+            matching = [
+                descriptor for descriptor in topLevelDescriptors if descriptor.name == rootName
+            ]
 
         if len(matching) > 1:
             elementNames = ", ".join(element.name for element in matching)
@@ -1028,19 +1148,16 @@ class PyXSD:
         schemaLocationSplit = None
         if self.makeFullName(xsiNS, "schemaLocation") in self.xmlRoot.attrib:
             schemaLocationTag = self.xmlRoot.attrib[self.makeFullName(xsiNS, "schemaLocation")]
-            if "\n" in schemaLocationTag:
-                schemaLocationSplit = schemaLocationTag.split("\n")
-            else:
-                schemaLocationSplit = schemaLocationTag.split(" ")
+            schemaLocationSplit = schemaLocationTag.split()
 
-            if len(schemaLocationSplit) != 2:
+            if not schemaLocationSplit or len(schemaLocationSplit) % 2 != 0:
                 report = getattr(self, "report", None)
                 message = (
-                    "the 'schemaLocation' tag must be a pair of values "
-                    "separated by a space or line break, with the namespace "
-                    "stated first, followed by the location of the schema; "
-                    "attempting to use the 'noNamespaceSchemaLocation' tag "
-                    "instead"
+                    "the 'schemaLocation' tag must be one or more "
+                    "namespace/location pairs separated by whitespace, with "
+                    "each namespace stated first, followed by the location of "
+                    "the schema; attempting to use the "
+                    "'noNamespaceSchemaLocation' tag instead"
                 )
                 if report is not None:
                     report.add_warning(message, code="schema-hint")
@@ -1067,7 +1184,7 @@ class PyXSD:
         if nameOrLocation == "n":
             return schemaNS
 
-        schemaLocation = schemaLocationSplit[-1]
+        schemaLocation = schemaLocationSplit[1]
         if nameOrLocation == "l":
             return schemaLocation
 
@@ -1075,6 +1192,26 @@ class PyXSD:
             return self.makeFullName(xsiNS, "schemaLocation")
 
         return None
+
+    def getSchemaLocationPairs(self) -> list[tuple[str | None, str]]:
+        """Returns every ``(namespace, location)`` hint in the instance.
+
+        ``xsi:schemaLocation`` may carry multiple namespace/location
+        pairs; ``xsi:noNamespaceSchemaLocation`` yields a single pair
+        with ``None`` for the namespace.
+        """
+        xsiNS = "http://www.w3.org/2001/XMLSchema-instance"
+        pairs: list[tuple[str | None, str]] = []
+        schemaLocationTag = self.xmlRoot.attrib.get(self.makeFullName(xsiNS, "schemaLocation"))
+        if schemaLocationTag:
+            tokens = schemaLocationTag.split()
+            if len(tokens) % 2 == 0:
+                for i in range(0, len(tokens), 2):
+                    pairs.append((tokens[i] or None, tokens[i + 1]))
+        noNamespace = self.xmlRoot.attrib.get(self.makeFullName(xsiNS, "noNamespaceSchemaLocation"))
+        if noNamespace:
+            pairs.append((None, noNamespace))
+        return pairs
 
     def makeFullName(self, ns: str | None, text: str) -> str:
         """Makes a string that looks similar to some of the names in

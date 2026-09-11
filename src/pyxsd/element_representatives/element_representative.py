@@ -427,9 +427,17 @@ class ElementRepresentative:
         the relevant form default (handled where declarations are
         matched).
         """
-        schema = self.getSchema()
+        try:
+            schema = self.getSchema()
+        except AttributeError:
+            # Detached representative (no parent); no namespace.
+            return None
         if schema is None:
             return None
+        overrides = getattr(schema, "namespaceOverrides", None)
+        element = getattr(self, "xsdElement", None)
+        if overrides and element is not None and id(element) in overrides:
+            return overrides[id(element)]
         getter = getattr(schema, "getNamespace", None)
         if getter is None:
             return getattr(schema, "targetNamespace", None)
@@ -578,12 +586,16 @@ class ElementRepresentative:
         table = _tableFor(obj)
         entries = table.setdefault(name, [])
         kind = componentKind(obj)
-        if any(componentKind(entry) == kind for entry in entries):
+        namespace = obj.getNamespace()
+        if any(
+            componentKind(entry) == kind and entry.getNamespace() == namespace for entry in entries
+        ):
             logger.debug(
-                "an element representative named %r (kind %r) is already "
-                "registered; keeping the first one",
+                "an element representative named %r (kind %r, namespace %r) is "
+                "already registered; keeping the first one",
                 name,
                 kind,
+                namespace,
             )
             return
         entries.append(obj)
@@ -651,6 +663,24 @@ _PRIMITIVE_TYPES = {
 # right parser's declarations. Multiple ERs may share a name and are
 # disambiguated by component kind (see ``ComponentTable.getFromName``).
 registry = _RegistryProxy()
+
+# Namespace overrides for components spliced in from imported schemas.
+# Keyed by ``id(xsdElement)`` because ElementTree elements do not allow
+# attribute assignment. The parser installs the map before the ER run so
+# a component can report the namespace of the document it was declared
+# in rather than the main schema's target namespace.
+_ACTIVE_NAMESPACE_OVERRIDES: dict[int, str | None] = {}
+
+
+def set_active_namespace_overrides(overrides: dict[int, str | None]) -> None:
+    """Installs the parser-owned per-component namespace overrides.
+
+    The module-level mapping is mutated in place so modules that
+    imported it by name (``schema``) observe the installed values.
+    """
+    _ACTIVE_NAMESPACE_OVERRIDES.clear()
+    _ACTIVE_NAMESPACE_OVERRIDES.update(overrides)
+
 
 # Import all of the tag-specific classes after the ER class definition
 # (the tag modules import this module's ElementRepresentative).  This

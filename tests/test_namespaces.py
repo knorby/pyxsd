@@ -382,3 +382,145 @@ class TestXsiTypeNamespaces:
         )
         parser = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
         assert "xsi-type" in [i.code for i in parser.report.issues]
+
+
+_MAIN_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" xmlns:o="urn:o"
+    targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:complexType name="Holder">
+    <xs:sequence><xs:element name="thing" type="o:Thing"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="t:Holder"/>
+</xs:schema>"""
+
+_OTHER_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:o="urn:o"
+    targetNamespace="urn:o" elementFormDefault="qualified">
+  <xs:complexType name="Thing">
+    <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+</xs:schema>"""
+
+_MAIN_REF_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" xmlns:o="urn:o"
+    targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:complexType name="Holder">
+    <xs:sequence><xs:element ref="o:thing"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="t:Holder"/>
+</xs:schema>"""
+
+_OTHER_ELEMENT_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:o="urn:o"
+    targetNamespace="urn:o" elementFormDefault="qualified">
+  <xs:element name="thing" type="xs:string"/>
+</xs:schema>"""
+
+_MULTI_INSTANCE = '<root xmlns="urn:t"><thing><b xmlns="urn:o">x</b></thing></root>'
+
+
+def _multi_parse(instance, main, other, tmp_path, *, use_schema_location=False, supply_other=True):
+    main_path = tmp_path / "main.xsd"
+    main_path.write_text(main)
+    other_path = tmp_path / "other.xsd"
+    other_path.write_text(other)
+    instance_path = tmp_path / "instance.xml"
+    instance_path.write_text(instance)
+    kwargs = {}
+    if use_schema_location:
+        xsd_file = None
+    else:
+        xsd_file = main_path
+        if supply_other:
+            kwargs["namespace_schemas"] = {"urn:o": other_path}
+    return PyXSD(
+        instance_path,
+        xsdFile=xsd_file,
+        xmlFileOutput="_No_Output_",
+        transformOutputName="_No_Output_",
+        mode=ParseModes.NAMESPACED,
+        **kwargs,
+    )
+
+
+class TestMultiNamespaceComposition:
+    """Cross-namespace schemas compose into one parser-owned table."""
+
+    def test_cross_namespace_type_reference_resolves(self, tmp_path):
+        parser = _multi_parse(_MULTI_INSTANCE, _MAIN_SCHEMA, _OTHER_SCHEMA, tmp_path)
+        assert not parser.report.has_errors
+        thing = parser.components.getFromName("Thing", kind="type", namespace="urn:o")
+        assert thing is not None
+        # The same local name in the other namespace is distinct.
+        assert parser.components.getFromName("Thing", kind="type", namespace="urn:t") is None
+
+    def test_cross_namespace_element_ref_resolves(self, tmp_path):
+        parser = _multi_parse(
+            '<root xmlns="urn:t"><o:thing xmlns:o="urn:o">x</o:thing></root>',
+            _MAIN_REF_SCHEMA,
+            _OTHER_ELEMENT_SCHEMA,
+            tmp_path,
+        )
+        codes = [i.code for i in parser.report.issues]
+        assert "unknown-elementRef" not in codes
+        assert not parser.report.has_errors
+
+    def test_multi_pair_schema_location_loads_all_namespaces(self, tmp_path):
+        instance = (
+            '<root xmlns="urn:t" xmlns:o="urn:o" '
+            f'xmlns:xsi="{XSI_NS}" '
+            'xsi:schemaLocation="urn:t main.xsd urn:o other.xsd">'
+            '<thing><b xmlns="urn:o">x</b></thing></root>'
+        )
+        parser = _multi_parse(
+            instance,
+            _MAIN_SCHEMA,
+            _OTHER_SCHEMA,
+            tmp_path,
+            use_schema_location=True,
+        )
+        assert not parser.report.has_errors
+        assert parser.components.getFromName("Thing", kind="type", namespace="urn:o") is not None
+
+    def test_namespace_schemas_supplies_namespace_only_import(self, tmp_path):
+        main = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" xmlns:o="urn:o"
+            targetNamespace="urn:t" elementFormDefault="qualified">
+          <xs:import namespace="urn:o"/>
+          <xs:complexType name="Holder">
+            <xs:sequence><xs:element name="thing" type="o:Thing"/></xs:sequence>
+          </xs:complexType>
+          <xs:element name="root" type="t:Holder"/>
+        </xs:schema>"""
+        parser = _multi_parse(
+            _MULTI_INSTANCE,
+            main,
+            _OTHER_SCHEMA,
+            tmp_path,
+        )
+        codes = [i.code for i in parser.report.issues]
+        assert "import-unresolved" not in codes
+        assert not parser.report.has_errors
+
+    def test_unresolved_namespace_only_import_is_reported(self, tmp_path):
+        main = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
+            targetNamespace="urn:t" elementFormDefault="qualified">
+          <xs:import namespace="urn:o"/>
+          <xs:element name="root" type="xs:string"/>
+        </xs:schema>"""
+        parser = _multi_parse(
+            '<root xmlns="urn:t">x</root>',
+            main,
+            _OTHER_SCHEMA,
+            tmp_path,
+            supply_other=False,
+        )
+        assert "import-unresolved" in [i.code for i in parser.report.issues]
+
+    def test_legacy_mode_still_merges_by_local_name(self, tmp_path):
+        main_path = tmp_path / "main.xsd"
+        main_path.write_text(_MAIN_SCHEMA)
+        other_path = tmp_path / "other.xsd"
+        other_path.write_text(_OTHER_SCHEMA)
+        parser = PyXSD(
+            StringIO(_MULTI_INSTANCE),
+            xsdFile=main_path,
+            xmlFileOutput="_No_Output_",
+            namespace_schemas={"urn:o": other_path},
+        )
+        assert not parser.report.has_errors
