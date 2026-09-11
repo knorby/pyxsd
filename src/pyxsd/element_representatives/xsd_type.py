@@ -103,6 +103,15 @@ class XsdType(ElementRepresentative):
         for rawName in self.superClassNames:
             superClassName = self.resolveSchemaQName(rawName, is_attribute=True, parser=pyXSD)
             base = ElementRepresentative.typeFromName(superClassName, pyXSD)
+            if base is None:
+                # An unresolved base must not reach issubclass() or
+                # types.new_class(): report it and keep building so the
+                # rest of a large schema still loads.
+                self._report_ref_error(
+                    f"base type '{superClassName}' of '{self.name}' could not be resolved",
+                    code="unknown-type",
+                )
+                continue
             self._checkFinal(base, superClassName)
             baseList.append(base)
         if not self.containsSchemaBase(baseList):
@@ -219,6 +228,49 @@ class XsdType(ElementRepresentative):
                     continue
                 attr.pyXSD = pyXSD
                 self.attributes[attrName] = attr
+
+    def resolveAttributeRefs(self, pyXSD):
+        """Resolves attribute reference sites to global declarations.
+
+        A ``<xs:attribute ref="..."/>`` has no name or type of its own;
+        the referenced global declaration supplies both. Resolved sites
+        adopt the declaration's name so instance matching and Python
+        access use the real attribute name. Unresolvable references are
+        reported and dropped rather than crashing class construction.
+        """
+        resolved = {}
+        for attr in self.attributes.values():
+            effective = self._resolveAttributeRef(attr, pyXSD)
+            if effective is None:
+                continue
+            resolved[effective.name] = effective
+        self.attributes = resolved
+
+    def _resolveAttributeRef(self, attr, pyXSD):
+        """Returns the effective attribute for a reference site.
+
+        Non-reference declarations are returned unchanged. A reference
+        is resolved against the schema's global attributes; on success
+        the site adopts the declaration's name and type, and on failure
+        the problem is reported and ``None`` is returned.
+        """
+        if not getattr(attr, "isAttributeRef", False):
+            return attr
+        candidate = attr.resolveReference(
+            attr.ref, self.getSchema().attributes.values(), parser=pyXSD
+        )
+        if candidate is None:
+            message = (
+                f"attribute reference '{attr.ref}' in type '{self.name}' could not be resolved"
+            )
+            self._report_ref_error(message, code="unknown-attributeRef")
+            return None
+        attr.referredAttribute = candidate
+        attr.name = candidate.name
+        if "type" not in attr.__dict__:
+            attr.type = candidate.type
+        attr.pyXSD = pyXSD
+        return attr
 
     def _collectAttributeGroup(self, group, visited, pyXSD):
         """Returns a group's attributes including nested group refs.
@@ -396,6 +448,7 @@ class XsdType(ElementRepresentative):
             return union
 
         self.resolveAttributeGroupRefs(pyXSD)
+        self.resolveAttributeRefs(pyXSD)
 
         bases = self.getBaseList(pyXSD)
         namespace = {
