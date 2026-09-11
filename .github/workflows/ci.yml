@@ -45,7 +45,7 @@ jobs:
         run: uv run pytest --cov=pyxsd --cov-report=term-missing
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.python-version }}
           path: .coverage
