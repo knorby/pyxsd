@@ -38,7 +38,10 @@ myst_heading_anchors = 3
 # --- HTML theme -------------------------------------------------------------
 html_theme = "furo"
 html_title = "pyxsd"
+html_baseurl = "https://pyxsd.knorby.com/"
 html_static_path = ["_static"]
+# Serve the custom domain from the GitHub Pages artifact.
+html_extra_path = ["CNAME"]
 
 # --- Intersphinx ------------------------------------------------------------
 intersphinx_mapping = {

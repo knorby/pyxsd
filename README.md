@@ -4,6 +4,7 @@
 [![Docs](https://github.com/knorby/pyxsd/actions/workflows/docs.yml/badge.svg)](https://github.com/knorby/pyxsd/actions/workflows/docs.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://pypi.org/project/pyxsd/)
 [![PyPI](https://img.shields.io/pypi/v/pyxsd)](https://pypi.org/project/pyxsd/)
+[![Docs](https://img.shields.io/badge/docs-pyxsd.knorby.com-blue)](https://pyxsd.knorby.com/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 **pyxsd** maps XML documents into Python object trees according to an XML
@@ -48,9 +49,8 @@ for issue in parser.report.issues:
     print(issue.format())
 ```
 
-See the [quickstart](https://github.com/knorby/pyxsd/blob/main/docs/quickstart.md)
-and [full documentation](https://github.com/knorby/pyxsd#documentation)
-for more.
+See the [quickstart](https://pyxsd.knorby.com/quickstart.html) and the
+[full documentation](https://pyxsd.knorby.com/) for more.
 
 ## What it validates
 
@@ -63,36 +63,39 @@ namespace-aware validation (`--namespaces strict` / `ParseModes.NAMESPACED`)
 handles `targetNamespace`, form defaults, cross-namespace imports, wildcard
 namespace/`processContents`, and QName values. Known
 gaps are tabulated in the
-[supported-features page](https://github.com/knorby/pyxsd/blob/main/docs/supported.md)
+[supported-features page](https://pyxsd.knorby.com/supported.html)
 — notably, facets on user-defined simpleTypes are parsed but not enforced.
 
-Backed by a 66-case conformance corpus of independently authored,
+Backed by a 65-case conformance corpus of independently authored,
 suite-inspired regression cases (see the
-[supported-features page](https://github.com/knorby/pyxsd/blob/main/docs/supported.md)).
+[supported-features page](https://pyxsd.knorby.com/supported.html)).
 
 ## Status
 
 pyxsd was written at Oak Ridge National Laboratory in 2006 (see
-[history](https://github.com/knorby/pyxsd/blob/main/docs/history/origins.md)),
+[history](https://pyxsd.knorby.com/history/origins.html)),
 abandoned around 2008, and revived as a Python 3 project in 2026.
 Version 1.0 is the first release of the modernized library.
 
 ## Documentation
 
-- [Quickstart](docs/quickstart.md)
-- [CLI reference](docs/cli.md)
-- [Architecture](docs/architecture.md)
-- [Data model](docs/data-model.md)
-- [Validation and issue codes](docs/validation.md)
-- [Parse modes](docs/binding.md)
-- [Transforms](docs/transforms/index.md)
-- [Supported features](docs/supported.md)
-- [API reference](docs/api.md)
-- [Migrating from 0.1](docs/migration-1.0.md)
-- [Project history](docs/history/origins.md)
-- [Contributing](docs/contributing.md)
+Full documentation is published at **<https://pyxsd.knorby.com/>**:
 
-(Sphinx sources in `docs/`; build with `uv run sphinx-build -b html docs docs/_build/html`.)
+- [Quickstart](https://pyxsd.knorby.com/quickstart.html)
+- [CLI reference](https://pyxsd.knorby.com/cli.html)
+- [Architecture](https://pyxsd.knorby.com/architecture.html)
+- [Data model](https://pyxsd.knorby.com/data-model.html)
+- [Validation and issue codes](https://pyxsd.knorby.com/validation.html)
+- [Parse modes](https://pyxsd.knorby.com/binding.html)
+- [Transforms](https://pyxsd.knorby.com/transforms/)
+- [Supported features](https://pyxsd.knorby.com/supported.html)
+- [API reference](https://pyxsd.knorby.com/api.html)
+- [Migrating from 0.1](https://pyxsd.knorby.com/migration-1.0.html)
+- [Project history](https://pyxsd.knorby.com/history/origins.html)
+- [Contributing](https://pyxsd.knorby.com/contributing.html)
+
+The Sphinx sources live in `docs/`; build them locally with
+`uv run sphinx-build -b html docs docs/_build/html`.
 
 ## License
 
