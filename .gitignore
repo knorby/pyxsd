@@ -29,5 +29,9 @@ docs/superpowers/
 # Docs build output
 docs/_build/
 
+# Downloaded ECMA-376 schemas for the docx example
+# (fetch with examples/docx/download_schemas.py; too large to commit)
+examples/docx/schemas/
+
 # OS noise
 .DS_Store

@@ -1,4 +1,8 @@
-# docx (WordprocessingML) example
+# docx (WordprocessingML) lax example
+
+> The real, namespaced example lives one directory up in
+> [`../README.md`](../README.md). This directory keeps the smaller
+> no-namespace stand-in that demonstrates lax binding.
 
 A real office format, parsed the messy way. This example takes a small
 **hand-authored, no-namespace stand-in** for the `word/document.xml`

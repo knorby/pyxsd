@@ -8,10 +8,18 @@ directory is loaded by name, and the transformed result is checked.
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 from pyxsd.binding import ParseModes
 from pyxsd.parser import PyXSD
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
+DOCX_SCHEMA = EXAMPLES / "docx" / "schemas" / "wml.xsd"
+
+requires_docx_schemas = pytest.mark.skipif(
+    not DOCX_SCHEMA.exists(),
+    reason="run examples/docx/download_schemas.py to fetch the ECMA-376 schemas",
+)
 
 
 def _run(example, transform, tmp_path, mode=ParseModes.STRICT, output_name="out.xml"):
@@ -67,9 +75,41 @@ class TestGpxExample:
 
 
 class TestDocxExample:
+    """The real example: full ECMA-376 WordprocessingML.
+
+    The schema set is large and fetched on demand (see
+    ``examples/docx/download_schemas.py``); the test skips when it has
+    not been downloaded.  The document is a realistic mixture of
+    headings, numbered and bulleted lists, a table, a hyperlink, and
+    whitespace-preserving runs.
+    """
+
+    @requires_docx_schemas
+    def test_real_document_markdown(self, tmp_path):
+        output = tmp_path / "document.md"
+        parser = PyXSD(
+            EXAMPLES / "docx" / "document.xml",
+            xsdFile=DOCX_SCHEMA,
+            xmlFileOutput="_No_Output_",
+            transformOutputName=str(output),
+            transforms=[f"ToMarkdown('{output}')"],
+            mode=ParseModes.NAMESPACED,
+        )
+        # The real schema composes cleanly; the only diagnostics are the
+        # documented circular-include warnings from dml-main.xsd.
+        assert not parser.report.has_errors
+        assert {issue.code for issue in parser.report.issues} <= {"compose-cycle"}
+
+        expected = (EXAMPLES / "docx" / "expected.md").read_text()
+        assert output.read_text() == expected
+
+
+class TestDocxLaxExample:
+    """The original stand-in example, kept as a lax-binding regression."""
+
     def _markdown(self, mode, tmp_path):
         return _run(
-            "docx",
+            "docx/lax",
             f"ToMarkdown('{tmp_path / 'document.md'}')",
             tmp_path,
             mode=mode,
@@ -82,7 +122,7 @@ class TestDocxExample:
         # an invalid run size are still reported in strict mode.
         assert "unexpected-element" in _codes(parser)
         assert "value" in _codes(parser)
-        expected = (EXAMPLES / "docx" / "expected.md").read_text()
+        expected = (EXAMPLES / "docx" / "lax" / "expected.md").read_text()
         assert output.read_text() == expected
 
     def test_lax_mode_binds_the_mess(self, tmp_path):
@@ -92,7 +132,7 @@ class TestDocxExample:
         assert "value" in _codes(parser)
         assert parser.report.has_errors
         # ...but the output is identical because no data was dropped.
-        expected = (EXAMPLES / "docx" / "expected.md").read_text()
+        expected = (EXAMPLES / "docx" / "lax" / "expected.md").read_text()
         assert output.read_text() == expected
 
         # Lax binding keeps the unmodeled element as a generic node...
