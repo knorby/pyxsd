@@ -1,13 +1,19 @@
 import logging
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pyxsd import xsi
+from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import first_required_name, match_content, particle_names
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.validation import IssueSeverity
-from pyxsd.xsd_data_types import XsdDataType, xsd_value_key
+from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, xsd_value_key
 
 logger = logging.getLogger(__name__)
+
+
+def _mode_for(cls) -> BindingPolicy:
+    """The binding policy stamped on a generated class (or STRICT)."""
+    return getattr(cls, "_parseMode_", ParseModes.STRICT)
 
 
 class SchemaBase:
@@ -374,6 +380,8 @@ class SchemaBase:
                         code="unknown-type",
                         element=cls.__name__,
                     )
+                    if _mode_for(cls).unresolved_type == "generic":
+                        instance._children_.append(cls.makeGenericInstance(subElement))
                     break
                 cls._addChildInstance(instance, subElement, subElCls, descriptor)
                 break
@@ -381,7 +389,7 @@ class SchemaBase:
             if not matched and substitutionGroups:
                 matched = cls._addSubstitutionMember(instance, subElement, elemDescriptors)
 
-            if not matched and hasWildcard:
+            if not matched and (hasWildcard or _mode_for(cls).undeclared_content == "generic"):
                 wildcardInstance = cls.makeGenericInstance(subElement)
                 instance._children_.append(wildcardInstance)
         return instance
@@ -915,6 +923,8 @@ class SchemaBase:
                 code="value",
                 element=cls.__name__,
             )
+            if _mode_for(cls).invalid_value == "raw":
+                return cls._rawPrimitiveValue(subElement, dataTypeText)
             return None
         dataTypeValInst._attribs_ = dict(subElement.attrib)
         dataTypeValInst._value_ = (
@@ -923,6 +933,21 @@ class SchemaBase:
         dataTypeValInst._children_ = dataTypeChildren
 
         return dataTypeValInst
+
+    @classmethod
+    def _rawPrimitiveValue(cls, subElement, dataTypeText):
+        """Binds an invalid lexical value as an unvalidated string.
+
+        Used by the ``raw`` invalid-value policy so a data-mapping user
+        keeps the original text (and the report still records the
+        problem). The stored value keeps the document's exact spelling
+        rather than the stripped lexical form.
+        """
+        instance: Any = AnySimpleType(dataTypeText if dataTypeText is not None else "")
+        instance._attribs_ = dict(subElement.attrib)
+        instance._value_ = [dataTypeText] if dataTypeText and dataTypeText.strip() else None
+        instance._children_ = []
+        return instance
 
     @classmethod
     def makeGenericInstance(cls, elementTag):

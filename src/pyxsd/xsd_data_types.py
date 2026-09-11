@@ -35,6 +35,9 @@ import decimal
 import math
 import re
 import struct
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
@@ -138,16 +141,57 @@ class XsdDataType:
 _XSD_WHITESPACE = " \t\n\r"
 _WS_RUN = re.compile(r"[ \t\n\r]+")
 _WS_ANY = re.compile(r"[ \t\n\r]")
+# Compatibility mode folds any Unicode whitespace (NBSP and friends), the
+# way Python's own str.split()/strip() do.
+_COMPAT_WS_RUN = re.compile(r"\s+")
+_COMPAT_WS_ANY = re.compile(r"\s")
+
+# Ambient whitespace handling for datatype construction. The datatype
+# ``__new__`` signatures take only the lexical value, so the parse mode
+# reaches them through a ContextVar set by the parser around instance
+# binding. "xsd" is the default; "compat" additionally folds Unicode
+# whitespace.
+_WHITESPACE_MODE: ContextVar[str] = ContextVar("pyxsd_whitespace_mode", default="xsd")
+
+
+@contextmanager
+def whitespace_mode(mode: str) -> Iterator[None]:
+    """Set the ambient whitespace handling for datatype construction."""
+    token = _WHITESPACE_MODE.set(mode)
+    try:
+        yield
+    finally:
+        _WHITESPACE_MODE.reset(token)
 
 
 def _ws_replace(text: str) -> str:
-    """The XSD ``replace`` facet: tab/newline/CR become spaces."""
+    """The XSD ``replace`` facet: tab/newline/CR become spaces.
+
+    In ``compat`` mode, other Unicode whitespace also becomes a space.
+    """
+    if _WHITESPACE_MODE.get() == "compat":
+        return _COMPAT_WS_ANY.sub(" ", text)
     return text.translate({0x09: 0x20, 0x0A: 0x20, 0x0D: 0x20})
 
 
 def _ws_collapse(text: str) -> str:
-    """The XSD ``collapse`` facet: trim and squeeze runs to one space."""
+    """The XSD ``collapse`` facet: trim and squeeze runs to one space.
+
+    In ``compat`` mode, runs of any Unicode whitespace are collapsed.
+    """
+    if _WHITESPACE_MODE.get() == "compat":
+        return _COMPAT_WS_RUN.sub(" ", text).strip(" ")
     return _WS_RUN.sub(" ", text).strip(" ")
+
+
+def _ws_remove(text: str) -> str:
+    """Remove whitespace entirely (used by base64Binary).
+
+    In ``compat`` mode, removes any Unicode whitespace.
+    """
+    if _WHITESPACE_MODE.get() == "compat":
+        return _COMPAT_WS_ANY.sub("", text)
+    return _WS_ANY.sub("", text)
 
 
 # XML 1.0 NameStartChar / NameChar ranges (5th edition). Using explicit
@@ -357,7 +401,7 @@ class Base64Binary(String):
     name = "base64Binary"
 
     def __new__(cls, val: str) -> Self:
-        text = _WS_ANY.sub("", str(val))
+        text = _ws_remove(str(val))
         try:
             decoded = base64.b64decode(text, validate=True)
         except (ValueError, TypeError, binascii.Error):
@@ -818,7 +862,7 @@ def xsd_value_key(value: Any) -> tuple:
     if isinstance(value, HexBinary):
         return ("hexBinary", bytes.fromhex(str(value)))
     if isinstance(value, Base64Binary):
-        return ("base64Binary", base64.b64decode(_WS_ANY.sub("", str(value))))
+        return ("base64Binary", base64.b64decode(_ws_remove(str(value))))
     if isinstance(value, _ListString):
         return (value.name, tuple(value.tokens))
     if isinstance(value, DateTime):

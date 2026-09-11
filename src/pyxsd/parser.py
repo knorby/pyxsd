@@ -54,13 +54,14 @@ from typing import IO, Any
 from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
+from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
-from pyxsd.xsd_data_types import xsd_value_key
+from pyxsd.xsd_data_types import AnySimpleType, whitespace_mode, xsd_value_key
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,7 @@ class PyXSD:
         classFile: str | Path | os.PathLike[str] | None = None,
         verbose: bool = False,
         quiet: bool = False,
+        mode: BindingPolicy = ParseModes.STRICT,
     ):
         """Initialize the parser and run the whole pipeline.
 
@@ -127,12 +129,19 @@ class PyXSD:
         - ``quiet`` - a boolean value. If set to true, logs less
           information (the CLI maps this to the CRITICAL log level).
 
+        - ``mode`` - a :class:`~pyxsd.binding.BindingPolicy` (usually a
+          :class:`~pyxsd.binding.ParseModes` preset) controlling how
+          invalid values are bound into the tree. Reporting is always
+          strict; the mode never suppresses a validation issue. Defaults
+          to :attr:`~pyxsd.binding.ParseModes.STRICT`.
+
         After construction, ``self.report`` holds the
         :class:`~pyxsd.validation.ValidationReport` collected while the
         instance document was bound.
         """
         self.verbose = verbose
         self.quiet = quiet
+        self.mode = mode
         self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
 
@@ -579,26 +588,27 @@ class PyXSD:
 
         subInstance = None
         if rootElementName == rootName:
-            subCls = self._classForRoot(rootElement)
-            self.generateCorrectSchemaTags()
-            contentKind = getattr(subCls, "_contentKind_", None)
-            isComplex = (
-                contentKind == "complex"
-                if contentKind is not None
-                else issubclass(subCls, SchemaBase)
-            )
-            if isComplex:
-                subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
-            else:
-                # The root element's declared type is a primitive
-                # (simple) data type: build a typed instance directly.
-                subInstance = self._primitiveRootInstance(subCls, rootElement)
-            # xsi:type may replace the declared root type, so the root
-            # instance is stored directly instead of validated against
-            # the declared element type.
-            schemaClassInstance.__dict__[rootElementName] = subInstance
-            subInstance._descriptor_ = rootElement
-            self._checkIdentityConstraints(subInstance)
+            with whitespace_mode(self.mode.whitespace):
+                subCls = self._classForRoot(rootElement)
+                self.generateCorrectSchemaTags()
+                contentKind = getattr(subCls, "_contentKind_", None)
+                isComplex = (
+                    contentKind == "complex"
+                    if contentKind is not None
+                    else issubclass(subCls, SchemaBase)
+                )
+                if isComplex:
+                    subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
+                else:
+                    # The root element's declared type is a primitive
+                    # (simple) data type: build a typed instance directly.
+                    subInstance = self._primitiveRootInstance(subCls, rootElement)
+                # xsi:type may replace the declared root type, so the root
+                # instance is stored directly instead of validated against
+                # the declared element type.
+                schemaClassInstance.__dict__[rootElementName] = subInstance
+                subInstance._descriptor_ = rootElement
+                self._checkIdentityConstraints(subInstance)
 
         return subInstance
 
@@ -659,6 +669,8 @@ class PyXSD:
                         code="value",
                         element=rootName,
                     )
+                    if self.mode.invalid_value == "raw":
+                        value = AnySimpleType(text)
 
         if not nilled and value is not None:
             fixed = rootElement.getFixed()
@@ -1268,6 +1280,15 @@ def main(argv: list[str] | None = None) -> None:
         default=False,
         help="exit with status 1 if the xml file has validation errors.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["strict", "lax"],
+        default="strict",
+        dest="mode",
+        help="binding mode. 'strict' (default) reports invalid values and "
+        "drops them; 'lax' keeps the report strict but binds best-effort "
+        "values (raw strings, generic subtrees) so no data is lost.",
+    )
 
     options = parser.parse_args(argv)
 
@@ -1317,6 +1338,7 @@ def main(argv: list[str] | None = None) -> None:
             options.classFile,
             options.verbose,
             options.quiet,
+            mode=ParseModes.LAX if options.mode == "lax" else ParseModes.STRICT,
         )
     except (PyXSDError, OSError) as e:
         print(f"pyxsd: error: {e}", file=sys.stderr)

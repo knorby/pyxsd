@@ -178,10 +178,17 @@ class Element(ElementRepresentative):
         descriptors.
         """
         if not isinstance(value, self.getType()):
-            raise TypeError(
-                f"{value!r} is not an instance of the type of element "
-                f"{self.name!r} ({self.getType().__name__})"
-            )
+            # Under the ``raw`` invalid-value policy a primitive child
+            # whose lexical value failed validation is bound as a plain
+            # string so no data is lost; the validation report still
+            # records the problem.
+            parser = getattr(self, "pyXSD", None)
+            policy = getattr(parser, "mode", None)
+            if getattr(policy, "invalid_value", "drop") != "raw":
+                raise TypeError(
+                    f"{value!r} is not an instance of the type of element "
+                    f"{self.name!r} ({self.getType().__name__})"
+                )
 
         if self.isList():
             obj.__dict__.setdefault(self.name, []).append(value)

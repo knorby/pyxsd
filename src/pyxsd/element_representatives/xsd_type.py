@@ -1,6 +1,7 @@
 import logging
 import types
 
+from pyxsd.binding import ParseModes
 from pyxsd.content_model import compile_content_model
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.xsd_data_types import XsdDataType
@@ -386,6 +387,10 @@ class XsdType(ElementRepresentative):
             "pyXSD": pyXSD,
             "name": self.name,
             "__doc__": self.__doc__,
+            # Binding policy stamped at class-build time; the binding
+            # sites in SchemaBase read it to decide what to do with
+            # invalid or unresolved content.
+            "_parseMode_": getattr(pyXSD, "mode", ParseModes.STRICT),
         }
         if getattr(self, "hasWildcardElements", False):
             namespace["hasWildcardElements_"] = True
