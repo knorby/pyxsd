@@ -5,8 +5,9 @@ from pyxsd import xsi
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import first_required_name, match_content, particle_names
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
-from pyxsd.namespaces import NamespaceError
+from pyxsd.namespaces import NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
+from pyxsd.wildcards import WildcardSpec
 from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, xsd_value_key
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,128 @@ class SchemaBase:
             return getattr(descriptor, "name", None)
         return name_fn(parser=getattr(cls, "pyXSD", None), is_attribute=is_attribute)
 
+    @classmethod
+    def _wildcard_element_specs(cls, instance) -> list[WildcardSpec]:
+        """Element wildcard constraints visible to ``instance``.
+
+        Specs are gathered along the MRO (least-derived first) so a
+        wildcard contributed by an extension base still applies to the
+        derived instance.
+        """
+        specs: list[WildcardSpec] = []
+        for klass in reversed(type(instance).__mro__):
+            specs.extend(klass.__dict__.get("wildcardElementSpecs_", ()))
+        return specs
+
+    @classmethod
+    def _wildcard_attribute_specs(cls, instance) -> list[WildcardSpec]:
+        """Attribute wildcard constraints visible to ``instance``."""
+        specs: list[WildcardSpec] = []
+        for klass in reversed(type(instance).__mro__):
+            specs.extend(klass.__dict__.get("wildcardAttributeSpecs_", ()))
+        return specs
+
+    @classmethod
+    def _wildcard_match(
+        cls, specs: list[WildcardSpec], node_name: str, target_namespace: str | None
+    ) -> WildcardSpec | None:
+        """The first wildcard constraint admitting ``node_name``.
+
+        ``node_name`` must be a Clark/expanded name; ``None`` means no
+        wildcard admits the node.
+        """
+        uri = namespace_of(node_name)
+        for spec in specs:
+            if spec.allows(uri, target_namespace):
+                return spec
+        return None
+
+    @classmethod
+    def _checkWildcardAttribute(cls, attr, value, spec, parser) -> bool:
+        """Checks a wildcard-matched attribute against ``processContents``.
+
+        Returns ``False`` when the attribute should be dropped (an error
+        has been reported). ``skip`` accepts unconditionally; ``lax``
+        validates when a global declaration exists and otherwise
+        accepts; ``strict`` requires a declaration.
+        """
+        if spec.process_contents == "skip":
+            return True
+        local = local_name(attr)
+        uri = namespace_of(attr)
+        components = getattr(parser, "components", None)
+        declaration = (
+            components.getFromName(local, kind="attribute", namespace=uri)
+            if components is not None
+            else None
+        )
+        if declaration is None:
+            if spec.process_contents == "strict":
+                cls._report_error(
+                    f"no declaration found for attribute '{local}' required by a strict wildcard",
+                    code="wildcard-no-declaration",
+                    element=cls.__name__,
+                )
+                return False
+            return True
+        try:
+            declaration.pyXSD = parser
+            declaration.getType()(value)
+        except Exception as e:
+            cls._report_error(
+                f"attribute '{local}' has an invalid value: {e}",
+                code="value",
+                element=cls.__name__,
+            )
+            return False
+        return True
+
+    @classmethod
+    def _bindWildcardChild(cls, instance, subElement, spec) -> None:
+        """Binds one child accepted by an element wildcard.
+
+        ``skip`` (and legacy mode) binds generically. ``lax`` validates
+        against a matching global declaration when one exists and binds
+        generically otherwise. ``strict`` reports
+        ``wildcard-no-declaration`` when no declaration matches.
+        """
+        parser = getattr(cls, "pyXSD", None)
+        mode = getattr(parser, "mode", None)
+        if getattr(mode, "namespaces", "legacy") != "strict" or spec.process_contents == "skip":
+            instance._children_.append(cls.makeGenericInstance(subElement))
+            return
+        local = local_name(subElement.tag)
+        uri = namespace_of(subElement.tag)
+        components = getattr(parser, "components", None)
+        descriptor = (
+            components.getFromName(local, kind="element", namespace=uri)
+            if components is not None
+            else None
+        )
+        if descriptor is not None:
+            if descriptor.isAbstract():
+                cls._report_error(
+                    f"element '{local}' is declared abstract; "
+                    "only its substitution group members may appear in the xml",
+                    code="abstract-element",
+                    element=cls.__name__,
+                )
+                return
+            descriptor.pyXSD = parser
+            subElCls = cls._classForChild(descriptor, subElement)
+            if subElCls is not None:
+                cls._addChildInstance(instance, subElement, subElCls, descriptor)
+                return
+        if spec.process_contents == "lax":
+            instance._children_.append(cls.makeGenericInstance(subElement))
+            return
+        cls._report_error(
+            f"no declaration found for element '{local}' required by a strict wildcard",
+            code="wildcard-no-declaration",
+            element=cls.__name__,
+        )
+        instance._children_.append(cls.makeGenericInstance(subElement))
+
     # ------------------------------------------------------------------
     # Instance tree construction
     # ------------------------------------------------------------------
@@ -258,15 +381,28 @@ class SchemaBase:
                 setattr(self, name, elementTag.attrib[matchName])
                 usedAttributes.append(matchName)
                 self._attribs_[matchName] = elementTag.attrib[matchName]
-        # Attribute wildcard (xs:anyAttribute) pass-through: attributes
-        # the schema does not declare are stored raw instead of being
-        # left out and reported as unexpected.
+        # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
+        # namespace mode every undeclared attribute is accepted raw; in
+        # strict mode the wildcard's namespace constraint must admit the
+        # attribute, and ``processContents`` decides whether a global
+        # declaration is required.
         if getattr(self, "hasWildcardAttributes_", False):
+            cls = type(self)
+            strict = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
+            specs = self._wildcard_attribute_specs(self) if strict else []
+            targetNamespace = getattr(cls, "_targetNamespace_", None) if strict else None
+            parser = getattr(cls, "pyXSD", None)
             for attr, value in elementTag.attrib.items():
                 if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
                     continue
                 if attr in usedAttributes:
                     continue
+                if strict:
+                    spec = self._wildcard_match(specs, attr, targetNamespace)
+                    if spec is None:
+                        continue
+                    if not self._checkWildcardAttribute(attr, value, spec, parser):
+                        continue
                 self._attribs_[attr] = value
                 usedAttributes.append(attr)
         return usedAttributes
@@ -316,19 +452,30 @@ class SchemaBase:
             for member in members:
                 memberHeadMap[cls._instance_name_of(member)] = headMatch
 
-        # Wildcard (xs:any) pass-through: children the schema does not
-        # declare are accepted and parsed generically when the type
-        # declares a wildcard. Order checking only sees declared
+        # Wildcard (xs:any) pass-through. In legacy namespace mode any
+        # undeclared child is wildcard content; in strict mode only
+        # children admitted by a wildcard's namespace constraint are
+        # (the rest are reported). Order checking only sees declared
         # children in that case.
         hasWildcard = getattr(instance, "hasWildcardElements_", False)
+        strictNamespaces = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
+        wildcardSpecs = cls._wildcard_element_specs(instance) if hasWildcard else []
+        targetNamespace = getattr(cls, "_targetNamespace_", None)
         if hasWildcard:
             declaredNames = {cls._instance_name_of(descriptor) for descriptor in elemDescriptors}
             declaredNames.update(memberHeadMap)
-            declaredChildren = [
-                subElement
-                for subElement in subElements
-                if cls._node_name(subElement) in declaredNames
-            ]
+            declaredChildren = []
+            for subElement in subElements:
+                nodeName = cls._node_name(subElement)
+                if nodeName in declaredNames:
+                    declaredChildren.append(subElement)
+                elif (
+                    strictNamespaces
+                    and cls._wildcard_match(wildcardSpecs, nodeName, targetNamespace) is not None
+                ) or not strictNamespaces:
+                    continue
+                else:
+                    declaredChildren.append(subElement)
         else:
             declaredChildren = subElements
 
@@ -367,7 +514,7 @@ class SchemaBase:
                             code="order",
                             element=cls.__name__,
                         )
-                    elif not hasWildcard:
+                    elif not hasWildcard or strictNamespaces:
                         cls._report_error(
                             f"element '{subElementName}' is not declared in the "
                             "content model and no wildcard allows it",
@@ -418,9 +565,19 @@ class SchemaBase:
             if not matched and substitutionGroups:
                 matched = cls._addSubstitutionMember(instance, subElement, elemDescriptors)
 
-            if not matched and (hasWildcard or _mode_for(cls).undeclared_content == "generic"):
-                wildcardInstance = cls.makeGenericInstance(subElement)
-                instance._children_.append(wildcardInstance)
+            if not matched:
+                wildcardSpec = None
+                if hasWildcard:
+                    if strictNamespaces:
+                        wildcardSpec = cls._wildcard_match(
+                            wildcardSpecs, subElementName, targetNamespace
+                        )
+                    else:
+                        wildcardSpec = WildcardSpec()
+                if wildcardSpec is not None:
+                    cls._bindWildcardChild(instance, subElement, wildcardSpec)
+                elif _mode_for(cls).undeclared_content == "generic":
+                    instance._children_.append(cls.makeGenericInstance(subElement))
         return instance
 
     @classmethod

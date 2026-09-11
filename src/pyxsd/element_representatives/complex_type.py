@@ -2,6 +2,7 @@ import logging
 
 from pyxsd.compositors import Compositor
 from pyxsd.element_representatives.xsd_type import XsdType
+from pyxsd.wildcards import register_wildcard
 
 logger = logging.getLogger(__name__)
 
@@ -111,14 +112,10 @@ class ComplexType(XsdType):
         except ValueError:
             compInfo = None
 
-        if not getattr(self, "hasWildcardElements", False) and getattr(
-            group, "hasWildcardElements", False
-        ):
-            self.hasWildcardElements = True
-        if not getattr(self, "hasWildcardAttributes", False) and getattr(
-            group, "hasWildcardAttributes", False
-        ):
-            self.hasWildcardAttributes = True
+        for spec in getattr(group, "wildcardElementSpecs", ()):
+            register_wildcard(self, spec)
+        for spec in getattr(group, "wildcardAttributeSpecs", ()):
+            register_wildcard(self, spec)
 
         contributed = []
         for element in compositor.elements:

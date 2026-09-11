@@ -524,3 +524,173 @@ class TestMultiNamespaceComposition:
             namespace_schemas={"urn:o": other_path},
         )
         assert not parser.report.has_errors
+
+
+def _wildcard_main(any_decl: str) -> str:
+    return f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
+    targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:complexType name="Holder">
+    <xs:sequence>{any_decl}</xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="t:Holder"/>
+</xs:schema>"""
+
+
+_OTHER_DECL = f"""<xs:schema xmlns:xs="{XSD_NS}"
+    targetNamespace="urn:o" elementFormDefault="qualified">
+  <xs:element name="extra" type="xs:int"/>
+</xs:schema>"""
+
+
+def _wildcard_parse(instance, any_decl, tmp_path, *, other=None, mode=None):
+    main_path = tmp_path / "main.xsd"
+    main_path.write_text(_wildcard_main(any_decl))
+    instance_path = tmp_path / "instance.xml"
+    instance_path.write_text(instance)
+    kwargs = {}
+    if other is not None:
+        other_path = tmp_path / "other.xsd"
+        other_path.write_text(other)
+        kwargs["namespace_schemas"] = {"urn:o": other_path}
+    return PyXSD(
+        instance_path,
+        xsdFile=main_path,
+        xmlFileOutput="_No_Output_",
+        transformOutputName="_No_Output_",
+        mode=mode or ParseModes.NAMESPACED,
+        **kwargs,
+    )
+
+
+class TestWildcardNamespaces:
+    """xs:any namespace constraints and processContents."""
+
+    def test_other_accepts_foreign_and_rejects_target(self, tmp_path):
+        decl = '<xs:any namespace="##other" processContents="skip"/>'
+        accepted = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
+        )
+        assert not accepted.report.has_errors
+        rejected = _wildcard_parse('<root xmlns="urn:t"><extra/></root>', decl, tmp_path)
+        assert "unexpected-element" in [i.code for i in rejected.report.issues]
+
+    def test_target_namespace_constraint(self, tmp_path):
+        decl = '<xs:any namespace="##targetNamespace" processContents="skip"/>'
+        accepted = _wildcard_parse('<root xmlns="urn:t"><extra/></root>', decl, tmp_path)
+        assert not accepted.report.has_errors
+        rejected = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
+        )
+        assert "unexpected-element" in [i.code for i in rejected.report.issues]
+
+    def test_local_constraint(self, tmp_path):
+        decl = '<xs:any namespace="##local" processContents="skip"/>'
+        accepted = _wildcard_parse('<root xmlns="urn:t"><extra xmlns=""/></root>', decl, tmp_path)
+        assert not accepted.report.has_errors
+        rejected = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
+        )
+        assert "unexpected-element" in [i.code for i in rejected.report.issues]
+
+    def test_uri_list_constraint(self, tmp_path):
+        decl = '<xs:any namespace="urn:o urn:x" processContents="skip"/>'
+        accepted = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
+        )
+        assert not accepted.report.has_errors
+        rejected = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:y"/></root>', decl, tmp_path
+        )
+        assert "unexpected-element" in [i.code for i in rejected.report.issues]
+
+    def test_strict_without_declaration_is_reported(self, tmp_path):
+        decl = '<xs:any namespace="##other" processContents="strict"/>'
+        parser = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
+        )
+        assert "wildcard-no-declaration" in [i.code for i in parser.report.issues]
+
+    def test_strict_with_declaration_validates(self, tmp_path):
+        decl = '<xs:any namespace="##other" processContents="strict"/>'
+        parser = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o">7</extra></root>',
+            decl,
+            tmp_path,
+            other=_OTHER_DECL,
+        )
+        assert not parser.report.has_errors
+        assert int(parser.schemaRootInstance.extra) == 7
+        bad = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o">x</extra></root>',
+            decl,
+            tmp_path,
+            other=_OTHER_DECL,
+        )
+        assert "value" in [i.code for i in bad.report.issues]
+
+    def test_lax_without_declaration_binds_generically(self, tmp_path):
+        decl = '<xs:any namespace="##other" processContents="lax"/>'
+        parser = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
+        )
+        assert "wildcard-no-declaration" not in [i.code for i in parser.report.issues]
+        assert len(parser.schemaRootInstance._children_) == 1
+
+    def test_skip_without_declaration_is_clean(self, tmp_path):
+        decl = '<xs:any namespace="##other" processContents="skip"/>'
+        parser = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
+        )
+        assert not parser.report.has_errors
+
+    def test_legacy_mode_ignores_namespace_constraint(self, tmp_path):
+        decl = '<xs:any namespace="##local" processContents="skip"/>'
+        parser = _wildcard_parse(
+            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>',
+            decl,
+            tmp_path,
+            mode=ParseModes.STRICT,
+        )
+        assert not parser.report.has_errors
+
+
+class TestWildcardAttributes:
+    """xs:anyAttribute namespace constraint and processContents."""
+
+    def _schema(self, any_attr: str) -> str:
+        return f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
+            targetNamespace="urn:t" elementFormDefault="qualified">
+          <xs:complexType name="Holder">
+            {any_attr}
+          </xs:complexType>
+          <xs:element name="root" type="t:Holder"/>
+        </xs:schema>"""
+
+    def _parse(self, any_attr: str, instance: str, tmp_path):
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(self._schema(any_attr))
+        instance_path = tmp_path / "instance.xml"
+        instance_path.write_text(instance)
+        return PyXSD(
+            instance_path,
+            xsdFile=schema_path,
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=ParseModes.NAMESPACED,
+        )
+
+    def test_other_attribute_passes(self, tmp_path):
+        decl = '<xs:anyAttribute namespace="##other" processContents="skip"/>'
+        accepted = self._parse(decl, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="1"/>', tmp_path)
+        assert not accepted.report.has_errors
+        assert accepted.schemaRootInstance._attribs_["{urn:o}x"] == "1"
+
+    def test_target_namespace_attribute_rejects_foreign(self, tmp_path):
+        decl = '<xs:anyAttribute namespace="##targetNamespace" processContents="skip"/>'
+        rejected = self._parse(decl, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="1"/>', tmp_path)
+        assert "{urn:o}x" not in rejected.schemaRootInstance._attribs_
+
+    def test_strict_attribute_requires_declaration(self, tmp_path):
+        decl = '<xs:anyAttribute namespace="##other" processContents="strict"/>'
+        parser = self._parse(decl, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="1"/>', tmp_path)
+        assert "wildcard-no-declaration" in [i.code for i in parser.report.issues]

@@ -411,6 +411,13 @@ class XsdType(ElementRepresentative):
             namespace["hasWildcardElements_"] = True
         if getattr(self, "hasWildcardAttributes", False):
             namespace["hasWildcardAttributes_"] = True
+        elementSpecs = getattr(self, "wildcardElementSpecs", None)
+        if elementSpecs:
+            namespace["wildcardElementSpecs_"] = list(elementSpecs)
+        attributeSpecs = getattr(self, "wildcardAttributeSpecs", None)
+        if attributeSpecs:
+            namespace["wildcardAttributeSpecs_"] = list(attributeSpecs)
+        namespace["_targetNamespace_"] = self.getNamespace()
         if self.tagAttributes.get("abstract") == "true":
             namespace["abstract_"] = True
         # Record the XSD content category explicitly. Generated simple
