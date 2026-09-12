@@ -47,6 +47,7 @@ import os.path
 import pkgutil
 import re
 import sys
+import tokenize
 import warnings
 from pathlib import Path
 from types import ModuleType
@@ -1469,6 +1470,45 @@ def parseTransformCall(call: str) -> tuple[str, list[Any], dict[str, Any]]:
     return class_name, args, kwargs
 
 
+def split_transform_chain(chain: str) -> list[str]:
+    """Splits a CLI transform chain on its top-level ``>`` separators.
+
+    The historic implementation split on every ``>`` character, so an
+    argument like ``PrintData("a>b.xml")`` was chopped mid-string. The
+    chain is now tokenized: a ``>`` only separates calls when it stands
+    outside any string literal and outside any call parentheses.
+    Whitespace around segments is stripped; a chain without separators
+    yields a single-element list.
+    """
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(chain).readline)
+        separators: list[int] = []
+        depth = 0
+        for tokType, tokString, start, _end, _line in tokens:
+            if tokType != tokenize.OP:
+                continue
+            if tokString in "([{":
+                depth += 1
+            elif tokString in ")]}":
+                depth -= 1
+            elif tokString == ">" and depth == 0:
+                separators.append(start[1])
+    except (tokenize.TokenError, IndentationError, SyntaxError) as e:
+        raise ValueError(
+            f"Transform Chain Error: the transform chain '{chain}' is not valid Python syntax."
+        ) from e
+    if not separators:
+        stripped = chain.strip()
+        return [stripped] if stripped else []
+    segments: list[str] = []
+    previous = 0
+    for position in separators:
+        segments.append(chain[previous:position].strip())
+        previous = position + 1
+    segments.append(chain[previous:].strip())
+    return segments
+
+
 def _configure_logging(verbose: bool, quiet: bool) -> None:
     """Set the root logging level according to the CLI flags."""
     if verbose:
@@ -1642,22 +1682,17 @@ def main(argv: list[str] | None = None) -> None:
     else:
         inputXmlFile = options.inputXmlFile
 
-    transforms = []
-
-    if options.transformCall:
-        if ">" in options.transformCall:
-            transforms = [t.strip().strip(">").strip() for t in options.transformCall.split(">")]
-        else:
-            transforms.append(options.transformCall)
-    if options.transformFile:
-        with open(options.transformFile) as fd:
-            transforms = [t.strip().strip(">").strip() for t in fd]
-
     parsedOutputFile = options.parsedOutputFile
     if not options.outputParsed:
         parsedOutputFile = "_No_Output_"
 
     try:
+        transforms = []
+        if options.transformCall:
+            transforms = split_transform_chain(options.transformCall)
+        if options.transformFile:
+            with open(options.transformFile) as fd:
+                transforms = [call for line in fd for call in split_transform_chain(line)]
         baseMode = ParseModes.LAX if options.mode == "lax" else ParseModes.STRICT
         app = PyXSD(
             inputXmlFile,
@@ -1670,7 +1705,7 @@ def main(argv: list[str] | None = None) -> None:
             options.quiet,
             mode=baseMode.replace(namespaces=options.namespaces),
         )
-    except (PyXSDError, OSError) as e:
+    except (PyXSDError, ValueError, OSError) as e:
         print(f"pyxsd: error: {e}", file=sys.stderr)
         raise SystemExit(1) from e
 
