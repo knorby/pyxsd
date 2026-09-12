@@ -855,3 +855,39 @@ class TestWriterNamespaces:
         assert "<root" in output
         assert "<a" in output
         assert "</a>" in output
+
+    def test_xml_namespace_uses_reserved_prefix(self, tmp_path):
+        """The reserved xml namespace keeps its implicit ``xml`` prefix.
+
+        Binding it to a generated ``nsN`` prefix makes the output
+        unparseable: XML reserves the ``xml`` prefix.
+        """
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
+            xmlns:xml="http://www.w3.org/XML/1998/namespace"
+            targetNamespace="urn:t" elementFormDefault="qualified">
+          <xs:complexType name="Holder">
+            <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+            <xs:attribute ref="xml:space"/>
+          </xs:complexType>
+          <xs:element name="root" type="t:Holder"/>
+        </xs:schema>"""
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(schema)
+        instance_path = tmp_path / "instance.xml"
+        instance_path.write_text('<root xmlns="urn:t" xml:space="preserve"><a>x</a></root>')
+        parser = PyXSD(
+            instance_path,
+            xsdFile=schema_path,
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=ParseModes.NAMESPACED,
+        )
+        assert not parser.report.has_errors
+        output = _write_instance(parser)
+
+        reparsed = ET.fromstring(output)
+        assert reparsed.get("{http://www.w3.org/XML/1998/namespace}space") == "preserve"
+        assert "xml:space" in output
+        # The xml prefix is implicit in every document; redeclaring it
+        # is redundant.
+        assert "xmlns:xml" not in output
