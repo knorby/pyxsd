@@ -64,3 +64,19 @@ jobs:
 
       - name: mypy
         run: uv run mypy src/pyxsd
+
+  oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+
+      - name: Sync environment
+        run: uv sync --group dev --python 3.12
+
+      - name: Compare against the xmlschema oracle
+        run: uv run pytest tests/test_oracle.py -q
+        env:
+          PYXSD_RUN_ORACLE: "1"

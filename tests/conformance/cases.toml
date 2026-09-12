@@ -1890,3 +1890,248 @@ instance = '''
 '''
 instance_valid = false
 expected_codes = ["identity-unique"]
+
+[[case]]
+id = "structure/group-occurrence-independent"
+description = "A group reference's occurrence applies to that use only, never to the shared group"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (reference occurrences)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g">
+    <xs:sequence>
+      <xs:element name="a" type="xs:int"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:complexType name="Optional">
+    <xs:sequence>
+      <xs:group ref="g" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Required">
+    <xs:sequence>
+      <xs:group ref="g"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="r" type="Required"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r/>
+'''
+instance_valid = false
+expected_codes = ["occurrence-min"]
+
+[[case]]
+id = "structure/wildcard-positional-declared-name-valid"
+description = "A wildcard particle may consume a name that is also declared later in the sequence"
+derived_from = "W3C XMLSchema1TestSuite, group 'any' (positional matching)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any processContents="skip"/>
+        <xs:element name="a" type="xs:int" maxOccurs="2"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r><a>1</a><a>2</a></r>
+'''
+
+[[case]]
+id = "structure/wildcard-second-particle-strict-invalid"
+description = "Each wildcard particle enforces its own processContents, not the first match"
+derived_from = "W3C XMLSchema1TestSuite, group 'any' (processContents per particle)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any processContents="skip"/>
+        <xs:any processContents="strict"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r><a/><b/></r>
+'''
+instance_valid = false
+expected_codes = ["wildcard-no-declaration"]
+
+[[case]]
+id = "structure/group-wildcard-valid"
+description = "A wildcard contributed by a named group reaches matching and binding"
+derived_from = "W3C XMLSchema1TestSuite, group 'any' (wildcard inside a group)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g">
+    <xs:sequence>
+      <xs:any processContents="skip"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:group ref="g"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r><a/></r>
+'''
+
+[[case]]
+id = "structure/name-collision-valid"
+description = "An element and an attribute sharing a name both bind; the element gets an alias"
+derived_from = "W3C XMLSchema1TestSuite (element and attribute declarations)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="item">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="code" type="xs:int"/>
+      </xs:sequence>
+      <xs:attribute name="code" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<item code="external"><code>7</code></item>
+'''
+
+[[case]]
+id = "occurrence/nil-whitespace-invalid"
+description = "xsi:nil requires a completely empty element; whitespace-only text is content"
+derived_from = "W3C XMLSchema1TestSuite, group 'nillable' (invalid instances)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="v" type="xs:int" nillable="true"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <v xsi:nil="true"> </v>
+</r>
+'''
+instance_valid = false
+expected_codes = ["nil"]
+
+[[case]]
+id = "occurrence/nil-fixed-invalid"
+description = "xsi:nil conflicts with a declaration that carries a fixed value"
+derived_from = "W3C XMLSchema1TestSuite, group 'nillable' (nil vs fixed)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="v" type="xs:int" nillable="true" fixed="7"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <v xsi:nil="true"/>
+</r>
+'''
+instance_valid = false
+expected_codes = ["nil"]
+
+[[case]]
+id = "composition/import-form-defaults-valid"
+description = "Imported components keep their source schema's form defaults"
+derived_from = "W3C XMLSchema1TestSuite, group 'import' (form defaults)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:m" xmlns:m="urn:m" xmlns:o="urn:o"
+           elementFormDefault="qualified">
+  <xs:import namespace="urn:o" schemaLocation="imported.xsd"/>
+  <xs:element name="r" type="o:T"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<m:r xmlns:m="urn:m" xmlns:o="urn:o" o:id="1"><a>7</a></m:r>
+'''
+[case.files]
+"imported.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:o"
+           elementFormDefault="unqualified" attributeFormDefault="qualified">
+  <xs:complexType name="T">
+    <xs:sequence>
+      <xs:element name="a" type="xs:int"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+  </xs:complexType>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/import-form-defaults-invalid"
+description = "The host schema's form defaults must not be applied to imported components"
+derived_from = "W3C XMLSchema1TestSuite, group 'import' (form defaults, invalid instances)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:m" xmlns:m="urn:m" xmlns:o="urn:o"
+           elementFormDefault="qualified">
+  <xs:import namespace="urn:o" schemaLocation="imported.xsd"/>
+  <xs:element name="r" type="o:T"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<m:r xmlns:m="urn:m" xmlns:o="urn:o" id="1"><o:a>7</o:a></m:r>
+'''
+instance_valid = false
+expected_codes = ["missing-attribute", "unexpected-element"]
+[case.files]
+"imported.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:o"
+           elementFormDefault="unqualified" attributeFormDefault="qualified">
+  <xs:complexType name="T">
+    <xs:sequence>
+      <xs:element name="a" type="xs:int"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+  </xs:complexType>
+</xs:schema>
+'''

@@ -31,6 +31,41 @@ requires_musicxml_schemas = pytest.mark.skipif(
     reason="run examples/musicxml/download_schemas.py to fetch the MusicXML schemas",
 )
 
+# A minimal GPX 1.1 subset carrying only what TrackStats reads. The
+# real-schema tests above skip when the downloaded schema is missing;
+# these keep the segment behavior covered in a clean checkout.
+GPX_SUBSET_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="gpx">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="trk" minOccurs="0" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="trkseg" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="trkpt" minOccurs="0" maxOccurs="unbounded">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element name="ele" type="xs:double" minOccurs="0"/>
+                        </xs:sequence>
+                        <xs:attribute name="lat" type="xs:double" use="required"/>
+                        <xs:attribute name="lon" type="xs:double" use="required"/>
+                      </xs:complexType>
+                    </xs:element>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+
 
 def _run(example, transform, tmp_path, mode=ParseModes.STRICT, output_name="out.xml"):
     output = tmp_path / output_name
@@ -158,6 +193,66 @@ class TestGpxExample:
         distance = float(root.attrib["distanceMeters"])
         assert 111100.0 < distance < 111300.0
         assert root.attrib["elevationGain"] == "100.0"
+        assert root.attrib["elevationLoss"] == "0.0"
+
+
+class TestGpxSegmentsSelfContained:
+    """Segment-local statistics without the downloaded GPX schema.
+
+    The real-schema tests above skip in a clean checkout; these run the
+    same ``TrackStats`` transform against an embedded GPX subset so the
+    segment semantics stay covered everywhere.
+    """
+
+    def _stats(self, tmp_path, monkeypatch, instance_text):
+        schema = tmp_path / "gpx-subset.xsd"
+        schema.write_text(GPX_SUBSET_SCHEMA)
+        instance = tmp_path / "instance.xml"
+        instance.write_text(instance_text)
+        monkeypatch.chdir(EXAMPLES / "gpx")
+        output = tmp_path / "stats.xml"
+        parser = PyXSD(
+            instance,
+            xsdFile=schema,
+            xmlFileOutput="_No_Output_",
+            transformOutputName=str(output),
+            transforms=["TrackStats()"],
+        )
+        assert not parser.report.has_errors
+        return ET.parse(output).getroot()
+
+    def test_segments_are_not_bridged(self, tmp_path, monkeypatch):
+        root = self._stats(
+            tmp_path,
+            monkeypatch,
+            "<gpx><trk><trkseg>"
+            '<trkpt lat="0.0" lon="0.0"><ele>0.0</ele></trkpt>'
+            '<trkpt lat="0.0" lon="1.0"><ele>100.0</ele></trkpt>'
+            "</trkseg><trkseg>"
+            '<trkpt lat="0.0" lon="2.0"><ele>50.0</ele></trkpt>'
+            "</trkseg></trk></gpx>",
+        )
+        assert root.attrib["pointCount"] == "3"
+        # Only the single leg inside the first segment; the gap to the
+        # second segment is not a recorded movement.
+        distance = float(root.attrib["distanceMeters"])
+        assert 111100.0 < distance < 111300.0
+        assert root.attrib["elevationGain"] == "100.0"
+        assert root.attrib["elevationLoss"] == "0.0"
+
+    def test_single_point_tracks_do_not_invent_movement(self, tmp_path, monkeypatch):
+        root = self._stats(
+            tmp_path,
+            monkeypatch,
+            "<gpx><trk><trkseg>"
+            '<trkpt lat="0.0" lon="0.0"><ele>0.0</ele></trkpt>'
+            "</trkseg></trk><trk><trkseg>"
+            '<trkpt lat="0.0" lon="1.0"><ele>100.0</ele></trkpt>'
+            "</trkseg></trk></gpx>",
+        )
+        assert root.attrib["pointCount"] == "2"
+        assert root.attrib["distanceMeters"] == "0.0"
+        assert root.attrib["elevationGain"] == "0.0"
         assert root.attrib["elevationLoss"] == "0.0"
 
 

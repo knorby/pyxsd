@@ -2,7 +2,7 @@
 
 pyxsd 1.0 implements a substantial, honest subset of XSD 1.0. This page
 summarizes what is validated, with pointers to the regression corpus that
-backing every claim (66 independently authored manifest-driven cases
+backing every claim (74 independently authored manifest-driven cases
 inspired by the W3C XMLSchema1TestSuite and NIST datatype feature areas —
 run
 `uv run python tests/report_conformance.py` for the live pass-rate report).
@@ -22,15 +22,25 @@ NMTOKENS/IDREFS/ENTITIES.
 
 - `xs:sequence`, `xs:choice`, `xs:all` content models with order and
   occurrence checking
-- `xs:group` definitions and references (nested, with occurrence folding
-  and cycle detection)
+- `xs:group` definitions and references (nested, with cycle detection);
+  a reference's `minOccurs`/`maxOccurs` stays with that reference and
+  never affects other uses of the shared group
 - `xs:attributeGroup` definitions and references
 - `xs:any` / `xs:anyAttribute` wildcards with namespace lists
   (`##any`, `##other`, `##local`, `##targetNamespace`, explicit URIs) and
-  `processContents` (`strict` / `lax` / `skip`), enforced in namespaced mode
+  `processContents` (`strict` / `lax` / `skip`), enforced in namespaced
+  mode; wildcard particles take part in sequence order and occurrence
+  matching, and each matched child is bound through the particle that
+  admitted it (including wildcards contributed by a group)
+- element and attribute declarations sharing a name: both are kept — the
+  attribute keeps the natural accessor and the element is exposed under
+  a collision-safe alias (`<name>_element`, with a numeric suffix when
+  that is taken)
 - XML Namespaces in namespaced mode: `targetNamespace`,
-  `elementFormDefault` / `attributeFormDefault`, prefixed type/`ref` QNames,
-  cross-namespace `xs:import`, and QName value identity
+  `elementFormDefault` / `attributeFormDefault` (including the source
+  schema's defaults for imported components and explicit `form`
+  overrides), prefixed type/`ref` QNames, cross-namespace `xs:import`,
+  and QName value identity
 - `xs:union` (declared members and inline anonymous members)
 - element references (`ref`) and substitution groups
 - complex content `xs:extension` / `xs:restriction` derivation with `final`
@@ -39,7 +49,10 @@ NMTOKENS/IDREFS/ENTITIES.
 ## Instance semantics
 
 - `minOccurs`/`maxOccurs` enforcement (including `unbounded`)
-- `xsi:nil` on nillable elements (nil instances preserved in output)
+- `xsi:nil` on nillable elements: a nilled element must be completely
+  empty (whitespace-only text and child elements are reported), may not
+  carry a `fixed` value, still has its attributes validated, and is
+  preserved as nil in output
 - `default` and `fixed` for attributes and simple-content elements
 - `xsi:type` dynamic dispatch on child elements and the document root
 - `abstract` elements and types; `block`/`prohibited` restrictions
