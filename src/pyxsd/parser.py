@@ -104,14 +104,14 @@ class PyXSD:
     # Resolved to a Path for file inputs, held as-is for file objects.
     xmlFileInput: Path | IO[str]
     xmlPath: Path
-    xsdFile: str | Path | os.PathLike[str] | None
+    xsdFile: str | Path | os.PathLike[str] | IO[str] | None
     xmlFileOutput: str | Path | bool
     schemaRootInstance: Any
 
     def __init__(
         self,
         xmlFileInput: str | Path | os.PathLike[str] | IO[str],
-        xsdFile: str | Path | os.PathLike[str] | None = None,
+        xsdFile: str | Path | os.PathLike[str] | IO[str] | None = None,
         xmlFileOutput: str | bool = False,
         transformOutputName: str | None = None,
         transforms: list[str] | None = None,
@@ -128,8 +128,9 @@ class PyXSD:
           accepted. Will raise an error if not specified.
 
         - ``xsdFile`` - the filename/path information for the schema
-          file. Will attempt to use the schemaLocation tag in the xml
-          if not specified.
+          file; a file object open for reading is also accepted. Will
+          attempt to use the schemaLocation tag in the xml if not
+          specified.
 
         - ``xmlFileOutput`` - location for xml output to be sent after
           it is parsed. Will use a default name if not specified. Will
@@ -185,9 +186,12 @@ class PyXSD:
         self.schemaContext = SchemaContext(components=ComponentTable())
         self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
-        # Identity set of transform-embedded reports already merged
-        # into self.report (see _absorbTransformReport).
-        self._absorbedReports: set[int] = set()
+        # Transform-embedded reports already merged into self.report
+        # (see _absorbTransformReport). The objects are retained so
+        # identity stays meaningful for the parser's lifetime; storing
+        # only id() values allowed a collected report's address to be
+        # reused and a new report to be mistaken for one already merged.
+        self._absorbedReports: list[ValidationReport] = []
         # Prefix-to-URI bindings captured while parsing the instance and
         # every schema document; one context accumulates them all so a
         # component resolves QNames against its own document's scope.
@@ -1261,13 +1265,16 @@ class PyXSD:
         inside their own parser run. Without this merge, problems in
         the transformed content would vanish with the inner run and
         ``--strict`` (which inspects this report) could not see them.
+        Only :class:`ValidationReport` values are merged: a transform is
+        free to use its ``report`` attribute for its own data.
         """
         if report is None or report is self.report:
             return
-        key = id(report)
-        if key in self._absorbedReports:
+        if not isinstance(report, ValidationReport):
             return
-        self._absorbedReports.add(key)
+        if any(report is absorbed for absorbed in self._absorbedReports):
+            return
+        self._absorbedReports.append(report)
         self.report.extend(report)
 
     def getTransformsFileName(self) -> Path:

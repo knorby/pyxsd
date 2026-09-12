@@ -1,3 +1,6 @@
+import contextlib
+import os.path
+from pathlib import Path
 from typing import IO, Any
 
 from pyxsd.parser import PyXSD
@@ -26,7 +29,7 @@ class SendTreeToPyXSD(Displayer):
 
     def __call__(
         self,
-        xsdFile: str | None = None,
+        xsdFile: str | Path | os.PathLike[str] | IO[str] | None = None,
         xmlFileOutput: str | bool = "_No_Output_",
         transformOutputName: str | None = None,
         transforms: list[str] | None = None,
@@ -35,16 +38,22 @@ class SendTreeToPyXSD(Displayer):
         verbose: bool = False,
         quiet: bool = False,
         mode: Any = None,
+        namespace_schemas: dict[str, str] | None = None,
     ) -> Any:
         """Reparses the tree and stores the run's report on ``self``.
 
         - ``xsdFile``: the schema to revalidate against. When omitted,
-          the enclosing parser's schema is used (driver-attached runs
-          only; a standalone call without any schema raises the
-          parser's usual no-schema error).
+          the enclosing parser's schema is used as it was given: a path
+          stays a path, and an in-memory schema stream is rewound and
+          reused rather than converted to a filename. A standalone call
+          without any schema raises the parser's usual no-schema error.
 
         - ``mode``: the binding policy for the revalidation. When
           omitted, the enclosing parser's mode is inherited.
+
+        - ``namespace_schemas``: ``{namespace: location}`` mappings for
+          imports without a ``schemaLocation``. When omitted, the
+          enclosing parser's mapping is inherited.
 
         - ``self.parser``: the constructed PyXSD object (the tree it
           parsed is its own bound copy; the transform still returns the
@@ -55,9 +64,15 @@ class SendTreeToPyXSD(Displayer):
         """
         outer = getattr(self, "outerParser", None)
         if xsdFile is None and outer is not None:
-            xsdFile = str(outer.xsdFile)
-        self._xmlInput = self.makeTempFileOfTree()
+            xsdFile = outer.xsdFile
+            if hasattr(xsdFile, "seek"):
+                # Non-seekable streams are reused as-is.
+                with contextlib.suppress(OSError, ValueError):
+                    xsdFile.seek(0)
+        if namespace_schemas is None and outer is not None:
+            namespace_schemas = dict(outer.namespaceSchemas)
         try:
+            self._xmlInput = self.makeTempFileOfTree()
             if not xmlFileOutput:
                 xmlFileOutput = "tempFileParsed.xml"
             if transformOutputName is None:
@@ -74,13 +89,16 @@ class SendTreeToPyXSD(Displayer):
                 "verbose": verbose,
                 "quiet": quiet,
             }
+            if namespace_schemas:
+                kwargs["namespace_schemas"] = namespace_schemas
             if mode is None and outer is not None:
                 mode = outer.mode
             if mode is not None:
                 kwargs["mode"] = mode
             parser = PyXSD(self._xmlInput, xsdFile, **kwargs)
         finally:
-            self._xmlInput.close()
+            if self._xmlInput is not None:
+                self._xmlInput.close()
         self.parser = parser
         self.report = parser.report
         return self.root
