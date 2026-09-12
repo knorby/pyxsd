@@ -125,12 +125,16 @@ class Element(ElementRepresentative):
         # name across namespaces (a strict-mode local-name fallback
         # would silently bind the wrong one). In legacy mode
         # ``resolvedTypeName`` returns the raw type, so this is the same
-        # lookup as before.
+        # lookup as before. Declarations that are not installed as class
+        # descriptors (for example a named group's shared elements) were
+        # never stamped with ``pyXSD`` by the class builder; fall back to
+        # the owning schema's parser, as ``instanceName`` does.
+        parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
         resolved = self.resolvedTypeName()
-        if resolved is not None and resolved in self.pyXSD.classes:
-            return self.pyXSD.classes[resolved]
+        if parser is not None and resolved is not None and resolved in parser.classes:
+            return parser.classes[resolved]
 
-        return self.typeFromName(resolved, self.pyXSD)
+        return self.typeFromName(resolved, parser)
 
     def __set_name__(self, owner, name):
         """Called when this descriptor is bound as ``name`` on ``owner``.

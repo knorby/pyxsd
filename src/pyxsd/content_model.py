@@ -34,6 +34,10 @@ class Particle:
     ``kind`` is ``sequence``, ``choice``, ``all``, ``element`` or
     ``any``. ``max_occurs`` of ``None`` means unbounded. An ``any``
     particle carries the wildcard's :class:`WildcardSpec` in ``spec``.
+    An ``element`` particle carries the declaration that position uses
+    in ``descriptor``, so binding validates each occurrence through the
+    particle that consumed it instead of re-deriving a declaration by
+    name.
     """
 
     kind: str
@@ -42,6 +46,7 @@ class Particle:
     children: list[Particle] = field(default_factory=list)
     name: str | None = None
     spec: WildcardSpec | None = None
+    descriptor: Any = None
 
     def is_element(self) -> bool:
         return self.kind == "element"
@@ -227,7 +232,11 @@ def _compile_element(item: Any, py_xsd: Any) -> Particle | None:
     maximum = item.getMaxOccurs()
     if maximum >= _UNBOUNDED_THRESHOLD:
         maximum = None
-    return Particle("element", minimum, maximum, [], name)
+    # Carry the resolved declaration: a reference site delegates its
+    # constraints to the referred declaration, and that declaration is
+    # the one whose type and ``fixed`` value validate the occurrence.
+    descriptor = target if target is not None else item
+    return Particle("element", minimum, maximum, [], name, None, descriptor=descriptor)
 
 
 def _compile_group_ref(

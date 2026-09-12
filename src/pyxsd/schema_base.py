@@ -641,13 +641,34 @@ class SchemaBase:
 
         for elementIndex, subElement in enumerate(subElements):
             subElementName = cls._node_name(subElement)
+            admitted = admittedBy.get(elementIndex)
+            if admitted is not None and admitted.kind == "any" and admitted.spec is not None:
+                # The model admitted the child through this wildcard
+                # particle. Bind it through that particle even when a
+                # declaration with the same name exists elsewhere in the
+                # model: position decides, not the name.
+                cls._bindWildcardChild(instance, subElement, admitted.spec)
+                continue
+
             matched = False
             queue = descriptorQueues.get(subElementName)
             if queue:
                 matched = True
                 used = descriptorUses.get(subElementName, 0)
-                descriptor = queue[min(used, len(queue) - 1)]
+                bindingDescriptor = queue[min(used, len(queue) - 1)]
                 descriptorUses[subElementName] = used + 1
+                descriptor = bindingDescriptor
+                if (
+                    admitted is not None
+                    and admitted.kind == "element"
+                    and admitted.descriptor is not None
+                    and admitted.descriptor is not bindingDescriptor
+                ):
+                    # The particle that consumed the child carries its
+                    # own declaration (a repeated declaration, or a
+                    # group's per-use copy): validate through it while
+                    # the accessor slot stays with the class descriptor.
+                    descriptor = admitted.descriptor
                 repeated = len(queue) > 1 or any(item.isList() for item in queue)
                 if descriptor.isAbstract():
                     cls._report_error(
@@ -674,6 +695,7 @@ class SchemaBase:
                         descriptor,
                         aggregate=repeated,
                         leader=queue[0],
+                        binding=bindingDescriptor,
                     )
 
             if not matched and substitutionGroups:
@@ -681,12 +703,7 @@ class SchemaBase:
 
             if not matched:
                 wildcardSpec = None
-                admitted = admittedBy.get(elementIndex)
                 if admitted is not None and admitted.kind == "any" and admitted.spec is not None:
-                    # The content model admitted this child through a
-                    # specific wildcard particle; use that particle's
-                    # constraint instead of searching for a compatible
-                    # wildcard again.
                     wildcardSpec = admitted.spec
                 elif hasWildcard:
                     if strictNamespaces:
@@ -770,7 +787,15 @@ class SchemaBase:
 
     @classmethod
     def _addChildInstance(
-        cls, instance, subElement, subElCls, descriptor, *, aggregate=False, leader=None
+        cls,
+        instance,
+        subElement,
+        subElCls,
+        descriptor,
+        *,
+        aggregate=False,
+        leader=None,
+        binding=None,
     ):
         """Builds and stores the instance for one matched child element.
 
@@ -782,6 +807,9 @@ class SchemaBase:
         declaration occurs in more than one particle of the effective
         model; ``leader`` is the first descriptor for the declaration,
         which owns the accessor and storage slot in that case.
+        ``binding`` is the class descriptor that owns the accessor slot
+        when it differs from ``descriptor`` (the validating declaration
+        carried by the matched particle); it defaults to ``descriptor``.
         """
         subElementName = cls._node_name(subElement)
         nilled = xsi.xsi_nil_is_true(subElement)
@@ -799,7 +827,12 @@ class SchemaBase:
                 element=cls.__name__,
             )
 
-        storage = leader if (aggregate and leader is not None) else descriptor
+        if aggregate and leader is not None:
+            storage = leader
+        elif binding is not None:
+            storage = binding
+        else:
+            storage = descriptor
         accessor, descriptorBound = cls._childAccessor(instance, storage, subElement)
 
         # for elements with primitive types

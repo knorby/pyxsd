@@ -86,7 +86,9 @@ def test_wildcard_can_consume_a_declared_name_positionally(tmp_path):
     (tmp_path / "v").mkdir(exist_ok=True)
     valid = parse(tmp_path / "v", schema, "<r><a>1</a><a>2</a></r>")
     assert codes(valid) == []
-    assert valid.schemaRootInstance.a == [1, 2]
+    # The first child was admitted by the wildcard, so it is generic
+    # content: only the declared occurrence reaches the typed accessor.
+    assert valid.schemaRootInstance.a == [2]
 
     # One a is not enough for both a minOccurs=1 wildcard and the element.
     (tmp_path / "short").mkdir(exist_ok=True)
