@@ -689,14 +689,25 @@ registry = _RegistryProxy()
 _ACTIVE_NAMESPACE_OVERRIDES: dict[int, str | None] = {}
 
 
+def get_active_namespace_overrides() -> dict[int, str | None]:
+    """Returns the currently installed namespace-override map.
+
+    Read once, at ``Schema`` construction time, so each parser's schema
+    representative captures its own parser's snapshot.
+    """
+    return _ACTIVE_NAMESPACE_OVERRIDES
+
+
 def set_active_namespace_overrides(overrides: dict[int, str | None]) -> None:
     """Installs the parser-owned per-component namespace overrides.
 
-    The module-level mapping is mutated in place so modules that
-    imported it by name (``schema``) observe the installed values.
+    The map is installed as a snapshot copy and the module global is
+    rebound, not mutated in place: a ``Schema`` representative keeps
+    the map it captured at construction, so a later parser's install
+    cannot rewrite an earlier parser's component namespaces.
     """
-    _ACTIVE_NAMESPACE_OVERRIDES.clear()
-    _ACTIVE_NAMESPACE_OVERRIDES.update(overrides)
+    global _ACTIVE_NAMESPACE_OVERRIDES
+    _ACTIVE_NAMESPACE_OVERRIDES = dict(overrides)
 
 
 # Import all of the tag-specific classes after the ER class definition

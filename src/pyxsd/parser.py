@@ -709,6 +709,14 @@ class PyXSD:
         """
         logger.debug("Starting to parse the xml file.")
 
+        # Re-activate this parser's schema context: another parser may
+        # have installed its own namespace overrides and component
+        # table since this parser's schema run.
+        import pyxsd.element_representatives.element_representative as ermod
+
+        set_active_namespace_overrides(self._namespaceOverrides)
+        ermod._ACTIVE_TABLE = self.components
+
         # Binding diagnostics from here on belong to the instance phase.
         self.report.phase = "instance"
 
