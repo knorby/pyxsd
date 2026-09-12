@@ -471,16 +471,18 @@ class SchemaBase:
             for member in members:
                 memberHeadMap[cls._instance_name_of(member)] = headMatch
 
-        # Wildcard (xs:any) pass-through. In legacy namespace mode any
-        # undeclared child is wildcard content; in strict mode only
-        # children admitted by a wildcard's namespace constraint are
-        # (the rest are reported). Order checking only sees declared
-        # children in that case.
+        # Wildcard (xs:any) constraints live in the compiled model as
+        # "any" particles, so order and occurrence are checked for
+        # wildcard content like any other content. The pre-filter below
+        # only applies when the model could not be compiled (the legacy
+        # order checkers must not see wildcard children).
         hasWildcard = getattr(instance, "hasWildcardElements_", False)
         strictNamespaces = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
         wildcardSpecs = cls._wildcard_element_specs(instance) if hasWildcard else []
         targetNamespace = getattr(cls, "_targetNamespace_", None)
-        if hasWildcard:
+
+        model = getattr(instance, "_contentModel_", None)
+        if model is None and hasWildcard:
             declaredNames = {cls._instance_name_of(descriptor) for descriptor in elemDescriptors}
             declaredNames.update(memberHeadMap)
             declaredChildren = []
@@ -498,10 +500,14 @@ class SchemaBase:
         else:
             declaredChildren = subElements
 
-        model = getattr(instance, "_contentModel_", None)
         if model is not None:
             complete, leftover = match_content(
-                model, declaredChildren, memberHeadMap, name_of=cls._node_name
+                model,
+                declaredChildren,
+                memberHeadMap,
+                name_of=cls._node_name,
+                target_namespace=targetNamespace,
+                namespace_checked=strictNamespaces,
             )
         else:
             complete, leftover = False, None
@@ -523,6 +529,19 @@ class SchemaBase:
                 # checkers do not cover (a closed model must consume
                 # every child).
                 declared = particle_names(model)
+
+                def exceeds_wildcard(node_name: str) -> bool:
+                    """True when a wildcard admits the name but the model
+                    still refused it: the wildcard's occurrence limits
+                    are exhausted."""
+                    if not hasWildcard:
+                        return False
+                    if not strictNamespaces:
+                        return True
+                    return (
+                        cls._wildcard_match(wildcardSpecs, node_name, targetNamespace) is not None
+                    )
+
                 for subElement in leftover:
                     subElementName = cls._node_name(subElement)
                     head = memberHeadMap.get(subElementName, subElementName)
@@ -533,7 +552,14 @@ class SchemaBase:
                             code="order",
                             element=cls.__name__,
                         )
-                    elif not hasWildcard or strictNamespaces:
+                    elif exceeds_wildcard(subElementName):
+                        cls._report_error(
+                            f"element '{subElementName}' exceeds the occurrence "
+                            "limits of the wildcard that allows it",
+                            code="order",
+                            element=cls.__name__,
+                        )
+                    else:
                         cls._report_error(
                             f"element '{subElementName}' is not declared in the "
                             "content model and no wildcard allows it",
@@ -541,8 +567,14 @@ class SchemaBase:
                             element=cls.__name__,
                         )
 
-            if model is not None and not leftover:
-                missing = first_required_name(model)
+            # A required particle is genuinely unmet when the best match
+            # consumed nothing (or there was nothing to consume): the
+            # model admitted no satisfying path. A static check on a
+            # partially-matched model would flag particles that the
+            # matching did satisfy, so it is skipped there.
+            if model is not None and not complete:
+                stalled = not leftover or leftover == declaredChildren
+                missing = first_required_name(model) if stalled else None
                 if missing is not None:
                     cls._report_error(
                         f"the content model requires element '{missing}', "

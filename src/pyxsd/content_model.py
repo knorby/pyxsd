@@ -17,7 +17,10 @@ legacy flat checks when compilation returns ``None``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
+
+from pyxsd.namespaces import namespace_of
+from pyxsd.wildcards import WildcardSpec, wildcard_spec
 
 _UNBOUNDED_THRESHOLD = 99999
 
@@ -26,8 +29,9 @@ _UNBOUNDED_THRESHOLD = 99999
 class Particle:
     """One node of a compiled content model.
 
-    ``kind`` is ``sequence``, ``choice``, ``all`` or ``element``.
-    ``max_occurs`` of ``None`` means unbounded.
+    ``kind`` is ``sequence``, ``choice``, ``all``, ``element`` or
+    ``any``. ``max_occurs`` of ``None`` means unbounded. An ``any``
+    particle carries the wildcard's :class:`WildcardSpec` in ``spec``.
     """
 
     kind: str
@@ -35,6 +39,7 @@ class Particle:
     max_occurs: int | None = 1
     children: list[Particle] = field(default_factory=list)
     name: str | None = None
+    spec: WildcardSpec | None = None
 
     def is_element(self) -> bool:
         return self.kind == "element"
@@ -58,7 +63,7 @@ def _occurrence(attributes: dict[str, Any]) -> tuple[int, int | None]:
 
 
 _CONTENT_WRAPPERS = ("ComplexContent", "Extension", "Restriction", "SimpleContent")
-_CONTENT_LEAVES = ("Sequence", "Choice", "All", "Element", "Group")
+_CONTENT_LEAVES = ("Sequence", "Choice", "All", "Element", "Group", "Any")
 
 
 def _content_children(er: Any) -> list[Any]:
@@ -157,11 +162,31 @@ def _compile_item(item: Any, owner: Any, visited: frozenset[str], py_xsd: Any) -
         return None
     if className == "Element":
         return _compile_element(item, py_xsd)
+    if className == "Any":
+        return _compile_any(item)
     if className in ("Sequence", "Choice", "All"):
         minimum, maximum = _occurrence(getattr(item, "tagAttributes", {}) or {})
         children = _compile_items(_content_children(item), owner, visited, py_xsd)
         return Particle(className.lower(), minimum, maximum, children)
     return None
+
+
+def _compile_any(item: Any) -> Particle:
+    """Compiles an ``xs:any`` wildcard into an ``any`` particle.
+
+    The wildcard's namespace constraint rides along in ``spec``; it is
+    applied at match time, where the schema's target namespace is known.
+    """
+    attributes = getattr(item, "tagAttributes", {}) or {}
+    minimum, maximum = _occurrence(attributes)
+    return Particle(
+        "any",
+        minimum,
+        maximum,
+        [],
+        None,
+        wildcard_spec(attributes, is_attribute=False),
+    )
 
 
 def _compile_element(item: Any, py_xsd: Any) -> Particle | None:
@@ -241,11 +266,13 @@ def particle_names(model: Particle | None) -> set[str]:
 
 
 def first_required_name(model: Particle | None) -> str | None:
-    """The first element name that must occur at least once, if any."""
+    """The first particle that must occur at least once, if any."""
     if model is None:
         return None
-    if model.is_element():
-        return model.name if model.min_occurs > 0 else None
+    if model.is_element() or model.kind == "any":
+        if model.min_occurs > 0:
+            return model.name or "wildcard content"
+        return None
     for child in model.children:
         name = first_required_name(child)
         if name is not None:
@@ -272,8 +299,33 @@ def expanded_name_of(node: Any) -> str:
     return node.tag
 
 
-def _accepts(node_name: str, particle: Particle, member_head_map: dict[str, str]) -> bool:
-    head = member_head_map.get(node_name, node_name)
+class _MatchContext(NamedTuple):
+    """Immutable per-call matching context.
+
+    Threading one object keeps the recursive matcher signatures short;
+    ``declared_names`` gives wildcards lower precedence than any
+    declared element or substitution member, and ``namespace_checked``
+    distinguishes strict namespace matching from the legacy rule that
+    every undeclared name is wildcard content.
+    """
+
+    member_head_map: dict[str, str]
+    name_of: Any
+    declared_names: frozenset[str]
+    target_namespace: str | None
+    namespace_checked: bool
+
+
+def _accepts(node_name: str, particle: Particle, ctx: _MatchContext) -> bool:
+    if particle.kind == "any":
+        # Declared particles always win; a wildcard only absorbs names
+        # nothing else in the model claims.
+        if node_name in ctx.declared_names:
+            return False
+        if not ctx.namespace_checked or particle.spec is None:
+            return True
+        return particle.spec.allows(namespace_of(node_name), ctx.target_namespace)
+    head = ctx.member_head_map.get(node_name, node_name)
     return particle.name == head
 
 
@@ -281,20 +333,19 @@ def _match_all(
     particle: Particle,
     nodes: list[Any],
     position: int,
-    member_head_map: dict[str, str],
-    name_of: Any,
+    ctx: _MatchContext,
 ) -> int | None:
     """Greedily match an ``xs:all`` particle; returns the end or ``None``."""
     counts = [0] * len(particle.children)
     index = position
     while index < len(nodes):
-        node_name = name_of(nodes[index])
+        node_name = ctx.name_of(nodes[index])
         chosen = None
         for i, member in enumerate(particle.children):
             limit = member.max_occurs
             if limit is not None and counts[i] >= limit:
                 continue
-            if _accepts(node_name, member, member_head_map):
+            if _accepts(node_name, member, ctx):
                 chosen = i
                 break
         if chosen is None:
@@ -320,8 +371,7 @@ def _ends_one(
     particle: Particle,
     nodes: list[Any],
     position: int,
-    member_head_map: dict[str, str],
-    name_of: Any,
+    ctx: _MatchContext,
     memo: dict[Any, frozenset[int]],
     depth: int,
 ) -> frozenset[int]:
@@ -333,8 +383,8 @@ def _ends_one(
     if cached is not None:
         return cached
 
-    if particle.is_element():
-        if position < len(nodes) and _accepts(name_of(nodes[position]), particle, member_head_map):
+    if particle.is_element() or particle.kind == "any":
+        if position < len(nodes) and _accepts(ctx.name_of(nodes[position]), particle, ctx):
             result = frozenset({position + 1})
         else:
             result = frozenset()
@@ -343,15 +393,7 @@ def _ends_one(
         for child in particle.children:
             advanced: set[int] = set()
             for start in current:
-                advanced |= _ends_repeated(
-                    child,
-                    nodes,
-                    start,
-                    member_head_map,
-                    name_of,
-                    memo,
-                    depth + 1,
-                )
+                advanced |= _ends_repeated(child, nodes, start, ctx, memo, depth + 1)
             current = advanced
             if not current:
                 break
@@ -359,18 +401,10 @@ def _ends_one(
     elif particle.kind == "choice":
         ends: set[int] = set()
         for branch in particle.children:
-            ends |= _ends_repeated(
-                branch,
-                nodes,
-                position,
-                member_head_map,
-                name_of,
-                memo,
-                depth + 1,
-            )
+            ends |= _ends_repeated(branch, nodes, position, ctx, memo, depth + 1)
         result = frozenset(ends)
     elif particle.kind == "all":
-        end = _match_all(particle, nodes, position, member_head_map, name_of)
+        end = _match_all(particle, nodes, position, ctx)
         result = frozenset() if end is None else frozenset({end})
     else:
         result = frozenset()
@@ -383,8 +417,7 @@ def _ends_repeated(
     particle: Particle,
     nodes: list[Any],
     position: int,
-    member_head_map: dict[str, str],
-    name_of: Any,
+    ctx: _MatchContext,
     memo: dict[Any, frozenset[int]],
     depth: int,
 ) -> frozenset[int]:
@@ -406,15 +439,7 @@ def _ends_repeated(
         count += 1
         advanced: set[int] = set()
         for start in frontier:
-            advanced |= _ends_one(
-                particle,
-                nodes,
-                start,
-                member_head_map,
-                name_of,
-                memo,
-                depth,
-            )
+            advanced |= _ends_one(particle, nodes, start, ctx, memo, depth)
         if count >= particle.min_occurs:
             results |= advanced
         if advanced == frontier and count >= particle.min_occurs:
@@ -433,19 +458,31 @@ def match_content(
     nodes: list[Any],
     member_head_map: dict[str, str] | None = None,
     name_of: Any = _name_of,
+    target_namespace: str | None = None,
+    namespace_checked: bool = False,
 ) -> tuple[bool, list[Any]]:
     """Matches child elements against a compiled content model.
 
     ``name_of`` extracts the name an instance node is matched by:
     the local name in legacy mode (the default) or the expanded tag in
-    strict namespace mode.
+    strict namespace mode. ``namespace_checked`` turns on namespace
+    checking for wildcard particles (strict namespace mode); in legacy
+    mode a wildcard absorbs any name no declared particle claims.
 
     Returns ``(complete, leftover)``: ``complete`` is True when the whole
     model is satisfied and consumes every node; ``leftover`` is the
     unconsumed tail of the best partial match.
     """
     member_head_map = member_head_map or {}
-    ends = _ends_repeated(model, nodes, 0, member_head_map, name_of, {}, 0)
+    declared = particle_names(model) | set(member_head_map)
+    ctx = _MatchContext(
+        member_head_map,
+        name_of,
+        frozenset(declared),
+        target_namespace,
+        namespace_checked,
+    )
+    ends = _ends_repeated(model, nodes, 0, ctx, {}, 0)
     if len(nodes) in ends:
         return True, []
     best = max(ends, default=0)
