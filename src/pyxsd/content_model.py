@@ -16,6 +16,8 @@ legacy flat checks when compilation returns ``None``.
 
 from __future__ import annotations
 
+import itertools
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -174,8 +176,10 @@ def _compile_item(item: Any, owner: Any, visited: frozenset[str], py_xsd: Any) -
 def _compile_any(item: Any) -> Particle:
     """Compiles an ``xs:any`` wildcard into an ``any`` particle.
 
-    The wildcard's namespace constraint rides along in ``spec``; it is
-    applied at match time, where the schema's target namespace is known.
+    The wildcard's namespace constraint rides along in ``spec``, along
+    with the target namespace of the document that declared it (so
+    ``##targetNamespace``/``##other`` keep their source meaning when a
+    derived type inherits the wildcard).
     """
     attributes = getattr(item, "tagAttributes", {}) or {}
     minimum, maximum = _occurrence(attributes)
@@ -185,7 +189,11 @@ def _compile_any(item: Any) -> Particle:
         maximum,
         [],
         None,
-        wildcard_spec(attributes, is_attribute=False),
+        wildcard_spec(
+            attributes,
+            is_attribute=False,
+            target_namespace=item.getNamespace(),
+        ),
     )
 
 
@@ -299,29 +307,41 @@ def expanded_name_of(node: Any) -> str:
     return node.tag
 
 
+class ChildMatch(NamedTuple):
+    """One consumed instance node and the particle that admitted it.
+
+    ``position`` is the node's position in the list passed to
+    :func:`match_content_associations`; ``particle`` is the element or
+    wildcard particle that consumed it. Binding uses these records
+    instead of searching the declarations again, so a child admitted by
+    a specific wildcard is validated and bound through *that* wildcard.
+    """
+
+    position: int
+    particle: Particle
+
+
 class _MatchContext(NamedTuple):
     """Immutable per-call matching context.
 
     Threading one object keeps the recursive matcher signatures short;
-    ``declared_names`` gives wildcards lower precedence than any
-    declared element or substitution member, and ``namespace_checked``
-    distinguishes strict namespace matching from the legacy rule that
-    every undeclared name is wildcard content.
+    ``namespace_checked`` distinguishes strict namespace matching from
+    the legacy rule that every undeclared name is wildcard content.
+    Wildcard precedence is positional: a wildcard particle may consume
+    a declared name when the wildcard is the particle active at that
+    point (so a repeated declaration can flow into a later element
+    particle), and declared particles consume their names where they
+    appear in the model.
     """
 
     member_head_map: dict[str, str]
     name_of: Any
-    declared_names: frozenset[str]
     target_namespace: str | None
     namespace_checked: bool
 
 
 def _accepts(node_name: str, particle: Particle, ctx: _MatchContext) -> bool:
     if particle.kind == "any":
-        # Declared particles always win; a wildcard only absorbs names
-        # nothing else in the model claims.
-        if node_name in ctx.declared_names:
-            return False
         if not ctx.namespace_checked or particle.spec is None:
             return True
         return particle.spec.allows(namespace_of(node_name), ctx.target_namespace)
@@ -334,9 +354,15 @@ def _match_all(
     nodes: list[Any],
     position: int,
     ctx: _MatchContext,
-) -> int | None:
-    """Greedily match an ``xs:all`` particle; returns the end or ``None``."""
+) -> tuple[int | None, list[ChildMatch]]:
+    """Greedily match an ``xs:all`` particle.
+
+    Returns ``(end, matches)``: the position after the last consumed
+    node (``None`` when a minimum occurrence bound is unmet) and the
+    ordered association records for the nodes consumed.
+    """
     counts = [0] * len(particle.children)
+    matches: list[ChildMatch] = []
     index = position
     while index < len(nodes):
         node_name = ctx.name_of(nodes[index])
@@ -351,11 +377,12 @@ def _match_all(
         if chosen is None:
             break
         counts[chosen] += 1
+        matches.append(ChildMatch(index, particle.children[chosen]))
         index += 1
     for i, member in enumerate(particle.children):
         if counts[i] < member.min_occurs:
-            return None
-    return index
+            return None, []
+    return index, matches
 
 
 # The matcher returns sets of end positions and memoizes by particle and
@@ -404,7 +431,7 @@ def _ends_one(
             ends |= _ends_repeated(branch, nodes, position, ctx, memo, depth + 1)
         result = frozenset(ends)
     elif particle.kind == "all":
-        end = _match_all(particle, nodes, position, ctx)
+        end, _ = _match_all(particle, nodes, position, ctx)
         result = frozenset() if end is None else frozenset({end})
     else:
         result = frozenset()
@@ -453,6 +480,161 @@ def _ends_repeated(
     return result
 
 
+def _trace_one(
+    particle: Particle,
+    nodes: list[Any],
+    start: int,
+    target: int,
+    ctx: _MatchContext,
+    memo: dict[Any, frozenset[int]],
+    out: list[ChildMatch],
+) -> None:
+    """Records associations for one occurrence of ``particle``.
+
+    Precondition: ``target`` is in the particle's one-occurrence end set
+    from ``start``. The walker uses the memoized end sets to choose a
+    feasible path, so it reconstructs a real match rather than a greedy
+    approximation.
+    """
+    if particle.is_element() or particle.kind == "any":
+        out.append(ChildMatch(start, particle))
+        return
+    if particle.kind == "all":
+        end, matches = _match_all(particle, nodes, start, ctx)
+        if end == target:
+            out.extend(matches)
+        return
+    if particle.kind == "choice":
+        for branch in particle.children:
+            if target in _ends_repeated(branch, nodes, start, ctx, memo, 0):
+                _trace_repeated(branch, nodes, start, target, ctx, memo, out)
+                return
+        return
+    if particle.kind == "sequence":
+        children = particle.children
+        if not children or start == target:
+            return
+        # Backward feasibility: can[i] holds the positions from which
+        # children[i:] can reach the target. Then walk forward choosing
+        # a feasible split point for each child.
+        can: list[set[int]] = [set() for _ in range(len(children) + 1)]
+        can[-1] = {target}
+        for i in range(len(children) - 1, -1, -1):
+            for position in range(start, target):
+                if _ends_repeated(children[i], nodes, position, ctx, memo, 0) & can[i + 1]:
+                    can[i].add(position)
+        position = start
+        for index, child in enumerate(children):
+            ends = [
+                end
+                for end in sorted(_ends_repeated(child, nodes, position, ctx, memo, 0))
+                if end in can[index + 1]
+            ]
+            if not ends:
+                return
+            end = ends[0]
+            _trace_repeated(child, nodes, position, end, ctx, memo, out)
+            position = end
+        return
+
+
+def _trace_repeated(
+    particle: Particle,
+    nodes: list[Any],
+    start: int,
+    target: int,
+    ctx: _MatchContext,
+    memo: dict[Any, frozenset[int]],
+    out: list[ChildMatch],
+) -> None:
+    """Records associations for a bounded repetition of ``particle``.
+
+    Precondition: ``target`` is in the particle's repeated end set from
+    ``start``. A breadth-first search over ``(position, steps)`` finds a
+    chain of one-occurrence steps satisfying the occurrence bounds.
+    """
+    if start == target and particle.min_occurs == 0:
+        return
+    maximum = particle.max_occurs
+    if maximum is None:
+        maximum = len(nodes) + 1
+    start_state = (start, 0)
+    queue: deque[tuple[int, int]] = deque([start_state])
+    seen = {start_state}
+    previous: dict[tuple[int, int], tuple[int, int] | None] = {start_state: None}
+    found: tuple[int, int] | None = None
+    while queue:
+        position, steps = queue.popleft()
+        if steps >= particle.min_occurs and position == target:
+            found = (position, steps)
+            break
+        if steps >= maximum:
+            continue
+        for end in sorted(_ends_one(particle, nodes, position, ctx, memo, 0)):
+            state = (end, steps + 1)
+            if state in seen:
+                continue
+            if end == position and steps + 1 > particle.min_occurs:
+                # A zero-width occurrence beyond the minimum cannot
+                # make progress; stop the chain from looping forever.
+                continue
+            seen.add(state)
+            previous[state] = (position, steps)
+            queue.append(state)
+    if found is None:
+        return
+    chain: list[tuple[int, int]] = []
+    cursor: tuple[int, int] | None = found
+    while cursor is not None:
+        chain.append(cursor)
+        cursor = previous[cursor]
+    chain.reverse()
+    for (before, _), (after, _) in itertools.pairwise(chain):
+        _trace_one(particle, nodes, before, after, ctx, memo, out)
+
+
+def match_content_associations(
+    model: Particle,
+    nodes: list[Any],
+    member_head_map: dict[str, str] | None = None,
+    name_of: Any = _name_of,
+    target_namespace: str | None = None,
+    namespace_checked: bool = False,
+) -> tuple[bool, list[Any], list[ChildMatch]]:
+    """Matches children and reports which particle admitted each node.
+
+    ``name_of`` extracts the name an instance node is matched by: the
+    local name in legacy mode (the default) or the expanded tag in
+    strict namespace mode. ``namespace_checked`` turns on namespace
+    checking for wildcard particles (strict namespace mode); in legacy
+    mode a wildcard absorbs any name no declared particle claims.
+
+    Returns ``(complete, leftover, associations)``: ``complete`` is True
+    when the whole model is satisfied and consumes every node;
+    ``leftover`` is the unconsumed tail of the best partial match;
+    ``associations`` maps each consumed node index to the element or
+    wildcard particle that admitted it.
+    """
+    member_head_map = member_head_map or {}
+    ctx = _MatchContext(
+        member_head_map,
+        name_of,
+        target_namespace,
+        namespace_checked,
+    )
+    memo: dict[Any, frozenset[int]] = {}
+    ends = _ends_repeated(model, nodes, 0, ctx, memo, 0)
+    complete = len(nodes) in ends
+    target = len(nodes) if complete else max(ends, default=0)
+    out: list[ChildMatch] = []
+    if complete or target > 0 or model.min_occurs == 0:
+        _trace_repeated(model, nodes, 0, target, ctx, memo, out)
+    out.sort(key=lambda match: match.position)
+    if complete:
+        return True, [], out
+    return False, list(nodes[target:]), out
+
+
 def match_content(
     model: Particle,
     nodes: list[Any],
@@ -463,27 +645,16 @@ def match_content(
 ) -> tuple[bool, list[Any]]:
     """Matches child elements against a compiled content model.
 
-    ``name_of`` extracts the name an instance node is matched by:
-    the local name in legacy mode (the default) or the expanded tag in
-    strict namespace mode. ``namespace_checked`` turns on namespace
-    checking for wildcard particles (strict namespace mode); in legacy
-    mode a wildcard absorbs any name no declared particle claims.
-
-    Returns ``(complete, leftover)``: ``complete`` is True when the whole
-    model is satisfied and consumes every node; ``leftover`` is the
-    unconsumed tail of the best partial match.
+    Returns ``(complete, leftover)``; see
+    :func:`match_content_associations` for the association records that
+    binding consumes.
     """
-    member_head_map = member_head_map or {}
-    declared = particle_names(model) | set(member_head_map)
-    ctx = _MatchContext(
+    complete, leftover, _ = match_content_associations(
+        model,
+        nodes,
         member_head_map,
         name_of,
-        frozenset(declared),
         target_namespace,
         namespace_checked,
     )
-    ends = _ends_repeated(model, nodes, 0, ctx, {}, 0)
-    if len(nodes) in ends:
-        return True, []
-    best = max(ends, default=0)
-    return False, list(nodes[best:])
+    return complete, leftover

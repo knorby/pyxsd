@@ -20,7 +20,11 @@ class Any(ElementRepresentative):
         ``__init__``.  See ElementRepresentative for more documentation.
         """
         super().__init__(xsdElement, parent)
-        self.wildcardSpec = wildcard_spec(self.tagAttributes, is_attribute=False)
+        self.wildcardSpec = wildcard_spec(
+            self.tagAttributes,
+            is_attribute=False,
+            target_namespace=self.getNamespace(),
+        )
         register_wildcard(self.getContainingType(), self.wildcardSpec)
 
     def getName(self):

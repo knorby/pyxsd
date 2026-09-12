@@ -3,7 +3,11 @@ from typing import Any, ClassVar
 
 from pyxsd import xsi
 from pyxsd.binding import BindingPolicy, ParseModes
-from pyxsd.content_model import first_required_name, match_content, particle_names
+from pyxsd.content_model import (
+    first_required_name,
+    match_content_associations,
+    particle_names,
+)
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
@@ -16,6 +20,32 @@ logger = logging.getLogger(__name__)
 def _mode_for(cls) -> BindingPolicy:
     """The binding policy stamped on a generated class (or STRICT)."""
     return getattr(cls, "_parseMode_", ParseModes.STRICT)
+
+
+def _global_declaration(components, local: str, kind: str, uri: str | None):
+    """Returns the *global* declaration named ``local`` in ``uri``.
+
+    Wildcard ``processContents`` checks look up global declarations
+    only. A local declaration inside an unrelated type must not satisfy
+    a strict wildcard, so candidates are filtered by kind, global
+    scope, and expanded name.
+    """
+    if components is None:
+        return None
+    entries = components.get(local)
+    if not entries:
+        return None
+    for entry in entries:
+        if componentKind(entry) != kind:
+            continue
+        is_global = getattr(entry, "isGlobalDeclaration", None)
+        if is_global is not None and not is_global():
+            continue
+        namespace = getattr(entry, "getNamespace", None)
+        if namespace is not None and namespace() != uri:
+            continue
+        return entry
+    return None
 
 
 class SchemaBase:
@@ -247,11 +277,7 @@ class SchemaBase:
         local = local_name(attr)
         uri = namespace_of(attr)
         components = getattr(parser, "components", None)
-        declaration = (
-            components.getFromName(local, kind="attribute", namespace=uri, warn=False)
-            if components is not None
-            else None
-        )
+        declaration = _global_declaration(components, local, "attribute", uri)
         if declaration is None:
             if spec.process_contents == "strict":
                 cls._report_error(
@@ -290,11 +316,7 @@ class SchemaBase:
         local = local_name(subElement.tag)
         uri = namespace_of(subElement.tag)
         components = getattr(parser, "components", None)
-        descriptor = (
-            components.getFromName(local, kind="element", namespace=uri, warn=False)
-            if components is not None
-            else None
-        )
+        descriptor = _global_declaration(components, local, "element", uri)
         if descriptor is not None:
             if descriptor.isAbstract():
                 cls._report_error(
@@ -505,7 +527,7 @@ class SchemaBase:
             declaredChildren = subElements
 
         if model is not None:
-            complete, leftover = match_content(
+            complete, leftover, childMatches = match_content_associations(
                 model,
                 declaredChildren,
                 memberHeadMap,
@@ -514,7 +536,11 @@ class SchemaBase:
                 namespace_checked=strictNamespaces,
             )
         else:
-            complete, leftover = False, None
+            complete, leftover, childMatches = False, None, []
+        # The particle that admitted each declared child. Binding uses
+        # these records so a child accepted by a particular wildcard is
+        # bound (and validated) through that wildcard.
+        admittedBy = {match.position: match.particle for match in childMatches}
 
         if model is None or not complete:
             sOrC = getattr(elemDescriptors[0], "sOrC", None) if elemDescriptors else None
@@ -597,7 +623,7 @@ class SchemaBase:
             descriptorQueues.setdefault(cls._instance_name_of(descriptor), []).append(descriptor)
         descriptorUses: dict[str, int] = {}
 
-        for subElement in subElements:
+        for elementIndex, subElement in enumerate(subElements):
             subElementName = cls._node_name(subElement)
             matched = False
             queue = descriptorQueues.get(subElementName)
@@ -639,7 +665,14 @@ class SchemaBase:
 
             if not matched:
                 wildcardSpec = None
-                if hasWildcard:
+                admitted = admittedBy.get(elementIndex)
+                if admitted is not None and admitted.kind == "any" and admitted.spec is not None:
+                    # The content model admitted this child through a
+                    # specific wildcard particle; use that particle's
+                    # constraint instead of searching for a compatible
+                    # wildcard again.
+                    wildcardSpec = admitted.spec
+                elif hasWildcard:
                     if strictNamespaces:
                         wildcardSpec = cls._wildcard_match(
                             wildcardSpecs, subElementName, targetNamespace
@@ -1580,4 +1613,5 @@ from pyxsd.element_representatives.attribute import Attribute  # noqa: E402
 from pyxsd.element_representatives.element import Element  # noqa: E402
 from pyxsd.element_representatives.element_representative import (  # noqa: E402
     ElementRepresentative,
+    componentKind,
 )

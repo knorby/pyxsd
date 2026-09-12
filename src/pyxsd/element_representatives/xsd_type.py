@@ -494,6 +494,11 @@ class XsdType(ElementRepresentative):
             # invalid or unresolved content.
             "_parseMode_": getattr(pyXSD, "mode", ParseModes.STRICT),
         }
+        # Expand group references before reading the wildcard metadata:
+        # a wildcard contributed by a named group registers on this type
+        # during expansion, and the class must stamp it so binding and
+        # occurrence checks see it.
+        elements = list(self.getElements())
         if getattr(self, "hasWildcardElements", False):
             namespace["hasWildcardElements_"] = True
         if getattr(self, "hasWildcardAttributes", False):
@@ -542,7 +547,6 @@ class XsdType(ElementRepresentative):
                     inheritedKeys.add(key)
                     inheritedAttributeNames.add(klass.__dict__[key].name)
 
-        elements = list(self.getElements())
         attributes = list(self.attributes.values())
         ownElementNames = {element.name for element in elements}
         ownAttributeNames = {attr.name for attr in attributes}
