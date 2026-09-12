@@ -1,21 +1,24 @@
 """Cross-check of pyxsd's verdicts against an independent oracle.
 
-This module is opt-in: it is skipped unless the environment variable
-``PYXSD_RUN_ORACLE=1`` is set. When it *is* requested, a missing
-``xmlschema`` installation fails the run rather than silently skipping
-the check. Run it after ``uv sync --group dev``::
+This module is opt-in locally: it is skipped unless the environment
+variable ``PYXSD_RUN_ORACLE=1`` is set. The CI workflow runs it as a
+required job with that variable set, and a missing ``xmlschema``
+installation then fails the run rather than silently skipping the
+check. Run it locally after ``uv sync --group dev``::
 
     PYXSD_RUN_ORACLE=1 uv run pytest tests/test_oracle.py -q
 
 ``xmlschema`` is a well-tested independent XSD 1.0 implementation. Where
 the two disagree, the disagreement is printed with the case id and
 direction so the result can be triaged. Internal crashes on either side
-are failures: "both crashed" is not agreement. Each case runs under the
-binding policy named by its manifest ``mode`` (``legacy`` by default), so
-the ``namespaced`` cases exercise namespace-aware matching alongside the
-oracle. The one remaining expected difference is a schema-composition
-warning/error mismatch; pyxsd's other documented limitations (identity
-XPath predicates, user facets, remote schemas) are not exercised by the
+are failures: "both crashed" is not agreement. Only xmlschema's own
+parse/namespace/validation errors are treated as verdicts; any other
+exception fails the test. Each case runs under the binding policy named
+by its manifest ``mode`` (``legacy`` by default), so the ``namespaced``
+cases exercise namespace-aware matching alongside the oracle. The one
+remaining expected difference is a schema-composition warning/error
+mismatch; pyxsd's other documented limitations (identity XPath
+predicates, user facets, remote schemas) are not exercised by the
 corpus.
 """
 
@@ -34,7 +37,7 @@ _ORACLE_REQUESTED = os.environ.get("PYXSD_RUN_ORACLE") == "1"
 
 pytestmark = pytest.mark.skipif(
     not _ORACLE_REQUESTED,
-    reason="set PYXSD_RUN_ORACLE=1 to run the non-gating xmlschema oracle",
+    reason="set PYXSD_RUN_ORACLE=1 to run the xmlschema oracle (required in CI)",
 )
 
 if _ORACLE_REQUESTED:
@@ -45,8 +48,15 @@ if _ORACLE_REQUESTED:
             "PYXSD_RUN_ORACLE=1 but the xmlschema oracle is not installed; "
             "install the dev dependency group (uv sync --group dev)"
         ) from exc
+    # The base of the errors xmlschema raises for its own parse,
+    # validation, and lookup verdicts. Anything else is an internal
+    # crash and must propagate.
+    from xmlschema.exceptions import XMLSchemaException
+
+    _ORACLE_ERRORS = (XMLSchemaException,)
 else:  # pragma: no cover - the skip above already short-circuits
     xmlschema = None  # type: ignore[assignment]
+    _ORACLE_ERRORS = ()
 
 CASES = load_cases()
 
@@ -90,16 +100,21 @@ def _pyxsd_verdict(case, directory):
 
 
 def _oracle_verdict(case, directory):
-    """Returns ``(schema_valid, instance_valid | None)`` for xmlschema."""
+    """Returns ``(schema_valid, instance_valid | None)`` for xmlschema.
+
+    Only xmlschema's own parse/validation errors become verdicts; any
+    other exception propagates so an oracle crash cannot masquerade as
+    agreement with pyxsd.
+    """
     try:
         schema = xmlschema.XMLSchema(str(directory / "schema.xsd"))
-    except Exception:
+    except _ORACLE_ERRORS:
         return False, None
     if "instance" not in case:
         return True, None
     try:
         return True, bool(schema.is_valid(str(directory / "instance.xml")))
-    except Exception:
+    except _ORACLE_ERRORS:
         # xmlschema raises on some instance errors (for example an
         # unresolvable xsi:type) instead of returning False.
         return True, False
@@ -127,3 +142,30 @@ def test_oracle_agrees(case, tmp_path):
             f"instance verdict differs for {case['id']}: "
             f"pyxsd={pyxsd_instance}, xmlschema={oracle_instance}"
         )
+
+
+def test_oracle_harness_fails_on_an_oracle_crash(tmp_path, monkeypatch):
+    """An unexpected xmlschema exception must fail, not become a verdict."""
+    case = CASES[0]
+    directory = _materialize(case, tmp_path)
+
+    def exploding(*args, **kwargs):
+        raise RuntimeError("oracle internal crash")
+
+    monkeypatch.setattr(xmlschema, "XMLSchema", exploding)
+    with pytest.raises(RuntimeError, match="oracle internal crash"):
+        _oracle_verdict(case, directory)
+
+
+def test_oracle_harness_fails_on_a_validation_crash(tmp_path, monkeypatch):
+    """An unexpected exception from ``is_valid`` must fail the harness."""
+    case = next(case for case in CASES if "instance" in case)
+    directory = _materialize(case, tmp_path)
+
+    class BrokenSchema:
+        def is_valid(self, source):
+            raise RuntimeError("validation internal crash")
+
+    monkeypatch.setattr(xmlschema, "XMLSchema", lambda source: BrokenSchema())
+    with pytest.raises(RuntimeError, match="validation internal crash"):
+        _oracle_verdict(case, directory)

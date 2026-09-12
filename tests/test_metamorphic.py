@@ -92,8 +92,17 @@ def test_group_occurrence_is_declaration_order_invariant(names):
         first_ok = parse(base / "first-ok", group_schema(names, optional_first=True), complete)
         second_ok = parse(base / "second-ok", group_schema(names, optional_first=False), complete)
         assert codes(first_ok) == codes(second_ok) == []
-        children = [child._name_ for child in first_ok.schemaRootInstance._children_]
-        assert children == names
+
+        def snapshot(parser):
+            root = parser.schemaRootInstance
+            children = [child._name_ for child in root._children_]
+            values = [str(root.__dict__[name]) for name in names]
+            return children, values
+
+        # Declaration order must not change what is bound, only how the
+        # schema is written down.
+        assert snapshot(first_ok) == snapshot(second_ok)
+        assert snapshot(first_ok) == (names, ["1"] * len(names))
 
 
 @settings(max_examples=10, deadline=None)
@@ -159,10 +168,11 @@ def attribute_to_xml(value: str) -> str:
 @settings(max_examples=30, deadline=None)
 @given(text=TEXT, note=st.text(alphabet="ab &<>\"'\r\n\t", max_size=8))
 def test_parse_write_parse_preserves_values(text, note):
-    """Writer output reparsed must carry exactly the bound values."""
+    """Writer output rebinds to the same values in a fresh parser."""
     instance = f'<r note="{attribute_to_xml(note)}"><text>{text_to_xml(text)}</text></r>'
     with tempfile.TemporaryDirectory() as temp:
-        parser = parse(Path(temp), ROUND_TRIP_SCHEMA, instance)
+        base = Path(temp)
+        parser = parse(base, ROUND_TRIP_SCHEMA, instance)
         assert not parser.report.has_errors
 
         root = parser.schemaRootInstance
@@ -171,6 +181,21 @@ def test_parse_write_parse_preserves_values(text, note):
 
         buffer = io.StringIO()
         XmlTreeWriter(root, buffer)
-        reparsed = ET.fromstring(buffer.getvalue())
+        serialized = buffer.getvalue()
+
+        # The element tree view must carry the exact values...
+        reparsed = ET.fromstring(serialized)
         assert (reparsed.findtext("text") or "") == text
         assert reparsed.attrib["note"] == note
+
+        # ...and a full second parse must validate and rebind them.
+        second = PyXSD(
+            io.StringIO(serialized),
+            str(base / "schema.xsd"),
+            xmlFileOutput=False,
+            transformOutputName=None,
+        )
+        assert not second.report.has_errors
+        second_root = second.schemaRootInstance
+        assert str(second_root.text) == text
+        assert str(second_root.note) == note
