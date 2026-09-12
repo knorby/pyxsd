@@ -2,7 +2,7 @@
 
 pyxsd 1.0 implements a substantial, honest subset of XSD 1.0. This page
 summarizes what is validated, with pointers to the regression corpus that
-backing every claim (74 independently authored manifest-driven cases
+backing every claim (78 independently authored manifest-driven cases
 inspired by the W3C XMLSchema1TestSuite and NIST datatype feature areas —
 run
 `uv run python tests/report_conformance.py` for the live pass-rate report).
@@ -31,7 +31,11 @@ NMTOKENS/IDREFS/ENTITIES.
   `processContents` (`strict` / `lax` / `skip`), enforced in namespaced
   mode; wildcard particles take part in sequence order and occurrence
   matching, and each matched child is bound through the particle that
-  admitted it (including wildcards contributed by a group)
+  admitted it — position decides, not the child's name (including
+  wildcards contributed by a group)
+- repeated declarations and inherited extension declarations validate
+  each occurrence through the particle that consumed it, so `fixed` and
+  type constraints stay with the declaration they were written on
 - element and attribute declarations sharing a name: both are kept — the
   attribute keeps the natural accessor and the element is exposed under
   a collision-safe alias (`<name>_element`, with a numeric suffix when

@@ -2135,3 +2135,109 @@ expected_codes = ["missing-attribute", "unexpected-element"]
   </xs:complexType>
 </xs:schema>
 '''
+
+[[case]]
+id = "structure/wildcard-positional-strict-invalid"
+description = "A strict wildcard's positional child is not satisfied by a later same-named declaration"
+derived_from = "W3C XMLSchema1TestSuite, group 'wildcard' (processContents strict)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any processContents="strict"/>
+        <xs:element name="a" type="xs:int"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r><a>1</a><a>2</a></r>
+'''
+instance_valid = false
+expected_codes = ["wildcard-no-declaration"]
+
+[[case]]
+id = "structure/wildcard-optional-suffix-invalid"
+description = "An absent optional suffix must not hide which wildcard admitted a child"
+derived_from = "W3C XMLSchema1TestSuite, group 'wildcard' (particle attribution)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any processContents="skip"/>
+        <xs:any processContents="strict"/>
+        <xs:element name="end" type="xs:string" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r><a/><b/></r>
+'''
+instance_valid = false
+expected_codes = ["wildcard-no-declaration"]
+
+[[case]]
+id = "occurrence/repeated-declaration-fixed-invalid"
+description = "Each occurrence of a repeated declaration validates through its own particle"
+derived_from = "W3C XMLSchema1TestSuite, group 'particles' (fixed values)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="a" type="xs:int" minOccurs="2" maxOccurs="2" fixed="1"/>
+        <xs:element name="a" type="xs:int" fixed="2"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r><a>1</a><a>2</a><a>2</a></r>
+'''
+instance_valid = false
+expected_codes = ["fixed-element"]
+
+[[case]]
+id = "composition/extension-inherited-fixed-invalid"
+description = "An extension's inherited declaration keeps its own fixed constraint"
+derived_from = "W3C XMLSchema1TestSuite, group 'extension' (inherited fixed values)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:sequence>
+      <xs:element name="a" type="xs:int" fixed="1"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="D">
+    <xs:complexContent>
+      <xs:extension base="B">
+        <xs:sequence>
+          <xs:element name="a" type="xs:int" fixed="2"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="r" type="D"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r><a>2</a><a>2</a></r>
+'''
+instance_valid = false
+expected_codes = ["fixed-element"]
