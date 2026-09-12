@@ -42,3 +42,21 @@ the *descriptor*, not the metadata, and the helpful `__getattr__` on
 generated classes raises an `AttributeError` listing the declared elements
 and attributes when you misspell something. Instance-level access goes
 through the descriptors, which validate types on assignment.
+
+### Name collisions: elements and attributes with the same name
+
+A complex type can legally declare an element and an attribute with the
+same name (`<xs:element name="code"/>` and `<xs:attribute name="code"/>`
+in one type). Both declarations stay fully active — each is matched,
+validated, and bound — but they cannot share one Python attribute, so
+the accessors are disambiguated:
+
+- The **attribute keeps the natural name** (`item.code`).
+- The **element's accessor gains an `_element` suffix**
+  (`item.code_element`). If a real declaration already occupies that
+  name too, a numeric suffix is used (`code_element_2`, `code_element_3`,
+  …).
+
+Only the Python accessor name changes. Child order in `_children_`,
+validation, identity constraints, and round-trip output are identical to
+a non-colliding schema.

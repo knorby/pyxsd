@@ -114,6 +114,52 @@ class TestGpxExample:
         assert float(root.attrib["avgHeartRate"]) > 0
         assert float(root.attrib["avgCadence"]) > 0
 
+    @requires_gpx_schemas
+    def test_segments_are_not_bridged(self, tmp_path, monkeypatch):
+        """Distances are computed within each segment, never across them.
+
+        Two segments that share no recorded movement between them must
+        not have a leg invented between the end of one and the start of
+        the other.
+        """
+        instance = tmp_path / "multi.xml"
+        instance.write_text(
+            "<?xml version='1.0' encoding='utf-8'?>\n"
+            '<gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1" creator="test">\n'
+            "  <trk>\n"
+            "    <trkseg>\n"
+            '      <trkpt lat="0.0" lon="0.0"><ele>0.0</ele></trkpt>\n'
+            '      <trkpt lat="0.0" lon="1.0"><ele>100.0</ele></trkpt>\n'
+            "    </trkseg>\n"
+            "    <trkseg>\n"
+            '      <trkpt lat="0.0" lon="2.0"><ele>50.0</ele></trkpt>\n'
+            "    </trkseg>\n"
+            "  </trk>\n"
+            "</gpx>\n"
+        )
+        monkeypatch.chdir(EXAMPLES / "gpx")
+        output = tmp_path / "multi-stats.xml"
+        parser = PyXSD(
+            instance,
+            xsdFile=GPX_SCHEMA,
+            xmlFileOutput="_No_Output_",
+            transformOutputName=str(output),
+            transforms=["TrackStats()"],
+            mode=ParseModes.NAMESPACED,
+        )
+        assert not parser.report.has_errors
+
+        root = ET.parse(output).getroot()
+        assert root.tag == "trackStats"
+        assert root.attrib["pointCount"] == "3"
+        # Only the single leg inside the first segment (1 degree of
+        # longitude at the equator); the gap to segment two is not a
+        # recorded movement and must not be bridged.
+        distance = float(root.attrib["distanceMeters"])
+        assert 111100.0 < distance < 111300.0
+        assert root.attrib["elevationGain"] == "100.0"
+        assert root.attrib["elevationLoss"] == "0.0"
+
 
 class TestDocxExample:
     """The real example: full ECMA-376 WordprocessingML.

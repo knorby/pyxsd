@@ -31,8 +31,11 @@ pyxsd --inputXml inventory.xml
 ```
 
 pyxsd locates the schema from the instance's `xsi:schemaLocation`-style hints
-(or you can pass `-s schema.xsd`), builds the object tree, validates it, and
-writes the parsed document to stdout. Useful flags:
+(or you can pass `-s schema.xsd`), builds the object tree, and validates it.
+By default nothing is written: a bare run is a validation pass. Pass `-k` to
+write the parsed tree, or give a transform with `-t` (its output then goes to
+`<input>Transformed.xml`, or wherever `-o` points — use `-o stdout` for
+standard output). Useful flags:
 
 ```bash
 # Validate strictly: exit 1 if the report contains errors
