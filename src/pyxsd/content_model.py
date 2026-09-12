@@ -516,11 +516,14 @@ def _trace_one(
             return
         # Backward feasibility: can[i] holds the positions from which
         # children[i:] can reach the target. Then walk forward choosing
-        # a feasible split point for each child.
+        # a feasible split point for each child. ``target`` itself is a
+        # valid position: a zero-width (optional) suffix may leave the
+        # remaining children to consume nothing, so excluding it would
+        # starve the feasibility sets and drop real associations.
         can: list[set[int]] = [set() for _ in range(len(children) + 1)]
         can[-1] = {target}
         for i in range(len(children) - 1, -1, -1):
-            for position in range(start, target):
+            for position in range(start, target + 1):
                 if _ends_repeated(children[i], nodes, position, ctx, memo, 0) & can[i + 1]:
                     can[i].add(position)
         position = start

@@ -171,6 +171,24 @@ def test_strict_attribute_wildcard_ignores_local_declarations(tmp_path):
     assert "wildcard-no-declaration" in codes(parser)
 
 
+def test_optional_suffix_does_not_hide_wildcard_associations(tmp_path):
+    """A zero-width optional suffix must not erase earlier associations."""
+    schema = (
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        "  <xs:element name='r'><xs:complexType><xs:sequence>"
+        "    <xs:any processContents='skip'/>"
+        "    <xs:any processContents='strict'/>"
+        "    <xs:element name='end' type='xs:string' minOccurs='0'/>"
+        "  </xs:sequence></xs:complexType></xs:element>"
+        "</xs:schema>"
+    )
+    parser = parse(tmp_path, schema, "<r><a/><b/></r>")
+    # ''a'' matches the first (skip) wildcard generically; ''b'' falls to the
+    # strict wildcard, which finds no global declaration.
+    assert codes(parser) == ["wildcard-no-declaration"]
+    assert child_names(parser) == ["a", "b"]
+
+
 def test_other_namespace_excludes_unqualified_content(tmp_path):
     """##other admits present namespaces except the target, never absent."""
     schema = (
