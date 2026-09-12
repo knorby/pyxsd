@@ -101,6 +101,16 @@ class ValidationReport:
         """Only the issues attributed to *phase* (``"schema"``/``"instance"``)."""
         return [i for i in self._issues if i.phase == phase]
 
+    def extend(self, other: "ValidationReport") -> None:
+        """Appends every issue from *other* to this report.
+
+        Used to surface the findings of a nested run (for example a
+        :class:`~pyxsd.transforms.send_tree_to_pyxsd.SendTreeToPyXSD`
+        revalidation) in the enclosing run's report. The issue objects
+        are shared, not copied; the other report is left unchanged.
+        """
+        self._issues.extend(other._issues)
+
     @property
     def issues(self) -> list[ValidationIssue]:
         """All recorded issues, in the order they were found."""

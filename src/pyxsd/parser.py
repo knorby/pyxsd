@@ -178,6 +178,9 @@ class PyXSD:
         self._formDefaults: dict[int, tuple[str | None, str | None]] = {}
         self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
+        # Identity set of transform-embedded reports already merged
+        # into self.report (see _absorbTransformReport).
+        self._absorbedReports: set[int] = set()
         # Prefix-to-URI bindings captured while parsing the instance and
         # every schema document; one context accumulates them all so a
         # component resolves QNames against its own document's scope.
@@ -1223,9 +1226,32 @@ class PyXSD:
                 argDesc,
             )
             transformCls = getattr(transformer, class_name)
-            currentRoot = transformCls(currentRoot)(*args, **kwargs)
+            instance = transformCls(currentRoot)
+            if getattr(instance, "inheritsParserContext", False):
+                # Reparsing transforms default to this run's schema and
+                # binding mode, and this run's report surfaces theirs.
+                instance.outerParser = self
+            currentRoot = instance(*args, **kwargs)
+            self._absorbTransformReport(getattr(instance, "report", None))
 
         return currentRoot
+
+    def _absorbTransformReport(self, report: ValidationReport | None) -> None:
+        """Merges a transform's embedded validation report into this
+        run's report, at most once per report object.
+
+        Transforms such as ``SendTreeToPyXSD`` revalidate the tree
+        inside their own parser run. Without this merge, problems in
+        the transformed content would vanish with the inner run and
+        ``--strict`` (which inspects this report) could not see them.
+        """
+        if report is None or report is self.report:
+            return
+        key = id(report)
+        if key in self._absorbedReports:
+            return
+        self._absorbedReports.add(key)
+        self.report.extend(report)
 
     def getTransformsFileName(self) -> Path:
         """Creates a default name for the xml file that is written after
