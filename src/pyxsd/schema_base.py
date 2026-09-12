@@ -3,7 +3,11 @@ from typing import Any, ClassVar
 
 from pyxsd import xsi
 from pyxsd.binding import BindingPolicy, ParseModes
-from pyxsd.content_model import first_required_name, match_content, particle_names
+from pyxsd.content_model import (
+    first_required_name,
+    match_content_associations,
+    particle_names,
+)
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
@@ -16,6 +20,48 @@ logger = logging.getLogger(__name__)
 def _mode_for(cls) -> BindingPolicy:
     """The binding policy stamped on a generated class (or STRICT)."""
     return getattr(cls, "_parseMode_", ParseModes.STRICT)
+
+
+def _global_declaration(components, local: str, kind: str, uri: str | None):
+    """Returns the *global* declaration named ``local`` in ``uri``.
+
+    Wildcard ``processContents`` checks look up global declarations
+    only. A local declaration inside an unrelated type must not satisfy
+    a strict wildcard, so candidates are filtered by kind, global
+    scope, and expanded name.
+    """
+    if components is None:
+        return None
+    entries = components.get(local)
+    if not entries:
+        return None
+    for entry in entries:
+        if componentKind(entry) != kind:
+            continue
+        is_global = getattr(entry, "isGlobalDeclaration", None)
+        if is_global is not None and not is_global():
+            continue
+        namespace = getattr(entry, "getNamespace", None)
+        if namespace is not None and namespace() != uri:
+            continue
+        return entry
+    return None
+
+
+def nil_content_kind(element: Any) -> str | None:
+    """The kind of content a nilled element must not have.
+
+    Returns ``"elements"`` when the element has child elements,
+    ``"characters"`` when it has any character content (whitespace
+    included: ``xsi:nil`` requires the element to be empty), and
+    ``None`` when the element is truly empty. One helper keeps the
+    emptiness rule identical for roots and children.
+    """
+    if list(element):
+        return "elements"
+    if element.text is not None and element.text != "":
+        return "characters"
+    return None
 
 
 class SchemaBase:
@@ -247,11 +293,7 @@ class SchemaBase:
         local = local_name(attr)
         uri = namespace_of(attr)
         components = getattr(parser, "components", None)
-        declaration = (
-            components.getFromName(local, kind="attribute", namespace=uri, warn=False)
-            if components is not None
-            else None
-        )
+        declaration = _global_declaration(components, local, "attribute", uri)
         if declaration is None:
             if spec.process_contents == "strict":
                 cls._report_error(
@@ -290,11 +332,7 @@ class SchemaBase:
         local = local_name(subElement.tag)
         uri = namespace_of(subElement.tag)
         components = getattr(parser, "components", None)
-        descriptor = (
-            components.getFromName(local, kind="element", namespace=uri, warn=False)
-            if components is not None
-            else None
-        )
+        descriptor = _global_declaration(components, local, "element", uri)
         if descriptor is not None:
             if descriptor.isAbstract():
                 cls._report_error(
@@ -397,7 +435,11 @@ class SchemaBase:
                 descriptor = self.descAttributes()[name]
                 matchName = self._instance_name_of(descriptor, is_attribute=True)
                 if matchName in elementTag.attrib:
-                    setattr(self, name, elementTag.attrib[matchName])
+                    # Bind through the declaration's own descriptor: a
+                    # subclass element sharing the name must not capture
+                    # the value (and a plain setattr would find it first
+                    # in the MRO).
+                    descriptor.__set__(self, elementTag.attrib[matchName])
                     usedAttributes.append(matchName)
                     self._attribs_[matchName] = elementTag.attrib[matchName]
             # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
@@ -471,16 +513,18 @@ class SchemaBase:
             for member in members:
                 memberHeadMap[cls._instance_name_of(member)] = headMatch
 
-        # Wildcard (xs:any) pass-through. In legacy namespace mode any
-        # undeclared child is wildcard content; in strict mode only
-        # children admitted by a wildcard's namespace constraint are
-        # (the rest are reported). Order checking only sees declared
-        # children in that case.
+        # Wildcard (xs:any) constraints live in the compiled model as
+        # "any" particles, so order and occurrence are checked for
+        # wildcard content like any other content. The pre-filter below
+        # only applies when the model could not be compiled (the legacy
+        # order checkers must not see wildcard children).
         hasWildcard = getattr(instance, "hasWildcardElements_", False)
         strictNamespaces = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
         wildcardSpecs = cls._wildcard_element_specs(instance) if hasWildcard else []
         targetNamespace = getattr(cls, "_targetNamespace_", None)
-        if hasWildcard:
+
+        model = getattr(instance, "_contentModel_", None)
+        if model is None and hasWildcard:
             declaredNames = {cls._instance_name_of(descriptor) for descriptor in elemDescriptors}
             declaredNames.update(memberHeadMap)
             declaredChildren = []
@@ -498,13 +542,21 @@ class SchemaBase:
         else:
             declaredChildren = subElements
 
-        model = getattr(instance, "_contentModel_", None)
         if model is not None:
-            complete, leftover = match_content(
-                model, declaredChildren, memberHeadMap, name_of=cls._node_name
+            complete, leftover, childMatches = match_content_associations(
+                model,
+                declaredChildren,
+                memberHeadMap,
+                name_of=cls._node_name,
+                target_namespace=targetNamespace,
+                namespace_checked=strictNamespaces,
             )
         else:
-            complete, leftover = False, None
+            complete, leftover, childMatches = False, None, []
+        # The particle that admitted each declared child. Binding uses
+        # these records so a child accepted by a particular wildcard is
+        # bound (and validated) through that wildcard.
+        admittedBy = {match.position: match.particle for match in childMatches}
 
         if model is None or not complete:
             sOrC = getattr(elemDescriptors[0], "sOrC", None) if elemDescriptors else None
@@ -523,6 +575,19 @@ class SchemaBase:
                 # checkers do not cover (a closed model must consume
                 # every child).
                 declared = particle_names(model)
+
+                def exceeds_wildcard(node_name: str) -> bool:
+                    """True when a wildcard admits the name but the model
+                    still refused it: the wildcard's occurrence limits
+                    are exhausted."""
+                    if not hasWildcard:
+                        return False
+                    if not strictNamespaces:
+                        return True
+                    return (
+                        cls._wildcard_match(wildcardSpecs, node_name, targetNamespace) is not None
+                    )
+
                 for subElement in leftover:
                     subElementName = cls._node_name(subElement)
                     head = memberHeadMap.get(subElementName, subElementName)
@@ -533,7 +598,14 @@ class SchemaBase:
                             code="order",
                             element=cls.__name__,
                         )
-                    elif not hasWildcard or strictNamespaces:
+                    elif exceeds_wildcard(subElementName):
+                        cls._report_error(
+                            f"element '{subElementName}' exceeds the occurrence "
+                            "limits of the wildcard that allows it",
+                            code="order",
+                            element=cls.__name__,
+                        )
+                    else:
                         cls._report_error(
                             f"element '{subElementName}' is not declared in the "
                             "content model and no wildcard allows it",
@@ -541,8 +613,14 @@ class SchemaBase:
                             element=cls.__name__,
                         )
 
-            if model is not None and not leftover:
-                missing = first_required_name(model)
+            # A required particle is genuinely unmet when the best match
+            # consumed nothing (or there was nothing to consume): the
+            # model admitted no satisfying path. A static check on a
+            # partially-matched model would flag particles that the
+            # matching did satisfy, so it is skipped there.
+            if model is not None and not complete:
+                stalled = not leftover or leftover == declaredChildren
+                missing = first_required_name(model) if stalled else None
                 if missing is not None:
                     cls._report_error(
                         f"the content model requires element '{missing}', "
@@ -552,14 +630,46 @@ class SchemaBase:
                     )
 
         # Children are matched (and recorded) in document order so the
-        # instance tree preserves the xml's layout.
-        for subElement in subElements:
+        # instance tree preserves the xml's layout. Several uses of one
+        # declaration (for example repeated group references) are
+        # consumed in declaration order, and when a declaration repeats
+        # every occurrence aggregates into one accessor list.
+        descriptorQueues: dict[str, list] = {}
+        for descriptor in elemDescriptors:
+            descriptorQueues.setdefault(cls._instance_name_of(descriptor), []).append(descriptor)
+        descriptorUses: dict[str, int] = {}
+
+        for elementIndex, subElement in enumerate(subElements):
             subElementName = cls._node_name(subElement)
+            admitted = admittedBy.get(elementIndex)
+            if admitted is not None and admitted.kind == "any" and admitted.spec is not None:
+                # The model admitted the child through this wildcard
+                # particle. Bind it through that particle even when a
+                # declaration with the same name exists elsewhere in the
+                # model: position decides, not the name.
+                cls._bindWildcardChild(instance, subElement, admitted.spec)
+                continue
+
             matched = False
-            for descriptor in elemDescriptors:
-                if cls._instance_name_of(descriptor) != subElementName:
-                    continue
+            queue = descriptorQueues.get(subElementName)
+            if queue:
                 matched = True
+                used = descriptorUses.get(subElementName, 0)
+                bindingDescriptor = queue[min(used, len(queue) - 1)]
+                descriptorUses[subElementName] = used + 1
+                descriptor = bindingDescriptor
+                if (
+                    admitted is not None
+                    and admitted.kind == "element"
+                    and admitted.descriptor is not None
+                    and admitted.descriptor is not bindingDescriptor
+                ):
+                    # The particle that consumed the child carries its
+                    # own declaration (a repeated declaration, or a
+                    # group's per-use copy): validate through it while
+                    # the accessor slot stays with the class descriptor.
+                    descriptor = admitted.descriptor
+                repeated = len(queue) > 1 or any(item.isList() for item in queue)
                 if descriptor.isAbstract():
                     cls._report_error(
                         f"element '{subElementName}' is declared abstract; "
@@ -577,16 +687,25 @@ class SchemaBase:
                     )
                     if _mode_for(cls).unresolved_type == "generic":
                         instance._children_.append(cls.makeGenericInstance(subElement))
-                    break
-                cls._addChildInstance(instance, subElement, subElCls, descriptor)
-                break
+                else:
+                    cls._addChildInstance(
+                        instance,
+                        subElement,
+                        subElCls,
+                        descriptor,
+                        aggregate=repeated,
+                        leader=queue[0],
+                        binding=bindingDescriptor,
+                    )
 
             if not matched and substitutionGroups:
                 matched = cls._addSubstitutionMember(instance, subElement, elemDescriptors)
 
             if not matched:
                 wildcardSpec = None
-                if hasWildcard:
+                if admitted is not None and admitted.kind == "any" and admitted.spec is not None:
+                    wildcardSpec = admitted.spec
+                elif hasWildcard:
                     if strictNamespaces:
                         wildcardSpec = cls._wildcard_match(
                             wildcardSpecs, subElementName, targetNamespace
@@ -667,14 +786,30 @@ class SchemaBase:
         return subElCls
 
     @classmethod
-    def _addChildInstance(cls, instance, subElement, subElCls, descriptor):
+    def _addChildInstance(
+        cls,
+        instance,
+        subElement,
+        subElCls,
+        descriptor,
+        *,
+        aggregate=False,
+        leader=None,
+        binding=None,
+    ):
         """Builds and stores the instance for one matched child element.
 
         Handles ``xsi:nil`` (nillable elements carry no content to
         validate), ``fixed`` value checking on simple content, and the
         primitive/complex split. Appends the built instance to the
         parent's ``_children_`` and, for primitive content, exposes it
-        as an instance attribute.
+        as an instance attribute. ``aggregate`` is true when the
+        declaration occurs in more than one particle of the effective
+        model; ``leader`` is the first descriptor for the declaration,
+        which owns the accessor and storage slot in that case.
+        ``binding`` is the class descriptor that owns the accessor slot
+        when it differs from ``descriptor`` (the validating declaration
+        carried by the matched particle); it defaults to ``descriptor``.
         """
         subElementName = cls._node_name(subElement)
         nilled = xsi.xsi_nil_is_true(subElement)
@@ -685,8 +820,20 @@ class SchemaBase:
                 element=cls.__name__,
             )
             nilled = False
+        if nilled and descriptor.getFixed() is not None:
+            cls._report_error(
+                f"element '{subElementName}' is marked nil but its declaration has a fixed value",
+                code="nil",
+                element=cls.__name__,
+            )
 
-        accessor, descriptorBound = cls._childAccessor(instance, descriptor, subElement)
+        if aggregate and leader is not None:
+            storage = leader
+        elif binding is not None:
+            storage = binding
+        else:
+            storage = descriptor
+        accessor, descriptorBound = cls._childAccessor(instance, storage, subElement)
 
         # for elements with primitive types
         contentKind = getattr(subElCls, "_contentKind_", None)
@@ -695,9 +842,19 @@ class SchemaBase:
             if contentKind is not None
             else issubclass(subElCls, SchemaBase)
         )
+        if nilled and isComplex:
+            # A nilled element carries no content to validate: the
+            # emptiness rule is checked, declared attributes are still
+            # validated, and an empty shell is bound.
+            cls._checkNilContent(subElement, subElementName)
+            subInstance = cls._nilledInstance(subElCls, subElement, subElementName)
+            subInstance._descriptor_ = descriptor
+            subInstance._nil_ = True
+            instance._children_.append(subInstance)
+            return None
         if not isComplex:
             if nilled:
-                subInstance = cls._nilPrimitive(subElCls, subElement)
+                subInstance = cls._nilPrimitive(subElCls, subElement, subElementName)
             else:
                 subInstance = cls._primitiveForElement(subElCls, subElement, descriptor)
             if subInstance is not None:
@@ -710,7 +867,23 @@ class SchemaBase:
                 subInstance._nil_ = nilled
                 instance._children_.append(subInstance)
                 if descriptorBound:
-                    setattr(instance, accessor, subInstance)
+                    bound = getattr(type(instance), accessor, None)
+                    if aggregate:
+                        # Several particles use this declaration: every
+                        # occurrence aggregates through the leader's slot.
+                        storage.bind(instance, subInstance, append=True)
+                    elif bound is storage:
+                        setattr(instance, accessor, subInstance)
+                    elif bound is None:
+                        # A substitution-group member descriptor is not a
+                        # class attribute; store it plainly like the
+                        # historical setattr did.
+                        instance.__dict__[accessor] = subInstance
+                    else:
+                        # Another declaration shadows the accessor in a
+                        # subclass; store through the declaring
+                        # descriptor itself.
+                        storage.bind(instance, subInstance)
                 else:
                     instance.__dict__[accessor] = subInstance
                 if not nilled:
@@ -730,13 +903,21 @@ class SchemaBase:
 
         The base name is the declaration's local name, which is also the
         descriptor's bound name (so ``setattr`` reaches the descriptor).
-        In strict namespace mode two declarations that share a local name
-        but differ in namespace would collide; the second is exposed as
+        A descriptor aliased at class-build time (element/attribute name
+        collision) binds through its alias instead. In strict namespace
+        mode two declarations that share a local name but differ in
+        namespace would collide; the second is exposed as
         ``local_prefix`` (using the instance's in-scope prefix, or a
         numeric suffix when the namespace is the default). Returns
         ``(name, descriptor_bound)``.
         """
         base = getattr(descriptor, "name", None) or subElement.tag.split("}")[-1]
+        if getattr(descriptor, "_aliased_", False):
+            # The descriptor was re-keyed at class-build time because
+            # an attribute took the natural accessor (element/attribute
+            # name collision); ``setattr`` must target the alias so the
+            # value reaches the element descriptor.
+            return getattr(descriptor, "bindingKey", base), True
         if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
             return base, True
         used = instance.__dict__.setdefault("_childAccessors_", {})
@@ -804,27 +985,71 @@ class SchemaBase:
         return instance
 
     @classmethod
-    def _nilPrimitive(cls, subElCls, subElement):
+    def _checkNilContent(cls, subElement, subElementName):
+        """Enforces the nil emptiness rule with code ``nil``.
+
+        An element carrying ``xsi:nil="true"`` may have attributes but
+        no character or element content; whitespace counts as character
+        content. The offending content itself is never bound.
+        """
+        kind = nil_content_kind(subElement)
+        if kind == "elements":
+            cls._report_error(
+                f"element '{subElementName}' is marked nil but contains child elements",
+                code="nil",
+                element=cls.__name__,
+            )
+        elif kind == "characters":
+            cls._report_error(
+                f"element '{subElementName}' is marked nil but contains character content",
+                code="nil",
+                element=cls.__name__,
+            )
+        return None
+
+    @classmethod
+    def _nilledInstance(cls, subElCls, subElement, subElementName):
+        """Builds an attribute-validated empty shell for a nilled element.
+
+        Declared attributes (required, prohibited, fixed, defaults) are
+        checked exactly as they would be for a non-nilled element; the
+        content model and value validation are skipped, because a
+        nilled element has no content.
+        """
+        unvalidated = getattr(subElCls, "_unvalidated", None)
+        # Simple-content classes are datatype subclasses whose
+        # constructor demands a lexical value; a bare shell skips it.
+        subInstance = unvalidated() if unvalidated is not None else subElCls()
+        subInstance._name_ = subElementName
+        subElCls.addAttributesTo(subInstance, subElement)
+        subInstance._value_ = None
+        subInstance._children_ = []
+        return subInstance
+
+    @classmethod
+    def _nilPrimitive(cls, subElCls, subElement, subElementName):
         """Builds an unvalidated instance for a nillable primitive element.
 
         A nillable element may carry no content, so no lexical form is
         available; the bare instance keeps the raw attributes (which
-        include ``xsi:nil``) for the writers.
+        include ``xsi:nil``) for the writers. Content on a nilled
+        element is reported (code ``nil``) and not bound.
         """
         try:
             subInstance = subElCls._unvalidated()
         except Exception:
             cls._report_error(
-                f"could not build a nil instance for the '{subElement.tag.split('}')[-1]}' element",
+                f"could not build a nil instance for the '{subElementName}' element",
                 code="value",
                 element=cls.__name__,
             )
             return None
+        cls._checkNilContent(subElement, subElementName)
         subInstance._attribs_ = {
             xsi.xsi_attr_key(key): value for key, value in subElement.attrib.items()
         }
         subInstance._value_ = None
-        subInstance._children_ = list(subElement)
+        subInstance._children_ = []
         return subInstance
 
     @classmethod
@@ -1265,16 +1490,24 @@ class SchemaBase:
         Walks the MRO of the instance's class collecting each class's
         own ``Element`` descriptors, least-derived first, so an
         extension's content model comes out in XSD order: base
-        elements before extension elements. A derived declaration
-        shadows an inherited element with the same name (later,
-        more-derived assignments overwrite earlier ones while keeping
-        the original position).
+        elements before extension elements. The merge keys on the
+        declaration name, not the class-attribute key: a derived
+        declaration replaces every inherited declaration of the same
+        name (including an inherited declaration that a derived
+        attribute forced onto an alias key), while several distinct
+        declarations of one name inside one class body are all kept.
         """
-        ordered = {}
+        ordered: dict[str, list] = {}
         for klass in reversed(type(self).__mro__):
-            for name in klass.__dict__.get("_elementNames_", ()):
-                ordered[name] = klass.__dict__[name]
-        return list(ordered.values())
+            own = [klass.__dict__[key] for key in klass.__dict__.get("_elementNames_", ())]
+            if not own:
+                continue
+            ownNames = {descriptor.name for descriptor in own}
+            for name in [name for name in ordered if name in ownNames]:
+                del ordered[name]
+            for descriptor in own:
+                ordered.setdefault(descriptor.name, []).append(descriptor)
+        return [descriptor for entries in ordered.values() for descriptor in entries]
 
     def descAttributes(self):
         """Returns a dictionary of the attribute descriptors.
@@ -1413,7 +1646,9 @@ class SchemaBase:
         value = default if default is not None else fixed
         if value is None:
             return None
-        setattr(instance, attributeDescriptor.name, value)
+        # Bind through the declaration's own descriptor so an inherited
+        # element sharing the name cannot capture the value.
+        attributeDescriptor.__set__(instance, value)
         return None
 
     @staticmethod
@@ -1433,4 +1668,5 @@ from pyxsd.element_representatives.attribute import Attribute  # noqa: E402
 from pyxsd.element_representatives.element import Element  # noqa: E402
 from pyxsd.element_representatives.element_representative import (  # noqa: E402
     ElementRepresentative,
+    componentKind,
 )

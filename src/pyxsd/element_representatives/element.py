@@ -125,29 +125,57 @@ class Element(ElementRepresentative):
         # name across namespaces (a strict-mode local-name fallback
         # would silently bind the wrong one). In legacy mode
         # ``resolvedTypeName`` returns the raw type, so this is the same
-        # lookup as before.
+        # lookup as before. Declarations that are not installed as class
+        # descriptors (for example a named group's shared elements) were
+        # never stamped with ``pyXSD`` by the class builder; fall back to
+        # the owning schema's parser, as ``instanceName`` does.
+        parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
         resolved = self.resolvedTypeName()
-        if resolved is not None and resolved in self.pyXSD.classes:
-            return self.pyXSD.classes[resolved]
+        if parser is not None and resolved is not None and resolved in parser.classes:
+            return parser.classes[resolved]
 
-        return self.typeFromName(resolved, self.pyXSD)
+        return self.typeFromName(resolved, parser)
 
     def __set_name__(self, owner, name):
         """Called when this descriptor is bound as ``name`` on ``owner``.
 
-        Stores the owning generated class so error messages can name
-        it, and warns if the class attribute name does not match the
-        schema element name (they are normally identical; a mismatch
-        means a descriptor was rebound under a different name).
+        Stores the owning generated class and the class-attribute key
+        it was bound under (``bindingKey``). For most descriptors the
+        key equals the schema element name. When a type declares an
+        element and an attribute with the same name, the element is
+        re-keyed under an aliased name (``<name>_element``), and that
+        alias is recorded here as an intentional binding.
         """
         self.owner = owner
+        self.bindingKey = name
         if name != self.name:
-            logger.warning(
-                "element descriptor for %r was bound as %r on %s",
-                self.name,
-                name,
-                owner.__name__,
-            )
+            if getattr(self, "_aliased_", False):
+                logger.debug(
+                    "element descriptor for %r aliased as %r on %s",
+                    self.name,
+                    name,
+                    owner.__name__,
+                )
+            else:
+                logger.warning(
+                    "element descriptor for %r was bound as %r on %s",
+                    self.name,
+                    name,
+                    owner.__name__,
+                )
+
+    def _storageKey(self):
+        """Returns the instance-dictionary key this descriptor stores under.
+
+        Descriptors keep values in the instance ``__dict__`` keyed by
+        their schema name so instance access and bookkeeping stay
+        stable. An aliased descriptor (see ``__set_name__``) stores
+        under its alias instead, so a same-named attribute and element
+        never share one storage slot.
+        """
+        if getattr(self, "_aliased_", False):
+            return getattr(self, "bindingKey", self.name)
+        return self.name
 
     def __str__(self):
         """Prints its name in a form that allows for quick identification
@@ -168,8 +196,9 @@ class Element(ElementRepresentative):
         """
         if obj is None:
             return self
-        if self.name in obj.__dict__:
-            return obj.__dict__[self.name]
+        key = self._storageKey()
+        if key in obj.__dict__:
+            return obj.__dict__[key]
 
         default = getattr(self, "default", None)
         return default
@@ -185,6 +214,19 @@ class Element(ElementRepresentative):
         See the Python documentation for full documentation on
         descriptors.
         """
+        self.bind(obj, value)
+        return None
+
+    def bind(self, obj, value, *, append: bool | None = None):
+        """Stores ``value`` for this descriptor without MRO dispatch.
+
+        Binding code calls this directly so a declaration always stores
+        through its own descriptor even when another declaration shadows
+        its accessor name in a subclass. ``append`` forces list
+        aggregation (or scalar storage when false); ``None`` uses the
+        declaration's own occurrence limit, which is the
+        descriptor-protocol behavior.
+        """
         if not isinstance(value, self.getType()):
             # Under the ``raw`` invalid-value policy a primitive child
             # whose lexical value failed validation is bound as a plain
@@ -198,11 +240,12 @@ class Element(ElementRepresentative):
                     f"{self.name!r} ({self.getType().__name__})"
                 )
 
-        if self.isList():
-            obj.__dict__.setdefault(self.name, []).append(value)
+        key = self._storageKey()
+        if self.isList() if append is None else append:
+            obj.__dict__.setdefault(key, []).append(value)
             return None
 
-        obj.__dict__[self.name] = value
+        obj.__dict__[key] = value
         return None
 
     def __delete__(self, obj):
@@ -211,7 +254,7 @@ class Element(ElementRepresentative):
         See the Python documentation for full documentation on
         descriptors.
         """
-        del obj.__dict__[self.name]
+        del obj.__dict__[self._storageKey()]
 
     def isList(self):
         """Returns true if maxOccurs is greater than one.

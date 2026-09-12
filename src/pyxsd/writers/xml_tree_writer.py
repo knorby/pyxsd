@@ -40,6 +40,7 @@ import time
 from typing import IO, Any
 
 from pyxsd import xsi
+from pyxsd.namespaces import XML_NS
 from pyxsd.writers.xml_tag_writer import XmlTagWriter
 
 
@@ -61,6 +62,24 @@ def _display_name(name: str, prefix_map: dict[str, str]) -> str:
         prefix = prefix_map.get(uri)
         return f"{prefix}:{local}" if prefix else local
     return name
+
+
+def _display_attribute(key: str, prefix_map: dict[str, str] | None) -> str:
+    """Renders an attribute key for output.
+
+    XSI-namespace keys get their ``xsi:`` spelling. When no prefix map
+    is active (unqualified output) an attribute in the reserved XML
+    namespace still has to use the implicit ``xml`` prefix; writing its
+    Clark name would not be well-formed XML.
+    """
+    display = xsi.xsi_attr_key(key)
+    if prefix_map is not None:
+        return _display_name(display, prefix_map)
+    if isinstance(display, str) and display.startswith("{"):
+        uri, local = display[1:].split("}", 1)
+        if uri == XML_NS:
+            return f"xml:{local}"
+    return display
 
 
 class XmlTreeWriter:
@@ -86,7 +105,11 @@ class XmlTreeWriter:
 
         if self.namespaced:
             self.prefix_map = XmlTreeWriter._build_prefix_map(root)
-            root_decls = {f"xmlns:{prefix}": uri for uri, prefix in self.prefix_map.items()}
+            # The xml prefix is implicit in every XML document; declaring
+            # it would be redundant.
+            root_decls = {
+                f"xmlns:{prefix}": uri for uri, prefix in self.prefix_map.items() if uri != XML_NS
+            }
         else:
             rootAttribs = {xsi.xsi_attr_key(key): value for key, value in root._attribs_.items()}
             if "xmlns:xsi" not in rootAttribs and XmlTreeWriter._tree_uses_xsi(root):
@@ -106,9 +129,10 @@ class XmlTreeWriter:
     def _build_prefix_map(root: Any) -> dict[str, str]:
         """Assigns a deterministic prefix to every namespace in the tree.
 
-        ``xsi`` is reserved for the XML Schema instance namespace.
-        Remaining namespaces are numbered ``ns0``, ``ns1``, ... in
-        first-encounter order.
+        ``xsi`` is reserved for the XML Schema instance namespace and
+        ``xml`` for the reserved XML namespace; both prefixes may not be
+        reused. Remaining namespaces are numbered ``ns0``, ``ns1``, ...
+        in first-encounter order.
         """
         uris: list[str] = []
 
@@ -125,7 +149,7 @@ class XmlTreeWriter:
 
         visit(root)
 
-        prefix_map: dict[str, str] = {}
+        prefix_map: dict[str, str] = {XML_NS: "xml"}
         if XmlTreeWriter._tree_uses_xsi(root):
             prefix_map[xsi.XSI_NAMESPACE] = "xsi"
         index = 0
@@ -178,10 +202,7 @@ class XmlTreeWriter:
         children = element._children_
         attribs: dict[str, str] = {}
         for key, value in element._attribs_.items():
-            display = xsi.xsi_attr_key(key)
-            if prefix_map is not None:
-                display = _display_name(display, prefix_map)
-            attribs[display] = value
+            attribs[_display_attribute(key, prefix_map)] = value
 
         if tabs == 0:
             if root_decls:

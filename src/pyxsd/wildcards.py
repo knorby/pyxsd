@@ -26,6 +26,10 @@ NAMESPACE_TARGET = "##targetNamespace"
 #: The ``processContents`` values; anything else is treated as ``strict``.
 PROCESS_CONTENTS = frozenset({"skip", "lax", "strict"})
 
+#: Sentinel for "the wildcard's source namespace was not recorded";
+#: namespace keywords then resolve against the matching schema.
+_UNSET: Any = object()
+
 
 @dataclass(frozen=True)
 class WildcardSpec:
@@ -35,28 +39,41 @@ class WildcardSpec:
     keywords and/or URIs; missing means ``##any``). ``process_contents``
     is ``"skip"``, ``"lax"`` or ``"strict"``. ``is_attribute`` records
     which wildcard kind produced the spec.
+
+    ``target_namespace`` is the target namespace of the document the
+    wildcard was *declared in*. ``##targetNamespace`` and ``##other``
+    resolve against that document, not against a schema that later
+    inherits the wildcard through an extension or restriction.
     """
 
     namespace: str = NAMESPACE_ANY
     process_contents: str = "strict"
     is_attribute: bool = False
+    target_namespace: Any = _UNSET
+
+    def effective_target(self, target_namespace: str | None) -> str | None:
+        """The namespace ``##targetNamespace``/``##other`` resolve to."""
+        if self.target_namespace is _UNSET:
+            return target_namespace
+        return self.target_namespace
 
     def allows(self, uri: str | None, target_namespace: str | None) -> bool:
         """Whether a node in namespace ``uri`` satisfies this constraint.
 
         ``uri`` is ``None`` for the absent (unqualified) namespace;
-        ``target_namespace`` is the containing schema's target namespace
-        (also possibly ``None``). The declared semantics:
+        ``target_namespace`` is the fallback target namespace when the
+        spec does not carry its source document's. The declared
+        semantics:
 
         * ``##any`` admits everything.
         * ``##local`` admits only the absent namespace.
         * ``##targetNamespace`` admits the target namespace (the absent
           namespace when the schema has no target namespace).
-        * ``##other`` admits any namespace except the target namespace,
-          but never the absent namespace when that *is* the target
-          namespace.
+        * ``##other`` admits any present namespace except the target
+          namespace; the absent namespace is never admitted.
         * A literal URI admits exactly that namespace.
         """
+        target = self.effective_target(target_namespace)
         for token in self.namespace.split():
             if token == NAMESPACE_ANY:
                 return True
@@ -64,24 +81,29 @@ class WildcardSpec:
                 if uri is None:
                     return True
             elif token == NAMESPACE_TARGET:
-                if uri == target_namespace:
+                if uri == target:
                     return True
             elif token == NAMESPACE_OTHER:
-                if uri == target_namespace:
-                    continue
-                if uri is not None or target_namespace is not None:
+                if uri is not None and uri != target:
                     return True
             elif not token.startswith("##") and token == uri:
                 return True
         return False
 
 
-def wildcard_spec(attributes: Mapping[str, Any], *, is_attribute: bool = False) -> WildcardSpec:
+def wildcard_spec(
+    attributes: Mapping[str, Any],
+    *,
+    is_attribute: bool = False,
+    target_namespace: Any = _UNSET,
+) -> WildcardSpec:
     """Builds a :class:`WildcardSpec` from an ER's ``tagAttributes``.
 
     Missing ``namespace`` defaults to ``##any``; an unrecognized
     ``processContents`` falls back to ``strict`` (the schema default) so
-    a malformed value cannot silently disable validation.
+    a malformed value cannot silently disable validation. Pass the
+    declaring document's ``targetNamespace`` as ``target_namespace`` so
+    namespace keywords keep their source meaning.
     """
     raw_namespace = attributes.get("namespace")
     raw_process = attributes.get("processContents")
@@ -92,6 +114,7 @@ def wildcard_spec(attributes: Mapping[str, Any], *, is_attribute: bool = False) 
         namespace=NAMESPACE_ANY if raw_namespace is None else str(raw_namespace),
         process_contents=process,
         is_attribute=is_attribute,
+        target_namespace=target_namespace,
     )
 
 

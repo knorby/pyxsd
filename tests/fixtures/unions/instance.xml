@@ -2,5 +2,5 @@
 <!-- size and tag exercise both named-member and inline-member unions. -->
 <record>
   <size>42</size>
-  <tag>  padded  </tag>
+  <tag>padded</tag>
 </record>

@@ -23,7 +23,7 @@ Every transform must follow these rules:
 ## Minimal example
 
 ```python
-from pyxsd.transforms import Transform
+from pyxsd.transforms import Transform, iter_tree
 
 
 class UpperValues(Transform):
@@ -41,6 +41,81 @@ class UpperValues(Transform):
 
 `iter_tree(instance)` is a generator yielding every node in pre-order,
 descending into lists, tuples and dicts; non-node objects are skipped.
+
+## A runnable in-memory example
+
+The transform above can be exercised without touching the filesystem:
+build a parser over string streams, run the transform directly, serialize
+the result to a `StringIO`, and revalidate the changed tree with
+`SendTreeToPyXSD` so its report can be inspected.
+
+```python
+import io
+
+from pyxsd.parser import PyXSD
+from pyxsd.transforms import Transform, iter_tree
+from pyxsd.transforms.send_tree_to_pyxsd import SendTreeToPyXSD
+from pyxsd.writers import XmlTreeWriter
+
+SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="note">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="body" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+
+INSTANCE = "<note><body>hello &amp; goodbye</body></note>"
+
+
+class UpperValues(Transform):
+    """Uppercase every string value in the tree."""
+
+    def __init__(self, rootInstance):
+        super().__init__(rootInstance)
+
+    def __call__(self):
+        for node in iter_tree(self.root):
+            if node._value_:
+                node._value_ = [value.upper() for value in node._value_]
+        return self.root
+
+
+def main():
+    parser = PyXSD(
+        io.StringIO(INSTANCE),
+        xsdFile=io.StringIO(SCHEMA),
+        xmlFileOutput="_No_Output_",
+        transformOutputName="_No_Output_",
+    )
+
+    print("body before:", parser.schemaRootInstance.body)
+
+    transformed = UpperValues(parser.schemaRootInstance)()
+
+    output = io.StringIO()
+    XmlTreeWriter(transformed, output)
+    print(output.getvalue().strip())
+
+    # Revalidate the changed tree against the same schema; the transform
+    # keeps the original tree but exposes the reparse's report.
+    revalidation = SendTreeToPyXSD(transformed)
+    revalidation.outerParser = parser
+    revalidation()
+    print("revalidation errors:", [issue.code for issue in revalidation.report.issues])
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Returning `self.root` hands the tree to the next stage; returning `None`
+ends the pipeline without writing output. Both are covered in
+{doc}`using`.
 
 ## Using the visitor helpers
 

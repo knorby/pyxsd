@@ -2,8 +2,9 @@ import copy
 
 from pyxsd.element_representatives.complex_type import ComplexType
 from pyxsd.element_representatives.element_representative import (
-    _ACTIVE_NAMESPACE_OVERRIDES,
     ComponentTable,
+    get_active_form_defaults,
+    get_active_namespace_overrides,
 )
 
 
@@ -25,8 +26,13 @@ class Schema(ComplexType):
         # table, so declarations cannot leak between parsers.
         self.components = ComponentTable()
         # Per-element namespace overrides for components spliced in from
-        # imported schemas (set by the parser before the ER run).
-        self.namespaceOverrides = _ACTIVE_NAMESPACE_OVERRIDES
+        # imported schemas (set by the parser before the ER run). The
+        # map is captured once, by value, so later parsers cannot
+        # rewrite this schema's component namespaces.
+        self.namespaceOverrides = get_active_namespace_overrides()
+        # The source document's form defaults per spliced component,
+        # captured with the same snapshot discipline.
+        self.formDefaultOverrides = get_active_form_defaults()
         self.attributeGroups = {}
         self.complexTypes = {}
         self.simpleTypes = {}

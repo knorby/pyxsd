@@ -29,6 +29,12 @@ class Displayer(Transform):
 
     def makeTempFileOfTree(self) -> IO[str]:
         newTree = tempfile.TemporaryFile(mode="w+")  # noqa: SIM115 - returned to caller
-        self.writeTree(newTree)
+        try:
+            self.writeTree(newTree)
+        except BaseException:
+            # The caller never receives the stream, so close it here;
+            # otherwise a serialization failure leaks the file handle.
+            newTree.close()
+            raise
         newTree.seek(0)
         return newTree

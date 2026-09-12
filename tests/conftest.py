@@ -38,15 +38,17 @@ def canonicalize(element):
     """Reduce an ElementTree element to a comparable structure.
 
     Comments are skipped (ElementTree drops them when parsing unless a
-    custom parser is installed, but be defensive), text is stripped,
-    and attributes are sorted, so documents that differ only in
-    whitespace layout or attribute order compare equal.
+    custom parser is installed, but be defensive), and attributes are
+    sorted. The text of a leaf element is kept exactly as parsed -- the
+    writer must reproduce it verbatim -- while the whitespace between a
+    parent element's tags is treated as layout and stripped.
     """
     children = [canonicalize(child) for child in element]
+    text = (element.text or "").strip() if children else element.text or ""
     return (
         element.tag,
         tuple(sorted(element.attrib.items())),
-        (element.text or "").strip(),
+        text,
         children,
     )
 

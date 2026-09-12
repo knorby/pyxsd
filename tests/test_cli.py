@@ -11,6 +11,7 @@ from pyxsd.parser import (
     _transformModuleNames,
     main,
     parseTransformCall,
+    split_transform_chain,
 )
 
 
@@ -133,11 +134,29 @@ def test_verbose_and_quiet_conflict(tmp_path, monkeypatch):
     assert excinfo.value.code == 2
 
 
-def test_unknown_transform_module_raises(tmp_path, monkeypatch):
+def test_unknown_transform_prints_clean_error(tmp_path, monkeypatch, capsys):
+    """A missing transform is a usage error, not a traceback."""
     monkeypatch.chdir(tmp_path)
     stage_fixture(tmp_path, "inventory")
-    with pytest.raises(ImportError, match="NoSuchTransform"):
+    with pytest.raises(SystemExit) as excinfo:
         main(["-i", "instance.xml", "-t", "NoSuchTransform()"])
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "NoSuchTransform" in err
+    assert "Traceback" not in err
+
+
+def test_transform_bad_signature_prints_clean_error(tmp_path, monkeypatch, capsys):
+    """Arguments that do not match the transform signature are reported."""
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    with pytest.raises(SystemExit) as excinfo:
+        main(["-i", "instance.xml", "-t", "PrintData(bogus=True)"])
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "PrintData" in err
+    assert "bogus" in err
+    assert "Traceback" not in err
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +336,80 @@ class TestParseTransformCall:
     def test_attribute_access_is_rejected(self):
         with pytest.raises(ValueError, match="correct syntax"):
             parseTransformCall("mod.PrintData()")
+
+
+class TestSplitTransformChain:
+    def test_simple_chain(self):
+        assert split_transform_chain("A()>B()") == ["A()", "B()"]
+
+    def test_single_call_has_no_separator(self):
+        assert split_transform_chain("PrintData()") == ["PrintData()"]
+
+    def test_quoted_separator_is_kept(self):
+        chain = 'PrintData("a>b.xml")'
+        assert split_transform_chain(chain) == [chain]
+
+    def test_quoted_separator_between_calls(self):
+        assert split_transform_chain('A("x>y")>B()') == ['A("x>y")', "B()"]
+
+    def test_separator_inside_nested_call(self):
+        assert split_transform_chain('A(f(">"))>B()') == ['A(f(">"))', "B()"]
+
+    def test_multiline_triple_quoted_argument(self):
+        """Token positions are absolute, not line-relative columns."""
+        chain = 'A("""x\ny""")>B()'
+        assert split_transform_chain(chain) == ['A("""x\ny""")', "B()"]
+
+    def test_multiline_call_with_quoted_separator(self):
+        chain = 'A(\n"x>y"\n)>B()'
+        assert split_transform_chain(chain) == ['A(\n"x>y"\n)', "B()"]
+
+    def test_whitespace_is_stripped(self):
+        assert split_transform_chain("  A()  >  B()  ") == ["A()", "B()"]
+
+    def test_unterminated_string_raises_value_error(self):
+        with pytest.raises(ValueError, match="not valid Python syntax"):
+            split_transform_chain('PrintData("unterminated)')
+
+    def test_invalid_character_raises_value_error(self):
+        """Tokenizer garbage must fail the split on every supported version.
+
+        Python 3.11's tokenizer emits ERRORTOKEN for characters it cannot
+        recognize (including an unterminated string outside any call
+        parentheses) without raising, while 3.12+'s C tokenizer raises
+        TokenError. Either way the chain is not valid Python syntax.
+        """
+        with pytest.raises(ValueError, match="not valid Python syntax"):
+            split_transform_chain('A() > "unterminated')
+
+    def test_cli_chain_with_quoted_argument(self, tmp_path, monkeypatch):
+        """A '>' inside a transform argument must not split the chain."""
+        monkeypatch.chdir(tmp_path)
+        stage_fixture(tmp_path, "inventory")
+        main(["-i", "instance.xml", "-t", 'PrintData("a>b.xml")'])
+        assert (tmp_path / "a>b.xml").exists()
+
+    def test_cli_malformed_call_prints_clean_error(self, tmp_path, monkeypatch, capsys):
+        """A transform that tokenizes but is not a valid literal call."""
+        monkeypatch.chdir(tmp_path)
+        stage_fixture(tmp_path, "inventory")
+        with pytest.raises(SystemExit) as exitInfo:
+            main(["-i", "instance.xml", "-t", "PrintData(**opts)"])
+        assert exitInfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "transform call" in captured.err
+        assert "Traceback" not in captured.err
+
+    def test_cli_malformed_chain_prints_clean_error(self, tmp_path, monkeypatch, capsys):
+        """A chain that is not valid Python syntax at all."""
+        monkeypatch.chdir(tmp_path)
+        stage_fixture(tmp_path, "inventory")
+        with pytest.raises(SystemExit) as exitInfo:
+            main(["-i", "instance.xml", "-t", "PrintData("])
+        assert exitInfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "not valid Python syntax" in captured.err
+        assert "Traceback" not in captured.err
 
 
 class TestTransformModuleNames:

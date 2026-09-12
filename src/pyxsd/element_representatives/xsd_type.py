@@ -1,3 +1,4 @@
+import copy
 import logging
 import types
 
@@ -493,6 +494,11 @@ class XsdType(ElementRepresentative):
             # invalid or unresolved content.
             "_parseMode_": getattr(pyXSD, "mode", ParseModes.STRICT),
         }
+        # Expand group references before reading the wildcard metadata:
+        # a wildcard contributed by a named group registers on this type
+        # during expansion, and the class must stamp it so binding and
+        # occurrence checks see it.
+        elements = list(self.getElements())
         if getattr(self, "hasWildcardElements", False):
             namespace["hasWildcardElements_"] = True
         if getattr(self, "hasWildcardAttributes", False):
@@ -524,7 +530,42 @@ class XsdType(ElementRepresentative):
         contentModel = compile_content_model(self, pyXSD)
         if contentModel is not None:
             namespace["_contentModel_"] = contentModel
-        for element in self.getElements():
+
+        # Accessor allocation must consider every inherited and
+        # same-class declaration, not just the names assembled so far:
+        # an alias that reuses an inherited key would shadow that
+        # declaration out of the effective content model, and an alias
+        # that collides with a later attribute would be overwritten by
+        # it. Collect the occupied keys and declaration names first.
+        inheritedKeys: set[str] = set()
+        inheritedAttributeNames: set[str] = set()
+        for base in bases:
+            for klass in getattr(base, "__mro__", ()):
+                for key in klass.__dict__.get("_elementNames_", ()):
+                    inheritedKeys.add(key)
+                for key in klass.__dict__.get("_attributeNames_", ()):
+                    inheritedKeys.add(key)
+                    inheritedAttributeNames.add(klass.__dict__[key].name)
+
+        attributes = list(self.attributes.values())
+        ownElementNames = {element.name for element in elements}
+        ownAttributeNames = {attr.name for attr in attributes}
+
+        def allocateAlias(name: str) -> str:
+            """Returns a free ``<name>_element`` class-attribute key."""
+            alias = f"{name}_element"
+            suffix = 2
+            while (
+                alias in namespace
+                or alias in ownElementNames
+                or alias in ownAttributeNames
+                or alias in inheritedKeys
+            ):
+                alias = f"{name}_element_{suffix}"
+                suffix += 1
+            return alias
+
+        for element in elements:
             element.pyXSD = pyXSD
             existing = namespace.get(element.name)
             if existing is not None and not isinstance(existing, str):
@@ -538,11 +579,39 @@ class XsdType(ElementRepresentative):
                     counter += 1
                     key = f"{element.name}|{counter}"
                 namespace[key] = element
+            elif element.name in ownAttributeNames or element.name in inheritedAttributeNames:
+                # An element and an attribute share a name (legal in
+                # XSD). The attribute keeps the natural accessor; the
+                # element is re-keyed under ``<name>_element`` (with a
+                # numeric suffix when that is taken). Marking the
+                # descriptor aliased before class creation makes both
+                # its storage and its binding use the alias, so the
+                # two declarations never share an instance slot.
+                alias = allocateAlias(element.name)
+                namespace[alias] = element
+                element._aliased_ = True
             else:
                 # The plain-string case is the historical quirk where
                 # an element named 'name' replaces the name metadata.
                 namespace[element.name] = element
-        for attr in self.attributes.values():
+
+        # An inherited element shadowed by a derived attribute needs a
+        # per-derived-class alias: the base descriptor cannot be
+        # re-keyed without changing base instances, so the derived
+        # class binds an aliased copy and the merge keeps it in place
+        # of the inherited declaration.
+        for attr in attributes:
+            if attr.name in namespace:
+                continue
+            inherited = XsdType._findInheritedElement(bases, attr.name)
+            if inherited is None:
+                continue
+            alias = allocateAlias(attr.name)
+            copied = copy.copy(inherited)
+            copied._aliased_ = True
+            namespace[alias] = copied
+
+        for attr in attributes:
             attr.pyXSD = pyXSD
             namespace[attr.name] = attr
 
@@ -559,6 +628,22 @@ class XsdType(ElementRepresentative):
 
         self._generatedClass = cls
         return cls
+
+    @staticmethod
+    def _findInheritedElement(bases, name):
+        """Returns the most-derived inherited element declaration.
+
+        Walks each base's MRO (most-derived first) and returns the first
+        element descriptor whose declaration name is ``name``, or
+        ``None`` when no base declares it.
+        """
+        for base in bases:
+            for klass in getattr(base, "__mro__", ()):
+                for key in klass.__dict__.get("_elementNames_", ()):
+                    descriptor = klass.__dict__[key]
+                    if descriptor.name == name:
+                        return descriptor
+        return None
 
 
 from pyxsd.schema_base import SchemaBase  # noqa: E402

@@ -41,12 +41,14 @@ Overview:
 import ast
 import importlib
 import importlib.util
+import inspect
 import io
 import logging
 import os.path
 import pkgutil
 import re
 import sys
+import tokenize
 import warnings
 from pathlib import Path
 from types import ModuleType
@@ -57,9 +59,9 @@ from pyxsd import __version__, xsi
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import (
+    ComponentTable,
     ElementRepresentative,
     componentKind,
-    set_active_namespace_overrides,
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.namespaces import (
@@ -70,7 +72,8 @@ from pyxsd.namespaces import (
     clark,
     parse_with_namespaces,
 )
-from pyxsd.schema_base import SchemaBase
+from pyxsd.schema_base import SchemaBase, nil_content_kind
+from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 from pyxsd.xsd_data_types import AnySimpleType, qname_context, whitespace_mode, xsd_value_key
@@ -102,14 +105,14 @@ class PyXSD:
     # Resolved to a Path for file inputs, held as-is for file objects.
     xmlFileInput: Path | IO[str]
     xmlPath: Path
-    xsdFile: str | Path | os.PathLike[str] | None
+    xsdFile: str | Path | os.PathLike[str] | IO[str] | None
     xmlFileOutput: str | Path | bool
     schemaRootInstance: Any
 
     def __init__(
         self,
         xmlFileInput: str | Path | os.PathLike[str] | IO[str],
-        xsdFile: str | Path | os.PathLike[str] | None = None,
+        xsdFile: str | Path | os.PathLike[str] | IO[str] | None = None,
         xmlFileOutput: str | bool = False,
         transformOutputName: str | None = None,
         transforms: list[str] | None = None,
@@ -126,8 +129,9 @@ class PyXSD:
           accepted. Will raise an error if not specified.
 
         - ``xsdFile`` - the filename/path information for the schema
-          file. Will attempt to use the schemaLocation tag in the xml
-          if not specified.
+          file; a file object open for reading is also accepted. Will
+          attempt to use the schemaLocation tag in the xml if not
+          specified.
 
         - ``xmlFileOutput`` - location for xml output to be sent after
           it is parsed. Will use a default name if not specified. Will
@@ -172,8 +176,23 @@ class PyXSD:
         # spliced in from imported schemas; installed before the ER run so
         # an imported declaration reports its own target namespace.
         self._namespaceOverrides: dict[int, str | None] = {}
+        # Source-document form defaults per spliced component:
+        # id(xsdElement) -> (elementFormDefault, attributeFormDefault).
+        self._formDefaults: dict[int, tuple[str | None, str | None]] = {}
+        # The parser's thread-local construction context: schema
+        # construction and instance binding run inside it, so concurrent
+        # parsers cannot observe each other's overrides or tables. The
+        # staged table collects representatives built before the schema
+        # root adopts one.
+        self.schemaContext = SchemaContext(components=ComponentTable())
         self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
+        # Transform-embedded reports already merged into self.report
+        # (see _absorbTransformReport). The objects are retained so
+        # identity stays meaningful for the parser's lifetime; storing
+        # only id() values allowed a collected report's address to be
+        # reused and a new report to be mistaken for one already merged.
+        self._absorbedReports: list[ValidationReport] = []
         # Prefix-to-URI bindings captured while parsing the instance and
         # every schema document; one context accumulates them all so a
         # component resolves QNames against its own document's scope.
@@ -275,6 +294,7 @@ class PyXSD:
             self._namespaceOverrides[id(attributeElement)] = XML_NS
             schemaRoot.append(attributeElement)
 
+    @with_schema_context
     def parseXSD(self) -> None:
         """Reads the given xsd file and creates a set of classes that
         correspond to the complex and simple type definitions.
@@ -314,11 +334,11 @@ class PyXSD:
         if getattr(self.mode, "namespaces", "legacy") == "strict":
             self._injectXmlNamespaceAttributes(root)
 
-        import pyxsd.element_representatives.element_representative as ermod
-
-        # Install the per-component namespace overrides before the ER run
-        # so imported declarations report their own target namespace.
-        set_active_namespace_overrides(self._namespaceOverrides)
+        # Stage this parser's snapshot on its own context before the ER
+        # run so imported declarations report their own target namespace
+        # and form defaults.
+        self.schemaContext.namespace_overrides = dict(self._namespaceOverrides)
+        self.schemaContext.form_defaults = dict(self._formDefaults)
         schemaER = ElementRepresentative.factory(root, None)
         # Attach the parser to the schema ER so class building can
         # record schema-reference problems (group/attributeGroup
@@ -328,11 +348,14 @@ class PyXSD:
         # QNames written in its own document.
         schemaER.namespaceContext = self.namespaceContext
         # This parser owns the component table the ER run registered
-        # into; expose it on the parser and as the module-level active
-        # table so later lookups (xsi:type dispatch, tests) use this
-        # parser's declarations rather than a previous parser's.
+        # into; expose it on the parser and on the context so registry
+        # lookups (xsi:type dispatch, tests) use this parser's
+        # declarations rather than a previous parser's.
         self.components = schemaER.components
-        ermod._ACTIVE_TABLE = self.components
+        self.schemaContext.components = self.components
+        # Module-level lookups after this parse (ElementRepresentative
+        # .getFromName, the registry proxy) see this parser's table.
+        remember_components(self.components)
 
         # The schema root is itself the instance class used to dispatch
         # the document root's element declarations.
@@ -608,14 +631,21 @@ class PyXSD:
 
         In strict mode the namespace each component was declared in is
         recorded so its expanded name reflects the source document
-        rather than the main schema's target namespace.
+        rather than the main schema's target namespace. That document's
+        form defaults are recorded too, so local declarations resolve
+        qualification against their own schema instead of the host.
         """
         strict = getattr(self.mode, "namespaces", "legacy") == "strict"
+        sourceDefaults = (
+            includedRoot.get("elementFormDefault"),
+            includedRoot.get("attributeFormDefault"),
+        )
         for component in list(includedRoot):
             if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
                 if strict:
                     for element in component.iter():
                         self._namespaceOverrides.setdefault(id(element), namespace)
+                        self._formDefaults.setdefault(id(element), sourceDefaults)
                 schemaRoot.append(component)
         return None
 
@@ -701,6 +731,7 @@ class PyXSD:
         check_identity_constraints(rootInstance, self.report)
         return None
 
+    @with_schema_context
     def parseXML(self) -> Any:
         """Reads the given xml file in the context of the xsd file.
 
@@ -770,7 +801,33 @@ class PyXSD:
                     else issubclass(subCls, SchemaBase)
                 )
                 if isComplex:
-                    subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
+                    nilled = xsi.xsi_nil_is_true(self.xmlRoot)
+                    if nilled and not rootElement.isNillable():
+                        self.report.add_error(
+                            f"the root element '{rootName}' is not nillable but carries xsi:nil",
+                            code="nil",
+                            element=rootName,
+                        )
+                        nilled = False
+                    if nilled:
+                        # A nilled root carries no content to validate:
+                        # the emptiness rule is checked, declared
+                        # attributes are validated, and an empty shell
+                        # is bound.
+                        if rootElement.getFixed() is not None:
+                            self.report.add_error(
+                                f"the root element '{rootName}' is marked nil "
+                                "but its declaration has a fixed value",
+                                code="nil",
+                                element=rootName,
+                            )
+                        subCls._checkNilContent(self.xmlRoot, rootElementName)
+                        subInstance = subCls._nilledInstance(
+                            subCls, self.xmlRoot, subCls._node_name(self.xmlRoot)
+                        )
+                        subInstance._nil_ = True
+                    else:
+                        subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
                 else:
                     # The root element's declared type is a primitive
                     # (simple) data type: build a typed instance directly.
@@ -810,16 +867,37 @@ class PyXSD:
             )
             nilled = False
 
+        nilContent = nil_content_kind(self.xmlRoot) if nilled else None
         if list(self.xmlRoot):
+            if nilled:
+                self.report.add_error(
+                    f"the root element '{rootName}' is marked nil but contains child elements",
+                    code="nil",
+                    element=rootName,
+                )
+            else:
+                self.report.add_error(
+                    f"the root element '{rootName}' has a simple type but contains child elements",
+                    code="unexpected-element",
+                    element=rootName,
+                )
+
+        if nilContent == "characters":
             self.report.add_error(
-                f"the root element '{rootName}' has a simple type but contains child elements",
-                code="unexpected-element",
+                f"the root element '{rootName}' is marked nil but contains character content",
+                code="nil",
                 element=rootName,
             )
-
         text = self.xmlRoot.text or ""
         value = None
         with qname_context(self._qname_bindings_for(self.xmlRoot)):
+            if nilled and rootElement.getFixed() is not None:
+                self.report.add_error(
+                    f"the root element '{rootName}' is marked nil "
+                    "but its declaration has a fixed value",
+                    code="nil",
+                    element=rootName,
+                )
             if not nilled:
                 forced = None
                 if self.xmlRoot.text is None and not list(self.xmlRoot):
@@ -869,7 +947,12 @@ class PyXSD:
         instance._attribs_ = {
             xsi.xsi_attr_key(key): val for key, val in self.xmlRoot.attrib.items()
         }
-        instance._value_ = [str(value)] if value is not None else ([text] if text else None)
+        if nilled:
+            # A nilled element has no value: the content rule above has
+            # reported any character content, which is not bound here.
+            instance._value_ = None
+        else:
+            instance._value_ = [str(value)] if value is not None else ([text] if text else None)
         instance._children_ = []
         return instance
 
@@ -1155,7 +1238,10 @@ class PyXSD:
 
         for transform in transforms:
             class_name, args, kwargs = parseTransformCall(transform)
-            transformer = self.getTransformModuleAndLoad(class_name)
+            try:
+                transformer = self.getTransformModuleAndLoad(class_name)
+            except ImportError as e:
+                raise PyXSDError(f"the transform '{class_name}' could not be loaded: {e}") from e
             argDesc = repr(args)
             if kwargs:
                 argDesc += " " + repr(kwargs)
@@ -1164,10 +1250,49 @@ class PyXSD:
                 class_name,
                 argDesc,
             )
-            transformCls = getattr(transformer, class_name)
-            currentRoot = transformCls(currentRoot)(*args, **kwargs)
+            transformCls = getattr(transformer, class_name, None)
+            if transformCls is None:
+                raise PyXSDError(
+                    f"the module for the transform '{class_name}' does not define that class"
+                )
+            instance = transformCls(currentRoot)
+            if getattr(instance, "inheritsParserContext", False):
+                # Reparsing transforms default to this run's schema and
+                # binding mode, and this run's report surfaces theirs.
+                instance.outerParser = self
+            try:
+                inspect.signature(instance.__call__).bind(*args, **kwargs)
+            except TypeError as e:
+                # Only the call signature is checked here; exceptions the
+                # transform body raises stay untouched.
+                raise PyXSDError(
+                    f"the transform call '{transform}' does not match the signature "
+                    f"of {class_name}: {e}"
+                ) from e
+            currentRoot = instance(*args, **kwargs)
+            self._absorbTransformReport(getattr(instance, "report", None))
 
         return currentRoot
+
+    def _absorbTransformReport(self, report: ValidationReport | None) -> None:
+        """Merges a transform's embedded validation report into this
+        run's report, at most once per report object.
+
+        Transforms such as ``SendTreeToPyXSD`` revalidate the tree
+        inside their own parser run. Without this merge, problems in
+        the transformed content would vanish with the inner run and
+        ``--strict`` (which inspects this report) could not see them.
+        Only :class:`ValidationReport` values are merged: a transform is
+        free to use its ``report`` attribute for its own data.
+        """
+        if report is None or report is self.report:
+            return
+        if not isinstance(report, ValidationReport):
+            return
+        if any(report is absorbed for absorbed in self._absorbedReports):
+            return
+        self._absorbedReports.append(report)
+        self.report.extend(report)
 
     def getTransformsFileName(self) -> Path:
         """Creates a default name for the xml file that is written after
@@ -1385,6 +1510,66 @@ def parseTransformCall(call: str) -> tuple[str, list[Any], dict[str, Any]]:
     return class_name, args, kwargs
 
 
+def _line_start_offsets(chain: str) -> list[int]:
+    """Absolute offsets at which each 1-based source line starts."""
+    starts = [0]
+    for index, character in enumerate(chain):
+        if character == "\n":
+            starts.append(index + 1)
+    return starts
+
+
+def split_transform_chain(chain: str) -> list[str]:
+    """Splits a CLI transform chain on its top-level ``>`` separators.
+
+    The historic implementation split on every ``>`` character, so an
+    argument like ``PrintData("a>b.xml")`` was chopped mid-string. The
+    chain is now tokenized: a ``>`` only separates calls when it stands
+    outside any string literal and outside any call parentheses.
+    Tokenizer positions are ``(line, column)`` pairs, so they are
+    converted to absolute string offsets before slicing; multi-line
+    calls and triple-quoted arguments therefore split correctly too.
+    Whitespace around segments is stripped; a chain without separators
+    yields a single-element list.
+    """
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(chain).readline)
+        line_starts = _line_start_offsets(chain)
+        separators: list[int] = []
+        depth = 0
+        for tokType, tokString, start, _end, _line in tokens:
+            if tokType == tokenize.ERRORTOKEN:
+                # Python 3.11's tokenizer reports invalid characters (and
+                # unterminated strings outside any call parentheses) as
+                # ERRORTOKEN tokens instead of raising; 3.12+ raises
+                # TokenError for them. Reject either way.
+                raise ValueError(
+                    f"Transform Chain Error: the transform chain '{chain}' is not valid Python syntax."
+                )
+            if tokType != tokenize.OP:
+                continue
+            if tokString in "([{":
+                depth += 1
+            elif tokString in ")]}":
+                depth -= 1
+            elif tokString == ">" and depth == 0:
+                separators.append(line_starts[start[0] - 1] + start[1])
+    except (tokenize.TokenError, IndentationError, SyntaxError) as e:
+        raise ValueError(
+            f"Transform Chain Error: the transform chain '{chain}' is not valid Python syntax."
+        ) from e
+    if not separators:
+        stripped = chain.strip()
+        return [stripped] if stripped else []
+    segments: list[str] = []
+    previous = 0
+    for position in separators:
+        segments.append(chain[previous:position].strip())
+        previous = position + 1
+    segments.append(chain[previous:].strip())
+    return segments
+
+
 def _configure_logging(verbose: bool, quiet: bool) -> None:
     """Set the root logging level according to the CLI flags."""
     if verbose:
@@ -1558,22 +1743,17 @@ def main(argv: list[str] | None = None) -> None:
     else:
         inputXmlFile = options.inputXmlFile
 
-    transforms = []
-
-    if options.transformCall:
-        if ">" in options.transformCall:
-            transforms = [t.strip().strip(">").strip() for t in options.transformCall.split(">")]
-        else:
-            transforms.append(options.transformCall)
-    if options.transformFile:
-        with open(options.transformFile) as fd:
-            transforms = [t.strip().strip(">").strip() for t in fd]
-
     parsedOutputFile = options.parsedOutputFile
     if not options.outputParsed:
         parsedOutputFile = "_No_Output_"
 
     try:
+        transforms = []
+        if options.transformCall:
+            transforms = split_transform_chain(options.transformCall)
+        if options.transformFile:
+            with open(options.transformFile) as fd:
+                transforms = [call for line in fd for call in split_transform_chain(line)]
         baseMode = ParseModes.LAX if options.mode == "lax" else ParseModes.STRICT
         app = PyXSD(
             inputXmlFile,
@@ -1586,7 +1766,7 @@ def main(argv: list[str] | None = None) -> None:
             options.quiet,
             mode=baseMode.replace(namespaces=options.namespaces),
         )
-    except (PyXSDError, OSError) as e:
+    except (PyXSDError, ValueError, OSError) as e:
         print(f"pyxsd: error: {e}", file=sys.stderr)
         raise SystemExit(1) from e
 

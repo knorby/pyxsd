@@ -1,3 +1,4 @@
+import copy
 import logging
 
 from pyxsd.compositors import Compositor
@@ -80,10 +81,10 @@ class ComplexType(XsdType):
 
         When the reference site specifies ``minOccurs``/``maxOccurs``,
         the occurrence limits are folded onto each contributed element
-        (see ``_foldRefOccurrences``). Note that this mutates the
-        shared element ERs, so a group referenced multiple times with
-        conflicting occurrence limits resolves with the last
-        reference's limits.
+        (see ``_foldRefOccurrences``). Each reference works on its own
+        copies of the group's element representatives, so a reference's
+        limits and compositor information never leak into the shared
+        declaration or into other references to the same group.
         """
         group = refSite.resolveReference(refSite.ref, self.getSchema().groups.values())
         groupName = refSite.ref.split(":", 1)[-1]
@@ -121,14 +122,20 @@ class ComplexType(XsdType):
         for element in compositor.elements:
             if getattr(element, "isRefSite", False):
                 contributed.extend(self._flattenGroupRef(element, visited | {groupKey}))
-            else:
-                if getattr(element, "isElementRef", False):
-                    # ``<xs:element ref="..."/>`` inside a named group
-                    # must resolve to its global declaration exactly as
-                    # it would directly inside the type.
-                    self._resolveElementRef(element)
-                element.sOrC = compInfo
-                contributed.append(element)
+                continue
+            # The group's element representatives are shared by every
+            # type that references the group. Each reference gets its
+            # own shallow copy, so folding this reference's occurrence
+            # limits (and resolving element refs) never mutates the
+            # shared declaration.
+            use = copy.copy(element)
+            if getattr(use, "isElementRef", False):
+                # ``<xs:element ref="..."/>`` inside a named group must
+                # resolve to its global declaration exactly as it would
+                # directly inside the type.
+                self._resolveElementRef(use)
+            use.sOrC = compInfo
+            contributed.append(use)
         self._foldRefOccurrences(refSite, contributed)
         return contributed
 
