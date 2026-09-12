@@ -232,6 +232,11 @@ class ElementRepresentative:
     the most general ways to gather information from the schema.
     """
 
+    # Set on element descriptors that were re-keyed in their generated
+    # class because an attribute took the natural accessor name
+    # (element/attribute name collision). See ``XsdType.clsFor``.
+    _aliased_: bool = False
+
     def __init__(self, xsdElement, parent):
         """See the documentation for the ElementRepresentative system at
         the top of this module.

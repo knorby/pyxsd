@@ -730,13 +730,21 @@ class SchemaBase:
 
         The base name is the declaration's local name, which is also the
         descriptor's bound name (so ``setattr`` reaches the descriptor).
-        In strict namespace mode two declarations that share a local name
-        but differ in namespace would collide; the second is exposed as
+        A descriptor aliased at class-build time (element/attribute name
+        collision) binds through its alias instead. In strict namespace
+        mode two declarations that share a local name but differ in
+        namespace would collide; the second is exposed as
         ``local_prefix`` (using the instance's in-scope prefix, or a
         numeric suffix when the namespace is the default). Returns
         ``(name, descriptor_bound)``.
         """
         base = getattr(descriptor, "name", None) or subElement.tag.split("}")[-1]
+        if getattr(descriptor, "_aliased_", False):
+            # The descriptor was re-keyed at class-build time because
+            # an attribute took the natural accessor (element/attribute
+            # name collision); ``setattr`` must target the alias so the
+            # value reaches the element descriptor.
+            return getattr(descriptor, "bindingKey", base), True
         if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
             return base, True
         used = instance.__dict__.setdefault("_childAccessors_", {})

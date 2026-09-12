@@ -544,6 +544,24 @@ class XsdType(ElementRepresentative):
                 namespace[element.name] = element
         for attr in self.attributes.values():
             attr.pyXSD = pyXSD
+            existing = namespace.get(attr.name)
+            if isinstance(existing, ElementRepresentative):
+                # An element and an attribute share a name (legal in
+                # XSD). The attribute keeps the natural accessor; the
+                # element is re-keyed under ``<name>_element`` (with a
+                # numeric suffix when that is taken). Marking the
+                # descriptor aliased before class creation makes both
+                # its storage and its binding use the alias, so the
+                # two declarations never share an instance slot.
+                alias = f"{attr.name}_element"
+                suffix = 2
+                occupant = namespace.get(alias)
+                while occupant is not None and not isinstance(occupant, str):
+                    alias = f"{attr.name}_element_{suffix}"
+                    suffix += 1
+                    occupant = namespace.get(alias)
+                namespace[alias] = existing
+                existing._aliased_ = True
             namespace[attr.name] = attr
 
         try:
