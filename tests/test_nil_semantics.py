@@ -182,8 +182,33 @@ def test_root_complex_nilled_with_children_is_reported(tmp_path):
     assert "nil" in codes(parser)
 
 
-def test_nillable_root_conflict_with_fixed_still_reported(tmp_path):
-    """A nilled element skips fixed checking; a non-nil one does not."""
+def test_nilled_root_with_fixed_value_is_reported(tmp_path):
+    """xsi:nil and a declaration's fixed value cannot both apply."""
     schema = ROOT_PRIMITIVE_SCHEMA.replace('nillable="true"', 'nillable="true" fixed="7"')
     nilled = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="true"/>', schema)
-    assert not nilled.report.has_errors
+    assert "nil" in codes(nilled)
+
+    matching = parse(tmp_path, f"<r {XSI_DECL}>7</r>", schema)
+    assert not matching.report.has_errors
+
+
+def test_nilled_child_with_fixed_value_is_reported(tmp_path):
+    """The same fixed conflict is reported for nilled children."""
+    schema = PRIMITIVE_SCHEMA.replace('nillable="true"', 'nillable="true" fixed="7"')
+    parser = parse(tmp_path, f'<r {XSI_DECL}><v xsi:nil="true"/></r>', schema)
+    assert "nil" in codes(parser)
+
+
+def test_whitespace_only_nilled_root_is_reported(tmp_path):
+    """Whitespace is character content; a nilled element must be empty."""
+    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="true"> </r>', ROOT_PRIMITIVE_SCHEMA)
+    assert "nil" in codes(parser)
+
+
+def test_whitespace_only_nilled_child_is_reported(tmp_path):
+    parser = parse(
+        tmp_path,
+        f'<r {XSI_DECL}><v xsi:nil="true"> </v></r>',
+        COMPLEX_SCHEMA,
+    )
+    assert "nil" in codes(parser)

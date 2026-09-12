@@ -48,6 +48,22 @@ def _global_declaration(components, local: str, kind: str, uri: str | None):
     return None
 
 
+def nil_content_kind(element: Any) -> str | None:
+    """The kind of content a nilled element must not have.
+
+    Returns ``"elements"`` when the element has child elements,
+    ``"characters"`` when it has any character content (whitespace
+    included: ``xsi:nil`` requires the element to be empty), and
+    ``None`` when the element is truly empty. One helper keeps the
+    emptiness rule identical for roots and children.
+    """
+    if list(element):
+        return "elements"
+    if element.text is not None and element.text != "":
+        return "characters"
+    return None
+
+
 class SchemaBase:
     """Serves as the base class for all schema type classes created.
 
@@ -776,6 +792,12 @@ class SchemaBase:
                 element=cls.__name__,
             )
             nilled = False
+        if nilled and descriptor.getFixed() is not None:
+            cls._report_error(
+                f"element '{subElementName}' is marked nil but its declaration has a fixed value",
+                code="nil",
+                element=cls.__name__,
+            )
 
         storage = leader if (aggregate and leader is not None) else descriptor
         accessor, descriptorBound = cls._childAccessor(instance, storage, subElement)
@@ -934,17 +956,17 @@ class SchemaBase:
         """Enforces the nil emptiness rule with code ``nil``.
 
         An element carrying ``xsi:nil="true"`` may have attributes but
-        no character or element content; whitespace-only text is
-        tolerated. The offending content itself is never bound.
+        no character or element content; whitespace counts as character
+        content. The offending content itself is never bound.
         """
-        if list(subElement):
+        kind = nil_content_kind(subElement)
+        if kind == "elements":
             cls._report_error(
                 f"element '{subElementName}' is marked nil but contains child elements",
                 code="nil",
                 element=cls.__name__,
             )
-        text = subElement.text
-        if text is not None and text.strip():
+        elif kind == "characters":
             cls._report_error(
                 f"element '{subElementName}' is marked nil but contains character content",
                 code="nil",

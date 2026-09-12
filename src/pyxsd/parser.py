@@ -71,7 +71,7 @@ from pyxsd.namespaces import (
     clark,
     parse_with_namespaces,
 )
-from pyxsd.schema_base import SchemaBase
+from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
@@ -809,6 +809,13 @@ class PyXSD:
                         # the emptiness rule is checked, declared
                         # attributes are validated, and an empty shell
                         # is bound.
+                        if rootElement.getFixed() is not None:
+                            self.report.add_error(
+                                f"the root element '{rootName}' is marked nil "
+                                "but its declaration has a fixed value",
+                                code="nil",
+                                element=rootName,
+                            )
                         subCls._checkNilContent(self.xmlRoot, rootElementName)
                         subInstance = subCls._nilledInstance(
                             subCls, self.xmlRoot, subCls._node_name(self.xmlRoot)
@@ -855,6 +862,7 @@ class PyXSD:
             )
             nilled = False
 
+        nilContent = nil_content_kind(self.xmlRoot) if nilled else None
         if list(self.xmlRoot):
             if nilled:
                 self.report.add_error(
@@ -869,15 +877,22 @@ class PyXSD:
                     element=rootName,
                 )
 
-        text = self.xmlRoot.text or ""
-        if nilled and text.strip():
+        if nilContent == "characters":
             self.report.add_error(
                 f"the root element '{rootName}' is marked nil but contains character content",
                 code="nil",
                 element=rootName,
             )
+        text = self.xmlRoot.text or ""
         value = None
         with qname_context(self._qname_bindings_for(self.xmlRoot)):
+            if nilled and rootElement.getFixed() is not None:
+                self.report.add_error(
+                    f"the root element '{rootName}' is marked nil "
+                    "but its declaration has a fixed value",
+                    code="nil",
+                    element=rootName,
+                )
             if not nilled:
                 forced = None
                 if self.xmlRoot.text is None and not list(self.xmlRoot):
