@@ -1,17 +1,18 @@
-"""Opt-in cross-check of pyxsd's verdicts against an independent oracle.
+"""Cross-check of pyxsd's verdicts against an independent oracle.
 
-This module is deliberately **non-gating**: it is skipped unless the
-environment variable ``PYXSD_RUN_ORACLE=1`` is set, so a disagreement
-(or a missing ``xmlschema`` install) can never fail CI. Run it manually
-after ``uv sync --group dev``::
+This module is opt-in: it is skipped unless the environment variable
+``PYXSD_RUN_ORACLE=1`` is set. When it *is* requested, a missing
+``xmlschema`` installation fails the run rather than silently skipping
+the check. Run it after ``uv sync --group dev``::
 
     PYXSD_RUN_ORACLE=1 uv run pytest tests/test_oracle.py -q
 
 ``xmlschema`` is a well-tested independent XSD 1.0 implementation. Where
 the two disagree, the disagreement is printed with the case id and
-direction so the result can be triaged. Each case runs under the binding
-policy named by its manifest ``mode`` (``legacy`` by default), so the
-``namespaced`` cases exercise namespace-aware matching alongside the
+direction so the result can be triaged. Internal crashes on either side
+are failures: "both crashed" is not agreement. Each case runs under the
+binding policy named by its manifest ``mode`` (``legacy`` by default), so
+the ``namespaced`` cases exercise namespace-aware matching alongside the
 oracle. The one remaining expected difference is a schema-composition
 warning/error mismatch; pyxsd's other documented limitations (identity
 XPath predicates, user facets, remote schemas) are not exercised by the
@@ -26,14 +27,26 @@ import os
 import pytest
 
 from conformance_runner import _errors, _materialize, case_mode, load_cases
+from pyxsd.exceptions import PyXSDError
 from pyxsd.parser import PyXSD
 
+_ORACLE_REQUESTED = os.environ.get("PYXSD_RUN_ORACLE") == "1"
+
 pytestmark = pytest.mark.skipif(
-    os.environ.get("PYXSD_RUN_ORACLE") != "1",
+    not _ORACLE_REQUESTED,
     reason="set PYXSD_RUN_ORACLE=1 to run the non-gating xmlschema oracle",
 )
 
-xmlschema = pytest.importorskip("xmlschema")
+if _ORACLE_REQUESTED:
+    try:
+        import xmlschema
+    except ImportError as exc:  # pragma: no cover - exercised only without the dev extra
+        raise RuntimeError(
+            "PYXSD_RUN_ORACLE=1 but the xmlschema oracle is not installed; "
+            "install the dev dependency group (uv sync --group dev)"
+        ) from exc
+else:  # pragma: no cover - the skip above already short-circuits
+    xmlschema = None  # type: ignore[assignment]
 
 CASES = load_cases()
 
@@ -63,8 +76,12 @@ def _pyxsd_verdict(case, directory):
             transformOutputName=None,
             mode=case_mode(case),
         )
-    except Exception:
+    except PyXSDError:
+        # pyxsd reports an unresolvable schema as a verdict, not a crash.
         return False, None
+    except Exception as exc:
+        # An internal crash is never agreement with the oracle.
+        pytest.fail(f"pyxsd raised {type(exc).__name__} for {case['id']}: {exc}")
     schema_ok = not _errors(parser.report.for_phase("schema"))
     if not has_instance:
         return schema_ok, None
