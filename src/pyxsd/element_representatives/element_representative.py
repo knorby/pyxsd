@@ -74,6 +74,7 @@ import logging
 
 from pyxsd import xsd_data_types
 from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, namespace_of
+from pyxsd.schema_context import context_or_ambient, last_components
 from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,23 @@ class ComponentTable(dict):
         return None
 
 
-_ACTIVE_TABLE = ComponentTable()
+_FALLBACK_TABLE = ComponentTable()
+
+
+def _resolve_active_table() -> ComponentTable:
+    """The component table module-level lookups should use.
+
+    Precedence: the active parser context, then the most recently
+    completed parser on this thread (the historical "last parse wins"
+    view), then an empty fallback table.
+    """
+    context = context_or_ambient()
+    if isinstance(context.components, ComponentTable):
+        return context.components
+    remembered = last_components()
+    if isinstance(remembered, ComponentTable):
+        return remembered
+    return _FALLBACK_TABLE
 
 
 class _RegistryProxy:
@@ -161,12 +178,14 @@ class _RegistryProxy:
 
     ``from ... import registry`` binds this object permanently, so it
     cannot be a plain dict that gets replaced per parse. It delegates
-    every mapping operation to the table the most recent parser
-    installed, preserving the historical module-level view.
+    every mapping operation to the component table of the context active
+    on the calling thread (falling back to an empty table outside any
+    parser run), preserving the historical module-level view without
+    leaking state between parsers.
     """
 
     def _active(self) -> ComponentTable:
-        return _ACTIVE_TABLE
+        return _resolve_active_table()
 
     def __getitem__(self, key):
         return self._active()[key]
@@ -221,7 +240,7 @@ def _tableFor(obj):
     table = getattr(_schemaOf(obj), "components", None)
     if isinstance(table, ComponentTable):
         return table
-    return _ACTIVE_TABLE
+    return _resolve_active_table()
 
 
 class ElementRepresentative:
@@ -705,49 +724,39 @@ _PRIMITIVE_TYPES = {
 # disambiguated by component kind (see ``ComponentTable.getFromName``).
 registry = _RegistryProxy()
 
+
 # Namespace overrides for components spliced in from imported schemas.
 # Keyed by ``id(xsdElement)`` because ElementTree elements do not allow
 # attribute assignment. The parser installs the map before the ER run so
 # a component can report the namespace of the document it was declared
 # in rather than the main schema's target namespace.
-_ACTIVE_NAMESPACE_OVERRIDES: dict[int, str | None] = {}
-
-
 def get_active_namespace_overrides() -> dict[int, str | None]:
-    """Returns the currently installed namespace-override map.
+    """Returns a snapshot of the active namespace-override map.
 
     Read once, at ``Schema`` construction time, so each parser's schema
-    representative captures its own parser's snapshot.
+    representative captures its own parser's snapshot. The map lives on
+    the thread's schema context rather than a module global, so
+    concurrent or nested parsers cannot see each other's overrides.
     """
-    return _ACTIVE_NAMESPACE_OVERRIDES
+    return dict(context_or_ambient().namespace_overrides)
 
 
 def set_active_namespace_overrides(overrides: dict[int, str | None]) -> None:
     """Installs the parser-owned per-component namespace overrides.
 
-    The map is installed as a snapshot copy and the module global is
-    rebound, not mutated in place: a ``Schema`` representative keeps
-    the map it captured at construction, so a later parser's install
-    cannot rewrite an earlier parser's component namespaces.
+    The map is stored as a snapshot copy, so mutating the caller's dict
+    afterwards cannot rewrite declarations that already captured it.
     """
-    global _ACTIVE_NAMESPACE_OVERRIDES
-    _ACTIVE_NAMESPACE_OVERRIDES = dict(overrides)
-
-
-# Form defaults of the document each spliced component was declared
-# in, keyed by ``id(xsdElement)``. Values are the source document's
-# ``(elementFormDefault, attributeFormDefault)``; ``None`` means the
-# document did not set that default (XSD default: unqualified).
-_ACTIVE_FORM_DEFAULTS: dict[int, tuple[str | None, str | None]] = {}
+    context_or_ambient().namespace_overrides = dict(overrides)
 
 
 def get_active_form_defaults() -> dict[int, tuple[str | None, str | None]]:
-    """Returns the currently installed source form-default map.
+    """Returns a snapshot of the active source form-default map.
 
     Read once, at ``Schema`` construction time, so each parser's schema
     representative captures its own parser's snapshot.
     """
-    return _ACTIVE_FORM_DEFAULTS
+    return dict(context_or_ambient().form_defaults)
 
 
 def set_active_form_defaults(
@@ -755,11 +764,10 @@ def set_active_form_defaults(
 ) -> None:
     """Installs the parser-owned source form defaults, as a snapshot.
 
-    See :func:`set_active_namespace_overrides` for why the install is a
-    rebinding copy rather than an in-place mutation.
+    See :func:`set_active_namespace_overrides` for the snapshot
+    discipline.
     """
-    global _ACTIVE_FORM_DEFAULTS
-    _ACTIVE_FORM_DEFAULTS = dict(defaults)
+    context_or_ambient().form_defaults = dict(defaults)
 
 
 # Import all of the tag-specific classes after the ER class definition

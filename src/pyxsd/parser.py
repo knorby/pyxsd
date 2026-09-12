@@ -58,10 +58,9 @@ from pyxsd import __version__, xsi
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import (
+    ComponentTable,
     ElementRepresentative,
     componentKind,
-    set_active_form_defaults,
-    set_active_namespace_overrides,
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.namespaces import (
@@ -73,6 +72,7 @@ from pyxsd.namespaces import (
     parse_with_namespaces,
 )
 from pyxsd.schema_base import SchemaBase
+from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 from pyxsd.xsd_data_types import AnySimpleType, qname_context, whitespace_mode, xsd_value_key
@@ -177,6 +177,12 @@ class PyXSD:
         # Source-document form defaults per spliced component:
         # id(xsdElement) -> (elementFormDefault, attributeFormDefault).
         self._formDefaults: dict[int, tuple[str | None, str | None]] = {}
+        # The parser's thread-local construction context: schema
+        # construction and instance binding run inside it, so concurrent
+        # parsers cannot observe each other's overrides or tables. The
+        # staged table collects representatives built before the schema
+        # root adopts one.
+        self.schemaContext = SchemaContext(components=ComponentTable())
         self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
         # Identity set of transform-embedded reports already merged
@@ -283,6 +289,7 @@ class PyXSD:
             self._namespaceOverrides[id(attributeElement)] = XML_NS
             schemaRoot.append(attributeElement)
 
+    @with_schema_context
     def parseXSD(self) -> None:
         """Reads the given xsd file and creates a set of classes that
         correspond to the complex and simple type definitions.
@@ -322,12 +329,11 @@ class PyXSD:
         if getattr(self.mode, "namespaces", "legacy") == "strict":
             self._injectXmlNamespaceAttributes(root)
 
-        import pyxsd.element_representatives.element_representative as ermod
-
-        # Install the per-component namespace overrides before the ER run
-        # so imported declarations report their own target namespace.
-        set_active_namespace_overrides(self._namespaceOverrides)
-        set_active_form_defaults(self._formDefaults)
+        # Stage this parser's snapshot on its own context before the ER
+        # run so imported declarations report their own target namespace
+        # and form defaults.
+        self.schemaContext.namespace_overrides = dict(self._namespaceOverrides)
+        self.schemaContext.form_defaults = dict(self._formDefaults)
         schemaER = ElementRepresentative.factory(root, None)
         # Attach the parser to the schema ER so class building can
         # record schema-reference problems (group/attributeGroup
@@ -337,11 +343,14 @@ class PyXSD:
         # QNames written in its own document.
         schemaER.namespaceContext = self.namespaceContext
         # This parser owns the component table the ER run registered
-        # into; expose it on the parser and as the module-level active
-        # table so later lookups (xsi:type dispatch, tests) use this
-        # parser's declarations rather than a previous parser's.
+        # into; expose it on the parser and on the context so registry
+        # lookups (xsi:type dispatch, tests) use this parser's
+        # declarations rather than a previous parser's.
         self.components = schemaER.components
-        ermod._ACTIVE_TABLE = self.components
+        self.schemaContext.components = self.components
+        # Module-level lookups after this parse (ElementRepresentative
+        # .getFromName, the registry proxy) see this parser's table.
+        remember_components(self.components)
 
         # The schema root is itself the instance class used to dispatch
         # the document root's element declarations.
@@ -717,6 +726,7 @@ class PyXSD:
         check_identity_constraints(rootInstance, self.report)
         return None
 
+    @with_schema_context
     def parseXML(self) -> Any:
         """Reads the given xml file in the context of the xsd file.
 
@@ -724,15 +734,6 @@ class PyXSD:
         Returns a schema instance object.
         """
         logger.debug("Starting to parse the xml file.")
-
-        # Re-activate this parser's schema context: another parser may
-        # have installed its own namespace overrides and component
-        # table since this parser's schema run.
-        import pyxsd.element_representatives.element_representative as ermod
-
-        set_active_namespace_overrides(self._namespaceOverrides)
-        set_active_form_defaults(self._formDefaults)
-        ermod._ACTIVE_TABLE = self.components
 
         # Binding diagnostics from here on belong to the instance phase.
         self.report.phase = "instance"
