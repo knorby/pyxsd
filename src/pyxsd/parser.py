@@ -791,7 +791,26 @@ class PyXSD:
                     else issubclass(subCls, SchemaBase)
                 )
                 if isComplex:
-                    subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
+                    nilled = xsi.xsi_nil_is_true(self.xmlRoot)
+                    if nilled and not rootElement.isNillable():
+                        self.report.add_error(
+                            f"the root element '{rootName}' is not nillable but carries xsi:nil",
+                            code="nil",
+                            element=rootName,
+                        )
+                        nilled = False
+                    if nilled:
+                        # A nilled root carries no content to validate:
+                        # the emptiness rule is checked, declared
+                        # attributes are validated, and an empty shell
+                        # is bound.
+                        subCls._checkNilContent(self.xmlRoot, rootElementName)
+                        subInstance = subCls._nilledInstance(
+                            subCls, self.xmlRoot, subCls._node_name(self.xmlRoot)
+                        )
+                        subInstance._nil_ = True
+                    else:
+                        subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
                 else:
                     # The root element's declared type is a primitive
                     # (simple) data type: build a typed instance directly.
@@ -832,13 +851,26 @@ class PyXSD:
             nilled = False
 
         if list(self.xmlRoot):
-            self.report.add_error(
-                f"the root element '{rootName}' has a simple type but contains child elements",
-                code="unexpected-element",
-                element=rootName,
-            )
+            if nilled:
+                self.report.add_error(
+                    f"the root element '{rootName}' is marked nil but contains child elements",
+                    code="nil",
+                    element=rootName,
+                )
+            else:
+                self.report.add_error(
+                    f"the root element '{rootName}' has a simple type but contains child elements",
+                    code="unexpected-element",
+                    element=rootName,
+                )
 
         text = self.xmlRoot.text or ""
+        if nilled and text.strip():
+            self.report.add_error(
+                f"the root element '{rootName}' is marked nil but contains character content",
+                code="nil",
+                element=rootName,
+            )
         value = None
         with qname_context(self._qname_bindings_for(self.xmlRoot)):
             if not nilled:
@@ -890,7 +922,12 @@ class PyXSD:
         instance._attribs_ = {
             xsi.xsi_attr_key(key): val for key, val in self.xmlRoot.attrib.items()
         }
-        instance._value_ = [str(value)] if value is not None else ([text] if text else None)
+        if nilled:
+            # A nilled element has no value: the content rule above has
+            # reported any character content, which is not bound here.
+            instance._value_ = None
+        else:
+            instance._value_ = [str(value)] if value is not None else ([text] if text else None)
         instance._children_ = []
         return instance
 

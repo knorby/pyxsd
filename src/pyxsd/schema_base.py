@@ -727,9 +727,19 @@ class SchemaBase:
             if contentKind is not None
             else issubclass(subElCls, SchemaBase)
         )
+        if nilled and isComplex:
+            # A nilled element carries no content to validate: the
+            # emptiness rule is checked, declared attributes are still
+            # validated, and an empty shell is bound.
+            cls._checkNilContent(subElement, subElementName)
+            subInstance = cls._nilledInstance(subElCls, subElement, subElementName)
+            subInstance._descriptor_ = descriptor
+            subInstance._nil_ = True
+            instance._children_.append(subInstance)
+            return None
         if not isComplex:
             if nilled:
-                subInstance = cls._nilPrimitive(subElCls, subElement)
+                subInstance = cls._nilPrimitive(subElCls, subElement, subElementName)
             else:
                 subInstance = cls._primitiveForElement(subElCls, subElement, descriptor)
             if subInstance is not None:
@@ -844,27 +854,71 @@ class SchemaBase:
         return instance
 
     @classmethod
-    def _nilPrimitive(cls, subElCls, subElement):
+    def _checkNilContent(cls, subElement, subElementName):
+        """Enforces the nil emptiness rule with code ``nil``.
+
+        An element carrying ``xsi:nil="true"`` may have attributes but
+        no character or element content; whitespace-only text is
+        tolerated. The offending content itself is never bound.
+        """
+        if list(subElement):
+            cls._report_error(
+                f"element '{subElementName}' is marked nil but contains child elements",
+                code="nil",
+                element=cls.__name__,
+            )
+        text = subElement.text
+        if text is not None and text.strip():
+            cls._report_error(
+                f"element '{subElementName}' is marked nil but contains character content",
+                code="nil",
+                element=cls.__name__,
+            )
+        return None
+
+    @classmethod
+    def _nilledInstance(cls, subElCls, subElement, subElementName):
+        """Builds an attribute-validated empty shell for a nilled element.
+
+        Declared attributes (required, prohibited, fixed, defaults) are
+        checked exactly as they would be for a non-nilled element; the
+        content model and value validation are skipped, because a
+        nilled element has no content.
+        """
+        unvalidated = getattr(subElCls, "_unvalidated", None)
+        # Simple-content classes are datatype subclasses whose
+        # constructor demands a lexical value; a bare shell skips it.
+        subInstance = unvalidated() if unvalidated is not None else subElCls()
+        subInstance._name_ = subElementName
+        subElCls.addAttributesTo(subInstance, subElement)
+        subInstance._value_ = None
+        subInstance._children_ = []
+        return subInstance
+
+    @classmethod
+    def _nilPrimitive(cls, subElCls, subElement, subElementName):
         """Builds an unvalidated instance for a nillable primitive element.
 
         A nillable element may carry no content, so no lexical form is
         available; the bare instance keeps the raw attributes (which
-        include ``xsi:nil``) for the writers.
+        include ``xsi:nil``) for the writers. Content on a nilled
+        element is reported (code ``nil``) and not bound.
         """
         try:
             subInstance = subElCls._unvalidated()
         except Exception:
             cls._report_error(
-                f"could not build a nil instance for the '{subElement.tag.split('}')[-1]}' element",
+                f"could not build a nil instance for the '{subElementName}' element",
                 code="value",
                 element=cls.__name__,
             )
             return None
+        cls._checkNilContent(subElement, subElementName)
         subInstance._attribs_ = {
             xsi.xsi_attr_key(key): value for key, value in subElement.attrib.items()
         }
         subInstance._value_ = None
-        subInstance._children_ = list(subElement)
+        subInstance._children_ = []
         return subInstance
 
     @classmethod
