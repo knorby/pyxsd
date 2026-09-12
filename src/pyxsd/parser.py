@@ -1538,6 +1538,14 @@ def split_transform_chain(chain: str) -> list[str]:
         separators: list[int] = []
         depth = 0
         for tokType, tokString, start, _end, _line in tokens:
+            if tokType == tokenize.ERRORTOKEN:
+                # Python 3.11's tokenizer reports invalid characters (and
+                # unterminated strings outside any call parentheses) as
+                # ERRORTOKEN tokens instead of raising; 3.12+ raises
+                # TokenError for them. Reject either way.
+                raise ValueError(
+                    f"Transform Chain Error: the transform chain '{chain}' is not valid Python syntax."
+                )
             if tokType != tokenize.OP:
                 continue
             if tokString in "([{":

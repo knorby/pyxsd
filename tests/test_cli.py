@@ -371,6 +371,17 @@ class TestSplitTransformChain:
         with pytest.raises(ValueError, match="not valid Python syntax"):
             split_transform_chain('PrintData("unterminated)')
 
+    def test_invalid_character_raises_value_error(self):
+        """Tokenizer garbage must fail the split on every supported version.
+
+        Python 3.11's tokenizer emits ERRORTOKEN for characters it cannot
+        recognize (including an unterminated string outside any call
+        parentheses) without raising, while 3.12+'s C tokenizer raises
+        TokenError. Either way the chain is not valid Python syntax.
+        """
+        with pytest.raises(ValueError, match="not valid Python syntax"):
+            split_transform_chain('A() > "unterminated')
+
     def test_cli_chain_with_quoted_argument(self, tmp_path, monkeypatch):
         """A '>' inside a transform argument must not split the chain."""
         monkeypatch.chdir(tmp_path)
