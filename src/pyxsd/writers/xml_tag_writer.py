@@ -1,6 +1,33 @@
 from typing import IO, Any
 
 
+def _escape_text(text: Any) -> str:
+    """Escapes characters that are illegal in element text.
+
+    Values are stored decoded; markup characters must be re-encoded
+    when they are written back out so the output stays well-formed.
+    """
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _escape_attribute(value: Any) -> str:
+    """Escapes characters that are illegal inside a double-quoted
+    attribute value.
+
+    In addition to markup characters, newlines and tabs are written as
+    character references so the XML attribute-value normalization rules
+    cannot change them on a later read.
+    """
+    escaped = _escape_text(value).replace('"', "&quot;")
+    escaped = (
+        escaped.replace("\r\n", "&#13;&#10;")
+        .replace("\r", "&#13;")
+        .replace("\n", "&#10;")
+        .replace("\t", "&#9;")
+    )
+    return escaped
+
+
 class XmlTagWriter:
     """Writes one element.
 
@@ -67,18 +94,28 @@ class XmlTagWriter:
 
         longestNameLen += 1
         for key in self.sortedKeyList:
-            value = self.attribs[key]
-            value = str(value)
+            value = str(self.attribs[key])
             self.output.write("\n")
             self.writeTabs(7)
             self.output.write(key)
             nameLen = len(key)
             spaces = longestNameLen - nameLen
             self.writeTabs(spaces, 0)
-            self.output.write(f'= "{value}"')
+            self.output.write(f'= "{_escape_attribute(value)}"')
 
         if not self.hasChildren and not self.hasValue:
             self.output.write("/>\n")
+            return None
+
+        if self.hasValue and not self.hasChildren and self._isSingleTextValue():
+            # A text-only element is written inline so that no layout
+            # whitespace can be mistaken for part of its value. The end
+            # tag is written directly: writeEndTag would indent, and
+            # that indentation would land inside the element.
+            self.output.write(">")
+            single = self.value[0] if isinstance(self.value, list) else self.value
+            self.output.write(_escape_text(single))
+            self.output.write(f"</{self.name}>\n")
             return None
 
         self.output.write(">\n")
@@ -88,10 +125,21 @@ class XmlTagWriter:
                 self.value = [self.value]
             for line in self.value:
                 self.writeTabs(3)
-                self.output.write(f"{line}\n")
+                self.output.write(f"{_escape_text(line)}\n")
             if not self.hasChildren:
                 self.writeEndTag()
         return None
+
+    def _isSingleTextValue(self) -> bool:
+        """True when the element's value is one scalar text string.
+
+        Such an element can be written inline. Lists of several values
+        (a documented mixed-content shape) keep the historical block
+        layout.
+        """
+        if not isinstance(self.value, list):
+            return True
+        return len(self.value) == 1 and isinstance(self.value[0], str)
 
     def writeComment(self) -> None:
         """If ``name`` is set to '_comment_' this function is called.
