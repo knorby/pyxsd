@@ -397,7 +397,11 @@ class SchemaBase:
                 descriptor = self.descAttributes()[name]
                 matchName = self._instance_name_of(descriptor, is_attribute=True)
                 if matchName in elementTag.attrib:
-                    setattr(self, name, elementTag.attrib[matchName])
+                    # Bind through the declaration's own descriptor: a
+                    # subclass element sharing the name must not capture
+                    # the value (and a plain setattr would find it first
+                    # in the MRO).
+                    descriptor.__set__(self, elementTag.attrib[matchName])
                     usedAttributes.append(matchName)
                     self._attribs_[matchName] = elementTag.attrib[matchName]
             # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
@@ -584,14 +588,25 @@ class SchemaBase:
                     )
 
         # Children are matched (and recorded) in document order so the
-        # instance tree preserves the xml's layout.
+        # instance tree preserves the xml's layout. Several uses of one
+        # declaration (for example repeated group references) are
+        # consumed in declaration order, and when a declaration repeats
+        # every occurrence aggregates into one accessor list.
+        descriptorQueues: dict[str, list] = {}
+        for descriptor in elemDescriptors:
+            descriptorQueues.setdefault(cls._instance_name_of(descriptor), []).append(descriptor)
+        descriptorUses: dict[str, int] = {}
+
         for subElement in subElements:
             subElementName = cls._node_name(subElement)
             matched = False
-            for descriptor in elemDescriptors:
-                if cls._instance_name_of(descriptor) != subElementName:
-                    continue
+            queue = descriptorQueues.get(subElementName)
+            if queue:
                 matched = True
+                used = descriptorUses.get(subElementName, 0)
+                descriptor = queue[min(used, len(queue) - 1)]
+                descriptorUses[subElementName] = used + 1
+                repeated = len(queue) > 1 or any(item.isList() for item in queue)
                 if descriptor.isAbstract():
                     cls._report_error(
                         f"element '{subElementName}' is declared abstract; "
@@ -609,9 +624,15 @@ class SchemaBase:
                     )
                     if _mode_for(cls).unresolved_type == "generic":
                         instance._children_.append(cls.makeGenericInstance(subElement))
-                    break
-                cls._addChildInstance(instance, subElement, subElCls, descriptor)
-                break
+                else:
+                    cls._addChildInstance(
+                        instance,
+                        subElement,
+                        subElCls,
+                        descriptor,
+                        aggregate=repeated,
+                        leader=queue[0],
+                    )
 
             if not matched and substitutionGroups:
                 matched = cls._addSubstitutionMember(instance, subElement, elemDescriptors)
@@ -699,14 +720,19 @@ class SchemaBase:
         return subElCls
 
     @classmethod
-    def _addChildInstance(cls, instance, subElement, subElCls, descriptor):
+    def _addChildInstance(
+        cls, instance, subElement, subElCls, descriptor, *, aggregate=False, leader=None
+    ):
         """Builds and stores the instance for one matched child element.
 
         Handles ``xsi:nil`` (nillable elements carry no content to
         validate), ``fixed`` value checking on simple content, and the
         primitive/complex split. Appends the built instance to the
         parent's ``_children_`` and, for primitive content, exposes it
-        as an instance attribute.
+        as an instance attribute. ``aggregate`` is true when the
+        declaration occurs in more than one particle of the effective
+        model; ``leader`` is the first descriptor for the declaration,
+        which owns the accessor and storage slot in that case.
         """
         subElementName = cls._node_name(subElement)
         nilled = xsi.xsi_nil_is_true(subElement)
@@ -718,7 +744,8 @@ class SchemaBase:
             )
             nilled = False
 
-        accessor, descriptorBound = cls._childAccessor(instance, descriptor, subElement)
+        storage = leader if (aggregate and leader is not None) else descriptor
+        accessor, descriptorBound = cls._childAccessor(instance, storage, subElement)
 
         # for elements with primitive types
         contentKind = getattr(subElCls, "_contentKind_", None)
@@ -752,7 +779,23 @@ class SchemaBase:
                 subInstance._nil_ = nilled
                 instance._children_.append(subInstance)
                 if descriptorBound:
-                    setattr(instance, accessor, subInstance)
+                    bound = getattr(type(instance), accessor, None)
+                    if aggregate:
+                        # Several particles use this declaration: every
+                        # occurrence aggregates through the leader's slot.
+                        storage.bind(instance, subInstance, append=True)
+                    elif bound is storage:
+                        setattr(instance, accessor, subInstance)
+                    elif bound is None:
+                        # A substitution-group member descriptor is not a
+                        # class attribute; store it plainly like the
+                        # historical setattr did.
+                        instance.__dict__[accessor] = subInstance
+                    else:
+                        # Another declaration shadows the accessor in a
+                        # subclass; store through the declaring
+                        # descriptor itself.
+                        storage.bind(instance, subInstance)
                 else:
                     instance.__dict__[accessor] = subInstance
                 if not nilled:
@@ -1359,16 +1402,24 @@ class SchemaBase:
         Walks the MRO of the instance's class collecting each class's
         own ``Element`` descriptors, least-derived first, so an
         extension's content model comes out in XSD order: base
-        elements before extension elements. A derived declaration
-        shadows an inherited element with the same name (later,
-        more-derived assignments overwrite earlier ones while keeping
-        the original position).
+        elements before extension elements. The merge keys on the
+        declaration name, not the class-attribute key: a derived
+        declaration replaces every inherited declaration of the same
+        name (including an inherited declaration that a derived
+        attribute forced onto an alias key), while several distinct
+        declarations of one name inside one class body are all kept.
         """
-        ordered = {}
+        ordered: dict[str, list] = {}
         for klass in reversed(type(self).__mro__):
-            for name in klass.__dict__.get("_elementNames_", ()):
-                ordered[name] = klass.__dict__[name]
-        return list(ordered.values())
+            own = [klass.__dict__[key] for key in klass.__dict__.get("_elementNames_", ())]
+            if not own:
+                continue
+            ownNames = {descriptor.name for descriptor in own}
+            for name in [name for name in ordered if name in ownNames]:
+                del ordered[name]
+            for descriptor in own:
+                ordered.setdefault(descriptor.name, []).append(descriptor)
+        return [descriptor for entries in ordered.values() for descriptor in entries]
 
     def descAttributes(self):
         """Returns a dictionary of the attribute descriptors.
@@ -1507,7 +1558,9 @@ class SchemaBase:
         value = default if default is not None else fixed
         if value is None:
             return None
-        setattr(instance, attributeDescriptor.name, value)
+        # Bind through the declaration's own descriptor so an inherited
+        # element sharing the name cannot capture the value.
+        attributeDescriptor.__set__(instance, value)
         return None
 
     @staticmethod

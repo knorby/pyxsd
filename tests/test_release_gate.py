@@ -255,9 +255,10 @@ class TestXsdTypeEdges:
         assert names == ["dup", "dup"]
         # Both descriptors are disambiguated on the class ('dup', 'dup|2').
         assert type(root)._elementNames_ == ["dup", "dup|2"]
-        # Historical limitation: every matching child feeds the first
-        # descriptor, so the last child wins the instance slot.
-        assert root.__dict__["dup"] == "b"
+        # Declaration-order consumption: each child is matched to the
+        # next particle of that name, and repeated uses aggregate so no
+        # occurrence is silently overwritten.
+        assert root.__dict__["dup"] == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------

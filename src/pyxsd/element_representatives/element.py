@@ -210,6 +210,19 @@ class Element(ElementRepresentative):
         See the Python documentation for full documentation on
         descriptors.
         """
+        self.bind(obj, value)
+        return None
+
+    def bind(self, obj, value, *, append: bool | None = None):
+        """Stores ``value`` for this descriptor without MRO dispatch.
+
+        Binding code calls this directly so a declaration always stores
+        through its own descriptor even when another declaration shadows
+        its accessor name in a subclass. ``append`` forces list
+        aggregation (or scalar storage when false); ``None`` uses the
+        declaration's own occurrence limit, which is the
+        descriptor-protocol behavior.
+        """
         if not isinstance(value, self.getType()):
             # Under the ``raw`` invalid-value policy a primitive child
             # whose lexical value failed validation is bound as a plain
@@ -223,11 +236,12 @@ class Element(ElementRepresentative):
                     f"{self.name!r} ({self.getType().__name__})"
                 )
 
-        if self.isList():
-            obj.__dict__.setdefault(self._storageKey(), []).append(value)
+        key = self._storageKey()
+        if self.isList() if append is None else append:
+            obj.__dict__.setdefault(key, []).append(value)
             return None
 
-        obj.__dict__[self._storageKey()] = value
+        obj.__dict__[key] = value
         return None
 
     def __delete__(self, obj):
