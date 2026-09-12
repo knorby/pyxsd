@@ -491,16 +491,35 @@ class ElementRepresentative:
         qualified = self.isGlobalDeclaration()
         if not qualified:
             schema = self.getSchema()
-            if schema is not None:
-                default = (
-                    schema.getAttributeFormDefault()
-                    if is_attribute
-                    else schema.getElementFormDefault()
-                )
-                qualified = default == "qualified"
+            qualified = self._localDeclarationIsQualified(schema, is_attribute)
         if qualified:
             return clark(uri, local)
         return local
+
+    def _localDeclarationIsQualified(self, schema, is_attribute: bool) -> bool:
+        """Decides whether a local declaration's name is qualified.
+
+        An explicit ``form`` attribute on the declaration wins. Without
+        one, a component spliced in from another document uses that
+        document's form defaults (recorded at composition time); only a
+        component native to the main schema falls back to the host
+        schema's defaults.
+        """
+        element = getattr(self, "xsdElement", None)
+        explicit = element.get("form") if element is not None else None
+        if explicit is not None:
+            return explicit == "qualified"
+        if schema is None:
+            return False
+        sourceDefaults = getattr(schema, "formDefaultOverrides", None)
+        if sourceDefaults and element is not None and id(element) in sourceDefaults:
+            elementDefault, attributeDefault = sourceDefaults[id(element)]
+            default = attributeDefault if is_attribute else elementDefault
+            return (default or "unqualified") == "qualified"
+        default = (
+            schema.getAttributeFormDefault() if is_attribute else schema.getElementFormDefault()
+        )
+        return default == "qualified"
 
     def resolveSchemaQName(self, value, *, parser=None):
         """Resolves a lexical QName written in this schema element.
@@ -708,6 +727,34 @@ def set_active_namespace_overrides(overrides: dict[int, str | None]) -> None:
     """
     global _ACTIVE_NAMESPACE_OVERRIDES
     _ACTIVE_NAMESPACE_OVERRIDES = dict(overrides)
+
+
+# Form defaults of the document each spliced component was declared
+# in, keyed by ``id(xsdElement)``. Values are the source document's
+# ``(elementFormDefault, attributeFormDefault)``; ``None`` means the
+# document did not set that default (XSD default: unqualified).
+_ACTIVE_FORM_DEFAULTS: dict[int, tuple[str | None, str | None]] = {}
+
+
+def get_active_form_defaults() -> dict[int, tuple[str | None, str | None]]:
+    """Returns the currently installed source form-default map.
+
+    Read once, at ``Schema`` construction time, so each parser's schema
+    representative captures its own parser's snapshot.
+    """
+    return _ACTIVE_FORM_DEFAULTS
+
+
+def set_active_form_defaults(
+    defaults: dict[int, tuple[str | None, str | None]],
+) -> None:
+    """Installs the parser-owned source form defaults, as a snapshot.
+
+    See :func:`set_active_namespace_overrides` for why the install is a
+    rebinding copy rather than an in-place mutation.
+    """
+    global _ACTIVE_FORM_DEFAULTS
+    _ACTIVE_FORM_DEFAULTS = dict(defaults)
 
 
 # Import all of the tag-specific classes after the ER class definition

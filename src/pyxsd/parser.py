@@ -59,6 +59,7 @@ from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derive
 from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
+    set_active_form_defaults,
     set_active_namespace_overrides,
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
@@ -172,6 +173,9 @@ class PyXSD:
         # spliced in from imported schemas; installed before the ER run so
         # an imported declaration reports its own target namespace.
         self._namespaceOverrides: dict[int, str | None] = {}
+        # Source-document form defaults per spliced component:
+        # id(xsdElement) -> (elementFormDefault, attributeFormDefault).
+        self._formDefaults: dict[int, tuple[str | None, str | None]] = {}
         self.classes: dict[str, type[SchemaBase]] = {}
         self.report = ValidationReport()
         # Prefix-to-URI bindings captured while parsing the instance and
@@ -319,6 +323,7 @@ class PyXSD:
         # Install the per-component namespace overrides before the ER run
         # so imported declarations report their own target namespace.
         set_active_namespace_overrides(self._namespaceOverrides)
+        set_active_form_defaults(self._formDefaults)
         schemaER = ElementRepresentative.factory(root, None)
         # Attach the parser to the schema ER so class building can
         # record schema-reference problems (group/attributeGroup
@@ -608,14 +613,21 @@ class PyXSD:
 
         In strict mode the namespace each component was declared in is
         recorded so its expanded name reflects the source document
-        rather than the main schema's target namespace.
+        rather than the main schema's target namespace. That document's
+        form defaults are recorded too, so local declarations resolve
+        qualification against their own schema instead of the host.
         """
         strict = getattr(self.mode, "namespaces", "legacy") == "strict"
+        sourceDefaults = (
+            includedRoot.get("elementFormDefault"),
+            includedRoot.get("attributeFormDefault"),
+        )
         for component in list(includedRoot):
             if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
                 if strict:
                     for element in component.iter():
                         self._namespaceOverrides.setdefault(id(element), namespace)
+                        self._formDefaults.setdefault(id(element), sourceDefaults)
                 schemaRoot.append(component)
         return None
 
@@ -715,6 +727,7 @@ class PyXSD:
         import pyxsd.element_representatives.element_representative as ermod
 
         set_active_namespace_overrides(self._namespaceOverrides)
+        set_active_form_defaults(self._formDefaults)
         ermod._ACTIVE_TABLE = self.components
 
         # Binding diagnostics from here on belong to the instance phase.
