@@ -64,6 +64,24 @@ def _display_name(name: str, prefix_map: dict[str, str]) -> str:
     return name
 
 
+def _display_attribute(key: str, prefix_map: dict[str, str] | None) -> str:
+    """Renders an attribute key for output.
+
+    XSI-namespace keys get their ``xsi:`` spelling. When no prefix map
+    is active (unqualified output) an attribute in the reserved XML
+    namespace still has to use the implicit ``xml`` prefix; writing its
+    Clark name would not be well-formed XML.
+    """
+    display = xsi.xsi_attr_key(key)
+    if prefix_map is not None:
+        return _display_name(display, prefix_map)
+    if isinstance(display, str) and display.startswith("{"):
+        uri, local = display[1:].split("}", 1)
+        if uri == XML_NS:
+            return f"xml:{local}"
+    return display
+
+
 class XmlTreeWriter:
     def __init__(self, root: Any, output: IO[str], namespaces: bool | None = None):
         """Initialize the writer.
@@ -184,10 +202,7 @@ class XmlTreeWriter:
         children = element._children_
         attribs: dict[str, str] = {}
         for key, value in element._attribs_.items():
-            display = xsi.xsi_attr_key(key)
-            if prefix_map is not None:
-                display = _display_name(display, prefix_map)
-            attribs[display] = value
+            attribs[_display_attribute(key, prefix_map)] = value
 
         if tabs == 0:
             if root_decls:

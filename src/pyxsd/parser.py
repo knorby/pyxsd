@@ -41,6 +41,7 @@ Overview:
 import ast
 import importlib
 import importlib.util
+import inspect
 import io
 import logging
 import os.path
@@ -1237,7 +1238,10 @@ class PyXSD:
 
         for transform in transforms:
             class_name, args, kwargs = parseTransformCall(transform)
-            transformer = self.getTransformModuleAndLoad(class_name)
+            try:
+                transformer = self.getTransformModuleAndLoad(class_name)
+            except ImportError as e:
+                raise PyXSDError(f"the transform '{class_name}' could not be loaded: {e}") from e
             argDesc = repr(args)
             if kwargs:
                 argDesc += " " + repr(kwargs)
@@ -1246,12 +1250,25 @@ class PyXSD:
                 class_name,
                 argDesc,
             )
-            transformCls = getattr(transformer, class_name)
+            transformCls = getattr(transformer, class_name, None)
+            if transformCls is None:
+                raise PyXSDError(
+                    f"the module for the transform '{class_name}' does not define that class"
+                )
             instance = transformCls(currentRoot)
             if getattr(instance, "inheritsParserContext", False):
                 # Reparsing transforms default to this run's schema and
                 # binding mode, and this run's report surfaces theirs.
                 instance.outerParser = self
+            try:
+                inspect.signature(instance.__call__).bind(*args, **kwargs)
+            except TypeError as e:
+                # Only the call signature is checked here; exceptions the
+                # transform body raises stay untouched.
+                raise PyXSDError(
+                    f"the transform call '{transform}' does not match the signature "
+                    f"of {class_name}: {e}"
+                ) from e
             currentRoot = instance(*args, **kwargs)
             self._absorbTransformReport(getattr(instance, "report", None))
 
@@ -1493,6 +1510,15 @@ def parseTransformCall(call: str) -> tuple[str, list[Any], dict[str, Any]]:
     return class_name, args, kwargs
 
 
+def _line_start_offsets(chain: str) -> list[int]:
+    """Absolute offsets at which each 1-based source line starts."""
+    starts = [0]
+    for index, character in enumerate(chain):
+        if character == "\n":
+            starts.append(index + 1)
+    return starts
+
+
 def split_transform_chain(chain: str) -> list[str]:
     """Splits a CLI transform chain on its top-level ``>`` separators.
 
@@ -1500,11 +1526,15 @@ def split_transform_chain(chain: str) -> list[str]:
     argument like ``PrintData("a>b.xml")`` was chopped mid-string. The
     chain is now tokenized: a ``>`` only separates calls when it stands
     outside any string literal and outside any call parentheses.
+    Tokenizer positions are ``(line, column)`` pairs, so they are
+    converted to absolute string offsets before slicing; multi-line
+    calls and triple-quoted arguments therefore split correctly too.
     Whitespace around segments is stripped; a chain without separators
     yields a single-element list.
     """
     try:
         tokens = tokenize.generate_tokens(io.StringIO(chain).readline)
+        line_starts = _line_start_offsets(chain)
         separators: list[int] = []
         depth = 0
         for tokType, tokString, start, _end, _line in tokens:
@@ -1515,7 +1545,7 @@ def split_transform_chain(chain: str) -> list[str]:
             elif tokString in ")]}":
                 depth -= 1
             elif tokString == ">" and depth == 0:
-                separators.append(start[1])
+                separators.append(line_starts[start[0] - 1] + start[1])
     except (tokenize.TokenError, IndentationError, SyntaxError) as e:
         raise ValueError(
             f"Transform Chain Error: the transform chain '{chain}' is not valid Python syntax."

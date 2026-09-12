@@ -134,11 +134,29 @@ def test_verbose_and_quiet_conflict(tmp_path, monkeypatch):
     assert excinfo.value.code == 2
 
 
-def test_unknown_transform_module_raises(tmp_path, monkeypatch):
+def test_unknown_transform_prints_clean_error(tmp_path, monkeypatch, capsys):
+    """A missing transform is a usage error, not a traceback."""
     monkeypatch.chdir(tmp_path)
     stage_fixture(tmp_path, "inventory")
-    with pytest.raises(ImportError, match="NoSuchTransform"):
+    with pytest.raises(SystemExit) as excinfo:
         main(["-i", "instance.xml", "-t", "NoSuchTransform()"])
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "NoSuchTransform" in err
+    assert "Traceback" not in err
+
+
+def test_transform_bad_signature_prints_clean_error(tmp_path, monkeypatch, capsys):
+    """Arguments that do not match the transform signature are reported."""
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    with pytest.raises(SystemExit) as excinfo:
+        main(["-i", "instance.xml", "-t", "PrintData(bogus=True)"])
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "PrintData" in err
+    assert "bogus" in err
+    assert "Traceback" not in err
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +354,15 @@ class TestSplitTransformChain:
 
     def test_separator_inside_nested_call(self):
         assert split_transform_chain('A(f(">"))>B()') == ['A(f(">"))', "B()"]
+
+    def test_multiline_triple_quoted_argument(self):
+        """Token positions are absolute, not line-relative columns."""
+        chain = 'A("""x\ny""")>B()'
+        assert split_transform_chain(chain) == ['A("""x\ny""")', "B()"]
+
+    def test_multiline_call_with_quoted_separator(self):
+        chain = 'A(\n"x>y"\n)>B()'
+        assert split_transform_chain(chain) == ['A(\n"x>y"\n)', "B()"]
 
     def test_whitespace_is_stripped(self):
         assert split_transform_chain("  A()  >  B()  ") == ["A()", "B()"]

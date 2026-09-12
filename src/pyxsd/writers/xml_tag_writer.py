@@ -6,8 +6,17 @@ def _escape_text(text: Any) -> str:
 
     Values are stored decoded; markup characters must be re-encoded
     when they are written back out so the output stays well-formed.
+    Carriage returns are written as character references because XML
+    end-of-line handling would otherwise fold them into newlines on the
+    next read.
     """
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\r", "&#13;")
+    )
 
 
 def _escape_attribute(value: Any) -> str:
@@ -16,16 +25,11 @@ def _escape_attribute(value: Any) -> str:
 
     In addition to markup characters, newlines and tabs are written as
     character references so the XML attribute-value normalization rules
-    cannot change them on a later read.
+    cannot change them on a later read. Carriage returns are already
+    character-referenced by :func:`_escape_text`.
     """
     escaped = _escape_text(value).replace('"', "&quot;")
-    escaped = (
-        escaped.replace("\r\n", "&#13;&#10;")
-        .replace("\r", "&#13;")
-        .replace("\n", "&#10;")
-        .replace("\t", "&#9;")
-    )
-    return escaped
+    return escaped.replace("\n", "&#10;").replace("\t", "&#9;")
 
 
 class XmlTagWriter:
