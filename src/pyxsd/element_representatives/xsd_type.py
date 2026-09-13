@@ -10,7 +10,7 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
-from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, XsdList, qname_context
+from pyxsd.xsd_data_types import NOTATION, AnySimpleType, XsdDataType, XsdList, qname_context
 
 logger = logging.getLogger(__name__)
 
@@ -551,6 +551,44 @@ class XsdType(ElementRepresentative):
         parent = getattr(base, "_facetConstraints_", None) if isinstance(base, type) else None
         return self._constraintNamespace(pyXSD, self, base, parent)
 
+    def _checkNotationRestriction(self, base):
+        """Reports XSD 1.1 NOTATION restriction violations.
+
+        A restriction of ``xs:NOTATION`` must carry an enumeration facet
+        (Schema Component Constraint), and every enumeration value must
+        name a notation declared in the schema (simple094, simple095).
+        """
+        if not (isinstance(base, type) and issubclass(base, NOTATION)):
+            return
+        enumerations = list(getattr(self, "enumerations", None) or ())
+        if not enumerations:
+            self._report_ref_error(
+                "a restriction of NOTATION must include an enumeration facet",
+                code="notation-enumeration-required",
+            )
+            return
+        declared = self._declaredNotations()
+        for value in enumerations:
+            local = str(value).split(":")[-1] if value else ""
+            if local not in declared:
+                self._report_ref_error(
+                    f"enumeration value '{value}' of a NOTATION restriction "
+                    "is not a declared notation",
+                    code="unknown-notation",
+                )
+
+    def _declaredNotations(self):
+        """Returns the local names of the schema's notation declarations."""
+        table = getattr(self.getSchema(), "components", None)
+        names: set[str] = set()
+        if table is None:
+            return names
+        for entries in table.values():
+            for entry in entries:
+                if type(entry).__name__ == "Notation" and entry.name:
+                    names.add(str(entry.name))
+        return names
+
     def _constraintNamespace(self, pyXSD, source, base, parent):
         """Builds the ``_facetConstraints_`` and ``__new__`` entries for a
         definition that restricts *base*.
@@ -721,6 +759,8 @@ class XsdType(ElementRepresentative):
         self._reportMissingDerivationBase()
 
         bases = self.getBaseList(pyXSD)
+        if self.__class__.__name__ == "SimpleType":
+            self._checkNotationRestriction(bases[0] if bases else None)
         namespace = {
             "pyXSD": pyXSD,
             "name": self.name,

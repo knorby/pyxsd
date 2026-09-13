@@ -430,9 +430,10 @@ class ElementRepresentative:
         self.getContainingType().superClassNames.append(name)
         return None
 
-    # Lexical space of ``nonNegativeInteger``: no sign, no whitespace,
-    # and no leading zeros beyond the value 0 itself.
-    _OCCURS_PATTERN = re.compile(r"^(0|[1-9][0-9]*)$")
+    # Lexical space of ``nonNegativeInteger``: an optional plus sign
+    # followed by decimal digits. Leading zeros are legal (the canonical
+    # form drops them, but the lexical space does not).
+    _OCCURS_PATTERN = re.compile(r"^\+?[0-9]+$")
 
     def _reportSchemaError(self, message, *, code):
         """Records a schema problem on the parser's report.

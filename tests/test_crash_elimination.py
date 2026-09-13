@@ -300,6 +300,20 @@ class TestOccursValues:
         )
         assert parser.report.has_errors is False
 
+    def test_leading_zero_occurs_ok(self, tmp_path):
+        # The lexical space of nonNegativeInteger allows leading zeros
+        # and a leading plus sign (elemJ005, elemJ013).
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="foo" type="bar"/>'
+            '<xs:complexType name="bar"><xs:sequence>'
+            '<xs:element name="name" minOccurs="+0" maxOccurs="010"/>'
+            "</xs:sequence></xs:complexType></xs:schema>",
+            "<foo><name/><name/></foo>",
+        )
+        assert parser.report.has_errors is False
+
 
 class TestUnnamedDeclarations:
     """Declarations without a usable name crashed class-name
@@ -571,6 +585,46 @@ class TestNotationSupport:
             monkeypatch,
         )
         assert "misplaced-declaration" in _codes(parser)
+
+    def test_notation_restriction_needs_enumeration(self, tmp_path, monkeypatch):
+        # XSD 1.1: a restriction of NOTATION must have an enumeration
+        # facet (simple094).
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>'
+            '<xs:simpleType name="r"><xs:restriction base="xs:NOTATION">'
+            '<xs:pattern value=".*"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        assert "notation-enumeration-required" in _codes(parser)
+
+    def test_notation_enumeration_must_be_declared(self, tmp_path, monkeypatch):
+        # XSD 1.1: each enumeration value must name a declared notation
+        # (simple095, Notation/name00101m2).
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>'
+            '<xs:simpleType name="r"><xs:restriction base="xs:NOTATION">'
+            '<xs:enumeration value="png"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        assert "unknown-notation" in _codes(parser)
+
+    def test_declared_notation_enumeration_ok(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>'
+            '<xs:simpleType name="r"><xs:restriction base="xs:NOTATION">'
+            '<xs:enumeration value="jpeg"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        assert parser.report.has_errors is False
 
 
 class TestUnreadableInputs:
