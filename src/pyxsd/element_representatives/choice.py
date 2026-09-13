@@ -13,11 +13,20 @@ class Choice(ElementRepresentative):
         """
         self.elements = []
         super().__init__(xsdElement, parent)
-        self.getContainingType().sequencesOrChoices.append(self)
+        containingType = self.getContainingType()
+        compositors = getattr(containingType, "sequencesOrChoices", None)
+        if compositors is not None:
+            compositors.append(self)
+        else:
+            self.misplacement = (
+                "misplaced-declaration",
+                f"choice cannot appear inside {containingType.__class__.__name__}",
+            )
 
     def getName(self):
         """Makes a name like this- choice``some id number``."""
-        choiceNum = len(self.getContainingType().sequencesOrChoices) + 1
+        compositors = getattr(self.getContainingType(), "sequencesOrChoices", None)
+        choiceNum = len(compositors) + 1 if compositors is not None else 1
         return f"choice{choiceNum}"
 
     def getMinOccurs(self):

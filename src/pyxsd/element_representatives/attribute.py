@@ -45,7 +45,18 @@ class Attribute(ElementRepresentative):
         if self.isAttributeRef:
             self.ref = xsdElement.get("ref")
         super().__init__(xsdElement, parent)
-        self.getContainingType().attributes[self.name] = self
+        # Only types with an attribute table accept attribute
+        # declarations; a misplaced attribute (inside a group
+        # definition, for example) is reported rather than crash.
+        container = self.getContainingType()
+        attributes = getattr(container, "attributes", None)
+        if attributes is not None:
+            attributes[self.name] = self
+        else:
+            self.misplacement = (
+                "misplaced-declaration",
+                f"attribute '{self.name}' cannot be declared inside {container.__class__.__name__}",
+            )
 
     def getName(self):
         """Returns the attribute's schema name.
@@ -99,15 +110,14 @@ class Attribute(ElementRepresentative):
         for child in children:
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
-            # An ``xsd:annotation`` is documentation, not the attribute
-            # declaration. Schemas commonly attach one to an attribute
-            # that already carries a ``type`` attribute (GPX does this
-            # for every attribute), and taking its bookkeeping name as
-            # the declared type overwrites the real one.
-            if child.tag.split("}")[-1] == "annotation":
+            # An unknown child (for example an ``xsd:notation``) does
+            # not carry a type name; only an inline ``xsd:simpleType``
+            # supplies one when the attribute has no explicit type.
+            if processedChild is None:
                 continue
-            # An explicit ``type`` attribute wins over any child; a child
-            # is the inline ``xsd:simpleType`` used when there is none.
+            if processedChild.__class__.__name__ != "SimpleType":
+                continue
+            # An explicit ``type`` attribute wins over any child.
             if "type" in self.tagAttributes:
                 continue
             self.type = processedChild.name

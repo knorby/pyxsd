@@ -27,13 +27,29 @@ class Group(ElementRepresentative):
         super().__init__(xsdElement, parent)
         if self.isRefSite:
             self.ref = self.tagAttributes["ref"]
-            if hasattr(parent, "elements"):
+            if parent is not None and parent.__class__.__name__ == "Schema":
+                # A group reference is not a top-level declaration.
+                self.misplacement = (
+                    "misplaced-declaration",
+                    f"group reference '{self.ref}' cannot appear at the top level of a schema",
+                )
+            elif hasattr(parent, "elements"):
                 # Nested inside a compositor.
                 parent.elements.append(self)
             else:
                 # Direct child of a containing type (complexType,
-                # extension, restriction, ...).
-                self.getContainingType().sequencesOrChoices.append(self)
+                # extension, restriction, ...); only types that carry a
+                # content model have sequencesOrChoices.
+                containingType = self.getContainingType()
+                compositors = getattr(containingType, "sequencesOrChoices", None)
+                if compositors is not None:
+                    compositors.append(self)
+                else:
+                    self.misplacement = (
+                        "misplaced-declaration",
+                        f"group reference '{self.ref}' cannot appear inside "
+                        f"{containingType.__class__.__name__}",
+                    )
         else:
             self.getSchema().groups[self.name] = self
 

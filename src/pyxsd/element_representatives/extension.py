@@ -8,10 +8,19 @@ logger = logging.getLogger(__name__)
 class Extension(ElementRepresentative):
     """The class for the extension tag."""
 
+    # Set when the extension declares no ``base`` attribute; the
+    # containing type reports it while building its class (see
+    # ``XsdType._reportMissingDerivationBase``).
+    hasNoBase: bool = False
+
     def __init__(self, xsdElement, parent):
         """See ElementRepresentative for documentation."""
         super().__init__(xsdElement, parent)
-        self.addSuperClassName(self.tagAttributes["base"])
+        base = self.tagAttributes.get("base")
+        if base is None:
+            self.hasNoBase = True
+            return
+        self.addSuperClassName(base)
 
     def getName(self):
         """Makes a name like this- ``ContainingTypeName``|extension.  The

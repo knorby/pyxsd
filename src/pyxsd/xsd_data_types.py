@@ -48,6 +48,7 @@ __all__ = [
     "IDREFS",
     "NMTOKEN",
     "NMTOKENS",
+    "NOTATION",
     "AnySimpleType",
     "AnyType",
     "AnyURI",
@@ -96,7 +97,7 @@ class XsdDataType:
 
     # The true XSD spelling of the type (e.g. "string", "base64Binary").
     # Declared on subclasses only, so that ``"name" in klass.__dict__``
-    # can distinguish the 45 built-ins from intermediate helper classes
+    # can distinguish the 46 built-ins from intermediate helper classes
     # that merely inherit a name.
     name: ClassVar[str]
 
@@ -419,6 +420,18 @@ class AnySimpleType(String):
     """``xs:anySimpleType``: any simple value, no constraints."""
 
     name = "anySimpleType"
+
+
+class NOTATION(String):
+    """``xs:NOTATION``: a reference to a notation declaration.
+
+    XSD 1.0 forbids using ``xs:NOTATION`` directly as an element or
+    attribute type (an ``xs:notation`` declaration must be used
+    instead), but schemas still write it; resolving the name keeps
+    those schemas loadable and treats the value space as strings.
+    """
+
+    name = "NOTATION"
 
 
 class AnyType(String):

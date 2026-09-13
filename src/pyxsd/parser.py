@@ -340,6 +340,11 @@ class PyXSD:
         self.schemaContext.namespace_overrides = dict(self._namespaceOverrides)
         self.schemaContext.form_defaults = dict(self._formDefaults)
         schemaER = ElementRepresentative.factory(root, None)
+        if schemaER is None or schemaER.__class__.__name__ != "Schema":
+            # A document that is not an XML Schema at all (for example
+            # an instance document passed as the schema) must surface as
+            # an input error, not as an AttributeError on ``None``.
+            raise PyXSDError(f"schema document root element is not xs:schema: {root.tag!r}")
         # Attach the parser to the schema ER so class building can
         # record schema-reference problems (group/attributeGroup
         # references) on the validation report.
@@ -427,6 +432,10 @@ class PyXSD:
                     f"has an illegal child '{tag}'",
                     code="unexpected-identity-child",
                 )
+            misplacement = getattr(er, "misplacement", None)
+            if misplacement is not None:
+                code, message = misplacement
+                self.report.add_error(message, code=code)
             stack.extend(getattr(er, "processedChildren", None) or ())
 
     def _buildSubstitutionGroups(self, schemaER: Any) -> None:
@@ -439,9 +448,14 @@ class PyXSD:
         member elements wherever the head is allowed. Heads that name
         no global element are recorded as schema errors.
         """
-        declaredNames = {element.name for element in schemaER.elements}
-        declaredExpanded = {element.expandedName for element in schemaER.elements}
-        for element in schemaER.elements:
+        # ``schema.elements`` normally holds element declarations, but a
+        # malformed schema can put other component kinds there (a
+        # top-level group reference, for example); only real element
+        # declarations participate in substitution groups.
+        elements = [e for e in schemaER.elements if type(e).__name__ == "Element"]
+        declaredNames = {element.name for element in elements}
+        declaredExpanded = {element.expandedName for element in elements}
+        for element in elements:
             head = element.getSubstitutionGroupHead(self)
             if head is None:
                 continue
@@ -1214,6 +1228,8 @@ class PyXSD:
         logger.debug("The XML file is being parsed by the ElementTree library...")
         try:
             root = parse_with_namespaces(self.xmlFileInput, self.namespaceContext)
+        except OSError as e:
+            raise PyXSDError(f"the xml input could not be read: {e}") from e
         except ET.ParseError as e:
             raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
         logger.debug("XML file parsed by the ElementTree library successfully...")

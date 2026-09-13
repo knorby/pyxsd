@@ -866,6 +866,7 @@ from pyxsd.element_representatives.max_length import MaxLength  # noqa: E402
 from pyxsd.element_representatives.min_exclusive import MinExclusive  # noqa: E402
 from pyxsd.element_representatives.min_inclusive import MinInclusive  # noqa: E402
 from pyxsd.element_representatives.min_length import MinLength  # noqa: E402
+from pyxsd.element_representatives.notation import Notation  # noqa: E402
 from pyxsd.element_representatives.pattern import Pattern  # noqa: E402
 from pyxsd.element_representatives.restriction import Restriction  # noqa: E402
 from pyxsd.element_representatives.schema import Schema  # noqa: E402
@@ -909,6 +910,7 @@ TAG_CLASSES = {
     "Length": Length,
     "MinLength": MinLength,
     "MaxLength": MaxLength,
+    "Notation": Notation,
     "TotalDigits": TotalDigits,
     "FractionDigits": FractionDigits,
     "WhiteSpace": WhiteSpace,

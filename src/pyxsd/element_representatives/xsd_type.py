@@ -116,7 +116,17 @@ class XsdType(ElementRepresentative):
         the base is still used so parsing can continue.
         """
         baseList = []
-        for rawName in self.superClassNames:
+        rawNames = list(self.superClassNames)
+        if getattr(self, "listItemType", None) is not None and rawNames:
+            # A simple type is either a list or derived from a base;
+            # combining both would create classes with conflicting
+            # instance layouts (str from the base, list from XsdList).
+            self._report_ref_error(
+                f"simpleType '{self.name}' cannot combine a list with a restriction or extension",
+                code="conflicting-derivation",
+            )
+            rawNames = []
+        for rawName in rawNames:
             superClassName = self.resolveSchemaQName(rawName, parser=pyXSD)
             if superClassName in (self.name, self.expandedName):
                 # A type deriving from itself would re-enter clsFor
@@ -193,32 +203,40 @@ class XsdType(ElementRepresentative):
                         derivation = derivation or "restriction"
         return derivation
 
-    def _reportMissingRestrictionBase(self):
-        """Reports restrictions that declare neither ``base`` nor an
-        inline ``simpleType``.
+    def _reportMissingDerivationBase(self):
+        """Reports restrictions and extensions that declare no base.
 
-        The restriction ER itself cannot report during construction
-        (the parser may not be attached yet), so the check runs while
-        the containing type builds its class.
+        A restriction may derive from an inline ``simpleType`` instead,
+        so only extensions and restrictions without either are errors.
+        The derivation ER itself cannot report during construction (the
+        parser may not be attached yet), so the check runs while the
+        containing type builds its class.
         """
-        restrictions = []
+        derivations = []
         for child in getattr(self, "processedChildren", None) or ():
             if child is None:
                 continue
             childName = child.__class__.__name__
-            if childName == "Restriction":
-                restrictions.append(child)
+            if childName in ("Restriction", "Extension"):
+                derivations.append(child)
             elif childName in ("ComplexContent", "SimpleContent"):
                 for grandchild in getattr(child, "processedChildren", None) or ():
-                    if grandchild is not None and grandchild.__class__.__name__ == "Restriction":
-                        restrictions.append(grandchild)
-        for restriction in restrictions:
-            if getattr(restriction, "hasNoBase", False):
-                self._report_ref_error(
+                    if grandchild is not None and grandchild.__class__.__name__ in (
+                        "Restriction",
+                        "Extension",
+                    ):
+                        derivations.append(grandchild)
+        for derivation in derivations:
+            if not getattr(derivation, "hasNoBase", False):
+                continue
+            if derivation.__class__.__name__ == "Restriction":
+                message = (
                     f"restriction of type '{self.name}' has neither a base "
-                    "attribute nor an inline simple type",
-                    code="restriction-base",
+                    "attribute nor an inline simple type"
                 )
+            else:
+                message = f"extension of type '{self.name}' has no base attribute"
+            self._report_ref_error(message, code=f"{derivation.__class__.__name__.lower()}-base")
 
     def _checkFinal(self, base, superClassName):
         """Reports a ``final`` violation against a derivation base.
@@ -700,7 +718,7 @@ class XsdType(ElementRepresentative):
 
         self.resolveAttributeGroupRefs(pyXSD)
         self.resolveAttributeRefs(pyXSD)
-        self._reportMissingRestrictionBase()
+        self._reportMissingDerivationBase()
 
         bases = self.getBaseList(pyXSD)
         namespace = {

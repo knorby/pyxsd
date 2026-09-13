@@ -30,8 +30,16 @@ class AttributeGroup(ElementRepresentative):
             self.ref = self.tagAttributes["ref"]
             self.getContainingType().attributeGroupRefs.append(self)
         else:
-            attrGroupContainer = self.parent.getContainingType()
-            attrGroupContainer.attributeGroups[self.name] = self
+            container = self.parent.getContainingType()
+            groups = getattr(container, "attributeGroups", None)
+            if groups is not None:
+                groups[self.name] = self
+            else:
+                self.misplacement = (
+                    "misplaced-declaration",
+                    f"attributeGroup '{self.name}' cannot be declared inside "
+                    f"{container.__class__.__name__}",
+                )
             self.getSchema().attributeGroups[self.name] = self
 
     def getContainingType(self):

@@ -10,7 +10,10 @@ issue or a correct verdict -- never an uncaught non-``pyxsd`` exception.
 import io
 from pathlib import Path
 
+import pytest
+
 from pyxsd.binding import ParseModes
+from pyxsd.exceptions import PyXSDError
 from pyxsd.parser import PyXSD
 from pyxsd.xsd_data_types import AnySimpleType
 
@@ -415,3 +418,180 @@ class TestCircularDerivation:
         )
         codes = [issue.code for issue in parser.report.issues]
         assert "circular-derivation" in codes
+
+
+def _codes(parser):
+    return [issue.code for issue in parser.report.issues]
+
+
+class TestMisplacedDeclarations:
+    """Misplaced declarations crashed on missing registration
+    containers (groupB001, groupO012, groupO013, groupO023, groupO025,
+    attgB002-004)."""
+
+    def test_top_level_group_ref(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:group name="foo"><xs:sequence><xs:element name="a"/>'
+            "</xs:sequence></xs:group>"
+            '<xs:group ref="foo"/></xs:schema>',
+            monkeypatch,
+        )
+        assert "misplaced-declaration" in _codes(parser)
+
+    def test_compositor_in_simple_type(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:simpleType name="A"><xs:sequence>'
+            '<xs:element name="a"/></xs:sequence></xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        assert "misplaced-declaration" in _codes(parser)
+
+    def test_attribute_in_group(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:group name="A"><xs:sequence/><xs:attribute name="att1"/>'
+            "</xs:group></xs:schema>",
+            monkeypatch,
+        )
+        assert "misplaced-declaration" in _codes(parser)
+
+    def test_group_ref_in_simple_type(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:group name="A"><xs:sequence/></xs:group>'
+            '<xs:simpleType name="myType"><xs:group ref="A"/>'
+            "</xs:simpleType></xs:schema>",
+            monkeypatch,
+        )
+        assert "misplaced-declaration" in _codes(parser)
+
+    def test_group_ref_in_attribute_group(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:group name="foo"><xs:sequence><xs:element name="abc"/>'
+            "</xs:sequence></xs:group>"
+            '<xs:attributeGroup name="ag"><xs:group ref="foo"/>'
+            '<xs:attribute name="att"/></xs:attributeGroup></xs:schema>',
+            monkeypatch,
+        )
+        assert "misplaced-declaration" in _codes(parser)
+
+    def test_nested_attribute_group_definition(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:attributeGroup name="G"><xs:attributeGroup name="abc">'
+            '<xs:attribute name="att" type="xs:int"/>'
+            "</xs:attributeGroup></xs:attributeGroup></xs:schema>",
+            monkeypatch,
+        )
+        assert "misplaced-declaration" in _codes(parser)
+
+    def test_attribute_group_definition_in_extension(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:complexType name="base"><xs:sequence/></xs:complexType>'
+            '<xs:complexType name="ext"><xs:complexContent>'
+            '<xs:extension base="base"><xs:attributeGroup name="abc"/>'
+            "</xs:extension></xs:complexContent></xs:complexType></xs:schema>",
+            monkeypatch,
+        )
+        assert "misplaced-declaration" in _codes(parser)
+
+
+class TestExtensionWithoutBase:
+    """An extension with no ``base`` crashed on a missing key
+    (notatF027, mgP059)."""
+
+    def test_missing_base_reports(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:complexType name="bar"><xs:complexContent>'
+            "<xs:extension><xs:sequence/></xs:extension>"
+            "</xs:complexContent></xs:complexType></xs:schema>",
+            monkeypatch,
+        )
+        assert "extension-base" in _codes(parser)
+
+
+class TestConflictingListRestriction:
+    """A simpleType combining a list with a restriction crashed in
+    class creation with a layout conflict (stB019, stB021)."""
+
+    @pytest.mark.parametrize(
+        "children",
+        [
+            '<xs:list itemType="xs:string"/><xs:restriction base="xs:string"/>',
+            '<xs:restriction base="xs:string"/><xs:list itemType="xs:string"/>',
+        ],
+    )
+    def test_list_with_restriction_reports(self, tmp_path, monkeypatch, children):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            f'<xs:simpleType name="fooType">{children}</xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        assert "conflicting-derivation" in _codes(parser)
+
+
+class TestNotationSupport:
+    """``xs:notation`` declarations and ``xs:NOTATION`` references
+    crashed or warned (notatF011, notatF027, over027)."""
+
+    def test_notation_declaration(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>'
+            '<xs:complexType name="c"><xs:attribute name="foo" '
+            'type="xs:NOTATION"/></xs:complexType></xs:schema>',
+            monkeypatch,
+        )
+        assert parser.report.has_errors is False
+
+    def test_nested_notation_reports(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:complexType name="c"><xs:attribute name="foo">'
+            '<xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>'
+            "</xs:attribute></xs:complexType></xs:schema>",
+            monkeypatch,
+        )
+        assert "misplaced-declaration" in _codes(parser)
+
+
+class TestUnreadableInputs:
+    """A schema root that is not ``xs:schema`` and a missing instance
+    file surfaced as raw AttributeError/FileNotFoundError
+    (particlesZ009, over027)."""
+
+    def test_instance_as_schema(self, tmp_path):
+        with pytest.raises(PyXSDError):
+            _parse(tmp_path, '<elem xmlns="foo"/>', "<x/>")
+
+    def test_missing_instance_file(self, tmp_path):
+        schema = tmp_path / "schema.xsd"
+        schema.write_text(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="x"/></xs:schema>'
+        )
+        with pytest.raises(PyXSDError):
+            PyXSD(
+                str(tmp_path / "missing.xml"),
+                str(schema),
+                xmlFileOutput=False,
+                transformOutputName=None,
+            )
