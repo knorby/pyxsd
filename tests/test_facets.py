@@ -319,3 +319,113 @@ def test_nil_bypasses_facets():
     )
     xml = '<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/>'
     assert errors(parse(body, xml)) == []
+
+
+# --- simpleContent complex types -------------------------------------------
+
+EXT_INT = (
+    '<xs:element name="r"><xs:complexType><xs:simpleContent>'
+    '<xs:extension base="xs:int"/></xs:simpleContent></xs:complexType></xs:element>'
+)
+
+
+def instance(body, xml):
+    parser = PyXSD(
+        io.StringIO(xml),
+        io.StringIO(SCHEMA.format(body=body)),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.NAMESPACED,
+    )
+    return parser.schemaRootInstance
+
+
+def test_simple_content_extension_value():
+    assert errors(parse(EXT_INT, "<r>7</r>")) == []
+    assert errors(parse(EXT_INT, "<r>abc</r>"))
+
+
+def test_simple_content_extension_attrs():
+    body = (
+        '<xs:element name="r"><xs:complexType><xs:simpleContent>'
+        '<xs:extension base="xs:int"><xs:attribute name="a" type="xs:string" use="required"/>'
+        "</xs:extension></xs:simpleContent></xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, '<r a="x">7</r>')) == []
+    assert errors(parse(body, "<r>7</r>"))
+
+
+def test_simple_content_extension_user_simple_type_facets():
+    body = (
+        '<xs:simpleType name="Color"><xs:restriction base="xs:string">'
+        '<xs:enumeration value="red"/><xs:enumeration value="green"/>'
+        "</xs:restriction></xs:simpleType>"
+        '<xs:element name="r"><xs:complexType><xs:simpleContent>'
+        '<xs:extension base="Color"/></xs:simpleContent></xs:complexType></xs:element>'
+    )
+    assert errors(parse(body, "<r>green</r>")) == []
+    assert errors(parse(body, "<r>blue</r>"))
+
+
+def test_simple_content_restriction_direct_facets():
+    body = (
+        '<xs:element name="r"><xs:complexType><xs:simpleContent>'
+        '<xs:restriction base="xs:string"><xs:maxLength value="3"/></xs:restriction>'
+        "</xs:simpleContent></xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, "<r>abc</r>")) == []
+    assert errors(parse(body, "<r>abcd</r>"))
+
+
+def test_simple_content_restriction_inline_type_facets():
+    body = (
+        '<xs:element name="r"><xs:complexType><xs:simpleContent>'
+        '<xs:restriction base="xs:string"><xs:simpleType><xs:restriction base="xs:string">'
+        '<xs:enumeration value="red"/><xs:enumeration value="green"/>'
+        "</xs:restriction></xs:simpleType></xs:restriction>"
+        "</xs:simpleContent></xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, "<r>green</r>")) == []
+    assert errors(parse(body, "<r>blue</r>"))
+
+
+def test_simple_content_root_default():
+    body = (
+        '<xs:element name="r" default="5"><xs:complexType><xs:simpleContent>'
+        '<xs:extension base="xs:int"/></xs:simpleContent></xs:complexType></xs:element>'
+    )
+    assert errors(parse(body, "<r/>")) == []
+    assert instance(body, "<r/>")._value_ == ["5"]
+
+
+def test_simple_content_root_fixed():
+    body = (
+        '<xs:element name="r" fixed="5"><xs:complexType><xs:simpleContent>'
+        '<xs:extension base="xs:int"/></xs:simpleContent></xs:complexType></xs:element>'
+    )
+    assert errors(parse(body, "<r>5</r>")) == []
+    assert [code for code, _ in errors(parse(body, "<r>6</r>"))] == ["fixed-element"]
+
+
+def test_simple_content_child_default_and_fixed():
+    body = (
+        '<xs:element name="r"><xs:complexType><xs:sequence>'
+        '<xs:element name="v" default="5"><xs:complexType><xs:simpleContent>'
+        '<xs:extension base="xs:int"/></xs:simpleContent></xs:complexType></xs:element>'
+        "</xs:sequence></xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, "<r><v/></r>")) == []
+    assert instance(body, "<r><v/></r>")._children_[0]._value_ == ["5"]
+
+    fixed = body.replace('default="5"', 'fixed="5"')
+    assert errors(parse(fixed, "<r><v>5</v></r>")) == []
+    assert [code for code, _ in errors(parse(fixed, "<r><v>6</v></r>"))] == ["fixed-element"]
+
+
+def test_simple_content_nil_skips_value_validation():
+    body = (
+        '<xs:element name="r" nillable="true"><xs:complexType><xs:simpleContent>'
+        '<xs:extension base="xs:int"/></xs:simpleContent></xs:complexType></xs:element>'
+    )
+    xml = '<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/>'
+    assert errors(parse(body, xml)) == []

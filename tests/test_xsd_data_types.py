@@ -556,9 +556,11 @@ class TestXsdLexicalCorrectness:
         assert math.isinf(Float("1e39"))
         assert Float("1e-50") == 0.0
 
-    def test_float_rejects_plus_inf(self):
-        with pytest.raises(TypeError):
-            Float("+INF")
+    def test_float_accepts_plus_inf(self):
+        # XSD 1.1 adds an explicit ``+INF`` spelling alongside ``INF``;
+        # both denote the same value.
+        assert math.isinf(Float("+INF"))
+        assert Float("+INF") == Float("INF")
         # The unadorned spelling remains legal.
         assert math.isinf(Double("INF"))
 
@@ -597,8 +599,9 @@ class TestXsdLexicalCorrectness:
         assert DateTime("2006-08-30T24:00:00") == "2006-08-30T24:00:00"
         with pytest.raises(TypeError):
             Date("2006-08-30+99:99")
-        with pytest.raises(TypeError):
-            GYear("0000")
+        # XSD 1.1 allows the year zero (1 BCE) and its negative spelling.
+        assert GYear("0000") == "0000"
+        assert GYear("-0000") == "-0000"
         with pytest.raises(TypeError):
             GYear("02006")
         with pytest.raises(TypeError):
