@@ -216,9 +216,10 @@ Your schemas keep working, with more of them validating correctly:
 - `xs:all`, groups, attributeGroups, unions, wildcards, substitution
   groups, element refs, `xsi:type`, nil/default/fixed, abstract/final —
   all new or fixed in 1.0.
-- Facet declarations on user simpleTypes are parsed but **not enforced**
-  (except whitespace collapse on built-ins) — see the gaps table in
-  {doc}`supported`.
+- Facet declarations on user simpleTypes are enforced where values bind
+  through the simple type (pattern uses the XSD 1.1 dialect via the
+  `elementpath` dependency); the remaining exception is `simpleContent` —
+  see the gaps table in {doc}`supported`.
 - Schemas must be well-formed XML; composition errors (missing include,
   cycles, namespace mismatch) are reported with dedicated codes.
 

@@ -50,7 +50,6 @@ The 1.0 roadmap (XSD coverage tiers, conformance corpus, docs) has been
 delivered; ongoing direction is tracked in the issue tracker and
 {file}`CHANGELOG.md`. Working design notes are kept outside the published
 docs tree. The 0.1 TODO list is of historical interest only — most of it
-(Python 3, test suite, `metaclass`-style construction) is now done; the
-regex machinery it called for backs built-in lexical checking, but
-facets declared on user-defined simpleTypes are still not enforced, as
+(Python 3, test suite, `metaclass`-style construction) is now done. Facets
+declared on user-defined simpleTypes are enforced, with the exceptions
 {doc}`supported` records.

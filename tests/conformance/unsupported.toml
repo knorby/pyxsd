@@ -12,9 +12,9 @@ note = "Namespace-aware validation is opt-in via ParseModes.NAMESPACED (CLI --na
 
 [[feature]]
 name = "Facet validation on user-defined simpleTypes"
-construct = "enumeration, pattern, length, minLength, maxLength, minInclusive, maxInclusive, fractionDigits, whiteSpace"
-status = "ignored"
-note = "Facets are parsed as annotation data only. Built-in type lexical validation is complete, but facets declared on user-defined simpleTypes are not enforced against instance values."
+construct = "enumeration, pattern, length, minLength, maxLength, minInclusive, maxInclusive, totalDigits, fractionDigits, whiteSpace"
+status = "partial"
+note = "Enforced for values bound through a user-defined simpleType, including restriction chains (XSD merge rules), list types (length counts items), and attributes. pattern uses the XSD 1.1 dialect via elementpath; illegal constructs are schema errors. Facet applicability, facet-value validity, and pattern syntax are checked at schema-compilation time. Not yet applied to values reaching the tree through a simpleContent complex type."
 
 [[feature]]
 name = "Wildcards with namespace filtering"

@@ -9,6 +9,24 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Facet enforcement for user-defined simpleTypes: `enumeration`, `pattern`,
+  `length`, `minLength`, `maxLength`, `minInclusive`, `minExclusive`,
+  `maxInclusive`, `maxExclusive`, `totalDigits`, `fractionDigits`, and
+  `whiteSpace`. Restriction chains follow the XSD merge rules (patterns
+  conjunct, enumerations intersect, bounds tighten); list types count items
+  for the length family; enumeration and bounds compare XSD values rather
+  than spellings; `whiteSpace` is applied before other facets. Facet
+  applicability, facet-value validity, and pattern syntax are reported as
+  schema-compilation errors. `pattern` uses the XSD 1.1 dialect through the
+  new `elementpath` dependency (minimal, pure-Python, no compiled
+  extensions).
+- `BindingPolicy.facets` (`"strict"` by default, `"off"` restores
+  parsing-only behavior for data-mapping users).
+
 ## [1.0.0] - 2026-09-11
 
 pyxsd 1.0.0 is a ground-up modernization of the 2006 0.1 release. The library
