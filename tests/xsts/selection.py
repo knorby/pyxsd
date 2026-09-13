@@ -98,9 +98,7 @@ def select_expected(expecteds: tuple[Expected, ...], profile: Profile) -> Expect
 
 
 def _describe(expecteds: list[Expected]) -> str:
-    return ", ".join(
-        f"{e.validity!r} (version={' '.join(e.version) or 'any'})" for e in expecteds
-    )
+    return ", ".join(f"{e.validity!r} (version={' '.join(e.version) or 'any'})" for e in expecteds)
 
 
 #: Expectation values whose outcome a Boolean conformance runner can check.

@@ -109,9 +109,7 @@ def build_bundle(
         if namespace is None:
             lines.append(f'  <xs:include schemaLocation="{location}"/>')
         else:
-            lines.append(
-                f'  <xs:import namespace="{namespace}" schemaLocation="{location}"/>'
-            )
+            lines.append(f'  <xs:import namespace="{namespace}" schemaLocation="{location}"/>')
     lines.append("</xs:schema>")
     driver = workdir / "driver.xsd"
     driver.write_text("\n".join(lines), encoding="utf-8")
@@ -249,7 +247,6 @@ class XmlSchemaDriver:
             result.adapter_gap = "group schema did not compile"
             return result
         try:
-
             schema_class = self._schema_class()
             schema = schema_class(str(schema_path))
             with time_limit(self.timeout):

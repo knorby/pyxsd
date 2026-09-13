@@ -310,10 +310,7 @@ def _parse_test_set(tree: ET.ElementTree, source: PurePosixPath) -> TestSet:
     if local_name(root.tag) != "testSet":
         raise CatalogError(f"{source}: expected <testSet>, found <{local_name(root.tag)}>")
     base = _effective_base(root, source.parent)
-    groups = tuple(
-        _parse_group(group, base, source)
-        for group in _children(root, "testGroup")
-    )
+    groups = tuple(_parse_group(group, base, source) for group in _children(root, "testGroup"))
     return TestSet(
         name=root.get("name", ""),
         contributor=root.get("contributor", ""),

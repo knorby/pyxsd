@@ -100,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="pyxsd-xsts-") as workdir:
         if args.jobs > 1:
+
             def progress(done: int, total: int) -> None:
                 if done % 500 == 0 or done == total:
                     print(f"  ...{done}/{total} cases", file=sys.stderr)
@@ -139,8 +140,9 @@ def main(argv: list[str] | None = None) -> int:
             "case_count": len(cases),
         }
         baseline.save(args.write_baseline, report.results_to_keys(results), meta)
-        print(f"wrote baseline with {len(results)} entries to {args.write_baseline}",
-              file=sys.stderr)
+        print(
+            f"wrote baseline with {len(results)} entries to {args.write_baseline}", file=sys.stderr
+        )
 
     if args.json:
         print(report.render_json(summary))

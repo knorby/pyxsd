@@ -315,11 +315,7 @@ class Runner:
         """Run one case through the primary driver and, if present, the oracle."""
         bundle: Path | None = None
         bundle_error: str | None = None
-        if (
-            case.metadata_error is None
-            and case.applicable
-            and case.schema_documents
-        ):
+        if case.metadata_error is None and case.applicable and case.schema_documents:
             try:
                 bundle = self._bundle(case)
             except HarnessError as exc:

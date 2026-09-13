@@ -28,9 +28,7 @@ class EngineSummary:
 
     engine: str
     outcomes: Counter[str] = field(default_factory=Counter)
-    by_contributor: dict[str, Counter[str]] = field(
-        default_factory=lambda: defaultdict(Counter)
-    )
+    by_contributor: dict[str, Counter[str]] = field(default_factory=lambda: defaultdict(Counter))
     by_kind: dict[str, Counter[str]] = field(default_factory=lambda: defaultdict(Counter))
     failures: list[CaseResult] = field(default_factory=list)
 
@@ -107,9 +105,7 @@ def render_text(summary: Summary, *, max_failures: int = 20) -> str:
     if summary.diff is not None and summary.diff.changes:
         lines.append(f"== baseline changes: {len(summary.diff.changes)} ==")
         for change in summary.diff.changes[:max_failures]:
-            lines.append(
-                f"  [{change.kind}] {change.key}: {change.previous} -> {change.current}"
-            )
+            lines.append(f"  [{change.kind}] {change.key}: {change.previous} -> {change.current}")
     return "\n".join(lines)
 
 
@@ -138,8 +134,12 @@ def render_json(summary: Summary) -> str:
     payload["engines"] = engines
     if summary.diff is not None:
         payload["baseline_changes"] = [
-            {"key": change.key, "previous": change.previous, "current": change.current,
-             "kind": change.kind}
+            {
+                "key": change.key,
+                "previous": change.previous,
+                "current": change.current,
+                "kind": change.kind,
+            }
             for change in summary.diff.changes
         ]
     return json.dumps(payload, indent=2)
