@@ -43,12 +43,22 @@ from pyxsd.xsd_data_types import (
     Date,
     DateTime,
     Duration,
+    GDay,
+    GMonth,
+    GMonthDay,
+    GYear,
+    GYearMonth,
     HexBinary,
     QName,
     Time,
     _date_key,
     _datetime_key,
     _duration_key,
+    _gday_key,
+    _gmonth_key,
+    _gmonthday_key,
+    _gyear_key,
+    _gyearmonth_key,
     _ListString,
     _time_key,
     _ws_collapse,
@@ -96,6 +106,16 @@ def order_key(value: Any) -> Any:
         return _date_key(str(value))
     if isinstance(value, Time):
         return _time_key(str(value))
+    if isinstance(value, GYear):
+        return _gyear_key(str(value))
+    if isinstance(value, GYearMonth):
+        return _gyearmonth_key(str(value))
+    if isinstance(value, GMonthDay):
+        return _gmonthday_key(str(value))
+    if isinstance(value, GMonth):
+        return _gmonth_key(str(value))
+    if isinstance(value, GDay):
+        return _gday_key(str(value))
     return str(value)
 
 
@@ -321,8 +341,26 @@ _BOUND_FACETS = ("minInclusive", "maxInclusive", "minExclusive", "maxExclusive")
 _DIGIT_FACETS = ("totalDigits", "fractionDigits")
 
 
+#: Types that are Python ``str`` subclasses for storage but are not
+#: derived from ``xs:string``, so the length family does not apply.
+_NON_STRING_DERIVED = (
+    HexBinary,
+    Base64Binary,
+    Boolean,
+    Duration,
+    DateTime,
+    Date,
+    Time,
+    GYear,
+    GYearMonth,
+    GMonth,
+    GMonthDay,
+    GDay,
+)
+
+
 def _is_string_like(base: type) -> bool:
-    return issubclass(base, str) and not issubclass(base, (HexBinary, Base64Binary))
+    return issubclass(base, str) and not issubclass(base, _NON_STRING_DERIVED)
 
 
 def _is_binary(base: type) -> bool:
@@ -431,6 +469,56 @@ def _facet_positive_int(text: str | None, name: str, errors: list[str]) -> int |
     return value
 
 
+_XML11_NAME_START_CONTENTS = (
+    ":A-Z_a-z"
+    "\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u02ff"
+    "\u0370-\u037d\u037f-\u1fff\u200c-\u200d\u2070-\u218f"
+    "\u2c00-\u2fef\u3001-\ud7ff\uf900-\ufdcf\ufdf0-\ufffd"
+    "\U00010000-\U000effff"
+)
+_XML11_NAME_CHAR_CONTENTS = _XML11_NAME_START_CONTENTS + "0-9.\u00b7\u0300-\u036f\u203f-\u2040-"
+_XML11_NAME_START_CLASS = f"[{_XML11_NAME_START_CONTENTS}]"
+_XML11_NAME_CHAR_CLASS = f"[{_XML11_NAME_CHAR_CONTENTS}]"
+
+
+def _xml11_name_classes(text: str) -> str:
+    """Spell out the ``\\i`` and ``\\c`` escapes as XML 1.1 name classes.
+
+    elementpath translates those escapes from an XML 1.0 table that stops
+    before the astral name characters, so the full ranges are substituted
+    here.  Outside a character class the replacement is the class itself;
+    inside one its contents are spliced in so the surrounding brackets stay
+    balanced.
+    """
+    out: list[str] = []
+    depth = 0
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if char == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt == "\\":
+                out.append("\\\\")
+                i += 2
+                continue
+            if nxt in "ic":
+                name_class = _XML11_NAME_START_CLASS if nxt == "i" else _XML11_NAME_CHAR_CLASS
+                out.append(name_class if depth == 0 else name_class[1:-1])
+                i += 2
+                continue
+            out.append(char)
+            out.append(nxt)
+            i += 2
+            continue
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth = max(depth - 1, 0)
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
 def _compile_pattern(text: str) -> re.Pattern[str]:
     """Translate and compile one XSD pattern.
 
@@ -439,7 +527,7 @@ def _compile_pattern(text: str) -> re.Pattern[str]:
     """
     try:
         translated = translate_pattern(
-            text,
+            _xml11_name_classes(text),
             xsd_version=PATTERN_XSD_VERSION,
             anchors=False,
             back_references=False,
