@@ -370,3 +370,48 @@ class TestIdentityConstraintChildren:
             '<root><hi a="1"/><hi a="2"/></root>',
         )
         assert parser.report.has_errors is False
+
+
+class TestCircularDerivation:
+    """A type deriving from itself recursed until ``RecursionError``
+    (addB101, elemM003)."""
+
+    def test_self_restriction_reports(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:simpleType name="foo"><xs:restriction base="foo">'
+            '<xs:pattern value="[0-9]{5}"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "circular-derivation" in codes
+
+    def test_self_extension_reports(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:complexType name="sAddress"><xs:complexContent>'
+            '<xs:extension base="sAddress"><xs:sequence>'
+            '<xs:element name="country" type="xs:string"/>'
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+            "</xs:schema>",
+            monkeypatch,
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "circular-derivation" in codes
+
+    def test_indirect_cycle_reports(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:simpleType name="a"><xs:restriction base="b">'
+            '<xs:enumeration value="x"/></xs:restriction></xs:simpleType>'
+            '<xs:simpleType name="b"><xs:restriction base="a">'
+            '<xs:enumeration value="x"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "circular-derivation" in codes

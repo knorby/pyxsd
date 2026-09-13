@@ -14,6 +14,11 @@ from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, XsdList, qname_cont
 
 logger = logging.getLogger(__name__)
 
+#: Marker stored in ``_generatedClass`` while a type's class is being
+#: built. Re-entry into ``clsFor`` while the marker is present means the
+#: type is part of a derivation cycle.
+_CLASS_IN_PROGRESS = object()
+
 #: Marks a simple-content restriction that applies its facets directly to
 #: the complex type being built; ``clsFor`` replaces it with the new class
 #: once that class exists.
@@ -113,6 +118,14 @@ class XsdType(ElementRepresentative):
         baseList = []
         for rawName in self.superClassNames:
             superClassName = self.resolveSchemaQName(rawName, parser=pyXSD)
+            if superClassName in (self.name, self.expandedName):
+                # A type deriving from itself would re-enter clsFor
+                # forever; report the cycle and skip the base.
+                self._report_ref_error(
+                    f"type '{self.name}' derives from itself",
+                    code="circular-derivation",
+                )
+                continue
             base = ElementRepresentative.typeFromName(superClassName, pyXSD)
             if base is None:
                 # An unresolved base must not reach issubclass() or
@@ -668,7 +681,17 @@ class XsdType(ElementRepresentative):
         # when a derived type is declared before its base.
         cached = getattr(self, "_generatedClass", None)
         if cached is not None:
+            if cached is _CLASS_IN_PROGRESS:
+                # Re-entry means an indirect derivation cycle (A derives
+                # from B which derives from A): report it and let the
+                # caller treat this base as unresolvable.
+                self._report_ref_error(
+                    f"type '{self.name}' is part of a circular derivation",
+                    code="circular-derivation",
+                )
+                return None
             return cached
+        self._generatedClass = _CLASS_IN_PROGRESS
 
         if getattr(self, "unionSpec", None) is not None:
             union = self.makeUnionClass(pyXSD)
