@@ -1,14 +1,16 @@
 import copy
 import logging
 import types
+from typing import Any
 
+from pyxsd import facets
 from pyxsd.binding import ParseModes
 from pyxsd.content_model import compile_content_model
 from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
-from pyxsd.xsd_data_types import XsdDataType
+from pyxsd.xsd_data_types import XsdDataType, qname_context
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +111,8 @@ class XsdType(ElementRepresentative):
             base = ElementRepresentative.typeFromName(superClassName, pyXSD)
             if base is None:
                 # An unresolved base must not reach issubclass() or
-                # types.new_class(): report it and keep building so the
-                # rest of a large schema still loads.
+                # the ``types.new_class()`` factory: report it and keep
+                # building so the rest of a large schema still loads.
                 self._report_ref_error(
                     f"base type '{superClassName}' of '{self.name}' could not be resolved",
                     code="unknown-type",
@@ -439,6 +441,61 @@ class XsdType(ElementRepresentative):
         )
         return union
 
+    def _facetNamespace(self, pyXSD, bases):
+        """Builds the facet-enforcement entries for a simple type's class.
+
+        Only ``SimpleType`` classes carry facets.  The constraint set is
+        merged with the base class's own constraints (a restriction can
+        only tighten), and a ``__new__`` wrapper applies the whiteSpace
+        facet to the lexical form, constructs the value through the base
+        class's validating ``__new__``, and then checks every other
+        facet.  A violation raises ``TypeError``, which the binding
+        paths already record as a ``value`` issue.
+        """
+        if self.__class__.__name__ != "SimpleType":
+            return {}
+        if getattr(getattr(pyXSD, "mode", None), "facets", "strict") == "off":
+            return {}
+        base = bases[0] if bases else None
+        if not isinstance(base, type) or not issubclass(base, XsdDataType):
+            return {}
+        parent = getattr(base, "_facetConstraints_", None)
+        # Facet literals that are QNames (an enumeration value, a bound
+        # on a QName-derived type) resolve against the schema document's
+        # own prefix bindings, not the instance's.
+        bindings = None
+        namespace_context = getattr(pyXSD, "namespaceContext", None)
+        if namespace_context is not None:
+            try:
+                bindings = namespace_context.bindings_for(self.xsdElement)
+            except Exception:  # pragma: no cover - defensive
+                bindings = None
+        with qname_context(bindings):
+            result = facets.build_constraints(self, base, parent, base_factory=base)
+        for message in result.errors:
+            self._report_ref_error(message, code="facet")
+        constraints = result.constraints
+        if constraints.is_empty:
+            return {}
+        baseNew: Any = base.__new__
+        # Element classes whose type is (or extends) this simple type are
+        # built bare by ``SchemaBase.makeInstanceFromTag`` and receive
+        # their value later, so mirror the built-in behaviour for a
+        # missing lexical value instead of requiring one.
+        missing = object()
+
+        def __new__(cls, value=missing, *args, **kwargs):
+            if value is missing:
+                return baseNew(cls, *args, **kwargs)
+            lexical = value
+            if constraints.white_space is not None and isinstance(lexical, str):
+                lexical = facets.whitespace_transform(constraints.white_space, lexical)
+            instance = baseNew(cls, lexical, *args, **kwargs)
+            constraints.check(instance, lexical if isinstance(lexical, str) else None)
+            return instance
+
+        return {"_facetConstraints_": constraints, "__new__": __new__}
+
     def clsFor(self, pyXSD):
         """Produces a class for a schema type.
 
@@ -494,6 +551,7 @@ class XsdType(ElementRepresentative):
             # invalid or unresolved content.
             "_parseMode_": getattr(pyXSD, "mode", ParseModes.STRICT),
         }
+        namespace.update(self._facetNamespace(pyXSD, bases))
         # Expand group references before reading the wildcard metadata:
         # a wildcard contributed by a named group registers on this type
         # during expansion, and the class must stamp it so binding and
@@ -513,9 +571,10 @@ class XsdType(ElementRepresentative):
         if self.tagAttributes.get("abstract") == "true":
             namespace["abstract_"] = True
         # Record the XSD content category explicitly. Generated simple
-        # types inherit both a primitive Python type and SchemaBase
-        # (for bookkeeping), so Python inheritance cannot tell a simple
-        # type from a complex one at instance-dispatch time.
+        # declarations inherit both a primitive Python class and
+        # SchemaBase (for bookkeeping), so Python inheritance cannot
+        # tell a simple declaration from a complex one at
+        # instance-dispatch time.
         namespace["_contentKind_"] = (
             "simple" if self.__class__.__name__ == "SimpleType" else "complex"
         )

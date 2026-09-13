@@ -124,7 +124,7 @@ class ComplexType(XsdType):
                 contributed.extend(self._flattenGroupRef(element, visited | {groupKey}))
                 continue
             # The group's element representatives are shared by every
-            # type that references the group. Each reference gets its
+            # complex type that references the group. Each reference gets its
             # own shallow copy, so folding this reference's occurrence
             # limits (and resolving element refs) never mutates the
             # shared declaration.

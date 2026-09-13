@@ -99,11 +99,11 @@ class Attribute(ElementRepresentative):
         for child in children:
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
-            # An ``xsd:annotation`` is documentation, not the attribute's
-            # type. Schemas commonly attach one to an attribute that
-            # already carries a ``type`` attribute (GPX does this for
-            # every attribute), and taking its bookkeeping name as the
-            # type overwrites the real one.
+            # An ``xsd:annotation`` is documentation, not the attribute
+            # declaration. Schemas commonly attach one to an attribute
+            # that already carries a ``type`` attribute (GPX does this
+            # for every attribute), and taking its bookkeeping name as
+            # the declared type overwrites the real one.
             if child.tag.split("}")[-1] == "annotation":
                 continue
             # An explicit ``type`` attribute wins over any child; a child

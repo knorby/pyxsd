@@ -12,6 +12,10 @@ license-files = ["LICENSE"]
 authors = [{ name = "Kali Norby", email = "kali.norby@gmail.com" }]
 maintainers = [{ name = "Kali Norby", email = "kali.norby@gmail.com" }]
 requires-python = ">=3.11"
+# Minimal, pure-Python dependencies; no compiled packages. elementpath
+# supplies the XSD regular-expression translator used to enforce the
+# xs:pattern facet.
+dependencies = ["elementpath>=4.7,<6"]
 keywords = ["xml", "xsd", "schema", "parser", "transform", "validation"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",

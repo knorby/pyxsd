@@ -897,13 +897,38 @@ def _date_key(text: str) -> Any:
     return _datetime(day.year, day.month, day.day) - _timedelta(seconds=offset)
 
 
+def _duration_key(text: str) -> tuple:
+    """A value-space key for ``xs:duration``: ``(sign, months, seconds)``.
+
+    XSD compares durations by months and seconds independently, so
+    ``P1Y`` equals ``P12M`` and ``P1D`` equals ``PT24H`` while ``P1M``
+    and ``P30D`` stay distinct (their equality is calendar-dependent).
+    """
+    match = _DURATION_PARTS.fullmatch(text)
+    if match is None:
+        return (0, 0, 0.0)
+
+    def number(part: str | None) -> float:
+        if not part:
+            return 0.0
+        return float(re.sub(r"[^0-9.]", "", part))
+
+    years, months, days, hours, minutes, seconds = (number(group) for group in match.groups())
+    total_months = int(years) * 12 + int(months)
+    total_seconds = int(days) * 86400 + int(hours) * 3600 + int(minutes) * 60 + seconds
+    sign = -1 if text.startswith("-") else 1
+    return (sign, total_months, total_seconds)
+
+
 def xsd_value_key(value: Any) -> tuple:
     """A comparison key implementing XSD value-space equality.
 
     Lexical spellings that denote one XSD value compare equal: hex case
-    (``FF``/``ff``), base64 whitespace, list whitespace, and timezone
-    offsets that name the same instant. Types without a specialised key
-    fall back to their lexical form.
+    (``FF``/``ff``), base64 whitespace, list whitespace, numeric values
+    that differ only in scale (``1.0``/``1.00``), duration values that
+    differ only in unit choice (``P1Y``/``P12M``), and timezone offsets
+    that name the same instant. Types without a specialised key fall
+    back to their lexical form.
     """
     if isinstance(value, HexBinary):
         return ("hexBinary", bytes.fromhex(str(value)))
@@ -911,6 +936,16 @@ def xsd_value_key(value: Any) -> tuple:
         return ("base64Binary", base64.b64decode(_ws_remove(str(value))))
     if isinstance(value, _ListString):
         return (value.name, tuple(value.tokens))
+    if isinstance(value, bool):
+        return ("boolean", int(value))
+    if isinstance(value, Duration):
+        return ("duration", _duration_key(str(value)))
+    if isinstance(value, decimal.Decimal):
+        return ("decimal", decimal.Decimal(str(value)))
+    if isinstance(value, int):
+        return ("integer", int(value))
+    if isinstance(value, float):
+        return ("float", "NaN" if math.isnan(value) else float(value))
     if isinstance(value, DateTime):
         return ("dateTime", _datetime_key(str(value)))
     if isinstance(value, Date):

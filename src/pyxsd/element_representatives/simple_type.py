@@ -14,6 +14,11 @@ class SimpleType(XsdType):
         """
         self.patterns = []
         self.length = None
+        self.minLength = None
+        self.maxLength = None
+        self.totalDigits = None
+        self.fractionDigits = None
+        self.whiteSpace = None
         self.listItemType = None
         self.minInclusive = None
         self.maxInclusive = None

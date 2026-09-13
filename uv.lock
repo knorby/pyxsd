@@ -1018,6 +1018,9 @@ wheels = [
 name = "pyxsd"
 version = "1.0.0"
 source = { editable = "." }
+dependencies = [
+    { name = "elementpath" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1037,6 +1040,7 @@ docs = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "elementpath", specifier = ">=4.7,<6" }]
 
 [package.metadata.requires-dev]
 dev = [
