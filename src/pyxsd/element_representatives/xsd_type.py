@@ -14,6 +14,11 @@ from pyxsd.xsd_data_types import XsdDataType, qname_context
 
 logger = logging.getLogger(__name__)
 
+#: Marks a simple-content restriction that applies its facets directly to
+#: the complex type being built; ``clsFor`` replaces it with the new class
+#: once that class exists.
+_SELF_CONTENT = object()
+
 
 class XsdType(ElementRepresentative):
     """Base class for SimpleType and ComplexType.
@@ -444,22 +449,31 @@ class XsdType(ElementRepresentative):
     def _facetNamespace(self, pyXSD, bases):
         """Builds the facet-enforcement entries for a simple type's class.
 
-        Only ``SimpleType`` classes carry facets.  The constraint set is
-        merged with the base class's own constraints (a restriction can
-        only tighten), and a ``__new__`` wrapper applies the whiteSpace
-        facet to the lexical form, constructs the value through the base
-        class's validating ``__new__``, and then checks every other
-        facet.  A violation raises ``TypeError``, which the binding
-        paths already record as a ``value`` issue.
+        Only ``SimpleType`` classes carry facets here; a complex type
+        with ``simpleContent`` applies its facets through
+        :meth:`_simpleContentNamespace`.
         """
         if self.__class__.__name__ != "SimpleType":
             return {}
+        base = bases[0] if bases else None
+        parent = getattr(base, "_facetConstraints_", None) if isinstance(base, type) else None
+        return self._constraintNamespace(pyXSD, self, base, parent)
+
+    def _constraintNamespace(self, pyXSD, source, base, parent):
+        """Builds the ``_facetConstraints_`` and ``__new__`` entries for a
+        definition that restricts *base*.
+
+        The constraint set is merged with the base class's own constraints
+        (a restriction can only tighten), and the ``__new__`` wrapper
+        applies the whiteSpace facet to the lexical form, constructs the
+        value through the base class's validating ``__new__``, and then
+        checks every other facet.  A violation raises ``TypeError``, which
+        the binding paths already record as a ``value`` issue.
+        """
         if getattr(getattr(pyXSD, "mode", None), "facets", "strict") == "off":
             return {}
-        base = bases[0] if bases else None
         if not isinstance(base, type) or not issubclass(base, XsdDataType):
             return {}
-        parent = getattr(base, "_facetConstraints_", None)
         # Facet literals that are QNames (an enumeration value, a bound
         # on a QName-derived type) resolve against the schema document's
         # own prefix bindings, not the instance's.
@@ -471,7 +485,7 @@ class XsdType(ElementRepresentative):
             except Exception:  # pragma: no cover - defensive
                 bindings = None
         with qname_context(bindings):
-            result = facets.build_constraints(self, base, parent, base_factory=base)
+            result = facets.build_constraints(source, base, parent, base_factory=base)
         for message in result.errors:
             self._report_ref_error(message, code="facet")
         constraints = result.constraints
@@ -495,6 +509,68 @@ class XsdType(ElementRepresentative):
             return instance
 
         return {"_facetConstraints_": constraints, "__new__": __new__}
+
+    def _simpleContentNamespace(self, pyXSD, bases):
+        """Builds the ``_simpleContentType_`` entry for a complex type.
+
+        A complex type with ``simpleContent`` ultimately constrains a
+        simple type.  An extension inherits its base's content type; a
+        restriction either declares an inline simple type (which carries
+        the facet machinery itself) or applies facets directly to the
+        complex type.  The recorded class validates the element's lexical
+        text when the instance binder constructs the value.
+        """
+        if self.__class__.__name__ != "ComplexType":
+            return {}
+        simple_content = self._firstProcessedChild(self, "SimpleContent")
+        if simple_content is None:
+            return {}
+        derivation = None
+        for name in ("Extension", "Restriction"):
+            derivation = self._firstProcessedChild(simple_content, name)
+            if derivation is not None:
+                break
+        if derivation is None:
+            return {}
+        base = bases[0] if bases else None
+        if derivation.__class__.__name__ == "Restriction":
+            inline = self._firstProcessedChild(derivation, "SimpleType")
+            if inline is not None:
+                content_cls = inline.clsFor(pyXSD)
+                if content_cls is None:
+                    return {}
+                return {"_simpleContentType_": content_cls}
+            # A restriction of a complex simple-content type restricts
+            # that type's content type, not the generated complex class
+            # itself (whose name says nothing about the value space).
+            facet_base = getattr(base, "_simpleContentType_", None)
+            if not (isinstance(facet_base, type) and issubclass(facet_base, XsdDataType)):
+                facet_base = base
+            parent = (
+                getattr(facet_base, "_facetConstraints_", None)
+                if isinstance(facet_base, type)
+                else None
+            )
+            namespace = self._constraintNamespace(pyXSD, self, facet_base, parent)
+            namespace["_simpleContentType_"] = _SELF_CONTENT
+            return namespace
+        # Extension: the content type is the base type itself when the
+        # base is a simple type, or the content type already carried by
+        # the base complex type.
+        content_cls = getattr(base, "_simpleContentType_", None)
+        if content_cls is None and isinstance(base, type) and issubclass(base, XsdDataType):
+            content_cls = base
+        if content_cls is None:
+            return {}
+        return {"_simpleContentType_": content_cls}
+
+    @staticmethod
+    def _firstProcessedChild(parent, name):
+        """The first processed child of *parent* whose ER class is *name*."""
+        for child in getattr(parent, "processedChildren", None) or ():
+            if child is not None and child.__class__.__name__ == name:
+                return child
+        return None
 
     def clsFor(self, pyXSD):
         """Produces a class for a schema type.
@@ -552,6 +628,7 @@ class XsdType(ElementRepresentative):
             "_parseMode_": getattr(pyXSD, "mode", ParseModes.STRICT),
         }
         namespace.update(self._facetNamespace(pyXSD, bases))
+        namespace.update(self._simpleContentNamespace(pyXSD, bases))
         # Expand group references before reading the wildcard metadata:
         # a wildcard contributed by a named group registers on this type
         # during expansion, and the class must stamp it so binding and
@@ -686,6 +763,9 @@ class XsdType(ElementRepresentative):
             raise
 
         self._generatedClass = cls
+        if cls.__dict__.get("_simpleContentType_") is _SELF_CONTENT:
+            # A direct-facet restriction is its own content type.
+            cls._simpleContentType_ = cls  # type: ignore[attr-defined]
         return cls
 
     @staticmethod

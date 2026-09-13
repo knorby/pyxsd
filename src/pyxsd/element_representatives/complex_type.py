@@ -18,6 +18,10 @@ class ComplexType(XsdType):
         ElementRepresentative for more documentation.
         """
         self.sequencesOrChoices = []
+        # A simpleContent restriction applies its facets directly to the
+        # complex type, whose element representatives record them here
+        # (the other facet attributes are set on first assignment).
+        self.patterns = []
         super().__init__(xsdElement, parent)
         self.getSchema().complexTypes[self.name] = self
 

@@ -827,7 +827,16 @@ class PyXSD:
                         )
                         subInstance._nil_ = True
                     else:
-                        subInstance = subCls.makeInstanceFromTag(self.xmlRoot)
+                        forcedText = None
+                        if self.xmlRoot.text is None and not list(self.xmlRoot):
+                            forcedText = rootElement.getDefault()
+                            if forcedText is None:
+                                forcedText = rootElement.getFixed()
+                        subInstance = subCls.makeInstanceFromTag(self.xmlRoot, forcedText)
+                        if getattr(subCls, "_simpleContentType_", None) is not None:
+                            subCls._checkFixedElement(
+                                rootElement, subCls, subInstance, rootElementName
+                            )
                 else:
                     # The root element's declared type is a primitive
                     # (simple) data type: build a typed instance directly.
