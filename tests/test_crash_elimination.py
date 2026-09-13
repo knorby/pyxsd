@@ -7,6 +7,7 @@ crash. A former crash must become either a structured ``PyXSD`` report
 issue or a correct verdict -- never an uncaught non-``pyxsd`` exception.
 """
 
+import io
 from pathlib import Path
 
 from pyxsd.binding import ParseModes
@@ -28,6 +29,24 @@ def _parse(tmp_path, schema_text, instance_text, mode=ParseModes.STRICT):
         xmlFileOutput=False,
         transformOutputName=None,
         mode=mode,
+    )
+
+
+def _parse_schema(tmp_path, schema_text, monkeypatch):
+    """Loads an inline schema without an instance document.
+
+    Mirrors the XSTS driver's schema-only mode: the schema phase still
+    runs, but the instance phase is stubbed out so a schema that
+    declares no root elements can be inspected.
+    """
+    schema = tmp_path / "schema.xsd"
+    schema.write_text(schema_text)
+    monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
+    return PyXSD(
+        io.StringIO("<x/>"),
+        str(schema),
+        xmlFileOutput=False,
+        transformOutputName=None,
     )
 
 
@@ -167,3 +186,187 @@ class TestAttributeRefResolution:
         )
         codes = [issue.code for issue in parser.report.issues]
         assert "unknown-attributeRef" in codes
+
+
+class TestRestrictionBase:
+    """``Restriction`` read ``tagAttributes['base']`` unconditionally
+    and crashed on a restriction with an inline ``simpleType`` instead
+    (stZ073b, addB014, addB064)."""
+
+    def test_inline_restriction_type(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="test" type="st.unionType"/>'
+            '<xs:simpleType name="st.unionType">'
+            "<xs:restriction><xs:simpleType>"
+            '<xs:union memberTypes="xs:string xs:integer"/>'
+            "</xs:simpleType>"
+            '<xs:enumeration value="a"/>'
+            "</xs:restriction>"
+            "</xs:simpleType>"
+            "</xs:schema>",
+            "<test>a</test>",
+        )
+        assert parser.report.has_errors is False
+
+    def test_missing_base_reports(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="test" type="Bad"/>'
+            '<xs:simpleType name="Bad"><xs:restriction>'
+            '<xs:enumeration value="a"/>'
+            "</xs:restriction></xs:simpleType>"
+            "</xs:schema>",
+            "<test>a</test>",
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "restriction-base" in codes
+
+
+class TestAnnotationContent:
+    """``documentation`` may contain arbitrary XML; an unqualified child
+    tag crashed tag parsing (annotB004, annotB005)."""
+
+    def test_foreign_documentation_child(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="foo"><xs:complexType><xs:all>'
+            "<xs:annotation><xs:documentation><Documentation/>"
+            "</xs:documentation></xs:annotation>"
+            "</xs:all></xs:complexType></xs:element></xs:schema>",
+            "<foo/>",
+        )
+        assert parser.report.has_errors is False
+
+    def test_documentation_text_still_sets_doc(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:complexType name="t"><xs:annotation>'
+            "<xs:documentation>hello docs</xs:documentation>"
+            "</xs:annotation></xs:complexType>"
+            '<xs:element name="t" type="t"/></xs:schema>',
+            "<t/>",
+        )
+        assert parser.report.has_errors is False
+        assert parser.classes["t"].__doc__ == "hello docs"
+
+
+class TestOccursValues:
+    """``getMinOccurs``/``getMaxOccurs`` ran ``int()`` on invalid
+    lexical values (elemJ006, elemJ008)."""
+
+    def test_empty_max_occurs_reports(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="foo" type="bar"/>'
+            '<xs:complexType name="bar"><xs:sequence>'
+            '<xs:element name="name" maxOccurs=""/>'
+            "</xs:sequence></xs:complexType></xs:schema>",
+            "<foo/>",
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "invalid-occurs" in codes
+
+    def test_wrong_case_unbounded_reports(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="foo" type="bar"/>'
+            '<xs:complexType name="bar"><xs:sequence>'
+            '<xs:element name="name" maxOccurs="Unbounded"/>'
+            "</xs:sequence></xs:complexType></xs:schema>",
+            "<foo/>",
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "invalid-occurs" in codes
+
+    def test_valid_occurs_still_work(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="foo" type="bar"/>'
+            '<xs:complexType name="bar"><xs:sequence>'
+            '<xs:element name="name" minOccurs="0" maxOccurs="unbounded"/>'
+            "</xs:sequence></xs:complexType></xs:schema>",
+            "<foo><name/><name/></foo>",
+        )
+        assert parser.report.has_errors is False
+
+
+class TestUnnamedDeclarations:
+    """Declarations without a usable name crashed class-name
+    capitalization (attQ005, attC004, ctA044)."""
+
+    def test_global_attribute_without_name(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:attribute/></xs:schema>',
+            monkeypatch,
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "declaration-name" in codes
+
+    def test_local_attribute_with_empty_name(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:complexType name="attRef"><xs:attribute name=""/>'
+            "</xs:complexType>"
+            '<xs:element name="doc" type="attRef"/></xs:schema>',
+            monkeypatch,
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "declaration-name" in codes
+
+    def test_complex_type_with_empty_name(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:complexType name=""><xs:sequence/>'
+            "</xs:complexType></xs:schema>",
+            monkeypatch,
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "declaration-name" in codes
+
+
+class TestIdentityConstraintChildren:
+    """An illegal child inside an identity constraint crashed on
+    ``parent.elements`` (s2_2_4si01)."""
+
+    def test_element_child_reports(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root"><xs:complexType><xs:sequence>'
+            '<xs:element name="hi">'
+            '<xs:key name="k"><xs:selector xpath="."/>'
+            '<xs:field xpath="@a"/></xs:key>'
+            '<xs:keyref name="r" refer="k"><xs:element name="a"/></xs:keyref>'
+            "</xs:element>"
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            '<root><hi a="1"/></root>',
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "unexpected-identity-child" in codes
+
+    def test_selector_and_field_still_work(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root"><xs:complexType><xs:sequence>'
+            '<xs:element name="hi" maxOccurs="unbounded">'
+            '<xs:complexType><xs:attribute name="a" type="xs:string"/>'
+            "</xs:complexType>"
+            '<xs:key name="k"><xs:selector xpath="."/>'
+            '<xs:field xpath="@a"/></xs:key>'
+            "</xs:element>"
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            '<root><hi a="1"/><hi a="2"/></root>',
+        )
+        assert parser.report.has_errors is False

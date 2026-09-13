@@ -180,6 +180,33 @@ class XsdType(ElementRepresentative):
                         derivation = derivation or "restriction"
         return derivation
 
+    def _reportMissingRestrictionBase(self):
+        """Reports restrictions that declare neither ``base`` nor an
+        inline ``simpleType``.
+
+        The restriction ER itself cannot report during construction
+        (the parser may not be attached yet), so the check runs while
+        the containing type builds its class.
+        """
+        restrictions = []
+        for child in getattr(self, "processedChildren", None) or ():
+            if child is None:
+                continue
+            childName = child.__class__.__name__
+            if childName == "Restriction":
+                restrictions.append(child)
+            elif childName in ("ComplexContent", "SimpleContent"):
+                for grandchild in getattr(child, "processedChildren", None) or ():
+                    if grandchild is not None and grandchild.__class__.__name__ == "Restriction":
+                        restrictions.append(grandchild)
+        for restriction in restrictions:
+            if getattr(restriction, "hasNoBase", False):
+                self._report_ref_error(
+                    f"restriction of type '{self.name}' has neither a base "
+                    "attribute nor an inline simple type",
+                    code="restriction-base",
+                )
+
     def _checkFinal(self, base, superClassName):
         """Reports a ``final`` violation against a derivation base.
 
@@ -392,11 +419,7 @@ class XsdType(ElementRepresentative):
         Falls back to logging when no parser is attached (for example
         when classes are built in isolation).
         """
-        parser = getattr(self.getSchema(), "pyXSD", None)
-        if parser is not None:
-            parser.report.add_error(message, code=code, element=self.name)
-        else:
-            logger.error("%s[%s] %s", self.name, code, message)
+        self._reportSchemaError(message, code=code)
 
     def makeUnionClass(self, pyXSD):
         """Produces the class for a union simple type.
@@ -654,6 +677,7 @@ class XsdType(ElementRepresentative):
 
         self.resolveAttributeGroupRefs(pyXSD)
         self.resolveAttributeRefs(pyXSD)
+        self._reportMissingRestrictionBase()
 
         bases = self.getBaseList(pyXSD)
         namespace = {

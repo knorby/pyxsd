@@ -24,14 +24,11 @@ class Choice(ElementRepresentative):
         """Retrieves the minOccurs value for elements in the choice.  Sets
         it to the default of 1 if it is not specified.
         """
-        return int(getattr(self, "minOccurs", 1))
+        return self._occursValue("minOccurs")
 
     def getMaxOccurs(self):
         """Retrieves the maxOccurs value for elements in the choice.  Sets
         it to the default of 1 if it is not specified.  Sets
         'unbounded' values to 99999, since it needs to be an integer.
         """
-        maxOccurs = getattr(self, "maxOccurs", 1)
-        if maxOccurs == "unbounded":
-            return 99999
-        return int(maxOccurs)
+        return self._occursValue("maxOccurs")

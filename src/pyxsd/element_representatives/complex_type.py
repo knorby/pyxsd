@@ -179,12 +179,11 @@ class ComplexType(XsdType):
         rest of the parser's unbounded handling at 99999).
         """
         if "minOccurs" in refSite.tagAttributes:
-            refMin = int(refSite.tagAttributes["minOccurs"])
+            refMin = refSite.getMinOccurs()
             for element in elements:
                 element.minOccurs = str(refMin * element.getMinOccurs())
         if "maxOccurs" in refSite.tagAttributes:
-            refMax = getattr(refSite, "maxOccurs", 1)
-            refMax = 99999 if refMax == "unbounded" else int(refMax)
+            refMax = refSite.getMaxOccurs()
             for element in elements:
                 folded = min(99999, refMax * element.getMaxOccurs())
                 element.maxOccurs = "unbounded" if folded >= 99999 else str(folded)

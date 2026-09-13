@@ -54,7 +54,19 @@ class Element(ElementRepresentative):
         # inside this element record themselves here.
         self.identities = []
         super().__init__(xsdElement, parent)
-        parent.elements.append(self)
+        # A stray ``element`` declaration may appear inside a parent
+        # that carries no element list (for example an identity
+        # constraint); the parser reports the placement error, but the
+        # ER run must not crash.
+        elements = getattr(parent, "elements", None)
+        if elements is not None:
+            elements.append(self)
+        else:
+            logger.warning(
+                "element declaration '%s' cannot be a child of %s; ignoring it",
+                self.name,
+                parent.__class__.__name__ if parent is not None else "nothing",
+            )
 
     def getName(self):
         """Returns the element's schema name.
@@ -268,9 +280,11 @@ class Element(ElementRepresentative):
     def getMinOccurs(self):
         """Returns an integer value for ``minOccurs``.
 
-        If no ``minOccurs`` has been set, uses the default of 1.
+        If no ``minOccurs`` has been set, uses the default of 1. See
+        ``ElementRepresentative._occursValue`` for the lexical
+        validation that replaced the old unguarded ``int()`` call.
         """
-        return int(getattr(self, "minOccurs", 1))
+        return self._occursValue("minOccurs")
 
     def getMaxOccurs(self):
         """Returns an integer value for ``maxOccurs``.
@@ -280,10 +294,7 @@ class Element(ElementRepresentative):
         should cover about every case in which someone would use
         'unbounded'.
         """
-        maxOccurs = getattr(self, "maxOccurs", 1)
-        if maxOccurs == "unbounded":
-            return 99999
-        return int(maxOccurs)
+        return self._occursValue("maxOccurs")
 
     def getDefault(self):
         """Returns the element's schema ``default`` value, or ``None``.

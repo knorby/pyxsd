@@ -344,6 +344,7 @@ class PyXSD:
         # record schema-reference problems (group/attributeGroup
         # references) on the validation report.
         schemaER.pyXSD = self
+        self._reportDeclarationIssues(schemaER)
         # The captured prefix bindings let every declaration resolve the
         # QNames written in its own document.
         schemaER.namespaceContext = self.namespaceContext
@@ -381,6 +382,52 @@ class PyXSD:
         self._buildSubstitutionGroups(schemaER)
 
         return None
+
+    def _reportDeclarationIssues(self, schemaER: Any) -> None:
+        """Reports declarations that cannot carry a usable name and
+        identity constraints with illegal children.
+
+        A missing or empty ``name`` on these components is a schema
+        error; the ER run deliberately tolerates it so the rest of a
+        large schema can still load. ``ref`` sites (elements, attributes,
+        groups, attribute groups) borrow the referred declaration's name
+        and are skipped.
+        """
+        namedKinds = (
+            "Element",
+            "Attribute",
+            "ComplexType",
+            "SimpleType",
+            "Group",
+            "AttributeGroup",
+            "Key",
+            "Keyref",
+            "Unique",
+        )
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if (
+                type(er).__name__ in namedKinds
+                and not er.name
+                and getattr(er, "ref", None) is None
+                and not getattr(er, "isElementRef", False)
+            ):
+                self.report.add_error(
+                    f"{type(er).__name__} declaration is missing a name",
+                    code="declaration-name",
+                )
+            for tag in getattr(er, "unexpectedChildTags", None) or ():
+                self.report.add_error(
+                    f"{type(er).__name__} '{getattr(er, 'constraintName', er.name)}' "
+                    f"has an illegal child '{tag}'",
+                    code="unexpected-identity-child",
+                )
+            stack.extend(getattr(er, "processedChildren", None) or ())
 
     def _buildSubstitutionGroups(self, schemaER: Any) -> None:
         """Maps substitution-group heads to their member elements.

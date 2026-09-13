@@ -71,6 +71,7 @@ dictionary in the PyXSD instance.
 """
 
 import logging
+import re
 
 from pyxsd import xsd_data_types
 from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, namespace_of
@@ -263,7 +264,10 @@ class ElementRepresentative:
         self.xsdElement = xsdElement
         self.parent = parent
         self.tagParts = self.xsdElement.tag.split("}")
-        self.tagType = self.tagParts[1]
+        # Annotation content and other foreign XML may carry no
+        # namespace at all; fall back to the raw tag instead of
+        # assuming a Clark name with a local part.
+        self.tagType = self.tagParts[1] if len(self.tagParts) == 2 else self.xsdElement.tag
         self.name = self.getName()
         self.register(self.name, self)
         self.superClassNames = []
@@ -273,8 +277,13 @@ class ElementRepresentative:
         self.tagAttributes = {}
         self.processedChildren = []
         self.layerNum = self.findLayerNum()
-        self.clsName = self.name
-        self.clsName = self.clsName[0].upper() + self.clsName[1:]
+        # A declaration may be missing its name (or carry an empty one);
+        # that is a schema error the parser reports later, but class
+        # building must still have a usable identifier to work with.
+        if self.name:
+            self.clsName = self.name[0].upper() + self.name[1:]
+        else:
+            self.clsName = self.__class__.__name__
 
         for name, value in xsdElement.items():
             if name == "name":
@@ -420,6 +429,60 @@ class ElementRepresentative:
                 return None
         self.getContainingType().superClassNames.append(name)
         return None
+
+    # Lexical space of ``nonNegativeInteger``: no sign, no whitespace,
+    # and no leading zeros beyond the value 0 itself.
+    _OCCURS_PATTERN = re.compile(r"^(0|[1-9][0-9]*)$")
+
+    def _reportSchemaError(self, message, *, code):
+        """Records a schema problem on the parser's report.
+
+        Falls back to logging when no parser is attached (for example
+        when ERs are built in isolation).
+        """
+        parser = getattr(self.getSchema(), "pyXSD", None)
+        if parser is not None:
+            parser.report.add_error(message, code=code, element=self.name)
+        else:
+            logger.error("%s[%s] %s", self.name, code, message)
+
+    def _occursValue(self, attrName):
+        """Returns the integer value of ``minOccurs``/``maxOccurs``.
+
+        Invalid lexical values are reported (the schema is not legal)
+        and replaced with the spec default of 1 so class building can
+        continue; ``maxOccurs="unbounded"`` maps to 99999.
+        """
+        raw = getattr(self, attrName, 1)
+        text = str(raw).strip()
+        if attrName == "maxOccurs" and text == "unbounded":
+            return 99999
+        if self._OCCURS_PATTERN.fullmatch(text):
+            return int(text)
+        self._reportSchemaError(
+            f"{self.__class__.__name__.lower()} '{self.name}' has an invalid "
+            f"{attrName} value '{raw}'; expected a nonNegativeInteger"
+            + (" or 'unbounded'" if attrName == "maxOccurs" else ""),
+            code="invalid-occurs",
+        )
+        return 1
+
+    def getMinOccurs(self):
+        """Returns an integer value for ``minOccurs``.
+
+        If no ``minOccurs`` has been set, uses the default of 1.
+        """
+        return self._occursValue("minOccurs")
+
+    def getMaxOccurs(self):
+        """Returns an integer value for ``maxOccurs``.
+
+        If no ``maxOccurs`` has been set, uses the default of 1. If
+        ``maxOccurs`` is set to 'unbounded', returns 99999, since this
+        should cover about every case in which someone would use
+        'unbounded'.
+        """
+        return self._occursValue("maxOccurs")
 
     def getContainingType(self):
         """Returns the parent's ``getContainingType()``.

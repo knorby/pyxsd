@@ -15,12 +15,17 @@ document is bound, in :mod:`pyxsd.identity`.
 import logging
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.namespaces import XSD_NS, local_name, namespace_of
 
 logger = logging.getLogger(__name__)
 
 
 class IdentityConstraint(ElementRepresentative):
     """Base class for the key, unique and keyref tags."""
+
+    #: Local names of tags that may appear inside an identity
+    #: constraint. ``element`` and other declarations are not allowed.
+    _ALLOWED_CHILDREN = ("annotation", "selector", "field")
 
     def __init__(self, xsdElement, parent):
         """Collects the selector and field paths from the child tags.
@@ -32,6 +37,8 @@ class IdentityConstraint(ElementRepresentative):
 
         See ElementRepresentative for documentation.
         """
+        # Must exist before ``super().__init__`` runs ``processChildren``.
+        self.unexpectedChildTags: list[str] = []
         super().__init__(xsdElement, parent)
         selectors = [
             child.xpath
@@ -55,6 +62,24 @@ class IdentityConstraint(ElementRepresentative):
                 self.constraintName,
                 container.__class__.__name__ if container is not None else "unknown parent",
             )
+
+    def processChildren(self):
+        """Builds ERs only for the legal annotation/selector/field
+        children.
+
+        Anything else (for example an ``element`` declaration inside a
+        ``keyref``) is not a component of the constraint; its tag is
+        recorded on ``unexpectedChildTags`` so the parser can report
+        the schema error after the ER run.
+        """
+        for child in self.xsdElement:
+            tagName = local_name(child.tag)
+            if namespace_of(child.tag) != XSD_NS or tagName not in self._ALLOWED_CHILDREN:
+                self.unexpectedChildTags.append(tagName)
+                self.processedChildren.append(None)
+                continue
+            self.processedChildren.append(ElementRepresentative.factory(child, self))
+        return None
 
     def getName(self):
         """Makes a unique bookkeeping name for the constraint."""
