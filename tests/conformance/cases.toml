@@ -2590,3 +2590,71 @@ instance = '''
 '''
 schema_valid = false
 expected_codes = ["facet"]
+
+[[case]]
+id = "attributes/untyped-attribute-any-simple-type"
+description = "An attribute declaration without a type and without an inline simpleType takes anySimpleType"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (type defaulting)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="record">
+    <xs:complexType>
+      <xs:attribute name="note"/>
+      <xs:attribute name="count" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<record note="any text" count="42"/>
+'''
+expected_values = { note = "any text", count = "42" }
+
+[[case]]
+id = "attributes/list-typed-attribute"
+description = "An attribute typed by a schema-declared xs:list binds whitespace-separated item values"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'list'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="numbers">
+    <xs:list itemType="xs:int"/>
+  </xs:simpleType>
+  <xs:element name="record">
+    <xs:complexType>
+      <xs:attribute name="values" type="numbers"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<record values="1 2 3"/>
+'''
+expected_values = { values = "[1, 2, 3]" }
+
+[[case]]
+id = "attributes/list-typed-attribute-invalid-item"
+description = "An item that is invalid for the list's itemType is reported on the attribute"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'list' (invalid member)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="numbers">
+    <xs:list itemType="xs:int"/>
+  </xs:simpleType>
+  <xs:element name="record">
+    <xs:complexType>
+      <xs:attribute name="values" type="numbers"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<record values="1 x 3"/>
+'''
+instance_valid = false
+expected_codes = ["invalid-attribute"]

@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
-from pyxsd.xsd_data_types import Boolean, XsdDataType
+from pyxsd.xsd_data_types import AnySimpleType, Boolean, XsdDataType
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,10 @@ class Attribute(ElementRepresentative):
             return referred.getType()
 
         if "type" not in self.__dict__:
-            raise TypeError(f"Attribute.getType() Error: type is not in {self.name}'s dictionary.")
+            # XSD: an attribute declaration with no ``type`` and no
+            # inline ``simpleType`` child takes anySimpleType, which
+            # accepts any value.
+            return AnySimpleType
 
         # Resolve the QName first so strict mode disambiguates types
         # that share a local name across namespaces; in legacy mode this
@@ -189,8 +192,24 @@ class Attribute(ElementRepresentative):
                     )
                 else:
                     logger.error(message)
-        elif not isinstance(obj, self.getType()):
-            raise TypeError(f"{obj!r} is not an instance of the attribute's type")
+        elif not isinstance(value, self.getType()):
+            # The declared type did not resolve to a validating datatype
+            # (a malformed or unresolved declaration). Record a
+            # structured error; assignment must never raise out of
+            # instance binding.
+            message = (
+                f"attribute '{self.name}' has a value that cannot be "
+                f"validated against its declared type"
+            )
+            parser = getattr(self, "pyXSD", None)
+            if parser is not None:
+                parser.report.add_error(
+                    message,
+                    code="invalid-attribute",
+                    element=getattr(obj, "_name_", None),
+                )
+            else:
+                logger.error(message)
 
         obj.__dict__[self.name] = value
 

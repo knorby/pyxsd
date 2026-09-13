@@ -121,6 +121,8 @@ class XsdDataType:
                 return float.__new__(cls)  # type: ignore[type-var]
             if base is decimal.Decimal:
                 return decimal.Decimal.__new__(cls)  # type: ignore[type-var]
+            if base is list:
+                return list.__new__(cls)
         return object.__new__(cls)
 
 
@@ -827,6 +829,47 @@ class TypeList(list, XsdDataType):
     name = "List"
 
 
+class XsdList(TypeList):
+    """A schema-declared ``xs:list`` type: a list of item-typed values.
+
+    The class generated for a ``<simpleType><list itemType="..."/>``
+    declaration derives from this base (alongside ``SchemaBase``); the
+    resolved item declaration is recorded as the class's ``itemType``
+    attribute. Construction parses the lexical form -- whitespace
+    separated tokens, per the ``collapse`` whitespace facet fixed for
+    list types -- converting each token through the item type, so an
+    invalid item raises ``TypeError``/``ValueError`` exactly like any
+    other datatype.
+    """
+
+    #: The item type class; the class generated for a list simple type
+    #: overrides this with the resolved item declaration.
+    itemType: ClassVar[type] = AnySimpleType
+
+    def __new__(cls, value: Any = "", *args: Any, **kwargs: Any) -> Self:
+        instance = super().__new__(cls)
+        if value is None:
+            value = ""
+        if isinstance(value, str):
+            text = _ws_collapse(value)
+            tokens: list[Any] = text.split(" ") if text else []
+        elif isinstance(value, (list, tuple)):
+            tokens = list(value)
+        else:
+            tokens = [value]
+        instance.extend(cls.itemType(token) for token in tokens)
+        return instance
+
+    def __init__(self, value: Any = "", *args: Any, **kwargs: Any) -> None:
+        """Values are built in ``__new__``; keep ``list.__init__`` inert."""
+        pass
+
+    @property
+    def tokens(self) -> list[str]:
+        """The items of the list as strings, for facet length checks."""
+        return [str(item) for item in self]
+
+
 # ---------------------------------------------------------------------------
 # XSD value-space comparison
 # ---------------------------------------------------------------------------
@@ -1028,6 +1071,8 @@ def xsd_value_key(value: Any) -> tuple:
         return ("base64Binary", base64.b64decode(_ws_remove(str(value))))
     if isinstance(value, _ListString):
         return (value.name, tuple(value.tokens))
+    if isinstance(value, XsdList):
+        return ("list", tuple(xsd_value_key(item) for item in value))
     if isinstance(value, bool):
         return ("boolean", int(value))
     if isinstance(value, Duration):

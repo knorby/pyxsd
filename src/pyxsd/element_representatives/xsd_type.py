@@ -10,7 +10,7 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
-from pyxsd.xsd_data_types import XsdDataType, qname_context
+from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, XsdList, qname_context
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +125,37 @@ class XsdType(ElementRepresentative):
                 continue
             self._checkFinal(base, superClassName)
             baseList.append(base)
+        listItem = getattr(self, "listItemType", None)
+        if listItem is not None and not any(
+            isinstance(base, type) and issubclass(base, XsdList) for base in baseList
+        ):
+            # A schema-declared xs:list simple type is a value list, not
+            # a scalar derived from a base; the item declaration
+            # converts each token (see XsdList and the class's itemType).
+            baseList.append(XsdList)
         if not self.containsSchemaBase(baseList):
             baseList.append(SchemaBase)
         return tuple(baseList)
+
+    def _listItemClass(self, pyXSD):
+        """Resolves the ``itemType`` of a schema-declared list simple type.
+
+        Returns ``None`` when this type is not a list type. An
+        unresolvable item type is reported and anySimpleType is used so
+        the rest of the schema can still load.
+        """
+        rawName = getattr(self, "listItemType", None)
+        if rawName is None:
+            return None
+        itemName = self.resolveSchemaQName(rawName, parser=pyXSD)
+        itemCls = ElementRepresentative.typeFromName(itemName, pyXSD)
+        if itemCls is None:
+            self._report_ref_error(
+                f"item type '{itemName}' of list type '{self.name}' could not be resolved",
+                code="unknown-type",
+            )
+            return AnySimpleType
+        return itemCls
 
     def getDerivation(self) -> str | None:
         """Returns ``"extension"``, ``"restriction"`` or ``None``.
@@ -278,8 +306,13 @@ class XsdType(ElementRepresentative):
         candidates = []
         for entries in table.values():
             for entry in entries:
-                if componentKind(entry) == "attribute" and not getattr(
-                    entry, "isAttributeRef", False
+                if (
+                    componentKind(entry) == "attribute"
+                    and not getattr(entry, "isAttributeRef", False)
+                    # Only global declarations are valid ref targets; a
+                    # local declaration that happens to share the name
+                    # must not satisfy the reference.
+                    and entry.checkTopLevelType()
                 ):
                     candidates.append(entry)
         return candidates
@@ -306,7 +339,12 @@ class XsdType(ElementRepresentative):
         attr.referredAttribute = candidate
         attr.name = candidate.name
         if "type" not in attr.__dict__:
-            attr.type = candidate.type
+            # An untyped global declaration (anySimpleType) has no
+            # ``type`` entry; the reference site adopts it through
+            # ``getType`` instead of copying an absent attribute.
+            candidateType = getattr(candidate, "type", None)
+            if candidateType is not None:
+                attr.type = candidateType
         attr.pyXSD = pyXSD
         # The referred global declaration may not have been reached while
         # building its containing type's class, so it can lack the
@@ -627,6 +665,9 @@ class XsdType(ElementRepresentative):
             # invalid or unresolved content.
             "_parseMode_": getattr(pyXSD, "mode", ParseModes.STRICT),
         }
+        itemCls = self._listItemClass(pyXSD)
+        if itemCls is not None:
+            namespace["itemType"] = itemCls
         namespace.update(self._facetNamespace(pyXSD, bases))
         namespace.update(self._simpleContentNamespace(pyXSD, bases))
         # Expand group references before reading the wildcard metadata:
