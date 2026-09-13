@@ -11,7 +11,8 @@
 Schema (XSD), reports non-fatal validation issues, runs user-defined
 *transforms*, and writes the tree back out as XML.
 
-- **Zero runtime dependencies** — the standard library is enough
+- **Minimal dependencies** — one small, pure-Python package (`elementpath`)
+  for XSD regular expressions; no compiled extensions
 - **Schema-compiled classes** — your schema becomes real Python classes;
   `xs:extension` becomes real subclassing
 - **Lax validation** — bad documents still build a tree; every issue is a
@@ -61,12 +62,14 @@ unions (including inline members); substitution groups; element refs;
 import / redefine; `key`/`unique`/`keyref` with an XPath subset. Opt-in
 namespace-aware validation (`--namespaces strict` / `ParseModes.NAMESPACED`)
 handles `targetNamespace`, form defaults, cross-namespace imports, wildcard
-namespace/`processContents`, and QName values. Known
+namespace/`processContents`, and QName values. Facets on user-defined
+simpleTypes are enforced (enumeration, pattern, length family, bounds,
+digits, and whiteSpace), including values bound through `simpleContent`
+complex types. Known
 gaps are tabulated in the
-[supported-features page](https://pyxsd.knorby.com/supported.html)
-— notably, facets on user-defined simpleTypes are parsed but not enforced.
+[supported-features page](https://pyxsd.knorby.com/supported.html).
 
-Backed by a 65-case conformance corpus of independently authored,
+Backed by a 93-case conformance corpus of independently authored,
 suite-inspired regression cases (see the
 [supported-features page](https://pyxsd.knorby.com/supported.html)).
 

@@ -38,9 +38,6 @@ import struct
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import date as _date
-from datetime import datetime as _datetime
-from datetime import timedelta as _timedelta
 from typing import Any, ClassVar, Self
 
 __all__ = [
@@ -472,8 +469,10 @@ class HexBinary(_PatternString):
 # ---------------------------------------------------------------------------
 
 _TIMEZONE = r"(?:Z|[+-](?:0[0-9]|1[0-3]):[0-5][0-9]|[+-]14:00)?"
-# No leading zeros in an extended year, and 0000 is not a legal year.
-_YEAR = r"-?(?!0000(?:-|T|Z|[+-]|$))(?:[0-9]{4}|[1-9][0-9]{4,})"
+# XSD 1.1 allows year 0000 (1 BCE, optionally written -0000) for the
+# temporal types.  Extended years still may not carry redundant leading
+# zeros, so five or more digits must start with a non-zero digit.
+_YEAR = r"-?(?:[0-9]{4}|[1-9][0-9]{4,})"
 _MONTH = r"(?:0[1-9]|1[0-2])"
 _DAY = r"(?:0[1-9]|[12][0-9]|3[01])"
 _HOUR = r"(?:[01][0-9]|2[0-3])"
@@ -719,7 +718,9 @@ class Decimal(decimal.Decimal, XsdDataType):
         return super().__new__(cls, val)
 
 
-_FLOAT_LEXICAL = re.compile(r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?|-?INF|NaN")
+_FLOAT_LEXICAL = re.compile(
+    r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?|[-+]?INF|NaN"
+)
 
 
 class Double(float, XsdDataType):
@@ -830,80 +831,196 @@ class TypeList(list, XsdDataType):
 # XSD value-space comparison
 # ---------------------------------------------------------------------------
 
-_OFFSET = re.compile(r"([+-])(\d{2}):(\d{2})$")
+_TEMPORAL_DATETIME = re.compile(
+    r"^(-?[0-9]{4,})-([0-9]{2})-([0-9]{2})T"
+    r"([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?"
+    r"(Z|[+-][0-9]{2}:[0-9]{2})?$"
+)
+_TEMPORAL_DATE = re.compile(r"^(-?[0-9]{4,})-([0-9]{2})-([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
+_TEMPORAL_TIME = re.compile(
+    r"^([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?(Z|[+-][0-9]{2}:[0-9]{2})?$"
+)
 
 
-def _split_timezone(text: str) -> tuple[int | None, str]:
-    """Returns ``(offset_seconds, lexical_without_timezone)``.
+def _offset_seconds(token: str | None) -> int:
+    """Timezone offset in seconds; an absent timezone compares as UTC."""
+    if token is None or token == "Z":
+        return 0
+    sign = 1 if token[0] == "+" else -1
+    hours, minutes = token[1:].split(":")
+    return sign * (int(hours) * 3600 + int(minutes) * 60)
 
-    ``None`` means the lexical form carries no timezone, so the value is
-    not comparable across offsets and callers fall back to the lexical
-    form.
+
+def _fraction_microseconds(digits: str | None) -> int:
+    """The fractional-second part of a lexical, padded or truncated to microseconds."""
+    if not digits:
+        return 0
+    return int((digits + "000000")[:6])
+
+
+def _days_from_civil(year: int, month: int, day: int) -> int:
+    """Proleptic-Gregorian day number (1970-01-01 is day 0).
+
+    Unlike :mod:`datetime` this supports XSD's extended years, including
+    year 0000 and negative (BCE) years.
     """
-    if text.endswith("Z"):
-        return 0, text[:-1]
-    match = _OFFSET.search(text)
-    if match is None:
-        return None, text
-    sign = 1 if match.group(1) == "+" else -1
-    seconds = sign * (int(match.group(2)) * 3600 + int(match.group(3)) * 60)
-    return seconds, text[: match.start()]
+    adjusted = year - (1 if month <= 2 else 0)
+    era = adjusted // 400
+    year_of_era = adjusted - era * 400
+    day_of_year = (153 * (month + (-3 if month > 2 else 9)) + 2) // 5 + day - 1
+    day_of_era = year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year
+    return era * 146097 + day_of_era - 719468
 
 
-def _datetime_key(text: str) -> Any:
-    offset, core = _split_timezone(text)
-    if offset is None:
-        return ("lex", text)
-    end_of_day = "T24:00:00" in core
-    if end_of_day:
-        core = core.replace("T24:00:00", "T00:00:00")
-    try:
-        moment = _datetime.fromisoformat(core)
-    except ValueError:
-        return ("lex", text)
-    if end_of_day:
-        moment += _timedelta(days=1)
-    return moment - _timedelta(seconds=offset)
+def _datetime_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:dateTime``: microseconds on a UTC timeline.
 
-
-def _time_key(text: str) -> Any:
-    offset, core = _split_timezone(text)
-    if offset is None:
-        return ("lex", text)
-    end_of_day = core.startswith("24:00:00")
-    if end_of_day:
-        core = "00:00:00" + core[len("24:00:00") :]
-    try:
-        parsed = _datetime.strptime(core, "%H:%M:%S" if "." not in core else "%H:%M:%S.%f")
-    except ValueError:
-        return ("lex", text)
-    seconds = parsed.hour * 3600 + parsed.minute * 60 + parsed.second
-    if end_of_day:
-        seconds += 24 * 3600
-    return seconds - offset
-
-
-def _date_key(text: str) -> Any:
-    offset, core = _split_timezone(text)
-    if offset is None:
-        return ("lex", text)
-    match = re.match(r"^(-?\d{4,})-(\d{2})-(\d{2})$", core)
+    The key is uniform for zoned and unzoned values (an absent timezone
+    compares as UTC), preserves fractional seconds, and handles the
+    end-of-day spelling ``24:00:00``.
+    """
+    match = _TEMPORAL_DATETIME.match(text)
     if match is None:
         return ("lex", text)
-    try:
-        day = _date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-    except ValueError:
+    year, month, day, hour, minute, second = (int(match.group(i)) for i in range(1, 7))
+    micros = _fraction_microseconds(match.group(7))
+    offset = _offset_seconds(match.group(8))
+    days = _days_from_civil(year, month, day)
+    extra_day = 0
+    if hour == 24:  # 24:00:00 is the end of the day
+        hour, extra_day = 0, 1
+    seconds = (days + extra_day) * 86400 + hour * 3600 + minute * 60 + second
+    return seconds * 1_000_000 + micros - offset * 1_000_000
+
+
+def _time_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:time``: microseconds since midnight UTC."""
+    match = _TEMPORAL_TIME.match(text)
+    if match is None:
         return ("lex", text)
-    return _datetime(day.year, day.month, day.day) - _timedelta(seconds=offset)
+    hour, minute, second = (int(match.group(i)) for i in range(1, 4))
+    micros = _fraction_microseconds(match.group(4))
+    offset = _offset_seconds(match.group(5))
+    seconds = 0 if hour == 24 else hour * 3600 + minute * 60 + second
+    return seconds * 1_000_000 + micros - offset * 1_000_000
+
+
+def _date_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:date``: microseconds on a UTC timeline."""
+    match = _TEMPORAL_DATE.match(text)
+    if match is None:
+        return ("lex", text)
+    year, month, day = (int(match.group(i)) for i in range(1, 4))
+    offset = _offset_seconds(match.group(4))
+    days = _days_from_civil(year, month, day)
+    return days * 86400 * 1_000_000 - offset * 1_000_000
+
+
+_TEMPORAL_GYEAR = re.compile(r"^(-?[0-9]{4,})(Z|[+-][0-9]{2}:[0-9]{2})?$")
+_TEMPORAL_GYEARMONTH = re.compile(r"^(-?[0-9]{4,})-([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
+_TEMPORAL_GMONTH = re.compile(r"^--([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
+_TEMPORAL_GMONTHDAY = re.compile(r"^--([0-9]{2})-([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
+_TEMPORAL_GDAY = re.compile(r"^---([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
+
+
+def _gyear_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:gYear`` anchored at January 1st."""
+    match = _TEMPORAL_GYEAR.match(text)
+    if match is None:
+        return ("lex", text)
+    year = int(match.group(1))
+    offset = _offset_seconds(match.group(2))
+    return _days_from_civil(year, 1, 1) * 86400 * 1_000_000 - offset * 1_000_000
+
+
+def _gyearmonth_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:gYearMonth`` anchored at the month start."""
+    match = _TEMPORAL_GYEARMONTH.match(text)
+    if match is None:
+        return ("lex", text)
+    year, month = int(match.group(1)), int(match.group(2))
+    offset = _offset_seconds(match.group(3))
+    return _days_from_civil(year, month, 1) * 86400 * 1_000_000 - offset * 1_000_000
+
+
+def _gmonth_key(text: str) -> tuple:
+    """A value-space key for ``xs:gMonth``: ``(month, offset)``."""
+    match = _TEMPORAL_GMONTH.match(text)
+    if match is None:
+        return ("lex", text)
+    return (int(match.group(1)), _offset_seconds(match.group(2)))
+
+
+def _gmonthday_key(text: str) -> tuple:
+    """A value-space key for ``xs:gMonthDay``: ``(month, day, offset)``."""
+    match = _TEMPORAL_GMONTHDAY.match(text)
+    if match is None:
+        return ("lex", text)
+    return (
+        int(match.group(1)),
+        int(match.group(2)),
+        _offset_seconds(match.group(3)),
+    )
+
+
+def _gday_key(text: str) -> tuple:
+    """A value-space key for ``xs:gDay``: ``(day, offset)``."""
+    match = _TEMPORAL_GDAY.match(text)
+    if match is None:
+        return ("lex", text)
+    return (int(match.group(1)), _offset_seconds(match.group(2)))
+
+
+def _duration_key(text: str) -> tuple:
+    """A value-space key for ``xs:duration``: ``(sign, months, seconds)``.
+
+    XSD compares durations by months and seconds independently, so
+    ``P1Y`` equals ``P12M`` and ``P1D`` equals ``PT24H`` while ``P1M``
+    and ``P30D`` stay distinct (their equality is calendar-dependent).
+    """
+    match = _DURATION_PARTS.fullmatch(text)
+    if match is None:
+        return (0, 0, 0.0)
+
+    def number(part: str | None) -> float:
+        if not part:
+            return 0.0
+        return float(re.sub(r"[^0-9.]", "", part))
+
+    years, months, days, hours, minutes, seconds = (number(group) for group in match.groups())
+    total_months = int(years) * 12 + int(months)
+    total_seconds = int(days) * 86400 + int(hours) * 3600 + int(minutes) * 60 + seconds
+    sign = -1 if text.startswith("-") else 1
+    return (sign, total_months, total_seconds)
+
+
+def _has_timezone(text: str) -> bool:
+    """Whether a temporal lexical form carries an explicit timezone."""
+    return text.endswith("Z") or bool(re.search(r"[+-][0-9]{2}:[0-9]{2}$", text))
+
+
+def _temporal_equality_key(kind: str, key: int | tuple[str, str], text: str) -> tuple[str, Any]:
+    """Wraps a timeline key with timezone presence for XSD equality.
+
+    An unzoned and a zoned value denote different XSD values even when
+    their timelines agree, so equality comparisons (enumeration, fixed
+    checks, identity constraints) must distinguish them.  Ordering uses
+    the bare timeline :func:`facets.order_key` produces instead.
+    """
+    if isinstance(key, tuple):
+        return (kind, key)
+    return (kind, (key, _has_timezone(text)))
 
 
 def xsd_value_key(value: Any) -> tuple:
     """A comparison key implementing XSD value-space equality.
 
     Lexical spellings that denote one XSD value compare equal: hex case
-    (``FF``/``ff``), base64 whitespace, list whitespace, and timezone
-    offsets that name the same instant. Types without a specialised key
-    fall back to their lexical form.
+    (``FF``/``ff``), base64 whitespace, list whitespace, numeric values
+    that differ only in scale (``1.0``/``1.00``), duration values that
+    differ only in unit choice (``P1Y``/``P12M``), and timezone offsets
+    that name the same instant. Types without a specialised key fall
+    back to their lexical form.
     """
     if isinstance(value, HexBinary):
         return ("hexBinary", bytes.fromhex(str(value)))
@@ -911,12 +1028,32 @@ def xsd_value_key(value: Any) -> tuple:
         return ("base64Binary", base64.b64decode(_ws_remove(str(value))))
     if isinstance(value, _ListString):
         return (value.name, tuple(value.tokens))
+    if isinstance(value, bool):
+        return ("boolean", int(value))
+    if isinstance(value, Duration):
+        return ("duration", _duration_key(str(value)))
+    if isinstance(value, decimal.Decimal):
+        return ("decimal", decimal.Decimal(str(value)))
+    if isinstance(value, int):
+        return ("integer", int(value))
+    if isinstance(value, float):
+        return ("float", "NaN" if math.isnan(value) else float(value))
     if isinstance(value, DateTime):
-        return ("dateTime", _datetime_key(str(value)))
+        return _temporal_equality_key("dateTime", _datetime_key(str(value)), str(value))
     if isinstance(value, Date):
-        return ("date", _date_key(str(value)))
+        return _temporal_equality_key("date", _date_key(str(value)), str(value))
     if isinstance(value, Time):
-        return ("time", _time_key(str(value)))
+        return _temporal_equality_key("time", _time_key(str(value)), str(value))
+    if isinstance(value, GYear):
+        return _temporal_equality_key("gYear", _gyear_key(str(value)), str(value))
+    if isinstance(value, GYearMonth):
+        return _temporal_equality_key("gYearMonth", _gyearmonth_key(str(value)), str(value))
+    if isinstance(value, GMonthDay):
+        return _temporal_equality_key("gMonthDay", _gmonthday_key(str(value)), str(value))
+    if isinstance(value, GMonth):
+        return _temporal_equality_key("gMonth", _gmonth_key(str(value)), str(value))
+    if isinstance(value, GDay):
+        return _temporal_equality_key("gDay", _gday_key(str(value)), str(value))
     if isinstance(value, QName) and getattr(value, "_resolved_", False):
         return ("QName", (value._uri_, value._local_))
     return (getattr(value, "name", type(value).__name__), str(value))

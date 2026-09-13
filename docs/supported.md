@@ -2,7 +2,7 @@
 
 pyxsd 1.0 implements a substantial, honest subset of XSD 1.0. This page
 summarizes what is validated, with pointers to the regression corpus that
-backing every claim (78 independently authored manifest-driven cases
+backing every claim (93 independently authored manifest-driven cases
 inspired by the W3C XMLSchema1TestSuite and NIST datatype feature areas —
 run
 `uv run python tests/report_conformance.py` for the live pass-rate report).
@@ -97,10 +97,6 @@ legacy behavior is unchanged).
   - `targetNamespace`, `elementFormDefault=qualified`
   - partial
   - Opt-in in namespaced mode (`ParseModes.NAMESPACED` / `--namespaces strict`); the default legacy mode keeps local-name matching. Namespace-qualified identity-constraint selectors and reporting an unbound prefix in an instance QName *value* are not implemented.
-* - Facets on user simpleTypes
-  - `enumeration`, `pattern`, `length`, …
-  - ignored
-  - Every built-in type's own lexical rules and whitespace mode are enforced, but facets declared on user-defined simpleTypes are not. `xs:QName` lexical form is checked; prefixes resolve against the instance context in namespaced mode.
 * - Wildcard namespace filtering
   - `processContents`, namespace lists
   - partial

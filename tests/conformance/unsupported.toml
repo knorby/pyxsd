@@ -11,12 +11,6 @@ status = "partial"
 note = "Namespace-aware validation is opt-in via ParseModes.NAMESPACED (CLI --namespaces strict): component identity, form-default-aware instance matching, xsi:type and type/ref QName resolution, cross-namespace imports, wildcard namespace/processContents, and QName value-space identity are honored. Legacy mode (the default) keeps local-name matching for backward compatibility. Namespace-qualified identity-constraint selectors and reporting an unbound prefix in an instance QName value are not implemented."
 
 [[feature]]
-name = "Facet validation on user-defined simpleTypes"
-construct = "enumeration, pattern, length, minLength, maxLength, minInclusive, maxInclusive, fractionDigits, whiteSpace"
-status = "ignored"
-note = "Facets are parsed as annotation data only. Built-in type lexical validation is complete, but facets declared on user-defined simpleTypes are not enforced against instance values."
-
-[[feature]]
 name = "Wildcards with namespace filtering"
 construct = "xs:any / xs:anyAttribute processContents, namespace lists"
 status = "partial"

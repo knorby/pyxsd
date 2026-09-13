@@ -786,6 +786,7 @@ from pyxsd.element_representatives.documentation import Documentation  # noqa: E
 from pyxsd.element_representatives.element import Element  # noqa: E402
 from pyxsd.element_representatives.enumeration import Enumeration  # noqa: E402
 from pyxsd.element_representatives.extension import Extension  # noqa: E402
+from pyxsd.element_representatives.fraction_digits import FractionDigits  # noqa: E402
 from pyxsd.element_representatives.group import Group  # noqa: E402
 from pyxsd.element_representatives.identity import (  # noqa: E402
     Field,
@@ -798,15 +799,19 @@ from pyxsd.element_representatives.length import Length  # noqa: E402
 from pyxsd.element_representatives.list import List  # noqa: E402
 from pyxsd.element_representatives.max_exclusive import MaxExclusive  # noqa: E402
 from pyxsd.element_representatives.max_inclusive import MaxInclusive  # noqa: E402
+from pyxsd.element_representatives.max_length import MaxLength  # noqa: E402
 from pyxsd.element_representatives.min_exclusive import MinExclusive  # noqa: E402
 from pyxsd.element_representatives.min_inclusive import MinInclusive  # noqa: E402
+from pyxsd.element_representatives.min_length import MinLength  # noqa: E402
 from pyxsd.element_representatives.pattern import Pattern  # noqa: E402
 from pyxsd.element_representatives.restriction import Restriction  # noqa: E402
 from pyxsd.element_representatives.schema import Schema  # noqa: E402
 from pyxsd.element_representatives.sequence import Sequence  # noqa: E402
 from pyxsd.element_representatives.simple_content import SimpleContent  # noqa: E402
 from pyxsd.element_representatives.simple_type import SimpleType  # noqa: E402
+from pyxsd.element_representatives.total_digits import TotalDigits  # noqa: E402
 from pyxsd.element_representatives.union import Union  # noqa: E402
+from pyxsd.element_representatives.white_space import WhiteSpace  # noqa: E402
 from pyxsd.element_representatives.xsd_type import XsdType  # noqa: E402
 
 TAG_CLASSES = {
@@ -839,6 +844,11 @@ TAG_CLASSES = {
     "Enumeration": Enumeration,
     "Pattern": Pattern,
     "Length": Length,
+    "MinLength": MinLength,
+    "MaxLength": MaxLength,
+    "TotalDigits": TotalDigits,
+    "FractionDigits": FractionDigits,
+    "WhiteSpace": WhiteSpace,
     "MinInclusive": MinInclusive,
     "MaxInclusive": MaxInclusive,
     "MinExclusive": MinExclusive,

@@ -362,7 +362,7 @@ class SchemaBase:
     # ------------------------------------------------------------------
 
     @classmethod
-    def makeInstanceFromTag(cls, elementTag):
+    def makeInstanceFromTag(cls, elementTag, forcedText=None):
         """Takes in a schema type class and its corresponding xml element.
 
         It then instantiates the class, adds a name from the name in
@@ -376,9 +376,23 @@ class SchemaBase:
         (derived classes may); the violation is recorded on the
         validation report and parsing continues.
 
+        When the class carries simple content (a complex type with
+        ``simpleContent``), the element's text is validated and bound
+        through the content's simple type instead of the raw
+        ``addValueTo`` path.
+
         - ``elementTag`` - the xml element that corresponds to ``cls``
+
+        - ``forcedText`` - a default or fixed value to use when the
+          element has no text of its own
         """
-        instance = cls()
+        content_cls = getattr(cls, "_simpleContentType_", None)
+        if not isinstance(content_cls, type):
+            content_cls = None
+        if content_cls is None:
+            instance = cls()
+        else:
+            instance = cls._simpleContentInstance(elementTag, content_cls, forcedText)
         instance._name_ = cls._node_name(elementTag)
         if cls.__dict__.get("abstract_"):
             cls._report_error(
@@ -388,8 +402,49 @@ class SchemaBase:
             )
         cls.addAttributesTo(instance, elementTag)
         cls.addElementsTo(instance, elementTag)
-        cls.addValueTo(instance, elementTag)
+        if content_cls is None:
+            cls.addValueTo(instance, elementTag)
 
+        return instance
+
+    @classmethod
+    def _simpleContentInstance(cls, elementTag, contentCls, forcedText):
+        """Builds a simple-content element through its content type.
+
+        The content class carries the lexical validation and any facet
+        constraints; the element instance itself is typed by the same
+        base, so the bound ``_value_`` is the validated one.  An invalid
+        value is reported with code ``value`` and yields an unvalidated
+        instance (or the raw text under the ``raw`` policy).
+        """
+        text = elementTag.text
+        if text is None and forcedText is not None:
+            text = forcedText
+        lexical = text if text is not None else ""
+        try:
+            with qname_context(cls._qname_bindings(elementTag)):
+                typed = contentCls(lexical)
+                instance = cls(lexical)
+        except (TypeError, ValueError) as e:
+            cls._report_error(
+                f"the value of the '{elementTag.tag.split('}')[-1]}' element "
+                f"is not valid for its type: {e}",
+                code="value",
+                element=cls.__name__,
+            )
+            if _mode_for(cls).invalid_value == "raw":
+                raw = cls._rawPrimitiveValue(elementTag, elementTag.text)
+                if forcedText is not None and elementTag.text is None:
+                    raw._value_ = [forcedText]
+                return raw
+            unvalidated = cls._unvalidated()  # type: ignore[attr-defined]
+            unvalidated._attribs_ = dict(elementTag.attrib)
+            unvalidated._value_ = None
+            unvalidated._children_ = []
+            return unvalidated
+        instance._attribs_ = dict(elementTag.attrib)
+        instance._value_ = [str(typed)]
+        instance._children_ = list(elementTag)
         return instance
 
     @classmethod
@@ -890,11 +945,24 @@ class SchemaBase:
                     cls._checkFixedElement(descriptor, subElCls, subInstance, subElementName)
             return None
 
-        subInstance = subElCls.makeInstanceFromTag(subElement)
+        forcedText = None
+        if subElement.text is None and not list(subElement):
+            forcedText = descriptor.getDefault()
+            if forcedText is None:
+                forcedText = descriptor.getFixed()
+        subInstance = subElCls.makeInstanceFromTag(subElement, forcedText)
         subInstance._name_ = subElementName
         subInstance._descriptor_ = descriptor
         subInstance._nil_ = nilled
         instance._children_.append(subInstance)
+        if (
+            not nilled
+            and getattr(subElCls, "_simpleContentType_", None) is not None
+            and getattr(subInstance, "_value_", None) is not None
+        ):
+            # Simple-content complex types carry a scalar value whose
+            # fixed declaration constrains it like a primitive's.
+            cls._checkFixedElement(descriptor, subElCls, subInstance, subElementName)
         return None
 
     @classmethod

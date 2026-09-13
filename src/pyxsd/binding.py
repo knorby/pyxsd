@@ -23,6 +23,7 @@ UnresolvedType = Literal["error", "generic"]
 UndeclaredContent = Literal["error", "generic"]
 WhitespaceHandling = Literal["xsd", "compat"]
 NamespaceHandling = Literal["legacy", "strict"]
+FacetHandling = Literal["strict", "off"]
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,14 @@ class BindingPolicy:
       QNames, keys components by expanded name, and matches instances
       namespace-correctly. ``"strict"`` is opt-in because it rejects
       documents that previously matched by local name alone.
+    - ``facets`` - ``"strict"`` enforces the XSD facets declared on
+      simple types (``enumeration``, ``pattern``, ``length`` and the
+      other length facets, ``minInclusive``/``maxInclusive`` and their
+      exclusive pairs, ``totalDigits``/``fractionDigits``, and
+      ``whiteSpace``) while binding. ``"off"`` skips facet enforcement
+      for callers who want schema-guided mapping without a strict
+      validation verdict; the report then no longer answers "is this
+      document valid?" for facet-constrained values.
     """
 
     invalid_value: InvalidValue = "drop"
@@ -56,6 +65,7 @@ class BindingPolicy:
     undeclared_content: UndeclaredContent = "error"
     whitespace: WhitespaceHandling = "xsd"
     namespaces: NamespaceHandling = "legacy"
+    facets: FacetHandling = "strict"
 
     def replace(self, **changes: object) -> BindingPolicy:
         """Return a copy with the given fields changed.
