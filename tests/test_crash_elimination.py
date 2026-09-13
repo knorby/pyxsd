@@ -600,6 +600,23 @@ class TestNotationSupport:
         )
         assert "notation-enumeration-required" in _codes(parser)
 
+    def test_derived_restriction_may_add_facets(self, tmp_path, monkeypatch):
+        # A type derived from a NOTATION restriction may add other
+        # facets without repeating the enumeration
+        # (NOTATION_pattern001).
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>'
+            '<xs:simpleType name="base"><xs:restriction base="xs:NOTATION">'
+            '<xs:enumeration value="jpeg"/></xs:restriction></xs:simpleType>'
+            '<xs:simpleType name="derived"><xs:restriction base="base">'
+            '<xs:pattern value="[a-z]peg"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        assert parser.report.has_errors is False
+
     def test_notation_enumeration_must_be_declared(self, tmp_path, monkeypatch):
         # XSD 1.1: each enumeration value must name a declared notation
         # (simple095, Notation/name00101m2).
@@ -613,6 +630,28 @@ class TestNotationSupport:
             monkeypatch,
         )
         assert "unknown-notation" in _codes(parser)
+
+    def test_imported_notation_resolves(self, tmp_path, monkeypatch):
+        # A notation declared in an imported schema must reach the
+        # importing schema's component table (Notation/targetns00101m2).
+        imported = tmp_path / "imported.xsd"
+        imported.write_text(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            'targetNamespace="tck_test">'
+            '<xs:notation name="png" public="image/png"/>'
+            "</xs:schema>"
+        )
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            'targetNamespace="targetNS" xmlns:tck="tck_test">'
+            '<xs:import namespace="tck_test" schemaLocation="imported.xsd"/>'
+            '<xs:simpleType name="r"><xs:restriction base="xs:NOTATION">'
+            '<xs:enumeration value="tck:png"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        assert parser.report.has_errors is False
 
     def test_declared_notation_enumeration_ok(self, tmp_path, monkeypatch):
         parser = _parse_schema(

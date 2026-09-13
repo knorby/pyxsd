@@ -554,11 +554,14 @@ class XsdType(ElementRepresentative):
     def _checkNotationRestriction(self, base):
         """Reports XSD 1.1 NOTATION restriction violations.
 
-        A restriction of ``xs:NOTATION`` must carry an enumeration facet
-        (Schema Component Constraint), and every enumeration value must
-        name a notation declared in the schema (simple094, simple095).
+        A *direct* restriction of ``xs:NOTATION`` must carry an
+        enumeration facet (Schema Component Constraint), and every
+        enumeration value must name a notation declared in the schema
+        (simple094, simple095). A type derived from such a restriction
+        may add other facets without repeating the enumeration, so only
+        the primitive itself is checked.
         """
-        if not (isinstance(base, type) and issubclass(base, NOTATION)):
+        if base is not NOTATION:
             return
         enumerations = list(getattr(self, "enumerations", None) or ())
         if not enumerations:

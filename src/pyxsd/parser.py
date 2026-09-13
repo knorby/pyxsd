@@ -89,6 +89,7 @@ _COMPOSABLE_TAGS = {
     "group",
     "attributeGroup",
     "attribute",
+    "notation",
 }
 
 
