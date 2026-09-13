@@ -1,0 +1,3 @@
+[submodule "tests/xsts/corpus"]
+	path = tests/xsts/corpus
+	url = https://github.com/w3c/xsdtests.git
