@@ -64,8 +64,8 @@ namespace-aware validation (`--namespaces strict` / `ParseModes.NAMESPACED`)
 handles `targetNamespace`, form defaults, cross-namespace imports, wildcard
 namespace/`processContents`, and QName values. Facets on user-defined
 simpleTypes are enforced (enumeration, pattern, length family, bounds,
-digits, and whiteSpace), with a documented exception for values bound
-through a `simpleContent` complex type. Known
+digits, and whiteSpace), including values bound through `simpleContent`
+complex types. Known
 gaps are tabulated in the
 [supported-features page](https://pyxsd.knorby.com/supported.html).
 

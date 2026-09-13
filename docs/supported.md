@@ -97,10 +97,6 @@ legacy behavior is unchanged).
   - `targetNamespace`, `elementFormDefault=qualified`
   - partial
   - Opt-in in namespaced mode (`ParseModes.NAMESPACED` / `--namespaces strict`); the default legacy mode keeps local-name matching. Namespace-qualified identity-constraint selectors and reporting an unbound prefix in an instance QName *value* are not implemented.
-* - Facets on user simpleTypes
-  - `enumeration`, `pattern`, `length`, `minLength`, `maxLength`, `minInclusive`, `minExclusive`, `maxInclusive`, `maxExclusive`, `totalDigits`, `fractionDigits`, `whiteSpace`
-  - partial
-  - Enforced for values bound through a user-defined simpleType, including restriction chains (XSD merge rules: patterns conjunct, enumerations intersect, bounds tighten), list types (length counts items), and attributes. `pattern` uses the XSD 1.1 regular-expression dialect (class subtraction, `\p{...}`, full-value matching) via `elementpath`; illegal constructs are schema errors. Facet applicability, facet-value validity, and pattern syntax are checked at schema-compilation time. Enumeration and bounds compare XSD values, not spellings. Not yet applied when a value reaches the tree through a `simpleContent` complex type, which has a separate known limitation.
 * - Wildcard namespace filtering
   - `processContents`, namespace lists
   - partial

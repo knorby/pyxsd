@@ -26,6 +26,20 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   extensions).
 - `BindingPolicy.facets` (`"strict"` by default, `"off"` restores
   parsing-only behavior for data-mapping users).
+- Facet enforcement now reaches values bound through `simpleContent`
+  complex types (inline and direct restrictions, and extensions), where
+  the element text previously skipped its datatype entirely. This also
+  fixes the crash when a `simpleContent` extension's base is a primitive
+  such as `xs:int`, and applies element `default`/`fixed` to those types.
+- Value-space comparison for temporal datatypes now preserves fractional
+  seconds, distinguishes zoned from unzoned spellings while treating
+  different offsets of the same instant as equal, normalizes `24:00:00`,
+  and accepts year `0000` (XSD 1.1). Enumeration, bounds, and fixed-value
+  checks use the corrected values.
+- `+INF` is accepted as a lexical form of `xs:float` and `xs:double`
+  (XSD 1.1).
+- `pattern` translation expands the XML 1.1 `\i`/`\c` name-character
+  classes, including astral characters.
 
 ## [1.0.0] - 2026-09-11
 
