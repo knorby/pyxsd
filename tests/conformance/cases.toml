@@ -2241,3 +2241,352 @@ instance = '''
 '''
 instance_valid = false
 expected_codes = ["fixed-element"]
+
+[[case]]
+id = "facets/enumeration-valid"
+description = "A string enumeration restriction accepts a declared member"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'atomic-string-enumeration'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:enumeration value="red"/>
+        <xs:enumeration value="green"/>
+        <xs:enumeration value="blue"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>green</r>
+'''
+
+[[case]]
+id = "facets/enumeration-invalid"
+description = "A value outside the enumeration is reported"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'atomic-string-enumeration'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:enumeration value="red"/>
+        <xs:enumeration value="green"/>
+        <xs:enumeration value="blue"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>purple</r>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "facets/enumeration-decimal-value-space"
+description = "enumeration compares decimal values, not spellings (1.0 == 1.00)"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'atomic-decimal-enumeration'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:decimal">
+        <xs:enumeration value="1.0"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>1.00</r>
+'''
+
+[[case]]
+id = "facets/pattern-full-match"
+description = "XSD patterns match the whole value, not a substring"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'atomic-string-pattern'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:pattern value="abc"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>xabcx</r>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "facets/pattern-class-subtraction-valid"
+description = "XSD character class subtraction is honored"
+derived_from = "W3C XMLSchema1TestSuite, group 'pattern' (class subtraction)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:pattern value="[a-z-[aeiou]]+"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>bcd</r>
+'''
+
+[[case]]
+id = "facets/pattern-class-subtraction-invalid"
+description = "A subtracted character does not match"
+derived_from = "W3C XMLSchema1TestSuite, group 'pattern' (class subtraction)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:pattern value="[a-z-[aeiou]]+"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>bcdae</r>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "facets/length-family-invalid"
+description = "The length facet constrains string length"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'atomic-string-length'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:length value="4"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>abc</r>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "facets/list-length-items"
+description = "Length facets on a list count items, not characters"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'list-length'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:NMTOKENS">
+        <xs:maxLength value="2"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>alpha beta gamma</r>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "facets/whitespace-collapse-before-pattern"
+description = "whiteSpace collapse runs before the pattern facet"
+derived_from = "W3C XMLSchema1TestSuite, group 'whiteSpace'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:whiteSpace value="collapse"/>
+        <xs:pattern value="abc"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>  abc  </r>
+'''
+
+[[case]]
+id = "facets/whitespace-replace-before-enumeration"
+description = "whiteSpace replace normalizes tabs to spaces before matching"
+derived_from = "W3C XMLSchema1TestSuite, group 'whiteSpace'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:whiteSpace value="replace"/>
+        <xs:enumeration value="a b"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>a&#9;b</r>
+'''
+
+[[case]]
+id = "facets/digits-invalid"
+description = "totalDigits counts all digits of the decimal value"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'atomic-decimal-totalDigits'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:simpleType>
+      <xs:restriction base="xs:decimal">
+        <xs:totalDigits value="4"/>
+        <xs:fractionDigits value="2"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>123.45</r>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "facets/inherited-restriction-merges"
+description = "A restriction of a restricted type keeps the inherited pattern"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (facet inheritance)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Lower">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[a-z]+"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="ShortLower">
+    <xs:restriction base="Lower">
+      <xs:maxLength value="3"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="ShortLower"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>ABCD</r>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "facets/attribute-enumeration-invalid"
+description = "An attribute facet violation is reported as invalid-attribute"
+derived_from = "NISTXMLSchemaDatatypesTestSuite, group 'atomic-string-enumeration'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:attribute name="mode" use="required">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:enumeration value="fast"/>
+            <xs:enumeration value="slow"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r mode="medium"/>
+'''
+instance_valid = false
+expected_codes = ["invalid-attribute"]
+
+[[case]]
+id = "facets/schema-illegal-pattern"
+description = "A lazy quantifier is not legal XSD pattern syntax"
+derived_from = "W3C XMLSchema1TestSuite, group 'pattern' (illegal constructs)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="a*?"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>a</r>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "facets/schema-inapplicable-facet"
+description = "A digit facet on a string base is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (facet applicability)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:string">
+      <xs:totalDigits value="3"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>abc</r>
+'''
+schema_valid = false
+expected_codes = ["facet"]
