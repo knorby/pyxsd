@@ -3854,3 +3854,124 @@ schema = '''
   <xs:element name="r" type="Good"/>
 </xs:schema>
 '''
+
+[[case]]
+id = "legality/element-default-invalid-for-user-simple-type"
+description = "An element default must satisfy a user-defined simpleType's facets (valueConstraint00401m8)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (valueConstraint00401m8)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="answer">
+    <xs:restriction base="xs:boolean"><xs:pattern value="true"/></xs:restriction>
+  </xs:simpleType>
+  <xs:element name="E" type="answer" default="false"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-default-and-fixed-are-exclusive"
+description = "An element may not carry both default and fixed (valueConstraint00301m3)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (valueConstraint00301m3)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string" default="0" fixed="0"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-type-and-inline-type-are-exclusive"
+description = "An element may not name a type and declare an inline complexType (typeDef00501m2)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (typeDef00501m2)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="Type">
+    <xs:complexType><xs:sequence>
+      <xs:element name="Local" minOccurs="0"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+  <xs:complexType name="Type"><xs:sequence>
+    <xs:element name="Local" minOccurs="0"/>
+  </xs:sequence></xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/substitution-member-blocked-by-head-final"
+description = "A member's type derivation must not be excluded by the head's final (substGrpExcl00202m2)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (substGrpExcl00202m2)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="Head" type="HeadType" final="extension"/>
+  <xs:complexType name="HeadType"><xs:sequence>
+    <xs:element name="Ear"/>
+  </xs:sequence></xs:complexType>
+  <xs:element name="Member3" substitutionGroup="Head">
+    <xs:complexType><xs:complexContent>
+      <xs:extension base="HeadType"><xs:sequence>
+        <xs:element name="Nose"/>
+      </xs:sequence></xs:extension>
+    </xs:complexContent></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/cyclic-substitution-group"
+description = "A substitution-group membership cycle is an invalid schema (suntest xsd009.e)"
+derived_from = "W3C XMLSchema1TestSuite, group 'combined' (xsd009.e cyclic substitution group)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" substitutionGroup="bar"/>
+  <xs:element name="bar" substitutionGroup="foo"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["circular-substitution-group"]
+
+[[case]]
+id = "legality/attribute-fixed-invalid-for-user-simple-type"
+description = "An attribute fixed value must satisfy a user-defined simpleType (attP006)"
+derived_from = "Microsoft XMLSchema1TestSuite, group 'attribute' (attP006)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="mySimpleType">
+    <xs:restriction base="xs:int">
+      <xs:enumeration value="1"/><xs:enumeration value="2"/><xs:enumeration value="3"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="ct">
+    <xs:attribute name="att" type="mySimpleType" fixed=""/>
+  </xs:complexType>
+  <xs:element name="root" type="ct"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-default-valid-for-user-simple-type"
+description = "An element default within a user-defined simpleType's value space is legal (valueConstraint00401m7)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (valueConstraint00401m7)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="answer">
+    <xs:restriction base="xs:boolean"><xs:pattern value="true"/></xs:restriction>
+  </xs:simpleType>
+  <xs:element name="E" type="answer" default="true"/>
+</xs:schema>
+'''

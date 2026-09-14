@@ -58,7 +58,7 @@ from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
 from pyxsd.binding import BindingPolicy, ParseModes
-from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
+from pyxsd.derivation import blockTokens, combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import (
     ComponentTable,
     ElementRepresentative,
@@ -80,6 +80,7 @@ from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 from pyxsd.xsd_data_types import (
     AnySimpleType,
     NCName,
+    XsdDataType,
     qname_context,
     whitespace_mode,
     xsd_value_key,
@@ -411,6 +412,8 @@ class PyXSD:
                 logger.debug("Class created for the %s type...", typeER.name)
 
         self._buildSubstitutionGroups(schemaER)
+        self._checkSubstitutionGroupExclusions(schemaER)
+        self._checkValueConstraints(schemaER)
 
         return None
 
@@ -698,6 +701,159 @@ class PyXSD:
                 continue
             schemaER.substitutionGroups.setdefault(head, []).append(element)
         logger.debug("Substitution groups built: %s", list(schemaER.substitutionGroups))
+        self._reportSubstitutionGroupCycles(elements)
+
+    def _reportSubstitutionGroupCycles(self, elements: list[Any]) -> None:
+        """Reports substitution-group membership cycles.
+
+        A cycle in the ``substitutionGroup`` graph (foo heads bar heads
+        foo) has no well-founded head, so the schema is invalid. Each
+        element that reaches a cycle while following its head chain is
+        reported once; trivial self-reference is included.
+        """
+        byName: dict[str, Any] = {}
+        for element in elements:
+            if element.name:
+                byName.setdefault(element.name, element)
+            expanded = getattr(element, "expandedName", None)
+            if expanded:
+                byName.setdefault(expanded, element)
+        for element in elements:
+            if element.getSubstitutionGroupHead(self) is None:
+                continue
+            visited: set[int] = set()
+            current = element
+            while current is not None and id(current) not in visited:
+                visited.add(id(current))
+                headName = current.getSubstitutionGroupHead(self)
+                head = byName.get(headName) if headName is not None else None
+                if head is None:
+                    break
+                if head is element:
+                    self.report.add_error(
+                        f"element '{element.name}' is part of a cyclic substitution group",
+                        code="circular-substitution-group",
+                        element=element.name,
+                        phase="schema",
+                    )
+                    break
+                current = head
+
+    def _checkSubstitutionGroupExclusions(self, schemaER: Any) -> None:
+        """Reports a substitution member whose derivation the head blocks.
+
+        e-props-correct requires a member's type to be validly derived
+        from the head's type given the head element's {substitution group
+        exclusions}, which the XML representation spells ``final`` (or
+        the schema's ``finalDefault``). Runs after class building so the
+        generated classes carry the derivation hierarchy and method.
+        """
+        finalDefault = schemaER.tagAttributes.get("finalDefault")
+        elements = [e for e in schemaER.elements if type(e).__name__ == "Element"]
+        byName: dict[str, Any] = {}
+        for element in elements:
+            if element.name:
+                byName.setdefault(element.name, element)
+            if getattr(element, "expandedName", None):
+                byName.setdefault(element.expandedName, element)
+        for member in elements:
+            headName = member.getSubstitutionGroupHead(self)
+            head = byName.get(headName) if headName is not None else None
+            if head is None or head is member:
+                continue
+            final = head.tagAttributes.get("final")
+            if final is None:
+                final = finalDefault
+            excluded = blockTokens(final)
+            if not excluded:
+                continue
+            memberCls = self._declaredTypeClass(member)
+            headCls = self._declaredTypeClass(head)
+            if memberCls is None or headCls is None:
+                continue
+            if is_validly_derived(memberCls, headCls, excluded) == "blocked":
+                self.report.add_error(
+                    f"element '{member.name}' has a type whose derivation from "
+                    f"substitution head '{head.name}' is excluded by final='{final}'",
+                    code="declaration-attribute",
+                    element=member.name,
+                    phase="schema",
+                )
+
+    @staticmethod
+    def _declaredTypeClass(element: Any) -> Any:
+        """Returns an element's generated type class, or ``None``."""
+        try:
+            cls = element.getType()
+        except (AttributeError, TypeError):
+            return None
+        return cls if isinstance(cls, type) else None
+
+    def _checkValueConstraints(self, schemaER: Any) -> None:
+        """Validates element/attribute ``default``/``fixed`` values.
+
+        Runs after generated classes are built so a value is checked
+        against the declaration's actual type: a user-defined simpleType
+        is validated through its constructor (built-in lexical space plus
+        every restricting facet), and a complex type with simple content
+        delegates to its content type. Built-in types take the same path.
+        A declaration whose type has no simple value space (element-only
+        complex content, or an unresolved type) is skipped.
+        """
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ in ("Element", "Attribute"):
+                self._checkDeclarationValueConstraint(er)
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkDeclarationValueConstraint(self, er: Any) -> None:
+        factory = self._valueConstraintFactory(er)
+        if factory is None:
+            return
+        label = type(er).__name__.lower()
+        for attr in ("default", "fixed"):
+            value = er.tagAttributes.get(attr)
+            if value is None:
+                continue
+            try:
+                factory(value)
+            except (TypeError, ValueError):
+                self.report.add_error(
+                    f"{label} '{er.name}' {attr} value '{value}' is not valid for its type",
+                    code="declaration-attribute",
+                    element=er.name,
+                    phase="schema",
+                )
+            except Exception:  # pragma: no cover - defensive
+                # A constructor raising anything else is a pyxsd bug, not
+                # a schema error; do not turn it into a false rejection.
+                logger.debug("could not validate %s value %r of %r", attr, value, er.name)
+
+    @staticmethod
+    def _valueConstraintFactory(er: Any) -> Any:
+        """Returns the class that validates a declaration's lexical value.
+
+        ``None`` when the declaration's type has no simple value space,
+        which leaves element-only complex content and unresolved types
+        unchecked.
+        """
+        try:
+            cls = er.getType()
+        except (AttributeError, TypeError):
+            return None
+        if not isinstance(cls, type):
+            return None
+        content = getattr(cls, "_simpleContentType_", None)
+        if isinstance(content, type):
+            cls = content
+        if not issubclass(cls, XsdDataType):
+            return None
+        return cls
 
     def _schemaCompositionContext(self) -> tuple[Path, set[str]]:
         """Returns the (baseDir, visited) context for schema composition.

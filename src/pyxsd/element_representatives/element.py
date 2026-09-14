@@ -428,10 +428,44 @@ class Element(ElementRepresentative):
         self._checkElementRef()
         if getattr(self, "isElementRef", False):
             return
+        self._checkElementValueConstraint()
+        self._checkElementTypeConflict()
         if self.isGlobalDeclaration():
             self._checkElementFinalAndBlock()
         else:
             self._checkLocalElementAttributes()
+
+    def _checkElementValueConstraint(self) -> None:
+        """Reports an element that carries both ``default`` and ``fixed``.
+
+        An element declaration's {value constraint} is either a default
+        or a fixed value; the XSD XML representation forbids both
+        (e-props-correct, value-constraint consistency). The lexical
+        value itself is validated after type classes are built, so a
+        user-defined simple type's facets apply too.
+        """
+        if "default" in self.tagAttributes and "fixed" in self.tagAttributes:
+            self._reportSchemaError(
+                f"element '{self.name}' must not carry both a default and a fixed value",
+                code="declaration-attribute",
+            )
+
+    def _checkElementTypeConflict(self) -> None:
+        """Reports an element that names a type and declares an inline type.
+
+        The ``type`` attribute and an inline ``simpleType``/``complexType``
+        are mutually exclusive in the XML representation of an element
+        declaration. The raw attribute is read from the element because
+        ``processChildren`` overwrites ``tagAttributes['type']`` with the
+        inline type's generated name.
+        """
+        if self.xsdElement.get("type") is None:
+            return
+        if any(tag in ("simpleType", "complexType") for tag in self.childTags):
+            self._reportSchemaError(
+                f"element '{self.name}' may not carry both a type and an inline type",
+                code="declaration-attribute",
+            )
 
     def _checkElementOccurs(self) -> None:
         minimum = self.getMinOccurs()

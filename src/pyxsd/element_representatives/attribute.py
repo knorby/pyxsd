@@ -307,7 +307,6 @@ class Attribute(ElementRepresentative):
         self._checkAttributeType()
         self._checkAttributeName()
         self._checkAttributeNamespace()
-        self._checkAttributeValue()
 
     def _checkAttributeDefaultFixed(self) -> None:
         if "default" in self.tagAttributes and "fixed" in self.tagAttributes:
@@ -458,33 +457,6 @@ class Attribute(ElementRepresentative):
                 f"attribute '{self.name}' must not be in the XML Schema instance namespace",
                 code="declaration-attribute",
             )
-
-    def _checkAttributeValue(self) -> None:
-        if getattr(self, "isAttributeRef", False):
-            return
-        raw = self.xsdElement.get("type")
-        if raw is None:
-            return
-        dtype = self._resolvedType(raw)
-        if not (isinstance(dtype, type) and issubclass(dtype, XsdDataType)):
-            return
-        factory: Any = dtype
-        for attr in ("default", "fixed"):
-            value = self.tagAttributes.get(attr)
-            if value is None:
-                continue
-            try:
-                factory(value)
-            except TypeError:
-                self._reportSchemaError(
-                    f"attribute '{self.name}' {attr} value '{value}' is not valid for type '{raw}'",
-                    code="declaration-attribute",
-                )
-            except Exception:
-                # A constructor that raises something other than the
-                # validation TypeError is a pyxsd bug, not a schema
-                # error; do not turn it into a false rejection.
-                logger.debug("could not validate %s value %r", attr, value)
 
     def _declaredNamespace(self) -> str | None:
         """Returns this declaration's XSD target namespace, if any.

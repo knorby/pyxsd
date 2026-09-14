@@ -827,6 +827,34 @@ class TestAttributeDeclarationLegality:
         )
         assert "declaration-attribute" not in _schema_codes(report)
 
+    def test_attribute_fixed_invalid_for_user_simple_type_reports(self, parse_schema):
+        """attP006: fixed='' must be valid for the named enumeration type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'"
+            " targetNamespace='urn:test' xmlns:t='urn:test'>"
+            "<xsd:simpleType name='mySimpleType'><xsd:restriction base='xsd:int'>"
+            "<xsd:enumeration value='1'/><xsd:enumeration value='2'/>"
+            "</xsd:restriction></xsd:simpleType>"
+            "<xsd:complexType name='ct'><xsd:attribute name='att'"
+            " type='t:mySimpleType' fixed=''/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_default_valid_for_user_simple_type_is_clean(self, parse_schema):
+        """A default within the named enumeration type's value space is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'"
+            " targetNamespace='urn:test' xmlns:t='urn:test'>"
+            "<xsd:simpleType name='mySimpleType'><xsd:restriction base='xsd:int'>"
+            "<xsd:enumeration value='1'/><xsd:enumeration value='2'/>"
+            "</xsd:restriction></xsd:simpleType>"
+            "<xsd:complexType name='ct'><xsd:attribute name='att'"
+            " type='t:mySimpleType' default='2'/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
 
 class TestElementDeclarationLegality:
     """Semantic element-declaration legality (elemC/elemF/elemJ, schZ)."""
@@ -963,6 +991,189 @@ class TestElementDeclarationLegality:
             "</xsd:schema>"
         )
         assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_element_default_invalid_for_boolean_reports(self, parse_schema):
+        """valueConstraint00401m2: default 'Yes' is not a valid boolean."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='E' type='xsd:boolean' default='Yes'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_fixed_invalid_for_float_reports(self, parse_schema):
+        """valueConstraint00601m2: fixed '1.0F-2' is not a valid float."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='xsd:float' fixed='1.0F-2'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_default_and_fixed_together_reports(self, parse_schema):
+        """valueConstraint00301m3: default and fixed must not both be present."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='xsd:string' default='0' fixed='0'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_default_invalid_for_restricted_simple_type_reports(self, parse_schema):
+        """valueConstraint00401m8: the value must match the user type's facets."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='E' type='answer' default='false'/>"
+            "<xsd:simpleType name='answer'><xsd:restriction base='xsd:boolean'>"
+            "<xsd:pattern value='true'/></xsd:restriction></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_default_valid_for_restricted_simple_type_is_clean(self, parse_schema):
+        """valueConstraint00401m7: 'true' matches the user type's facets."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='E' type='answer' default='true'/>"
+            "<xsd:simpleType name='answer'><xsd:restriction base='xsd:boolean'>"
+            "<xsd:pattern value='true'/></xsd:restriction></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_element_default_invalid_for_simple_content_complex_type_reports(self, parse_schema):
+        """valueConstraint00401m6: simple-content base is boolean, so 'Yes' fails."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='E' type='answer' default='Yes'/>"
+            "<xsd:complexType name='answer'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:boolean'>"
+            "<xsd:attribute name='certainty'/>"
+            "</xsd:extension></xsd:simpleContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_default_valid_for_simple_content_complex_type_is_clean(self, parse_schema):
+        """valueConstraint00401m5: 'true' is valid for the boolean content type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='E' type='answer' default='true'/>"
+            "<xsd:complexType name='answer'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:boolean'>"
+            "<xsd:attribute name='certainty'/>"
+            "</xsd:extension></xsd:simpleContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_element_default_for_any_type_is_clean(self, parse_schema):
+        """valueConstraint00401m3/m4: the ur-type accepts any lexical value."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='E' default='alpha'/>"
+            "<xsd:element name='F' type='xsd:anyType' default='alpha'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_element_type_with_inline_complex_type_reports(self, parse_schema):
+        """typeDef00501m2: an element may not carry both type and an inline type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='Type'>"
+            "<xsd:complexType><xsd:sequence>"
+            "<xsd:element name='Local' minOccurs='0'/>"
+            "</xsd:sequence></xsd:complexType></xsd:element>"
+            "<xsd:complexType name='Type'><xsd:sequence>"
+            "<xsd:element name='Local' minOccurs='0'/>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_type_with_inline_simple_type_reports(self, parse_schema):
+        """typeDef00502m2: an element may not carry both type and a simpleType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='Type'>"
+            "<xsd:simpleType><xsd:restriction base='xsd:boolean'>"
+            "<xsd:pattern value='false'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:element>"
+            "<xsd:simpleType name='Type'><xsd:restriction base='xsd:boolean'>"
+            "<xsd:pattern value='false'/></xsd:restriction></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_type_with_inline_type_only_inline_is_clean(self, parse_schema):
+        """typeDef00501m1: an inline type alone (no type attribute) is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root'>"
+            "<xsd:complexType><xsd:sequence>"
+            "<xsd:element name='Local' minOccurs='0'/>"
+            "</xsd:sequence></xsd:complexType></xsd:element>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+
+class TestSubstitutionGroupLegality:
+    """Schema-side substitution-group constraints (final/exclusions/cycles)."""
+
+    def test_member_extension_blocked_by_head_final_reports(self, parse_schema):
+        """substGrpExcl00202m2: head final='extension' forbids the extension member."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='Head' type='HeadType' final='extension'/>"
+            "<xsd:complexType name='HeadType'><xsd:sequence>"
+            "<xsd:element name='Ear'/></xsd:sequence></xsd:complexType>"
+            "<xsd:element name='Member3' substitutionGroup='Head'>"
+            "<xsd:complexType><xsd:complexContent>"
+            "<xsd:extension base='HeadType'><xsd:sequence>"
+            "<xsd:element name='Nose'/></xsd:sequence></xsd:extension>"
+            "</xsd:complexContent></xsd:complexType></xsd:element>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_member_extension_without_head_final_is_clean(self, parse_schema):
+        """substGrpExcl00202m1: without a head final the extension member is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='Head' type='HeadType'/>"
+            "<xsd:complexType name='HeadType'><xsd:sequence>"
+            "<xsd:element name='Ear'/></xsd:sequence></xsd:complexType>"
+            "<xsd:element name='Member3' substitutionGroup='Head'>"
+            "<xsd:complexType><xsd:complexContent>"
+            "<xsd:extension base='HeadType'><xsd:sequence>"
+            "<xsd:element name='Nose'/></xsd:sequence></xsd:extension>"
+            "</xsd:complexContent></xsd:complexType></xsd:element>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_member_restriction_blocked_by_block_is_schema_valid(self, parse_schema):
+        """disallowedSubst00501m2: block (not final) leaves the schema valid."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='Head' type='xsd:string' block='restriction'/>"
+            "<xsd:simpleType name='derivedFromString'>"
+            "<xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "<xsd:element name='Member1' type='derivedFromString' substitutionGroup='Head'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_cyclic_substitution_group_reports(self, parse_schema):
+        """xsd009.e: a substitution-group cycle is an invalid schema."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' substitutionGroup='bar'/>"
+            "<xsd:element name='bar' substitutionGroup='foo'/>"
+            "</xsd:schema>"
+        )
+        assert "circular-substitution-group" in _schema_codes(report)
 
 
 class TestNotationDeclarationLegality:

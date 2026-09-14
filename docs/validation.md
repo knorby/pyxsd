@@ -49,7 +49,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `declaration-duplicate` | ERROR | A child that may appear at most once is repeated, two distinct alternatives (for example `simpleContent` and `complexContent`) occupy the same exclusive slot, two declarations share an `xs:ID`, or two named components share one symbol space (a duplicate global element/attribute/type/group/attributeGroup, or two identity constraints of one element with the same name). |
 | `declaration-order` | ERROR | Children are out of order, or an exclusive content kind excludes later children. |
 | `declaration-name` | ERROR | A declaration is missing its required name. |
-| `declaration-attribute` | ERROR | A declaration's XML attribute is illegal for its XSD representation: `default` and `fixed` together, an invalid `use`/`form`/`final`/`block` token, a global-only attribute on a local declaration, a `ref` conflicting with `name`/`type`/`form`/inline type, a name or `id` that is not an NCName, a `default`/`fixed` value outside the declared type's lexical space, or a declaration in the XML Schema instance namespace. |
+| `declaration-attribute` | ERROR | A declaration's XML attribute is illegal for its XSD representation: `default` and `fixed` together, an invalid `use`/`form`/`final`/`block` token, a global-only attribute on a local declaration, a `ref` conflicting with `name`/`type`/`form`/inline type, a `type` attribute together with an inline type, a name or `id` that is not an NCName, a `default`/`fixed` value outside the declared type's lexical/value space (including a user-defined simple type's facets), a substitution member whose derivation the head's `final` excludes, or a declaration in the XML Schema instance namespace. |
 | `facet` | ERROR | A constraining facet is not applicable to its base type, or its declared value is not legal for that base (bad lexical form, outside the base's value space, or a digit facet that violates the fixed value on an integer-derived type). |
 | `facet-conflict` | ERROR | Two constraining facets in one restriction step cannot hold together: mutually exclusive bounds (`minInclusive`/`minExclusive`, `maxInclusive`/`maxExclusive`), a lower bound above the upper bound, or an empty value space once the base type's own fixed bounds are applied (for example `positiveInteger` with `maxExclusive="1"`, or a list `minLength` below 1). |
 | `unexpected-element` | ERROR | Element is not declared in the content model and no wildcard allows it. |
@@ -83,6 +83,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `unknown-attributeGroup` | ERROR | Referenced `xs:attributeGroup` missing. |
 | `circular-attributeGroup` | ERROR | Nested attributeGroup reference cycle. |
 | `unknown-substitution-head` | ERROR | Substitution group references a missing head. |
+| `circular-substitution-group` | ERROR | Substitution-group membership is cyclic (`foo` heads `bar` heads `foo`), so no well-founded head exists. |
 | `unknown-elementRef` | ERROR | Element `ref` points to a missing global element. |
 | `final` | ERROR | Derivation violates the base type's `final` attribute. |
 | `schema` | ERROR | The schema file itself is malformed or unreadable. |
