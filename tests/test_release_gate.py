@@ -57,6 +57,10 @@ FACET_SCHEMA = f"""\
     <xs:restriction base="xs:int">
       <xs:minInclusive value="0"/>
       <xs:maxInclusive value="10"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="rangeIntExclusive">
+    <xs:restriction base="xs:int">
       <xs:minExclusive value="-1"/>
       <xs:maxExclusive value="11"/>
     </xs:restriction>
@@ -93,8 +97,10 @@ class TestFacetElementRepresentatives:
         range_type = _schema_er().simpleTypes["rangeInt"]
         assert range_type.minInclusive == "0"
         assert range_type.maxInclusive == "10"
-        assert range_type.minExclusive == "-1"
-        assert range_type.maxExclusive == "11"
+
+        exclusive_type = _schema_er().simpleTypes["rangeIntExclusive"]
+        assert exclusive_type.minExclusive == "-1"
+        assert exclusive_type.maxExclusive == "11"
 
     def test_list_facet_records_item_type(self, tmp_path):
         _parse(FACET_SCHEMA, "<doc><a>abcd</a></doc>", tmp_path)

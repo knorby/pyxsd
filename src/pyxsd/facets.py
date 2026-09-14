@@ -333,10 +333,17 @@ class FacetConstraints:
 
 @dataclass(frozen=True)
 class FacetBuildResult:
-    """The constraints built for one type plus any schema-level problems."""
+    """The constraints built for one type plus any schema-level problems.
+
+    ``errors`` are single-facet legality problems (reported with the
+    ``facet`` code); ``conflicts`` are combination problems — mutually
+    exclusive facets, an empty value space — reported with the
+    ``facet-conflict`` code.
+    """
 
     constraints: FacetConstraints
     errors: tuple[str, ...] = ()
+    conflicts: tuple[str, ...] = ()
 
 
 # --- applicability ---------------------------------------------------------
@@ -398,6 +405,44 @@ def _is_integer(base: type) -> bool:
     if issubclass(base, (Boolean, bool)):
         return False
     return issubclass(base, int)
+
+
+def _effective_lower(inclusive: Any | None, exclusive: Any | None) -> tuple[Any, bool] | None:
+    """The tighter lower bound as ``(value, is_exclusive)``, or ``None``."""
+    if inclusive is None and exclusive is None:
+        return None
+    if inclusive is None:
+        return (exclusive, True)
+    if exclusive is None:
+        return (inclusive, False)
+    try:
+        if exclusive > inclusive:
+            return (exclusive, True)
+    except TypeError:
+        return (exclusive, True)
+    # Equal bounds: the exclusive one is stricter.
+    if exclusive == inclusive:
+        return (inclusive, True)
+    return (inclusive, False)
+
+
+def _effective_upper(inclusive: Any | None, exclusive: Any | None) -> tuple[Any, bool] | None:
+    """The tighter upper bound as ``(value, is_exclusive)``, or ``None``."""
+    if inclusive is None and exclusive is None:
+        return None
+    if inclusive is None:
+        return (exclusive, True)
+    if exclusive is None:
+        return (inclusive, False)
+    try:
+        if exclusive < inclusive:
+            return (exclusive, True)
+    except TypeError:
+        return (exclusive, True)
+    # Equal bounds: the exclusive one is stricter.
+    if exclusive == inclusive:
+        return (inclusive, True)
+    return (inclusive, False)
 
 
 def _is_qname_like(base: type) -> bool:
@@ -574,6 +619,7 @@ def build_constraints(
     error while the rest of the schema still compiles.
     """
     errors: list[str] = []
+    conflicts: list[str] = []
     parent = parent or FacetConstraints()
     allowed: set[str] = set()
     if base is not None:
@@ -712,6 +758,29 @@ def build_constraints(
     max_inclusive = _tighten_max(parse_bound("maxInclusive"), parent.max_inclusive)
     max_exclusive = _tighten_max(parse_bound("maxExclusive"), parent.max_exclusive)
 
+    # The two lower bounds and the two upper bounds are mutually exclusive
+    # within one restriction step.
+    if facet_value("maxInclusive") is not None and facet_value("maxExclusive") is not None:
+        conflicts.append("cannot specify both 'maxInclusive' and 'maxExclusive'")
+    if facet_value("minInclusive") is not None and facet_value("minExclusive") is not None:
+        conflicts.append("cannot specify both 'minInclusive' and 'minExclusive'")
+
+    # The effective interval must not be empty: a lower bound above the
+    # upper one, or equal bounds with an exclusive side.
+    lower = _effective_lower(min_inclusive, min_exclusive)
+    upper = _effective_upper(max_inclusive, max_exclusive)
+    if lower is not None and upper is not None:
+        lower_value, lower_is_exclusive = lower
+        upper_value, upper_is_exclusive = upper
+        try:
+            empty = lower_value > upper_value or (
+                lower_value == upper_value and (lower_is_exclusive or upper_is_exclusive)
+            )
+        except TypeError:
+            empty = False
+        if empty:
+            conflicts.append("the declared bounds leave no value in the base type's value space")
+
     total_digits_value = _facet_positive_int(facet_value("totalDigits"), "totalDigits", errors)
     fraction_digits_value = _facet_non_negative_int(
         facet_value("fractionDigits"), "fractionDigits", errors
@@ -775,7 +844,9 @@ def build_constraints(
         total_digits=total_digits,
         fraction_digits=fraction_digits,
     )
-    return FacetBuildResult(constraints=constraints, errors=tuple(errors))
+    return FacetBuildResult(
+        constraints=constraints, errors=tuple(errors), conflicts=tuple(conflicts)
+    )
 
 
 def _tighten_min(own: Any | None, inherited: Any | None) -> Any | None:

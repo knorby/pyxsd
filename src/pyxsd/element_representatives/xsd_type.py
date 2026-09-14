@@ -621,6 +621,8 @@ class XsdType(ElementRepresentative):
             result = facets.build_constraints(source, base, parent, base_factory=base)
         for message in result.errors:
             self._report_ref_error(message, code="facet")
+        for message in result.conflicts:
+            self._report_ref_error(message, code="facet-conflict")
         constraints = result.constraints
         if constraints.is_empty:
             return {}

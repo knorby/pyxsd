@@ -50,6 +50,8 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `declaration-order` | ERROR | Children are out of order, or an exclusive content kind excludes later children. |
 | `declaration-name` | ERROR | A declaration is missing its required name. |
 | `declaration-attribute` | ERROR | A declaration's XML attribute is illegal for its XSD representation: `default` and `fixed` together, an invalid `use`/`form`/`final`/`block` token, a global-only attribute on a local declaration, a `ref` conflicting with `name`/`type`/`form`/inline type, a name or `id` that is not an NCName, a `default`/`fixed` value outside the declared type's lexical space, or a declaration in the XML Schema instance namespace. |
+| `facet` | ERROR | A constraining facet is not applicable to its base type, or its declared value is not legal for that base (bad lexical form, outside the base's value space, or a digit facet that violates the fixed value on an integer-derived type). |
+| `facet-conflict` | ERROR | Two constraining facets in one restriction step cannot hold together: mutually exclusive bounds (`minInclusive`/`minExclusive`, `maxInclusive`/`maxExclusive`), or a lower bound above the upper bound. |
 | `unexpected-element` | ERROR | Element is not declared in the content model and no wildcard allows it. |
 | `wildcard-no-declaration` | ERROR | `processContents="strict"` wildcard matched an element/attribute with no global declaration (namespaced mode). |
 | `occurrence-min` | ERROR | Fewer occurrences than `minOccurs` allows. |

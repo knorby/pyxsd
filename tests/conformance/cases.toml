@@ -2614,6 +2614,52 @@ schema_valid = false
 expected_codes = ["facet"]
 
 [[case]]
+id = "facets/mutually-exclusive-upper-bounds"
+description = "maxInclusive and maxExclusive cannot both constrain one restriction"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (facet combination)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:byte">
+      <xs:maxInclusive value="5"/>
+      <xs:maxExclusive value="5"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>1</r>
+'''
+schema_valid = false
+expected_codes = ["facet-conflict"]
+
+[[case]]
+id = "facets/min-greater-than-max"
+description = "A lower bound above the upper bound leaves an empty value space"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (facet combination)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="7"/>
+      <xs:maxInclusive value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>1</r>
+'''
+schema_valid = false
+expected_codes = ["facet-conflict"]
+
+[[case]]
 id = "attributes/untyped-attribute-any-simple-type"
 description = "An attribute declaration without a type and without an inline simpleType takes anySimpleType"
 derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (type defaulting)"

@@ -1282,3 +1282,43 @@ class TestFacetLegality:
             "</xsd:restriction></xsd:simpleType></xsd:schema>"
         )
         assert "facet" not in _schema_codes(report)
+
+    def test_max_inclusive_and_max_exclusive_reports_facet_conflict(self, parse_schema):
+        """msData byte_maxInclusive005: the two upper bounds are exclusive."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:byte'>"
+            "<xsd:maxInclusive value='5'/><xsd:maxExclusive value='5'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" in _schema_codes(report)
+
+    def test_min_inclusive_and_min_exclusive_reports_facet_conflict(self, parse_schema):
+        """The two lower bounds are mutually exclusive as well."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:byte'>"
+            "<xsd:minInclusive value='5'/><xsd:minExclusive value='5'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" in _schema_codes(report)
+
+    def test_min_above_max_reports_facet_conflict(self, parse_schema):
+        """msData integer_minInclusive003: an empty interval is illegal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:integer'>"
+            "<xsd:minInclusive value='7'/><xsd:maxInclusive value='1'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" in _schema_codes(report)
+
+    def test_equal_inclusive_bounds_are_clean(self, parse_schema):
+        """A single-point interval (minInclusive == maxInclusive) is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:integer'>"
+            "<xsd:minInclusive value='5'/><xsd:maxInclusive value='5'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" not in _schema_codes(report)
