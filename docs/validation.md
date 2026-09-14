@@ -46,9 +46,10 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | ---- | -------- | ------- |
 | `order` | ERROR | Child order violates the sequence content model. |
 | `declaration-child` | ERROR | A child element is not allowed by the declaration's child grammar. |
-| `declaration-duplicate` | ERROR | A child that may appear at most once is repeated, or two distinct alternatives (for example `simpleContent` and `complexContent`) occupy the same exclusive slot. |
+| `declaration-duplicate` | ERROR | A child that may appear at most once is repeated, two distinct alternatives (for example `simpleContent` and `complexContent`) occupy the same exclusive slot, or two declarations share an `xs:ID`. |
 | `declaration-order` | ERROR | Children are out of order, or an exclusive content kind excludes later children. |
 | `declaration-name` | ERROR | A declaration is missing its required name. |
+| `declaration-attribute` | ERROR | A declaration's XML attribute is illegal for its XSD representation: `default` and `fixed` together, an invalid `use`/`form`/`final`/`block` token, a global-only attribute on a local declaration, a `ref` conflicting with `name`/`type`/`form`/inline type, a name or `id` that is not an NCName, a `default`/`fixed` value outside the declared type's lexical space, or a declaration in the XML Schema instance namespace. |
 | `unexpected-element` | ERROR | Element is not declared in the content model and no wildcard allows it. |
 | `wildcard-no-declaration` | ERROR | `processContents="strict"` wildcard matched an element/attribute with no global declaration (namespaced mode). |
 | `occurrence-min` | ERROR | Fewer occurrences than `minOccurs` allows. |

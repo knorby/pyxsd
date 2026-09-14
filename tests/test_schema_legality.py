@@ -612,3 +612,439 @@ class TestDeclarationContainerGrammar:
             "declaration-duplicate",
             "declaration-order",
         } & _schema_codes(report)
+
+
+class TestAttributeDeclarationLegality:
+    """Semantic attribute-declaration legality.
+
+    Mirrors the W3C ``msData/attribute`` family (attKa/Kb/Kc, attF, attO):
+    ``default``/``fixed`` consistency, ``use`` legality, global-only
+    attributes, ref conflicts and default/fixed value checking.
+    """
+
+    def test_attribute_default_and_fixed_reports_declaration_attribute(self, parse_schema):
+        """attKa001: default and fixed must not both be present."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='ga' type='xsd:integer' fixed='abc' default='abc'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_group_default_and_fixed_reports_declaration_attribute(self, parse_schema):
+        """attKb001: same constraint for an attributeGroup member."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attributeGroup name='ag'>"
+            "<xsd:attribute name='aga' default='abc' fixed='abc'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_in_complex_type_default_and_fixed_reports(self, parse_schema):
+        """attKc001: same constraint for a complexType attribute use."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' default='abc' fixed='abc'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_use_prohibited_with_default_reports(self, parse_schema):
+        """attKb005/attKc005: a prohibited use cannot also declare a default."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' use='prohibited' default='abc'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_use_prohibited_with_fixed_reports(self, parse_schema):
+        """attKb009/attKc009: XSD 1.1 forbids a prohibited use with fixed."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' use='prohibited' fixed='abc'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_required_with_default_reports(self, parse_schema):
+        """attKb004/attKc004: use must be optional when default is present."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' use='required' default='abc'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_bad_use_value_reports(self, parse_schema):
+        """attF007: ``use`` must be optional, required or prohibited."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' use='foo'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_global_attribute_use_reports(self, parse_schema):
+        """attO013/attO019: a global attribute must not carry ``use``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='ga' use='required'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_global_attribute_form_reports(self, parse_schema):
+        """attA001: a global attribute must not carry ``form``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='ga' form='unqualified'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_default_invalid_for_type_reports(self, parse_schema):
+        """attO003: default='abc' is not a valid xsd:integer."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' type='xsd:integer' default='abc'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_fixed_invalid_for_type_reports(self, parse_schema):
+        """attO002: fixed='abc' is not a valid xsd:integer."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' type='xsd:integer' fixed='abc'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_ref_with_type_reports(self, parse_schema):
+        """attKc013: a ref use must not also carry ``type``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='ga' type='xsd:string'/>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute ref='ga' type='xsd:string'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_type_and_simple_type_reports(self, parse_schema):
+        """attKc014: ``type`` and an inline simpleType are mutually exclusive."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' type='xsd:string'>"
+            "<xsd:simpleType><xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "</xsd:attribute></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_invalid_name_reports(self, parse_schema):
+        """attC009: a name containing two colons is not an NCName."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='a:b:b' type='xsd:string'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_invalid_id_reports(self, parse_schema):
+        """attB006/notatA005: ``id`` must be a valid NCName."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='foo' type='xsd:string' id='0'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_non_simple_type_reports(self, parse_schema):
+        """attD002: an attribute's type must be a simple type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'/>"
+            "<xsd:attribute name='bar' type='ct'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_global_attribute_default_is_clean(self, parse_schema):
+        """attKa002: a global attribute may carry a default."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='ga' default='abc'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_local_attribute_optional_default_is_clean(self, parse_schema):
+        """attKb003: use='optional' with default is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' use='optional' default='abc'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_attribute_valid_integer_default_is_clean(self, parse_schema):
+        """attO006: a lexically valid integer default is accepted."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' type='xsd:integer' fixed=' 123 '/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_attribute_required_with_fixed_is_clean(self, parse_schema):
+        """use='required' with a fixed value is legal (only prohibited conflicts)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' type='xsd:string' use='required' fixed='1.1'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_attribute_ref_without_conflicts_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='ga' type='xsd:string'/>"
+            "<xsd:complexType name='ct'><xsd:attribute ref='ga' use='required'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+
+class TestElementDeclarationLegality:
+    """Semantic element-declaration legality (elemC/elemF/elemJ, schZ)."""
+
+    def test_element_bad_final_token_reports(self, parse_schema):
+        """elemF009: ``foo`` is not a legal final token."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' final='foo'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_final_substitution_token_reports(self, parse_schema):
+        """elemF004: ``substitution`` is not legal in an element ``final``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' final='substitution'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_final_all_with_tokens_reports(self, parse_schema):
+        """elemF014: ``#all`` cannot be combined with other tokens."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' final='#all extension restriction'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_bad_block_token_reports(self, parse_schema):
+        """elemC009: ``foo`` is not a legal block token."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' block='foo'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_block_all_with_tokens_reports(self, parse_schema):
+        """elemC014: ``#all`` cannot be combined with other tokens."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' block='#all extension restriction substitution'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_min_occurs_greater_than_max_reports(self, parse_schema):
+        """elemJ019: minOccurs must not exceed maxOccurs."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' type='bar'/>"
+            "<xsd:complexType name='bar'><xsd:sequence>"
+            "<xsd:element name='name' minOccurs='2' maxOccurs='1'/>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_local_element_abstract_reports(self, parse_schema):
+        """schZ001: a local element must not carry ``abstract``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root'><xsd:complexType><xsd:all>"
+            "<xsd:element name='noAbstract' type='xsd:string' abstract='true'/>"
+            "</xsd:all></xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_local_element_final_reports(self, parse_schema):
+        """schZ002: a local element must not carry ``final``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root'><xsd:complexType><xsd:all>"
+            "<xsd:element name='noFinal' type='xsd:string' final='restriction'/>"
+            "</xsd:all></xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_local_element_substitution_group_reports(self, parse_schema):
+        """schZ003: a local element must not carry ``substitutionGroup``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root'><xsd:complexType><xsd:all>"
+            "<xsd:element name='noSub' type='xsd:string' substitutionGroup='elt'/>"
+            "</xsd:all></xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_element_final_all_is_clean(self, parse_schema):
+        """elemF001: final='#all' is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' final='#all'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_element_final_extension_restriction_is_clean(self, parse_schema):
+        """elemF005: final='extension restriction' is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' final='extension restriction'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_element_block_all_tokens_is_clean(self, parse_schema):
+        """elemC: block may list extension, restriction and substitution."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' block='extension restriction substitution'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_element_occurs_min_le_max_is_clean(self, parse_schema):
+        """elemJ018: minOccurs='1' maxOccurs='2' is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' type='bar'/>"
+            "<xsd:complexType name='bar'><xsd:sequence>"
+            "<xsd:element name='name' minOccurs='1' maxOccurs='2'/>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_global_element_abstract_is_clean(self, parse_schema):
+        """``abstract`` is reserved for global element declarations."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='foo' abstract='true'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+
+class TestNotationDeclarationLegality:
+    """Semantic notation-declaration legality (notatA/notatB)."""
+
+    def test_notation_without_public_or_system_reports(self, parse_schema):
+        """notatB001: a notation needs a public or system identifier."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='foo'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_notation_invalid_name_reports(self, parse_schema):
+        """notatB008: a notation name must be an NCName."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='foo:bar' public='image/jpeg' system='viewer.exe'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_notation_invalid_id_reports(self, parse_schema):
+        """notatA005: ``id`` must be a valid NCName."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation id='25' name='jpeg' public='image/jpeg' system='viewer.exe'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_notation_duplicate_id_reports_declaration_duplicate(self, parse_schema):
+        """notatA007: ``id`` values must be unique within the schema."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation id='foo25' name='jpeg' public='image/jpeg'/>"
+            "<xsd:notation id='foo25' name='jpeg2' public='image/jpeg'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_notation_with_public_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_notation_name_and_id_ok(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation id='foo25' name='jpeg' system='viewer.exe'/>"
+            "</xsd:schema>"
+        )
+        assert not {"declaration-attribute", "declaration-duplicate"} & _schema_codes(report)
+
+
+class TestAnnotationDeclarationLegality:
+    """Semantic annotation-declaration legality (annotF)."""
+
+    def test_documentation_invalid_xml_lang_reports(self, parse_schema):
+        """annotF001/annotF003: ``xml:lang`` must be a valid language."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:annotation><xsd:documentation xml:lang=''>"
+            "</xsd:documentation></xsd:annotation></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_documentation_empty_source_ok(self, parse_schema):
+        """annotB003: an empty ``source`` is a valid anyURI."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:annotation><xsd:documentation source=''/></xsd:annotation></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_documentation_valid_xml_lang_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:annotation><xsd:documentation xml:lang='en-US'/></xsd:annotation>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)

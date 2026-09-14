@@ -394,3 +394,100 @@ class Element(ElementRepresentative):
         if namespace_of(resolved) is None:
             return local_name(resolved)
         return resolved
+
+    #: Element ``final`` accepts only these tokens, plus ``#all`` alone.
+    #: Notably ``substitution`` is *not* a legal final token.
+    _FINAL_TOKENS = ("extension", "restriction")
+    #: Element ``block`` additionally accepts ``substitution``.
+    _BLOCK_TOKENS = ("extension", "restriction", "substitution")
+    #: Attributes only a non-reference local element may not carry.
+    _LOCAL_ONLY_FORBIDDEN = ("abstract", "final", "substitutionGroup")
+    #: Attributes a reference site must not redeclare.
+    _REF_FORBIDDEN = (
+        "type",
+        "form",
+        "default",
+        "fixed",
+        "nillable",
+        "abstract",
+        "block",
+        "final",
+        "substitutionGroup",
+    )
+
+    def checkDeclarationLegality(self):
+        """Reports element-declaration attribute (XML) constraints.
+
+        Covers the ``final``/``block`` token lists, the ``minOccurs``/
+        ``maxOccurs`` ordering, the global-only attributes and the
+        conflicts a ``ref`` reference site must not introduce (the
+        reference site's content model is not factored, so those are
+        checked from the raw attributes here).
+        """
+        self._checkElementOccurs()
+        self._checkElementRef()
+        if getattr(self, "isElementRef", False):
+            return
+        if self.isGlobalDeclaration():
+            self._checkElementFinalAndBlock()
+        else:
+            self._checkLocalElementAttributes()
+
+    def _checkElementOccurs(self) -> None:
+        minimum = self.getMinOccurs()
+        maximum = self.getMaxOccurs()
+        if minimum > maximum:
+            self._reportSchemaError(
+                f"element '{self.name}' has minOccurs={minimum} greater than maxOccurs={maximum}",
+                code="declaration-attribute",
+            )
+
+    def _checkElementFinalAndBlock(self) -> None:
+        final = self.tagAttributes.get("final")
+        if final is not None and self._invalidTokenList(final, self._FINAL_TOKENS):
+            self._reportSchemaError(
+                f"element '{self.name}' has an invalid final value '{final}'; "
+                "expected extension, restriction or #all",
+                code="declaration-attribute",
+            )
+        block = self.tagAttributes.get("block")
+        if block is not None and self._invalidTokenList(block, self._BLOCK_TOKENS):
+            self._reportSchemaError(
+                f"element '{self.name}' has an invalid block value '{block}'; "
+                "expected extension, restriction, substitution or #all",
+                code="declaration-attribute",
+            )
+
+    def _checkLocalElementAttributes(self) -> None:
+        for attr in self._LOCAL_ONLY_FORBIDDEN:
+            if attr in self.tagAttributes:
+                self._reportSchemaError(
+                    f"local element '{self.name}' must not carry '{attr}'",
+                    code="declaration-attribute",
+                )
+
+    def _checkElementRef(self) -> None:
+        if not getattr(self, "isElementRef", False):
+            return
+        if self.isGlobalDeclaration():
+            self._reportSchemaError(
+                f"global element '{self.name}' must not carry a ref attribute",
+                code="declaration-attribute",
+            )
+        if self.xsdElement.get("name") is not None:
+            self._reportSchemaError(
+                f"element reference '{self.ref}' must not also declare a name",
+                code="declaration-attribute",
+            )
+        for attr in self._REF_FORBIDDEN:
+            if attr in self.tagAttributes:
+                self._reportSchemaError(
+                    f"element reference '{self.ref}' must not also carry '{attr}'",
+                    code="declaration-attribute",
+                )
+        for child in self.xsdElement:
+            if local_name(child.tag) in ("simpleType", "complexType"):
+                self._reportSchemaError(
+                    f"element reference '{self.ref}' must not also declare an inline type",
+                    code="declaration-attribute",
+                )

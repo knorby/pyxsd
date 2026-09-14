@@ -3225,3 +3225,226 @@ schema = '''
   <xs:element name="root" type="xs:string"/>
 </xs:schema>
 '''
+
+[[case]]
+id = "legality/attribute-default-and-fixed"
+description = "An attribute declaration may not carry both default and fixed (attKa001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="ga" type="xs:integer" fixed="1" default="1"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-prohibited-with-fixed"
+description = "XSD 1.1 forbids use='prohibited' together with fixed (attKb009)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="ct">
+    <xs:attribute name="ca" type="xs:string" use="prohibited" fixed="x"/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-global-use"
+description = "A global attribute declaration must not carry use (attO013)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="ga" type="xs:string" use="required"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-default-invalid-for-type"
+description = "An attribute default value must be in its type's lexical space (attO003)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute locally valid)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="ct">
+    <xs:attribute name="ca" type="xs:integer" default="abc"/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-name-not-ncname"
+description = "An attribute declaration name must be an NCName (attC009)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (name lexical space)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="a:b:c" type="xs:string"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-required-fixed-allowed"
+description = "use='required' with fixed is legal; only prohibited conflicts"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute use)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="ct">
+    <xs:attribute name="ca" type="xs:string" use="required" fixed="1.1"/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/element-final-substitution"
+description = "substitution is not a legal element final token (elemF004)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (element declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" final="substitution"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-block-invalid-token"
+description = "A block token outside the allowed list is illegal (elemC009)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (element declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" block="foo"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-final-extension-restriction-allowed"
+description = "final='extension restriction' is a legal element definition"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (element declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" final="extension restriction"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/element-min-greater-than-max"
+description = "minOccurs must not exceed maxOccurs (elemJ019)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (element declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" type="bar"/>
+  <xs:complexType name="bar"><xs:sequence>
+    <xs:element name="name" minOccurs="2" maxOccurs="1"/>
+  </xs:sequence></xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/local-element-abstract"
+description = "A local element declaration must not carry abstract (schZ001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'schema' (invalid localElement attributes)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:all>
+    <xs:element name="noAbstract" type="xs:string" abstract="true"/>
+  </xs:all></xs:complexType></xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/notation-missing-public-system"
+description = "A notation needs a public or system identifier (notatB001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notations' (notation declaration)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:notation name="foo"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/notation-duplicate-id"
+description = "Notation ids must be unique within a schema document (notatA007)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notations' (ID uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:notation id="foo25" name="jpeg" public="image/jpeg"/>
+  <xs:notation id="foo25" name="jpeg2" public="image/jpeg"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/notation-public-system-allowed"
+description = "A notation with public and system identifiers is legal"
+derived_from = "W3C XMLSchema1TestSuite, group 'notations' (notation declaration)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/annotation-invalid-xml-lang"
+description = "documentation xml:lang must be a valid language (annotF001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotations' (annotation attributes)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:annotation><xs:documentation xml:lang=""/></xs:annotation>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/annotation-empty-source-allowed"
+description = "An empty documentation source is a valid anyURI (annotB003)"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotations' (annotation attributes)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:annotation><xs:documentation source=""/></xs:annotation>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''

@@ -77,7 +77,13 @@ from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
-from pyxsd.xsd_data_types import AnySimpleType, qname_context, whitespace_mode, xsd_value_key
+from pyxsd.xsd_data_types import (
+    AnySimpleType,
+    NCName,
+    qname_context,
+    whitespace_mode,
+    xsd_value_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +187,11 @@ class PyXSD:
         # Source-document form defaults per spliced component:
         # id(xsdElement) -> (elementFormDefault, attributeFormDefault).
         self._formDefaults: dict[int, tuple[str | None, str | None]] = {}
+        # Element identities that came from an included/imported schema
+        # document. ``id`` uniqueness is an XML (per-document) rule, so
+        # components spliced from another document must not be compared
+        # against the main document's ids.
+        self._composedElementIds: set[int] = set()
         # The parser's thread-local construction context: schema
         # construction and instance binding run inside it, so concurrent
         # parsers cannot observe each other's overrides or tables. The
@@ -412,6 +423,7 @@ class PyXSD:
             "Unique",
         )
         seen: set[int] = set()
+        seenIds: dict[str, Any] = {}
         stack = [schemaER]
         while stack:
             er = stack.pop()
@@ -429,11 +441,53 @@ class PyXSD:
                     code="declaration-name",
                 )
             self._checkChildGrammar(er)
+            self._checkDeclarationId(er, seenIds)
+            er.checkDeclarationLegality()
             misplacement = getattr(er, "misplacement", None)
             if misplacement is not None:
                 code, message = misplacement
                 self.report.add_error(message, code=code)
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkDeclarationId(self, er: Any, seenIds: dict[str, Any]) -> None:
+        """Reports lexical/duplicate ``id`` attributes on declarations.
+
+        Every ``id`` on a schema component is an ``xs:ID``: it must be a
+        valid NCName and unique within its schema document. Uniqueness is
+        scoped to the main document because "document" is the unit of the
+        XML ID rule; components spliced in from includes/imports are not
+        compared against it (``_composedElementIds``). The walk visits
+        every representative once, so uniqueness is tracked here rather
+        than on each subclass.
+        """
+        value = getattr(er, "id", None)
+        if value is None:
+            return
+        try:
+            NCName(value)
+        except TypeError:
+            self.report.add_error(
+                f"id '{value}' on <{er.rawTag}> is not a valid NCName",
+                code="declaration-attribute",
+                element=er.rawTag,
+                phase="schema",
+            )
+            return
+        element = getattr(er, "xsdElement", None)
+        if element is not None and id(element) in self._composedElementIds:
+            # A component from an included/imported document: ``id``
+            # uniqueness is scoped to a single schema document, so it is
+            # not compared against the main document's ids.
+            return
+        if value in seenIds:
+            self.report.add_error(
+                f"duplicate id '{value}' on <{er.rawTag}>",
+                code="declaration-duplicate",
+                element=er.rawTag,
+                phase="schema",
+            )
+            return
+        seenIds[value] = er
 
     def _checkChildGrammar(self, er: Any) -> None:
         """Reports a declaration's children against its grammar table.
@@ -728,6 +782,10 @@ class PyXSD:
         self._spliceComposedSchemas(
             includedRoot, includedPath.parent, visited | {str(includedPath)}
         )
+        # Record provenance before the components are appended to the
+        # main root: ``id`` uniqueness is scoped to a schema document.
+        for element in includedRoot.iter():
+            self._composedElementIds.add(id(element))
         self._appendNamedComponents(includedRoot, schemaRoot, componentNamespace)
         self._composedDocuments.add(key)
         return None
@@ -836,6 +894,10 @@ class PyXSD:
         self._spliceComposedSchemas(
             includedRoot, includedPath.parent, visited | {str(includedPath)}
         )
+        # The redefined document's components come from another schema
+        # document; scope ``id`` uniqueness provenance to it.
+        for element in includedRoot.iter():
+            self._composedElementIds.add(id(element))
         self._appendNamedComponents(includedRoot, schemaRoot, schemaRoot.get("targetNamespace"))
         for child in list(redefineTag):
             for element in child.iter():

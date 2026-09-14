@@ -513,6 +513,36 @@ class ElementRepresentative:
         else:
             logger.error("%s[%s] %s", self.name, code, message)
 
+    def checkDeclarationLegality(self):
+        """Reports semantic declaration-legality problems.
+
+        The child-grammar tables cover which children a declaration may
+        contain; this hook covers the *attribute* constraints of the
+        XSD component's XML representation (for example
+        ``default``/``fixed`` consistency, ``use`` legality or the
+        lexical space of a name). Subclasses override it; the default
+        does nothing. The parser calls it once per representative after
+        the ER tree is built, when ``getSchema().pyXSD`` is attached and
+        ``_reportSchemaError`` can reach the report.
+        """
+        return None
+
+    @staticmethod
+    def _invalidTokenList(value, allowed):
+        """Whether an XSD token-list attribute is lexically illegal.
+
+        ``#all`` is only legal on its own; otherwise every
+        whitespace-separated token must be in ``allowed``. An empty (or
+        absent) value is legal and means the default. Shared by the
+        ``final``/``block`` checks on elements and types.
+        """
+        tokens = value.split()
+        if not tokens:
+            return False
+        if "#all" in tokens:
+            return tokens != ["#all"]
+        return any(token not in allowed for token in tokens)
+
     def _occursValue(self, attrName):
         """Returns the integer value of ``minOccurs``/``maxOccurs``.
 
