@@ -581,6 +581,50 @@ class ElementRepresentative:
         """
         return self._occursValue("maxOccurs")
 
+    def _checkParticleOccurs(self) -> None:
+        """Reports an occurrence range whose minimum exceeds its maximum.
+
+        Shared by the particle ERs (``sequence``/``choice``; ``group``
+        reference sites use the reference's name in the message).
+        Reading the values also reports lexical failures through
+        ``_occursValue`` (``invalid-occurs``), so a garbage attribute is
+        never silently ignored. ``all`` bounds are compositor-legality
+        and carry their own code (``all-rule``), so ``all`` does not
+        call this helper.
+        """
+        minimum = self.getMinOccurs()
+        maximum = self.getMaxOccurs()
+        if minimum > maximum:
+            self._reportSchemaError(
+                f"{self.rawTag} '{self.name}' has minOccurs={minimum} greater "
+                f"than maxOccurs={maximum}",
+                code="declaration-attribute",
+            )
+
+    def resolveGroupRef(self, refSite):
+        """Returns the group definition a group reference site names.
+
+        Prefers QName-aware resolution (``resolveReference``) and falls
+        back to the ``schema.groups`` table by full reference and local
+        name, mirroring the content-model compiler. Returns ``None``
+        when the reference cannot be resolved.
+        """
+        ref = getattr(refSite, "ref", None)
+        if not ref:
+            return None
+        schema = self.getSchema()
+        if schema is None:
+            return None
+        groups = getattr(schema, "groups", None)
+        if not groups:
+            return None
+        resolver = getattr(refSite, "resolveReference", None)
+        if resolver is not None:
+            resolved = resolver(ref, groups.values(), parser=getattr(schema, "pyXSD", None))
+            if resolved is not None:
+                return resolved
+        return groups.get(ref) or groups.get(ref.split(":")[-1])
+
     def getContainingType(self):
         """Returns the parent's ``getContainingType()``.
 

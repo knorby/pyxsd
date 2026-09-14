@@ -45,3 +45,13 @@ class Choice(ElementRepresentative):
         'unbounded' values to 99999, since it needs to be an integer.
         """
         return self._occursValue("maxOccurs")
+
+    def checkDeclarationLegality(self):
+        """Reports occurrence-range sanity on this compositor.
+
+        ``minOccurs`` must not exceed ``maxOccurs``. Reading the values
+        also reports lexical failures through ``_occursValue``
+        (``invalid-occurs``), so garbage in either attribute is never
+        silently ignored.
+        """
+        self._checkParticleOccurs()

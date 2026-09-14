@@ -141,6 +141,80 @@ def register_wildcard(containing_type: Any, spec: WildcardSpec) -> None:
     containing_type.hasWildcardElements = True
 
 
+def _wildcard_admission(
+    spec: WildcardSpec, target_namespace: str | None
+) -> tuple[str, frozenset[str], bool, bool]:
+    """Expands a namespace constraint into comparable admission parts.
+
+    Returns ``(kind, uris, local, target)`` where ``kind`` is ``"any"``
+    (everything), ``"other"`` (any present namespace except the
+    excluded ones) or ``"set"``; for ``"other"`` the ``uris`` set holds
+    the *excluded* namespaces (the target namespace and the optional
+    ``##other uri`` exclusion), for ``"set"`` it holds the *admitted*
+    literal URIs. ``local`` admits the absent namespace and ``target``
+    admits the target namespace.
+    """
+    tokens = spec.namespace.split() or [NAMESPACE_ANY]
+    if NAMESPACE_ANY in tokens:
+        return ("any", frozenset(), False, False)
+    if tokens[0] == NAMESPACE_OTHER:
+        # "##other" may be followed by a single URI: everything except
+        # the target namespace *and* that URI.
+        excluded = {token for token in tokens[1:] if not token.startswith("##")}
+        if target_namespace is not None:
+            excluded.add(target_namespace)
+        return ("other", frozenset(excluded), False, False)
+    uris = frozenset(token for token in tokens if not token.startswith("##"))
+    return (
+        "set",
+        uris,
+        NAMESPACE_LOCAL in tokens,
+        NAMESPACE_TARGET in tokens,
+    )
+
+
+def wildcard_specs_overlap(
+    first: WildcardSpec,
+    second: WildcardSpec,
+    target_namespace: str | None = None,
+) -> bool:
+    """Whether two wildcard namespace constraints admit a common node.
+
+    Used by the content-model sweep for the UPA rule on ``all`` groups:
+    two wildcards in the same ``all`` must not overlap (all243), while
+    disjoint URI lists are fine (all005). ``##any`` overlaps
+    everything; ``##other`` overlaps ``##other`` (both admit every
+    third-party namespace) and any literal URI it does not exclude;
+    ``##local`` only overlaps ``##local`` (and ``##any``), never
+    ``##other``; ``##targetNamespace`` overlaps ``##targetNamespace`` and
+    a URI list containing the target namespace, but never ``##other``.
+    """
+    kind_a, uris_a, local_a, target_a = _wildcard_admission(first, target_namespace)
+    kind_b, uris_b, local_b, target_b = _wildcard_admission(second, target_namespace)
+    if kind_a == "any" or kind_b == "any":
+        return True
+    if kind_a == "other" and kind_b == "other":
+        return True
+    if kind_a == "other" or kind_b == "other":
+        excluded = uris_a if kind_a == "other" else uris_b
+        uris = uris_b if kind_a == "other" else uris_a
+        local = local_b if kind_a == "other" else local_a
+        target = target_b if kind_a == "other" else target_a
+        if local or target:
+            # "##other" never admits the absent namespace or the target.
+            return False
+        return any(uri not in excluded for uri in uris)
+    if local_a and local_b:
+        return True
+    if target_a and target_b:
+        return True
+    if uris_a & uris_b:
+        return True
+    return bool(target_b and target_namespace in uris_a) or bool(
+        target_a and target_namespace in uris_b
+    )
+
+
 __all__ = [
     "NAMESPACE_ANY",
     "NAMESPACE_LOCAL",
@@ -150,4 +224,5 @@ __all__ = [
     "WildcardSpec",
     "register_wildcard",
     "wildcard_spec",
+    "wildcard_specs_overlap",
 ]

@@ -31,3 +31,13 @@ class Sequence(ElementRepresentative):
         compositors = getattr(self.getContainingType(), "sequencesOrChoices", None)
         sequenceNum = len(compositors) + 1 if compositors is not None else 1
         return f"sequence{sequenceNum}"
+
+    def checkDeclarationLegality(self):
+        """Reports occurrence-range sanity on this compositor.
+
+        ``minOccurs`` must not exceed ``maxOccurs``. Reading the values
+        also reports lexical failures through ``_occursValue``
+        (``invalid-occurs``), so garbage in either attribute is never
+        silently ignored.
+        """
+        self._checkParticleOccurs()

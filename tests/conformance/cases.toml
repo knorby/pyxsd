@@ -4410,3 +4410,98 @@ expected_codes = ["unknown-group"]
   </xs:group>
 </xs:schema>
 '''
+
+[[case]]
+id = "structure/all-max-occurs-invalid"
+description = "xs:all carries maxOccurs=2; the all itself must have maxOccurs=1 (mgAb shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'modelGroups' (all: maxOccurs = 2)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="t"/>
+  <xs:complexType name="t">
+    <xs:all maxOccurs="2">
+      <xs:element name="e"/>
+    </xs:all>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["all-rule"]
+
+[[case]]
+id = "structure/all-duplicate-identical-invalid"
+description = "Two identical element declarations under xs:all are a UPA violation (mgQ shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'modelGroups' (identical declarations under all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="t"/>
+  <xs:complexType name="t">
+    <xs:all>
+      <xs:element name="e1" type="xs:string"/>
+      <xs:element name="e1" type="xs:string"/>
+    </xs:all>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["all-rule"]
+
+[[case]]
+id = "structure/all-duplicate-types-invalid"
+description = "Same element name twice under xs:all with different types violates Element Declarations Consistent (mgR shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'modelGroups' (identical names, different types, under all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="t"/>
+  <xs:complexType name="t">
+    <xs:all>
+      <xs:element name="e1" type="xs:string"/>
+      <xs:element name="e1" type="xs:integer"/>
+    </xs:all>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["all-rule"]
+
+[[case]]
+id = "structure/all-nested-in-sequence-invalid"
+description = "xs:all can only be the root of a content model; nesting it under xs:sequence is illegal (mgA shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'modelGroups' (all: with parent sequence)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:all>
+          <xs:element name="e"/>
+        </xs:all>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["all-rule"]
+
+[[case]]
+id = "structure/all-relaxed-particles-valid"
+description = "Under XSD 1.1 element particles of xs:all may carry relaxed minOccurs/maxOccurs (all001 shape)"
+derived_from = "W3C XMLSchema1TestSuite (Saxonica All/all001: relaxed minOccurs and maxOccurs)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:all>
+        <xs:element name="a" minOccurs="0" maxOccurs="5"/>
+        <xs:element name="b" minOccurs="2" maxOccurs="unbounded"/>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''

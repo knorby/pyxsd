@@ -79,6 +79,7 @@ from pyxsd.namespaces import (
 from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.validation import ValidationReport
+from pyxsd.wildcards import wildcard_specs_overlap
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 from pyxsd.xsd_data_types import (
     AnySimpleType,
@@ -504,11 +505,208 @@ class PyXSD:
             self._checkDeclarationId(er, seenIds)
             self._checkDuplicateName(er, declared)
             er.checkDeclarationLegality()
+            self._reportContentModelIssues(er)
             misplacement = getattr(er, "misplacement", None)
             if misplacement is not None:
                 code, message = misplacement
                 self.report.add_error(message, code=code)
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    #: Compositor ERs whose particle sets the content-model sweep checks.
+    _COMPOSITOR_KINDS = ("All", "Sequence", "Choice")
+
+    def _reportContentModelIssues(self, er: Any) -> None:
+        """Reports duplicate or conflicting particles inside one compositor.
+
+        Element declaration particles are collected transitively through
+        nested compositor children — never through an element
+        declaration's *type* (a different content model) and never
+        through a group reference (spliced in later). Two particles with
+        the same expanded name but different type declarations violate
+        Element Declarations Consistent in any compositor; under an
+        ``all`` any two particles with the same expanded name violate
+        UPA (identical or not — identical duplicates elsewhere are
+        deterministic and legal), as do an element in the substitution
+        group of another and two overlapping wildcards. Each conflicting
+        name is reported once per compositor.
+
+        Reference sites are resolved against the document's global
+        element declarations: references to the same declaration share
+        its type, and a reference that cannot be resolved here (it
+        names an import, say) is left out of the comparison — its type
+        is unknown, and guessing from the raw QName would compare
+        prefixes instead of declarations.
+        """
+        if type(er).__name__ not in self._COMPOSITOR_KINDS:
+            return
+        rawParticles: list[Any] = []
+        self._collectParticles(er, rawParticles, set())
+        resolved = self._resolveParticles(rawParticles)
+        byName: dict[tuple[str, str], list[tuple[str, Any]]] = {}
+        for name, typeKey, particle in resolved:
+            byName.setdefault(name, []).append((typeKey, particle))
+        isAll = type(er).__name__ == "All"
+        for (_, local), sameName in byName.items():
+            if len(sameName) < 2:
+                continue
+            typeKeys = {typeKey for typeKey, _ in sameName}
+            if len(typeKeys) > 1:
+                self.report.add_error(
+                    f"element declarations consistent: element '{local}' is "
+                    "declared with conflicting types "
+                    f"{sorted(key for key in typeKeys if key) or ['(anonymous)']} "
+                    "in the same content model",
+                    code="all-rule",
+                )
+                continue
+            if isAll:
+                self.report.add_error(
+                    f"content model is ambiguous: element '{local}' appears more "
+                    "than once in an all",
+                    code="all-rule",
+                )
+        if isAll:
+            self._checkSubstitutionOverlap(resolved)
+            self._checkAllWildcardOverlap(er)
+
+    def _globalElements(self, er: Any) -> list[Any]:
+        """The schema document's global element declarations."""
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return []
+        return [
+            element
+            for element in getattr(schema, "elements", None) or ()
+            if type(element).__name__ == "Element" and element.name
+        ]
+
+    def _resolveParticles(self, particles: list[Any]) -> list[tuple[tuple[str, str], str, Any]]:
+        """Maps particles to ``(expanded name, type key, particle)``.
+
+        A reference site adopts the referred declaration's expanded name
+        and a shared ``decl:`` type key; a reference that does not
+        resolve against this document's globals is dropped (its type is
+        unknown). A name site keeps its declared name and the raw (or
+        inline-generated) ``type`` attribute as its key.
+        """
+        globals_ = self._globalElements(particles[0] if particles else None)
+        resolved: list[tuple[tuple[str, str], str, Any]] = []
+        for particle in particles:
+            if getattr(particle, "isElementRef", False):
+                referred = None
+                resolver = getattr(particle, "resolveReference", None)
+                if resolver is not None:
+                    referred = resolver(
+                        getattr(particle, "ref", None),
+                        globals_,
+                        parser=getattr(particle.getSchema(), "pyXSD", None),
+                    )
+                if referred is None:
+                    continue
+                try:
+                    namespace = referred.getNamespace() or ""
+                except AttributeError:
+                    namespace = ""
+                name = (namespace, referred.name or "")
+                resolved.append((name, f"decl:{referred.expandedName}", particle))
+                continue
+            try:
+                namespace = particle.getNamespace() or ""
+            except AttributeError:
+                namespace = ""
+            name = (namespace, getattr(particle, "name", None) or "")
+            typeKey = particle.tagAttributes.get("type") or ""
+            resolved.append((name, typeKey, particle))
+        return resolved
+
+    def _collectParticles(self, er: Any, out: list[Any], visited: set[int]) -> None:
+        """Collects element particles under *er* through compositor children."""
+        for child in getattr(er, "processedChildren", None) or ():
+            if child is None or id(child) in visited:
+                continue
+            visited.add(id(child))
+            kind = type(child).__name__
+            if kind == "Element":
+                out.append(child)
+            elif kind in self._COMPOSITOR_KINDS:
+                self._collectParticles(child, out, visited)
+
+    def _checkSubstitutionOverlap(self, resolved: list[tuple[tuple[str, str], str, Any]]) -> None:
+        """Reports a substitution-group member meeting its head in an all.
+
+        A member can stand wherever its head appears, so head and member
+        under one ``all`` is ambiguous (all241). The head is read from
+        the particle's own ``substitutionGroup`` attribute, or — for a
+        reference site — from the referred global declaration. A head
+        whose {block} excludes substitution cannot be substituted here,
+        so the pair is deterministic and not reported (elemZ028a). Only
+        the immediate head step is consulted; chains are left to the
+        substitution-group machinery.
+        """
+        headsByLocal: dict[str, str] = {}
+        blockedHeads: set[str] = set()
+        schema = None
+        try:
+            schema = resolved[0][2].getSchema() if resolved else None
+        except AttributeError:
+            schema = None
+        if schema is not None:
+            for element in getattr(schema, "elements", None) or ():
+                if type(element).__name__ != "Element" or not element.name:
+                    continue
+                block = element.tagAttributes.get("block") or ""
+                if "substitution" in block.split() or "#all" in block.split():
+                    blockedHeads.add(element.name)
+                head = element.tagAttributes.get("substitutionGroup")
+                if head:
+                    headsByLocal.setdefault(element.name, head.split(":")[-1])
+        locals = {local for _, local in (name for name, _, _ in resolved)}
+        for (_, local), _, particle in resolved:
+            head = particle.tagAttributes.get("substitutionGroup")
+            if not head:
+                head = headsByLocal.get(local)
+            if not head:
+                continue
+            headLocal = head.split(":")[-1]
+            if headLocal in blockedHeads:
+                continue
+            if headLocal in locals:
+                self.report.add_error(
+                    f"content model is ambiguous: element '{headLocal}' has a "
+                    "substitution group member in the same all",
+                    code="all-rule",
+                )
+                return
+
+    def _checkAllWildcardOverlap(self, er: Any) -> None:
+        """Reports two overlapping wildcards under one all (all243).
+
+        Wildcards carrying XSD 1.1 ``notNamespace``/``notQName``
+        constraints are skipped: their exclusion sets can make
+        namespace-overlapping wildcards disjoint (wild049), and the
+        1.1 wildcard algebra is out of scope here.
+        """
+        wildcards = [
+            child
+            for child in getattr(er, "processedChildren", None) or ()
+            if child is not None
+            and child.__class__.__name__ == "Any"
+            and child.xsdElement.get("notNamespace") is None
+            and child.xsdElement.get("notQName") is None
+        ]
+        try:
+            target = er.getNamespace()
+        except AttributeError:
+            target = None
+        for index, first in enumerate(wildcards):
+            for second in wildcards[index + 1 :]:
+                if wildcard_specs_overlap(first.wildcardSpec, second.wildcardSpec, target):
+                    self.report.add_error(
+                        "content model is ambiguous: an all contains two overlapping wildcards",
+                        code="all-rule",
+                    )
+                    return
 
     def _checkDeclarationId(self, er: Any, seenIds: dict[str, Any]) -> None:
         """Reports lexical/duplicate ``id`` attributes on declarations.
