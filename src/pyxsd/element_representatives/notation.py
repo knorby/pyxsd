@@ -6,9 +6,13 @@ class Notation(ElementRepresentative):
 
     A notation declaration records its ``name``, ``public`` and
     ``system`` values from ``tagAttributes``; it has no content model
-    and takes no part in instance parsing beyond making schemas that
-    declare or reference notations load.
+    beyond an optional leading annotation.
     """
+
+    #: ``notation`` may carry a single ``annotation`` child and nothing
+    #: else (XSD 1.0/1.1).
+    _ALLOWED_CHILDREN = ("annotation",)
+    _MAX_ONE_CHILDREN = ("annotation",)
 
     def __init__(self, xsdElement, parent):
         """See ElementRepresentative for documentation.

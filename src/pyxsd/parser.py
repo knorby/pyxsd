@@ -462,7 +462,17 @@ class PyXSD:
                     element=er.rawTag,
                     phase="schema",
                 )
-        if "annotation" in counts and er.childTags.index("annotation") != 0:
+        # ``annotation`` is position-independent and may repeat (on the
+        # schema element it may precede each declaration). Only a grammar
+        # that pins annotation to the first slot (complexType) makes
+        # "annotation must be first" meaningful; a permissive or
+        # annotation-unconstrained class must not fire it.
+        first_slot = er._CHILD_ORDER[0] if er._CHILD_ORDER else ()
+        if (
+            "annotation" in first_slot
+            and "annotation" in counts
+            and er.childTags.index("annotation") != 0
+        ):
             self.report.add_error(
                 f"<annotation> must be the first child of <{er.rawTag}>",
                 code="declaration-order",

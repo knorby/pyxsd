@@ -2708,3 +2708,153 @@ schema = '''
 '''
 schema_valid = false
 expected_codes = ["declaration-order"]
+
+[[case]]
+id = "legality/notation-non-annotation-child"
+description = "A notation may not contain an all compositor (notatF002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notation' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:notation name="jpeg" public="image/jpeg" system="viewer.exe">
+    <xs:all/>
+  </xs:notation>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/notation-foreign-child"
+description = "Arbitrary foreign XML is not legal notation content (notatG002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notation' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:notation name="jpeg" public="image/jpeg" system="viewer.exe">
+    <a><b/></a>
+  </xs:notation>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/notation-annotation-allowed"
+description = "A single annotation is the only legal notation child (notatF004)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notation' (annotation child)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:notation name="foo" public="jpeg" system="system.exe">
+    <xs:annotation/>
+  </xs:notation>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/notation-duplicate-annotation"
+description = "A notation may contain at most one annotation"
+derived_from = "W3C XMLSchema1TestSuite, group 'notation' (single annotation)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:notation name="foo" public="jpeg" system="system.exe">
+    <xs:annotation/><xs:annotation/>
+  </xs:notation>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/annotation-nested"
+description = "An annotation may not contain another annotation (annotB001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotation' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:annotation>
+    <xs:annotation><xs:appinfo>Application Information</xs:appinfo></xs:annotation>
+    <xs:appinfo>Application Information</xs:appinfo>
+    <xs:documentation>Documentation</xs:documentation>
+  </xs:annotation>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/annotation-appinfo-documentation-allowed"
+description = "An annotation may contain appinfo and documentation children"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotation' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:annotation>
+    <xs:appinfo>Application Information</xs:appinfo>
+    <xs:documentation>Documentation</xs:documentation>
+  </xs:annotation>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/schema-unknown-child"
+description = "An element other than the legal schema children is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'schema' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:bogus/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/schema-repeated-annotations"
+description = "A schema may carry more than one top-level annotation"
+derived_from = "W3C XMLSchema1TestSuite, group 'schema' (annotation repetition)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:annotation/><xs:annotation/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/schema-trailing-annotation"
+description = "A top-level annotation may follow the declarations"
+derived_from = "W3C XMLSchema1TestSuite, group 'schema' (trailing annotation)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:annotation/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/foreign-annotation-in-permissive-container"
+description = "A foreign annotation child inside a permissive sequence is not an order violation"
+derived_from = "pyxsd regression guard for the annotation-order check (no grammar declared)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:f="urn:foreign">
+  <xs:complexType name="t">
+    <xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+      <f:annotation/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="t"/>
+</xs:schema>
+'''

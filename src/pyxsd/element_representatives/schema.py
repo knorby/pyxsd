@@ -16,11 +16,42 @@ class Schema(ComplexType):
 
     # ``Schema`` reuses the ``ComplexType`` implementation but not its
     # child grammar: the schema's children are the top-level declaration
-    # set, whose table is added separately. Reset the inherited table so
-    # a schema document is permissive here.
-    _ALLOWED_CHILDREN = None
-    _MAX_ONE_CHILDREN = ()
-    _CHILD_ORDER = ()
+    # set. The table below is the Real Schema child grammar (XSD 1.0/1.1).
+    _ALLOWED_CHILDREN = (
+        "annotation",
+        "include",
+        "import",
+        "redefine",
+        "override",
+        "defaultOpenContent",
+        "notation",
+        "attribute",
+        "element",
+        "simpleType",
+        "complexType",
+        "group",
+        "attributeGroup",
+    )
+    #: ``annotation`` may appear repeatedly and in any position on the
+    #: schema element (before the composition tags and before/after each
+    #: declaration), so it is deliberately not a "max one" child; the
+    #: order table below keeps imports/includes ahead of declarations
+    #: (the generic order check ignores ``annotation``).
+    _MAX_ONE_CHILDREN = ("defaultOpenContent",)
+    _CHILD_ORDER = (
+        ("include", "import", "redefine", "override"),
+        ("annotation",),
+        ("defaultOpenContent",),
+        (
+            "notation",
+            "attribute",
+            "element",
+            "simpleType",
+            "complexType",
+            "group",
+            "attributeGroup",
+        ),
+    )
     _EXCLUSIVE_SLOTS = frozenset()
 
     def __init__(self, xsdElement, parent):
