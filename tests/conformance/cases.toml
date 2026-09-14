@@ -2592,6 +2592,28 @@ schema_valid = false
 expected_codes = ["facet"]
 
 [[case]]
+id = "facets/integer-fraction-digits-fixed"
+description = "fractionDigits is fixed to 0 on an integer-derived base"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (fractionDigits fixed value)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:byte">
+      <xs:fractionDigits value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>1</r>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
 id = "attributes/untyped-attribute-any-simple-type"
 description = "An attribute declaration without a type and without an inline simpleType takes anySimpleType"
 derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (type defaulting)"

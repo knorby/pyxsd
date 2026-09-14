@@ -1220,3 +1220,65 @@ class TestCompositorSingleOccurrenceGrammar:
             "</xsd:choice></xsd:complexType></xsd:schema>"
         )
         assert "declaration-duplicate" not in _schema_codes(report)
+
+
+class TestFacetLegality:
+    """Schema-phase legality of constraining facets on built-in bases.
+
+    Mirrors the W3C ``msData/datatypes/Facets`` family: a facet must be
+    applicable to its base (``fractionDigits`` is fixed to 0 on every
+    integer-derived type), and the declared facet values must describe a
+    consistent, non-empty value space.
+    """
+
+    def test_fraction_digits_on_bounded_integer_reports_facet(self, parse_schema):
+        """msData byte_fractionDigits004: fractionDigits is 0 on integers."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:byte'>"
+            "<xsd:fractionDigits value='1'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_fraction_digits_on_integer_reports_facet(self, parse_schema):
+        """msData integer_fractionDigits004: the unbounded integer too."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:integer'>"
+            "<xsd:fractionDigits value='1'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_fraction_digits_five_with_total_digits_reports_facet(self, parse_schema):
+        """msData byte_fractionDigits007: the digit facets stay conflicting
+        when fractionDigits is fixed to 0."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:byte'>"
+            "<xsd:fractionDigits value='5'/><xsd:totalDigits value='5'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_fraction_digits_zero_on_integer_is_clean(self, parse_schema):
+        """msData byte_fractionDigits003: the fixed value 0 is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:byte'>"
+            "<xsd:fractionDigits value='0'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" not in _schema_codes(report)
+
+    def test_total_digits_on_integer_is_clean(self, parse_schema):
+        """totalDigits is applicable to the integer family, unlike
+        fractionDigits, so splitting the two must not reject it."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:byte'>"
+            "<xsd:totalDigits value='3'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" not in _schema_codes(report)

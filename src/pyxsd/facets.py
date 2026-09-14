@@ -381,12 +381,23 @@ def _is_numeric_or_temporal(base: type) -> bool:
 
 
 def _is_decimal(base: type) -> bool:
-    # The digit facets apply to every type derived from decimal, which
+    # ``totalDigits`` applies to every type derived from decimal, which
     # includes the whole integer family (pyxsd models those as ``int``
     # subclasses) but not float/double or boolean.
     if issubclass(base, (Boolean, bool)):
         return False
     return issubclass(base, (decimal.Decimal, int))
+
+
+def _is_integer(base: type) -> bool:
+    """Whether *base* is derived from ``xs:integer``.
+
+    ``xs:boolean`` is a Python ``bool``/``int`` subclass but is not an
+    integer-derived XSD type.
+    """
+    if issubclass(base, (Boolean, bool)):
+        return False
+    return issubclass(base, int)
 
 
 def _is_qname_like(base: type) -> bool:
@@ -705,6 +716,20 @@ def build_constraints(
     fraction_digits_value = _facet_non_negative_int(
         facet_value("fractionDigits"), "fractionDigits", errors
     )
+    if (
+        fraction_digits_value is not None
+        and fraction_digits_value != 0
+        and base is not None
+        and _is_integer(base)
+    ):
+        # ``fractionDigits`` is fixed to 0 on every integer-derived type:
+        # the base's value space has no fractional part, so a restriction
+        # may restate the fixed value but not change it.
+        base_label = getattr(base, "name", None) or base.__name__
+        errors.append(
+            f"facet 'fractionDigits' value {fraction_digits_value!r} is not allowed "
+            f"for base type {base_label!r} (fixed to 0 on integer types)"
+        )
     total_digits = _min_optional(
         total_digits_value if "totalDigits" in allowed else None,
         parent.total_digits,
