@@ -2660,6 +2660,50 @@ schema_valid = false
 expected_codes = ["facet-conflict"]
 
 [[case]]
+id = "facets/empty-value-space-vs-base-bounds"
+description = "maxExclusive below a bounded base's own minimum is an empty value space"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (empty value space)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:positiveInteger">
+      <xs:maxExclusive value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>1</r>
+'''
+schema_valid = false
+expected_codes = ["facet-conflict"]
+
+[[case]]
+id = "facets/list-min-length-below-one"
+description = "A list base fixes minLength at 1, so minLength 0 is a conflict"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (list fixed minLength)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:NMTOKENS">
+      <xs:minLength value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>alpha</r>
+'''
+schema_valid = false
+expected_codes = ["facet-conflict"]
+
+[[case]]
 id = "attributes/untyped-attribute-any-simple-type"
 description = "An attribute declaration without a type and without an inline simpleType takes anySimpleType"
 derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (type defaulting)"

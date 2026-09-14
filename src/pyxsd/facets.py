@@ -383,6 +383,18 @@ def _is_list(base: type) -> bool:
     return issubclass(base, (_ListString, XsdList))
 
 
+def _base_min_length(base: type | None) -> int | None:
+    """A fixed ``minLength`` on a built-in *base*, if it has one.
+
+    Every XSD list type fixes ``minLength`` to 1: an empty list is not a
+    legal value, so a restriction can neither lower the minimum nor set a
+    maximum below it.
+    """
+    if base is not None and _is_list(base):
+        return 1
+    return None
+
+
 def _is_numeric_or_temporal(base: type) -> bool:
     return issubclass(base, (int, float, decimal.Decimal, Duration, DateTime, Date, Time))
 
@@ -405,6 +417,38 @@ def _is_integer(base: type) -> bool:
     if issubclass(base, (Boolean, bool)):
         return False
     return issubclass(base, int)
+
+
+#: Inclusive bounds fixed by the integer-derived built-ins whose value
+#: space is encoded in ``__new__`` rather than a ``_min``/``_max`` class
+#: attribute.
+_INTEGER_FIXED_BOUNDS: dict[str, tuple[int | None, int | None]] = {
+    "positiveInteger": (1, None),
+    "nonNegativeInteger": (0, None),
+    "negativeInteger": (None, -1),
+    "nonPositiveInteger": (None, 0),
+}
+
+
+def _base_fixed_bounds(base: type | None) -> tuple[Any | None, Any | None, Any | None, Any | None]:
+    """The bounds a built-in *base* fixes on its value space.
+
+    Returns ``(min_inclusive, min_exclusive, max_inclusive, max_exclusive)``.
+    Only the integer-derived built-ins fix a bound; every other built-in
+    datatype is unbounded.
+    """
+    if base is None:
+        return (None, None, None, None)
+    low = getattr(base, "_min", None)
+    high = getattr(base, "_max", None)
+    if low is not None or high is not None:
+        return (low, None, high, None)
+    for klass in getattr(base, "__mro__", (base,)):
+        name = klass.__dict__.get("name") or klass.__name__
+        if name in _INTEGER_FIXED_BOUNDS:
+            low, high = _INTEGER_FIXED_BOUNDS[name]
+            return (low, None, high, None)
+    return (None, None, None, None)
 
 
 def _effective_lower(inclusive: Any | None, exclusive: Any | None) -> tuple[Any, bool] | None:
@@ -663,6 +707,20 @@ def build_constraints(
             errors.append("cannot specify both 'length' and 'minLength'")
     if min_length is not None and max_length is not None and min_length > max_length:
         errors.append(f"maxLength {max_length} is less than minLength {min_length}")
+    base_min_length = _base_min_length(base)
+    if base_min_length is not None:
+        # A list base fixes minLength to 1, so a restriction cannot lower
+        # the minimum or cap the maximum below it.
+        for facet, value in (
+            ("length", length),
+            ("minLength", min_length),
+            ("maxLength", max_length),
+        ):
+            if value is not None and value < base_min_length:
+                conflicts.append(
+                    f"facet {facet!r} value {value} is less than the base type's "
+                    f"minimum {base_min_length}"
+                )
     if "length" not in allowed:
         length = None
     if "minLength" not in allowed:
@@ -765,10 +823,20 @@ def build_constraints(
     if facet_value("minInclusive") is not None and facet_value("minExclusive") is not None:
         conflicts.append("cannot specify both 'minInclusive' and 'minExclusive'")
 
-    # The effective interval must not be empty: a lower bound above the
-    # upper one, or equal bounds with an exclusive side.
-    lower = _effective_lower(min_inclusive, min_exclusive)
-    upper = _effective_upper(max_inclusive, max_exclusive)
+    # Fold in the bounds the built-in base itself fixes, then require the
+    # effective interval to be non-empty: a lower bound above the upper
+    # one, or equal bounds with an exclusive side.
+    base_min_inclusive, base_min_exclusive, base_max_inclusive, base_max_exclusive = (
+        _base_fixed_bounds(base)
+    )
+    lower = _effective_lower(
+        _tighten_min(min_inclusive, base_min_inclusive),
+        _tighten_min(min_exclusive, base_min_exclusive),
+    )
+    upper = _effective_upper(
+        _tighten_max(max_inclusive, base_max_inclusive),
+        _tighten_max(max_exclusive, base_max_exclusive),
+    )
     if lower is not None and upper is not None:
         lower_value, lower_is_exclusive = lower
         upper_value, upper_is_exclusive = upper

@@ -1322,3 +1322,56 @@ class TestFacetLegality:
             "</xsd:restriction></xsd:simpleType></xsd:schema>"
         )
         assert "facet-conflict" not in _schema_codes(report)
+
+    def test_positive_integer_max_exclusive_at_base_minimum_reports(self, parse_schema):
+        """msData positiveInteger_maxExclusive001: ``< 1`` is empty because
+        the base type's value space starts at 1."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:positiveInteger'>"
+            "<xsd:maxExclusive value='1'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" in _schema_codes(report)
+
+    def test_positive_integer_max_inclusive_at_base_minimum_is_clean(self, parse_schema):
+        """``<= 1`` still holds the single value 1."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:positiveInteger'>"
+            "<xsd:maxInclusive value='1'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" not in _schema_codes(report)
+
+    def test_list_min_length_below_one_reports_facet_conflict(self, parse_schema):
+        """msData NMTOKENS_minLength001: a list always has at least one item."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:NMTOKENS'>"
+            "<xsd:minLength value='0'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" in _schema_codes(report)
+
+    def test_list_max_length_zero_reports_facet_conflict(self, parse_schema):
+        """msData NMTOKENS_maxLength001: ``maxLength 0`` cannot hold one
+        item."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:NMTOKENS'>"
+            "<xsd:maxLength value='0'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" in _schema_codes(report)
+
+    def test_list_min_length_below_one_with_max_length_reports(self, parse_schema):
+        """msData NMTOKENS_minLength004: the impossible minimum is still a
+        conflict when a maximum is also declared."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:NMTOKENS'>"
+            "<xsd:minLength value='0'/><xsd:maxLength value='2'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" in _schema_codes(report)
