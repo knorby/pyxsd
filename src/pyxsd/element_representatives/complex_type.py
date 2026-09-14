@@ -131,7 +131,7 @@ class ComplexType(XsdType):
         limits and compositor information never leak into the shared
         declaration or into other references to the same group.
         """
-        group = refSite.resolveReference(refSite.ref, self.getSchema().groups.values())
+        group = refSite.resolveReference(refSite.ref, refSite._globalGroupCandidates())
         groupName = refSite.ref.split(":", 1)[-1]
         groupKey = getattr(group, "expandedName", None) or groupName
         if groupKey in visited:

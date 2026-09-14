@@ -3976,3 +3976,116 @@ schema = '''
 </xs:schema>
 '''
 schema_valid = true
+
+[[case]]
+id = "composition/chameleon-simple-content-extension-valid"
+description = "A no-namespace included schema adopts the includer's target namespace, so its own unprefixed base type reference resolves (W3C ctE018)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ctE018' (chameleon simpleContent extension)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:t" targetNamespace="urn:t">
+  <xs:include schemaLocation="chameleon.xsd"/>
+  <xs:element name="root" type="fooType"/>
+</xs:schema>
+'''
+[case.files]
+"chameleon.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="myType">
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+  <xs:complexType name="fooType">
+    <xs:simpleContent>
+      <xs:extension base="myType">
+        <xs:attribute name="a" type="xs:int"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/chameleon-nested-include-valid"
+description = "A chameleon include nested inside another chameleon inherits the outermost target namespace, so the absorbed group resolves (W3C schD10)"
+derived_from = "W3C XMLSchema1TestSuite, group 'schD10' (chameleon include)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:t" targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:include schemaLocation="outer.xsd"/>
+  <xs:complexType name="a-ct">
+    <xs:sequence>
+      <xs:group ref="c-g2"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="a-ct"/>
+</xs:schema>
+'''
+[case.files]
+"outer.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="inner.xsd"/>
+  <xs:group name="grp">
+    <xs:choice>
+      <xs:group ref="c-g2"/>
+    </xs:choice>
+  </xs:group>
+  <xs:complexType name="b-ct">
+    <xs:group ref="c-g2"/>
+  </xs:complexType>
+</xs:schema>
+'''
+"inner.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="c-g2">
+    <xs:sequence>
+      <xs:element name="foo" type="xs:string"/>
+    </xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/attribute-group-ref-same-local-name-valid"
+description = "Two imported attributeGroups sharing a local name stay distinct by namespace, so both refs resolve (W3C attgB014)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attgB014' (imported attributeGroup refs)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="urn:foo" xmlns:y="urn:bar">
+  <xs:import namespace="urn:foo" schemaLocation="foo.xsd"/>
+  <xs:import namespace="urn:bar" schemaLocation="bar.xsd"/>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:attributeGroup ref="x:car"/>
+      <xs:attributeGroup ref="y:car"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+[case.files]
+"foo.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:foo" attributeFormDefault="qualified">
+  <xs:attributeGroup name="car">
+    <xs:attribute name="model" type="xs:string"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+"bar.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:bar" attributeFormDefault="qualified">
+  <xs:attributeGroup name="car">
+    <xs:attribute name="age" type="xs:int"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''

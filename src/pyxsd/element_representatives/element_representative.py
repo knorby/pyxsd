@@ -734,6 +734,11 @@ class ElementRepresentative:
         context = getattr(self.getSchema(), "namespaceContext", None)
         if context is None:
             return value
+        # QName-valued schema attributes are of type ``xs:QName`` (or a
+        # list of them), whose whiteSpace facet is ``collapse``, so
+        # surrounding whitespace is not part of the reference.
+        if isinstance(value, str):
+            value = value.strip()
         try:
             return context.resolve(self.xsdElement, value)
         except NamespaceError as e:
@@ -901,6 +906,61 @@ class ElementRepresentative:
             candidates.extend(getattr(schema, "complexTypes", {}).values())
         schema._globalTypeCandidatesCache = candidates
         return candidates
+
+    def _globalComponentCandidates(self, kind, legacy_values, *, parser=None):
+        """Returns the global candidates a reference may resolve to.
+
+        In ``strict`` namespace mode the per-schema ``groups`` and
+        ``attributeGroups`` dictionaries are keyed by local name, so two
+        definitions that share a local name in different namespaces (for
+        example ``x:car`` and ``y:car``) collapse onto a single entry.
+        The parser-owned component table preserves both by expanded name,
+        so gather the global definitions of *kind* from it instead.
+
+        A local name is only taken from the component table when it is
+        declared more than once *in different namespaces* — the case the
+        local-name mapping cannot represent. Otherwise the historical
+        mapping is used, so duplicate expanded names (typically a
+        circular ``xs:redefine`` chain, which the suite leaves
+        implementation-defined) keep their existing resolution.
+
+        In ``legacy`` mode the historical mapping is used unchanged.
+        """
+        if parser is None:
+            parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
+        mode = getattr(parser, "mode", None)
+        legacy = legacy_values if isinstance(legacy_values, dict) else None
+        if getattr(mode, "namespaces", "legacy") != "strict":
+            return list(legacy.values()) if legacy is not None else legacy_values
+        table = getattr(self.getSchema(), "components", None)
+        if not isinstance(table, ComponentTable):
+            return list(legacy.values()) if legacy is not None else legacy_values
+        byLocal: dict[str, list] = {}
+        for entries in table.values():
+            for entry in entries:
+                if componentKind(entry) == kind and entry.checkTopLevelType():
+                    byLocal.setdefault(entry.name, []).append(entry)
+        candidates = []
+        for local, entries in byLocal.items():
+            namespaces = {entry.getNamespace() for entry in entries}
+            if len(entries) >= 2 and len(namespaces) >= 2:
+                # Same local name in two namespaces: only the component
+                # table can distinguish them.
+                candidates.extend(entries)
+                continue
+            legacyEntry = legacy.get(local) if legacy is not None else None
+            candidates.append(legacyEntry if legacyEntry is not None else entries[0])
+        return candidates
+
+    def _globalGroupCandidates(self, *, parser=None):
+        """Global ``xs:group`` definitions, namespace-aware in strict mode."""
+        return self._globalComponentCandidates("group", self.getSchema().groups, parser=parser)
+
+    def _globalAttributeGroupCandidates(self, *, parser=None):
+        """Global ``xs:attributeGroup`` definitions, namespace-aware."""
+        return self._globalComponentCandidates(
+            "attributeGroup", self.getSchema().attributeGroups, parser=parser
+        )
 
     def resolvedTypeName(self):
         """Returns the ``type`` attribute resolved to a Clark name.

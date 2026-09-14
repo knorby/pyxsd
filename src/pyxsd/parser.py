@@ -71,6 +71,8 @@ from pyxsd.namespaces import (
     NamespaceContext,
     NamespaceError,
     clark,
+    local_name,
+    namespace_of,
     parse_with_namespaces,
 )
 from pyxsd.schema_base import SchemaBase, nil_content_kind
@@ -1011,6 +1013,16 @@ class PyXSD:
             return None
         mainNS = schemaRoot.get("targetNamespace")
         includedNS = includedRoot.get("targetNamespace")
+        if not isImport and includedNS is None and mainNS is not None:
+            # Chameleon pre-processing (XSD 1.1 §4.2.3 and Appendix F.1):
+            # a document with no targetNamespace that is included by a
+            # namespaced schema adopts the including target namespace, and
+            # its unqualified QName references are rewritten into it. The
+            # attribute is set on the tree so nested chameleon includes
+            # inherit the same namespace.
+            includedRoot.set("targetNamespace", mainNS)
+            self._applyChameleonNamespace(includedRoot, mainNS)
+            includedNS = mainNS
         if not isImport and includedNS not in (None, mainNS):
             self.report.add_error(
                 f"the schema '{location}' declares targetNamespace "
@@ -1072,6 +1084,61 @@ class PyXSD:
             )
             return None
         return root
+
+    #: QName-valued schema attributes that chameleon pre-processing
+    #: rewrites (XSD 1.1 Appendix F.1). Each holds a single QName.
+    _CHAMELEON_QNAME_ATTRIBUTES = (
+        "ref",
+        "base",
+        "type",
+        "refer",
+        "itemType",
+        "defaultAttributes",
+    )
+    #: QName-valued schema attributes that hold a whitespace-separated list.
+    _CHAMELEON_QNAME_LIST_ATTRIBUTES = ("memberTypes", "substitutionGroup", "notQName")
+
+    def _applyChameleonNamespace(self, includedRoot: Any, namespace: str) -> None:
+        """Simulates XSD chameleon pre-processing (Appendix F.1).
+
+        A no-namespace document absorbed into *namespace* has every QName
+        reference that carries no namespace rewritten into it; references
+        that already name a namespace (by prefix or default declaration)
+        are left untouched. Applying the transform to the tree lets the
+        ordinary ER run resolve the absorbed components and nested
+        chameleon includes inherit the same target namespace.
+        """
+        for element in includedRoot.iter():
+            tag = element.tag
+            if not isinstance(tag, str) or not tag.startswith(f"{{{XSD_NS}}}"):
+                continue
+            for attribute in self._CHAMELEON_QNAME_ATTRIBUTES:
+                value = element.get(attribute)
+                if value is None:
+                    continue
+                rewritten = self._chameleonQName(element, value, namespace)
+                if rewritten != value:
+                    element.set(attribute, rewritten)
+            for attribute in self._CHAMELEON_QNAME_LIST_ATTRIBUTES:
+                value = element.get(attribute)
+                if value is None:
+                    continue
+                tokens = [
+                    self._chameleonQName(element, token, namespace) for token in value.split()
+                ]
+                element.set(attribute, " ".join(tokens))
+
+    def _chameleonQName(self, element: Any, token: str, namespace: str) -> str:
+        """Rewrites one lexical QName with an absent namespace, else keeps it."""
+        if not token or token.startswith(("##", "{")):
+            return token
+        try:
+            resolved = self.namespaceContext.resolve(element, token)
+        except NamespaceError:
+            return token
+        if namespace_of(resolved) is None:
+            return clark(namespace, local_name(resolved))
+        return token
 
     def _appendNamedComponents(
         self, includedRoot: Any, schemaRoot: Any, namespace: str | None

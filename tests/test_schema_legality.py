@@ -11,10 +11,15 @@ import pytest
 
 from pyxsd.binding import ParseModes
 from pyxsd.parser import PyXSD
+from pyxsd.validation import IssueSeverity
 
 
 def _schema_codes(report) -> set[str]:
     return {issue.code for issue in report.for_phase("schema")}
+
+
+def _schema_errors(report) -> list:
+    return [issue for issue in report.for_phase("schema") if issue.severity is IssueSeverity.ERROR]
 
 
 @pytest.fixture
@@ -1831,3 +1836,23 @@ class TestSimpleTypeAtomicity:
             "</xsd:union></xsd:simpleType></xsd:schema>"
         )
         assert "atomic-required" not in _schema_codes(report)
+
+
+class TestFalseRejectLoosenings:
+    """Valid schema constructs that pyxsd used to reject (Task 10)."""
+
+    def test_qname_whitespace_collapsed(self, parse_schema):
+        """A QName-valued schema attribute collapses surrounding whitespace.
+
+        W3C addB106: ``base='    xsd:string '`` names ``xsd:string``.
+        """
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='STRTYPE'>"
+            "<xsd:restriction base='    xsd:string '/>"
+            "</xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert _schema_errors(report) == []
+        assert "unknown-type" not in _schema_codes(report)
+        assert "unknown-namespace-prefix" not in _schema_codes(report)
