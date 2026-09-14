@@ -45,6 +45,10 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | Code | Severity | Meaning |
 | ---- | -------- | ------- |
 | `order` | ERROR | Child order violates the sequence content model. |
+| `declaration-child` | ERROR | A child element is not allowed by the declaration's child grammar. |
+| `declaration-duplicate` | ERROR | A child that may appear at most once is repeated. |
+| `declaration-order` | ERROR | Children are out of order, or an exclusive content kind excludes later children. |
+| `declaration-name` | ERROR | A declaration is missing its required name. |
 | `unexpected-element` | ERROR | Element is not declared in the content model and no wildcard allows it. |
 | `wildcard-no-declaration` | ERROR | `processContents="strict"` wildcard matched an element/attribute with no global declaration (namespaced mode). |
 | `occurrence-min` | ERROR | Fewer occurrences than `minOccurs` allows. |

@@ -257,6 +257,22 @@ class ElementRepresentative:
     # (element/attribute name collision). See ``XsdType.clsFor``.
     _aliased_: bool = False
 
+    #: Child tag grammar for this element. ``None`` means the class does
+    #: not constrain its children (each child is factored into its own
+    #: representative); a tuple restricts the legal local names.
+    _ALLOWED_CHILDREN: tuple[str, ...] | None = None
+    #: Local names of children that may appear at most once.
+    _MAX_ONE_CHILDREN: tuple[str, ...] = ()
+    #: Ordered grammar slots. Each slot is a tuple of tags sharing that
+    #: position; the children (by tag) must occupy slots in
+    #: non-decreasing order. ``annotation`` is position-independent and
+    #: handled separately.
+    _CHILD_ORDER: tuple[tuple[str, ...], ...] = ()
+    #: Slots that, when occupied, forbid any later slot (for example
+    #: ``simpleContent``/``complexContent`` excludes particles and
+    #: attributes).
+    _EXCLUSIVE_SLOTS: frozenset[int] = frozenset()
+
     def __init__(self, xsdElement, parent):
         """See the documentation for the ElementRepresentative system at
         the top of this module.
@@ -291,6 +307,9 @@ class ElementRepresentative:
             setattr(self, name, value)
             self.tagAttributes[name] = value
 
+        self.childTags = []
+        self.unexpectedChildTags = []
+        self.rawTag = self.tagType
         self.processChildren()
 
     def __str__(self):
@@ -303,11 +322,25 @@ class ElementRepresentative:
         )
 
     def processChildren(self):
-        """Calls the ``factory`` on all of the children of an element."""
+        """Calls the ``factory`` on all of the children of an element.
+
+        When ``_ALLOWED_CHILDREN`` is set, a child whose local name is
+        not in the table (or which is not in the XML Schema namespace)
+        is not a schema component of this element; its tag is recorded
+        on ``unexpectedChildTags`` for the parser to report later.
+        """
         children = list(self.xsdElement)
         if not children:
             return None
         for child in children:
+            tag = local_name(child.tag)
+            self.childTags.append(tag)
+            if self._ALLOWED_CHILDREN is not None and (
+                namespace_of(child.tag) != XSD_NS or tag not in self._ALLOWED_CHILDREN
+            ):
+                self.unexpectedChildTags.append(tag)
+                self.processedChildren.append(None)
+                continue
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
         return None

@@ -2658,3 +2658,53 @@ instance = '''
 '''
 instance_valid = false
 expected_codes = ["invalid-attribute"]
+
+[[case]]
+id = "legality/complexType-unknown-child"
+description = "An element other than the legal complexType children is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (child grammar)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:bogus/>
+  </xs:complexType>
+  <xs:element name="root" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/complexType-duplicate-simpleContent"
+description = "A complexType with two simpleContent children is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (single content kind)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:simpleContent><xs:extension base="xs:string"/></xs:simpleContent>
+    <xs:simpleContent><xs:extension base="xs:string"/></xs:simpleContent>
+  </xs:complexType>
+  <xs:element name="root" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/complexType-annotation-out-of-order"
+description = "An annotation after another complexType child is out of order"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (annotation first)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:simpleContent><xs:extension base="xs:string"/></xs:simpleContent>
+    <xs:annotation><xs:documentation/></xs:annotation>
+  </xs:complexType>
+  <xs:element name="root" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-order"]

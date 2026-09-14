@@ -238,7 +238,8 @@ class TestKeyref:
 
 
 class TestConstraintPlacement:
-    """Constraints outside element declarations are ignored with a warning."""
+    """Constraints outside element declarations are ignored, and the
+    illegal placement is reported as a child-grammar error."""
 
     def test_constraint_in_complex_type_is_dropped(self, tmp_path):
         schema = (
@@ -253,7 +254,10 @@ class TestConstraintPlacement:
             "</xs:schema>\n"
         )
         parser = _parse(schema, "<root><x>1</x></root>", tmp_path)
-        assert not parser.report.has_errors
+        codes = [issue.code for issue in parser.report.errors]
+        assert "declaration-child" in codes
+        # The constraint is still dropped rather than applied.
+        assert not any(code.startswith("identity-") for code in codes)
 
 
 class TestXPathSubset:

@@ -14,6 +14,15 @@ class Schema(ComplexType):
     Subclass of ComplexType, because it is so similar to it.
     """
 
+    # ``Schema`` reuses the ``ComplexType`` implementation but not its
+    # child grammar: the schema's children are the top-level declaration
+    # set, whose table is added separately. Reset the inherited table so
+    # a schema document is permissive here.
+    _ALLOWED_CHILDREN = None
+    _MAX_ONE_CHILDREN = ()
+    _CHILD_ORDER = ()
+    _EXCLUSIVE_SLOTS = frozenset()
+
     def __init__(self, xsdElement, parent):
         """Stores all the attributeGroups, complexTypes, and simpleTypes
         in the document in dictionaries. Also has a list of top-level

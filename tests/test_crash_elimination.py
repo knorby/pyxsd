@@ -375,7 +375,7 @@ class TestIdentityConstraintChildren:
             '<root><hi a="1"/></root>',
         )
         codes = [issue.code for issue in parser.report.issues]
-        assert "unexpected-identity-child" in codes
+        assert "declaration-child" in codes
 
     def test_selector_and_field_still_work(self, tmp_path):
         parser = _parse(

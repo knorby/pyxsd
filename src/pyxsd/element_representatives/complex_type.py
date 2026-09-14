@@ -11,6 +11,44 @@ logger = logging.getLogger(__name__)
 class ComplexType(XsdType):
     """The class for the complexType tag."""
 
+    #: Child grammar of ``complexType`` (XSD 1.0/1.1): an optional
+    #: annotation, openContent, a single content kind
+    #: (simpleContent/complexContent or a particle), attributes, an
+    #: anyAttribute and assertions.
+    _ALLOWED_CHILDREN = (
+        "annotation",
+        "openContent",
+        "simpleContent",
+        "complexContent",
+        "group",
+        "all",
+        "choice",
+        "sequence",
+        "attribute",
+        "attributeGroup",
+        "anyAttribute",
+        "assert",
+    )
+    _MAX_ONE_CHILDREN = (
+        "annotation",
+        "openContent",
+        "simpleContent",
+        "complexContent",
+        "anyAttribute",
+    )
+    _CHILD_ORDER = (
+        ("annotation",),
+        ("openContent",),
+        ("simpleContent", "complexContent"),
+        ("group", "all", "choice", "sequence"),
+        ("attribute", "attributeGroup"),
+        ("anyAttribute",),
+        ("assert",),
+    )
+    #: A simpleContent/complexContent slot excludes later particle and
+    #: attribute slots.
+    _EXCLUSIVE_SLOTS = frozenset({2})
+
     def __init__(self, xsdElement, parent):
         """Keeps a list of sequences, choices, and alls that are
         children of it.  Stores itself in the schema dictionary of

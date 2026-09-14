@@ -50,6 +50,7 @@ import re
 import sys
 import tokenize
 import warnings
+from collections import Counter
 from pathlib import Path
 from types import ModuleType
 from typing import IO, Any
@@ -427,17 +428,67 @@ class PyXSD:
                     f"{type(er).__name__} declaration is missing a name",
                     code="declaration-name",
                 )
-            for tag in getattr(er, "unexpectedChildTags", None) or ():
-                self.report.add_error(
-                    f"{type(er).__name__} '{getattr(er, 'constraintName', er.name)}' "
-                    f"has an illegal child '{tag}'",
-                    code="unexpected-identity-child",
-                )
+            self._checkChildGrammar(er)
             misplacement = getattr(er, "misplacement", None)
             if misplacement is not None:
                 code, message = misplacement
                 self.report.add_error(message, code=code)
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkChildGrammar(self, er: Any) -> None:
+        """Reports a declaration's children against its grammar table.
+
+        The table lives on the element representative: ``_ALLOWED_CHILDREN``
+        (illegal children), ``_MAX_ONE_CHILDREN`` (duplicates),
+        ``_CHILD_ORDER``/``_EXCLUSIVE_SLOTS`` (ordering). A class without
+        an ``_ALLOWED_CHILDREN`` table is not checked for illegal
+        children; its duplicate/order tables default to empty unless it
+        declares otherwise.
+        """
+        if er._ALLOWED_CHILDREN is not None:
+            for tag in er.unexpectedChildTags:
+                self.report.add_error(
+                    f"<{tag}> is not allowed inside <{er.rawTag}>",
+                    code="declaration-child",
+                    element=er.rawTag,
+                    phase="schema",
+                )
+        counts = Counter(er.childTags)
+        for tag in er._MAX_ONE_CHILDREN:
+            if counts[tag] > 1:
+                self.report.add_error(
+                    f"<{er.rawTag}> may contain at most one <{tag}>",
+                    code="declaration-duplicate",
+                    element=er.rawTag,
+                    phase="schema",
+                )
+        if "annotation" in counts and er.childTags.index("annotation") != 0:
+            self.report.add_error(
+                f"<annotation> must be the first child of <{er.rawTag}>",
+                code="declaration-order",
+                element=er.rawTag,
+                phase="schema",
+            )
+        if er._CHILD_ORDER:
+            slot_of = {tag: i for i, slot in enumerate(er._CHILD_ORDER) for tag in slot}
+            seen = [slot_of[t] for t in er.childTags if t != "annotation" and t in slot_of]
+            if seen != sorted(seen):
+                self.report.add_error(
+                    f"children of <{er.rawTag}> are out of order",
+                    code="declaration-order",
+                    element=er.rawTag,
+                    phase="schema",
+                )
+            occupied = set(seen)
+            for slot in er._EXCLUSIVE_SLOTS:
+                if slot in occupied and any(x > slot for x in occupied):
+                    self.report.add_error(
+                        f"<{er.rawTag}> with this content kind cannot also "
+                        "contain later declarations",
+                        code="declaration-order",
+                        element=er.rawTag,
+                        phase="schema",
+                    )
 
     def _buildSubstitutionGroups(self, schemaER: Any) -> None:
         """Maps substitution-group heads to their member elements.
