@@ -3050,3 +3050,178 @@ schema = '''
 '''
 schema_valid = false
 expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/attribute-in-attribute"
+description = "An attribute declaration cannot contain another attribute (attP001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="att">
+    <xs:attribute name="att1" type="xs:string"/>
+  </xs:attribute>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attribute-element-child"
+description = "An element is not a legal attribute child (attP002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="att"><xs:element name="elem"/></xs:attribute>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attribute-simple-type-allowed"
+description = "An inline simpleType is the legal child of an attribute"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (inline type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="att">
+    <xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>
+  </xs:attribute>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/element-attribute-child"
+description = "An attribute declaration is not a legal element child (attQ002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="e"><xs:attribute name="att"/></xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/element-group-child"
+description = "A group reference is not a legal element child (groupO024)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="A"><xs:sequence/></xs:group>
+  <xs:element name="e"><xs:group ref="A"/></xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/element-type-and-identity-allowed"
+description = "An element may combine an inline type with identity constraints"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (content model)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="e">
+    <xs:complexType><xs:sequence><xs:element name="a"/></xs:sequence></xs:complexType>
+    <xs:key name="k"><xs:selector xpath="a"/><xs:field xpath="."/></xs:key>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/group-duplicate-particle"
+description = "A global group holds exactly one particle (addB083)"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (single particle)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G"><xs:choice/><xs:choice/></xs:group>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/group-distinct-particles"
+description = "A global group cannot combine two different particles"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (single particle)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G"><xs:choice/><xs:sequence/></xs:group>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/group-attribute-child"
+description = "An attribute is not a legal group child (groupO013)"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G"><xs:sequence/><xs:attribute name="a"/></xs:group>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attributeGroup-group-child"
+description = "A group reference is not a legal attributeGroup child (groupO025)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attributeGroup' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="foo"><xs:sequence/></xs:group>
+  <xs:attributeGroup name="ag">
+    <xs:group ref="foo"/><xs:attribute name="att"/>
+  </xs:attributeGroup>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attributeGroup-notation-child"
+description = "A notation is not a legal attributeGroup child (notatF013)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attributeGroup' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="ag">
+    <xs:notation name="n" public="p" system="s"/>
+  </xs:attributeGroup>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attributeGroup-attributes-allowed"
+description = "An attributeGroup may carry attributes, nested groups and a wildcard"
+derived_from = "W3C XMLSchema1TestSuite, group 'attributeGroup' (content model)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="inner"><xs:attribute name="b"/></xs:attributeGroup>
+  <xs:attributeGroup name="ag">
+    <xs:attribute name="a"/><xs:attributeGroup ref="inner"/><xs:anyAttribute/>
+  </xs:attributeGroup>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''

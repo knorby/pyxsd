@@ -27,6 +27,13 @@ class Attribute(ElementRepresentative):
     methods when modifying the program.
     """
 
+    #: Child grammar of an ``attribute`` declaration: an optional
+    #: annotation and at most one inline ``simpleType``. (The
+    #: ``type``/inline-type conflict is an attribute check, not a child
+    #: -grammar one.)
+    _ALLOWED_CHILDREN = ("annotation", "simpleType")
+    _MAX_ONE_CHILDREN = ("annotation", "simpleType")
+
     # The owning parser is attached during clsFor.  Annotation only:
     # the attribute is assigned dynamically.
     pyXSD: Any
@@ -101,6 +108,9 @@ class Attribute(ElementRepresentative):
         attribute child can exist that is not a type, then this
         function will screw it up; however, as far as the developers
         knew at the time of writing this program, they cannot.
+
+        A child the grammar rejects is not factored; ``_acceptChild``
+        records it on ``unexpectedChildTags`` for the parser to report.
         """
         children = list(self.xsdElement)
 
@@ -108,6 +118,9 @@ class Attribute(ElementRepresentative):
             return None
 
         for child in children:
+            if not self._acceptChild(child):
+                self.processedChildren.append(None)
+                continue
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
             # An unknown child (for example an ``xsd:notation``) does

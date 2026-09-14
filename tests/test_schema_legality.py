@@ -432,3 +432,183 @@ class TestTypeDefinitionGrammar:
             "</xsd:restriction></xsd:simpleType></xsd:schema>"
         )
         assert "declaration-child" not in _schema_codes(report)
+
+
+class TestDeclarationContainerGrammar:
+    def test_attribute_attribute_child_reports_declaration_child(self, parse_schema):
+        """attP001: an attribute declaration cannot contain another
+        attribute."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='att'>"
+            "<xsd:attribute name='att1' type='xsd:string'/>"
+            "</xsd:attribute></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_attribute_element_child_reports_declaration_child(self, parse_schema):
+        """attP002: an element is not a legal attribute child."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='att'><xsd:element name='elem'/>"
+            "</xsd:attribute></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_attribute_complex_type_child_reports_declaration_child(self, parse_schema):
+        """attQ006: a complexType is not a legal attribute child."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='att'><xsd:complexType name='foo'/>"
+            "</xsd:attribute></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_attribute_simple_type_is_clean(self, parse_schema):
+        """The one legal type child of an attribute is an inline
+        simpleType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='att'>"
+            "<xsd:simpleType><xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "</xsd:attribute></xsd:schema>"
+        )
+        assert not {
+            "declaration-child",
+            "declaration-duplicate",
+            "declaration-order",
+        } & _schema_codes(report)
+
+    def test_element_attribute_child_reports_declaration_child(self, parse_schema):
+        """attQ002: an attribute declaration is not a legal element child."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='e'><xsd:attribute name='att'/>"
+            "</xsd:element></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_element_notation_child_reports_declaration_child(self, parse_schema):
+        """notatF023: a notation is not a legal element child."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='e'>"
+            "<xsd:notation name='n' public='p' system='s'/>"
+            "</xsd:element></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_element_group_child_reports_declaration_child(self, parse_schema):
+        """groupO024: a group reference is not a legal element child."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:group name='A'><xsd:sequence/></xsd:group>"
+            "<xsd:element name='e'><xsd:group ref='A'/></xsd:element>"
+            "</xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_element_two_inline_types_reports_declaration_duplicate(self, parse_schema):
+        """An element may carry at most one inline type (simpleType or
+        complexType)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='e'>"
+            "<xsd:simpleType><xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "<xsd:complexType/>"
+            "</xsd:element></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_element_inline_type_and_identity_constraint_is_clean(self, parse_schema):
+        """A valid element combines an inline type with identity
+        constraints."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='e'>"
+            "<xsd:complexType><xsd:sequence><xsd:element name='a'/></xsd:sequence>"
+            "</xsd:complexType>"
+            "<xsd:key name='k'><xsd:selector xpath='a'/><xsd:field xpath='.'/></xsd:key>"
+            "</xsd:element></xsd:schema>"
+        )
+        assert not {
+            "declaration-child",
+            "declaration-duplicate",
+            "declaration-order",
+        } & _schema_codes(report)
+
+    def test_group_duplicate_particle_reports_declaration_duplicate(self, parse_schema):
+        """addB083: a global group holds exactly one particle; two
+        ``choice`` children repeat it."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:group name='G'><xsd:choice/><xsd:choice/></xsd:group>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_group_distinct_particles_reports_declaration_duplicate(self, parse_schema):
+        """A global group cannot combine two different particles."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:group name='G'><xsd:choice/><xsd:sequence/></xsd:group>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_group_attribute_child_reports_declaration_child(self, parse_schema):
+        """groupO013: an attribute is not a legal group child."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:group name='G'><xsd:sequence/><xsd:attribute name='a'/>"
+            "</xsd:group></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_group_single_particle_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:group name='G'><xsd:annotation/><xsd:sequence>"
+            "<xsd:element name='a'/></xsd:sequence></xsd:group></xsd:schema>"
+        )
+        assert not {
+            "declaration-child",
+            "declaration-duplicate",
+            "declaration-order",
+        } & _schema_codes(report)
+
+    def test_attribute_group_group_child_reports_declaration_child(self, parse_schema):
+        """groupO025: a group reference is not a legal attributeGroup
+        child."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:group name='foo'><xsd:sequence/></xsd:group>"
+            "<xsd:attributeGroup name='ag'><xsd:group ref='foo'/>"
+            "<xsd:attribute name='att'/></xsd:attributeGroup></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_attribute_group_notation_child_reports_declaration_child(self, parse_schema):
+        """notatF013: a notation is not a legal attributeGroup child."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attributeGroup name='ag'>"
+            "<xsd:notation name='n' public='p' system='s'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_attribute_group_attributes_and_wildcard_are_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attributeGroup name='inner'><xsd:attribute name='b'/>"
+            "</xsd:attributeGroup>"
+            "<xsd:attributeGroup name='ag'><xsd:annotation/>"
+            "<xsd:attribute name='a'/><xsd:attributeGroup ref='inner'/>"
+            "<xsd:anyAttribute/></xsd:attributeGroup></xsd:schema>"
+        )
+        assert not {
+            "declaration-child",
+            "declaration-duplicate",
+            "declaration-order",
+        } & _schema_codes(report)

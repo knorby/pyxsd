@@ -14,6 +14,14 @@ class Group(ElementRepresentative):
     ``ComplexType._flattenGroupRef``).
     """
 
+    #: Child grammar of a global ``group``: an optional annotation and
+    #: exactly one particle (``all``/``choice``/``sequence``).
+    _ALLOWED_CHILDREN = ("annotation", "all", "choice", "sequence")
+    _MAX_ONE_CHILDREN = ("annotation", "all", "choice", "sequence")
+    _CHILD_ORDER = (("all", "choice", "sequence"),)
+    #: The particle slot holds mutually exclusive alternatives.
+    _ONE_OF_SLOTS = frozenset({0})
+
     def __init__(self, xsdElement, parent):
         """Sets up the group as a definition or a reference site, then
         uses the ER ``__init__``.  See ElementRepresentative for more

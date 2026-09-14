@@ -332,31 +332,46 @@ class ElementRepresentative:
             self.__dict__.get("name", "???"),
         )
 
+    def _acceptChild(self, child):
+        """Records a child's tag and reports whether its grammar allows it.
+
+        Only schema-namespace children are recorded on ``childTags``; the
+        duplicate/order/annotation checks operate on schema components, so
+        a foreign child whose local name happens to be ``annotation``
+        (arbitrary XML in an ``appinfo``/``documentation`` body, say)
+        never drives grammar-order reporting. When ``_ALLOWED_CHILDREN``
+        is set, a child whose local name is not in the table, or which is
+        not in the XML Schema namespace, is not a schema component of this
+        element; its tag is recorded on ``unexpectedChildTags`` for the
+        parser to report later and the caller must not factor it.
+
+        Subclasses that need bespoke child handling (``Element`` and
+        ``Attribute`` set ``self.type`` from an inline type child) share
+        this helper so the table is never bypassed.
+        """
+        inSchema = namespace_of(child.tag) == XSD_NS
+        tag = local_name(child.tag)
+        if inSchema:
+            self.childTags.append(tag)
+        if self._ALLOWED_CHILDREN is not None and (
+            not inSchema or tag not in self._ALLOWED_CHILDREN
+        ):
+            self.unexpectedChildTags.append(tag)
+            return False
+        return True
+
     def processChildren(self):
         """Calls the ``factory`` on all of the children of an element.
 
-        Only schema-namespace children are recorded on ``childTags``;
-        the duplicate/order/annotation checks operate on schema
-        components, so a foreign child whose local name happens to be
-        ``annotation`` (arbitrary XML in an ``appinfo``/``documentation``
-        body, say) never drives grammar-order reporting. When
-        ``_ALLOWED_CHILDREN`` is set, any child whose local name is not in
-        the table, or which is not in the XML Schema namespace, is not a
-        schema component of this element; its tag is recorded on
-        ``unexpectedChildTags`` for the parser to report later.
+        See ``_acceptChild`` for the grammar filtering; a child the
+        grammar rejects is recorded on ``unexpectedChildTags`` and is not
+        factored (``processedChildren`` holds ``None`` for its slot).
         """
         children = list(self.xsdElement)
         if not children:
             return None
         for child in children:
-            inSchema = namespace_of(child.tag) == XSD_NS
-            tag = local_name(child.tag)
-            if inSchema:
-                self.childTags.append(tag)
-            if self._ALLOWED_CHILDREN is not None and (
-                not inSchema or tag not in self._ALLOWED_CHILDREN
-            ):
-                self.unexpectedChildTags.append(tag)
+            if not self._acceptChild(child):
                 self.processedChildren.append(None)
                 continue
             processedChild = ElementRepresentative.factory(child, self)

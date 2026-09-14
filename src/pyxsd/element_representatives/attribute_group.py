@@ -14,6 +14,13 @@ class AttributeGroup(ElementRepresentative):
     ``XsdType.resolveAttributeGroupRefs``).
     """
 
+    #: Child grammar of an ``attributeGroup`` definition: an optional
+    #: annotation, any number of attribute/attributeGroup members, then
+    #: an optional ``anyAttribute`` wildcard.
+    _ALLOWED_CHILDREN = ("annotation", "attribute", "attributeGroup", "anyAttribute")
+    _MAX_ONE_CHILDREN = ("annotation", "anyAttribute")
+    _CHILD_ORDER = (("attribute", "attributeGroup"), ("anyAttribute",))
+
     def __init__(self, xsdElement, parent):
         """Creates a dictionary for attributes.  Adds itself to the
         attribute group dictionary in schema (definitions) or to the

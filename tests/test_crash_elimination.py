@@ -478,7 +478,7 @@ class TestMisplacedDeclarations:
             "</xs:group></xs:schema>",
             monkeypatch,
         )
-        assert "misplaced-declaration" in _codes(parser)
+        assert "declaration-child" in _codes(parser)
 
     def test_group_ref_in_simple_type(self, tmp_path, monkeypatch):
         parser = _parse_schema(
@@ -501,7 +501,7 @@ class TestMisplacedDeclarations:
             '<xs:attribute name="att"/></xs:attributeGroup></xs:schema>',
             monkeypatch,
         )
-        assert "misplaced-declaration" in _codes(parser)
+        assert "declaration-child" in _codes(parser)
 
     def test_nested_attribute_group_definition(self, tmp_path, monkeypatch):
         parser = _parse_schema(
@@ -589,7 +589,7 @@ class TestNotationSupport:
             "</xs:attribute></xs:complexType></xs:schema>",
             monkeypatch,
         )
-        assert "misplaced-declaration" in _codes(parser)
+        assert "declaration-child" in _codes(parser)
 
     def test_notation_restriction_needs_enumeration(self, tmp_path, monkeypatch):
         # XSD 1.1: a restriction of NOTATION must have an enumeration

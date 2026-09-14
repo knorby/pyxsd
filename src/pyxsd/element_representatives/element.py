@@ -30,6 +30,30 @@ class Element(ElementRepresentative):
     ``_elementNames_`` bookkeeping.
     """
 
+    #: Child grammar of an ``element`` declaration: an optional
+    #: annotation, at most one inline type, XSD 1.1 ``alternative`` type
+    #: alternatives and identity constraints. Global and local element
+    #: declarations share this content model.
+    _ALLOWED_CHILDREN = (
+        "annotation",
+        "simpleType",
+        "complexType",
+        "key",
+        "keyref",
+        "unique",
+        "alternative",
+    )
+    _MAX_ONE_CHILDREN = ("annotation", "simpleType", "complexType")
+    #: ``alternative`` precedes the identity constraints in the XSD 1.1
+    #: content model (saxonData CTA cta0045).
+    _CHILD_ORDER = (
+        ("simpleType", "complexType"),
+        ("alternative",),
+        ("key", "keyref", "unique"),
+    )
+    #: The inline-type slot holds mutually exclusive alternatives.
+    _ONE_OF_SLOTS = frozenset({0})
+
     # Set by ComplexType._resolveElementRef for ``ref`` sites; the
     # owning parser is attached during clsFor.  Annotations only: the
     # attributes are assigned dynamically.
@@ -86,7 +110,9 @@ class Element(ElementRepresentative):
 
         Reference elements carry no content model of their own (only
         annotations, which carry no parse-relevant information), so
-        their children are not made into ERs.
+        their children are not made into ERs. A non-reference element's
+        children are filtered through ``_acceptChild`` so an illegal
+        child is reported rather than factored.
         """
         if getattr(self, "isElementRef", False):
             return None
@@ -96,6 +122,9 @@ class Element(ElementRepresentative):
             return None
 
         for child in children:
+            if not self._acceptChild(child):
+                self.processedChildren.append(None)
+                continue
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
             childClassName = processedChild.__class__.__name__ if processedChild is not None else ""
