@@ -1375,3 +1375,48 @@ class TestFacetLegality:
             "</xsd:restriction></xsd:simpleType></xsd:schema>"
         )
         assert "facet-conflict" in _schema_codes(report)
+
+    def test_generic_list_zero_length_is_legal(self, parse_schema):
+        """A generic list is zero or more items, so length 0 is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='L'><xsd:list itemType='xsd:int'/></xsd:simpleType>"
+            "<xsd:simpleType name='t'><xsd:restriction base='L'>"
+            "<xsd:length value='0'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" not in _schema_codes(report)
+
+    def test_generic_list_zero_minimum_is_legal(self, parse_schema):
+        """A generic list's fixed minimum stays 0, not 1."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='L'><xsd:list itemType='xsd:int'/></xsd:simpleType>"
+            "<xsd:simpleType name='t'><xsd:restriction base='L'>"
+            "<xsd:minLength value='0'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" not in _schema_codes(report)
+
+    def test_generic_list_zero_maximum_is_legal(self, parse_schema):
+        """A generic list's maximum may be 0 (the empty list)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='L'><xsd:list itemType='xsd:int'/></xsd:simpleType>"
+            "<xsd:simpleType name='t'><xsd:restriction base='L'>"
+            "<xsd:maxLength value='0'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" not in _schema_codes(report)
+
+    def test_list_derived_from_nmtokens_still_fixes_min_length(self, parse_schema):
+        """A user list that restricts NMTOKENS keeps the fixed minimum."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='L'><xsd:restriction base='xsd:NMTOKENS'>"
+            "<xsd:maxLength value='4'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='t'><xsd:restriction base='L'>"
+            "<xsd:minLength value='0'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet-conflict" in _schema_codes(report)

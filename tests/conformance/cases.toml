@@ -2704,6 +2704,25 @@ schema_valid = false
 expected_codes = ["facet-conflict"]
 
 [[case]]
+id = "facets/generic-list-zero-length"
+description = "A generic list accepts the empty list, so its length 0 restriction is legal"
+derived_from = "W3C XMLSchema1TestSuite, group 'list' (generic list value space)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="IntList">
+    <xs:list itemType="xs:int"/>
+  </xs:simpleType>
+  <xs:simpleType name="EmptyList">
+    <xs:restriction base="IntList">
+      <xs:length value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="EmptyList"/>
+</xs:schema>
+'''
+
+[[case]]
 id = "attributes/untyped-attribute-any-simple-type"
 description = "An attribute declaration without a type and without an inline simpleType takes anySimpleType"
 derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (type defaulting)"

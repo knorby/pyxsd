@@ -383,15 +383,24 @@ def _is_list(base: type) -> bool:
     return issubclass(base, (_ListString, XsdList))
 
 
+#: Built-in list types whose value space is one or more items, so they fix
+#: ``minLength`` to 1.  A generic list accepts the empty list (zero items).
+_FIXED_MIN_LENGTH_LISTS = frozenset({"NMTOKENS", "IDREFS", "ENTITIES"})
+
+
 def _base_min_length(base: type | None) -> int | None:
     """A fixed ``minLength`` on a built-in *base*, if it has one.
 
-    Every XSD list type fixes ``minLength`` to 1: an empty list is not a
-    legal value, so a restriction can neither lower the minimum nor set a
-    maximum below it.
+    Only ``NMTOKENS``, ``IDREFS`` and ``ENTITIES`` fix ``minLength`` to 1;
+    a generic list type's value space is zero or more items, so its
+    minimum stays 0.
     """
-    if base is not None and _is_list(base):
-        return 1
+    if base is None:
+        return None
+    for klass in getattr(base, "__mro__", (base,)):
+        name = klass.__dict__.get("name") or klass.__name__
+        if name in _FIXED_MIN_LENGTH_LISTS:
+            return 1
     return None
 
 
