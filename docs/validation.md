@@ -50,6 +50,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `declaration-order` | ERROR | Children are out of order, or an exclusive content kind excludes later children. |
 | `declaration-name` | ERROR | A declaration is missing its required name. |
 | `declaration-attribute` | ERROR | A declaration's XML attribute is illegal for its XSD representation: `default` and `fixed` together, an invalid `use`/`form`/`final`/`block` token, a global-only attribute on a local declaration, a `ref` conflicting with `name`/`type`/`form`/inline type, a `type` attribute together with an inline type, a name or `id` that is not an NCName, a `default`/`fixed` value outside the declared type's lexical/value space (including a user-defined simple type's facets), a substitution member whose derivation the head's `final` excludes, or a declaration in the XML Schema instance namespace. The substitution-member check is deliberately an under-approximation: it reports only a member type whose *immediate* derivation method is excluded, and does not walk a blocked step earlier in the derivation chain or reject a member type that is wholly unrelated to the head's type. |
+| `misplaced-declaration` | ERROR | A declaration sits in a container whose construction-time context cannot hold it: an `xs:attribute` or `xs:attributeGroup` whose containing type has no corresponding declaration table, a compositor (`all`/`choice`/`sequence`) or group reference in a container that cannot accept it, or a non-top-level `xs:notation` or group reference. This is a legacy context-sensitive placement diagnostic emitted while the tree is built; it coexists with the newer table-driven `declaration-child`/`declaration-order` checks. |
 | `facet` | ERROR | A constraining facet is not applicable to its base type, or its declared value is not legal for that base (bad lexical form, outside the base's value space, or a digit facet that violates the fixed value on an integer-derived type). |
 | `facet-conflict` | ERROR | Two constraining facets in one restriction step cannot hold together: mutually exclusive bounds (`minInclusive`/`minExclusive`, `maxInclusive`/`maxExclusive`), a lower bound above the upper bound, or an empty value space once the base type's own fixed bounds are applied (for example `positiveInteger` with `maxExclusive="1"`, or a list `minLength` below 1). |
 | `unexpected-element` | ERROR | Element is not declared in the content model and no wildcard allows it. |
@@ -99,3 +100,48 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 
 `pyxsd --strict` exits with status 1 when the report contains any
 `ERROR`-severity issue. Warnings never affect the exit code.
+
+## Known limitations (schema legality)
+
+The schema-phase checks are intentionally shallow in a few places, and a
+handful of conformance-corpus cases are deferred. Recorded here so they
+survive outside the branch's uncommitted working notes:
+
+- **Substitution-derivation under-approximation.** The `declaration-attribute`
+  substitution-member check reports only a member type whose *immediate*
+  derivation method the head's `final` excludes. It does not walk a blocked
+  step earlier in the derivation chain, and it accepts a member type that is
+  wholly unrelated to the head's type.
+- **Duplicate names and `xs:ID` uniqueness are main-document only.** Duplicate
+  component names and duplicate `id` values contributed by separate
+  included/imported documents are not reported; both checks are scoped to the
+  main schema document.
+- **`vc:*` conditional inclusion.** In a document that uses XSD 1.1 `vc:*`
+  conditional inclusion, the ancestor walk used to evaluate it suppresses
+  same-document duplicate-name detection.
+- **Shared-include conflicting redefine.** A conflicting `xs:redefine` reached
+  through a shared include (the same base document reached by more than one
+  path) is suppressed rather than reported.
+- **Inline list/union members.** `atomic-required` under-reports for *inline*
+  anonymous list/union members; atomicity is checked for named and
+  `memberTypes`-referenced members.
+- **`attP032` false reject.** A valid schema is rejected by the
+  substitution-derivation check. The only fix for it regresses the disputed
+  cyclic `s4_2_4si01`, and the two expectations contradict each other
+  (`attP032` vs `schU1`) within the same suite.
+- **Composition residuals.** `schN10`/`schN12` need group-redefine
+  content-model restriction validation; `schG9`/`schG10` need per-schema
+  import visibility (high-risk under global composition); `schG2.v` is an
+  instance-binding gap.
+- **XSD 1.1 built-in types.** 41 XSD 1.1 built-in types remain unimplemented
+  (the Area H feature gap); schemas that use them are not validated.
+- **Caller-supplied schemas.** A missing caller-supplied resource
+  (`namespace_schemas`, or an instance `xsi:schemaLocation`) is still an
+  `ERROR`, unlike a schema's own missing include/import/redefine, which warns
+  (`Override/over029.v01`).
+
+```{note}
+When re-running the XSTS suite, use a clean bytecode cache
+(`PYTHONPYCACHEPREFIX=$(mktemp -d)`). A same-length source edit can leave a
+header-valid but stale `.pyc` in place and silently invalidate a measurement.
+```
