@@ -51,6 +51,7 @@ from pyxsd.xsd_data_types import (
     HexBinary,
     QName,
     Time,
+    XsdList,
     _date_key,
     _datetime_key,
     _duration_key,
@@ -153,6 +154,8 @@ def _value_length(value: Any) -> int:
         return len(base64.b64decode(_ws_remove(str(value))))
     if isinstance(value, _ListString):
         return len(value.tokens)
+    if isinstance(value, XsdList):
+        return len(value)
     return len(str(value))
 
 
@@ -160,6 +163,8 @@ def _list_items(value: Any) -> list[str] | None:
     """The items of a list-typed value, or ``None`` when it is not a list."""
     if isinstance(value, _ListString):
         return value.tokens
+    if isinstance(value, XsdList):
+        return [str(item) for item in value]
     tokens = getattr(value, "tokens", None)
     if isinstance(tokens, list):
         return [str(token) for token in tokens]
@@ -368,7 +373,7 @@ def _is_binary(base: type) -> bool:
 
 
 def _is_list(base: type) -> bool:
-    return issubclass(base, _ListString)
+    return issubclass(base, (_ListString, XsdList))
 
 
 def _is_numeric_or_temporal(base: type) -> bool:

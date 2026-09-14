@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
-from pyxsd.xsd_data_types import Boolean, XsdDataType
+from pyxsd.xsd_data_types import AnySimpleType, Boolean, XsdDataType
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,18 @@ class Attribute(ElementRepresentative):
         if self.isAttributeRef:
             self.ref = xsdElement.get("ref")
         super().__init__(xsdElement, parent)
-        self.getContainingType().attributes[self.name] = self
+        # Only types with an attribute table accept attribute
+        # declarations; a misplaced attribute (inside a group
+        # definition, for example) is reported rather than crash.
+        container = self.getContainingType()
+        attributes = getattr(container, "attributes", None)
+        if attributes is not None:
+            attributes[self.name] = self
+        else:
+            self.misplacement = (
+                "misplaced-declaration",
+                f"attribute '{self.name}' cannot be declared inside {container.__class__.__name__}",
+            )
 
     def getName(self):
         """Returns the attribute's schema name.
@@ -99,15 +110,14 @@ class Attribute(ElementRepresentative):
         for child in children:
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
-            # An ``xsd:annotation`` is documentation, not the attribute
-            # declaration. Schemas commonly attach one to an attribute
-            # that already carries a ``type`` attribute (GPX does this
-            # for every attribute), and taking its bookkeeping name as
-            # the declared type overwrites the real one.
-            if child.tag.split("}")[-1] == "annotation":
+            # An unknown child (for example an ``xsd:notation``) does
+            # not carry a type name; only an inline ``xsd:simpleType``
+            # supplies one when the attribute has no explicit type.
+            if processedChild is None:
                 continue
-            # An explicit ``type`` attribute wins over any child; a child
-            # is the inline ``xsd:simpleType`` used when there is none.
+            if processedChild.__class__.__name__ != "SimpleType":
+                continue
+            # An explicit ``type`` attribute wins over any child.
             if "type" in self.tagAttributes:
                 continue
             self.type = processedChild.name
@@ -133,7 +143,10 @@ class Attribute(ElementRepresentative):
             return referred.getType()
 
         if "type" not in self.__dict__:
-            raise TypeError(f"Attribute.getType() Error: type is not in {self.name}'s dictionary.")
+            # XSD: an attribute declaration with no ``type`` and no
+            # inline ``simpleType`` child takes anySimpleType, which
+            # accepts any value.
+            return AnySimpleType
 
         # Resolve the QName first so strict mode disambiguates types
         # that share a local name across namespaces; in legacy mode this
@@ -189,8 +202,24 @@ class Attribute(ElementRepresentative):
                     )
                 else:
                     logger.error(message)
-        elif not isinstance(obj, self.getType()):
-            raise TypeError(f"{obj!r} is not an instance of the attribute's type")
+        elif not isinstance(value, self.getType()):
+            # The declared type did not resolve to a validating datatype
+            # (a malformed or unresolved declaration). Record a
+            # structured error; assignment must never raise out of
+            # instance binding.
+            message = (
+                f"attribute '{self.name}' has a value that cannot be "
+                f"validated against its declared type"
+            )
+            parser = getattr(self, "pyXSD", None)
+            if parser is not None:
+                parser.report.add_error(
+                    message,
+                    code="invalid-attribute",
+                    element=getattr(obj, "_name_", None),
+                )
+            else:
+                logger.error(message)
 
         obj.__dict__[self.name] = value
 

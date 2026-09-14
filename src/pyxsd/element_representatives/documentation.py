@@ -1,4 +1,8 @@
+import logging
+
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+
+logger = logging.getLogger(__name__)
 
 
 class Documentation(ElementRepresentative):
@@ -12,6 +16,16 @@ class Documentation(ElementRepresentative):
         self.contType = self.getContainingType()
         if xsdElement.text is not None:
             self.contType.__doc__ = xsdElement.text.strip()
+
+    def processChildren(self):
+        """``documentation`` content is arbitrary XML, never schema
+        components; a child such as an unqualified ``<Documentation/>``
+        must be ignored rather than treated as a declaration.
+        """
+        for child in self.xsdElement:
+            logger.debug("Skipping documentation content %s", child.tag)
+            self.processedChildren.append(None)
+        return None
 
     def getName(self):
         """Makes a name like this- ``ContainingTypeName``|Documentation.

@@ -17,6 +17,7 @@ from pyxsd.element_representatives.element_representative import (
     get_active_namespace_overrides,
     set_active_namespace_overrides,
 )
+from pyxsd.exceptions import PyXSDError
 from pyxsd.parser import PyXSD
 
 SIMPLE_SCHEMA = (
@@ -172,7 +173,7 @@ def test_concurrent_parsers_capture_their_own_context(tmp_path, monkeypatch):
 def test_failed_construction_leaves_no_active_context(tmp_path):
     """A parser that raises while building does not leak its context."""
     missing = tmp_path / "missing"
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(PyXSDError):
         PyXSD(
             missing / "instance.xml",
             xsdFile=missing / "schema.xsd",

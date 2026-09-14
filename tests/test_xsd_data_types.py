@@ -646,10 +646,10 @@ class TestBuiltinNameTable:
             assert klass.name in _PRIMITIVE_TYPES, klass.__name__
             assert _PRIMITIVE_TYPES[klass.name] is klass
 
-    def test_table_has_45_builtins(self):
+    def test_table_has_46_builtins(self):
         from pyxsd.element_representatives.element_representative import _PRIMITIVE_TYPES
 
-        assert len(_PRIMITIVE_TYPES) == 45
+        assert len(_PRIMITIVE_TYPES) == 46
         # Spot-check XSD spellings.
         for xsd_name in (
             "string",
@@ -671,6 +671,7 @@ class TestBuiltinNameTable:
             "QName",
             "NCName",
             "NMTOKENS",
+            "NOTATION",
             "unsignedByte",
             "positiveInteger",
             "anySimpleType",

@@ -10,9 +10,14 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
-from pyxsd.xsd_data_types import XsdDataType, qname_context
+from pyxsd.xsd_data_types import NOTATION, AnySimpleType, XsdDataType, XsdList, qname_context
 
 logger = logging.getLogger(__name__)
+
+#: Marker stored in ``_generatedClass`` while a type's class is being
+#: built. Re-entry into ``clsFor`` while the marker is present means the
+#: type is part of a derivation cycle.
+_CLASS_IN_PROGRESS = object()
 
 #: Marks a simple-content restriction that applies its facets directly to
 #: the complex type being built; ``clsFor`` replaces it with the new class
@@ -111,8 +116,26 @@ class XsdType(ElementRepresentative):
         the base is still used so parsing can continue.
         """
         baseList = []
-        for rawName in self.superClassNames:
+        rawNames = list(self.superClassNames)
+        if getattr(self, "listItemType", None) is not None and rawNames:
+            # A simple type is either a list or derived from a base;
+            # combining both would create classes with conflicting
+            # instance layouts (str from the base, list from XsdList).
+            self._report_ref_error(
+                f"simpleType '{self.name}' cannot combine a list with a restriction or extension",
+                code="conflicting-derivation",
+            )
+            rawNames = []
+        for rawName in rawNames:
             superClassName = self.resolveSchemaQName(rawName, parser=pyXSD)
+            if superClassName in (self.name, self.expandedName):
+                # A type deriving from itself would re-enter clsFor
+                # forever; report the cycle and skip the base.
+                self._report_ref_error(
+                    f"type '{self.name}' derives from itself",
+                    code="circular-derivation",
+                )
+                continue
             base = ElementRepresentative.typeFromName(superClassName, pyXSD)
             if base is None:
                 # An unresolved base must not reach issubclass() or
@@ -125,9 +148,37 @@ class XsdType(ElementRepresentative):
                 continue
             self._checkFinal(base, superClassName)
             baseList.append(base)
+        listItem = getattr(self, "listItemType", None)
+        if listItem is not None and not any(
+            isinstance(base, type) and issubclass(base, XsdList) for base in baseList
+        ):
+            # A schema-declared xs:list simple type is a value list, not
+            # a scalar derived from a base; the item declaration
+            # converts each token (see XsdList and the class's itemType).
+            baseList.append(XsdList)
         if not self.containsSchemaBase(baseList):
             baseList.append(SchemaBase)
         return tuple(baseList)
+
+    def _listItemClass(self, pyXSD):
+        """Resolves the ``itemType`` of a schema-declared list simple type.
+
+        Returns ``None`` when this type is not a list type. An
+        unresolvable item type is reported and anySimpleType is used so
+        the rest of the schema can still load.
+        """
+        rawName = getattr(self, "listItemType", None)
+        if rawName is None:
+            return None
+        itemName = self.resolveSchemaQName(rawName, parser=pyXSD)
+        itemCls = ElementRepresentative.typeFromName(itemName, pyXSD)
+        if itemCls is None:
+            self._report_ref_error(
+                f"item type '{itemName}' of list type '{self.name}' could not be resolved",
+                code="unknown-type",
+            )
+            return AnySimpleType
+        return itemCls
 
     def getDerivation(self) -> str | None:
         """Returns ``"extension"``, ``"restriction"`` or ``None``.
@@ -151,6 +202,41 @@ class XsdType(ElementRepresentative):
                     elif grandName == "Restriction":
                         derivation = derivation or "restriction"
         return derivation
+
+    def _reportMissingDerivationBase(self):
+        """Reports restrictions and extensions that declare no base.
+
+        A restriction may derive from an inline ``simpleType`` instead,
+        so only extensions and restrictions without either are errors.
+        The derivation ER itself cannot report during construction (the
+        parser may not be attached yet), so the check runs while the
+        containing type builds its class.
+        """
+        derivations = []
+        for child in getattr(self, "processedChildren", None) or ():
+            if child is None:
+                continue
+            childName = child.__class__.__name__
+            if childName in ("Restriction", "Extension"):
+                derivations.append(child)
+            elif childName in ("ComplexContent", "SimpleContent"):
+                for grandchild in getattr(child, "processedChildren", None) or ():
+                    if grandchild is not None and grandchild.__class__.__name__ in (
+                        "Restriction",
+                        "Extension",
+                    ):
+                        derivations.append(grandchild)
+        for derivation in derivations:
+            if not getattr(derivation, "hasNoBase", False):
+                continue
+            if derivation.__class__.__name__ == "Restriction":
+                message = (
+                    f"restriction of type '{self.name}' has neither a base "
+                    "attribute nor an inline simple type"
+                )
+            else:
+                message = f"extension of type '{self.name}' has no base attribute"
+            self._report_ref_error(message, code=f"{derivation.__class__.__name__.lower()}-base")
 
     def _checkFinal(self, base, superClassName):
         """Reports a ``final`` violation against a derivation base.
@@ -278,8 +364,13 @@ class XsdType(ElementRepresentative):
         candidates = []
         for entries in table.values():
             for entry in entries:
-                if componentKind(entry) == "attribute" and not getattr(
-                    entry, "isAttributeRef", False
+                if (
+                    componentKind(entry) == "attribute"
+                    and not getattr(entry, "isAttributeRef", False)
+                    # Only global declarations are valid ref targets; a
+                    # local declaration that happens to share the name
+                    # must not satisfy the reference.
+                    and entry.checkTopLevelType()
                 ):
                     candidates.append(entry)
         return candidates
@@ -306,7 +397,12 @@ class XsdType(ElementRepresentative):
         attr.referredAttribute = candidate
         attr.name = candidate.name
         if "type" not in attr.__dict__:
-            attr.type = candidate.type
+            # An untyped global declaration (anySimpleType) has no
+            # ``type`` entry; the reference site adopts it through
+            # ``getType`` instead of copying an absent attribute.
+            candidateType = getattr(candidate, "type", None)
+            if candidateType is not None:
+                attr.type = candidateType
         attr.pyXSD = pyXSD
         # The referred global declaration may not have been reached while
         # building its containing type's class, so it can lack the
@@ -354,11 +450,7 @@ class XsdType(ElementRepresentative):
         Falls back to logging when no parser is attached (for example
         when classes are built in isolation).
         """
-        parser = getattr(self.getSchema(), "pyXSD", None)
-        if parser is not None:
-            parser.report.add_error(message, code=code, element=self.name)
-        else:
-            logger.error("%s[%s] %s", self.name, code, message)
+        self._reportSchemaError(message, code=code)
 
     def makeUnionClass(self, pyXSD):
         """Produces the class for a union simple type.
@@ -458,6 +550,47 @@ class XsdType(ElementRepresentative):
         base = bases[0] if bases else None
         parent = getattr(base, "_facetConstraints_", None) if isinstance(base, type) else None
         return self._constraintNamespace(pyXSD, self, base, parent)
+
+    def _checkNotationRestriction(self, base):
+        """Reports XSD 1.1 NOTATION restriction violations.
+
+        A *direct* restriction of ``xs:NOTATION`` must carry an
+        enumeration facet (Schema Component Constraint), and every
+        enumeration value must name a notation declared in the schema
+        (simple094, simple095). A type derived from such a restriction
+        may add other facets without repeating the enumeration, so only
+        the primitive itself is checked.
+        """
+        if base is not NOTATION:
+            return
+        enumerations = list(getattr(self, "enumerations", None) or ())
+        if not enumerations:
+            self._report_ref_error(
+                "a restriction of NOTATION must include an enumeration facet",
+                code="notation-enumeration-required",
+            )
+            return
+        declared = self._declaredNotations()
+        for value in enumerations:
+            local = str(value).split(":")[-1] if value else ""
+            if local not in declared:
+                self._report_ref_error(
+                    f"enumeration value '{value}' of a NOTATION restriction "
+                    "is not a declared notation",
+                    code="unknown-notation",
+                )
+
+    def _declaredNotations(self):
+        """Returns the local names of the schema's notation declarations."""
+        table = getattr(self.getSchema(), "components", None)
+        names: set[str] = set()
+        if table is None:
+            return names
+        for entries in table.values():
+            for entry in entries:
+                if type(entry).__name__ == "Notation" and entry.name:
+                    names.add(str(entry.name))
+        return names
 
     def _constraintNamespace(self, pyXSD, source, base, parent):
         """Builds the ``_facetConstraints_`` and ``__new__`` entries for a
@@ -607,7 +740,17 @@ class XsdType(ElementRepresentative):
         # when a derived type is declared before its base.
         cached = getattr(self, "_generatedClass", None)
         if cached is not None:
+            if cached is _CLASS_IN_PROGRESS:
+                # Re-entry means an indirect derivation cycle (A derives
+                # from B which derives from A): report it and let the
+                # caller treat this base as unresolvable.
+                self._report_ref_error(
+                    f"type '{self.name}' is part of a circular derivation",
+                    code="circular-derivation",
+                )
+                return None
             return cached
+        self._generatedClass = _CLASS_IN_PROGRESS
 
         if getattr(self, "unionSpec", None) is not None:
             union = self.makeUnionClass(pyXSD)
@@ -616,8 +759,11 @@ class XsdType(ElementRepresentative):
 
         self.resolveAttributeGroupRefs(pyXSD)
         self.resolveAttributeRefs(pyXSD)
+        self._reportMissingDerivationBase()
 
         bases = self.getBaseList(pyXSD)
+        if self.__class__.__name__ == "SimpleType":
+            self._checkNotationRestriction(bases[0] if bases else None)
         namespace = {
             "pyXSD": pyXSD,
             "name": self.name,
@@ -627,6 +773,9 @@ class XsdType(ElementRepresentative):
             # invalid or unresolved content.
             "_parseMode_": getattr(pyXSD, "mode", ParseModes.STRICT),
         }
+        itemCls = self._listItemClass(pyXSD)
+        if itemCls is not None:
+            namespace["itemType"] = itemCls
         namespace.update(self._facetNamespace(pyXSD, bases))
         namespace.update(self._simpleContentNamespace(pyXSD, bases))
         # Expand group references before reading the wildcard metadata:

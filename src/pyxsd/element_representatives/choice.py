@@ -13,25 +13,31 @@ class Choice(ElementRepresentative):
         """
         self.elements = []
         super().__init__(xsdElement, parent)
-        self.getContainingType().sequencesOrChoices.append(self)
+        containingType = self.getContainingType()
+        compositors = getattr(containingType, "sequencesOrChoices", None)
+        if compositors is not None:
+            compositors.append(self)
+        else:
+            self.misplacement = (
+                "misplaced-declaration",
+                f"choice cannot appear inside {containingType.__class__.__name__}",
+            )
 
     def getName(self):
         """Makes a name like this- choice``some id number``."""
-        choiceNum = len(self.getContainingType().sequencesOrChoices) + 1
+        compositors = getattr(self.getContainingType(), "sequencesOrChoices", None)
+        choiceNum = len(compositors) + 1 if compositors is not None else 1
         return f"choice{choiceNum}"
 
     def getMinOccurs(self):
         """Retrieves the minOccurs value for elements in the choice.  Sets
         it to the default of 1 if it is not specified.
         """
-        return int(getattr(self, "minOccurs", 1))
+        return self._occursValue("minOccurs")
 
     def getMaxOccurs(self):
         """Retrieves the maxOccurs value for elements in the choice.  Sets
         it to the default of 1 if it is not specified.  Sets
         'unbounded' values to 99999, since it needs to be an integer.
         """
-        maxOccurs = getattr(self, "maxOccurs", 1)
-        if maxOccurs == "unbounded":
-            return 99999
-        return int(maxOccurs)
+        return self._occursValue("maxOccurs")
