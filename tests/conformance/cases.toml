@@ -4089,3 +4089,70 @@ schema = '''
   </xs:attributeGroup>
 </xs:schema>
 '''
+
+[[case]]
+id = "composition/conflicting-redefines-in-two-namespaces-invalid"
+description = "Two imports redefine the same group from a chameleon base into different namespaces; the refs must not be resolved away, so the conflicting redefines stay rejected (W3C schN6)"
+derived_from = "W3C XMLSchema1TestSuite, group 'schN6' (conflicting redefines across namespaces)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:d" xmlns="urn:d">
+  <xs:import namespace="urn:a" schemaLocation="a.xsd"/>
+  <xs:import namespace="urn:b" schemaLocation="b.xsd"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["unknown-group"]
+[case.files]
+"a.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:a" xmlns="urn:a" elementFormDefault="qualified">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="c-g2">
+      <xs:choice>
+        <xs:element name="c21" type="xs:string" maxOccurs="2"/>
+        <xs:element name="c22" type="xs:string" maxOccurs="2"/>
+      </xs:choice>
+    </xs:group>
+  </xs:redefine>
+  <xs:complexType name="a-ct">
+    <xs:sequence>
+      <xs:group ref="c-g2"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="e1" type="a-ct"/>
+</xs:schema>
+'''
+"b.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:b" xmlns="urn:b" elementFormDefault="qualified">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="c-g2">
+      <xs:choice>
+        <xs:group ref="c-g2"/>
+        <xs:element name="c23" type="xs:int" maxOccurs="2"/>
+        <xs:element name="c24" type="xs:string" maxOccurs="2"/>
+      </xs:choice>
+    </xs:group>
+  </xs:redefine>
+  <xs:complexType name="b-ct">
+    <xs:group ref="c-g2"/>
+  </xs:complexType>
+  <xs:element name="e1" type="b-ct"/>
+</xs:schema>
+'''
+"base.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="c-g2">
+    <xs:choice>
+      <xs:element name="c21" type="xs:int" maxOccurs="3"/>
+      <xs:element name="c22" type="xs:int" maxOccurs="3"/>
+    </xs:choice>
+  </xs:group>
+</xs:schema>
+'''

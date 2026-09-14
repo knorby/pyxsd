@@ -251,7 +251,7 @@ def _compile_group_ref(
     group = None
     resolver = getattr(ref_site, "resolveReference", None)
     if resolver is not None:
-        group = resolver(ref, ref_site._globalGroupCandidates(parser=py_xsd), parser=py_xsd)
+        group = resolver(ref, schema.groups.values(), parser=py_xsd)
     if group is None:
         group = schema.groups.get(ref) or schema.groups.get(ref.split(":")[-1])
     if group is None:

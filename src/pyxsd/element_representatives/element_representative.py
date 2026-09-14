@@ -910,12 +910,12 @@ class ElementRepresentative:
     def _globalComponentCandidates(self, kind, legacy_values, *, parser=None):
         """Returns the global candidates a reference may resolve to.
 
-        In ``strict`` namespace mode the per-schema ``groups`` and
-        ``attributeGroups`` dictionaries are keyed by local name, so two
-        definitions that share a local name in different namespaces (for
-        example ``x:car`` and ``y:car``) collapse onto a single entry.
-        The parser-owned component table preserves both by expanded name,
-        so gather the global definitions of *kind* from it instead.
+        In ``strict`` namespace mode the per-schema ``attributeGroups``
+        dictionary is keyed by local name, so two definitions that share a
+        local name in different namespaces (for example ``x:car`` and
+        ``y:car``) collapse onto a single entry. The parser-owned component
+        table preserves both by expanded name, so gather the global
+        definitions of *kind* from it instead.
 
         A local name is only taken from the component table when it is
         declared more than once *in different namespaces* — the case the
@@ -951,10 +951,6 @@ class ElementRepresentative:
             legacyEntry = legacy.get(local) if legacy is not None else None
             candidates.append(legacyEntry if legacyEntry is not None else entries[0])
         return candidates
-
-    def _globalGroupCandidates(self, *, parser=None):
-        """Global ``xs:group`` definitions, namespace-aware in strict mode."""
-        return self._globalComponentCandidates("group", self.getSchema().groups, parser=parser)
 
     def _globalAttributeGroupCandidates(self, *, parser=None):
         """Global ``xs:attributeGroup`` definitions, namespace-aware."""
