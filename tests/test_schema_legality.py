@@ -1048,3 +1048,175 @@ class TestAnnotationDeclarationLegality:
             "</xsd:schema>"
         )
         assert "declaration-attribute" not in _schema_codes(report)
+
+
+class TestDuplicateComponentNames:
+    """Duplicate names within one schema symbol space (XSD 1.0 §2.5).
+
+    A symbol space holds one name per global component kind: simple and
+    complex types share one, while elements, attributes, groups and
+    attribute groups each have their own. Within a single element
+    declaration the ``key``/``keyref``/``unique`` names share one too.
+    Local declarations are scoped to their containing complex type and
+    must not be compared across types.
+    """
+
+    def test_duplicate_complex_type_reports_declaration_duplicate(self, parse_schema):
+        """ctI001: two complex types of one name in one symbol space."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'/>"
+            "<xsd:complexType name='t'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_simple_and_complex_type_share_a_symbol_space(self, parse_schema):
+        """ctI002: simple and complex type definitions share one space."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "<xsd:complexType name='t'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_duplicate_global_element_reports_declaration_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='e' type='xsd:string'/>"
+            "<xsd:element name='e' type='xsd:string'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_duplicate_global_attribute_reports_declaration_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_duplicate_group_reports_declaration_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:group name='g'><xsd:sequence/></xsd:group>"
+            "<xsd:group name='g'><xsd:sequence/></xsd:group>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_duplicate_attribute_group_reports_declaration_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attributeGroup name='ag'/>"
+            "<xsd:attributeGroup name='ag'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_duplicate_identity_constraint_reports_declaration_duplicate(self, parse_schema):
+        """Two key constraints with one name on the same element declaration."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root'>"
+            "<xsd:key name='k'><xsd:selector xpath='a'/><xsd:field xpath='.'/></xsd:key>"
+            "<xsd:key name='k'><xsd:selector xpath='b'/><xsd:field xpath='.'/></xsd:key>"
+            "</xsd:element></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_distinct_identity_constraints_across_kinds_are_clean(self, parse_schema):
+        """A key, a unique and a keyref may share one element; only their
+        names matter, and distinct names are legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root'>"
+            "<xsd:key name='KEY'><xsd:selector xpath='a'/><xsd:field xpath='.'/></xsd:key>"
+            "<xsd:unique name='UNIQ'><xsd:selector xpath='b'/><xsd:field xpath='.'/></xsd:unique>"
+            "<xsd:keyref name='REF' refer='KEY'>"
+            "<xsd:selector xpath='c'/><xsd:field xpath='.'/></xsd:keyref>"
+            "</xsd:element></xsd:schema>"
+        )
+        assert "declaration-duplicate" not in _schema_codes(report)
+
+    def test_element_and_type_share_one_name(self, parse_schema):
+        """Different symbol spaces: an element and a type may share a name."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='t' type='xsd:string'/>"
+            "<xsd:complexType name='t'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" not in _schema_codes(report)
+
+    def test_attribute_and_type_same_name_is_clean(self, parse_schema):
+        """ctI003: an attribute and a complex type may share a name."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='fooType' type='xsd:string'/>"
+            "<xsd:complexType name='fooType'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" not in _schema_codes(report)
+
+    def test_local_element_names_may_repeat_across_types(self, parse_schema):
+        """name00301m1: local element declarations are scoped to their
+        containing complex type, so the same local name in two types is
+        not a duplicate."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:sequence>"
+            "<xsd:element name='local' type='xsd:string'/></xsd:sequence></xsd:complexType>"
+            "<xsd:complexType name='t2'><xsd:sequence>"
+            "<xsd:element name='local' type='xsd:string'/></xsd:sequence></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" not in _schema_codes(report)
+
+
+class TestCompositorSingleOccurrenceGrammar:
+    """``all``/``sequence``/``choice`` allow one annotation each."""
+
+    def test_duplicate_annotation_in_all_reports_declaration_duplicate(self, parse_schema):
+        """annotB004: an ``all`` may carry at most one annotation."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root'><xsd:complexType><xsd:all>"
+            "<xsd:annotation><xsd:documentation/></xsd:annotation>"
+            "<xsd:annotation><xsd:documentation/></xsd:annotation>"
+            "</xsd:all></xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_duplicate_annotation_in_sequence_reports_declaration_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:sequence>"
+            "<xsd:annotation/><xsd:annotation/>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_repeated_element_children_in_all_are_allowed(self, parse_schema):
+        """The max-one table must not cap repeated element children."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root'><xsd:complexType><xsd:all>"
+            "<xsd:element name='a' type='xsd:string'/>"
+            "<xsd:element name='b' type='xsd:string'/>"
+            "</xsd:all></xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-duplicate" not in _schema_codes(report)
+
+    def test_repeated_particles_in_choice_are_allowed(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:choice>"
+            "<xsd:sequence><xsd:element name='a'/></xsd:sequence>"
+            "<xsd:sequence><xsd:element name='b'/></xsd:sequence>"
+            "</xsd:choice></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-duplicate" not in _schema_codes(report)

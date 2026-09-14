@@ -3448,3 +3448,168 @@ schema = '''
   <xs:element name="root" type="xs:string"/>
 </xs:schema>
 '''
+
+[[case]]
+id = "legality/duplicate-complexType-name"
+description = "Two complexType definitions may not share a name (ctI001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="fooType">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="fooType">
+    <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="fooType"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-type-symbol-space"
+description = "Simple and complex type definitions share one symbol space (ctI002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="fooType"><xs:restriction base="xs:string"/></xs:simpleType>
+  <xs:complexType name="fooType">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="fooType"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-global-element-name"
+description = "Two global element declarations may not share a name"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-global-attribute-name"
+description = "Two global attribute declarations may not share a name"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="ga" type="xs:string"/>
+  <xs:attribute name="ga" type="xs:string"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-group-name"
+description = "Two model group definitions may not share a name"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g"><xs:sequence/></xs:group>
+  <xs:group name="g"><xs:sequence/></xs:group>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-attributeGroup-name"
+description = "Two attribute group definitions may not share a name"
+derived_from = "W3C XMLSchema1TestSuite, group 'attributeGroup' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="ag"><xs:attribute name="a" type="xs:string"/></xs:attributeGroup>
+  <xs:attributeGroup name="ag"><xs:attribute name="b" type="xs:string"/></xs:attributeGroup>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-annotation-in-all"
+description = "An all content model may carry at most one annotation (annotB004)"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotations' (all content model)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:all>
+        <xs:annotation><xs:documentation/></xs:annotation>
+        <xs:annotation><xs:documentation/></xs:annotation>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/element-and-type-share-name-allowed"
+description = "An element declaration and a type may share a name (ctI003)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (distinct symbol spaces)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="fooType" type="xs:string"/>
+  <xs:complexType name="fooType">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="fooType"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/local-element-names-repeat-allowed"
+description = "The same local element name may appear in two complex types (name00301m1)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (local declaration scoping)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="type1">
+    <xs:sequence><xs:element name="Local" type="xs:boolean"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="type2">
+    <xs:sequence><xs:element name="Local" type="xs:decimal"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/repeated-elements-in-all-allowed"
+description = "An all content model holds several distinct element children"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (all content model)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:all>
+        <xs:element name="a" type="xs:string"/>
+        <xs:element name="b" type="xs:string"/>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''

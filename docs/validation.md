@@ -46,7 +46,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | ---- | -------- | ------- |
 | `order` | ERROR | Child order violates the sequence content model. |
 | `declaration-child` | ERROR | A child element is not allowed by the declaration's child grammar. |
-| `declaration-duplicate` | ERROR | A child that may appear at most once is repeated, two distinct alternatives (for example `simpleContent` and `complexContent`) occupy the same exclusive slot, or two declarations share an `xs:ID`. |
+| `declaration-duplicate` | ERROR | A child that may appear at most once is repeated, two distinct alternatives (for example `simpleContent` and `complexContent`) occupy the same exclusive slot, two declarations share an `xs:ID`, or two named components share one symbol space (a duplicate global element/attribute/type/group/attributeGroup, or two identity constraints of one element with the same name). |
 | `declaration-order` | ERROR | Children are out of order, or an exclusive content kind excludes later children. |
 | `declaration-name` | ERROR | A declaration is missing its required name. |
 | `declaration-attribute` | ERROR | A declaration's XML attribute is illegal for its XSD representation: `default` and `fixed` together, an invalid `use`/`form`/`final`/`block` token, a global-only attribute on a local declaration, a `ref` conflicting with `name`/`type`/`form`/inline type, a name or `id` that is not an NCName, a `default`/`fixed` value outside the declared type's lexical space, or a declaration in the XML Schema instance namespace. |

@@ -10,6 +10,11 @@ class All(ElementRepresentative):
     containing type, so the compositor machinery treats it uniformly.
     """
 
+    #: An ``all`` may carry at most one ``annotation``; its element (and
+    #: XSD 1.1 wildcard/group) children may repeat, so only the
+    #: annotation is capped.
+    _MAX_ONE_CHILDREN = ("annotation",)
+
     def __init__(self, xsdElement, parent):
         """Adds itself to the sequencesOrChoices list in its containing
         type.  Makes a blank list for element children.  Uses the ER

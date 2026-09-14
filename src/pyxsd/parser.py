@@ -99,6 +99,11 @@ _COMPOSABLE_TAGS = {
     "notation",
 }
 
+#: Namespace of the XSD 1.1 conditional-inclusion attributes
+#: (``vc:minVersion`` etc.). Version selectors may legitimately leave
+#: several same-named declarations for different versions.
+_VC_NS = "http://www.w3.org/2007/XMLSchema-versioning"
+
 
 class PyXSD:
     """Main class of the program that is in charge of data flow.
@@ -116,6 +121,12 @@ class PyXSD:
     xsdFile: str | Path | os.PathLike[str] | IO[str] | None
     xmlFileOutput: str | Path | bool
     schemaRootInstance: Any
+
+    #: ER class names for the identity-constraint definitions. Their
+    #: names share one symbol space scoped to the containing element
+    #: declaration (XSD 1.0 §3.11), unlike the per-target-namespace
+    #: symbol spaces of the global components.
+    _IDENTITY_KINDS = ("Key", "Keyref", "Unique")
 
     def __init__(
         self,
@@ -424,6 +435,7 @@ class PyXSD:
         )
         seen: set[int] = set()
         seenIds: dict[str, Any] = {}
+        declared: dict[tuple[str, Any, str], Any] = {}
         stack = [schemaER]
         while stack:
             er = stack.pop()
@@ -442,6 +454,7 @@ class PyXSD:
                 )
             self._checkChildGrammar(er)
             self._checkDeclarationId(er, seenIds)
+            self._checkDuplicateName(er, declared)
             er.checkDeclarationLegality()
             misplacement = getattr(er, "misplacement", None)
             if misplacement is not None:
@@ -488,6 +501,91 @@ class PyXSD:
             )
             return
         seenIds[value] = er
+
+    def _checkDuplicateName(self, er: Any, declared: dict[tuple[str, Any, str], Any]) -> None:
+        """Reports a named component declared twice in one symbol space.
+
+        XSD 1.0 §2.5 gives each target namespace one symbol space per
+        global component kind, except that simple and complex type
+        definitions share one; element, attribute, model group and
+        attribute group definitions each have their own. A second
+        declaration of the same name in a symbol space is the reported
+        error. Identity-constraint names (``key``/``keyref``/
+        ``unique``) share one symbol space scoped to their containing
+        element declaration. Local element and attribute declarations
+        are scoped to their containing complex type and are not
+        compared here.
+        """
+        element = getattr(er, "xsdElement", None)
+        name = element.get("name") if element is not None else None
+        if not name:
+            return
+        if element is not None and id(element) in self._composedElementIds:
+            # A component spliced in from an included, imported or
+            # redefined document is not compared against the main
+            # schema's components. Composition may legitimately expose a
+            # name twice (nested redefines, a re-parsed document), so the
+            # check is scoped to the main document, matching the ``id``
+            # uniqueness scope in ``_checkDeclarationId``.
+            return
+        if self._inConditionalInclusion(er):
+            # XSD 1.1 conditional-inclusion declarations (``vc:*``) may
+            # share a name, selected by version or availability. Without
+            # evaluating the selectors, do not report the duplicate.
+            return
+        typeName = type(er).__name__
+        if typeName in self._IDENTITY_KINDS:
+            parent = getattr(er, "parent", None)
+            if parent is None or type(parent).__name__ != "Element":
+                return
+            key = ("identity", id(parent), name)
+            label = "identity constraint"
+        else:
+            kind = componentKind(er)
+            if kind is None or not er.isGlobalDeclaration():
+                return
+            namespace = er.getNamespace()
+            if namespace == XML_NS:
+                # The XML-namespace attributes (xml:lang, xml:space, ...)
+                # are registered as built-ins before the ER run and may
+                # also be imported from the XML namespace schema; a
+                # repeat there is not an authoring error.
+                return
+            key = (kind, namespace, name)
+            label = {
+                "element": "element",
+                "attribute": "attribute",
+                "type": "type",
+                "group": "group",
+                "attributeGroup": "attributeGroup",
+            }[kind]
+        if key in declared:
+            self.report.add_error(
+                f"duplicate {label} declaration '{name}'",
+                code="declaration-duplicate",
+                element=er.rawTag,
+                phase="schema",
+            )
+            return
+        declared[key] = er
+
+    @staticmethod
+    def _inConditionalInclusion(er: Any) -> bool:
+        """Whether *er* or an ancestor carries an ``vc:*`` attribute.
+
+        Conditional inclusion can produce declarations that do not
+        coexist for any single schema version, so their names must not be
+        compared without evaluating the version selectors.
+        """
+        node = er
+        while node is not None:
+            element = getattr(node, "xsdElement", None)
+            if element is not None and any(
+                key.startswith(f"{{{_VC_NS}}}") for key in element.attrib
+            ):
+                return True
+            node = getattr(node, "parent", None)
+        return False
 
     def _checkChildGrammar(self, er: Any) -> None:
         """Reports a declaration's children against its grammar table.

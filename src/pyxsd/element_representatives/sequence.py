@@ -4,6 +4,10 @@ from pyxsd.element_representatives.element_representative import ElementRepresen
 class Sequence(ElementRepresentative):
     """The class for the sequence tag."""
 
+    #: A ``sequence`` may carry at most one ``annotation``; its particle
+    #: children (element/group/choice/sequence/any) may repeat.
+    _MAX_ONE_CHILDREN = ("annotation",)
+
     def __init__(self, xsdElement, parent):
         """Adds itself to the sequencesOrChoices list in its containing
         complexType.  Makes a blank list for element children.  Uses the
