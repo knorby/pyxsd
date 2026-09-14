@@ -2844,17 +2844,34 @@ schema = '''
 
 [[case]]
 id = "legality/foreign-annotation-in-permissive-container"
-description = "A foreign annotation child inside a permissive sequence is not an order violation"
-derived_from = "pyxsd regression guard for the annotation-order check (no grammar declared)"
+description = "Arbitrary foreign XML in an appinfo/documentation body is not an order violation"
+derived_from = "pyxsd regression guard for the annotation-order check (permissive bodies)"
 schema = '''
 <?xml version="1.0"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:f="urn:foreign">
+  <xs:annotation>
+    <xs:appinfo><f:annotation/></xs:appinfo>
+    <xs:documentation><f:annotation/></xs:documentation>
+  </xs:annotation>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/sequence-annotation-out-of-order"
+description = "Annotation after a sequence child is out of order (untabulated container)"
+derived_from = "W3C XMLSchema1TestSuite, group 'sequence' (annotation first)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:complexType name="t">
     <xs:sequence>
       <xs:element name="a" type="xs:string"/>
-      <f:annotation/>
+      <xs:annotation><xs:documentation/></xs:annotation>
     </xs:sequence>
   </xs:complexType>
   <xs:element name="root" type="t"/>
 </xs:schema>
 '''
+schema_valid = false
+expected_codes = ["declaration-order"]

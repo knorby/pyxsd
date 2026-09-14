@@ -66,20 +66,49 @@ class TestChildGrammarInfra:
         )
         assert "declaration-order" in _schema_codes(report)
 
-    def test_permissive_container_does_not_report_annotation_order(self, parse_schema):
-        """A foreign child whose local name is ``annotation`` inside a
-        permissive container (``sequence`` here) must not fire the
-        annotation-order check: the container declares no grammar, so the
-        ordering rule does not apply to it.
+    def test_permissive_body_does_not_report_annotation_order(self, parse_schema):
+        """Arbitrary foreign XML inside an ``appinfo``/``documentation``
+        body must not emit a grammar-order error: those bodies are
+        permissive, not schema components.
         """
         report = parse_schema(
             "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' xmlns:f='urn:foreign'>"
-            "<xsd:complexType name='t'><xsd:sequence>"
-            "<xsd:element name='a' type='xsd:string'/>"
-            "<f:annotation/>"
-            "</xsd:sequence></xsd:complexType></xsd:schema>"
+            "<xsd:annotation>"
+            "<xsd:appinfo><f:annotation/></xsd:appinfo>"
+            "<xsd:documentation><f:annotation/></xsd:documentation>"
+            "</xsd:annotation></xsd:schema>"
         )
         assert "declaration-order" not in _schema_codes(report)
+
+    def test_foreign_annotation_is_not_a_schema_child(self, parse_schema):
+        """A foreign-namespaced element whose local name is ``annotation``
+        is not an XSD annotation: it is an illegal child of a complexType,
+        but must not drive the annotation-order check.
+        """
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' xmlns:f='urn:foreign'>"
+            "<xsd:complexType name='t'>"
+            "<xsd:simpleContent><xsd:extension base='xsd:string'/></xsd:simpleContent>"
+            "<f:annotation/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        codes = _schema_codes(report)
+        assert "declaration-child" in codes
+        assert "declaration-order" not in codes
+
+    def test_untabulated_container_reports_annotation_order(self, parse_schema):
+        """A container with no grammar table yet (``sequence``) still
+        enforces annotation-first: the check must not be gated on the
+        presence of a table.
+        """
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:sequence>"
+            "<xsd:element name='a' type='xsd:string'/>"
+            "<xsd:annotation><xsd:documentation/></xsd:annotation>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-order" in _schema_codes(report)
 
 
 class TestContainerGrammar:

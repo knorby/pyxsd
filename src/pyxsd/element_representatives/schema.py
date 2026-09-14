@@ -53,6 +53,9 @@ class Schema(ComplexType):
         ),
     )
     _EXCLUSIVE_SLOTS = frozenset()
+    #: The schema root allows annotations in any position (and repeated),
+    #: so the generic "annotation must be first" rule does not apply.
+    _ANNOTATION_FIRST = False
 
     def __init__(self, xsdElement, parent):
         """Stores all the attributeGroups, complexTypes, and simpleTypes

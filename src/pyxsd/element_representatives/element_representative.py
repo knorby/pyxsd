@@ -272,6 +272,11 @@ class ElementRepresentative:
     #: ``simpleContent``/``complexContent`` excludes particles and
     #: attributes).
     _EXCLUSIVE_SLOTS: frozenset[int] = frozenset()
+    #: When true (the XSD rule for every declaration), a schema-namespace
+    #: ``annotation`` child must be the first schema child. The schema
+    #: root sets this false: its content model allows annotations in any
+    #: position, and repeatedly.
+    _ANNOTATION_FIRST: bool = True
 
     def __init__(self, xsdElement, parent):
         """See the documentation for the ElementRepresentative system at
@@ -324,19 +329,26 @@ class ElementRepresentative:
     def processChildren(self):
         """Calls the ``factory`` on all of the children of an element.
 
-        When ``_ALLOWED_CHILDREN`` is set, a child whose local name is
-        not in the table (or which is not in the XML Schema namespace)
-        is not a schema component of this element; its tag is recorded
-        on ``unexpectedChildTags`` for the parser to report later.
+        Only schema-namespace children are recorded on ``childTags``;
+        the duplicate/order/annotation checks operate on schema
+        components, so a foreign child whose local name happens to be
+        ``annotation`` (arbitrary XML in an ``appinfo``/``documentation``
+        body, say) never drives grammar-order reporting. When
+        ``_ALLOWED_CHILDREN`` is set, any child whose local name is not in
+        the table, or which is not in the XML Schema namespace, is not a
+        schema component of this element; its tag is recorded on
+        ``unexpectedChildTags`` for the parser to report later.
         """
         children = list(self.xsdElement)
         if not children:
             return None
         for child in children:
+            inSchema = namespace_of(child.tag) == XSD_NS
             tag = local_name(child.tag)
-            self.childTags.append(tag)
+            if inSchema:
+                self.childTags.append(tag)
             if self._ALLOWED_CHILDREN is not None and (
-                namespace_of(child.tag) != XSD_NS or tag not in self._ALLOWED_CHILDREN
+                not inSchema or tag not in self._ALLOWED_CHILDREN
             ):
                 self.unexpectedChildTags.append(tag)
                 self.processedChildren.append(None)
