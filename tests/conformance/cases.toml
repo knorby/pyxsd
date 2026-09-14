@@ -3975,3 +3975,4 @@ schema = '''
   <xs:element name="E" type="answer" default="true"/>
 </xs:schema>
 '''
+schema_valid = true

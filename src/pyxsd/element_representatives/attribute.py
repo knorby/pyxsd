@@ -152,6 +152,11 @@ class Attribute(ElementRepresentative):
         The instance of PyXSD is attached to every element and attribute
         while the classes for the schema types are being built.
         Clearly, this function is used after the main ER run.
+
+        An attribute declared inside a global ``attributeGroup`` is never
+        installed as a class descriptor, so it never receives ``pyXSD``;
+        fall back to the owning schema's parser (as ``Element.getType``
+        does) so value-constraint validation can still resolve its type.
         """
         if getattr(self, "isAttributeRef", False):
             referred = getattr(self, "referredAttribute", None)
@@ -168,11 +173,12 @@ class Attribute(ElementRepresentative):
         # Resolve the QName first so strict mode disambiguates types
         # that share a local name across namespaces; in legacy mode this
         # is the same raw-type lookup as before.
+        parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
         resolved = self.resolvedTypeName()
-        if resolved is not None and resolved in self.pyXSD.classes:
-            return self.pyXSD.classes[resolved]
+        if parser is not None and resolved is not None and resolved in parser.classes:
+            return parser.classes[resolved]
 
-        return self.typeFromName(resolved, self.pyXSD)
+        return self.typeFromName(resolved, parser)
 
     def __get__(self, obj, objtype=None):
         """Gets an attribute value from the obj's dictionary.

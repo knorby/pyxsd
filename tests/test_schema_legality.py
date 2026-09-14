@@ -855,6 +855,26 @@ class TestAttributeDeclarationLegality:
         )
         assert "declaration-attribute" not in _schema_codes(report)
 
+    def test_attribute_group_standalone_default_invalid_reports(self, parse_schema):
+        """A default in an unreferenced global attributeGroup is still validated."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attributeGroup name='ag'>"
+            "<xsd:attribute name='a' type='xsd:boolean' default='Yes'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_group_standalone_default_valid_is_clean(self, parse_schema):
+        """A valid default in an unreferenced global attributeGroup is clean."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attributeGroup name='ag'>"
+            "<xsd:attribute name='a' type='xsd:boolean' default='true'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
 
 class TestElementDeclarationLegality:
     """Semantic element-declaration legality (elemC/elemF/elemJ, schZ)."""
