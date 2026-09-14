@@ -41,3 +41,7 @@ class Sequence(ElementRepresentative):
         silently ignored.
         """
         self._checkParticleOccurs()
+
+    def _emptiableParticle(self, visited: set) -> bool:
+        """A sequence can match zero when empty or all-empty children."""
+        return self._compositorEmptiable(visited)

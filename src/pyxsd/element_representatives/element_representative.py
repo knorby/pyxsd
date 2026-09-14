@@ -601,6 +601,62 @@ class ElementRepresentative:
                 code="declaration-attribute",
             )
 
+    def _silentOccurs(self, attrName):
+        """Reads ``minOccurs``/``maxOccurs`` without reporting.
+
+        Like ``_occursValue`` but garbage lexical values read as the
+        default 1 instead of raising ``invalid-occurs`` — the
+        declaration walk reports lexical failures on the owning
+        declaration exactly once, so lazy readers (emptiability) must
+        stay silent to avoid duplicate issues.
+        """
+        raw = getattr(self, attrName, 1)
+        text = str(raw).strip()
+        if attrName == "maxOccurs" and text == "unbounded":
+            return 99999
+        if self._OCCURS_PATTERN.fullmatch(text):
+            return int(text)
+        return 1
+
+    @property
+    def emptiable(self):
+        """Whether this particle can match zero elements.
+
+        Elements and wildcards are emptiable exactly when their
+        ``minOccurs`` is 0; compositors and groups override
+        ``_emptiableParticle``. A group reference resolves its
+        emptiability lazily through the group it names, so group
+        cycles must be guarded by the caller-supplied visited set.
+        """
+        return self._emptiableParticle(set())
+
+    def _emptiableParticle(self, visited: set) -> bool:
+        return self._silentOccurs("minOccurs") == 0
+
+    def _particleChildren(self) -> list:
+        """The particle children of a compositor (annotations skipped)."""
+        kinds = ("Element", "Group", "Choice", "Sequence", "All", "Any")
+        return [
+            child
+            for child in self.processedChildren or ()
+            if child is not None and type(child).__name__ in kinds
+        ]
+
+    def _compositorEmptiable(self, visited: set) -> bool:
+        """A compositor can match zero when its own occurrence allows it,
+        or when it has no particles or every particle child can (the
+        particlesHa emptiability rule).
+
+        For ``sequence``/``all`` an empty particle set always matches
+        zero (each iteration matches zero elements); ``choice``
+        overrides because an empty choice with ``minOccurs >= 1``
+        cannot match at all.
+        """
+        if self._silentOccurs("minOccurs") == 0:
+            return True
+        children = self._particleChildren()
+        return not children or all(child._emptiableParticle(visited) for child in children)
+
     def resolveGroupRef(self, refSite):
         """Returns the group definition a group reference site names.
 

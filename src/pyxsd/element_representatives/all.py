@@ -169,3 +169,7 @@ class All(ElementRepresentative):
                 "name a group whose content model is an all",
                 code="all-rule",
             )
+
+    def _emptiableParticle(self, visited: set) -> bool:
+        """An all can match zero when empty or all-empty children."""
+        return self._compositorEmptiable(visited)

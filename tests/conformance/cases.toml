@@ -4505,3 +4505,45 @@ schema = '''
   </xs:element>
 </xs:schema>
 '''
+
+[[case]]
+id = "structure/pointless-empty-choice-invalid"
+description = "An empty choice inside a group referenced with minOccurs=0 is a pointless particle and must be eliminated (particlesHa008 shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesHa' (ignore pointless occurences of 'choice': choice (C) is empty and the group within which (C) appears has minOccurs of 0)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc" type="xs:string"/>
+  <xs:group name="P">
+    <xs:sequence>
+      <xs:group ref="x:Q" minOccurs="0"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="Q">
+    <xs:choice minOccurs="0"/>
+  </xs:group>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["pointless-particle"]
+
+[[case]]
+id = "structure/emptiable-choice-required-ref-valid"
+description = "The same emptiable choice under a group reference without minOccurs=0 stays legal (valid control for the pointless-particle rule)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesHa' (valid control: the optional-reference context is what makes the particle pointless)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc" type="xs:string"/>
+  <xs:group name="P">
+    <xs:sequence>
+      <xs:group ref="x:Q"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="Q">
+    <xs:choice minOccurs="0"/>
+  </xs:group>
+</xs:schema>
+'''

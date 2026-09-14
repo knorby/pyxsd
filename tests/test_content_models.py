@@ -489,3 +489,67 @@ class TestGroupReferenceLegality:
             "<xs:group name='h'><xs:sequence><xs:element name='e'/></xs:sequence></xs:group>"
         )
         assert "misplaced-declaration" in schema_codes(report)
+
+
+class TestPointlessParticles:
+    def test_empty_choice_under_optional_group_ref_is_invalid(self, parse):
+        # particlesHa008 (verbatim shape, condensed)
+        report = parse(
+            "<xs:group name='P'><xs:sequence>"
+            "<xs:group ref='x:Q' minOccurs='0'/></xs:sequence></xs:group>"
+            "<xs:group name='Q'><xs:choice minOccurs='0'/></xs:group>"
+        )
+        assert "pointless-particle" in schema_codes(report)
+
+    def test_emptiable_choice_is_fine_when_not_optional(self, parse):
+        # valid control: the same group without minOccurs=0 must stay clean
+        report = parse(
+            "<xs:group name='P'><xs:sequence>"
+            "<xs:group ref='x:Q'/></xs:sequence></xs:group>"
+            "<xs:group name='Q'><xs:choice minOccurs='0'/></xs:group>"
+        )
+        assert "pointless-particle" not in schema_codes(report)
+
+    def test_choice_with_vacuous_child_in_optional_group_ref_is_valid(self, parse):
+        # groupL007: a choice (minOccurs=0) whose child is a group
+        # reference with maxOccurs=0 can still be eliminated without
+        # changing the language, but MS pins the schema VALID — only a
+        # compositor with *no* particle children is pointless.
+        report = parse(
+            "<xs:group name='A'><xs:sequence>"
+            "<xs:choice minOccurs='0'>"
+            "<xs:group ref='B' minOccurs='0' maxOccurs='0'/>"
+            "</xs:choice></xs:sequence></xs:group>"
+            "<xs:group name='B'><xs:choice>"
+            "<xs:element name='b1'/><xs:element name='b2'/>"
+            "</xs:choice></xs:group>"
+            "<xs:element name='elem'><xs:complexType>"
+            "<xs:group ref='A' minOccurs='0'/>"
+            "</xs:complexType></xs:element>"
+        )
+        assert "pointless-particle" not in schema_codes(report)
+
+    def test_compositor_with_optional_children_in_optional_group_ref_is_valid(self, parse):
+        # ECMA-376 shape: every child optional makes the compositor
+        # emptiable, but it can still match content — eliminating it
+        # would change the language, so it is not pointless.
+        report = parse(
+            "<xs:group name='g'><xs:sequence>"
+            "<xs:element name='a' minOccurs='0'/>"
+            "<xs:element name='b' minOccurs='0'/>"
+            "</xs:sequence></xs:group>"
+            "<xs:element name='doc'><xs:complexType>"
+            "<xs:group ref='g' minOccurs='0'/>"
+            "</xs:complexType></xs:element>"
+        )
+        assert "pointless-particle" not in schema_codes(report)
+
+    def test_empty_choice_with_default_min_occurs_is_not_reported(self, parse):
+        # an empty choice with minOccurs=1 is unsatisfiable rather than
+        # eliminable — not the pointless-particle shape
+        report = parse(
+            "<xs:group name='P'><xs:sequence>"
+            "<xs:group ref='x:Q' minOccurs='0'/></xs:sequence></xs:group>"
+            "<xs:group name='Q'><xs:choice/></xs:group>"
+        )
+        assert "pointless-particle" not in schema_codes(report)

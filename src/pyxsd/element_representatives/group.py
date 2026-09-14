@@ -85,6 +85,28 @@ class Group(ElementRepresentative):
             return None
         return self.sequencesOrChoices[0]
 
+    def _emptiableParticle(self, visited: set) -> bool:
+        """Whether this group particle can match zero elements.
+
+        A definition is as emptiable as its compositor; a reference
+        site is emptiable when it is optional or when the group it
+        names is, resolving lazily through the definition. ``visited``
+        holds the definitions already being resolved so a group
+        reference cycle reads as not emptiable instead of recursing
+        forever.
+        """
+        if not self.isRefSite:
+            compositor = self.getCompositor()
+            return compositor is not None and compositor._emptiableParticle(visited)
+        if self._silentOccurs("minOccurs") == 0:
+            return True
+        group = self.resolveGroupRef(self)
+        if group is None or id(group) in visited:
+            return False
+        visited.add(id(group))
+        compositor = group.getCompositor()
+        return compositor is not None and compositor._emptiableParticle(visited)
+
     def checkDeclarationLegality(self):
         """Reports group declaration and reference legality problems.
 

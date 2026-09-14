@@ -515,6 +515,9 @@ class PyXSD:
     #: Compositor ERs whose particle sets the content-model sweep checks.
     _COMPOSITOR_KINDS = ("All", "Sequence", "Choice")
 
+    #: Compositors the pointless-particle rule (particlesHa) applies to.
+    _POINTLESS_KINDS = ("Sequence", "Choice")
+
     def _reportContentModelIssues(self, er: Any) -> None:
         """Reports duplicate or conflicting particles inside one compositor.
 
@@ -530,6 +533,11 @@ class PyXSD:
         group of another and two overlapping wildcards. Each conflicting
         name is reported once per compositor.
 
+        ``sequence``/``choice`` compositors with an empty particle set
+        inside a group referenced with ``minOccurs="0"`` additionally
+        violate the pointless-particle rule
+        (``_reportPointlessParticle``).
+
         Reference sites are resolved against the document's global
         element declarations: references to the same declaration share
         its type, and a reference that cannot be resolved here (it
@@ -537,6 +545,8 @@ class PyXSD:
         is unknown, and guessing from the raw QName would compare
         prefixes instead of declarations.
         """
+        if type(er).__name__ in self._POINTLESS_KINDS:
+            self._reportPointlessParticle(er)
         if type(er).__name__ not in self._COMPOSITOR_KINDS:
             return
         rawParticles: list[Any] = []
@@ -568,6 +578,92 @@ class PyXSD:
         if isAll:
             self._checkSubstitutionOverlap(resolved)
             self._checkAllWildcardOverlap(er)
+
+    def _reportPointlessParticle(self, er: Any) -> None:
+        """Reports a pointless ``sequence``/``choice`` inside an optional group.
+
+        The particlesHa rule: a compositor with *no particle children*
+        (``{particles}`` is empty) whose ``minOccurs`` lets it match
+        zero — the ERs' ``emptiable`` property — is pointless when the
+        group definition containing it is referenced with
+        ``minOccurs="0"``, because the optional reference can always be
+        satisfied without it. Such a particle must be eliminated
+        (particlesHa008). Deliberately conservative shapes beyond that
+        are not reported: a compositor with children can still match
+        content even when every child is optional or ``maxOccurs="0"``,
+        so eliminating it could change the content model's language
+        (MS pins such schemas valid — groupL007 — and real-world
+        schemas, ECMA-376 among them, use the shape heavily), and an
+        empty compositor with ``minOccurs="1"`` is unsatisfiable rather
+        than eliminable. ``all`` compositors are not reported — their
+        legality is the ``all-rule``.
+        """
+        if er._particleChildren() or not getattr(er, "emptiable", False):
+            return
+        definition = self._containingGroupDefinition(er)
+        if definition is None:
+            return
+        for refSite in self._groupRefSites(definition):
+            if self._isOptionalParticle(refSite):
+                self.report.add_error(
+                    f"pointless particle: the empty {er.rawTag} in group "
+                    f"'{definition.name}' matches no elements and the "
+                    "group reference is optional (minOccurs=0); the "
+                    "particle is pointless and must be eliminated",
+                    code="pointless-particle",
+                )
+                return
+
+    def _containingGroupDefinition(self, er: Any) -> Any | None:
+        """The group definition a compositor's occurrence context hangs on.
+
+        Walks up through enclosing compositors (their own occurrence
+        does not make an emptiable child required) and returns the
+        group definition the chain ends in, or ``None`` for any other
+        container (a complex type root, say) or a malformed chain.
+        """
+        node = er.parent
+        while node is not None:
+            kind = type(node).__name__
+            if kind in self._COMPOSITOR_KINDS:
+                node = node.parent
+                continue
+            if kind == "Group" and not getattr(node, "isRefSite", False):
+                return node
+            return None
+        return None
+
+    def _groupRefSites(self, definition: Any) -> list[Any]:
+        """The group reference sites in this schema that name *definition*.
+
+        The whole document tree is scanned (definitions do not record
+        who references them); a reference that cannot be resolved to
+        this definition — including one naming an import — is skipped.
+        """
+        try:
+            schema = definition.getSchema()
+        except AttributeError:
+            return []
+        refs: list[Any] = []
+        stack = [schema] if schema is not None else []
+        seen: set[int] = set()
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "Group" and getattr(er, "isRefSite", False):
+                try:
+                    if definition.resolveGroupRef(er) is definition:
+                        refs.append(er)
+                except NamespaceError:
+                    continue
+            stack.extend(getattr(er, "processedChildren", None) or ())
+        return refs
+
+    def _isOptionalParticle(self, particle: Any) -> bool:
+        """Whether a particle's raw ``minOccurs`` is 0 (silent read)."""
+        return getattr(particle, "minOccurs", None) == "0"
 
     def _globalElements(self, er: Any) -> list[Any]:
         """The schema document's global element declarations."""

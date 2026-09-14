@@ -55,3 +55,16 @@ class Choice(ElementRepresentative):
         silently ignored.
         """
         self._checkParticleOccurs()
+
+    def _emptiableParticle(self, visited: set) -> bool:
+        """A choice can match zero when optional, via all-empty children,
+        or — only for the empty choice — never: an empty choice with
+        ``minOccurs >= 1`` is unsatisfiable rather than emptiable,
+        unlike an empty sequence, whose iterations match zero elements.
+        """
+        if self._silentOccurs("minOccurs") == 0:
+            return True
+        children = self._particleChildren()
+        if not children:
+            return False
+        return all(child._emptiableParticle(visited) for child in children)
