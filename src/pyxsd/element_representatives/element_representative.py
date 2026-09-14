@@ -221,8 +221,8 @@ class _RegistryProxy:
     def clear(self):
         self._active().clear()
 
-    def getFromName(self, name, kind=None):
-        return self._active().getFromName(name, kind)
+    def getFromName(self, name, kind=None, namespace=ANY_NAMESPACE, warn=True):
+        return self._active().getFromName(name, kind, namespace, warn)
 
     def getFromNameNS(self, name, kind=None, namespace=ANY_NAMESPACE):
         return self._active().getFromName(name, kind, namespace)

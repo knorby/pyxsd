@@ -58,6 +58,7 @@ from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
 from pyxsd.binding import BindingPolicy, ParseModes
+from pyxsd.content_model import _content_children, compile_content_model
 from pyxsd.derivation import blockTokens, combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import (
     ComponentTable,
@@ -76,6 +77,7 @@ from pyxsd.namespaces import (
     namespace_of,
     parse_with_namespaces,
 )
+from pyxsd.particle_derivation import is_valid_particle_restriction
 from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.validation import ValidationReport
@@ -423,16 +425,17 @@ class PyXSD:
         # declaration checks run: the atomicity check resolves
         # ``itemType``/``memberTypes`` through the in-scope namespaces.
         schemaER.namespaceContext = self.namespaceContext
-        self._reportDeclarationIssues(schemaER)
         # This parser owns the component table the ER run registered
         # into; expose it on the parser and on the context so registry
-        # lookups (xsi:type dispatch, tests) use this parser's
-        # declarations rather than a previous parser's.
+        # lookups (xsi:type dispatch, tests, and the declaration-issue
+        # walk's type resolution) use this parser's declarations rather
+        # than a previous parser's.
         self.components = schemaER.components
         self.schemaContext.components = self.components
-        # Module-level lookups after this parse (ElementRepresentative
+        # Module-level lookups from here on (ElementRepresentative
         # .getFromName, the registry proxy) see this parser's table.
         remember_components(self.components)
+        self._reportDeclarationIssues(schemaER)
 
         # The schema root is itself the instance class used to dispatch
         # the document root's element declarations.
@@ -533,6 +536,10 @@ class PyXSD:
         group of another and two overlapping wildcards. Each conflicting
         name is reported once per compositor.
 
+        Complex types derived by restriction with a particle
+        additionally run the particle-valid restriction check
+        (``_reportParticleRestriction``, cos-particle-restrict).
+
         ``sequence``/``choice`` compositors with an empty particle set
         inside a group referenced with ``minOccurs="0"`` additionally
         violate the pointless-particle rule
@@ -547,6 +554,8 @@ class PyXSD:
         """
         if type(er).__name__ in self._POINTLESS_KINDS:
             self._reportPointlessParticle(er)
+        if type(er).__name__ == "ComplexType":
+            self._reportParticleRestriction(er)
         if type(er).__name__ not in self._COMPOSITOR_KINDS:
             return
         rawParticles: list[Any] = []
@@ -578,6 +587,60 @@ class PyXSD:
         if isAll:
             self._checkSubstitutionOverlap(resolved)
             self._checkAllWildcardOverlap(er)
+
+    def _reportParticleRestriction(self, er: Any) -> None:
+        """Reports particle-invalid restriction derivations.
+
+        For a complex type whose derivation is a restriction carrying a
+        particle (cos-particle-restrict, XSD 1.0 §3.9.6), compiles the
+        restricting type's own tree and the base type's effective tree
+        and hands them to the pure predicate in
+        ``pyxsd.particle_derivation``. Every violation is reported as
+        ``particle-restriction`` with the deciding rule name in the
+        message.
+
+        Skips — never errors — when the type is not a particle
+        restriction, the base type cannot be resolved to a compiled
+        type, or either tree could not be compiled (the legacy flat
+        fallback); each skip is logged at debug level with its reason.
+        """
+        if er.getDerivation() != "restriction":
+            return
+        if not _content_children(er):
+            # No particle slot (simple-content restriction, facets only):
+            # the particle rules do not apply.
+            return
+        derived_model = compile_content_model(er, self)
+        if derived_model is None:
+            logger.debug(
+                "particle restriction: content model of %s could not be compiled; skipped",
+                getattr(er, "name", "?"),
+            )
+            return
+        base_class = None
+        for raw_name in er.superClassNames:
+            resolved = er.resolveSchemaQName(raw_name, parser=self)
+            candidate = ElementRepresentative.typeFromName(resolved, self)
+            if candidate is not None:
+                base_class = candidate
+                break
+        if base_class is None:
+            logger.debug(
+                "particle restriction: base type %r of %s unresolved; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        base_model = getattr(base_class, "_contentModel_", None)
+        if base_model is None:
+            logger.debug(
+                "particle restriction: base type %s has no compiled content model; skipped",
+                getattr(base_class, "name", "?"),
+            )
+            return
+        resolver = lambda particle: getattr(particle, "descriptor", None)  # noqa: E731
+        for reason in is_valid_particle_restriction(base_model, derived_model, resolver):
+            self.report.add_error(reason, code="particle-restriction")
 
     def _reportPointlessParticle(self, er: Any) -> None:
         """Reports a pointless ``sequence``/``choice`` inside an optional group.

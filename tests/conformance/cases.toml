@@ -4547,3 +4547,175 @@ schema = '''
   </xs:group>
 </xs:schema>
 '''
+
+[[case]]
+id = "structure/particle-nssubset-process-contents-invalid"
+description = "A wildcard restriction may not weaken processContents; ##any/strict restricted by an unqualified lax wildcard is invalid (NSSubset)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesOb' (particlesOb001: B's namespace=##any, R's namespace=absent, processContents=lax)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="B">
+    <xs:choice>
+      <xs:any namespace="##any" minOccurs="1" maxOccurs="1"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:choice>
+          <xs:any minOccurs="1" maxOccurs="1" processContents="lax"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/particle-nssubset-namespace-invalid"
+description = "A wildcard restriction may only narrow the namespace constraint; ##local restricted by the default (absent = ##any) wildcard is invalid (NSSubset)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesOb' (particlesOb019: B's namespace=##local, R's namespace=absent)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="B">
+    <xs:choice>
+      <xs:any namespace="##local" minOccurs="1" maxOccurs="1"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:choice>
+          <xs:any minOccurs="1" maxOccurs="1"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/particle-forbidden-any-over-element-invalid"
+description = "A wildcard cannot restrict an element declaration (forbidden transition any:elt)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesHb' (particlesHb001: Forbidden: drived by restriction any : elt)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="e1" minOccurs="2" maxOccurs="10"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:any minOccurs="3" maxOccurs="9"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/particle-choice-over-all-invalid"
+description = "A choice cannot restrict an all whose required members its branches drop (forbidden transition choice:all)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesHb' (particlesHb009: Forbidden: drived by restriction choice : all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="e1"/>
+      <xs:element name="e2"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="e1"/>
+          <xs:element name="e2"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/particle-nssubset-contained-valid"
+description = "A wildcard restriction that narrows ##any to ##other with a contained occurrence range and unchanged processContents is valid (valid control for the NSSubset rule)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesOb' (particlesOb003: B's namespace=##any, R's namespace=##other, occurrence 4..6 in 1..10)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="B">
+    <xs:choice>
+      <xs:any namespace="##any" minOccurs="1" maxOccurs="10"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:choice>
+          <xs:any namespace="##other" minOccurs="4" maxOccurs="6"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
