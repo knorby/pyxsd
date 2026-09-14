@@ -772,6 +772,119 @@ class ElementRepresentative:
             return candidate
         return None
 
+    def simpleVariety(self, _seen=None):
+        """Returns the XSD {variety} of this type representative.
+
+        ``"atomic"``, ``"list"``, ``"union"`` or ``"complex"``; ``None``
+        when the representative is neither a simple nor a complex type.
+        A restriction inherits the variety of its base, so a restriction
+        of a list is still a list and one of a union is still a union.
+        ``_seen`` guards against a derivation cycle.
+        """
+        kind = type(self).__name__
+        if kind == "ComplexType":
+            return "complex"
+        if kind != "SimpleType":
+            return None
+        if _seen is None:
+            _seen = set()
+        if id(self) in _seen:
+            return None
+        _seen = _seen | {id(self)}
+        for child in self.processedChildren or ():
+            if child is None:
+                continue
+            childKind = type(child).__name__
+            if childKind == "List":
+                return "list"
+            if childKind == "Union":
+                return "union"
+        for child in self.processedChildren or ():
+            if child is None or type(child).__name__ != "Restriction":
+                continue
+            base = child.tagAttributes.get("base")
+            if base is None:
+                # A restriction may derive from an inline simple type.
+                for grandchild in child.processedChildren or ():
+                    if grandchild is not None and type(grandchild).__name__ == "SimpleType":
+                        return grandchild.simpleVariety(_seen)
+                return None
+            variety, _ = self.varietyOfReference(base, _seen)
+            return variety
+        return "atomic"
+
+    def varietyOfReference(self, value, _seen=None):
+        """Returns the {variety} of the type named by a lexical QName.
+
+        Returns a ``(variety, representative)`` pair; the representative
+        is ``None`` for a built-in type or an unresolvable name. Built-ins
+        are recognised by the XML Schema namespace URI (so any prefix
+        bound to it works), with the legacy ``xs:``/``xsd:`` spelling as
+        a fallback. A built-in list type (``IDREFS`` and friends) reports
+        ``"list"``, and the two ur-types report ``"non-atomic"``.
+        """
+        if _seen is None:
+            _seen = set()
+        resolved = self.resolveSchemaQName(value)
+        local = local_name(resolved)
+        uri = namespace_of(resolved)
+        isBuiltin = uri == XSD_NS or (isinstance(value, str) and value.startswith(("xs:", "xsd:")))
+        if isBuiltin or (uri is None and local in _PRIMITIVE_TYPES):
+            return _builtinVariety(local), None
+        er = self.resolveReference(value, self._globalTypeCandidates())
+        if er is None:
+            return None, None
+        return er.simpleVariety(_seen), er
+
+    def unionMembersAllAtomic(self, unionER, _seen=None):
+        """Whether every member of a union representative is atomic.
+
+        XSD 1.1 lets a list take a union as its item type only when every
+        member of that union is atomic (stJ002); a union with a list or
+        union member is not an atomic item type.
+        """
+        if _seen is None:
+            _seen = set()
+        _seen = _seen | {id(unionER)}
+        for memberName in getattr(unionER, "unionSpec", ()) or ():
+            variety, _ = self.varietyOfReference(memberName, _seen)
+            if variety != "atomic":
+                return False
+        for child in unionER.processedChildren or ():
+            if (
+                child is not None
+                and type(child).__name__ == "SimpleType"
+                and child.simpleVariety(_seen) != "atomic"
+            ):
+                return False
+        return True
+
+    def _globalTypeCandidates(self):
+        """Returns the global simple and complex type representatives.
+
+        Both kinds share the ``type`` symbol space. The parser-owned
+        component table keeps one entry per expanded name, so it is
+        preferred; the per-schema dictionaries are the fallback. The
+        list is cached on the schema because the component set does not
+        change after the ER tree is built.
+        """
+        schema = self.getSchema()
+        cached = getattr(schema, "_globalTypeCandidatesCache", None)
+        if cached is not None:
+            return cached
+        table = getattr(schema, "components", None)
+        candidates = []
+        if isinstance(table, ComponentTable):
+            for entries in table.values():
+                for entry in entries:
+                    if componentKind(entry) == "type" and entry.checkTopLevelType():
+                        candidates.append(entry)
+        else:
+            candidates.extend(getattr(schema, "simpleTypes", {}).values())
+            candidates.extend(getattr(schema, "complexTypes", {}).values())
+        schema._globalTypeCandidatesCache = candidates
+        return candidates
+
     def resolvedTypeName(self):
         """Returns the ``type`` attribute resolved to a Clark name.
 
@@ -877,6 +990,28 @@ _PRIMITIVE_TYPES = {
     and "name" in klass.__dict__
     and klass is not xsd_data_types.TypeList
 }
+
+
+#: Built-in XSD types whose {variety} is list rather than atomic.
+_BUILTIN_LIST_TYPES = frozenset({"IDREFS", "ENTITIES", "NMTOKENS"})
+
+#: Built-in XSD types that have no atomic value space (the ur-types).
+_NON_ATOMIC_BUILTINS = frozenset({"anySimpleType", "anyType"})
+
+
+def _builtinVariety(localName):
+    """Returns the {variety} of a built-in XSD type by local name.
+
+    Every built-in is an atomic simple type except the three named list
+    types and the two ur-types, which have no atomic value space.
+    """
+    if localName in _NON_ATOMIC_BUILTINS:
+        return "non-atomic"
+    if localName in _BUILTIN_LIST_TYPES:
+        return "list"
+    return "atomic"
+
+
 # The active parser's component table, keyed by name. Each ``PyXSD``
 # parse installs its own :class:`ComponentTable` here so registrations
 # during class building and detached lookups (``getFromName``) see the

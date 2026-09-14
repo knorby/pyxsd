@@ -1420,3 +1420,154 @@ class TestFacetLegality:
             "</xsd:restriction></xsd:simpleType></xsd:schema>"
         )
         assert "facet-conflict" in _schema_codes(report)
+
+
+class TestSimpleTypeAtomicity:
+    """A list's item type and a union's member types must be simple types.
+
+    XSD 1.1 relaxes the XSD 1.0 rule in both directions and the msData
+    stJ/stK corpus pins the relaxed behaviour: a list item type may be a
+    union all of whose members are atomic (stJ002 is valid), and a union
+    member may be a list (stK004 is valid) or another union (whose
+    members flatten). A list item type that is itself a list stays
+    illegal, as does a union member that is a complex type
+    (`atomic-required`).
+    """
+
+    def test_list_item_type_restriction_of_atomic_is_clean(self, parse_schema):
+        """msData stJ001: an item type that restricts an atomic is atomic."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:restriction base='xsd:integer'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:list itemType='myType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" not in _schema_codes(report)
+
+    def test_list_item_type_union_of_atomics_is_clean(self, parse_schema):
+        """msData stJ002: a union of atomic members is a legal item type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:union>"
+            "<xsd:simpleType><xsd:restriction base='xsd:integer'/></xsd:simpleType>"
+            "<xsd:simpleType><xsd:restriction base='xsd:NMTOKEN'/></xsd:simpleType>"
+            "</xsd:union></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:list itemType='myType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" not in _schema_codes(report)
+
+    def test_list_item_type_referring_to_list_reports(self, parse_schema):
+        """msData stJ019: a list cannot be the item type of a list."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:list>"
+            "<xsd:simpleType><xsd:restriction base='xsd:integer'/></xsd:simpleType>"
+            "</xsd:list></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:list itemType='myType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
+    def test_list_item_type_referring_to_builtin_list_reports(self, parse_schema):
+        """A built-in list type (IDREFS) is not atomic either."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:list itemType='xsd:IDREFS'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
+    def test_list_item_type_referring_to_complex_type_reports(self, parse_schema):
+        """msData stJ003: a complex type is not an atomic simple type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='myType'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:integer'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:simpleType name='fooType'><xsd:list itemType='myType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
+    def test_list_inline_item_type_that_is_a_list_reports(self, parse_schema):
+        """An inline item type is subject to the same atomicity rule."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:list>"
+            "<xsd:simpleType><xsd:list itemType='xsd:int'/></xsd:simpleType>"
+            "</xsd:list></xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
+    def test_union_member_restriction_of_atomic_is_clean(self, parse_schema):
+        """msData stK001: atomic member types are legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType_1'><xsd:restriction base='xsd:integer'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='myType_2'><xsd:restriction base='xsd:duration'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='fooType'>"
+            "<xsd:union memberTypes='myType_1 myType_2'/></xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" not in _schema_codes(report)
+
+    def test_union_member_referring_to_list_is_clean(self, parse_schema):
+        """msData stK004: a list is a legal union member."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:list>"
+            "<xsd:simpleType><xsd:restriction base='xsd:integer'/></xsd:simpleType>"
+            "</xsd:list></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:union memberTypes='myType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" not in _schema_codes(report)
+
+    def test_union_member_referring_to_union_is_clean(self, parse_schema):
+        """A union-of-union is legal; its member set is flattened."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType_1'><xsd:restriction base='xsd:integer'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='myType_2'>"
+            "<xsd:union memberTypes='myType_1 xsd:duration'/></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:union memberTypes='myType_2'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" not in _schema_codes(report)
+
+    def test_union_member_unknown_type_reports(self, parse_schema):
+        """msData stK002: a member naming an undefined type is reported."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType_1'><xsd:restriction base='xsd:integer'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='myType_2'>"
+            "<xsd:union memberTypes='myType_1 xsd:timeDuration'/></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:union memberTypes='myType_2'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "unknown-type" in _schema_codes(report)
+
+    def test_union_member_referring_to_complex_type_reports(self, parse_schema):
+        """msData stK003: a complex type cannot be a union member."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='myType'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:integer'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:simpleType name='fooType'><xsd:union memberTypes='myType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
+    def test_union_inline_member_that_is_a_union_is_clean(self, parse_schema):
+        """An inline union member is legal under the same flattening rule."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:union>"
+            "<xsd:simpleType><xsd:union memberTypes='xsd:int'/></xsd:simpleType>"
+            "</xsd:union></xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" not in _schema_codes(report)

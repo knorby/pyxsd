@@ -373,10 +373,12 @@ class PyXSD:
         # record schema-reference problems (group/attributeGroup
         # references) on the validation report.
         schemaER.pyXSD = self
-        self._reportDeclarationIssues(schemaER)
         # The captured prefix bindings let every declaration resolve the
-        # QNames written in its own document.
+        # QNames written in its own document. Install them before the
+        # declaration checks run: the atomicity check resolves
+        # ``itemType``/``memberTypes`` through the in-scope namespaces.
         schemaER.namespaceContext = self.namespaceContext
+        self._reportDeclarationIssues(schemaER)
         # This parser owns the component table the ER run registered
         # into; expose it on the parser and on the context so registry
         # lookups (xsi:type dispatch, tests) use this parser's

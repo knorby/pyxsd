@@ -3744,3 +3744,113 @@ schema = '''
   </xs:element>
 </xs:schema>
 '''
+
+[[case]]
+id = "legality/list-item-type-must-be-atomic"
+description = "A list whose item type is itself a list is reported with code atomic-required"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stJ019: list itemType refers to listType)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="inner">
+    <xs:list itemType="xs:int"/>
+  </xs:simpleType>
+  <xs:simpleType name="Bad">
+    <xs:list itemType="inner"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["atomic-required"]
+
+[[case]]
+id = "legality/union-member-type-must-be-simple"
+description = "A union whose member type is a complex type is reported with code atomic-required"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stK003: union memberTypes refers to complexType)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="inner">
+    <xs:simpleContent><xs:extension base="xs:integer"/></xs:simpleContent>
+  </xs:complexType>
+  <xs:simpleType name="Bad">
+    <xs:union memberTypes="inner"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["atomic-required"]
+
+[[case]]
+id = "legality/union-member-type-union-valid"
+description = "A union member type may itself be a union (stK002's member is a union)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (union member flattening)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="inner">
+    <xs:union memberTypes="xs:int xs:string"/>
+  </xs:simpleType>
+  <xs:simpleType name="Good">
+    <xs:union memberTypes="inner"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Good"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/union-member-type-undefined"
+description = "A union member naming an undefined type is reported with code unknown-type (stK002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stK002: undefined member type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:union memberTypes="xs:timeDuration"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["unknown-type"]
+
+[[case]]
+id = "legality/list-item-type-union-of-atomics-valid"
+description = "A list item type may be a union whose members are all atomic (stJ002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stJ002: list itemType refers to union type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="myType">
+    <xs:union>
+      <xs:simpleType><xs:restriction base="xs:integer"/></xs:simpleType>
+      <xs:simpleType><xs:restriction base="xs:NMTOKEN"/></xs:simpleType>
+    </xs:union>
+  </xs:simpleType>
+  <xs:simpleType name="Good">
+    <xs:list itemType="myType"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Good"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/union-member-type-list-valid"
+description = "A list is a legal union member type (stK004)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stK004: union memberTypes refers to list type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="myType">
+    <xs:list>
+      <xs:simpleType><xs:restriction base="xs:integer"/></xs:simpleType>
+    </xs:list>
+  </xs:simpleType>
+  <xs:simpleType name="Good">
+    <xs:union memberTypes="myType"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Good"/>
+</xs:schema>
+'''

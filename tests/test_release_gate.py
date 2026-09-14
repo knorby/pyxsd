@@ -172,7 +172,14 @@ class TestElementRepresentativeHelpers:
 
 
 class TestXsdTypeEdges:
-    def test_union_with_unresolvable_member_skips_it(self, tmp_path, caplog):
+    def test_union_with_unresolvable_named_member_reports_and_skips_it(self, tmp_path):
+        """A ``memberTypes`` name that resolves to no type is an error.
+
+        pyxsd stays lax: it reports ``unknown-type`` and still builds the
+        union from the members that did resolve, so the instance parses.
+        (An inline member that hits a name-resolution gap is still only
+        warned about; see ``makeUnionClass``.)
+        """
         schema = f"""\
 <xs:schema {XS}>
   <xs:element name="doc">
@@ -189,8 +196,8 @@ class TestXsdTypeEdges:
 </xs:schema>
 """
         parser = _parse(schema, "<doc><v>2024-01-02</v></doc>", tmp_path)
-        assert not parser.report.has_errors
-        assert any("noSuchType" in record.getMessage() for record in caplog.records)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "unknown-type" in codes
 
         root = _root_instance(parser)
         member = root.v

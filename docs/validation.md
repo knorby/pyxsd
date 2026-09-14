@@ -62,6 +62,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `prohibited-attribute` | WARNING | Attribute declared `use="prohibited"` present. |
 | `fixed-attribute` | ERROR | Attribute present with a value differing from `fixed`. |
 | `unknown-type` | ERROR | Referenced type could not be resolved. |
+| `atomic-required` | ERROR | A `list`'s `itemType` (or inline item type) is not an atomic simple type or an all-atomic union, or a `union`'s member type is a complex type rather than a simple type. Atomic, list and union members are all legal union members. |
 | `unknown-namespace-prefix` | ERROR | A prefixed name uses a namespace prefix that is not bound in scope (namespaced mode). |
 | `value` | ERROR | Text content failed lexical validation for its type. |
 | `default` | ERROR | Element default value is not valid for the element's type. |

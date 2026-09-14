@@ -473,19 +473,33 @@ class XsdType(ElementRepresentative):
         namedMembers = [
             self.resolveSchemaQName(memberName, parser=pyXSD) for memberName in self.unionSpec
         ]
-        memberNames = namedMembers + list(getattr(self, "unionInline", ()))
+        memberNames = [(name, True) for name in namedMembers]
+        memberNames += [(name, False) for name in getattr(self, "unionInline", ())]
         members = []
-        for memberName in memberNames:
+        for memberName, isNamed in memberNames:
             if memberName in pyXSD.classes:
                 resolved = pyXSD.classes[memberName]
             else:
                 resolved = ElementRepresentative.typeFromName(memberName, pyXSD)
             if resolved is None:
-                logger.warning(
-                    "union member type %r of %r could not be resolved and was skipped",
-                    memberName,
-                    self.name,
-                )
+                if isNamed:
+                    # A ``memberTypes`` name that resolves to no type is a
+                    # schema error; report it rather than silently
+                    # accepting a union over an undefined type.
+                    self._report_ref_error(
+                        f"member type '{memberName}' of union '{self.name}' could not be resolved",
+                        code="unknown-type",
+                    )
+                else:
+                    # An inline member is built from its own ER, so a
+                    # miss here is a name-resolution gap in ``typeFromName``
+                    # rather than a missing declaration; keep the historical
+                    # warning-and-skip behaviour.
+                    logger.warning(
+                        "union member type %r of %r could not be resolved and was skipped",
+                        memberName,
+                        self.name,
+                    )
                 continue
             if hasattr(resolved, "_unionMembers"):
                 # A union member that is itself a union: flatten.

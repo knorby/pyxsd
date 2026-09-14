@@ -41,3 +41,42 @@ class Union(ElementRepresentative):
         """
         contName = self.getContainingTypeName()
         return contName + "|union"
+
+    def checkDeclarationLegality(self):
+        """Reports a union member type that is not a simple type.
+
+        A union member type must be a simple type definition: an atomic
+        type, a list, or (transitively) another union are all legal
+        (stK004), but a complex type is not (stK003). Each offending
+        ``memberTypes`` name and inline member is reported as
+        ``atomic-required``. An unresolvable name is left to the
+        ``unknown-type`` check that runs while the union class is built.
+        """
+        containingName = self.getContainingTypeName()
+        owner = f"union '{containingName}'"
+        for memberName in self.memberTypes:
+            if self._memberVarietyIsLegal(*self.varietyOfReference(memberName)):
+                continue
+            self._reportSchemaError(
+                f"member type '{memberName}' of {owner} is not a simple type",
+                code="atomic-required",
+            )
+        for child in self.processedChildren or ():
+            if child is None or child.__class__.__name__ != "SimpleType":
+                continue
+            if self._memberVarietyIsLegal(child.simpleVariety(), child):
+                continue
+            self._reportSchemaError(
+                f"inline member type '{child.name}' of {owner} is not a simple type",
+                code="atomic-required",
+            )
+
+    @staticmethod
+    def _memberVarietyIsLegal(variety, _er):
+        """Whether a resolved member variety is a legal simple type.
+
+        Atomic, list and union members are all legal; a complex type is
+        not. An unresolved type (``None``) is left to the ``unknown-type``
+        check so one reference does not produce two errors.
+        """
+        return variety in ("atomic", "list", "union", None)
