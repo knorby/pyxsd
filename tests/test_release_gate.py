@@ -14,6 +14,7 @@ from io import StringIO
 import pytest
 
 import pyxsd.element_representatives.element_representative as ermod
+from pyxsd.binding import ParseModes
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.exceptions import PyXSDError
 from pyxsd.parser import PyXSD
@@ -203,6 +204,47 @@ class TestXsdTypeEdges:
         member = root.v
         assert member.memberValue == "2024-01-02"
         assert len(member._unionMembers) == 1
+
+    def test_union_inline_member_resolution_gap_warns_and_skips_it(self, tmp_path, caplog):
+        """An inline member that hits the generated-name resolution gap is
+        only warned about, never reported; the named members still build.
+
+        The gap is namespace-specific: in namespaced mode ``typeFromName``
+        looks up the brace-less generated name with no namespace, while the
+        inline type is registered under the target namespace.
+        """
+        schema = f"""\
+<xs:schema {XS} targetNamespace="urn:t" xmlns:t="urn:t" elementFormDefault="qualified">
+  <xs:attribute name="lang">
+    <xs:simpleType>
+      <xs:union memberTypes="xs:language">
+        <xs:simpleType>
+          <xs:restriction base="xs:string"><xs:enumeration value=""/></xs:restriction>
+        </xs:simpleType>
+      </xs:union>
+    </xs:simpleType>
+  </xs:attribute>
+  <xs:element name="root">
+    <xs:complexType><xs:attribute ref="t:lang"/></xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(schema)
+        caplog.set_level(logging.WARNING)
+        parser = PyXSD(
+            StringIO('<t:root xmlns:t="urn:t"/>'),
+            xsdFile=schema_path,
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=ParseModes.NAMESPACED,
+        )
+        assert not parser.report.has_errors
+        assert any(
+            "lang|simpleType|union|simpleType" in record.getMessage() for record in caplog.records
+        )
+        union_cls = parser.classes["lang|simpleType"]
+        assert len(union_cls._unionMembers) == 1
 
     def test_union_equality_hash_and_repr(self, tmp_path):
         schema = f"""\

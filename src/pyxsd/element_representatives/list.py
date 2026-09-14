@@ -30,8 +30,9 @@ class List(ElementRepresentative):
         """Reports a list item type that is not atomic.
 
         XSD 1.1 requires a list's item type to be an atomic simple type,
-        or a union all of whose members are atomic (stJ002). A list item
-        type that is itself a list, a union with a non-atomic member, a
+        or a union with no list type anywhere in its transitive
+        membership (stJ002; nested unions are followed). A list item type
+        that is itself a list, a union with a transitive list member, a
         complex type or a built-in list is reported as
         ``atomic-required``.
         """
@@ -65,12 +66,13 @@ class List(ElementRepresentative):
         """Whether a resolved item type satisfies the atomicity rule.
 
         An unresolved type (``None``) is left to the ``unknown-type``
-        check; a union is acceptable only when every member is atomic.
+        check; a union is acceptable when no list type appears anywhere in
+        its transitive membership (nested unions are followed).
         """
         if variety is None:
             return True
         if variety == "atomic":
             return True
         if variety == "union":
-            return er is not None and self.unionMembersAllAtomic(er)
+            return er is not None and self.unionTransitiveMembershipHasNoList(er)
         return False

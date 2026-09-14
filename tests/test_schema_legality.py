@@ -1458,6 +1458,35 @@ class TestSimpleTypeAtomicity:
         )
         assert "atomic-required" not in _schema_codes(report)
 
+    def test_list_item_type_union_of_nested_unions_is_clean(self, parse_schema):
+        """A union item type is legal when no list appears in its
+        transitive membership, even through nested unions."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='V'>"
+            "<xsd:union memberTypes='xsd:int xsd:string'/></xsd:simpleType>"
+            "<xsd:simpleType name='U'>"
+            "<xsd:union memberTypes='V'/></xsd:simpleType>"
+            "<xsd:simpleType name='L'>"
+            "<xsd:list itemType='U'/></xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" not in _schema_codes(report)
+
+    def test_list_item_type_union_with_transitive_list_reports(self, parse_schema):
+        """A union item type is illegal when a list appears anywhere in
+        its transitive membership, even inside a nested union."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='L0'><xsd:list itemType='xsd:int'/></xsd:simpleType>"
+            "<xsd:simpleType name='V'>"
+            "<xsd:union memberTypes='xsd:int L0'/></xsd:simpleType>"
+            "<xsd:simpleType name='U'>"
+            "<xsd:union memberTypes='V'/></xsd:simpleType>"
+            "<xsd:simpleType name='L'>"
+            "<xsd:list itemType='U'/></xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
     def test_list_item_type_referring_to_list_reports(self, parse_schema):
         """msData stJ019: a list cannot be the item type of a list."""
         report = parse_schema(

@@ -836,28 +836,45 @@ class ElementRepresentative:
             return None, None
         return er.simpleVariety(_seen), er
 
-    def unionMembersAllAtomic(self, unionER, _seen=None):
-        """Whether every member of a union representative is atomic.
+    def unionTransitiveMembershipHasNoList(self, unionER, _seen=None):
+        """Whether a union's transitive membership holds no list type.
 
-        XSD 1.1 lets a list take a union as its item type only when every
-        member of that union is atomic (stJ002); a union with a list or
-        union member is not an atomic item type.
+        XSD 1.1 §3.16.6.2 lets a list take a union as its item type when
+        no type of variety ``list`` appears anywhere in the union's
+        transitive membership; nested unions are followed recursively.
+        A complex or other non-simple member is illegal as well (``list``
+        item types must be simple). Atomic and unresolved members are
+        acceptable here (an unresolved name is reported separately as
+        ``unknown-type``).
         """
         if _seen is None:
             _seen = set()
         _seen = _seen | {id(unionER)}
         for memberName in getattr(unionER, "unionSpec", ()) or ():
-            variety, _ = self.varietyOfReference(memberName, _seen)
-            if variety != "atomic":
+            variety, memberER = self.varietyOfReference(memberName, _seen)
+            if not self._membershipVarietyHasNoList(variety, memberER, _seen):
                 return False
         for child in unionER.processedChildren or ():
             if (
                 child is not None
                 and type(child).__name__ == "SimpleType"
-                and child.simpleVariety(_seen) != "atomic"
+                and not self._membershipVarietyHasNoList(child.simpleVariety(_seen), child, _seen)
             ):
                 return False
         return True
+
+    def _membershipVarietyHasNoList(self, variety, memberER, _seen):
+        """Whether one member's variety is legal under the list item rule.
+
+        Atomic and unresolved members are acceptable; a union is
+        acceptable when its own transitive membership has no list; a list
+        or complex type is not.
+        """
+        if variety in (None, "atomic"):
+            return True
+        if variety == "union":
+            return memberER is not None and self.unionTransitiveMembershipHasNoList(memberER, _seen)
+        return False
 
     def _globalTypeCandidates(self):
         """Returns the global simple and complex type representatives.
