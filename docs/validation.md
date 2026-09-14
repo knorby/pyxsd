@@ -92,6 +92,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `import-unresolved` | ERROR / WARNING | An `xs:import` could not be satisfied from a `schemaLocation` or `namespace_schemas` (namespaced mode). WARNING for a namespace-only import that is merely a hint; ERROR when a component from that namespace is referenced by the importing document, so the unresolved import is fatal. An instance- or caller-supplied schema that is missing remains an ERROR. |
 | `compose-cycle` | WARNING | A repeated include/redefine was deduplicated. |
 | `compose-namespace` | ERROR | Include target namespace mismatch. |
+| `compose-invalid` | ERROR | A composition rule violation beyond a missing resource: an `xs:import` whose `namespace` does not match the imported document's target namespace; an `xs:redefine` of a component the base document does not define, or in a namespace other than the redefining schema's; the same component of one base document redefined twice; an unqualified self reference in a chameleon redefine; and an attributeGroup redefine that is not a valid restriction (adds or reorders attributes, drops a `fixed` value, changes a non-optional `use`, or duplicates an attribute pulled in by its self reference). |
 | `internal` | WARNING | Parser internal inconsistency — please report. |
 
 ## Strict mode

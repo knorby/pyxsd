@@ -109,6 +109,16 @@ _COMPOSABLE_TAGS = {
 _VC_NS = "http://www.w3.org/2007/XMLSchema-versioning"
 
 
+def _qnameLocal(value: str) -> str:
+    """Returns the local part of a lexical QName or Clark name."""
+    return local_name(value.rpartition(":")[2])
+
+
+def _stackPrefix(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
+    """Whether *shorter* is a prefix of *longer* (document ancestry)."""
+    return len(shorter) <= len(longer) and longer[: len(shorter)] == shorter
+
+
 class PyXSD:
     """Main class of the program that is in charge of data flow.
 
@@ -212,6 +222,15 @@ class PyXSD:
         # ER walk, but their ids still take part in the document's xs:ID
         # uniqueness, so declaration ids are compared against them.
         self._directiveIds: dict[str, Any] = {}
+        # The include/redefine ancestry of the document currently being
+        # composed (resolved paths, outermost first). Used to tell an
+        # independent second redefine of a component (a conflict) from a
+        # nested one reached through a shared include (the suite leaves
+        # the latter implementation-defined).
+        self._composeStack: list[str] = []
+        # For each redefined ``(base path, kind, name)``, the
+        # ``_composeStack`` snapshot at its first redefine.
+        self._redefineOrigins: dict[tuple[str, str, str], tuple[str, ...]] = {}
         # Namespaces for which a schema was supplied or successfully
         # loaded. A namespace-only import of one of these is satisfied by
         # that schema rather than an unresolved hint.
@@ -981,7 +1000,9 @@ class PyXSD:
                     # conventional spelling; the built-in types are
                     # always available here.
                     continue
-                self._spliceIncludedSchema(child, schemaRoot, baseDir, visited, isImport=True)
+                self._spliceIncludedSchema(
+                    child, schemaRoot, baseDir, visited, isImport=True, checkImportNamespace=True
+                )
         return None
 
     def _noteDirectiveId(self, tag: Any) -> None:
@@ -1012,6 +1033,7 @@ class PyXSD:
         visited: set[str],
         isImport: bool,
         missing_severity: str = "warning",
+        checkImportNamespace: bool = False,
     ) -> None:
         """Splices the named components of one included/imported schema.
 
@@ -1024,6 +1046,13 @@ class PyXSD:
         ``namespace_schemas`` entry or an instance ``xsi:schemaLocation``
         pair, spliced via ``_spliceAdditionalSchemas``) is a required
         input, so a missing one stays an error.
+
+        ``checkImportNamespace`` is true for an ``xs:import`` written in
+        a schema document: the import's ``namespace`` attribute must
+        match the referenced document's target namespace (an import
+        cannot absorb a no-namespace document; that is an include).
+        Caller-supplied schemas are exempt because their namespace label
+        is not an authoring statement in the schema.
         """
         self._checkDirectiveAnnotation(tag, isImport)
         location = tag.get("schemaLocation")
@@ -1101,6 +1130,23 @@ class PyXSD:
             includedNS = mainNS
         if includedNS:
             self._composedTargetNamespaces.add(includedNS)
+        if (
+            isImport
+            and checkImportNamespace
+            and tag.get("namespace") is not None
+            and includedNS != tag.get("namespace")
+        ):
+            # An import carrying a namespace attribute must reference a
+            # document with exactly that target namespace. A document
+            # with no target namespace is absorbed by include, not
+            # import; a different namespace is the wrong document.
+            self.report.add_error(
+                f"the imported schema '{location}' declares targetNamespace "
+                f"'{includedNS or 'none'}', which does not match the import's "
+                f"namespace '{tag.get('namespace')}'",
+                code="compose-invalid",
+                phase="schema",
+            )
         if not isImport and includedNS not in (None, mainNS):
             self.report.add_error(
                 f"the schema '{location}' declares targetNamespace "
@@ -1125,9 +1171,13 @@ class PyXSD:
             componentNamespace = includedNS if includedNS is not None else tag.get("namespace")
         else:
             componentNamespace = includedNS if includedNS is not None else mainNS
-        self._spliceComposedSchemas(
-            includedRoot, includedPath.parent, visited | {str(includedPath)}
-        )
+        self._composeStack.append(key)
+        try:
+            self._spliceComposedSchemas(
+                includedRoot, includedPath.parent, visited | {str(includedPath)}
+            )
+        finally:
+            self._composeStack.pop()
         # Record provenance before the components are appended to the
         # main root: ``id`` uniqueness is scoped to a schema document.
         for element in includedRoot.iter():
@@ -1370,9 +1420,24 @@ class PyXSD:
                     phase="schema",
                 )
             return None
-        if includedRoot.get("targetNamespace"):
-            self._composedTargetNamespaces.add(includedRoot.get("targetNamespace"))
+        mainNS = schemaRoot.get("targetNamespace")
+        includedNS = includedRoot.get("targetNamespace")
+        if includedNS:
+            self._composedTargetNamespaces.add(includedNS)
         includedPath = (baseDir / location).resolve()
+        if includedNS is not None and mainNS is not None and includedNS != mainNS:
+            # A redefine may target a document in the redefining schema's
+            # namespace or a no-namespace (chameleon) document; redefining
+            # a third namespace would introduce the renamed components
+            # into the wrong namespace. A no-namespace redefiner is the
+            # disputed circular case (W3C schU1), left unresolved.
+            self.report.add_error(
+                f"the redefined schema '{location}' declares targetNamespace "
+                f"'{includedNS}', which does not match the redefining schema's "
+                f"namespace ({mainNS or 'none'})",
+                code="compose-invalid",
+                phase="schema",
+            )
         if str(includedPath) in visited:
             self.report.add_warning(
                 f"the schema '{location}' is already being composed; "
@@ -1380,13 +1445,17 @@ class PyXSD:
                 code="compose-cycle",
             )
             return None
-        redefinedNames = set()
+        redefined: list[tuple[str, str]] = []
         for child in list(redefineTag):
             local = child.tag.split("}")[-1]
             if local in ("complexType", "simpleType", "group", "attributeGroup") and child.get(
                 "name"
             ):
-                redefinedNames.add(child.get("name"))
+                redefined.append((local, child.get("name")))
+        self._checkRedefineTargets(includedRoot, location, redefined)
+        self._checkRedefineDuplicates(includedPath, location, redefined)
+        self._checkRedefineRestrictions(includedRoot, location, redefineTag)
+        redefinedNames = {name for _, name in redefined}
         for component in list(includedRoot):
             local = component.tag.split("}")[-1]
             name = component.get("name")
@@ -1395,32 +1464,327 @@ class PyXSD:
                 and name in redefinedNames
             ):
                 component.set("name", f"{name}|base")
-        self._spliceComposedSchemas(
-            includedRoot, includedPath.parent, visited | {str(includedPath)}
-        )
+        self._composeStack.append(str(includedPath))
+        try:
+            self._spliceComposedSchemas(
+                includedRoot, includedPath.parent, visited | {str(includedPath)}
+            )
+        finally:
+            self._composeStack.pop()
         # The redefined document's components come from another schema
         # document; scope ``id`` uniqueness provenance to it.
         for element in includedRoot.iter():
             self._composedElementIds.add(id(element))
-        self._appendNamedComponents(includedRoot, schemaRoot, schemaRoot.get("targetNamespace"))
+        self._appendNamedComponents(includedRoot, schemaRoot, mainNS)
+        self._rebindRedefineReferences(redefineTag, redefinedNames, includedNS, mainNS)
+        for child in list(redefineTag):
+            schemaRoot.append(child)
+        return None
+
+    def _checkRedefineTargets(
+        self, includedRoot: Any, location: str, redefined: list[tuple[str, str]]
+    ) -> None:
+        """Reports a redefine of a component the base document lacks.
+
+        A redefine may only modify an existing component, never add a
+        new one. The base's own direct declarations and the definitions
+        carried by its nested redefines are considered. If the base also
+        includes other documents the target may live there, so the check
+        is skipped rather than risk a false positive.
+        """
+        if any(
+            isinstance(child.tag, str) and child.tag.split("}")[-1] == "include"
+            for child in list(includedRoot)
+        ):
+            return
+        declared = self._declaredComponentKinds(includedRoot)
+        for kind, name in redefined:
+            if (kind, name) not in declared:
+                self.report.add_error(
+                    f"the component '{name}' in <redefine> is not defined "
+                    f"in the redefined schema '{location}'",
+                    code="compose-invalid",
+                    phase="schema",
+                )
+
+    _COMPOSABLE_REDEFINE_KINDS = ("complexType", "simpleType", "group", "attributeGroup")
+
+    def _declaredComponentKinds(self, root: Any) -> set[tuple[str, str]]:
+        """Returns ``(kind, name)`` for the global components *root* declares.
+
+        A nested ``xs:redefine`` counts as declaring the components it
+        defines, because after composition they belong to *root*'s
+        namespace.
+        """
+        kinds: set[tuple[str, str]] = set()
+        for child in list(root):
+            if not isinstance(child.tag, str):
+                continue
+            local = child.tag.split("}")[-1]
+            if local in self._COMPOSABLE_REDEFINE_KINDS and child.get("name"):
+                kinds.add((local, child.get("name")))
+            elif local == "redefine":
+                for grandchild in list(child):
+                    if not isinstance(grandchild.tag, str):
+                        continue
+                    grandLocal = grandchild.tag.split("}")[-1]
+                    if grandLocal in self._COMPOSABLE_REDEFINE_KINDS and grandchild.get("name"):
+                        kinds.add((grandLocal, grandchild.get("name")))
+        return kinds
+
+    def _checkRedefineDuplicates(
+        self, includedPath: Path, location: str, redefined: list[tuple[str, str]]
+    ) -> None:
+        """Reports a base component redefined twice in the composition.
+
+        Two schema documents that both redefine the same component of
+        the same base document conflict: each redefine replaces the
+        component, so the result is ambiguous. A redefine chain is not a
+        conflict because the outer redefine targets the inner redefining
+        document, a different base. A redefine reached through a shared
+        include (one redefining document composing the other) is also
+        not reported: the suite marks such circular/nested redefines
+        implementation-defined and pyxsd preserves its historical
+        resolution.
+        """
+        current = tuple(self._composeStack)
+        seen: list[tuple[str, str, str]] = []
+        for kind, name in redefined:
+            key = (str(includedPath), kind, name)
+            origin = self._redefineOrigins.get(key)
+            if origin is None:
+                seen.append(key)
+                continue
+            if _stackPrefix(origin, current) or _stackPrefix(current, origin):
+                continue
+            self.report.add_error(
+                f"the component '{name}' of the redefined schema "
+                f"'{location}' is redefined more than once",
+                code="compose-invalid",
+                phase="schema",
+            )
+        for key in seen:
+            self._redefineOrigins[key] = current
+
+    def _checkRedefineRestrictions(
+        self, includedRoot: Any, location: str, redefineTag: Any
+    ) -> None:
+        """Reports an attributeGroup redefine that is not a valid restriction.
+
+        For an ``attributeGroup`` redefinition without a self reference the
+        new content must be a valid restriction of the original: it may
+        not add attributes, must keep them in the original order, must
+        preserve a non-optional ``use`` and a base ``fixed`` value, and
+        must keep every required base attribute. A self reference pulls in
+        the original attributes, so a declared attribute that the original
+        already contributes is a duplicate. Only the base document's own
+        declaration is inspected; if it cannot be found (or uses
+        unresolved refs) the check is skipped rather than guessing.
+        """
+        for declaration in list(redefineTag):
+            if (
+                not isinstance(declaration.tag, str)
+                or declaration.tag.split("}")[-1] != "attributeGroup"
+            ):
+                continue
+            name = declaration.get("name")
+            if not name:
+                continue
+            baseDecl = self._findBaseComponent(includedRoot, "attributeGroup", name)
+            if baseDecl is None:
+                continue
+            baseUses = self._attributeUses(baseDecl)
+            if baseUses is None:
+                continue
+            declared: list[tuple[str, Any]] = []
+            hasSelfReference = False
+            skip = False
+            for child in list(declaration):
+                if not isinstance(child.tag, str):
+                    continue
+                local = child.tag.split("}")[-1]
+                if local == "attribute":
+                    if child.get("ref") is not None:
+                        # A referenced attribute cannot be compared
+                        # structurally.
+                        skip = True
+                        break
+                    childName = child.get("name")
+                    if childName:
+                        declared.append((childName, child))
+                elif local == "attributeGroup":
+                    ref = child.get("ref")
+                    if ref is not None and _qnameLocal(ref) == name:
+                        hasSelfReference = True
+                    else:
+                        # A reference to another group hides its
+                        # attributes; the content cannot be compared.
+                        skip = True
+                        break
+            if skip:
+                continue
+            if hasSelfReference:
+                baseNames = {baseName for baseName, _ in baseUses}
+                for childName, _ in declared:
+                    if childName in baseNames:
+                        self.report.add_error(
+                            f"the attribute '{childName}' is already contributed "
+                            f"by the redefined attributeGroup '{name}'",
+                            code="compose-invalid",
+                            phase="schema",
+                        )
+                continue
+            basePositions = {baseName: index for index, (baseName, _) in enumerate(baseUses)}
+            baseByName = dict(baseUses)
+            derivedNames = [childName for childName, _ in declared]
+            for baseName, baseAttr in baseUses:
+                if baseName not in derivedNames and baseAttr.get("use") == "required":
+                    self.report.add_error(
+                        f"the required attribute '{baseName}' of the redefined "
+                        f"attributeGroup '{name}' is missing",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+            position = 0
+            for childName, childAttr in declared:
+                if childName not in basePositions:
+                    self.report.add_error(
+                        f"the attribute '{childName}' is not in the redefined "
+                        f"attributeGroup '{name}'",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+                    continue
+                nextPosition = basePositions[childName]
+                if nextPosition < position:
+                    self.report.add_error(
+                        f"the attributes of the redefined attributeGroup "
+                        f"'{name}' are not in the original order",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+                    break
+                position = nextPosition
+                baseAttr = baseByName[childName]
+                if baseAttr.get("use") not in (None, "optional") and childAttr.get(
+                    "use"
+                ) != baseAttr.get("use"):
+                    self.report.add_error(
+                        f"the attribute '{childName}' of the redefined "
+                        f"attributeGroup '{name}' changes its use",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+                if baseAttr.get("fixed") is not None and childAttr.get("fixed") is None:
+                    self.report.add_error(
+                        f"the attribute '{childName}' of the redefined "
+                        f"attributeGroup '{name}' drops its fixed value",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+
+    def _findBaseComponent(self, root: Any, kind: str, name: str) -> Any | None:
+        """Returns *root*'s declaration of ``(kind, name)`` if it has one.
+
+        A direct declaration is preferred; a definition carried by a
+        nested ``xs:redefine`` also belongs to the document's namespace
+        after composition, so it is accepted as a fallback.
+        """
+        for child in list(root):
+            if not isinstance(child.tag, str):
+                continue
+            local = child.tag.split("}")[-1]
+            if local == kind and child.get("name") == name:
+                return child
+            if local == "redefine":
+                for grandchild in list(child):
+                    if (
+                        isinstance(grandchild.tag, str)
+                        and grandchild.tag.split("}")[-1] == kind
+                        and grandchild.get("name") == name
+                    ):
+                        return grandchild
+        return None
+
+    def _attributeUses(self, declaration: Any) -> list[tuple[str, Any]] | None:
+        """Returns ``(name, element)`` for a declaration's direct attributes.
+
+        ``None`` means the declaration cannot be compared structurally: it
+        contains an attribute or attributeGroup reference whose target is
+        resolved elsewhere.
+        """
+        uses: list[tuple[str, Any]] = []
+        for child in list(declaration):
+            if not isinstance(child.tag, str):
+                continue
+            local = child.tag.split("}")[-1]
+            if local == "attributeGroup" or (local == "attribute" and child.get("ref") is not None):
+                return None
+            if local == "attribute":
+                childName = child.get("name")
+                if childName:
+                    uses.append((childName, child))
+        return uses
+
+    def _rebindRedefineReferences(
+        self,
+        redefineTag: Any,
+        redefinedNames: set[str],
+        includedNS: str | None,
+        mainNS: str | None,
+    ) -> None:
+        """Rewrites a redefine block's self-references to the original.
+
+        ``base``/``ref`` values that name a redefined component refer to
+        the *original* in the redefining block, so they are repointed at
+        the renamed ``Name|base`` component. In a chameleon redefine the
+        base component is ported into the redefining namespace, so an
+        unqualified self-reference names no namespace and is reported
+        instead of being silently rebound.
+        """
         for child in list(redefineTag):
             for element in child.iter():
+                if not isinstance(element.tag, str):
+                    continue
+                tagLocal = element.tag.split("}")[-1]
                 base = element.get("base")
                 if base and base.split(":")[-1] in redefinedNames:
                     element.set("base", f"{base.split(':')[-1]}|base")
-                # Inside a redefine block a reference to the redefined
-                # group/attributeGroup means the *original*, so rebind it
-                # to the renamed |base definition instead of the new one
-                # (which would be a circular reference).
                 localRef = element.get("ref")
                 if (
-                    element.tag.split("}")[-1] in ("group", "attributeGroup")
+                    tagLocal in ("group", "attributeGroup")
                     and localRef
                     and localRef.split(":")[-1] in redefinedNames
                 ):
                     element.set("ref", f"{localRef.split(':')[-1]}|base")
-            schemaRoot.append(child)
-        return None
+                if includedNS is not None or mainNS is None:
+                    continue
+                candidates = []
+                if base and _qnameLocal(base) in redefinedNames:
+                    candidates.append(base)
+                if (
+                    tagLocal in ("group", "attributeGroup")
+                    and localRef
+                    and _qnameLocal(localRef) in redefinedNames
+                ):
+                    candidates.append(localRef)
+                for value in candidates:
+                    if self._qnameNamespace(element, value) is None:
+                        self.report.add_error(
+                            f"the redefinition self reference '{value}' "
+                            "must be qualified into the redefining "
+                            f"namespace '{mainNS}'",
+                            code="compose-invalid",
+                            phase="schema",
+                        )
+
+    def _qnameNamespace(self, element: Any, value: str) -> str | None:
+        """Resolves one QName to its namespace, or ``None`` if unbound/absent."""
+        try:
+            resolved = self.namespaceContext.resolve(element, value)
+        except NamespaceError:
+            return None
+        return namespace_of(resolved)
 
     def _checkIdentityConstraints(self, rootInstance: Any) -> None:
         """Runs the identity-constraint check over the bound tree."""

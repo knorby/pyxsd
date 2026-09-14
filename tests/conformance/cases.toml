@@ -1299,6 +1299,228 @@ instance = '''
 '''
 
 [[case]]
+id = "composition/redefine-missing-component-invalid"
+description = "A redefine may not add a component the base does not define"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (src-redefine)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:redefine schemaLocation="redefined.xsd">
+    <xs:group name="absentGroup">
+      <xs:sequence><xs:element name="e" type="xs:string"/></xs:sequence>
+    </xs:group>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"redefined.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="presentGroup">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-duplicate-invalid"
+description = "The same component of one base schema may not be redefined twice"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (conflicting redefines)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns="urn:t">
+  <xs:include schemaLocation="a.xsd"/>
+  <xs:include schemaLocation="b.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns="urn:t">
+  <xs:group name="g">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+"a.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns="urn:t">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="g">
+      <xs:sequence>
+        <xs:group ref="g"/>
+        <xs:element name="b" type="xs:string"/>
+      </xs:sequence>
+    </xs:group>
+  </xs:redefine>
+</xs:schema>
+'''
+"b.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns="urn:t">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="g">
+      <xs:sequence>
+        <xs:group ref="g"/>
+        <xs:element name="c" type="xs:string"/>
+      </xs:sequence>
+    </xs:group>
+  </xs:redefine>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/import-namespace-mismatch-invalid"
+description = "An import namespace must match the imported schema's target namespace"
+derived_from = "W3C XMLSchema1TestSuite, group 'import' (namespace errors)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:b="urn:example:other">
+  <xs:import namespace="urn:example:other" schemaLocation="other.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"other.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="e"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-chameleon-unqualified-selfref-invalid"
+description = "A chameleon redefine self reference must be qualified into the redefining namespace"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (chameleon)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="g">
+      <xs:choice>
+        <xs:group ref="g"/>
+        <xs:element name="b" type="xs:string"/>
+      </xs:choice>
+    </xs:group>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-chameleon-qualified-selfref-valid"
+description = "A qualified chameleon redefine self reference is accepted"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (chameleon)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="g">
+      <xs:choice>
+        <xs:group ref="a:g"/>
+        <xs:element name="b" type="xs:string"/>
+      </xs:choice>
+    </xs:group>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-attribute-group-superset-invalid"
+description = "An attributeGroup redefine without a self reference may not add attributes"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (attributeGroup)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:attributeGroup name="ag">
+      <xs:attribute name="a" type="xs:string"/>
+      <xs:attribute name="b" type="xs:string"/>
+    </xs:attributeGroup>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="ag">
+    <xs:attribute name="a" type="xs:string"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-attribute-group-extension-valid"
+description = "An attributeGroup redefine with a self reference extends the original"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (attributeGroup)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:attributeGroup name="ag">
+      <xs:attributeGroup ref="ag"/>
+      <xs:attribute name="b" type="xs:string"/>
+    </xs:attributeGroup>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="ag">
+    <xs:attribute name="a" type="xs:string"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+
+[[case]]
 id = "composition/include-missing"
 description = "An include whose schemaLocation cannot be resolved is a warning, not an error"
 derived_from = "W3C XMLSchema1TestSuite, group 'include' (unresolvable)"
