@@ -16,6 +16,7 @@ from pyxsd.binding import ParseModes
 from pyxsd.exceptions import PyXSDError
 from pyxsd.parser import PyXSD
 from pyxsd.xsd_data_types import AnySimpleType
+from xsts.runner import corpus_available
 
 XSTS_CORPUS = Path(__file__).parent / "xsts" / "corpus"
 
@@ -145,6 +146,10 @@ class TestListTypedAttributeBinding:
         codes = [issue.code for issue in parser.report.issues]
         assert "invalid-attribute" in codes
 
+    @pytest.mark.skipif(
+        not corpus_available(),
+        reason="xsdtests corpus not checked out (git submodule update --init tests/xsts/corpus)",
+    )
     def test_xsts_metaschema_version_list_does_not_crash(self):
         parser = PyXSD(
             str(XSTS_CORPUS / "saxonMeta" / "All.testSet"),
