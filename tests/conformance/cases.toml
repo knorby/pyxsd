@@ -1300,7 +1300,7 @@ instance = '''
 
 [[case]]
 id = "composition/include-missing"
-description = "Include pointing at a missing file is reported with code schema-compose"
+description = "An include whose schemaLocation cannot be resolved is a warning, not an error"
 derived_from = "W3C XMLSchema1TestSuite, group 'include' (unresolvable)"
 schema = '''
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1309,8 +1309,40 @@ schema = '''
   <xs:element name="root"/>
 </xs:schema>
 '''
+schema_valid = true
+
+[[case]]
+id = "composition/import-missing"
+description = "An import whose schemaLocation cannot be resolved is a warning, not an error"
+derived_from = "W3C XMLSchema1TestSuite, group 'import' (unresolvable)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:o="urn:example:other">
+  <xs:import namespace="urn:example:other" schemaLocation="absent.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = true
+
+[[case]]
+id = "composition/malformed-include-invalid"
+description = "An include of an existing but malformed schema remains a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'include' (malformed)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="bad.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
 schema_valid = false
 expected_codes = ["schema-compose"]
+
+[case.files]
+"bad.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><unclosed>
+'''
 
 [[case]]
 id = "composition/include-cycle"

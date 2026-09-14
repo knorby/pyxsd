@@ -88,8 +88,8 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `final` | ERROR | Derivation violates the base type's `final` attribute. |
 | `schema` | ERROR | The schema file itself is malformed or unreadable. |
 | `schema-hint` | WARNING | Malformed schemaLocation hint in the instance document. |
-| `schema-compose` | ERROR | Missing or malformed included/imported schema file. |
-| `import-unresolved` | ERROR | Namespace-only `xs:import` could not be satisfied from a schemaLocation or `namespace_schemas` (namespaced mode). |
+| `schema-compose` | ERROR / WARNING | A composition directive is invalid or its referenced schema cannot be used. ERROR for a missing `schemaLocation` attribute, a malformed referenced schema, a repeated `annotation` on `xs:include`/`xs:import`, or an `xs:redefine` that redefines components whose base schema cannot be opened. WARNING when an `xs:include`/`xs:import`/`xs:redefine` `schemaLocation` names a document that does not exist (an unresolvable location is a hint, not a rule violation). |
+| `import-unresolved` | ERROR / WARNING | An `xs:import` could not be satisfied from a `schemaLocation` or `namespace_schemas` (namespaced mode). WARNING for a namespace-only import that is merely a hint; ERROR when a component from that namespace is referenced by the importing document, so the unresolved import is fatal. An instance- or caller-supplied schema that is missing remains an ERROR. |
 | `compose-cycle` | WARNING | A repeated include/redefine was deduplicated. |
 | `compose-namespace` | ERROR | Include target namespace mismatch. |
 | `internal` | WARNING | Parser internal inconsistency — please report. |

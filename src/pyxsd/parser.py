@@ -68,6 +68,7 @@ from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.namespaces import (
     XML_NS,
     XSD_NS,
+    XSI_NS,
     NamespaceContext,
     NamespaceError,
     clark,
@@ -206,6 +207,20 @@ class PyXSD:
         # components spliced from another document must not be compared
         # against the main document's ids.
         self._composedElementIds: set[int] = set()
+        # ``id`` attributes on the main document's composition directives
+        # (include/import/redefine). The directives are removed before the
+        # ER walk, but their ids still take part in the document's xs:ID
+        # uniqueness, so declaration ids are compared against them.
+        self._directiveIds: dict[str, Any] = {}
+        # Namespaces for which a schema was supplied or successfully
+        # loaded. A namespace-only import of one of these is satisfied by
+        # that schema rather than an unresolved hint.
+        self._resolvedImports: set[str] = set()
+        # Target namespaces of the schema documents in the composition.
+        # A namespace-only import of a namespace another document in the
+        # collection declares is satisfied by it; only the importing
+        # document's own target namespace does not count.
+        self._composedTargetNamespaces: set[str] = set()
         # The parser's thread-local construction context: schema
         # construction and instance binding run inside it, so concurrent
         # parsers cannot observe each other's overrides or tables. The
@@ -356,7 +371,14 @@ class PyXSD:
         # spliced twice (diamond includes) and a repeat encounter is not
         # an error.
         self._composedDocuments: set[str] = set(visited)
-        self._spliceComposedSchemas(root, baseDir, visited)
+        # A namespace is satisfied if a schema for it was supplied up
+        # front, so such a namespace-only import is not unresolved.
+        self._resolvedImports.update(ns for ns in self.namespaceSchemas if ns)
+        self._resolvedImports.update(ns for ns, _ in getattr(self, "_additionalSchemas", []) if ns)
+        mainTargetNamespace = root.get("targetNamespace")
+        if mainTargetNamespace:
+            self._composedTargetNamespaces.add(mainTargetNamespace)
+        self._spliceComposedSchemas(root, baseDir, visited, mainDocument=True)
         self._spliceAdditionalSchemas(root, baseDir, visited)
         if getattr(self.mode, "namespaces", "legacy") == "strict":
             self._injectXmlNamespaceAttributes(root)
@@ -441,7 +463,7 @@ class PyXSD:
             "Unique",
         )
         seen: set[int] = set()
-        seenIds: dict[str, Any] = {}
+        seenIds: dict[str, Any] = dict(self._directiveIds)
         declared: dict[tuple[str, Any, str], Any] = {}
         stack = [schemaER]
         while stack:
@@ -912,9 +934,17 @@ class PyXSD:
             tag = ET.Element(clark(XSD_NS, "import"), {"schemaLocation": str(path)})
             if namespace:
                 tag.set("namespace", namespace)
-            self._spliceIncludedSchema(tag, schemaRoot, baseDir, visited, isImport=True)
+            self._spliceIncludedSchema(
+                tag, schemaRoot, baseDir, visited, isImport=True, missing_severity="error"
+            )
 
-    def _spliceComposedSchemas(self, schemaRoot: Any, baseDir: Path, visited: set[str]) -> None:
+    def _spliceComposedSchemas(
+        self,
+        schemaRoot: Any,
+        baseDir: Path,
+        visited: set[str],
+        mainDocument: bool = False,
+    ) -> None:
         """Merges composed schemas into ``schemaRoot`` before class building.
 
         ``xs:include`` (same target namespace or none - the chameleon
@@ -928,9 +958,16 @@ class PyXSD:
 
         The composition tags are removed from the tree afterwards so
         the ER factory does not warn about them.
+
+        ``mainDocument`` is true only for the top-level call: the ids of
+        the main document's directives are recorded so declaration ids
+        can be checked against them (an included document's directives
+        belong to a different XML document).
         """
         for child in list(schemaRoot):
             local = child.tag.split("}")[-1]
+            if local in ("include", "redefine", "import") and mainDocument:
+                self._noteDirectiveId(child)
             if local == "include":
                 schemaRoot.remove(child)
                 self._spliceIncludedSchema(child, schemaRoot, baseDir, visited, isImport=False)
@@ -947,6 +984,26 @@ class PyXSD:
                 self._spliceIncludedSchema(child, schemaRoot, baseDir, visited, isImport=True)
         return None
 
+    def _noteDirectiveId(self, tag: Any) -> None:
+        """Records a main-document composition directive's ``id``.
+
+        A directive's id is an ``xs:ID`` too; because the directive is
+        removed before the ER walk, declaration ids are compared against
+        this set instead. A directive that repeats an earlier id is
+        itself reported here.
+        """
+        value = tag.get("id")
+        if not value:
+            return
+        if value in self._directiveIds:
+            self.report.add_error(
+                f"duplicate id '{value}' on <{tag.tag.split('}')[-1]}>",
+                code="declaration-duplicate",
+                phase="schema",
+            )
+            return
+        self._directiveIds[value] = tag
+
     def _spliceIncludedSchema(
         self,
         tag: Any,
@@ -954,34 +1011,45 @@ class PyXSD:
         baseDir: Path,
         visited: set[str],
         isImport: bool,
+        missing_severity: str = "warning",
     ) -> None:
         """Splices the named components of one included/imported schema.
 
         Handles locating and parsing the file, cycle detection and the
         namespace checks; the actual splicing is shared with redefine.
+
+        ``missing_severity`` controls how an unreadable referenced
+        document is reported. A schema document's own include/import is
+        a hint (warning); a schema the *caller* explicitly supplied (a
+        ``namespace_schemas`` entry or an instance ``xsi:schemaLocation``
+        pair, spliced via ``_spliceAdditionalSchemas``) is a required
+        input, so a missing one stays an error.
         """
+        self._checkDirectiveAnnotation(tag, isImport)
         location = tag.get("schemaLocation")
+        strict = getattr(self.mode, "namespaces", "legacy") == "strict"
         if not location:
             if isImport:
                 # ``schemaLocation`` is optional on xs:import: a
                 # namespace-only import is a hint with no document to
                 # load. In strict mode it is unresolved unless a schema
-                # for the namespace was supplied.
+                # for the namespace was supplied. A namespace that the
+                # importing document actually references is fatal; an
+                # unused hint is only a warning.
                 namespace = tag.get("namespace")
-                if (
-                    getattr(self.mode, "namespaces", "legacy") == "strict"
-                    and namespace
-                    and namespace != XML_NS
-                    and namespace not in self.namespaceSchemas
-                    and namespace
-                    not in {ns for ns, _ in getattr(self, "_additionalSchemas", []) if ns}
-                ):
-                    self.report.add_error(
-                        f"the import for namespace '{namespace}' has no "
-                        "schemaLocation and no schema was supplied for it",
-                        code="import-unresolved",
-                        phase="schema",
+                if strict and namespace and namespace not in (XML_NS, XSD_NS, XSI_NS):
+                    otherTargets = self._composedTargetNamespaces - {
+                        schemaRoot.get("targetNamespace")
+                    }
+                    supplied = (
+                        namespace in self.namespaceSchemas
+                        or namespace in self._resolvedImports
+                        or namespace in otherTargets
+                        or namespace
+                        in {ns for ns, _ in getattr(self, "_additionalSchemas", []) if ns}
                     )
+                    if not supplied:
+                        self._reportUnresolvedImport(namespace, schemaRoot)
                 logger.debug("namespace-only xs:import with no schemaLocation; skipping")
                 return None
             self.report.add_error(
@@ -1008,11 +1076,19 @@ class PyXSD:
             location,
             baseDir,
             error_code="import-unresolved" if isImport else "schema-compose",
+            missing_severity=missing_severity,
         )
         if includedRoot is None:
             return None
         mainNS = schemaRoot.get("targetNamespace")
         includedNS = includedRoot.get("targetNamespace")
+        if isImport:
+            # A schema for the namespace was loaded, so a namespace-only
+            # import of the same URI is satisfied rather than unresolved.
+            if tag.get("namespace"):
+                self._resolvedImports.add(tag.get("namespace"))
+            if includedNS:
+                self._resolvedImports.add(includedNS)
         if not isImport and includedNS is None and mainNS is not None:
             # Chameleon pre-processing (XSD 1.1 §4.2.3 and Appendix F.1):
             # a document with no targetNamespace that is included by a
@@ -1023,6 +1099,8 @@ class PyXSD:
             includedRoot.set("targetNamespace", mainNS)
             self._applyChameleonNamespace(includedRoot, mainNS)
             includedNS = mainNS
+        if includedNS:
+            self._composedTargetNamespaces.add(includedNS)
         if not isImport and includedNS not in (None, mainNS):
             self.report.add_error(
                 f"the schema '{location}' declares targetNamespace "
@@ -1059,31 +1137,117 @@ class PyXSD:
         return None
 
     def _parseIncludedSchema(
-        self, location: str, baseDir: Path, error_code: str = "schema-compose"
+        self,
+        location: str,
+        baseDir: Path,
+        error_code: str = "schema-compose",
+        missing_severity: str = "error",
     ) -> Any | None:
         """Parses one included schema file; returns its root or ``None``.
 
-        Failures (unreadable file, malformed xml) are recorded as
-        ``error_code`` errors and the composition proceeds without the
-        missing file.
+        A file that cannot be opened is *resource-not-found*: XSD treats
+        an unresolvable ``schemaLocation`` as a non-fatal hint, so the
+        caller decides (``missing_severity``) whether that is a warning
+        or an error. A file that exists but is not well-formed XML is a
+        rule violation and is always an error. Composition proceeds
+        without the missing file.
         """
         includedPath = baseDir / location
         try:
             with open(includedPath, "rb") as includedFile:
                 root = parse_with_namespaces(includedFile, self.namespaceContext)
         except OSError as e:
-            self.report.add_error(
-                f"the schema '{location}' could not be opened: {e}",
-                code=error_code,
-            )
+            message = f"the schema '{location}' could not be opened: {e}"
+            if missing_severity == "warning":
+                self.report.add_warning(message, code=error_code, phase="schema")
+            else:
+                self.report.add_error(message, code=error_code, phase="schema")
             return None
         except ET.ParseError as e:
             self.report.add_error(
                 f"the schema '{location}' is not well-formed XML: {e}",
                 code=error_code,
+                phase="schema",
             )
             return None
         return root
+
+    def _checkDirectiveAnnotation(self, tag: Any, isImport: bool) -> None:
+        """Reports a repeated ``annotation`` child on include/import.
+
+        The schema-for-schemas allows at most one ``annotation`` on
+        ``xs:include`` and ``xs:import`` (unlike ``xs:redefine``, where
+        the W3C suite accepts repeats - annotB025). This is a directive
+        rule independent of whether the referenced resource resolves.
+        """
+        local = "import" if isImport else "include"
+        count = sum(
+            1
+            for child in tag
+            if isinstance(child.tag, str) and child.tag == clark(XSD_NS, "annotation")
+        )
+        if count > 1:
+            self.report.add_error(
+                f"<{local}> may carry at most one <annotation>; found {count}",
+                code="schema-compose",
+                phase="schema",
+            )
+
+    def _referencedNamespaces(self, schemaRoot: Any) -> set[str]:
+        """Returns the namespaces named by QName-valued schema attributes.
+
+        Used to decide whether an unresolved namespace-only import is
+        actually needed: a reference into the namespace that cannot be
+        satisfied makes the schema invalid, an unreferenced hint does
+        not.
+        """
+        namespaces: set[str] = set()
+        for element in schemaRoot.iter():
+            tag = element.tag
+            if not isinstance(tag, str) or not tag.startswith(f"{{{XSD_NS}}}"):
+                continue
+            tokens = [element.get(attribute) for attribute in self._CHAMELEON_QNAME_ATTRIBUTES]
+            for attribute in self._CHAMELEON_QNAME_LIST_ATTRIBUTES:
+                value = element.get(attribute)
+                if value:
+                    tokens.extend(value.split())
+            for token in tokens:
+                if not token or token.startswith("##"):
+                    continue
+                try:
+                    resolved = self.namespaceContext.resolve(element, token)
+                except NamespaceError:
+                    continue
+                uri = namespace_of(resolved)
+                if uri is not None:
+                    namespaces.add(uri)
+        return namespaces
+
+    def _reportUnresolvedImport(self, namespace: str, schemaRoot: Any) -> None:
+        """Reports one unresolved namespace-only ``xs:import``.
+
+        A namespace-only import is a hint: if a component from its
+        namespace is referenced by the importing document and nothing
+        satisfied the namespace, the schema is invalid; otherwise it is
+        only a warning. The reference scan is scoped to the document
+        that declared the import, because an import is only needed for
+        references made by its own schema document.
+        """
+        if namespace in self._referencedNamespaces(schemaRoot):
+            self.report.add_error(
+                f"the import for namespace '{namespace}' has no "
+                "schemaLocation and a component from that namespace "
+                "is referenced",
+                code="import-unresolved",
+                phase="schema",
+            )
+        else:
+            self.report.add_warning(
+                f"the import for namespace '{namespace}' has no "
+                "schemaLocation and no schema was supplied for it",
+                code="import-unresolved",
+                phase="schema",
+            )
 
     #: QName-valued schema attributes that chameleon pre-processing
     #: rewrites (XSD 1.1 Appendix F.1). Each holds a single QName.
@@ -1188,9 +1352,26 @@ class PyXSD:
                 code="schema-compose",
             )
             return None
-        includedRoot = self._parseIncludedSchema(location, baseDir)
+        includedRoot = self._parseIncludedSchema(location, baseDir, missing_severity="warning")
         if includedRoot is None:
+            # A redefine that actually redefines a component needs its
+            # base document: without it the redefined component cannot be
+            # found, which is a composition rule violation (not merely an
+            # unresolvable hint). A block carrying only annotations is
+            # just the missing-resource warning (W3C a009/annotB025).
+            hasContent = any(
+                isinstance(child.tag, str) and child.tag.split("}")[-1] != "annotation"
+                for child in list(redefineTag)
+            )
+            if hasContent:
+                self.report.add_error(
+                    f"the base schema '{location}' for the redefinition could not be opened",
+                    code="schema-compose",
+                    phase="schema",
+                )
             return None
+        if includedRoot.get("targetNamespace"):
+            self._composedTargetNamespaces.add(includedRoot.get("targetNamespace"))
         includedPath = (baseDir / location).resolve()
         if str(includedPath) in visited:
             self.report.add_warning(
