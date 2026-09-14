@@ -8,6 +8,41 @@ logger = logging.getLogger(__name__)
 class Extension(ElementRepresentative):
     """The class for the extension tag."""
 
+    #: An extension adds a particle and attributes to a base; unlike a
+    #: restriction it has no facets and no inline ``simpleType``.
+    _ALLOWED_CHILDREN = (
+        "annotation",
+        "openContent",
+        "group",
+        "all",
+        "choice",
+        "sequence",
+        "attribute",
+        "attributeGroup",
+        "anyAttribute",
+        "assert",
+    )
+    _MAX_ONE_CHILDREN = (
+        "annotation",
+        "openContent",
+        "group",
+        "all",
+        "choice",
+        "sequence",
+        "anyAttribute",
+    )
+    _CHILD_ORDER = (
+        ("annotation",),
+        ("openContent",),
+        ("group", "all", "choice", "sequence"),
+        ("attribute", "attributeGroup"),
+        ("anyAttribute",),
+        ("assert",),
+    )
+    #: The particle slot is an alternative: an extension holds at most
+    #: one of group/all/choice/sequence.
+    _ONE_OF_SLOTS = frozenset({2})
+
     # Set when the extension declares no ``base`` attribute; the
     # containing type reports it while building its class (see
     # ``XsdType._reportMissingDerivationBase``).

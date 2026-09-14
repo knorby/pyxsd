@@ -498,6 +498,19 @@ class PyXSD:
                         element=er.rawTag,
                         phase="schema",
                     )
+            # A "one of" slot is an alternative: two *distinct* tags in the
+            # same slot are illegal (``choice``+``group``), even though the
+            # per-tag max-one check above sees each only once.
+            for slot in er._ONE_OF_SLOTS:
+                slotTags = {t for t in er.childTags if t != "annotation" and slot_of.get(t) == slot}
+                if len(slotTags) > 1:
+                    choices = ", ".join(f"<{tag}>" for tag in sorted(slotTags))
+                    self.report.add_error(
+                        f"<{er.rawTag}> may contain only one of {choices}",
+                        code="declaration-duplicate",
+                        element=er.rawTag,
+                        phase="schema",
+                    )
 
     def _buildSubstitutionGroups(self, schemaER: Any) -> None:
         """Maps substitution-group heads to their member elements.

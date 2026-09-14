@@ -228,3 +228,207 @@ class TestContainerGrammar:
             "declaration-duplicate",
             "declaration-order",
         } & _schema_codes(report)
+
+
+class TestTypeDefinitionGrammar:
+    def test_simple_type_direct_facet_reports_declaration_child(self, parse_schema):
+        """A facet is not legal directly inside ``simpleType``; it belongs
+        in a ``restriction`` (msData stF facets-outside-restriction)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:length value='3'/></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_simple_type_restriction_then_list_reports_declaration_order(self, parse_schema):
+        """stB019: a simpleType cannot combine restriction and list."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'>"
+            "<xsd:restriction base='xsd:string'/><xsd:list itemType='xsd:string'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-order" in _schema_codes(report)
+
+    def test_simple_type_duplicate_restriction_reports_declaration_duplicate(self, parse_schema):
+        """stB004: at most one derivation child of a simpleType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'>"
+            "<xsd:restriction base='xsd:string'/><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_list_duplicate_simple_type_reports_declaration_duplicate(self, parse_schema):
+        """stD004: a list may declare at most one inline item type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:list>"
+            "<xsd:simpleType><xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "<xsd:simpleType><xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "</xsd:list></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_union_multiple_simple_types_is_clean(self, parse_schema):
+        """A union may declare several inline member types (stE014); the
+        list-style max-one rule must not apply to ``union``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:union>"
+            "<xsd:simpleType><xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "<xsd:simpleType><xsd:restriction base='xsd:int'/></xsd:simpleType>"
+            "</xsd:union></xsd:simpleType></xsd:schema>"
+        )
+        assert not {
+            "declaration-child",
+            "declaration-duplicate",
+            "declaration-order",
+        } & _schema_codes(report)
+
+    def test_list_facet_child_reports_declaration_child(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'>"
+            "<xsd:list itemType='xsd:string'><xsd:length value='3'/></xsd:list>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_restriction_unknown_facet_reports_declaration_child(self, parse_schema):
+        """stF007: ``duration`` is not a constraining facet (msData facet
+        set), so a restriction may not carry it."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:string'>"
+            "<xsd:duration value='P1D'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_extension_facet_child_reports_declaration_child(self, parse_schema):
+        """ctE005: an extension may not carry a constraining facet."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='xsd:anyType'><xsd:length value='3'/></xsd:extension>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_restriction_two_particles_reports_declaration_duplicate(self, parse_schema):
+        """ctG027/ctB063: a restriction holds a single particle; ``choice``
+        and ``group`` are two distinct tags in the same slot."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='xsd:anyType'><xsd:choice/><xsd:group ref='g'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_extension_two_particles_reports_declaration_duplicate(self, parse_schema):
+        """ctH003: an extension holds a single particle; two ``group``
+        references repeat the one particle tag."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='xsd:anyType'>"
+            "<xsd:group ref='g'/><xsd:group ref='h'/>"
+            "</xsd:extension></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_complex_type_simple_and_complex_content_reports_declaration_duplicate(
+        self, parse_schema
+    ):
+        """ctB006/ctB019: the two content kinds are mutually exclusive even
+        though each appears only once."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'>"
+            "<xsd:simpleContent/><xsd:complexContent/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_complex_type_choice_and_group_reports_declaration_duplicate(self, parse_schema):
+        """ctB063: a complexType holds a single particle; ``choice`` and
+        ``group`` are distinct tags in the particle slot."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:choice/><xsd:group ref='g'/>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_complex_content_restriction_and_extension_reports_declaration_duplicate(
+        self, parse_schema
+    ):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='xsd:anyType'/><xsd:extension base='xsd:anyType'/>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_restriction_valid_particle_with_attributes_is_clean(self, parse_schema):
+        """ctG007: a particle followed by attributes is legal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='xsd:anyType'>"
+            "<xsd:choice/><xsd:attribute name='a'/><xsd:anyAttribute/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert not {
+            "declaration-child",
+            "declaration-duplicate",
+            "declaration-order",
+        } & _schema_codes(report)
+
+    def test_extension_valid_group_with_any_attribute_is_clean(self, parse_schema):
+        """ctH001/ctH082: a particle plus attributes is legal in an extension."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='xsd:anyType'>"
+            "<xsd:group ref='g'/><xsd:attribute name='a'/><xsd:anyAttribute/>"
+            "</xsd:extension></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert not {
+            "declaration-child",
+            "declaration-duplicate",
+            "declaration-order",
+        } & _schema_codes(report)
+
+    def test_restriction_allows_open_content(self, parse_schema):
+        """saxonData Open/open015: an XSD 1.1 restriction may carry an
+        ``openContent`` before its particle."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='xsd:anyType'>"
+            "<xsd:openContent mode='suffix'><xsd:any namespace='##any'/></xsd:openContent>"
+            "<xsd:sequence/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert not {
+            "declaration-child",
+            "declaration-duplicate",
+            "declaration-order",
+        } & _schema_codes(report)
+
+    def test_simple_type_restriction_assertion_facet_is_allowed(self, parse_schema):
+        """XSD 1.1 ``assertion`` is a constraining facet of a restriction
+        (ibmData assertion tests); it must not be reported as illegal."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:string'>"
+            "<xsd:assertion test='true()'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)

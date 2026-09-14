@@ -48,6 +48,9 @@ class ComplexType(XsdType):
     #: A simpleContent/complexContent slot excludes later particle and
     #: attribute slots.
     _EXCLUSIVE_SLOTS = frozenset({2})
+    #: The content-kind slot (simpleContent/complexContent) and the
+    #: particle slot (group/all/choice/sequence) are each alternatives.
+    _ONE_OF_SLOTS = frozenset({2, 3})
 
     def __init__(self, xsdElement, parent):
         """Keeps a list of sequences, choices, and alls that are

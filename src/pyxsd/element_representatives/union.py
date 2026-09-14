@@ -12,6 +12,12 @@ class Union(ElementRepresentative):
     (see ``XsdType.makeUnionClass``).
     """
 
+    #: A ``union`` is an annotation plus any number of inline member
+    #: ``simpleType`` children, so only the annotation is max-one.
+    _ALLOWED_CHILDREN = ("annotation", "simpleType")
+    _MAX_ONE_CHILDREN = ("annotation",)
+    _CHILD_ORDER = (("annotation",), ("simpleType",))
+
     def __init__(self, xsdElement, parent):
         """Records the union member specification on the containing
         SimpleType: named members from ``memberTypes`` (whitespace

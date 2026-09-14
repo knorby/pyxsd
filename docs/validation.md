@@ -46,7 +46,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | ---- | -------- | ------- |
 | `order` | ERROR | Child order violates the sequence content model. |
 | `declaration-child` | ERROR | A child element is not allowed by the declaration's child grammar. |
-| `declaration-duplicate` | ERROR | A child that may appear at most once is repeated. |
+| `declaration-duplicate` | ERROR | A child that may appear at most once is repeated, or two distinct alternatives (for example `simpleContent` and `complexContent`) occupy the same exclusive slot. |
 | `declaration-order` | ERROR | Children are out of order, or an exclusive content kind excludes later children. |
 | `declaration-name` | ERROR | A declaration is missing its required name. |
 | `unexpected-element` | ERROR | Element is not declared in the content model and no wildcard allows it. |

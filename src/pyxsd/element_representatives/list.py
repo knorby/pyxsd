@@ -4,6 +4,12 @@ from pyxsd.element_representatives.element_representative import ElementRepresen
 class List(ElementRepresentative):
     """The class for the list tag."""
 
+    #: A ``list`` is an annotation plus either an ``itemType`` attribute
+    #: or a single inline ``simpleType``.
+    _ALLOWED_CHILDREN = ("annotation", "simpleType")
+    _MAX_ONE_CHILDREN = ("annotation", "simpleType")
+    _CHILD_ORDER = (("annotation",), ("simpleType",))
+
     def __init__(self, xsdElement, parent):
         """See ElementRepresentative for documentation."""
         super().__init__(xsdElement, parent)

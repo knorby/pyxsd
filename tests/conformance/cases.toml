@@ -2875,3 +2875,178 @@ schema = '''
 '''
 schema_valid = false
 expected_codes = ["declaration-order"]
+
+[[case]]
+id = "legality/simpleType-facet-outside-restriction"
+description = "A constraining facet directly inside simpleType is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (facets belong in restriction)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:length value="3"/>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/simpleType-restriction-and-list"
+description = "A simpleType may not combine restriction and list"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (single derivation)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:restriction base="xs:string"/>
+    <xs:list itemType="xs:string"/>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-order"]
+
+[[case]]
+id = "legality/list-duplicate-simpleType"
+description = "A list may declare at most one inline item simpleType"
+derived_from = "W3C XMLSchema1TestSuite, group 'list' (single inline item type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:list>
+      <xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>
+    </xs:list>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/union-multiple-simpleTypes"
+description = "A union may declare several inline member simpleTypes"
+derived_from = "W3C XMLSchema1TestSuite, group 'union' (inline members)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:union>
+      <xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType><xs:restriction base="xs:int"/></xs:simpleType>
+    </xs:union>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/restriction-unknown-facet"
+description = "A restriction may not carry a non-facet element (stF007 duration)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (facet set)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:restriction base="xs:string">
+      <xs:duration value="P1D"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/extension-facet"
+description = "An extension may not carry a constraining facet (ctE005 length)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (extension content)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:complexContent>
+      <xs:extension base="xs:anyType"><xs:length value="3"/></xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/restriction-two-particles"
+description = "A restriction holds a single particle; choice and group are exclusive"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (ctG027)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:complexContent>
+      <xs:restriction base="xs:anyType"><xs:choice/><xs:group ref="g"/></xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/extension-two-particles"
+description = "An extension holds a single particle; two group references repeat it"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (ctH003)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:complexContent>
+      <xs:extension base="xs:anyType">
+        <xs:group ref="g"/><xs:group ref="h"/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/complexType-content-kind-alternatives"
+description = "simpleContent and complexContent are mutually exclusive (ctB006/ctB019)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (single content kind)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:simpleContent/><xs:complexContent/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/complexType-choice-and-group"
+description = "A complexType particle slot is an alternative (ctB063)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (single particle)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:choice/><xs:group ref="g"/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]

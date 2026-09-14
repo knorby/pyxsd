@@ -53,6 +53,9 @@ class Schema(ComplexType):
         ),
     )
     _EXCLUSIVE_SLOTS = frozenset()
+    #: The declaration slot holds many kinds of top-level declaration, so
+    #: unlike ``ComplexType`` no slot is a "one of" alternative.
+    _ONE_OF_SLOTS = frozenset()
     #: The schema root allows annotations in any position (and repeated),
     #: so the generic "annotation must be first" rule does not apply.
     _ANNOTATION_FIRST = False

@@ -272,6 +272,12 @@ class ElementRepresentative:
     #: ``simpleContent``/``complexContent`` excludes particles and
     #: attributes).
     _EXCLUSIVE_SLOTS: frozenset[int] = frozenset()
+    #: Slots that hold alternatives: occupying such a slot with two
+    #: *distinct* tags is illegal even though each tag appears only once
+    #: (for example ``simpleContent``+``complexContent``, or
+    #: ``choice``+``group``). Slots that may legitimately hold many
+    #: children ``(attribute, attributeGroup)`` are deliberately omitted.
+    _ONE_OF_SLOTS: frozenset[int] = frozenset()
     #: When true (the XSD rule for every declaration), a schema-namespace
     #: ``annotation`` child must be the first schema child. The schema
     #: root sets this false: its content model allows annotations in any

@@ -468,7 +468,7 @@ class TestMisplacedDeclarations:
             "</xs:schema>",
             monkeypatch,
         )
-        assert "misplaced-declaration" in _codes(parser)
+        assert "declaration-child" in _codes(parser)
 
     def test_attribute_in_group(self, tmp_path, monkeypatch):
         parser = _parse_schema(
@@ -489,7 +489,7 @@ class TestMisplacedDeclarations:
             "</xs:simpleType></xs:schema>",
             monkeypatch,
         )
-        assert "misplaced-declaration" in _codes(parser)
+        assert "declaration-child" in _codes(parser)
 
     def test_group_ref_in_attribute_group(self, tmp_path, monkeypatch):
         parser = _parse_schema(
