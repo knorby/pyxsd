@@ -7,6 +7,9 @@ per-particle (not per-leaf) occurrence semantics, and restriction
 replacing the base particle tree.
 """
 
+import xml.etree.ElementTree as ET
+
+from pyxsd.content_model import Particle
 from pyxsd.parser import PyXSD
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
@@ -394,3 +397,62 @@ class TestMixedInheritanceThroughEmptyExtension:
             tmp_path,
         )
         assert "unexpected-character" in _codes(parser)
+
+
+class TestRepeatedParticleSearchCost:
+    """The Z034/Z036 shape: ``sequence[a{1,unbounded}]{1,100}, b, ...``.
+
+    ``_ends_repeated`` walks a repetition frontier one step at a time.
+    Once a step's end positions are all already reachable within the
+    occurrence bounds (the Z034/Z036 frontiers shrink by one position per
+    step), every later step is contained in the accumulated result too,
+    so the walk must stop; it otherwise expands each bounded repetition
+    O(n) times per starting position on ~1000-element documents.
+    """
+
+    NODES = 101
+
+    @staticmethod
+    def _model():
+        return Particle(
+            "sequence",
+            1,
+            1,
+            [
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+            ],
+        )
+
+    @staticmethod
+    def _nodes():
+        return (
+            [ET.Element("a") for _ in range(10)]
+            + [ET.Element("b")]
+            + [ET.Element("a") for _ in range(90)]
+        )
+
+    def test_exact_end_positions_are_preserved(self):
+        from pyxsd import content_model
+
+        nodes = self._nodes()
+        ctx = content_model._MatchContext({}, content_model._name_of, None, False, None)
+        ends = content_model._ends_repeated(self._model(), nodes, 0, ctx, {}, 0)
+        assert ends == frozenset(range(12, self.NODES + 1))
+        assert content_model.match_content(self._model(), nodes) == (True, [])
+
+    def test_repetition_walk_stops_at_the_fixed_point(self, monkeypatch):
+        from pyxsd import content_model
+
+        calls = 0
+        original = content_model._ends_one
+
+        def counting(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(content_model, "_ends_one", counting)
+        assert content_model.match_content(self._model(), self._nodes()) == (True, [])
+        assert calls <= 5 * self.NODES**2, calls

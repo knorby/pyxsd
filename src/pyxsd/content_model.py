@@ -746,6 +746,15 @@ def _ends_repeated(
         for start in frontier:
             advanced |= _ends_one(particle, nodes, start, ctx, memo, depth)
         if count >= particle.min_occurs:
+            if advanced <= results:
+                # A repetition step that reaches only positions already
+                # reachable within the occurrence bounds cannot lead to a
+                # fresh one: every later step starts from these positions
+                # and stays inside the accumulated result. Unbounded
+                # repeats whose one-step sets shrink (Z034/Z036) would
+                # otherwise walk a frontier of ~len(nodes) positions for
+                # every remaining repetition, per starting position.
+                break
             results |= advanced
         if advanced == frontier and count >= particle.min_occurs:
             # A zero-width particle has reached its fixed point; further
