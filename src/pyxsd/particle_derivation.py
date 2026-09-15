@@ -46,13 +46,25 @@ Rule cells implemented so far (later sub-tasks extend this module):
   every required base member covered, and split coverage for a derived
   wildcard spread over several base wildcards. A choice over an ``all``
   restricts it when every branch restricts the ``all`` on its own.
-* Deliberately silent until the later sub-tasks: element over a model
-  group (RecurseAsIfGroup needs the deep occurrence arithmetic of
-  particlesM003 — naive containment there would reject a valid
-  restriction), a model group over an element (the 1.0 table forbids
-  the shape, but the corpus pins the exemplars valid under the 1.1
-  profile — particlesHb008/Hb011 — because the 1.1 Recurse alignment
-  absorbs them; Task 4d completes this).
+* ``EltOverGroup`` (RecurseAsIfGroup): an element restricting a
+  choice/sequence/all base is wrapped in a singleton group of the
+  base's variety at 1..1 and that wrapper is checked with the matching
+  Recurse rule — the compositor's range gates the wrapper while the
+  element's own range is weighed against the member it maps onto
+  (particlesL/K/M, the J wildcard-base residues, W014).
+* ``MapAndSum``: a sequence restricting a choice maps every derived
+  member onto *some* validly-restricted base member (not injectively,
+  not order-preservingly) and checks the sequence's effective total
+  range against the choice's range (particlesV).
+* ``NSRecurseCheckCardinality``: a group restricting a wildcard admits
+  each of its members to the wildcard's namespaces and checks the
+  group's effective total range against the wildcard's (particlesQ/R,
+  the sequence-of-any J residues).
+* Deliberately silent: a model group over an element (the 1.0 table
+  forbids the shape, but the corpus pins the exemplars valid under the
+  1.1 profile — particlesHb008/Hb011 — where the enclosing
+  alignments absorb the members; a per-pair check cannot be stated
+  without regressing them).
 """
 
 from __future__ import annotations
@@ -79,8 +91,7 @@ _PROCESS_SEVERITY = {"skip": 0, "lax": 1, "strict": 2}
 #: reading of RecurseAsIfGroup — the MS suite pins an element restricting
 #: a wildcard or group base as *valid* when the deep derivation holds
 #: (particlesJa-Jq, particlesK001, particlesM002/M003), against a literal
-#: reading that would forbid them. ``EltOverGroup`` stays deferred: its
-#: deep occurrence arithmetic is Task 4d's.
+#: reading that would forbid them.
 _SHAPE_RULES: dict[tuple[str, str], str] = {
     ("element", "element"): "NameAndTypeOK",
     ("element", "any"): "RecurseAsIfGroup",
@@ -112,30 +123,19 @@ _SHAPE_RULES: dict[tuple[str, str], str] = {
 Resolver = Callable[[Particle], Any]
 HeadLookup = Callable[[Any], Any]
 
-#: Cells this sub-task deliberately leaves silent because every partial
-#: approximation of them rejects corpus-pinned valid schemas; each lands
-#: with the sub-task that implements its full rule:
+#: Cells this module deliberately leaves silent because every partial
+#: approximation of them rejects corpus-pinned valid schemas:
 #:
-#: * ``EltOverGroup`` — RecurseAsIfGroup's deep occurrence arithmetic
-#:   (particlesM003 pins a restriction valid that naive containment
-#:   would reject); Task 4d.
-#: * ``GroupOverElement`` — 1.0 forbids the shape, but the corpus pins
-#:   the exemplars valid under the 1.1 profile (particlesHb008/Hb011)
-#:   via 1.1's Recurse alignment; Task 4d.
-#: * ``NSRecurseCheckCardinality`` — its occurrence clause weighs the
-#:   group members' multiplicity against the wildcard's range, so plain
-#:   containment rejects valid schemas (particlesHa070, Q013, R009);
-#:   Task 4d.
-#: * ``MapAndSum`` — partitions the derived sequence over the base
-#:   choice with occurrence arithmetic (particlesV003); Task 4d.
-_DEFERRED_CELLS = frozenset(
-    {
-        "EltOverGroup",
-        "GroupOverElement",
-        "NSRecurseCheckCardinality",
-        "MapAndSum",
-    }
-)
+#: * ``GroupOverElement`` — 1.0 forbids the shape, and the corpus pins
+#:   the exemplars valid under the 1.1 profile via the 1.1
+#:   language-inclusion reading (particlesHb008/Hb011): a derived
+#:   choice sits inside a derived sequence and absorbs several base
+#:   members at once. The enclosing sequence alignment already accepts
+#:   those exemplars; a per-pair check (all branches must restrict the
+#:   one base element) would reject Hb008, whose choice(e3, e4) member
+#:   spreads over the optional base e3 and e4. The cell therefore stays
+#:   silent rather than approximate the absorption.
+_DEFERRED_CELLS = frozenset({"GroupOverElement"})
 
 
 def contains_occurs(
@@ -232,7 +232,7 @@ def _pair_violations(
     RecurseUnordered matcher passes ``False`` and accounts the mapped
     members' ranges by sum instead (all221/all230).
     """
-    base = _unwrap(base)
+    base = _unwrap_base(base)
     derived = _unwrap(derived)
     key = (id(base), id(derived))
     if key in visited:
@@ -257,10 +257,23 @@ def _pair_violations(
         # members, so nothing more is reported.
         return []
     if rule in _DEFERRED_CELLS:
-        # The cells whose full rules need the later sub-tasks' machinery
-        # are silent here; partial approximations of them reject valid
-        # corpus schemas (details on each entry).
+        # The cells whose partial approximations reject valid corpus
+        # schemas are silent here (details on the entry).
         return []
+    if rule == "EltOverGroup":
+        return _elt_over_group_violations(base, derived, resolver, visited, head_lookup)
+    if rule == "MapAndSum":
+        return _mapandsum_violations(
+            base,
+            derived,
+            resolver,
+            visited,
+            _member_amplified(base, derived, amplified),
+            head_lookup,
+            check_occurs,
+        )
+    if rule == "NSRecurseCheckCardinality":
+        return _nscard_violations(base, derived, resolver, visited, head_lookup)
     violations: list[str] = []
     # The §3.9.6 common clause holds for the derivation pair itself.
     # Inside compositors it survives only where the corpus demands it:
@@ -312,6 +325,263 @@ def _pair_violations(
             )
         )
     return violations
+
+
+def _occurrence_multiplied(member: Particle, base: Particle) -> Particle:
+    """A copy of ``member`` with the enclosing compositor's range folded in.
+
+    A compositor matching ``base.min_occurs .. base.max_occurs`` times
+    contributes each member over that whole repetition count: the
+    member's effective range is the product of the two ranges. The
+    member is returned unchanged when the product is its own range.
+    """
+    minimum = member.min_occurs * base.min_occurs
+    if member.max_occurs is None or base.max_occurs is None:
+        maximum = None
+    else:
+        maximum = member.max_occurs * base.max_occurs
+    if minimum == member.min_occurs and maximum == member.max_occurs:
+        return member
+    return Particle(
+        member.kind,
+        minimum,
+        maximum,
+        member.children,
+        member.name,
+        member.spec,
+        member.descriptor,
+    )
+
+
+def _elt_over_group_violations(
+    base: Particle,
+    derived: Particle,
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    head_lookup: HeadLookup | None,
+) -> list[str]:
+    """RecurseAsIfGroup: an element restricting a model group.
+
+    Under the harness's XSD 1.1 profile the element is admitted when it
+    validly restricts *one of* the group's members with the group's own
+    occurrence multiplied into that member's range — a choice or
+    sequence selecting a member over its whole repetition count. For a
+    choice base this is the language-containment reading the corpus
+    pins: ``a(0,1)`` restricting ``choice(0,1)[a, b]`` is legal because
+    the choice can match zero (particlesHa161, Z001 valid@1.1), while
+    ``c1(1,1)`` under ``choice(2,3)[c1, c2]`` is not (particlesL001),
+    and the member multiplication is what makes ``c1(3,3)`` exceed a
+    ``c1(2,2)`` member (L004).
+
+    A sequence or ``all`` base keeps the §3.9.6 singleton-wrapper
+    reading: the element wrapped in a group of the base's variety at
+    1..1 must be a valid restriction of the base, which is what
+    preserves the order and required-member structure of a sequence
+    (particlesM001/M033/M034) and the per-member sums of an ``all``
+    (particlesK004/K006). The member checks run unamplified so the
+    member's own range is compared directly.
+    """
+    if base.kind == "choice":
+        detail: list[str] = []
+        for member in base.children:
+            candidate = _occurrence_multiplied(member, base)
+            trial = set(visited)
+            if candidate.kind in ("sequence", "all", "choice"):
+                reasons = _elt_over_group_violations(
+                    candidate, derived, resolver, trial, head_lookup
+                )
+            else:
+                reasons = _pair_violations(
+                    candidate,
+                    derived,
+                    resolver,
+                    trial,
+                    amplified=False,
+                    head_lookup=head_lookup,
+                    check_occurs=True,
+                )
+            if not reasons:
+                return []
+            if not detail:
+                detail.extend(reasons)
+        return [
+            f"particle restriction (EltOverGroup): element '{derived.name}' validly "
+            f"restricts no member of the base choice with the choice's occurrence "
+            f"{_occurrence_text(base.min_occurs, base.max_occurs)} folded in "
+            f"({'; '.join(detail)})"
+        ]
+    if not contains_occurs(1, 1, base.min_occurs, base.max_occurs):
+        return [
+            f"particle restriction (EltOverGroup): the element's singleton "
+            f"{base.kind} wrapper has occurrence range [1,1], which is not contained "
+            f"in the base {_occurrence_text(base.min_occurs, base.max_occurs)}"
+        ]
+    wrapper = Particle(base.kind, 1, 1, [derived])
+    if base.kind == "sequence":
+        return _sequence_alignment_violations(
+            base, wrapper, resolver, visited, False, head_lookup, True
+        )
+    return _unordered_violations(
+        base, wrapper, resolver, visited, False, head_lookup, "EltOverGroup", True
+    )
+
+
+def _maps_onto_a_base_member(
+    base: Particle,
+    member: Particle,
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    amplified: bool,
+    head_lookup: HeadLookup | None,
+    check_occurs: bool,
+) -> bool:
+    """Whether a derived member validly restricts some base member."""
+    for candidate in base.children:
+        trial = set(visited)
+        reasons = _pair_violations(
+            candidate,
+            member,
+            resolver,
+            trial,
+            amplified=amplified,
+            head_lookup=head_lookup,
+            removable=True,
+            check_occurs=check_occurs,
+        )
+        if not reasons:
+            return True
+    return False
+
+
+def _mapandsum_violations(
+    base: Particle,
+    derived: Particle,
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    amplified: bool,
+    head_lookup: HeadLookup | None,
+    check_occurs: bool,
+) -> list[str]:
+    """MapAndSum: a sequence restricting a choice group.
+
+    Every member of the derived sequence must validly restrict *some*
+    member of the base choice — the mapping is neither injective nor
+    order-preserving (particlesV015's ``seq(e3, e2, e1)`` over
+    ``choice(e1|e2|e3)``) — and the sequence's effective total range
+    (its own occurrence range times its member count, §3.8.6) must be
+    contained in the base choice's range (particlesV001 valid,
+    V002/V003/V005).
+    """
+    violations: list[str] = []
+    count = len(derived.children)
+    minimum = derived.min_occurs * count
+    maximum = None if derived.max_occurs is None else derived.max_occurs * count
+    if not contains_occurs(minimum, maximum, base.min_occurs, base.max_occurs):
+        violations.append(
+            f"particle restriction (MapAndSum): the derived sequence's effective total "
+            f"range {_occurrence_text(minimum, maximum)} (its own "
+            f"{_occurrence_text(derived.min_occurs, derived.max_occurs)} times {count} "
+            f"members) is not contained in the base choice's "
+            f"{_occurrence_text(base.min_occurs, base.max_occurs)}"
+        )
+    for index, member in enumerate(derived.children):
+        if _maps_onto_a_base_member(
+            base, member, resolver, visited, amplified, head_lookup, check_occurs
+        ):
+            continue
+        label = f"'{member.name}' " if member.kind == "element" else ""
+        violations.append(
+            f"particle restriction (MapAndSum): derived sequence member {index} "
+            f"{label}validly restricts no member of the base choice"
+        )
+    return violations
+
+
+def _nscard_violations(
+    base: Particle,
+    derived: Particle,
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    head_lookup: HeadLookup | None,
+) -> list[str]:
+    """NSRecurseCheckCardinality: a group restricting a wildcard.
+
+    Every member of the derived group must validly restrict the
+    wildcard as defined by Particle Valid (Restriction) — namespace
+    admission for elements, recursion for nested groups — with the
+    per-member occurrence clause suspended because the aggregate clause
+    accounts for it (particlesQ013's members are 2..2 under a 4..8
+    wildcard). The group's effective total range must then be contained
+    in the wildcard's range (particlesQ006/Q013, R010/R014). A
+    ``maxOccurs=0`` group matches nothing, so nothing is checked (the
+    W006 posture).
+    """
+    if derived.max_occurs == 0:
+        return []
+    violations: list[str] = []
+    minimum, maximum = _effective_total_range(derived)
+    if not contains_occurs(minimum, maximum, base.min_occurs, base.max_occurs):
+        violations.append(
+            f"particle restriction (NSRecurseCheckCardinality): the derived "
+            f"{derived.kind}'s effective total range {_occurrence_text(minimum, maximum)} "
+            f"is not contained in the base wildcard's "
+            f"{_occurrence_text(base.min_occurs, base.max_occurs)}"
+        )
+    for member in derived.children:
+        reasons = _pair_violations(
+            base,
+            member,
+            resolver,
+            set(visited),
+            amplified=True,
+            head_lookup=head_lookup,
+            check_occurs=False,
+        )
+        if reasons:
+            label = f"'{member.name}' " if member.kind == "element" else ""
+            violations.append(
+                f"particle restriction (NSRecurseCheckCardinality): derived member "
+                f"{label}does not validly restrict the base wildcard "
+                f"({'; '.join(reasons)})"
+            )
+    return violations
+
+
+def _effective_total_range(particle: Particle) -> tuple[int, int | None]:
+    """The §3.8.6 effective total range of a compositor particle.
+
+    A sequence or ``all`` adds its members' contributions, a choice
+    takes the narrowest minimum and the widest maximum; the particle's
+    own occurrence multiplies the aggregate. ``None`` means unbounded,
+    which any unbounded member forces (and which the particle's own
+    unbounded range forces whenever the aggregate can be non-zero).
+    """
+    if particle.kind not in ("sequence", "all", "choice"):
+        return (particle.min_occurs, particle.max_occurs)
+    if not particle.children:
+        return (0, 0)
+    ranges = [_effective_total_range(child) for child in particle.children]
+    maxima = [item[1] for item in ranges]
+    numeric_maxima: list[int] = [value for value in maxima if value is not None]
+    inner_max: int | None
+    if len(numeric_maxima) != len(maxima):
+        inner_max = None
+    elif particle.kind == "choice":
+        inner_max = max(numeric_maxima)
+    else:
+        inner_max = sum(numeric_maxima)
+    if particle.kind == "choice":
+        inner_min = min(item[0] for item in ranges)
+    else:
+        inner_min = sum(item[0] for item in ranges)
+    minimum = particle.min_occurs * inner_min
+    if inner_max is None:
+        maximum = None
+    elif particle.max_occurs is None:
+        maximum = None if inner_max > 0 else 0
+    else:
+        maximum = particle.max_occurs * inner_max
+    return (minimum, maximum)
 
 
 def _over_all_violations(
@@ -389,22 +659,86 @@ def _wildcard_particles(particle: Particle) -> list[Particle]:
 
 
 def _unwrap(particle: Particle) -> Particle:
-    """Sees through ``1..1`` sequence wrappers holding one particle.
+    """Sees through the compiler's synthetic group-reference wrappers.
 
-    The pointless-particle elimination of §3.9.6 runs before the shape
-    table: such a sequence matches exactly what its child matches, so
-    the pair is decided on the child. The compiler emits this exact
-    shape for group references; multi-child and repeated sequences
-    carry their own identity and stay.
+    A group reference is not a particle: its content model is the
+    referenced compositor, repeated at the reference site's occurrence.
+    The compiler models it as a ``synthetic`` singleton ``sequence``
+    wrapper, so the wrapper is replaced by its content with the two
+    occurrence ranges folded together (a ``minOccurs=0`` reference to a
+    choice yields an optional choice, not a sequence). Literal
+    sequences — however few members they hold — are real particles per
+    §3.9.6 and keep their identity on the *derived* side
+    (particlesL010's nested sequence, groupB003v's group-vs-group
+    alignment); the base side also sees through ``1..1`` single-member
+    literals (``_unwrap_base``).
     """
-    while (
-        particle.kind == "sequence"
-        and len(particle.children) == 1
-        and particle.min_occurs == 1
-        and particle.max_occurs == 1
-    ):
-        particle = particle.children[0]
-    return particle
+    while True:
+        if particle.kind == "sequence" and particle.synthetic and len(particle.children) == 1:
+            particle = _fold_synthetic(particle)
+            continue
+        if (
+            particle.kind == "sequence"
+            and len(particle.children) == 1
+            and particle.min_occurs == 1
+            and particle.max_occurs == 1
+            and particle.children[0].kind not in ("sequence", "choice", "all")
+        ):
+            # A 1..1 singleton sequence holding a leaf is the pointless
+            # case §3.9.6 eliminates before the table; composite
+            # children keep the sequence's identity so the alignment can
+            # match whole groups (groupB003v).
+            particle = particle.children[0]
+            continue
+        return particle
+
+
+def _fold_synthetic(particle: Particle) -> Particle:
+    """Replaces a synthetic group-ref wrapper with its content.
+
+    The reference site's occurrence folds into the content's own range
+    (a ``minOccurs=0`` reference to a choice yields an optional choice).
+    """
+    inner = particle.children[0]
+    if particle.max_occurs is None or inner.max_occurs is None:
+        maximum = None
+    else:
+        maximum = particle.max_occurs * inner.max_occurs
+    return Particle(
+        inner.kind,
+        particle.min_occurs * inner.min_occurs,
+        maximum,
+        inner.children,
+        inner.name,
+        inner.spec,
+        inner.descriptor,
+    )
+
+
+def _unwrap_base(particle: Particle) -> Particle:
+    """The base-side view: synthetic wrappers plus literal singleton groups.
+
+    On the base side the corpus treats a ``1..1`` single-member
+    sequence as transparent as well — an ``all`` restricting
+    ``sequence[any]`` sees the wildcard itself (particlesHa070/Ha080,
+    P002), and a vacuous member is not required to consume the
+    sequence's supply (particlesJd010). ``1..1`` multiplication is the
+    identity, so no occurrence folding is needed for those literals.
+    """
+    while True:
+        inner = _unwrap(particle)
+        if inner is not particle:
+            particle = inner
+            continue
+        if (
+            particle.kind == "sequence"
+            and len(particle.children) == 1
+            and particle.min_occurs == 1
+            and particle.max_occurs == 1
+        ):
+            particle = particle.children[0]
+            continue
+        return particle
 
 
 def _nssubset_violations(base: Particle, derived: Particle) -> list[str]:
@@ -441,9 +775,13 @@ def _wildcard_admission_violations(
     """RecurseAsIfGroup's base case: an element restricting a wildcard
     must be admitted by it. The element is admitted when its instance
     namespace lies in the wildcard's constraint; an unresolvable
-    declaration gets the benefit of the doubt.
+    declaration gets the benefit of the doubt. A vacuous element
+    (``maxOccurs=0``) can never occur, so the namespace constraint
+    cannot exclude it (particlesJq010).
     """
     if base.kind != "any" or base.spec is None:
+        return []
+    if derived.max_occurs == 0:
         return []
     declaration = resolver(derived) if resolver is not None else None
     if declaration is None or not callable(getattr(declaration, "getNamespace", None)):
@@ -806,6 +1144,28 @@ def _member_amplified(base: Particle, derived: Particle, amplified: bool) -> boo
     )
 
 
+def _choice_branches(choice: Particle) -> list[Particle]:
+    """The effective alternative list of a choice group.
+
+    A group reference compiles to a synthetic singleton sequence
+    wrapper; once unwrapped, a nested ``choice`` is itself an
+    alternative union, so its branches join this choice's branch list
+    (§3.9.6's pointless-choice elimination, particlesIb006/Ib007). A
+    nested choice carrying its own repetition is a real particle and
+    stays a single branch. Singleton wrappers are seen through here on
+    both sides (``_unwrap_base``): the branch list is the group's
+    language, not its spelled structure.
+    """
+    branches: list[Particle] = []
+    for child in choice.children:
+        inner = _unwrap_base(child)
+        if inner.kind == "choice" and inner.min_occurs == 1 and inner.max_occurs == 1:
+            branches.extend(_choice_branches(inner))
+        else:
+            branches.append(inner)
+    return branches
+
+
 def _choice_mapping_violations(
     base: Particle,
     derived: Particle,
@@ -822,11 +1182,13 @@ def _choice_mapping_violations(
     (RecurseLax's bijective mapping). Backtracking tries each unused
     base branch per derived branch, so a branch that only fits a base
     branch another one needs forces a different overall mapping.
+    Group-ref choices among the derived members contribute their own
+    branches to this choice's alternatives (``_choice_branches``).
     """
     used: set[int] = set()
     dead_ends: list[tuple[int, list[str]]] = []
-    derived_children = derived.children
-    base_children = base.children
+    derived_children = _choice_branches(derived)
+    base_children = _choice_branches(base)
 
     def assign(index: int) -> bool:
         if index == len(derived_children):
@@ -868,6 +1230,22 @@ def _choice_mapping_violations(
         f"particle restriction (Recurse): derived choice member {index} validly "
         f"restricts no unused member of the base choice ({detail})"
     ]
+
+
+def _particle_emptiable(particle: Particle) -> bool:
+    """§3.9.6 Particle Emptiable: whether the particle can match zero.
+
+    A particle is emptiable when its own ``minOccurs`` is 0 or — for a
+    group — when its effective total range's minimum is 0. A
+    ``sequence[e(0,1)]`` member is therefore emptiable even though the
+    member particle's own ``minOccurs`` is 1 (addB091/Ha002).
+    """
+    if particle.min_occurs == 0:
+        return True
+    if particle.kind in ("sequence", "all", "choice"):
+        minimum, _maximum = _effective_total_range(particle)
+        return minimum == 0
+    return False
 
 
 def _sequence_alignment_violations(
@@ -937,15 +1315,22 @@ def _sequence_alignment_violations(
             return memo[key]
         if index == len(derived_children):
             # An empty tail matches zero members, so a derived sequence
-            # that stopped exactly at the end is aligned (all(...) over
-            # the empty slice is vacuously true).
-            ok = all(member.min_occurs == 0 for member in base_children[position:])
+            # that stopped exactly at the end is aligned when every base
+            # member left over is emptiable in the §3.9.6 sense.
+            ok = all(_particle_emptiable(member) for member in base_children[position:])
             memo[key] = ok
             return ok
         if exhausted:
             memo[key] = False
             return False
         member = derived_children[index]
+        if member.max_occurs == 0:
+            # A member that can never match removes itself: it neither
+            # consumes a base copy nor constrains the alignment
+            # (particlesJd010; the mgH014 posture).
+            ok = walk(index + 1, position, used)
+            memo[key] = ok
+            return ok
         trial = set(visited)
         reasons = _pair_violations(
             base_children[position],
@@ -970,7 +1355,7 @@ def _sequence_alignment_violations(
         ):
             memo[key] = True
             return True
-        if base_children[position].min_occurs == 0 and walk(index, position + 1, 0):
+        if _particle_emptiable(base_children[position]) and walk(index, position + 1, 0):
             memo[key] = True
             return True
         memo[key] = False
@@ -1237,15 +1622,19 @@ def _wildcard_contained_in(unit: Particle, member: Particle) -> bool:
 
 
 def _element_namespace(declaration: Any) -> str | None:
-    """The namespace an element declaration is checked against.
+    """The {target namespace} an element declaration is checked against.
 
-    Reference sites take the referred declaration's namespace; every
-    other declaration answers with the declaring document's target
-    namespace. The corpus treats local elements as living in their
-    schema's namespace regardless of form defaults (particlesJq010 is
-    pinned valid with an unqualified local element under a
-    ``##targetNamespace`` wildcard, particlesJl002 invalid under a URI
-    list missing it), so no form-default qualification happens here.
+    Reference sites take the referred declaration's namespace. A
+    global declaration carries its schema's target namespace; a local
+    declaration carries it only when qualified — its own ``form``
+    attribute, the source document's ``elementFormDefault`` (recorded
+    at composition time for spliced components), or the host schema's
+    default. An unqualified local element therefore has the absent
+    namespace, which is a *different* expanded name from a same-named
+    global (particlesL010/L030). An explicit XSD 1.1
+    ``targetNamespace`` attribute on the declaration wins (the TargetNS
+    corpus cases). Declarations without scope information (test
+    stand-ins) keep the historical form-blind reading.
     """
     if declaration is None:
         return None
@@ -1256,13 +1645,47 @@ def _element_namespace(declaration: Any) -> str | None:
     if callable(explicit):
         target = explicit("targetNamespace")
         if target:
-            # XSD 1.1 lets a local element declaration name its namespace
-            # directly (the TargetNS corpus cases).
             return target
     getter = getattr(declaration, "getNamespace", None)
     if not callable(getter):
         return None
+    if not _local_declaration_is_qualified(declaration):
+        return None
     return getter()
+
+
+def _local_declaration_is_qualified(declaration: Any) -> bool:
+    """Whether a declaration's expanded name carries its schema namespace.
+
+    A global declaration always does. A local one depends on its own
+    ``form`` attribute, then the form defaults of the document the
+    component was spliced from, then the host schema's
+    ``elementFormDefault``. Declarations without scope information
+    (test stand-ins) are treated as global.
+    """
+    is_global = getattr(declaration, "isGlobalDeclaration", None)
+    if not callable(is_global):
+        return True
+    if is_global():
+        return True
+    element = getattr(declaration, "xsdElement", None)
+    explicit = element.get("form") if element is not None else None
+    if explicit is not None:
+        return explicit == "qualified"
+    try:
+        schema = declaration.getSchema()
+    except AttributeError:
+        return True
+    if schema is None:
+        return True
+    source_defaults = getattr(schema, "formDefaultOverrides", None)
+    if source_defaults and element is not None and id(element) in source_defaults:
+        element_default, _attribute_default = source_defaults[id(element)]
+        return (element_default or "unqualified") == "qualified"
+    default_getter = getattr(schema, "getElementFormDefault", None)
+    if not callable(default_getter):
+        return True
+    return default_getter() == "qualified"
 
 
 def _occurrence_text(minimum: int, maximum: int | None) -> str:

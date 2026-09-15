@@ -835,7 +835,15 @@ class PyXSD:
         return resolved
 
     def _collectParticles(self, er: Any, out: list[Any], visited: set[int]) -> None:
-        """Collects element particles under *er* through compositor children."""
+        """Collects element particles under *er* transitively.
+
+        Descends nested compositors and — because a group reference's
+        content model is spliced into the referencing type's model —
+        through group references to their definition's compositor
+        (mgR022's conflicting ``e1`` sits inside a referenced sequence).
+        A reference that cannot be resolved here (it names an import)
+        is skipped: its contents belong to that document's own sweep.
+        """
         for child in getattr(er, "processedChildren", None) or ():
             if child is None or id(child) in visited:
                 continue
@@ -845,6 +853,38 @@ class PyXSD:
                 out.append(child)
             elif kind in self._COMPOSITOR_KINDS:
                 self._collectParticles(child, out, visited)
+            elif kind == "Group" and getattr(child, "isRefSite", False):
+                definition = self._groupRefDefinition(child)
+                if definition is None:
+                    continue
+                compositor = definition.getCompositor()
+                if compositor is not None and id(compositor) not in visited:
+                    visited.add(id(compositor))
+                    self._collectParticles(compositor, out, visited)
+
+    def _groupRefDefinition(self, refSite: Any) -> Any | None:
+        """The group definition a reference site names, or ``None``.
+
+        Mirrors the content-model compiler's resolution: QName-aware
+        where the document supplies a namespace context, then the
+        schema's group table by full reference and local name.
+        """
+        ref = getattr(refSite, "ref", None)
+        if not ref:
+            return None
+        try:
+            schema = refSite.getSchema()
+        except AttributeError:
+            return None
+        groups = getattr(schema, "groups", None)
+        if not groups:
+            return None
+        resolver = getattr(refSite, "resolveReference", None)
+        if resolver is not None:
+            resolved = resolver(ref, groups.values(), parser=getattr(schema, "pyXSD", None))
+            if resolved is not None:
+                return resolved
+        return groups.get(ref) or groups.get(ref.split(":")[-1])
 
     def _checkSubstitutionOverlap(self, resolved: list[tuple[tuple[str, str], str, Any]]) -> None:
         """Reports a substitution-group member meeting its head in an all.

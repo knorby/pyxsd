@@ -29,6 +29,13 @@ LOCAL = WildcardSpec(namespace="##local")
 XSD_HEAD = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
 XSD_TAIL = "</xs:schema>"
 
+#: A schema root carrying a target namespace and the ``x`` prefix (for
+#: the form-awareness cases: refs to globals against unqualified locals).
+XSD_HEAD_NS = (
+    "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' "
+    "xmlns:x='http://xsdtesting' targetNamespace='http://xsdtesting'>"
+)
+
 
 def schema_codes(report) -> set[str]:
     return {issue.code for issue in report.for_phase("schema")}
@@ -54,8 +61,8 @@ def parse(tmp_path, monkeypatch):
     monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
     schema_path = tmp_path / "schema.xsd"
 
-    def _parse(schema_string: str):
-        schema_path.write_text(XSD_HEAD + schema_string + XSD_TAIL, encoding="utf-8")
+    def _parse(schema_string: str, head: str = XSD_HEAD):
+        schema_path.write_text(head + schema_string + XSD_TAIL, encoding="utf-8")
         return PyXSD(
             io.StringIO("<pyxsd-schema-probe/>"),
             str(schema_path),
@@ -349,12 +356,14 @@ class TestPredicateCells:
         assert not is_valid_particle_restriction(base, derived, resolver=no_resolver)
 
     def test_single_particle_sequence_is_transparent(self):
-        # Hb002: the base's group reference compiles to a 1/1 sequence
-        # wrapper; shape decisions see through it (choice over all is
-        # forbidden, choice over the wrapper would be a different cell)
+        # Hb002: the base's group reference compiles to a synthetic 1/1
+        # sequence wrapper; shape decisions see through it (choice over
+        # all is forbidden, choice over the wrapper would be a different
+        # cell)
         base = Particle(
             "sequence",
             children=[Particle("all", children=[Particle("element", name="e1", min_occurs=0)])],
+            synthetic=True,
         )
         derived = Particle("choice", children=[Particle("any", spec=ANY)])
         assert is_valid_particle_restriction(base, derived, resolver=no_resolver)
@@ -1729,3 +1738,660 @@ class TestSchemaRecurseCorpus:
             "</xs:all></xs:restriction></xs:complexContent></xs:complexType>"
         )
         assert not particle_restriction_issues(report)
+
+
+class TestEltOverGroup:
+    """RecurseAsIfGroup: an element restricting a choice/sequence/all base.
+
+    The element is wrapped in a singleton group of the base's variety at
+    1..1 and that wrapper is checked with the matching Recurse rule, so
+    the base compositor's own occurrence range is compared against the
+    wrapper while the member carries its own range (particlesL/K/M).
+    """
+
+    def test_element_over_choice_maps_one_member(self):
+        # particlesL003/L006: B choice(1,1)[c1(1,2), c2], R c1(1,2)
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="c1"), 1, 2),
+            _elt(_Declaration(name="c2")),
+        )
+        derived = _elt(_Declaration(name="c1"), 1, 2)
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_element_over_choice_below_base_minimum_is_invalid(self):
+        # particlesL001: B choice(2,3), R c1(1,1) — the singleton wrapper
+        # is 1..1 and cannot sit in [2,3]
+        base = _group("choice", _elt(_Declaration(name="c1")), min_occurs=2, max_occurs=3)
+        derived = _elt(_Declaration(name="c1"))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "EltOverGroup" in reasons[0]
+
+    def test_element_over_choice_member_max_widening_is_invalid(self):
+        # particlesL004/L008: member c1(1,1), R c1(1,2)
+        base = _group("choice", _elt(_Declaration(name="c1")))
+        derived = _elt(_Declaration(name="c1"), 1, 2)
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "occurrence range" in reasons[0]
+
+    def test_element_over_choice_member_min_widening_is_invalid(self):
+        # particlesL005: B choice(1,1)[c1(1,1)], R c1(0,1)
+        base = _group("choice", _elt(_Declaration(name="c1")))
+        derived = _elt(_Declaration(name="c1"), 0, 1)
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "occurrence range" in reasons[0]
+
+    def test_element_over_all_optional_members_may_go_unmapped(self):
+        # particlesK001: all(1,1)[a0(0), a1(1,1), a2(0)], R a1(1,1)
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a0"), 0, 1),
+            _elt(_Declaration(name="a1")),
+            _elt(_Declaration(name="a2"), 0, 1),
+        )
+        derived = _elt(_Declaration(name="a1"))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_element_over_all_member_widening_is_invalid(self):
+        # particlesK004: R a1(2,2) against the member a1(1,1)
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a0"), 0, 1),
+            _elt(_Declaration(name="a1")),
+            _elt(_Declaration(name="a2"), 0, 1),
+        )
+        derived = _elt(_Declaration(name="a1"), 2, 2)
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "EltOverGroup" in reasons[0]
+
+    def test_element_over_sequence_contained_member_is_valid(self):
+        # particlesW014's contained frame (without the namespace mismatch)
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="e1"), max_occurs=3),
+            _elt(_Declaration(name="e2"), 0, 3),
+            _elt(_Declaration(name="e3"), 0, 3),
+        )
+        derived = _elt(_Declaration(name="e1"))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_element_over_sequence_unmappable_member_is_invalid(self):
+        # particlesW014: the imported ref's name matches no base member
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="e1"), max_occurs=3),
+            _elt(_Declaration(name="e2"), 0, 3),
+            _elt(_Declaration(name="e3"), 0, 3),
+        )
+        derived = _elt(_Declaration(name="imported1"))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons
+
+    def test_element_over_sequence_required_unmapped_member_is_invalid(self):
+        # particlesJe012's shape: the base's required member has no
+        # derived counterpart to absorb it
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="e1")),
+            _elt(_Declaration(name="e2")),
+        )
+        derived = _elt(_Declaration(name="e1"))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons
+
+    def test_element_over_sequence_member_widening_is_invalid(self):
+        # particlesM001: the base member's range does not contain R's
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="c1")),
+            _elt(_Declaration(name="c2"), 0, 1),
+            min_occurs=2,
+            max_occurs=3,
+        )
+        derived = _elt(_Declaration(name="c1"), 1, 3)
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons
+
+
+class TestMapAndSum:
+    """MapAndSum: a derived sequence over a base choice."""
+
+    def test_contained_product_range_is_valid(self):
+        # particlesV001: R seq(1,3) of three members has effective (3,9)
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="e1"), max_occurs=10),
+            _elt(_Declaration(name="e2"), 2, 10),
+            _elt(_Declaration(name="e3"), 3, 10),
+            max_occurs=10,
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="e1"), max_occurs=10),
+            _elt(_Declaration(name="e2"), 2, 10),
+            _elt(_Declaration(name="e3"), 3, 10),
+            max_occurs=3,
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_product_maximum_exceeding_base_is_invalid(self):
+        # particlesV002/V005: R seq(1,99) x 3 members has effective max 297
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="e1"), max_occurs=10),
+            _elt(_Declaration(name="e2"), 2, 10),
+            _elt(_Declaration(name="e3"), 2, 10),
+            max_occurs=99,
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="e1"), max_occurs=10),
+            _elt(_Declaration(name="e2"), 2, 10),
+            _elt(_Declaration(name="e3"), 2, 10),
+            max_occurs=99,
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "MapAndSum" in reasons[0]
+
+    def test_product_minimum_below_base_is_invalid(self):
+        # the mirror of particlesV003's valid (4,8) in (3,9): a two-member
+        # sequence at 1..1 has effective (2,2), below the base's minimum 3
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="e1")),
+            _elt(_Declaration(name="e2")),
+            min_occurs=3,
+            max_occurs=9,
+        )
+        derived = _group("sequence", _elt(_Declaration(name="e1")), _elt(_Declaration(name="e2")))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "MapAndSum" in reasons[0]
+
+    def test_two_member_product_in_base_is_valid(self):
+        # particlesV003: effective (4,8) in (3,9)
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="e1")),
+            _elt(_Declaration(name="e2")),
+            min_occurs=3,
+            max_occurs=9,
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="e1")),
+            _elt(_Declaration(name="e2")),
+            min_occurs=2,
+            max_occurs=4,
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_member_without_base_mapping_is_invalid(self):
+        # particlesV016: R's extra e4 restricts no member of B
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="e1"), max_occurs=3),
+            _elt(_Declaration(name="e2"), 0, 3),
+            _elt(_Declaration(name="e3"), 0, 3),
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="e1")),
+            _elt(_Declaration(name="e2"), 0, 1),
+            _elt(_Declaration(name="e3"), 0, 1),
+            _elt(_Declaration(name="e4"), 0, 1),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "MapAndSum" in reasons[0]
+
+    def test_mapping_ignores_member_order(self):
+        # particlesV015: R seq(e3, e2, e1) over B choice(e1|e2|e3)
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="e1")),
+            _elt(_Declaration(name="e2")),
+            _elt(_Declaration(name="e3")),
+            min_occurs=0,
+            max_occurs=3,
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="e3")),
+            _elt(_Declaration(name="e2")),
+            _elt(_Declaration(name="e1")),
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_member_type_mismatch_is_invalid(self):
+        # particlesV018: e1 with an unrelated type restricts no member
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="e1", type_=_Restricted)),
+            _elt(_Declaration(name="e2")),
+            max_occurs=4,
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="e1", type_=_Unrelated)),
+            _elt(_Declaration(name="e2")),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "MapAndSum" in reasons[0]
+
+
+class TestNSRecurseCheckCardinality:
+    """A derived group over a wildcard base."""
+
+    def test_effective_range_contained_is_valid(self):
+        # particlesQ013: any(4,8) over seq(1,2)[e1(2,2), e2(2,2)] -> (4,8)
+        base = _wild("##any", 4, 8)
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="e1"), 2, 2),
+            _elt(_Declaration(name="e2"), 2, 2),
+            min_occurs=1,
+            max_occurs=2,
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_effective_range_maximum_exceeds_wildcard(self):
+        # particlesQ006: any(0,3) over seq(0,4)[e1(1,1)] -> max 4
+        base = _wild("##any", 0, 3)
+        derived = _group("sequence", _elt(_Declaration(name="e1")), min_occurs=0, max_occurs=4)
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "NSRecurseCheckCardinality" in reasons[0]
+
+    def test_choice_effective_minimum_below_wildcard_is_invalid(self):
+        # particlesR010: any(4,4) over choice(1,1)[e1(3,3), e2(3,3)] -> min 3
+        base = _wild("##any", 4, 4)
+        derived = _group(
+            "choice",
+            _elt(_Declaration(name="e1"), 3, 3),
+            _elt(_Declaration(name="e2"), 3, 3),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "NSRecurseCheckCardinality" in reasons[0]
+
+    def test_choice_effective_range_in_wildcard_is_valid(self):
+        # particlesR014's valid-side control: choice(2,2) -> (2,2) in (2,2)
+        base = _wild("##any", 2, 2)
+        derived = _group(
+            "choice",
+            _elt(_Declaration(name="e1")),
+            _elt(_Declaration(name="e2")),
+            min_occurs=2,
+            max_occurs=2,
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_member_namespace_must_be_admitted(self):
+        # particlesQ018/Jh001: ##other admits neither the absent namespace
+        # nor the target namespace. The sequence keeps minOccurs=0 so the
+        # singleton-wrapper elimination does not reduce it to Elt:Any.
+        base = _wild("##other", 0, 1)
+        derived = _group("sequence", _elt(_Declaration(name="elem")), min_occurs=0, max_occurs=1)
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "NSRecurseCheckCardinality" in reasons[0]
+
+    def test_member_namespace_admitted_is_valid(self):
+        base = _wild("##any", 0, 1)
+        derived = _group("sequence", _elt(_Declaration(name="elem")))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_vacuous_derived_group_is_not_reported(self):
+        # a compositor with maxOccurs=0 matches nothing, so its members
+        # stay unconstrained (the W006 posture)
+        base = _wild("##local", 0, 0)
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="elem", namespace="http://t")),
+            min_occurs=0,
+            max_occurs=0,
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+
+class TestGroupRefChoiceFlattening:
+    """A derived choice branch that is a group-ref choice union."""
+
+    def _group_ref(self, inner):
+        """The synthetic singleton wrapper a group reference compiles to."""
+        return Particle("sequence", children=[inner], synthetic=True)
+
+    def test_unmappable_nested_branch_is_invalid(self):
+        # particlesIb006: choice wrapping the group-ref choice(foo|bar)
+        # against a base choice(foo|test); bar has no base branch
+        base = _group("choice", _elt(_Declaration(name="foo")), _elt(_Declaration(name="test")))
+        derived = _group(
+            "choice",
+            self._group_ref(
+                _group(
+                    "choice",
+                    _elt(_Declaration(name="foo")),
+                    _elt(_Declaration(name="bar")),
+                ),
+            ),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_nested_branch_mapping_is_valid(self):
+        # particlesIb005: the group-ref branch and bar both map
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="foo"), max_occurs=4),
+            _elt(_Declaration(name="bar")),
+        )
+        derived = _group(
+            "choice",
+            self._group_ref(_group("choice", _elt(_Declaration(name="foo"), max_occurs=3))),
+            _elt(_Declaration(name="bar")),
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+
+class _FormSchema:
+    """A schema stand-in exposing the form defaults the predicate reads."""
+
+    def __init__(self, element_default="unqualified"):
+        self._element_default = element_default
+
+    def getElementFormDefault(self):
+        return self._element_default
+
+    def getAttributeFormDefault(self):
+        return self._element_default
+
+
+class _FormDeclaration:
+    """A declaration stand-in with global scope and form information."""
+
+    def __init__(self, name, namespace, global_, form=None, schema_default="unqualified"):
+        self.name = name
+        self._namespace = namespace
+        self._global = global_
+        self.xsdElement = {} if form is None else {"form": form}
+        self._schema = _FormSchema(schema_default)
+
+    def getNamespace(self):
+        return self._namespace
+
+    def isGlobalDeclaration(self):
+        return self._global
+
+    def getSchema(self):
+        return self._schema
+
+
+def _form_elt(name, namespace, global_, form=None, schema_default="unqualified", **occurs):
+    return Particle(
+        "element",
+        name=name,
+        descriptor=_FormDeclaration(
+            name, namespace, global_, form=form, schema_default=schema_default
+        ),
+        **occurs,
+    )
+
+
+class TestFormAwareElementNamespaces:
+    """Local unqualified declarations carry the absent namespace.
+
+    The {target namespace} of an unqualified local element declaration
+    is absent, so it is a *different* expanded name from a global
+    declaration of the same local name in the target namespace
+    (particlesL010/L030).
+    """
+
+    def test_ref_global_versus_unqualified_local_is_a_name_mismatch(self):
+        base = _form_elt("c1", "http://t", True)
+        derived = _form_elt("c1", "http://t", False)
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_qualified_local_matches_ref_global(self):
+        base = _form_elt("c1", "http://t", True)
+        derived = _form_elt("c1", "http://t", False, schema_default="qualified")
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_explicit_form_attribute_wins(self):
+        base = _form_elt("c1", "http://t", True)
+        derived = _form_elt("c1", "http://t", False, form="qualified")
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_unqualified_local_is_admitted_by_local_wildcard(self):
+        base = Particle("any", min_occurs=0, spec=WildcardSpec(namespace="##local"))
+        derived = _form_elt("e1", "http://t", False)
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_vacuous_element_is_admitted_by_any_wildcard(self):
+        # particlesJq010: R's element carries maxOccurs=0, so its
+        # namespace is unconstrained
+        base = Particle(
+            "any",
+            min_occurs=0,
+            spec=WildcardSpec(namespace="##targetNamespace", target_namespace="http://t"),
+        )
+        derived = _form_elt("e1", "http://t", False, min_occurs=0, max_occurs=0)
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_non_vacuous_unqualified_element_is_not_admitted(self):
+        base = Particle(
+            "any",
+            min_occurs=0,
+            spec=WildcardSpec(namespace="##targetNamespace", target_namespace="http://t"),
+        )
+        derived = _form_elt("e1", "http://t", False, min_occurs=0, max_occurs=1)
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "RecurseAsIfGroup" in reasons[0]
+
+
+class TestSchemaCombinatorialCorpus:
+    """Corpus-shaped schema tests for the 4d rules."""
+
+    def test_element_over_choice_occurrence_widening_is_invalid(self, parse):
+        # particlesL001 shape
+        report = parse(
+            "<xs:complexType name='B'><xs:sequence>"
+            "<xs:choice minOccurs='2' maxOccurs='3'>"
+            "<xs:element name='c1'/><xs:element name='c2'/></xs:choice>"
+            "<xs:choice><xs:element name='d1'/><xs:element name='d2'/></xs:choice>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='B'><xs:sequence>"
+            "<xs:element name='c1'/><xs:element name='d1'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "particle restriction" in issues[0].message
+
+    def test_element_over_choice_contained_is_valid(self, parse):
+        # particlesL003/L006 shape (valid control)
+        report = parse(
+            "<xs:complexType name='B'><xs:sequence>"
+            "<xs:choice><xs:element name='c1' maxOccurs='2'/>"
+            "<xs:element name='c2' maxOccurs='2'/></xs:choice>"
+            "<xs:choice><xs:element name='d1' maxOccurs='2'/>"
+            "<xs:element name='d2' maxOccurs='2'/></xs:choice>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='B'><xs:sequence>"
+            "<xs:element name='c1' maxOccurs='2'/>"
+            "<xs:element name='d1' maxOccurs='2'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_element_over_all_member_widening_is_invalid(self, parse):
+        # particlesK004 shape
+        report = parse(
+            "<xs:complexType name='B'><xs:all>"
+            "<xs:element name='a0' minOccurs='0'/>"
+            "<xs:element name='a1' minOccurs='1' maxOccurs='1'/>"
+            "<xs:element name='a2' minOccurs='0'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='B'><xs:sequence>"
+            "<xs:element name='a1' minOccurs='2' maxOccurs='2'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "particle restriction" in issues[0].message
+
+    def test_element_over_all_optional_members_is_valid(self, parse):
+        # particlesK001 shape (valid control)
+        report = parse(
+            "<xs:complexType name='B'><xs:all>"
+            "<xs:element name='a0' minOccurs='0'/>"
+            "<xs:element name='a1' minOccurs='1' maxOccurs='1'/>"
+            "<xs:element name='a2' minOccurs='0'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='B'><xs:sequence>"
+            "<xs:element name='a1' minOccurs='1' maxOccurs='1'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_mapandsum_product_widening_is_invalid(self, parse):
+        # particlesV005 shape
+        report = parse(
+            "<xs:complexType name='B'><xs:choice minOccurs='0' maxOccurs='2'>"
+            "<xs:element name='e1' maxOccurs='3'/>"
+            "<xs:element name='e2' maxOccurs='3'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='B'><xs:sequence maxOccurs='2'>"
+            "<xs:element name='e1' maxOccurs='2'/>"
+            "<xs:element name='e2' maxOccurs='2'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "MapAndSum" in issues[0].message
+
+    def test_mapandsum_contained_product_is_valid(self, parse):
+        # particlesV003 shape (valid control)
+        report = parse(
+            "<xs:complexType name='B'><xs:choice minOccurs='3' maxOccurs='9'>"
+            "<xs:element name='e1'/><xs:element name='e2'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='B'><xs:sequence minOccurs='2' maxOccurs='4'>"
+            "<xs:element name='e1'/><xs:element name='e2'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_nscard_effective_range_widening_is_invalid(self, parse):
+        # particlesQ006 shape
+        report = parse(
+            "<xs:complexType name='B'><xs:sequence>"
+            "<xs:any namespace='##any' minOccurs='0' maxOccurs='3'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='B'><xs:sequence>"
+            "<xs:sequence minOccurs='0' maxOccurs='4'>"
+            "<xs:element name='e1' minOccurs='1' maxOccurs='1'/>"
+            "</xs:sequence></xs:sequence></xs:restriction>"
+            "</xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "NSRecurseCheckCardinality" in issues[0].message
+
+    def test_nscard_effective_range_contained_is_valid(self, parse):
+        # particlesQ013 shape (valid control)
+        report = parse(
+            "<xs:complexType name='B'><xs:sequence>"
+            "<xs:any namespace='##any' minOccurs='4' maxOccurs='8'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='B'><xs:sequence>"
+            "<xs:sequence minOccurs='1' maxOccurs='2'>"
+            "<xs:element name='e1' minOccurs='2' maxOccurs='2'/>"
+            "<xs:element name='e2' minOccurs='2' maxOccurs='2'/>"
+            "</xs:sequence></xs:sequence></xs:restriction>"
+            "</xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_group_ref_choice_branch_must_map(self, parse):
+        # particlesIb006 shape
+        report = parse(
+            "<xs:group name='G1'><xs:choice>"
+            "<xs:element name='foo'/><xs:element name='bar'/>"
+            "</xs:choice></xs:group>"
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='foo'/><xs:element name='test'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:group ref='G1'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "Recurse" in issues[0].message
+
+    def test_ref_global_versus_unqualified_local_is_invalid(self, parse):
+        # particlesL010 shape: the ref to the global c1 and the base's
+        # unqualified local c1 have different expanded names
+        report = parse(
+            "<xs:element name='c1'/>"
+            "<xs:complexType name='B'><xs:sequence>"
+            "<xs:choice><xs:element name='c1'/><xs:element name='c2'/></xs:choice>"
+            "<xs:choice><xs:element name='d1'/><xs:element name='d2'/></xs:choice>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='x:B'><xs:sequence>"
+            "<xs:element ref='x:c1'/><xs:element name='d1'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>",
+            head=XSD_HEAD_NS,
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "NameAndTypeOK" in issues[0].message
+
+    def test_qualified_local_matches_ref_global(self, parse):
+        # the valid side of the form boundary: with qualified locals the
+        # ref and the local share the target namespace
+        head = XSD_HEAD_NS.replace(
+            "targetNamespace='http://xsdtesting'",
+            "targetNamespace='http://xsdtesting' elementFormDefault='qualified'",
+        )
+        report = parse(
+            "<xs:element name='c1'/>"
+            "<xs:complexType name='B'><xs:choice><xs:element name='c1'/>"
+            "<xs:element name='c2'/></xs:choice></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='x:B'><xs:choice>"
+            "<xs:element ref='x:c1'/></xs:choice>"
+            "</xs:restriction></xs:complexContent></xs:complexType>",
+            head=head,
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_vacuous_element_over_target_namespace_wildcard_is_valid(self, parse):
+        # particlesJq010 shape: maxOccurs=0 leaves the namespace free
+        report = parse(
+            "<xs:complexType name='B'><xs:sequence>"
+            "<xs:any namespace='##targetNamespace' minOccurs='0'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='x:B'><xs:sequence>"
+            "<xs:element name='e1' minOccurs='0' maxOccurs='0'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>",
+            head=XSD_HEAD_NS,
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_edc_conflict_through_group_ref_is_invalid(self, parse):
+        # mgR022 shape: same-name particles with different types, one
+        # reached through a group reference, violate EDC
+        report = parse(
+            "<xs:element name='doc' type='foo'/>"
+            "<xs:group name='group'>"
+            "<xs:sequence><xs:element name='e1' type='xs:integer'/></xs:sequence>"
+            "</xs:group>"
+            "<xs:complexType name='foo'><xs:choice>"
+            "<xs:element name='e1' type='xs:string'/>"
+            "<xs:group ref='group'/>"
+            "</xs:choice></xs:complexType>"
+        )
+        assert any(issue.code == "all-rule" for issue in report.for_phase("schema"))

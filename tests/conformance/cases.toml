@@ -4989,3 +4989,340 @@ schema = '''
 </xs:schema>
 '''
 schema_valid = false
+
+[[case]]
+id = "structure/particle-element-over-choice-wide-occurrence-invalid"
+description = "An element restricting a choice member whose occurrence is multiplied by the choice's 2..3 range is invalid when the element occurs only once (Elt:Choice RecurseAsIfGroup)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesL' (particlesL001: B's choice minOccurs=2, R's element minOccurs=1)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:choice minOccurs="2" maxOccurs="3">
+        <xs:element name="c1"/>
+        <xs:element name="c2"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="d1"/>
+        <xs:element name="d2"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:element name="c1"/>
+          <xs:element name="d1"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-element-over-choice-contained-valid"
+description = "An element restricting one member of a choice is valid when the member's range contains it (Elt:Choice RecurseAsIfGroup valid control)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesL' (particlesL003/particlesL006 shapes)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="c1" maxOccurs="2"/>
+        <xs:element name="c2" maxOccurs="2"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="d1" maxOccurs="2"/>
+        <xs:element name="d2" maxOccurs="2"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:element name="c1" maxOccurs="2"/>
+          <xs:element name="d1" maxOccurs="2"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-element-over-all-member-widening-invalid"
+description = "An element restricting a member of an all may not widen the member's occurrence range (Elt:All RecurseAsIfGroup)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesK' (particlesK004: B all has a1 1..1, R has a1 2..2)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a0" minOccurs="0"/>
+      <xs:element name="a1" minOccurs="1" maxOccurs="1"/>
+      <xs:element name="a2" minOccurs="0"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:element name="a1" minOccurs="2" maxOccurs="2"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-mapandsum-product-widening-invalid"
+description = "A sequence restricting a choice has an effective total range of its own maxOccurs times its member count; widening the product past the base's range is invalid (MapAndSum)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesV' (particlesV005: B choice maxOccurs=2, R sequence maxOccurs=2 with two members)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:choice minOccurs="0" maxOccurs="2">
+      <xs:element name="e1" maxOccurs="3"/>
+      <xs:element name="e2" maxOccurs="3"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence maxOccurs="2">
+          <xs:element name="e1" maxOccurs="2"/>
+          <xs:element name="e2" maxOccurs="2"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-mapandsum-contained-valid"
+description = "A two-member sequence at 2..4 has effective range 4..8, contained in a base choice's 3..9 (MapAndSum valid control)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesV' (particlesV003 shape)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:choice minOccurs="3" maxOccurs="9">
+      <xs:element name="e1"/>
+      <xs:element name="e2"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence minOccurs="2" maxOccurs="4">
+          <xs:element name="e1"/>
+          <xs:element name="e2"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-nscard-wildcard-range-widening-invalid"
+description = "A group restricting a wildcard may not exceed the wildcard's occurrence range through its effective total range (NSRecurseCheckCardinality)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesQ' (particlesQ006: B's any maxOccurs=3, R's nested sequence maxOccurs=4)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:any namespace="##any" minOccurs="0" maxOccurs="3"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:sequence minOccurs="0" maxOccurs="4">
+            <xs:element name="e1"/>
+          </xs:sequence>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-nscard-wildcard-range-contained-valid"
+description = "A nested sequence at 1..2 with two 2..2 members has effective range 4..8, contained in a wildcard's 4..8 (NSRecurseCheckCardinality valid control)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesQ' (particlesQ013 shape)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:any namespace="##any" minOccurs="4" maxOccurs="8"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:sequence minOccurs="1" maxOccurs="2">
+            <xs:element name="e1" minOccurs="2" maxOccurs="2"/>
+            <xs:element name="e2" minOccurs="2" maxOccurs="2"/>
+          </xs:sequence>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-group-ref-choice-extra-branch-invalid"
+description = "A derived choice whose group reference expands to a branch the base choice lacks is invalid (the referenced choice's branches are the referencing choice's alternatives)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesIb' (particlesIb006: group ref G1 wrapping choice(foo|bar) against base choice(foo|test))"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G1">
+    <xs:choice>
+      <xs:element name="foo"/>
+      <xs:element name="bar"/>
+    </xs:choice>
+  </xs:group>
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="foo"/>
+      <xs:element name="test"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:choice>
+          <xs:group ref="G1"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-edc-group-ref-conflict-invalid"
+description = "The same element name declared with different types directly and through a group reference violates Element Declarations Consistent (mgR022)"
+derived_from = "W3C XML Schema Test Suite, MS group 'modelGroups' (mgR022: choice of element e1 string and group ref to sequence of element e1 integer)"
+expected_codes = ["all-rule"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="foo"/>
+  <xs:group name="group">
+    <xs:sequence>
+      <xs:element name="e1" type="xs:integer"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:complexType name="foo">
+    <xs:choice>
+      <xs:element name="e1" type="xs:string"/>
+      <xs:group ref="group"/>
+    </xs:choice>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-form-local-vs-global-name-invalid"
+description = "An unqualified local c1 and a reference to the global c1 of the same local name have different expanded names; the ref cannot restrict the local (Elt:Choice RecurseAsIfGroup)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesL' (particlesL010: R is of different global element than in B)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="c1"/>
+  <xs:complexType name="B">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="c1"/>
+        <xs:element name="c2"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="d1"/>
+        <xs:element name="d2"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:sequence>
+          <xs:element ref="x:c1"/>
+          <xs:element name="d1"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-vacuous-element-targetns-wildcard-valid"
+description = "A maxOccurs=0 element matches nothing, so a ##targetNamespace wildcard cannot exclude it (Elt:Any NSCompat vacuous control)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesJq' (particlesJq010 shape)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:complexType name="B">
+    <xs:sequence>
+      <xs:any namespace="##targetNamespace" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:sequence>
+          <xs:element name="e1" minOccurs="0" maxOccurs="0"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:R"/>
+</xs:schema>
+'''

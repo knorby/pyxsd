@@ -47,6 +47,12 @@ class Particle:
     name: str | None = None
     spec: WildcardSpec | None = None
     descriptor: Any = None
+    #: True for the ``sequence`` wrapper the compiler emits around a
+    #: group reference's compositor. The reference is transparent in the
+    #: component model — the compositor takes the reference site's
+    #: occurrence — so derivation checks fold the two ranges together
+    #: instead of treating the wrapper as a literal sequence.
+    synthetic: bool = False
 
     def is_element(self) -> bool:
         return self.kind == "element"
@@ -266,8 +272,11 @@ def _compile_group_ref(
     if inner is None:
         return None
     minimum, maximum = _occurrence(getattr(ref_site, "tagAttributes", {}) or {})
-    # The reference repeats the whole group as a unit.
-    return Particle("sequence", minimum, maximum, [inner])
+    # The reference repeats the whole group as a unit. The wrapper is
+    # marked synthetic: the reference is not a real sequence particle,
+    # it stands in for the referenced compositor at the reference
+    # site's occurrence (derivation checks fold the ranges together).
+    return Particle("sequence", minimum, maximum, [inner], synthetic=True)
 
 
 def particle_names(model: Particle | None) -> set[str]:
