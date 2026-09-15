@@ -330,3 +330,67 @@ class TestElementOnlyCharacters:
         )
         parser = _parse(schema, "<r><b/>text<a/>text<d/>text<a/></r>", tmp_path)
         assert parser.report.has_errors
+
+
+class TestMixedInheritanceThroughEmptyExtension:
+    """An extension with empty explicit content inherits its base's content type.
+
+    XSD 1.1 §3.4.2.3.3 clause 4.2.2: when the base's content type is
+    element-only or mixed and the extension's effective content is empty
+    (an attribute-only or bare extension), the derived type's content
+    type *is the base's*. A mixed base therefore keeps its text
+    allowance through such an extension.
+    """
+
+    def test_attribute_extension_of_mixed_sequence_base_keeps_text(self, tmp_path):
+        parser = _parse(
+            '<xs:complexType name="b" mixed="true"><xs:sequence>'
+            '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:extension base="b"><xs:attribute name="x" type="xs:string"/></xs:extension>'
+            "</xs:complexContent></xs:complexType>"
+            '<xs:element name="r" type="t"/>',
+            "<r>text<a/></r>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_bare_extension_of_mixed_sequence_base_keeps_text(self, tmp_path):
+        parser = _parse(
+            '<xs:complexType name="b" mixed="true"><xs:sequence>'
+            '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:extension base="b"/></xs:complexContent></xs:complexType>'
+            '<xs:element name="r" type="t"/>',
+            "<r>text</r>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_attribute_extension_of_mixed_all_base_keeps_text(self, tmp_path):
+        parser = _parse(
+            '<xs:complexType name="b" mixed="true"><xs:all>'
+            '<xs:element name="a" minOccurs="0"/></xs:all></xs:complexType>'
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:extension base="b"><xs:attribute name="x" type="xs:string"/></xs:extension>'
+            "</xs:complexContent></xs:complexType>"
+            '<xs:element name="r" type="t"/>',
+            "<r>text<a/></r>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_element_only_base_still_rejects_text_through_empty_extension(self, tmp_path):
+        # the inheritance is the base's content type, not a blanket
+        # allowance: an element-only base stays element-only
+        parser = _parse(
+            '<xs:complexType name="b"><xs:sequence>'
+            '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:extension base="b"><xs:attribute name="x" type="xs:string"/></xs:extension>'
+            "</xs:complexContent></xs:complexType>"
+            '<xs:element name="r" type="t"/>',
+            "<r>text<a/></r>",
+            tmp_path,
+        )
+        assert "unexpected-character" in _codes(parser)

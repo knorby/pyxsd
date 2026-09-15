@@ -803,3 +803,62 @@ class TestExtensionStructure:
             "</xs:extension></xs:complexContent></xs:complexType>"
         )
         assert "particle-restriction" not in schema_codes(report)
+
+
+class TestExtensionOfBuiltinAnyType:
+    """``xs:anyType`` bases in an extension suffix check.
+
+    ``xs:anyType``'s effective content type is mixed with a sequence
+    particle, so an ``all`` suffix over it is the same all-in-sequence
+    violation as any sequence base; a ``sequence`` suffix is not
+    reported by this check (the 1.1 mixed-variety mismatch is a
+    different rule).
+    """
+
+    def test_all_extends_any_type_is_invalid(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='xs:anyType'><xs:all>"
+            "<xs:element name='e'/></xs:all></xs:extension>"
+            "</xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_sequence_extends_any_type_is_not_reported(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='xs:anyType'><xs:sequence>"
+            "<xs:element name='e'/></xs:sequence></xs:extension>"
+            "</xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_attribute_only_extends_any_type_is_valid(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='xs:anyType'>"
+            "<xs:attribute name='x' type='xs:string'/></xs:extension>"
+            "</xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_all_extends_any_type_is_invalid_in_legacy_mode(self, tmp_path, monkeypatch):
+        # legacy namespace mode resolves no prefixes, so the builtin is
+        # recognised by the conventional xs:/xsd: spelling
+        monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(
+            "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='xs:anyType'><xs:all><xs:element name='e'/>"
+            "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+            "<xs:element name='r' type='t'/></xs:schema>",
+            encoding="utf-8",
+        )
+        report = PyXSD(
+            io.StringIO("<pyxsd-schema-probe/>"),
+            str(schema_path),
+            xmlFileOutput=False,
+            mode=ParseModes.STRICT,
+        ).report
+        assert "particle-restriction" in schema_codes(report)

@@ -5554,3 +5554,64 @@ instance = '''
 </product>
 '''
 instance_valid = false
+
+[[case]]
+id = "structure/element-only-character-invalid"
+description = "Character data under an element-only all-extends-all composition is rejected (Saxon all307.n01)"
+derived_from = "Saxon XSD 1.1 test suite, All group all306/all307 (Element Locally Valid (Complex Type))"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a" minOccurs="0" maxOccurs="5"/>
+      <xs:element name="b" minOccurs="0" maxOccurs="5"/>
+      <xs:element name="c" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="d" minOccurs="0" maxOccurs="1"/>
+          <xs:element name="e" minOccurs="0" maxOccurs="4"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc><b/>text<a/>text<d/>text<a/></doc>
+'''
+instance_valid = false
+expected_codes = ["unexpected-character"]
+
+[[case]]
+id = "structure/mixed-base-empty-extension-valid"
+description = "An attribute-only extension of a mixed base keeps the base's mixed content type (3.4.2.3.3 clause 4.2.2)"
+derived_from = "XSD 1.1 Structures §3.4.2.3.3 (effective content of complex type extension)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base" mixed="true">
+    <xs:sequence>
+      <xs:element name="a" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:attribute name="x" type="xs:string"/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc>text<a/></doc>
+'''

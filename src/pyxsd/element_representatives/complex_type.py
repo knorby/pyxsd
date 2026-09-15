@@ -13,6 +13,13 @@ def _isTrue(value: str) -> bool:
     return str(value).strip().lower() in ("true", "1")
 
 
+#: The model-group particles the empty-explicit-content rule recognises.
+_MODEL_GROUP_KINDS = ("Group", "All", "Choice", "Sequence")
+
+#: The particle children that make a model group non-empty.
+_PARTICLE_KINDS = ("Group", "All", "Choice", "Sequence", "Element", "Any")
+
+
 class ComplexType(XsdType):
     """The class for the complexType tag."""
 
@@ -71,14 +78,30 @@ class ComplexType(XsdType):
         super().__init__(xsdElement, parent)
         self.getSchema().complexTypes[self.name] = self
 
-    def effectiveMixed(self) -> bool:
-        """The type's effective ``mixed`` value (XSD 1.1 §3.4.2.3.3 clause 1).
+    def effectiveMixed(self, _seen: set[int] | None = None) -> bool:
+        """The type's effective ``mixed`` value (XSD 1.1 §3.4.2.3.3).
 
-        The ``mixed`` attribute on ``complexContent``, when present,
-        wins over the one on ``complexType``; absent both, the value is
-        false. ``mixed`` is an ``xs:boolean``, so ``1``/``true`` are
-        true and ``0``/``false`` (and anything else) are false.
+        Clause 1: the ``mixed`` attribute on ``complexContent``, when
+        present, wins over the one on ``complexType``; absent both, the
+        value is false (``mixed`` is an ``xs:boolean``: ``1``/``true``
+        are true, anything else is false). Clause 4.2.2: an extension
+        whose explicit content is empty takes the *base's* content type,
+        so a mixed base keeps its character-data allowance through an
+        attribute-only or bare extension. ``_seen`` guards a derivation
+        cycle (itself an invalid schema).
         """
+        value = self._ownMixed()
+        if value or self.getDerivation() != "extension":
+            return value
+        if not self._explicitContentEmpty():
+            return value
+        base = self._baseComplexType(_seen)
+        if base is None:
+            return False
+        return base.effectiveMixed((_seen or set()) | {id(self)})
+
+    def _ownMixed(self) -> bool:
+        """The ``mixed`` value written on this type (clause 1)."""
         for child in self.processedChildren or ():
             if child is not None and type(child).__name__ == "ComplexContent":
                 value = (getattr(child, "tagAttributes", {}) or {}).get("mixed")
@@ -87,6 +110,62 @@ class ComplexType(XsdType):
                 break
         value = (getattr(self, "tagAttributes", {}) or {}).get("mixed")
         return value is not None and _isTrue(value)
+
+    def _explicitContentEmpty(self) -> bool:
+        """Whether the type's explicit content is empty (clause 2).
+
+        The particle children live on ``extension``/``restriction`` when
+        a ``complexContent`` wrapper is present, otherwise on the type.
+        Clause 2.1: no model group at all, an empty ``all``/``sequence``,
+        an empty ``choice`` with ``minOccurs=0``, or any model group
+        with ``maxOccurs=0`` is empty explicit content. A ``group``
+        reference is always a particle (its referenced content is not
+        inlined here).
+        """
+        holder = self
+        complex_content = self._firstProcessedChild(self, "ComplexContent")
+        if complex_content is not None:
+            holder = (
+                self._firstProcessedChild(complex_content, "Extension")
+                or self._firstProcessedChild(complex_content, "Restriction")
+                or complex_content
+            )
+        particles = [
+            child
+            for child in getattr(holder, "processedChildren", None) or ()
+            if child is not None and type(child).__name__ in _MODEL_GROUP_KINDS
+        ]
+        if not particles:
+            return True
+        particle = particles[0]
+        # Silent occurrence reads: a garbage value is reported once on
+        # the owning declaration, not here.
+        if particle._silentOccurs("maxOccurs") == 0:
+            return True
+        kind = type(particle).__name__
+        if kind == "Group":
+            return False
+        members = [
+            child
+            for child in getattr(particle, "processedChildren", None) or ()
+            if child is not None and type(child).__name__ in _PARTICLE_KINDS
+        ]
+        if members:
+            return False
+        if kind in ("All", "Sequence"):
+            return True
+        return particle._silentOccurs("minOccurs") == 0
+
+    def _baseComplexType(self, _seen: set[int] | None = None) -> "ComplexType | None":
+        """The first base type that is a complex type, or ``None``."""
+        for name in getattr(self, "superClassNames", None) or ():
+            _, representative = self.varietyOfReference(name)
+            if representative is None or type(representative).__name__ != "ComplexType":
+                continue
+            if _seen and id(representative) in _seen:
+                return None
+            return representative
+        return None
 
     def getElements(self):
         """Returns a list of elements.

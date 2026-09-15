@@ -60,6 +60,7 @@ from xml.etree import ElementTree as ET
 from pyxsd import __version__, xsi
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import (
+    Particle,
     _content_children,
     all_extension_occurrence,
     all_members,
@@ -523,6 +524,13 @@ class PyXSD:
                 self.report.add_error(message, code=code)
             stack.extend(getattr(er, "processedChildren", None) or ())
 
+    #: ``xs:anyType``'s effective content: a mixed sequence holding an
+    #: unrestricted wildcard. It stands in for the built-in type's model
+    #: during extension-structure checks (the built-in has no compiled
+    #: class model); it is neither empty nor an ``all``, so an ``all``
+    #: suffix over it is reported while sequence/choice suffixes are not.
+    _ANY_TYPE_CONTENT = Particle("sequence", 1, 1, [Particle("any")])
+
     #: Compositor ERs whose particle sets the content-model sweep checks.
     _COMPOSITOR_KINDS = ("All", "Sequence", "Choice")
 
@@ -687,6 +695,27 @@ class PyXSD:
                 return found
         return None
 
+    def _baseIsAnyType(self, er: Any) -> bool:
+        """Whether the first base type is the built-in ``xs:anyType``.
+
+        ``xs:anyType`` has no generated class, so ``_baseTypeClass``
+        cannot resolve it; the extension-structure check reads it as its
+        effective mixed-sequence content instead. A user type named
+        ``anyType`` never matches (the reference must be in the XML
+        Schema namespace or carry the ``xs:``/``xsd:`` spelling in
+        legacy mode).
+        """
+        for raw_name in getattr(er, "superClassNames", []) or []:
+            resolved = er.resolveSchemaQName(raw_name, parser=self)
+            if namespace_of(resolved) == XSD_NS and local_name(resolved) == "anyType":
+                return True
+            if namespace_of(resolved) is not None or not isinstance(raw_name, str):
+                continue
+            prefix, _, local = raw_name.strip().partition(":")
+            if local == "anyType" and prefix in ("xs", "xsd"):
+                return True
+        return False
+
     def _reportExtensionStructure(self, er: Any) -> None:
         """Reports invalid particle composition in a complex type extension.
 
@@ -702,28 +731,40 @@ class PyXSD:
         takes the suffix as its model unless the base is mixed, which
         cannot be extended by an ``all`` at all (all308, bug 6202).
 
-        Skips — never errors — when the type is not an extension, either
-        content model cannot be compiled, or the base type cannot be
+        Skips — never errors — when the type is not an extension, when
+        it has no explicit content (nothing to append), or when either
+        content model cannot be compiled or the base type cannot be
         resolved; each skip is logged at debug level with its reason.
         """
         if er.getDerivation() != "extension":
             return
         own = compile_own_content(er, self)
         if own is None:
-            logger.debug(
-                "extension structure: content model of %s could not be compiled; skipped",
-                getattr(er, "name", "?"),
-            )
+            if _content_children(er):
+                logger.debug(
+                    "extension structure: content model of %s could not be compiled; skipped",
+                    getattr(er, "name", "?"),
+                )
+            else:
+                logger.debug(
+                    "extension structure: %s has no explicit content; skipped",
+                    getattr(er, "name", "?"),
+                )
             return
-        base_class = self._baseTypeClass(er)
-        if base_class is None:
+        base_is_any_type = self._baseIsAnyType(er)
+        base_class = None if base_is_any_type else self._baseTypeClass(er)
+        if not base_is_any_type and base_class is None:
             logger.debug(
                 "extension structure: base type %r of %s unresolved; skipped",
                 list(getattr(er, "superClassNames", []) or []),
                 getattr(er, "name", "?"),
             )
             return
-        base_model = getattr(base_class, "_contentModel_", None)
+        base_model = (
+            self._ANY_TYPE_CONTENT
+            if base_is_any_type
+            else getattr(base_class, "_contentModel_", None)
+        )
         if base_model is None:
             logger.debug(
                 "extension structure: base type %s has no compiled content model; skipped",
@@ -738,8 +779,9 @@ class PyXSD:
             base_er = self._baseTypeER(er)
             if own_kind == "all" and base_er is not None and self._typeIsMixed(base_er):
                 self.report.add_error(
-                    "extension structure: an all cannot extend empty mixed content "
-                    "(the empty mixed base puts the all inside a sequence)",
+                    "particle restriction (cos-ct-extends): an all cannot extend "
+                    "empty mixed content (the empty mixed base puts the all inside "
+                    "a sequence)",
                     code="particle-restriction",
                 )
             return
@@ -749,14 +791,14 @@ class PyXSD:
             return
         if own_kind == "all" and base_kind != "all":
             self.report.add_error(
-                f"extension structure: all cannot extend {base_kind} "
+                f"particle restriction (cos-ct-extends): all cannot extend {base_kind} "
                 "(only an all may extend an all)",
                 code="particle-restriction",
             )
             return
         if own_kind != "all" and base_kind == "all":
             self.report.add_error(
-                f"extension structure: {own_kind} cannot extend all",
+                f"particle restriction (cos-ct-extends): {own_kind} cannot extend all",
                 code="particle-restriction",
             )
             return
@@ -768,9 +810,9 @@ class PyXSD:
         own_all, own_min = occurrence
         if own_min != base_model.min_occurs:
             self.report.add_error(
-                "extension structure: minOccurs mismatch - when an all extends an "
-                f"all both must have the same minOccurs (base={base_model.min_occurs}, "
-                f"extension={own_min})",
+                "particle restriction (cos-particle-extend): minOccurs mismatch - "
+                "when an all extends an all both must have the same minOccurs "
+                f"(base={base_model.min_occurs}, extension={own_min})",
                 code="particle-restriction",
             )
         self._reportExtensionAllOverlap(all_members(base_term), all_members(own_all), er)
@@ -793,9 +835,9 @@ class PyXSD:
         for member in own_members:
             if member.kind == "element" and member.name and member.name in base_names:
                 self.report.add_error(
-                    "extension structure: overlapping particles in all extension - "
-                    f"element '{member.name}' appears in both the base and the "
-                    "extension all",
+                    "particle restriction (cos-nonambig): overlapping particles in "
+                    f"all extension - element '{member.name}' appears in both the "
+                    "base and the extension all",
                     code="particle-restriction",
                 )
                 break
@@ -809,7 +851,8 @@ class PyXSD:
             for second in own_wildcards:
                 if wildcard_specs_overlap(first.spec, second.spec, target):
                     self.report.add_error(
-                        "extension structure: overlapping wildcards in all extension",
+                        "particle restriction (cos-nonambig): overlapping wildcards "
+                        "in all extension",
                         code="particle-restriction",
                     )
                     return
