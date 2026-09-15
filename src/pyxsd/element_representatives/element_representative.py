@@ -76,6 +76,7 @@ import re
 from pyxsd import xsd_data_types
 from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, namespace_of
 from pyxsd.schema_context import context_or_ambient, last_components
+from pyxsd.wildcards import wildcard_declaration_problems
 from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
@@ -512,6 +513,21 @@ class ElementRepresentative:
             parser.report.add_error(message, code=code, element=self.name)
         else:
             logger.error("%s[%s] %s", self.name, code, message)
+
+    def _checkWildcardDeclaration(self, *, is_attribute: bool) -> None:
+        """Reports wildcard XML-attribute grammar problems.
+
+        Shared by ``Any`` and ``AnyAttribute``: the namespace-constraint
+        token grammar, the ``processContents`` value, occurrence
+        attributes on ``xs:anyAttribute`` and the unqualified XML
+        attributes outside the wildcard's allowed set. The raw
+        ``xsdElement`` attributes are inspected (not ``tagAttributes``)
+        so the reserved ``name`` attribute is seen too.
+        """
+        for code, message in wildcard_declaration_problems(
+            self.xsdElement.attrib, is_attribute=is_attribute
+        ):
+            self._reportSchemaError(message, code=code)
 
     def checkDeclarationLegality(self):
         """Reports semantic declaration-legality problems.

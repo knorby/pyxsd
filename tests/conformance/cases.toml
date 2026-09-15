@@ -5615,3 +5615,255 @@ instance = '''
 <?xml version="1.0" encoding="UTF-8"?>
 <doc>text<a/></doc>
 '''
+
+[[case]]
+id = "structure/wildcard-namespace-token-invalid"
+description = "A wildcard namespace constraint may not mix the ##any/##other keywords with other tokens (MS wildC049)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildC' (namespace constraint token grammar)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##any ##other"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-unknown-namespace-token-invalid"
+description = "An unknown ## keyword is not a legal namespace constraint token (MS wildK002)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildK' (anyAttribute namespace tokens)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:anyAttribute namespace="##anyAttribute"/>
+  </xs:complexType>
+  <xs:element name="doc" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-process-contents-invalid"
+description = "processContents must be exactly skip, lax or strict (MS wildD075)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildD' (processContents grammar)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any processContents="lax skip"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/any-occurrence-lexical-invalid"
+description = "minOccurs/maxOccurs on xs:any are checked like any other particle (MS wildB014)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildB' (occurrence attributes on any)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any maxOccurs=""/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["invalid-occurs"]
+
+[[case]]
+id = "structure/any-occurrence-range-invalid"
+description = "minOccurs must not exceed maxOccurs on xs:any (MS wildB027)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildB' (occurrence range on any)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any minOccurs="2" maxOccurs="1"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "structure/any-attribute-occurrence-invalid"
+description = "xs:anyAttribute is not a particle and takes no occurrence attributes (MS wildQ002)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildQ' (occurrence attributes on anyAttribute)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:anyAttribute minOccurs="2"/>
+  </xs:complexType>
+  <xs:element name="doc" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-double-annotation-invalid"
+description = "A wildcard may carry at most one annotation (MS wildE002)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildE' (wildcard annotation cardinality)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any>
+          <xs:annotation><xs:documentation>one</xs:documentation></xs:annotation>
+          <xs:annotation><xs:documentation>two</xs:documentation></xs:annotation>
+        </xs:any>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "structure/wildcard-unknown-attribute-invalid"
+description = "An unqualified XML attribute outside a wildcard's allowed set is a schema error (MS wildI003)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildI' (foreign and invalid attributes on any)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any id="bar" namespace="##other" processContents="lax" foo="bar"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["invalid-attribute"]
+
+[[case]]
+id = "structure/wildcard-qualified-foreign-attribute-valid"
+description = "A qualified attribute in a non-schema namespace is a foreign attribute and legal on a wildcard (MS wildI001)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildI' (foreign attributes on any)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:a="http://foo">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any id="bar" namespace="##other" processContents="lax" a:b="c"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/wildcard-upa-choice-invalid"
+description = "Two overlapping wildcards in one choice are non-deterministic (MS wildI009)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildI' (UPA with wildcards)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice maxOccurs="10">
+        <xs:any namespace="##other" processContents="lax"/>
+        <xs:any namespace="A"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-upa-sequence-valid"
+description = "Single-occurrence overlapping wildcards in a sequence are deterministic (MS wildI011)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildI' (deterministic wildcard sequence)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##other" processContents="lax"/>
+        <xs:any namespace="A" processContents="lax"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/wildcard-attribute-restriction-narrow-valid"
+description = "A restriction may narrow the base attribute wildcard and strengthen processContents"
+derived_from = "XSD 1.1 Structures §3.4.6.3 (Derivation Valid (Restriction, Complex))"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence/>
+    <xs:anyAttribute namespace="##any" processContents="lax"/>
+  </xs:complexType>
+  <xs:complexType name="narrowed">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence/>
+        <xs:anyAttribute namespace="foo" processContents="strict"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="narrowed"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/wildcard-attribute-restriction-widen-invalid"
+description = "A restriction may not widen the base type's attribute wildcard namespace constraint"
+derived_from = "XSD 1.1 Structures §3.4.6.3 (Derivation Valid (Restriction, Complex))"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence/>
+    <xs:anyAttribute namespace="foo"/>
+  </xs:complexType>
+  <xs:complexType name="widened">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence/>
+        <xs:anyAttribute namespace="foo bar"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="widened"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]

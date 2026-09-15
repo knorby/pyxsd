@@ -86,11 +86,16 @@ from pyxsd.namespaces import (
     namespace_of,
     parse_with_namespaces,
 )
-from pyxsd.particle_derivation import is_valid_particle_restriction
+from pyxsd.particle_derivation import is_valid_particle_restriction, wildcard_subset
 from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.validation import ValidationReport
-from pyxsd.wildcards import wildcard_specs_overlap
+from pyxsd.wildcards import (
+    PROCESS_SEVERITY,
+    effective_attribute_wildcard,
+    invalid_namespace_constraint,
+    wildcard_specs_overlap,
+)
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 from pyxsd.xsd_data_types import (
     AnySimpleType,
@@ -572,9 +577,12 @@ class PyXSD:
             self._reportPointlessParticle(er)
         if type(er).__name__ == "ComplexType":
             self._reportParticleRestriction(er)
+            self._reportAttributeWildcardRestriction(er)
             self._reportExtensionStructure(er)
         if type(er).__name__ not in self._COMPOSITOR_KINDS:
             return
+        if type(er).__name__ in ("Sequence", "Choice"):
+            self._checkWildcardParticleOverlap(er)
         rawParticles: list[Any] = []
         self._collectParticles(er, rawParticles, set())
         resolved = self._resolveParticles(rawParticles)
@@ -655,6 +663,69 @@ class PyXSD:
             base_model, derived_model, resolver, head_lookup=head_lookup
         ):
             self.report.add_error(reason, code="particle-restriction")
+
+    def _reportAttributeWildcardRestriction(self, er: Any) -> None:
+        """Reports a restriction that does not narrow the base wildcard.
+
+        The derived type's effective attribute wildcard (its local
+        ``anyAttribute`` plus the ones its attribute groups contribute,
+        intersected) must be a valid restriction of the base type's
+        effective wildcard: the namespace constraint may only narrow and
+        ``processContents`` must not weaken. A derived type that declares
+        no attribute wildcard of its own accepts fewer attributes and is
+        always a valid restriction, so only a type whose complete
+        wildcard is non-absent is checked. Skips — never errors — when
+        the base type cannot be resolved or carries no attribute
+        wildcard of its own (an empty derived wildcard admits nothing,
+        making the semantic rule depend on more than the constraint
+        shape).
+        """
+        if er.getDerivation() != "restriction":
+            return
+        ownSpecs = getattr(er, "wildcardAttributeSpecs", None)
+        if not ownSpecs:
+            return
+        baseER = self._baseTypeER(er)
+        if baseER is None:
+            logger.debug(
+                "attribute wildcard restriction: base type %r of %s unresolved; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        baseSpecs = getattr(baseER, "wildcardAttributeSpecs", None)
+        if not baseSpecs:
+            # The base has no attribute wildcard; whether a derived
+            # wildcard is a valid restriction is a semantic question
+            # (an empty derived wildcard admits nothing and is fine), so
+            # the structural comparison below has nothing to check.
+            logger.debug(
+                "attribute wildcard restriction: base type %s has no attribute wildcard; skipped",
+                getattr(baseER, "name", "?"),
+            )
+            return
+        target = er.getNamespace()
+        own = effective_attribute_wildcard(ownSpecs, target)
+        base = effective_attribute_wildcard(baseSpecs, baseER.getNamespace())
+        if own is None or base is None:
+            return
+        if not wildcard_subset(own, base, target):
+            self.report.add_error(
+                f"restriction of type '{er.name}' widens the base attribute "
+                f"wildcard namespace constraint ('{own.namespace}' is not a "
+                f"subset of '{base.namespace}')",
+                code="wildcard-invalid",
+            )
+            return
+        if PROCESS_SEVERITY.get(own.process_contents, 2) < PROCESS_SEVERITY.get(
+            base.process_contents, 2
+        ):
+            self.report.add_error(
+                f"restriction of type '{er.name}' weakens the base attribute "
+                f"wildcard processContents ('{own.process_contents}' is weaker "
+                f"than '{base.process_contents}')",
+                code="wildcard-invalid",
+            )
 
     def _baseTypeClass(self, er: Any) -> Any | None:
         """The generated class of the first resolvable base type."""
@@ -1199,6 +1270,124 @@ class PyXSD:
                         code="all-rule",
                     )
                     return
+
+    def _checkWildcardParticleOverlap(self, er: Any) -> None:
+        """Reports non-deterministic wildcard pairs in a sequence/choice.
+
+        Two element wildcards in one content model whose namespace
+        constraints overlap violate Unique Particle Attribution when both
+        can match an item at the same point: in a ``choice`` every
+        alternative is live at once, while in a ``sequence`` the earlier
+        wildcard creates the ambiguity only when it can match again
+        (``maxOccurs`` > 1) or be skipped (``minOccurs`` = 0) while every
+        particle between the two is emptiable (wildI013/I014 are
+        non-deterministic; the single-occurrence wildI011 and the
+        second-repeats wildI012 are deterministic and stay valid).
+        Wildcards carrying XSD 1.1 ``notNamespace``/``notQName`` are
+        skipped (their exclusion sets are a separate task), as is a
+        malformed namespace constraint — the declaration check already
+        reported that token.
+        """
+        children = [
+            child
+            for child in er._particleChildren()
+            if not (
+                child.__class__.__name__ == "Any"
+                and (
+                    child.xsdElement.get("notNamespace") is not None
+                    or child.xsdElement.get("notQName") is not None
+                )
+            )
+        ]
+        wildcards = [
+            (index, child)
+            for index, child in enumerate(children)
+            if child.__class__.__name__ == "Any"
+        ]
+        if len(wildcards) < 2:
+            return
+        if self._unreferencedGroupContent(er):
+            return
+        try:
+            target = er.getNamespace()
+        except AttributeError:
+            target = None
+        isChoice = type(er).__name__ == "Choice"
+        for position, (index, first) in enumerate(wildcards):
+            if not isChoice and not self._wildcardMatchableAgain(first):
+                continue
+            for laterIndex, second in wildcards[position + 1 :]:
+                if not isChoice and not all(
+                    getattr(child, "emptiable", False) for child in children[index + 1 : laterIndex]
+                ):
+                    continue
+                firstSpec = first.wildcardSpec
+                secondSpec = second.wildcardSpec
+                if invalid_namespace_constraint(firstSpec.namespace) is not None:
+                    continue
+                if invalid_namespace_constraint(secondSpec.namespace) is not None:
+                    continue
+                if wildcard_specs_overlap(firstSpec, secondSpec, target):
+                    self.report.add_error(
+                        "content model is ambiguous: two wildcards with "
+                        "overlapping namespace constraints are not deterministic",
+                        code="wildcard-invalid",
+                    )
+                    return
+
+    @staticmethod
+    def _wildcardMatchableAgain(particle: Any) -> bool:
+        """Whether a sequence wildcard is still live when the next is.
+
+        A wildcard that can repeat (``maxOccurs`` > 1) is live again
+        after one match, and a skippable one (``minOccurs`` = 0) is live
+        next to the following particle from the start. The silent reads
+        avoid duplicating the declaration walk's ``invalid-occurs``
+        report for a garbage occurrence value.
+        """
+        return particle._silentOccurs("maxOccurs") > 1 or particle._silentOccurs("minOccurs") == 0
+
+    def _unreferencedGroupContent(self, er: Any) -> bool:
+        """Whether *er*'s content model belongs to an unreferenced group.
+
+        Unique Particle Attribution applies to the effective content
+        model of a complex type, not to an orphan group definition: the
+        corpus pins an ambiguous wildcard sequence inside a group that
+        nothing references as *valid* (addB194), and the oracle accepts
+        it. A group some reference site names becomes part of a type's
+        model, so its compositors are still checked; a reference that
+        cannot be resolved here counts as no reference (its contents
+        belong to another document's own sweep).
+        """
+        container = er.getContainingType()
+        if container is None or type(container).__name__ != "Group":
+            return False
+        return id(container) not in self._referencedGroupIds(er)
+
+    def _referencedGroupIds(self, er: Any) -> set[int]:
+        """The ids of group definitions named by at least one reference site."""
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return set()
+        cached = getattr(self, "_referencedGroupIdCache", None)
+        if cached is not None and cached[0] is schema:
+            return cached[1]
+        referenced: set[int] = set()
+        seen: set[int] = set()
+        stack = [schema]
+        while stack:
+            node = stack.pop()
+            if node is None or id(node) in seen:
+                continue
+            seen.add(id(node))
+            if type(node).__name__ == "Group" and getattr(node, "isRefSite", False):
+                definition = self._groupRefDefinition(node)
+                if definition is not None:
+                    referenced.add(id(definition))
+            stack.extend(getattr(node, "processedChildren", None) or ())
+        self._referencedGroupIdCache = (schema, referenced)
+        return referenced
 
     def _checkDeclarationId(self, er: Any, seenIds: dict[str, Any]) -> None:
         """Reports lexical/duplicate ``id`` attributes on declarations.

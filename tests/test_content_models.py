@@ -14,6 +14,13 @@ import pytest
 from pyxsd.binding import ParseModes
 from pyxsd.parser import PyXSD
 from pyxsd.validation import IssueSeverity
+from pyxsd.wildcards import (
+    WildcardSpec,
+    effective_attribute_wildcard,
+    intersect_wildcard_specs,
+    union_wildcard_specs,
+    wildcard_spec,
+)
 
 XSD_HEAD = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
 XSD_TAIL = "</xs:schema>"
@@ -862,3 +869,755 @@ class TestExtensionOfBuiltinAnyType:
             mode=ParseModes.STRICT,
         ).report
         assert "particle-restriction" in schema_codes(report)
+
+
+class TestWildcardNamespaceConstraintGrammar:
+    """Schema-phase ``namespace`` grammar on ``xs:any``/``xs:anyAttribute``.
+
+    Only ``##any`` or ``##other`` (alone), or a whitespace-separated list
+    whose tokens are URI references, ``##local`` or
+    ``##targetNamespace``, are legal. Corpus shapes: MS wildC/wildF
+    (``xs:any``), wildK/wildN (``xs:anyAttribute``).
+    """
+
+    def any_schema(self, namespace):
+        return (
+            "<xs:complexType name='t'><xs:sequence>"
+            f"<xs:any namespace='{namespace}'/>"
+            "</xs:sequence></xs:complexType>"
+        )
+
+    def attribute_schema(self, namespace):
+        return (
+            f"<xs:complexType name='t'><xs:anyAttribute namespace='{namespace}'/></xs:complexType>"
+        )
+
+    @pytest.mark.parametrize(
+        "namespace, source",
+        [
+            ("##target", "wildC035"),
+            ("##all", "wildC036"),
+            ("##any ##other", "wildC049"),
+            ("##any ##local", "wildC050"),
+            ("##any ##targetNameSpace", "wildC051"),
+            ("##other ##local", "wildC052"),
+            ("##other ##targetNamespace", "wildC053"),
+            ("##any ##other ##local", "wildC055"),
+            ("##any ##other ##targetNamespace", "wildC056"),
+            ("##any ##local ##targetNamespace", "wildC057"),
+            ("##any ##other ##local ##targetNamespace", "wildC058"),
+            ("##any http://www.w3.org/1999/xhtml", "wildC066"),
+            ("##other http://www.w3.org/1999/xhtml", "wildC067"),
+            ("##anyAttribute", "wildN001"),
+            ("##anyAttribute ##other ##local ##targetNamespace", "wildN015"),
+        ],
+    )
+    def test_illegal_namespace_token_on_any(self, parse, namespace, source):
+        report = parse(self.any_schema(namespace))
+        assert "wildcard-invalid" in schema_codes(report), source
+
+    @pytest.mark.parametrize(
+        "namespace, source",
+        [
+            ("##anyAttribute", "wildK002/wildN001"),
+            ("##target", "wildK006"),
+            ("##all", "wildK007"),
+            ("##anyAttribute ##other", "wildK020/wildN006"),
+            ("##anyAttribute ##local", "wildK021/wildN007"),
+            ("##anyAttribute ##targetNamespace", "wildK022/wildN008"),
+            ("##other ##local", "wildK023/wildN009"),
+            ("##other ##targetNamespace", "wildK024/wildN010"),
+            ("##anyAttribute ##local ##targetNamespace", "wildK028/wildN014"),
+            ("##anyAttribute ##other ##local ##targetNamespace", "wildK029/wildN015"),
+            ("##anyAttribute http://foobar", "wildN016"),
+            ("##other http://foobar", "wildN018/wildK038"),
+        ],
+    )
+    def test_illegal_namespace_token_on_any_attribute(self, parse, namespace, source):
+        report = parse(self.attribute_schema(namespace))
+        assert "wildcard-invalid" in schema_codes(report), source
+
+    @pytest.mark.parametrize(
+        "namespace, source",
+        [
+            ("##any", "wildC031"),
+            ("##other", "wildC033"),
+            ("##local", "wildC032"),
+            ("##targetNamespace", "wildC034"),
+            ("##local ##targetNamespace", "wildC054"),
+            ("http://a.example/ http://b.example/", "wildC060"),
+            ("#any", "wildC037: a single '#' is a URI reference"),
+            ("#local", "wildC038"),
+            ("#other", "wildC039"),
+            ("#targetNamespace", "wildC040"),
+            ("any", "wildC043: plain words are relative URI references"),
+            ("local", "wildC044"),
+            ("target", "wildC047"),
+            ("2", "brief: numeric token is a URI reference"),
+            ("a:b", "brief ruling: a QName-like token is a legal URI reference"),
+            ("", "wildZ010: empty namespace is not a schema error"),
+            ("x http://a.example/", "wildN019/mixed list"),
+            ("##local ##targetNamespace http://foobar", "wildN020 list"),
+        ],
+    )
+    def test_legal_namespace_token_on_any(self, parse, namespace, source):
+        report = parse(self.any_schema(namespace))
+        assert "wildcard-invalid" not in schema_codes(report), source
+
+    def test_legal_namespace_token_on_any_attribute(self, parse):
+        report = parse(self.attribute_schema("a:b"))
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_legal_namespace_list_on_any_attribute(self, parse):
+        report = parse(self.attribute_schema("##local http://foobar"))
+        assert "wildcard-invalid" not in schema_codes(report)
+
+
+class TestWildcardProcessContents:
+    """Schema-phase ``processContents`` grammar (MS wildD/wildL)."""
+
+    def any_schema(self, value):
+        return (
+            "<xs:complexType name='t'><xs:sequence>"
+            f"<xs:any processContents='{value}'/>"
+            "</xs:sequence></xs:complexType>"
+        )
+
+    def attribute_schema(self, value):
+        return (
+            "<xs:complexType name='t'>"
+            f"<xs:anyAttribute processContents='{value}'/>"
+            "</xs:complexType>"
+        )
+
+    @pytest.mark.parametrize(
+        "value, source",
+        [
+            ("", "wildD071"),
+            ("lax skip", "wildD075"),
+            ("lax strict", "wildD076"),
+            ("skip strict", "wildD077"),
+            ("lax skip strict", "wildD078"),
+            ("all", "wildD079"),
+        ],
+    )
+    def test_illegal_process_contents_on_any(self, parse, value, source):
+        report = parse(self.any_schema(value))
+        assert "wildcard-invalid" in schema_codes(report), source
+
+    @pytest.mark.parametrize(
+        "value, source",
+        [
+            ("", "wildL001"),
+            ("lax skip", "wildL005"),
+            ("lax strict", "wildL006"),
+            ("skip strict", "wildL007"),
+            ("lax skip strict", "wildL008"),
+            ("all", "wildL009"),
+        ],
+    )
+    def test_illegal_process_contents_on_any_attribute(self, parse, value, source):
+        report = parse(self.attribute_schema(value))
+        assert "wildcard-invalid" in schema_codes(report), source
+
+    @pytest.mark.parametrize("value", ["skip", "lax", "strict"])
+    def test_legal_process_contents_on_any(self, parse, value):
+        report = parse(self.any_schema(value))
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    @pytest.mark.parametrize("value", ["skip", "lax", "strict"])
+    def test_legal_process_contents_on_any_attribute(self, parse, value):
+        report = parse(self.attribute_schema(value))
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_absent_process_contents_defaults_to_strict(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:sequence><xs:any/></xs:sequence></xs:complexType>"
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_wildcard_spec_still_defaults_malformed_to_strict(self):
+        # ``wildcard_spec`` keeps its defensive default (``strict``) so a
+        # malformed value can never silently disable validation; the new
+        # schema check inspects the raw attribute instead.
+        spec = wildcard_spec({"processContents": "all"})
+        assert spec.process_contents == "strict"
+
+
+class TestAnyOccurrenceLegality:
+    """``xs:any`` is a particle and takes ``minOccurs``/``maxOccurs``.
+
+    Corpus shapes: MS wildB (lexical garbage and range violations), and
+    particlesOa004/Oa008 (``minOccurs`` > ``maxOccurs``).
+    """
+
+    def any_schema(self, attributes):
+        return (
+            "<xs:complexType name='t'><xs:sequence>"
+            f"<xs:any {attributes}/>"
+            "</xs:sequence></xs:complexType>"
+        )
+
+    @pytest.mark.parametrize(
+        "attributes, source",
+        [
+            ("maxOccurs=''", "wildB014"),
+            ("maxOccurs='-1'", "wildB015"),
+            ("maxOccurs='Unbounded'", "wildB016"),
+            ("minOccurs='unbounded'", "wildB020"),
+            ("minOccurs=''", "wildB022"),
+            ("minOccurs='-1'", "wildB023"),
+            ("minOccurs='Unbounded'", "wildB024"),
+            ("minOccurs='unbounded' maxOccurs='unbounded'", "wildB028"),
+        ],
+    )
+    def test_lexically_illegal_occurs_on_any(self, parse, attributes, source):
+        report = parse(self.any_schema(attributes))
+        assert "invalid-occurs" in schema_codes(report), source
+
+    def test_min_occurs_greater_than_max_occurs_on_any(self, parse):
+        # wildB027
+        report = parse(self.any_schema("minOccurs='2' maxOccurs='1'"))
+        assert "declaration-attribute" in schema_codes(report)
+
+    def test_valid_occurs_on_any(self, parse):
+        report = parse(self.any_schema("minOccurs='0' maxOccurs='unbounded'"))
+        assert "invalid-occurs" not in schema_codes(report)
+        assert "declaration-attribute" not in schema_codes(report)
+
+
+class TestAnyAttributeOccurrenceLegality:
+    """``xs:anyAttribute`` takes no ``minOccurs``/``maxOccurs`` (wildQ)."""
+
+    def attribute_schema(self, attributes):
+        return f"<xs:complexType name='t'><xs:anyAttribute {attributes}/></xs:complexType>"
+
+    @pytest.mark.parametrize(
+        "attributes, source",
+        [
+            ("minOccurs='2'", "wildQ002"),
+            ("maxOccurs='2'", "wildQ003"),
+            ("minOccurs='2' maxOccurs='unbounded'", "wildQ004"),
+        ],
+    )
+    def test_occurrence_attribute_on_any_attribute(self, parse, attributes, source):
+        report = parse(self.attribute_schema(attributes))
+        assert "wildcard-invalid" in schema_codes(report), source
+
+    def test_plain_any_attribute_has_no_occurrence(self, parse):
+        report = parse(self.attribute_schema(""))
+        assert "wildcard-invalid" not in schema_codes(report)
+
+
+class TestWildcardAnnotationCardinality:
+    """A wildcard carries at most one annotation (wildE002/wildM002, SUN)."""
+
+    ANNOTATION = "<xs:annotation><xs:documentation>x</xs:documentation></xs:annotation>"
+
+    def test_two_annotations_on_any(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:sequence><xs:any>"
+            f"{self.ANNOTATION}{self.ANNOTATION}"
+            "</xs:any></xs:sequence></xs:complexType>"
+        )
+        assert "declaration-duplicate" in schema_codes(report)
+
+    def test_two_annotations_on_any_attribute(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:anyAttribute>"
+            f"{self.ANNOTATION}{self.ANNOTATION}"
+            "</xs:anyAttribute></xs:complexType>"
+        )
+        assert "declaration-duplicate" in schema_codes(report)
+
+    def test_one_annotation_is_valid(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:sequence><xs:any>"
+            f"{self.ANNOTATION}"
+            "</xs:any></xs:sequence></xs:complexType>"
+        )
+        assert "declaration-duplicate" not in schema_codes(report)
+
+
+class TestWildcardForeignAttributes:
+    """Unqualified XML attributes on a wildcard are restricted (wildI).
+
+    ``wildI001`` pins the qualified foreign attribute ``a:b="c"``
+    *valid*: attributes in a non-schema namespace are foreign and never
+    reported. ``wildI002``/``wildI003`` add an unqualified attribute and
+    are invalid.
+    """
+
+    def sequence(self, any_attributes):
+        return (
+            "<xs:complexType name='t'><xs:sequence>"
+            f"<xs:any {any_attributes}/>"
+            "</xs:sequence></xs:complexType>"
+        )
+
+    def test_unknown_unqualified_attribute_on_any(self, parse):
+        # wildI003
+        report = parse(self.sequence("id='bar' namespace='##other' foo='bar'"))
+        assert "invalid-attribute" in schema_codes(report)
+
+    def test_unqualified_attribute_beside_qualified_foreign(self, parse):
+        # wildI002
+        report = parse(
+            self.sequence(
+                "id='bar' namespace='##other' processContents='lax' "
+                "maxOccurs='2' minOccurs='1' a:b='c' b='c' xmlns:a='http://foo'"
+            )
+        )
+        assert "invalid-attribute" in schema_codes(report)
+
+    def test_qualified_foreign_attribute_is_valid(self, parse):
+        # wildI001
+        report = parse(
+            self.sequence(
+                "id='bar' namespace='##other' processContents='lax' "
+                "maxOccurs='2' minOccurs='1' a:b='c' xmlns:a='http://foo'"
+            )
+        )
+        assert "invalid-attribute" not in schema_codes(report)
+
+    def test_unknown_unqualified_attribute_on_any_attribute(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:anyAttribute namespace='##other' foo='bar'/>"
+            "</xs:complexType>"
+        )
+        assert "invalid-attribute" in schema_codes(report)
+
+    def test_qualified_foreign_attribute_on_any_attribute_is_valid(self, parse):
+        report = parse(
+            "<xs:complexType name='t'>"
+            "<xs:anyAttribute namespace='##other' a:b='c' xmlns:a='http://foo'/>"
+            "</xs:complexType>"
+        )
+        assert "invalid-attribute" not in schema_codes(report)
+
+
+class TestWildcardNonDeterminism:
+    """UPA for element wildcards in one ``sequence``/``choice`` (wildI009-014).
+
+    In a ``choice`` every alternative is live at once, so overlapping
+    wildcards are ambiguous. In a ``sequence`` the earlier wildcard
+    creates the ambiguity only when it can match again
+    (``maxOccurs`` > 1) or be skipped (``minOccurs`` = 0) while every
+    particle between the two is emptiable; ``wildI011``/``wildI012`` pin
+    the single-occurrence and second-repeats shapes *valid*.
+    """
+
+    def choice_schema(self, children, choice_attrs=""):
+        return (
+            "<xs:complexType name='t'><xs:choice"
+            + (f" {choice_attrs}" if choice_attrs else "")
+            + ">"
+            + children
+            + "</xs:choice></xs:complexType>"
+        )
+
+    def sequence_schema(self, children, sequence_attrs=""):
+        return (
+            "<xs:complexType name='t'><xs:sequence"
+            + (f" {sequence_attrs}" if sequence_attrs else "")
+            + ">"
+            + children
+            + "</xs:sequence></xs:complexType>"
+        )
+
+    def test_overlapping_wildcards_in_choice(self, parse):
+        # wildI009: ##other and A overlap in a repeating choice
+        report = parse(
+            self.choice_schema(
+                "<xs:any namespace='##other' processContents='lax'/><xs:any namespace='A'/>",
+                "maxOccurs='10'",
+            )
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
+    def test_identical_wildcards_in_choice(self, parse):
+        # wildI010: two identical wildcards in a choice are still ambiguous
+        report = parse(
+            self.choice_schema(
+                "<xs:any namespace='A' processContents='lax'/><xs:any namespace='A'/>",
+                "maxOccurs='10'",
+            )
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
+    def test_repeatable_wildcard_before_overlapping_sequence_member(self, parse):
+        # wildI013: ##other maxOccurs=2 followed by A
+        report = parse(
+            self.sequence_schema(
+                "<xs:any namespace='##other' maxOccurs='2' processContents='lax'/>"
+                "<xs:any namespace='A' processContents='lax'/>",
+                "maxOccurs='10'",
+            )
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
+    def test_repeatable_wildcard_between_overlapping_sequence_members(self, parse):
+        # wildI014: A, ##other maxOccurs=2, A
+        report = parse(
+            self.sequence_schema(
+                "<xs:any namespace='A' processContents='lax'/>"
+                "<xs:any namespace='##other' maxOccurs='2' processContents='lax'/>"
+                "<xs:any namespace='A' processContents='lax'/>",
+                "maxOccurs='10'",
+            )
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
+    def test_optional_wildcard_before_overlapping_sequence_member(self, parse):
+        # a skippable first wildcard and the next can both match at the start
+        report = parse(
+            self.sequence_schema("<xs:any namespace='A' minOccurs='0'/><xs:any namespace='A'/>")
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
+    def test_single_occurrence_wildcards_in_sequence_are_deterministic(self, parse):
+        # wildI011
+        report = parse(
+            self.sequence_schema(
+                "<xs:any namespace='##other' processContents='lax'/>"
+                "<xs:any namespace='A' processContents='lax'/>"
+            )
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_second_wildcard_repeating_in_sequence_is_deterministic(self, parse):
+        # wildI012
+        report = parse(
+            self.sequence_schema(
+                "<xs:any namespace='##other' processContents='lax'/>"
+                "<xs:any namespace='A' maxOccurs='2' processContents='lax'/>"
+            )
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_identical_single_occurrence_wildcards_in_sequence_are_valid(self, parse):
+        report = parse(self.sequence_schema("<xs:any namespace='A'/><xs:any namespace='A'/>"))
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_disjoint_wildcards_in_choice_are_valid(self, parse):
+        report = parse(
+            self.choice_schema(
+                "<xs:any namespace='http://a.example/'/><xs:any namespace='http://b.example/'/>"
+            )
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_disjoint_wildcards_in_sequence_are_valid(self, parse):
+        report = parse(
+            self.sequence_schema(
+                "<xs:any namespace='http://a.example/' maxOccurs='unbounded'/>"
+                "<xs:any namespace='http://b.example/'/>"
+            )
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_invalid_namespace_token_does_not_drive_overlap_noise(self, parse):
+        # rule 1 already reports the malformed token; the UPA sweep skips it
+        report = parse(self.choice_schema("<xs:any namespace='##bogus'/><xs:any namespace='A'/>"))
+        issues = [issue for issue in report.for_phase("schema") if issue.code == "wildcard-invalid"]
+        assert len(issues) == 1
+
+    def test_unreferenced_group_content_is_not_reported(self, parse):
+        # addB194: UPA applies to a complex type's content model, not to an
+        # orphan group definition, so an ambiguous sequence nothing
+        # references stays valid
+        report = parse(
+            "<xs:group name='g'><xs:sequence>"
+            "<xs:any namespace='##other' maxOccurs='2'/>"
+            "<xs:any namespace='##other'/>"
+            "</xs:sequence></xs:group>"
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_referenced_group_content_is_reported(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:group ref='g'/></xs:complexType>"
+            "<xs:group name='g'><xs:sequence>"
+            "<xs:any namespace='##other' maxOccurs='2'/>"
+            "<xs:any namespace='A'/>"
+            "</xs:sequence></xs:group>"
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
+
+class TestAttributeWildcardAlgebra:
+    """Rule 8: the pure intersection/union helpers for attribute wildcards.
+
+    Restriction intersects the base and own constraints; extension unions
+    them. Intersection takes the weaker ``processContents`` (skip < lax <
+    strict), union the stronger, because both wildcards apply.
+    """
+
+    TARGET = "http://t.example/"
+
+    def attr(self, namespace, process="strict", target=None):
+        spec = WildcardSpec(namespace=namespace, process_contents=process, is_attribute=True)
+        if target is not None:
+            return WildcardSpec(
+                namespace=namespace,
+                process_contents=process,
+                is_attribute=True,
+                target_namespace=target,
+            )
+        return spec
+
+    def admits(self, spec, uri):
+        return spec.allows(uri, self.TARGET)
+
+    def test_intersection_with_any_keeps_the_other_constraint(self):
+        result = intersect_wildcard_specs(self.attr("##any"), self.attr("foo bar"), self.TARGET)
+        assert result.namespace == "foo bar"
+        assert self.admits(result, "foo") and not self.admits(result, "baz")
+
+    def test_intersection_of_enumerations(self):
+        result = intersect_wildcard_specs(self.attr("foo bar"), self.attr("bar baz"), self.TARGET)
+        assert result.namespace == "bar"
+        assert self.admits(result, "bar") and not self.admits(result, "foo")
+
+    def test_intersection_of_other_and_enumeration_drops_the_target(self):
+        result = intersect_wildcard_specs(
+            self.attr("##other"), self.attr(f"{self.TARGET} foo"), self.TARGET
+        )
+        assert result.namespace == "foo"
+        assert not self.admits(result, self.TARGET)
+        assert not self.admits(result, None)
+
+    def test_intersection_of_two_other_constraints(self):
+        result = intersect_wildcard_specs(self.attr("##other"), self.attr("##other"), self.TARGET)
+        assert result.namespace == "##other"
+        assert self.admits(result, "foo") and not self.admits(result, self.TARGET)
+
+    def test_intersection_of_other_constraints_with_distinct_targets(self):
+        result = intersect_wildcard_specs(
+            self.attr("##other", target="http://a.example/"),
+            self.attr("##other", target="http://b.example/"),
+            self.TARGET,
+        )
+        assert self.admits(result, "http://c.example/")
+        assert not self.admits(result, "http://a.example/")
+        assert not self.admits(result, "http://b.example/")
+
+    def test_intersection_keeps_local_only_when_both_admit_it(self):
+        result = intersect_wildcard_specs(
+            self.attr("##local foo"), self.attr("##local bar"), self.TARGET
+        )
+        assert self.admits(result, None)
+        result = intersect_wildcard_specs(self.attr("##local foo"), self.attr("foo"), self.TARGET)
+        assert not self.admits(result, None)
+        assert self.admits(result, "foo")
+
+    def test_intersection_takes_the_weaker_process_contents(self):
+        result = intersect_wildcard_specs(
+            self.attr("##any", process="strict"),
+            self.attr("##any", process="lax"),
+            self.TARGET,
+        )
+        assert result.process_contents == "lax"
+        result = intersect_wildcard_specs(
+            self.attr("##any", process="lax"),
+            self.attr("##any", process="skip"),
+            self.TARGET,
+        )
+        assert result.process_contents == "skip"
+
+    def test_union_with_any_is_any(self):
+        result = union_wildcard_specs(self.attr("foo"), self.attr("##any"), self.TARGET)
+        assert result.namespace == "##any"
+        assert self.admits(result, "whatever")
+
+    def test_union_of_enumerations(self):
+        result = union_wildcard_specs(self.attr("foo"), self.attr("bar"), self.TARGET)
+        assert self.admits(result, "foo") and self.admits(result, "bar")
+        assert not self.admits(result, "baz")
+
+    def test_union_of_other_and_enumeration(self):
+        base = self.attr("##other", target="http://a.example/")
+        result = union_wildcard_specs(base, self.attr("B"), self.TARGET)
+        assert self.admits(result, "B")
+        assert not self.admits(result, "http://a.example/")
+        assert not self.admits(result, None)
+
+    def test_union_of_other_and_enumeration_can_widen_to_any(self):
+        # the set side admits the only namespace the ##other excludes
+        base = self.attr("##other", target=self.TARGET)
+        result = union_wildcard_specs(base, self.attr(f"{self.TARGET} foo"), self.TARGET)
+        assert result.namespace == "##any"
+        assert self.admits(result, self.TARGET)
+        assert self.admits(result, "bar")
+        assert self.admits(result, None)
+
+    def test_union_takes_the_stronger_process_contents(self):
+        result = union_wildcard_specs(
+            self.attr("##any", process="skip"),
+            self.attr("##any", process="strict"),
+            self.TARGET,
+        )
+        assert result.process_contents == "strict"
+
+    def test_effective_wildcard_of_no_specs_is_none(self):
+        assert effective_attribute_wildcard([], self.TARGET) is None
+
+    def test_effective_wildcard_of_one_spec_is_that_spec(self):
+        spec = self.attr("foo")
+        result = effective_attribute_wildcard([spec], self.TARGET)
+        assert result == spec
+
+    def test_effective_wildcard_intersects_all_specs(self):
+        result = effective_attribute_wildcard(
+            [
+                self.attr("##other", process="lax"),
+                self.attr(f"{self.TARGET} foo", process="strict"),
+                self.attr("foo bar", process="strict"),
+            ],
+            self.TARGET,
+        )
+        assert result.namespace == "foo"
+        assert result.process_contents == "lax"
+
+
+class TestAttributeWildcardRestriction:
+    """Rule 8 schema wiring: a restriction must narrow the base wildcard.
+
+    The derived type's effective attribute wildcard (its own and its
+    attribute groups' constraints, intersected) must be a subset of the
+    base's effective wildcard, and must not weaken ``processContents``.
+    """
+
+    def restriction(self, base_wildcard, derived_wildcard):
+        return (
+            "<xs:complexType name='b'><xs:sequence/>"
+            f"{base_wildcard}</xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:restriction base='b'><xs:sequence/>"
+            f"{derived_wildcard}</xs:restriction>"
+            "</xs:complexContent></xs:complexType>"
+        )
+
+    def test_restriction_widening_the_namespace_is_invalid(self, parse):
+        report = parse(
+            self.restriction(
+                "<xs:anyAttribute namespace='foo'/>",
+                "<xs:anyAttribute namespace='foo bar'/>",
+            )
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
+    def test_restriction_weakening_process_contents_is_invalid(self, parse):
+        report = parse(
+            self.restriction(
+                "<xs:anyAttribute namespace='##any' processContents='strict'/>",
+                "<xs:anyAttribute namespace='##any' processContents='lax'/>",
+            )
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
+    def test_restriction_narrowing_the_namespace_is_valid(self, parse):
+        report = parse(
+            self.restriction(
+                "<xs:anyAttribute namespace='##any' processContents='lax'/>",
+                "<xs:anyAttribute namespace='foo' processContents='strict'/>",
+            )
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_restriction_without_own_wildcard_is_valid(self, parse):
+        report = parse(
+            self.restriction(
+                "<xs:anyAttribute namespace='##any'/>",
+                "",
+            )
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_restriction_over_unresolved_base_is_skipped(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:restriction base='missing'><xs:sequence/>"
+            "<xs:anyAttribute namespace='##any'/>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+
+class TestWildcardDeclarationPredicates:
+    """The pure grammar predicates behind the wildcard declaration check."""
+
+    def test_unknown_keyword_token(self):
+        from pyxsd.wildcards import invalid_namespace_constraint
+
+        assert invalid_namespace_constraint("##target") == "##target"
+        assert invalid_namespace_constraint("foo ##all") == "##all"
+        assert invalid_namespace_constraint("##ANY") == "##ANY"
+
+    def test_legal_constraints(self):
+        from pyxsd.wildcards import invalid_namespace_constraint
+
+        for legal in (
+            None,
+            "",
+            "##any",
+            "##other",
+            "##local",
+            "##targetNamespace",
+            "##local ##targetNamespace",
+            "##any ##other",  # reported below only for ##any mixed? no: token ##any is unknown here
+            "foo",
+            "#any",
+            "a:b",
+            "foo ##local",
+        ):
+            if legal == "##any ##other":
+                continue
+            assert invalid_namespace_constraint(legal) is None, legal
+
+    def test_process_contents_predicate(self):
+        from pyxsd.wildcards import invalid_process_contents
+
+        assert invalid_process_contents(None) is None
+        assert invalid_process_contents("skip") is None
+        assert invalid_process_contents(" lax ") is None
+        assert invalid_process_contents("") == ""
+        assert invalid_process_contents("lax skip") == "lax skip"
+
+    def test_declaration_problems_reports_each_class(self):
+        from pyxsd.wildcards import wildcard_declaration_problems
+
+        problems = wildcard_declaration_problems(
+            {
+                "namespace": "##bogus",
+                "processContents": "all",
+                "minOccurs": "2",
+                "foo": "bar",
+            },
+            is_attribute=True,
+        )
+        codes = [code for code, _ in problems]
+        assert codes == [
+            "wildcard-invalid",  # namespace
+            "wildcard-invalid",  # processContents
+            "wildcard-invalid",  # occurrence attribute
+            "invalid-attribute",  # unknown unqualified attribute
+        ]
+
+    def test_declaration_problems_ignores_foreign_attributes(self):
+        from pyxsd.wildcards import wildcard_declaration_problems
+
+        assert (
+            wildcard_declaration_problems({"{http://foo}b": "c", "id": "bar"}, is_attribute=False)
+            == []
+        )
+
+    def test_declaration_problems_allows_11_wildcard_attributes(self):
+        from pyxsd.wildcards import wildcard_declaration_problems
+
+        assert (
+            wildcard_declaration_problems(
+                {"notNamespace": "foo", "notQName": "bar"}, is_attribute=False
+            )
+            == []
+        )
