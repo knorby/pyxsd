@@ -1852,6 +1852,44 @@ class TestEltOverGroup:
         reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
         assert reasons
 
+    def test_element_over_choice_group_ref_member_matches_literal_member(self):
+        # A group reference compiles to a synthetic singleton wrapper.
+        # A choice member that is one must fold to the referenced choice
+        # with the reference's occurrence, exactly like the literal
+        # nested choice: base choice(2,3) over choice(a|b) admits a(2,2).
+        literal = _group(
+            "choice",
+            _group("choice", _elt(_Declaration(name="a")), _elt(_Declaration(name="b"))),
+            min_occurs=2,
+            max_occurs=3,
+        )
+        referenced = _group(
+            "choice",
+            Particle(
+                "sequence",
+                1,
+                1,
+                [_group("choice", _elt(_Declaration(name="a")), _elt(_Declaration(name="b")))],
+                synthetic=True,
+            ),
+            min_occurs=2,
+            max_occurs=3,
+        )
+        derived = _elt(_Declaration(name="a"), 2, 2)
+        assert not is_valid_particle_restriction(literal, derived, _decls_resolver)
+        assert not is_valid_particle_restriction(referenced, derived, _decls_resolver)
+
+    def test_vacuous_element_is_not_admitted_over_choice_or_sequence(self):
+        # Vacuity is scoped: a maxOccurs=0 element is exempt from a
+        # wildcard's namespace constraint and self-removes inside a
+        # sequence alignment, but it still may not widen its way onto a
+        # choice or sequence member (mgE006's derivation-pair posture).
+        over_choice = _group("choice", _elt(_Declaration(name="e")), _elt(_Declaration(name="f")))
+        over_sequence = _group("sequence", _elt(_Declaration(name="e")))
+        derived = _elt(_Declaration(name="e"), 0, 0)
+        assert is_valid_particle_restriction(over_choice, derived, _decls_resolver)
+        assert is_valid_particle_restriction(over_sequence, derived, _decls_resolver)
+
 
 class TestMapAndSum:
     """MapAndSum: a derived sequence over a base choice."""

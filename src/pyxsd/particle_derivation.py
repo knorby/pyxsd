@@ -350,6 +350,7 @@ def _occurrence_multiplied(member: Particle, base: Particle) -> Particle:
         member.name,
         member.spec,
         member.descriptor,
+        member.synthetic,
     )
 
 
@@ -362,29 +363,31 @@ def _elt_over_group_violations(
 ) -> list[str]:
     """RecurseAsIfGroup: an element restricting a model group.
 
-    Under the harness's XSD 1.1 profile the element is admitted when it
-    validly restricts *one of* the group's members with the group's own
-    occurrence multiplied into that member's range — a choice or
-    sequence selecting a member over its whole repetition count. For a
-    choice base this is the language-containment reading the corpus
-    pins: ``a(0,1)`` restricting ``choice(0,1)[a, b]`` is legal because
-    the choice can match zero (particlesHa161, Z001 valid@1.1), while
-    ``c1(1,1)`` under ``choice(2,3)[c1, c2]`` is not (particlesL001),
-    and the member multiplication is what makes ``c1(3,3)`` exceed a
-    ``c1(2,2)`` member (L004).
+    The check is hybrid because the corpus pins different readings per
+    base compositor. For a **choice** base the element is admitted when
+    it validly restricts *one of* the choice's members with the
+    choice's own occurrence multiplied into that member's range — the
+    language-containment reading under which ``a(0,1)`` restricting
+    ``choice(0,1)[a, b]`` is legal because the choice can match zero
+    (particlesHa161, Z001 valid@1.1), while ``c1(1,1)`` under
+    ``choice(2,3)[c1, c2]`` is not (particlesL001), and ``c1(3,3)``
+    exceeds a ``c1(2,2)`` member (L004). A member that is itself a
+    compositor is folded first (group references are synthetic
+    wrappers), then recursed on with the product.
 
-    A sequence or ``all`` base keeps the §3.9.6 singleton-wrapper
-    reading: the element wrapped in a group of the base's variety at
-    1..1 must be a valid restriction of the base, which is what
-    preserves the order and required-member structure of a sequence
-    (particlesM001/M033/M034) and the per-member sums of an ``all``
-    (particlesK004/K006). The member checks run unamplified so the
-    member's own range is compared directly.
+    A **sequence** or **all** base keeps the §3.9.6 singleton-wrapper
+    reading instead: the element wrapped in a group of the base's
+    variety at 1..1 must be a valid restriction of the base. That is
+    what preserves the order and required-member structure of a
+    sequence (particlesM001/M033/M034) and the per-member sums of an
+    ``all`` (particlesK004/K006); member multiplication would accept
+    M033/M034's invalid shapes. The member checks run unamplified so
+    the member's own range is compared directly.
     """
     if base.kind == "choice":
         detail: list[str] = []
         for member in base.children:
-            candidate = _occurrence_multiplied(member, base)
+            candidate = _occurrence_multiplied(_unwrap_base(member), base)
             trial = set(visited)
             if candidate.kind in ("sequence", "all", "choice"):
                 reasons = _elt_over_group_violations(
@@ -467,10 +470,11 @@ def _mapandsum_violations(
     Every member of the derived sequence must validly restrict *some*
     member of the base choice — the mapping is neither injective nor
     order-preserving (particlesV015's ``seq(e3, e2, e1)`` over
-    ``choice(e1|e2|e3)``) — and the sequence's effective total range
-    (its own occurrence range times its member count, §3.8.6) must be
-    contained in the base choice's range (particlesV001 valid,
-    V002/V003/V005).
+    ``choice(e1|e2|e3)``) — and the pair of the sequence's own
+    occurrence range times its member count (MapAndSum's second
+    clause, not the §3.8.6 effective-total-range rule, which applies
+    to compositors in general) must be contained in the base choice's
+    range (particlesV001 valid, V002/V003/V005).
     """
     violations: list[str] = []
     count = len(derived.children)
