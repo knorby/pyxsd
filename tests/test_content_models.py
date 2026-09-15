@@ -1546,6 +1546,145 @@ class TestAttributeWildcardAlgebra:
         assert result.process_contents == "lax"
 
 
+class TestAttributeWildcardAlgebraWithExclusions:
+    """XSD 1.1 §3.10.6.3/§3.10.6.4: the set algebra carries exclusions.
+
+    The corpus shapes are wild014-018, wild023-026, wild043-046 and
+    wild058-060/wild083: intersection unions the exclusion sets, union
+    intersects them with the wildcard-aware allowance rules.
+    """
+
+    TARGET = "http://t.example/"
+
+    def spec(
+        self,
+        namespace="##any",
+        *,
+        not_namespace=(),
+        not_qname=(),
+        target=None,
+        process="strict",
+    ):
+        return WildcardSpec(
+            namespace=namespace,
+            process_contents=process,
+            is_attribute=True,
+            target_namespace=self.TARGET if target is None else target,
+            not_namespace=frozenset(not_namespace),
+            not_qname=frozenset(not_qname),
+        )
+
+    def allows(self, spec, name, **kwargs):
+        return spec.allows_name(name, self.TARGET, **kwargs)
+
+    # -- intersection --------------------------------------------------------
+
+    def test_intersection_unions_the_not_namespace_sets(self):
+        # wild017: B excludes abel/cain, R excludes cain/abel/adam
+        base = self.spec(not_namespace=("http://abel.com/", "http://cain.com/"))
+        own = self.spec(not_namespace=("http://cain.com/", "http://abel.com/", "http://adam.com/"))
+        result = intersect_wildcard_specs(base, own, self.TARGET)
+        assert not self.allows(result, "{http://adam.com/}a")
+        assert not self.allows(result, "{http://abel.com/}a")
+        assert not self.allows(result, "{http://cain.com/}a")
+        assert self.allows(result, "{http://eve.com/}a")
+
+    def test_intersection_subtracts_not_namespace_from_a_list(self):
+        # wild025: "adam eve" ∩ not("eve abel") = adam only
+        listed = self.spec("http://adam.com/ http://eve.com/")
+        excluded = self.spec(not_namespace=("http://eve.com/", "http://abel.com/"))
+        result = intersect_wildcard_specs(listed, excluded, self.TARGET)
+        assert self.allows(result, "{http://adam.com/}a")
+        assert not self.allows(result, "{http://eve.com/}a")
+
+    def test_intersection_of_not_namespace_keeps_absent_excluded(self):
+        # wild023: not(##local) ∩ not(eve) still rejects unqualified names
+        base = self.spec(not_namespace=("##local",))
+        own = self.spec(not_namespace=("http://eve.com/",))
+        result = intersect_wildcard_specs(base, own, self.TARGET)
+        assert not self.allows(result, "a")
+        assert not self.allows(result, "{http://eve.com/}a")
+        assert self.allows(result, "{http://adam.com/}a")
+
+    def test_intersection_unions_the_exact_not_qname_names(self):
+        # wild043: {a b c} ∩ {c d e} = {a b c d e}
+        base = self.spec(not_qname=("{urn:x}a", "{urn:x}b", "{urn:x}c"))
+        own = self.spec(not_qname=("{urn:x}c", "{urn:x}d", "{urn:x}e"))
+        result = intersect_wildcard_specs(base, own, self.TARGET)
+        for local in ("a", "b", "c", "d", "e"):
+            assert not self.allows(result, f"{{urn:x}}{local}")
+        assert self.allows(result, "{urn:x}f")
+
+    def test_intersection_keeps_defined_when_either_side_has_it(self):
+        # wild058/059: g has ##defined jang, h has ##defined
+        result = intersect_wildcard_specs(
+            self.spec(not_qname=("##defined", "jang")),
+            self.spec(not_qname=("##defined",)),
+        )
+        assert not self.allows(result, "jang")
+        assert not self.allows(result, "zang", defined={"zang"})
+        assert self.allows(result, "zing", defined={"zang"})
+
+    # -- union ---------------------------------------------------------------
+
+    def test_union_intersects_the_not_namespace_sets(self):
+        # wild014: not(cain) union not(abel cain) = not(cain)
+        base = self.spec(not_namespace=("http://cain.com/",))
+        own = self.spec(not_namespace=("http://abel.com/", "http://cain.com/"))
+        result = union_wildcard_specs(base, own, self.TARGET)
+        assert not self.allows(result, "{http://cain.com/}a")
+        assert self.allows(result, "{http://abel.com/}a")
+
+    def test_union_subtracts_the_list_side_from_a_not_constraint(self):
+        # wild015/wild016: "abel adam" union not("abel cain") = not(cain)
+        listed = self.spec("http://abel.com/ http://adam.com/")
+        excluded = self.spec(not_namespace=("http://abel.com/", "http://cain.com/"))
+        result = union_wildcard_specs(listed, excluded, self.TARGET)
+        assert self.allows(result, "{http://eve.com/}a")
+        assert self.allows(result, "{http://adam.com/}a")
+        assert not self.allows(result, "{http://cain.com/}a")
+
+    def test_union_drops_names_the_other_side_allows(self):
+        # wild060/wild083: a name survives only when the other wildcard
+        # does not allow it
+        base = self.spec(not_qname=("##defined", "no-surprise"))
+        own = self.spec(not_qname=("surprise", "no-surprise"))
+        result = union_wildcard_specs(base, own, self.TARGET)
+        assert not self.allows(result, "no-surprise")
+        assert self.allows(result, "surprise")
+
+    def test_union_keeps_a_name_the_other_namespace_rejects(self):
+        # wild046: the list side is ##local, so an XML-namespace exclusion
+        # of the not side survives
+        base = self.spec(namespace="##local", not_qname=("a", "b", "c"))
+        own = self.spec(
+            not_namespace=("http://www.w3.org/1999/XSL/Transform",),
+            not_qname=("c", "d", "e", "{http://www.w3.org/XML/1998/namespace}lang"),
+        )
+        result = union_wildcard_specs(base, own, self.TARGET)
+        assert not self.allows(result, "c")
+        assert not self.allows(result, "{http://www.w3.org/XML/1998/namespace}lang")
+        assert self.allows(result, "a")
+        assert self.allows(result, "d")
+
+    def test_union_drops_defined_unless_both_sides_carry_it(self):
+        # wild083's spec note: ##defined is dropped when only one side has it
+        base = self.spec(not_qname=("##defined", "no-surprise"))
+        own = self.spec(not_qname=("surprise", "no-surprise"))
+        result = union_wildcard_specs(base, own, self.TARGET)
+        assert self.allows(result, "zang", defined={"zang"})
+
+    def test_effective_wildcard_of_attribute_groups_carries_exclusions(self):
+        # wild025/026: two attribute groups intersect
+        groups = [
+            self.spec("http://adam.com/ http://eve.com/"),
+            self.spec(not_namespace=("http://eve.com/", "http://abel.com/")),
+        ]
+        result = effective_attribute_wildcard(groups, self.TARGET)
+        assert self.allows(result, "{http://adam.com/}a")
+        assert not self.allows(result, "{http://eve.com/}a")
+
+
 class TestAttributeWildcardRestriction:
     """Rule 8 schema wiring: a restriction must narrow the base wildcard.
 

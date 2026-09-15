@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import itertools
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
-from pyxsd.namespaces import namespace_of
-from pyxsd.wildcards import WildcardSpec, wildcard_spec
+from pyxsd.wildcards import DISALLOWED_SIBLING, WildcardSpec, wildcard_spec
 
 _UNBOUNDED_THRESHOLD = 99999
 
@@ -53,6 +53,11 @@ class Particle:
     #: occurrence — so derivation checks fold the two ranges together
     #: instead of treating the wrapper as a literal sequence.
     synthetic: bool = False
+    #: For an ``any`` particle whose spec carries the
+    #: ``##definedSibling`` keyword, the expanded names of every element
+    #: declaration in the type's own content model (substitution-group
+    #: members included). ``None`` when the keyword does not apply.
+    siblings: frozenset[str] | None = None
 
     def is_element(self) -> bool:
         return self.kind == "element"
@@ -108,7 +113,87 @@ def compile_own_content(type_er: Any, py_xsd: Any = None) -> Particle | None:
     own = _group_particles(_compile_items(content, type_er, frozenset(), py_xsd))
     if own is None and content:
         return None
+    _annotate_defined_siblings(own, py_xsd)
     return own
+
+
+def _iter_particles(model: Particle) -> Iterator[Particle]:
+    """Yields ``model`` and every descendant particle."""
+    stack = [model]
+    while stack:
+        particle = stack.pop()
+        yield particle
+        stack.extend(particle.children)
+
+
+def _substitution_member_names(descriptor: Any, py_xsd: Any) -> list[str]:
+    """Instance names of the global elements whose head is ``descriptor``.
+
+    The compiled model stores a reference site's *head* declaration; the
+    ``##definedSibling`` name set also covers the head's substitution
+    group members (XSD 1.1 §3.10.4.1 clause 3.6, "implicitly
+    contained"). An unresolvable schema or declaration contributes
+    nothing (skip, never reject).
+    """
+    if descriptor is None:
+        return []
+    try:
+        schema = descriptor.getSchema()
+    except Exception:
+        return []
+    elements = getattr(schema, "elements", None) or ()
+    head_names = {getattr(descriptor, "name", None), getattr(descriptor, "expandedName", None)}
+    names: list[str] = []
+    for element in elements:
+        if type(element).__name__ != "Element":
+            continue
+        try:
+            head = element.getSubstitutionGroupHead(py_xsd)
+        except Exception:
+            continue
+        if head is None or head not in head_names:
+            continue
+        try:
+            name = element.instanceName(parser=py_xsd)
+        except Exception:
+            continue
+        if name:
+            names.append(name)
+    return names
+
+
+def _annotate_defined_siblings(model: Particle | None, py_xsd: Any) -> None:
+    """Stamps wildcard particles' ``##definedSibling`` name sets.
+
+    The keyword disallows every element declaration in the wildcard's
+    own content model, whether declared directly or reached through a
+    nested compositor or group reference, plus the substitution-group
+    members of a referenced head. The annotation is computed after the
+    type's own model is compiled (before any base composition), so a
+    wildcard sees the content model it was declared in.
+    """
+    if model is None:
+        return
+    marked = [
+        particle
+        for particle in _iter_particles(model)
+        if particle.kind == "any"
+        and particle.spec is not None
+        and DISALLOWED_SIBLING in particle.spec.not_qname
+    ]
+    if not marked:
+        return
+    names: set[str] = set()
+    for particle in _iter_particles(model):
+        if particle.kind != "element" or not particle.name:
+            continue
+        names.add(particle.name)
+        names.update(_substitution_member_names(particle.descriptor, py_xsd))
+    if not names:
+        return
+    siblings = frozenset(names)
+    for particle in marked:
+        particle.siblings = siblings
 
 
 def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
@@ -496,20 +581,29 @@ class _MatchContext(NamedTuple):
     a declared name when the wildcard is the particle active at that
     point (so a repeated declaration can flow into a later element
     particle), and declared particles consume their names where they
-    appear in the model.
+    appear in the model. ``defined`` holds the expanded names of the
+    schema's top-level declarations for the ``##defined`` keyword
+    (``None`` when the caller cannot supply it, which leaves the keyword
+    unapplied).
     """
 
     member_head_map: dict[str, str]
     name_of: Any
     target_namespace: str | None
     namespace_checked: bool
+    defined: frozenset[str] | None = None
 
 
 def _accepts(node_name: str, particle: Particle, ctx: _MatchContext) -> bool:
     if particle.kind == "any":
         if not ctx.namespace_checked or particle.spec is None:
             return True
-        return particle.spec.allows(namespace_of(node_name), ctx.target_namespace)
+        return particle.spec.allows_name(
+            node_name,
+            ctx.target_namespace,
+            defined=ctx.defined,
+            siblings=particle.siblings,
+        )
     head = ctx.member_head_map.get(node_name, node_name)
     return particle.name == head
 
@@ -768,6 +862,7 @@ def match_content_associations(
     name_of: Any = _name_of,
     target_namespace: str | None = None,
     namespace_checked: bool = False,
+    defined: frozenset[str] | None = None,
 ) -> tuple[bool, list[Any], list[ChildMatch]]:
     """Matches children and reports which particle admitted each node.
 
@@ -776,6 +871,8 @@ def match_content_associations(
     strict namespace mode. ``namespace_checked`` turns on namespace
     checking for wildcard particles (strict namespace mode); in legacy
     mode a wildcard absorbs any name no declared particle claims.
+    ``defined`` supplies the schema's top-level declaration names for
+    the ``##defined`` keyword.
 
     Returns ``(complete, leftover, associations)``: ``complete`` is True
     when the whole model is satisfied and consumes every node;
@@ -789,6 +886,7 @@ def match_content_associations(
         name_of,
         target_namespace,
         namespace_checked,
+        defined,
     )
     memo: dict[Any, frozenset[int]] = {}
     ends = _ends_repeated(model, nodes, 0, ctx, memo, 0)
@@ -810,6 +908,7 @@ def match_content(
     name_of: Any = _name_of,
     target_namespace: str | None = None,
     namespace_checked: bool = False,
+    defined: frozenset[str] | None = None,
 ) -> tuple[bool, list[Any]]:
     """Matches child elements against a compiled content model.
 
@@ -824,5 +923,6 @@ def match_content(
         name_of,
         target_namespace,
         namespace_checked,
+        defined,
     )
     return complete, leftover

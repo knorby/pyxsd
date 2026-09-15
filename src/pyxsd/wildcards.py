@@ -678,38 +678,211 @@ def wildcard_specs_overlap(
     )
 
 
-def _constraint_parts(
+def _namespace_constraint(
     spec: WildcardSpec, target_namespace: str | None
-) -> tuple[str, frozenset[str], bool]:
-    """Normalizes a constraint into ``(kind, uris, local)``.
+) -> tuple[str, frozenset[Any]]:
+    """Normalizes a constraint into ``(variety, members)``.
 
-    ``kind`` is ``"any"``, ``"other"`` (``uris`` holds the *excluded*
-    namespaces, resolved against the spec's own target) or ``"set"``
-    (``uris`` holds the admitted literal namespaces and ``local`` says
-    the absent namespace is admitted). An empty constraint admits
-    nothing. This mirrors :meth:`WildcardSpec.allows`, so a computed
-    constraint can be re-normalized by a later combination.
+    ``variety`` is ``"any"``, ``"not"`` (``members`` holds the *excluded*
+    namespaces) or ``"enum"`` (``members`` holds the admitted ones); the
+    absent namespace is the member ``None``. This mirrors the XSD 1.1
+    §3.10.2.2 mapping (``##other`` maps to ``not`` with the absent
+    namespace and the target namespace in the set) and
+    :meth:`WildcardSpec.admits_namespace`, so a computed constraint can
+    be re-normalized by a later combination. An empty constraint admits
+    nothing.
     """
+    if spec.not_namespace:
+        target = spec.effective_target(target_namespace)
+        members: set[Any] = set()
+        for token in spec.not_namespace:
+            if token == NAMESPACE_LOCAL:
+                members.add(None)
+            elif token == NAMESPACE_TARGET:
+                members.add(target)
+            elif not token.startswith("##"):
+                members.add(token)
+        return "not", frozenset(members)
     tokens = spec.namespace.split()
     if not tokens:
-        return ("set", frozenset(), False)
+        return "enum", frozenset()
     if NAMESPACE_ANY in tokens:
-        return ("any", frozenset(), False)
+        return "any", frozenset()
     if tokens[0] == NAMESPACE_OTHER:
-        excluded = {token for token in tokens[1:] if not token.startswith("##")}
+        members = {token for token in tokens[1:] if not token.startswith("##")}
         target = spec.effective_target(target_namespace)
         if target is not None:
-            excluded.add(target)
-        return ("other", frozenset(excluded), NAMESPACE_LOCAL in tokens)
-    uris = {token for token in tokens if not token.startswith("##")}
-    local = NAMESPACE_LOCAL in tokens
+            members.add(target)
+        if NAMESPACE_LOCAL not in tokens:
+            members.add(None)
+        return "not", frozenset(members)
+    members = {token for token in tokens if not token.startswith("##")}
     if NAMESPACE_TARGET in tokens:
         target = spec.effective_target(target_namespace)
-        if target is None:
-            local = True
-        else:
-            uris.add(target)
-    return ("set", frozenset(uris), local)
+        members.add(target)
+    if NAMESPACE_LOCAL in tokens:
+        members.add(None)
+    return "enum", frozenset(members)
+
+
+def _namespace_member_allowed(variety: str, members: frozenset[Any], uri: str | None) -> bool:
+    """Wildcard allows Namespace Name (XSD 1.1 §3.10.4.3)."""
+    if variety == "any":
+        return True
+    if variety == "not":
+        return uri not in members
+    return uri in members
+
+
+def _token_namespace_allowed(variety: str, members: frozenset[Any], token: str) -> bool:
+    """Whether a ``notQName`` token's namespace is allowed by a constraint.
+
+    Reserved keywords and unresolved raw tokens name no namespace and are
+    never allowed.
+    """
+    match = disallowed_name_parts(token)
+    if match is None:
+        return False
+    uri, _local = match
+    return _namespace_member_allowed(variety, members, uri)
+
+
+def _token_excluded(token: str, not_qname: frozenset[str]) -> bool:
+    """Whether a ``notQName`` set already excludes the token's name."""
+    match = disallowed_name_parts(token)
+    if match is None:
+        return False
+    uri, local = match
+    for candidate in not_qname:
+        other = disallowed_name_parts(candidate)
+        if other is None:
+            continue
+        other_uri, other_local = other
+        if other_uri == uri and (other_local is None or other_local == local):
+            return True
+    return False
+
+
+def _token_allowed(
+    variety: str,
+    members: frozenset[Any],
+    not_qname: frozenset[str],
+    token: str,
+) -> bool:
+    """Wildcard allows Expanded Name (XSD 1.1 §3.10.4.2) for a token.
+
+    The name is allowed when its namespace is allowed by the constraint
+    and the wildcard's disallowed-name set does not contain it.
+    """
+    if not _token_namespace_allowed(variety, members, token):
+        return False
+    return not _token_excluded(token, not_qname)
+
+
+def _intersection_disallowed(
+    base: WildcardSpec,
+    kind_base: str,
+    members_base: frozenset[Any],
+    own: WildcardSpec,
+    kind_own: str,
+    members_own: frozenset[Any],
+) -> frozenset[str]:
+    """The {disallowed names} of an Attribute Wildcard Intersection.
+
+    §3.10.6.4: each side's QName members survive when the *other* side's
+    namespace constraint allows their namespace; the ``##defined`` /
+    ``##definedSibling`` keywords survive when either side carries them.
+    """
+    names: set[str] = set()
+    for token in base.not_qname:
+        if _token_namespace_allowed(kind_own, members_own, token):
+            names.add(token)
+    for token in own.not_qname:
+        if _token_namespace_allowed(kind_base, members_base, token):
+            names.add(token)
+    for marker in (DISALLOWED_DEFINED, DISALLOWED_SIBLING):
+        if marker in base.not_qname or marker in own.not_qname:
+            names.add(marker)
+    return frozenset(names)
+
+
+def _union_disallowed(
+    base: WildcardSpec,
+    kind_base: str,
+    members_base: frozenset[Any],
+    own: WildcardSpec,
+    kind_own: str,
+    members_own: frozenset[Any],
+) -> frozenset[str]:
+    """The {disallowed names} of an Attribute Wildcard Union.
+
+    §3.10.6.3: each side's QName members survive when the *other*
+    wildcard does not allow the name (namespace constraint and disallowed
+    names both consulted); a keyword survives only when both sides carry
+    it.
+    """
+    names: set[str] = set()
+    for token in base.not_qname:
+        if disallowed_name_parts(token) is None:
+            continue
+        if not _token_allowed(kind_own, members_own, own.not_qname, token):
+            names.add(token)
+    for token in own.not_qname:
+        if disallowed_name_parts(token) is None:
+            continue
+        if not _token_allowed(kind_base, members_base, base.not_qname, token):
+            names.add(token)
+    for marker in (DISALLOWED_DEFINED, DISALLOWED_SIBLING):
+        if marker in base.not_qname and marker in own.not_qname:
+            names.add(marker)
+    return frozenset(names)
+
+
+def _combine_namespace(
+    variety: str,
+    members: frozenset[Any],
+    base: WildcardSpec,
+    own: WildcardSpec,
+    target_namespace: str | None,
+) -> tuple[str, str | None, frozenset[str]]:
+    """Encodes a computed constraint as ``(namespace, target, not_namespace)``.
+
+    ``"any"`` and ``"enum"`` results are written into the ``namespace``
+    string; a ``"not"`` result is written as the classic ``##other``
+    spelling when one of the source targets is among the excluded
+    namespaces, and otherwise as literal exclusions with no target (so
+    the ``##other`` target does not over-exclude). The absent namespace
+    is written as ``##local`` when it is admitted, the same convention
+    the existing combination code uses.
+    """
+    if variety == "any":
+        return NAMESPACE_ANY, target_namespace, frozenset()
+    if variety == "enum":
+        tokens = sorted(uri for uri in members if uri is not None)
+        if None in members:
+            tokens.append(NAMESPACE_LOCAL)
+        return " ".join(tokens), target_namespace, frozenset()
+    present = {uri for uri in members if uri is not None}
+    absent_excluded = None in members
+    target: str | None = None
+    for spec in (base, own):
+        candidate = spec.effective_target(target_namespace)
+        if candidate is not None and candidate in present:
+            target = candidate
+            break
+    if target is None and target_namespace is not None and target_namespace in present:
+        target = target_namespace
+    extras = sorted(present - {target}) if target is not None else sorted(present)
+    if not extras and not present and not absent_excluded:
+        return NAMESPACE_ANY, target_namespace, frozenset()
+    if not present and absent_excluded:
+        # Only the absent namespace is excluded: "every present
+        # namespace, not absent" is exactly a targetless ##other.
+        return NAMESPACE_OTHER, None, frozenset()
+    namespace = NAMESPACE_OTHER if not extras else f"{NAMESPACE_OTHER} {' '.join(extras)}"
+    if not absent_excluded:
+        namespace = f"{namespace} {NAMESPACE_LOCAL}"
+    return namespace, target, frozenset()
 
 
 def _severity(process_contents: str) -> int:
@@ -730,6 +903,9 @@ def _combine(
     namespace: str,
     severity: int,
     target_namespace: Any,
+    *,
+    not_namespace: frozenset[str] = frozenset(),
+    not_qname: frozenset[str] = frozenset(),
 ) -> WildcardSpec:
     """Builds a computed spec from two source specs."""
     return WildcardSpec(
@@ -737,20 +913,9 @@ def _combine(
         process_contents=_process_contents_name(severity),
         is_attribute=base.is_attribute or own.is_attribute,
         target_namespace=target_namespace,
+        not_namespace=not_namespace,
+        not_qname=not_qname,
     )
-
-
-def _other_namespace(excluded: frozenset[str], target: str | None) -> str:
-    """The ``##other`` constraint excluding ``target`` and ``excluded``.
-
-    Extra exclusions are written as trailing literal URIs; the caller
-    must ensure at least the target (or one exclusion) is present, since
-    an empty exclusion set is not expressible as ``##other``.
-    """
-    extras = sorted(uri for uri in excluded if uri != target)
-    if not extras:
-        return NAMESPACE_OTHER
-    return f"{NAMESPACE_OTHER} {' '.join(extras)}"
 
 
 def intersect_wildcard_specs(
@@ -760,45 +925,67 @@ def intersect_wildcard_specs(
 ) -> WildcardSpec:
     """The intersection of two attribute-wildcard constraints.
 
-    Namespace constraints intersect (errata E1-10): ``##any`` yields the
-    other side, two ``##other`` constraints exclude the union of their
-    exclusions, ``##other`` against a list keeps the listed namespaces
-    the ``##other`` does not exclude, and two lists intersect. The absent
-    namespace is admitted only when *both* constraints admit it — a
-    computed ``##other … ##local`` (an extension union) does — and is
-    written as ``##local`` in the result. The intersection takes the
-    *weaker* ``processContents`` of the two (``skip`` < ``lax`` <
-    ``strict``); the caller decides whether a derived type may weaken its
-    base by comparing severities.
+    Namespace constraints intersect as XSD 1.1 §3.10.6.4 defines it
+    (errata E1-10): ``##any`` yields the other side, enumerations
+    intersect, two ``not`` constraints union their exclusions, and a
+    ``not`` against an enumeration keeps the enumerated namespaces the
+    ``not`` does not exclude. The absent namespace is admitted only when
+    *both* constraints admit it.
+
+    The {disallowed names} set is computed by the intersection rule:
+    each side's QName members survive when the other side's namespace
+    constraint allows their namespace, and ``##defined`` /
+    ``##definedSibling`` survive when either side carries them. The
+    intersection takes the *weaker* ``processContents`` of the two
+    (``skip`` < ``lax`` < ``strict``); the caller decides whether a
+    derived type may weaken its base by comparing severities.
     """
-    kind_base, uris_base, local_base = _constraint_parts(base, target_namespace)
-    kind_own, uris_own, local_own = _constraint_parts(own, target_namespace)
+    kind_base, members_base = _namespace_constraint(base, target_namespace)
+    kind_own, members_own = _namespace_constraint(own, target_namespace)
     severity = min(_severity(base.process_contents), _severity(own.process_contents))
-    local = local_base and local_own
+    disallowed = _intersection_disallowed(base, kind_base, members_base, own, kind_own, members_own)
     if kind_base == "any" and kind_own == "any":
-        return _combine(base, own, NAMESPACE_ANY, severity, target_namespace)
+        return _combine(base, own, NAMESPACE_ANY, severity, target_namespace, not_qname=disallowed)
     if kind_base == "any":
-        return _combine(base, own, own.namespace, severity, own.target_namespace)
+        return _combine(
+            base,
+            own,
+            own.namespace,
+            severity,
+            own.target_namespace,
+            not_namespace=own.not_namespace,
+            not_qname=disallowed,
+        )
     if kind_own == "any":
-        return _combine(base, own, base.namespace, severity, base.target_namespace)
-    if kind_base == "other" and kind_own == "other":
-        excluded = uris_base | uris_own
-        target = base.effective_target(target_namespace)
-        if target is None:
-            target = own.effective_target(target_namespace)
-        namespace = _other_namespace(excluded, target)
-        if local:
-            namespace = f"{namespace} {NAMESPACE_LOCAL}"
-        return _combine(base, own, namespace, severity, target)
-    if kind_base == "other":
-        tokens = sorted(uris_own - uris_base) + ([NAMESPACE_LOCAL] if local else [])
-        return _combine(base, own, " ".join(tokens), severity, target_namespace)
-    if kind_own == "other":
-        tokens = sorted(uris_base - uris_own) + ([NAMESPACE_LOCAL] if local else [])
-        return _combine(base, own, " ".join(tokens), severity, target_namespace)
-    uris = uris_base & uris_own
-    tokens = sorted(uris) + ([NAMESPACE_LOCAL] if local else [])
-    return _combine(base, own, " ".join(tokens), severity, target_namespace)
+        return _combine(
+            base,
+            own,
+            base.namespace,
+            severity,
+            base.target_namespace,
+            not_namespace=base.not_namespace,
+            not_qname=disallowed,
+        )
+    if kind_base == "enum" and kind_own == "enum":
+        variety, members = "enum", members_base & members_own
+    elif kind_base == "not" and kind_own == "not":
+        variety, members = "not", members_base | members_own
+    elif kind_base == "not":
+        variety, members = "enum", members_own - members_base
+    else:
+        variety, members = "enum", members_base - members_own
+    namespace, target, not_namespace = _combine_namespace(
+        variety, members, base, own, target_namespace
+    )
+    return _combine(
+        base,
+        own,
+        namespace,
+        severity,
+        target,
+        not_namespace=not_namespace,
+        not_qname=disallowed,
+    )
 
 
 def union_wildcard_specs(
@@ -809,81 +996,48 @@ def union_wildcard_specs(
     """The union of two attribute-wildcard constraints (extension).
 
     Both wildcards apply to the derived type, so the union admits every
-    namespace either side admits (errata E1-10): ``##any`` wins, two
-    ``##other`` constraints exclude only the intersection of their
-    exclusions, and a list unions into / against the other side. The union
-    takes the *stronger* ``processContents``: a single combined spec
-    must not weaken an obligation that either source wildcard imposes.
+    namespace either side admits (XSD 1.1 §3.10.6.3, errata E1-10):
+    ``##any`` wins, enumerations union, two ``not`` constraints exclude
+    only the intersection of their exclusions (the constraint is ``any``
+    when that intersection is empty), and a ``not`` against an
+    enumeration excludes the set difference. The union takes the
+    *stronger* ``processContents``: a single combined spec must not
+    weaken an obligation that either source wildcard imposes.
 
-    A union admits the absent namespace only when a source wildcard
-    admits it (``##local``/``##any``): when the exclusion sets cancel
-    but neither side admits the absent namespace, the result is the
-    "every present namespace, not absent" constraint, not ``##any``.
+    The {disallowed names} set is computed by the union rule: each
+    side's QName members survive when the *other wildcard* (namespace
+    constraint and disallowed names together) does not allow the name; a
+    keyword survives only when both sides carry it.
     """
-    kind_base, uris_base, local_base = _constraint_parts(base, target_namespace)
-    kind_own, uris_own, local_own = _constraint_parts(own, target_namespace)
+    kind_base, members_base = _namespace_constraint(base, target_namespace)
+    kind_own, members_own = _namespace_constraint(own, target_namespace)
     severity = max(_severity(base.process_contents), _severity(own.process_contents))
-    local = local_base or local_own
+    disallowed = _union_disallowed(base, kind_base, members_base, own, kind_own, members_own)
+    members: frozenset[Any]
     if kind_base == "any" or kind_own == "any":
-        return _combine(base, own, NAMESPACE_ANY, severity, target_namespace)
-    if kind_base == "other" and kind_own == "other":
-        excluded = uris_base & uris_own
-        target = base.effective_target(target_namespace)
-        if target is None:
-            target = own.effective_target(target_namespace)
-        if not excluded:
-            return _absent_union_result(base, own, local, severity, target_namespace)
-        return _other_union_result(base, own, excluded, target, local, severity)
-    if kind_base == "other" or kind_own == "other":
-        other_excluded = uris_base if kind_base == "other" else uris_own
-        admitted = uris_own if kind_base == "other" else uris_base
-        excluded = other_excluded - admitted
-        if not excluded:
-            return _absent_union_result(base, own, local, severity, target_namespace)
-        target = base.effective_target(target_namespace)
-        if target is None:
-            target = own.effective_target(target_namespace)
-        return _other_union_result(base, own, excluded, target, local, severity)
-    uris = uris_base | uris_own
-    tokens = sorted(uris) + ([NAMESPACE_LOCAL] if local else [])
-    return _combine(base, own, " ".join(tokens), severity, target_namespace)
-
-
-def _absent_union_result(
-    base: WildcardSpec,
-    own: WildcardSpec,
-    local: bool,
-    severity: int,
-    target_namespace: str | None,
-) -> WildcardSpec:
-    """The union result when no present namespace stays excluded."""
-    if local:
-        return _combine(base, own, NAMESPACE_ANY, severity, target_namespace)
-    # Every present namespace, the absent namespace still excluded:
-    # ``##other`` with no target admits exactly that.
-    return _combine(base, own, NAMESPACE_OTHER, severity, None)
-
-
-def _other_union_result(
-    base: WildcardSpec,
-    own: WildcardSpec,
-    excluded: frozenset[str],
-    target: str | None,
-    local: bool,
-    severity: int,
-) -> WildcardSpec:
-    """A union result with a non-empty present-namespace exclusion set."""
-    if target is not None and target in excluded:
-        namespace = _other_namespace(excluded, target)
-        spec_target = target
+        variety, members = "any", frozenset()
+    elif kind_base == "enum" and kind_own == "enum":
+        variety, members = "enum", members_base | members_own
+    elif kind_base == "not" and kind_own == "not":
+        members = members_base & members_own
+        variety = "not" if members else "any"
     else:
-        # The stored target must not over-exclude: write every excluded
-        # namespace as a literal and carry no target.
-        namespace = _other_namespace(excluded, None)
-        spec_target = None
-    if local:
-        namespace = f"{namespace} {NAMESPACE_LOCAL}"
-    return _combine(base, own, namespace, severity, spec_target)
+        not_members = members_base if kind_base == "not" else members_own
+        enum_members = members_own if kind_base == "not" else members_base
+        members = not_members - enum_members
+        variety = "not" if members else "any"
+    namespace, target, not_namespace = _combine_namespace(
+        variety, members, base, own, target_namespace
+    )
+    return _combine(
+        base,
+        own,
+        namespace,
+        severity,
+        target,
+        not_namespace=not_namespace,
+        not_qname=disallowed,
+    )
 
 
 def effective_attribute_wildcard(

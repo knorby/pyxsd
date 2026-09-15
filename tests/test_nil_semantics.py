@@ -212,3 +212,21 @@ def test_whitespace_only_nilled_child_is_reported(tmp_path):
         COMPLEX_SCHEMA,
     )
     assert "nil" in codes(parser)
+
+
+def test_xsi_nil_value_outside_the_boolean_lexical_space_is_reported(tmp_path):
+    """The built-in xsi:nil declaration is xs:boolean; '1234' is not."""
+    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1234"/>', ROOT_COMPLEX_SCHEMA)
+    assert "nil" in codes(parser)
+
+
+def test_xsi_nil_boolean_spellings_are_accepted(tmp_path):
+    """The lexical check keeps the historical case-insensitive reading."""
+    for value in ("false", "0", "False"):
+        parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="{value}"/>', ROOT_COMPLEX_SCHEMA)
+        assert "nil" not in codes(parser), value
+
+
+def test_whitespace_padded_xsi_nil_value_is_accepted(tmp_path):
+    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil=" true "/>', ROOT_COMPLEX_SCHEMA)
+    assert not parser.report.has_errors

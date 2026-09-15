@@ -530,3 +530,256 @@ def test_no_attribute_wildcard_keeps_the_warning_only():
     parser = run(schema, '<root stray="1"><v>x</v></root>')
     assert not parser.report.has_errors
     assert "unexpected-attribute" in codes(parser)
+
+
+# --- XSD 1.1 exclusions reach attribute binding -----------------------------
+
+NOT_NAMESPACE_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:element name="eden"><xs:complexType><xs:sequence/>'
+    '<xs:anyAttribute notNamespace="http://apple.com/ http://devil.com/"'
+    ' processContents="skip"/></xs:complexType></xs:element></xs:schema>'
+)
+
+
+def test_not_namespace_wildcard_rejects_an_excluded_namespace():
+    # wild001.n1/n2
+    parser = run(
+        NOT_NAMESPACE_SCHEMA,
+        '<eden evil:eve="f" xmlns:evil="http://devil.com/"/>',
+    )
+    assert errors(parser) == ["wildcard-namespace"]
+    parser = run(
+        NOT_NAMESPACE_SCHEMA,
+        '<eden e:eve="f" xmlns:e="http://apple.com/"/>',
+    )
+    assert errors(parser) == ["wildcard-namespace"]
+
+
+def test_not_namespace_wildcard_admits_other_namespaces():
+    parser = run(
+        NOT_NAMESPACE_SCHEMA,
+        '<eden adam="m" xmlns:c="http://genesis.com/" c:cain="m"/>',
+    )
+    assert codes(parser) == []
+
+
+NOT_QNAME_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:element name="eden"><xs:complexType><xs:sequence/>'
+    '<xs:anyAttribute notQName="xml:space xml:id" processContents="skip"/>'
+    "</xs:complexType></xs:element></xs:schema>"
+)
+
+
+def test_not_qname_wildcard_rejects_an_exact_expanded_name():
+    # wild027.n1/n2
+    parser = run(
+        NOT_QNAME_SCHEMA,
+        '<eden a="1" b:b="2" xmlns:b="http://b.com/" xml:space="preserve"/>',
+    )
+    assert errors(parser) == ["wildcard-namespace"]
+    parser = run(
+        NOT_QNAME_SCHEMA,
+        '<eden a="1" xml:id="N001"/>',
+    )
+    assert errors(parser) == ["wildcard-namespace"]
+
+
+def test_not_qname_wildcard_admits_other_names():
+    parser = run(NOT_QNAME_SCHEMA, '<eden a="1" b:b="2" xmlns:b="http://b.com/"/>')
+    assert codes(parser) == []
+
+
+RESTRICTION_NOT_NAMESPACE_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:element name="eden" type="R"/>'
+    '<xs:complexType name="B"><xs:sequence/>'
+    '<xs:anyAttribute notNamespace="http://abel.com/ http://cain.com/"'
+    ' processContents="lax"/></xs:complexType>'
+    '<xs:complexType name="R"><xs:complexContent>'
+    '<xs:restriction base="B"><xs:sequence/>'
+    '<xs:anyAttribute notNamespace="http://cain.com/ http://abel.com/ http://adam.com/"'
+    ' processContents="lax"/></xs:restriction></xs:complexContent></xs:complexType>'
+    "</xs:schema>"
+)
+
+
+def test_restriction_intersection_keeps_the_derived_exclusions():
+    # wild017.n1-n3
+    for local, uri in (("adam", "http://adam.com/"), ("abel", "http://abel.com/")):
+        parser = run(
+            RESTRICTION_NOT_NAMESPACE_SCHEMA,
+            f'<eden m:{local}="x" xmlns:m="{uri}"/>',
+        )
+        assert errors(parser) == ["wildcard-namespace"], local
+    parser = run(
+        RESTRICTION_NOT_NAMESPACE_SCHEMA,
+        '<eden c:cain="x" xmlns:c="http://cain.com/"/>',
+    )
+    assert errors(parser) == ["wildcard-namespace"]
+
+
+DOMAIN_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:attributeGroup name="a">'
+    '<xs:anyAttribute namespace="http://adam.com/ http://eve.com/"'
+    ' processContents="lax"/></xs:attributeGroup>'
+    '<xs:attributeGroup name="b">'
+    '<xs:anyAttribute notNamespace="http://eve.com/ http://abel.com/"'
+    ' processContents="lax"/></xs:attributeGroup>'
+    '<xs:complexType name="T"><xs:sequence/>'
+    '<xs:attributeGroup ref="a"/><xs:attributeGroup ref="b"/>'
+    "</xs:complexType>"
+    '<xs:element name="eden" type="T"/>'
+    "</xs:schema>"
+)
+
+
+def test_attribute_group_intersection_rejects_an_excluded_namespace():
+    # wild025.n3
+    parser = run(DOMAIN_SCHEMA, '<eden e:eve="eve" xmlns:e="http://eve.com/"/>')
+    assert errors(parser) == ["wildcard-namespace"]
+    parser = run(DOMAIN_SCHEMA, '<eden m:adam="m" xmlns:m="http://adam.com/"/>')
+    assert codes(parser) == []
+
+
+UNION_NOT_QNAME_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:attributeGroup name="a">'
+    '<xs:anyAttribute namespace="##local" notQName="a b c" processContents="skip"/>'
+    "</xs:attributeGroup>"
+    '<xs:attributeGroup name="b">'
+    '<xs:anyAttribute notNamespace="http://www.w3.org/1999/XSL/Transform"'
+    ' notQName="c d e xml:lang" processContents="skip"/>'
+    "</xs:attributeGroup>"
+    '<xs:complexType name="computer"><xs:sequence/>'
+    '<xs:attributeGroup ref="a"/></xs:complexType>'
+    '<xs:complexType name="extendedComputer"><xs:complexContent>'
+    '<xs:extension base="computer"><xs:attributeGroup ref="b"/>'
+    "</xs:extension></xs:complexContent></xs:complexType>"
+    '<xs:element name="computer" type="extendedComputer"/>'
+    "</xs:schema>"
+)
+
+
+def test_extension_union_keeps_cross_side_exclusions():
+    # wild046.n1/n2 with the wild045 controls
+    parser = run(UNION_NOT_QNAME_SCHEMA, '<computer c="c"/>')
+    assert errors(parser) == ["wildcard-namespace"]
+    parser = run(UNION_NOT_QNAME_SCHEMA, '<computer xml:lang="de"/>')
+    assert errors(parser) == ["wildcard-namespace"]
+    parser = run(UNION_NOT_QNAME_SCHEMA, '<computer a="a"/>')
+    assert codes(parser) == []
+    parser = run(UNION_NOT_QNAME_SCHEMA, '<computer d="d"/>')
+    assert codes(parser) == []
+
+
+DEFINED_ATTRIBUTE_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:complexType name="zing"><xs:sequence/>'
+    '<xs:anyAttribute namespace="##any" notQName="##defined jang"'
+    ' processContents="skip"/></xs:complexType>'
+    '<xs:element name="zing" type="zing"/>'
+    '<xs:attribute name="zang" type="xs:date"/>'
+    '<xs:attribute name="zong" type="xs:time"/>'
+    "</xs:schema>"
+)
+
+
+def test_defined_marker_rejects_a_global_attribute_declaration():
+    # wild054.n1/n2
+    parser = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing zang="2008-12-12"/>')
+    assert errors(parser) == ["wildcard-namespace"]
+    parser = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing jang="2008-12-12"/>')
+    assert errors(parser) == ["wildcard-namespace"]
+
+
+def test_defined_marker_admits_undeclared_and_xml_namespace_attributes():
+    # wild054.v1/v2: the implicit xml:* declarations are not user globals
+    parser = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing xml:lang="de"/>')
+    assert codes(parser) == []
+    parser = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing wing="de"/>')
+    assert codes(parser) == []
+
+
+DEFINED_RESTRICTION_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:complexType name="zing"><xs:sequence/>'
+    '<xs:anyAttribute namespace="##any" notQName="##defined jang xml:space"'
+    ' processContents="skip"/></xs:complexType>'
+    '<xs:complexType name="restrictedZing"><xs:complexContent>'
+    '<xs:restriction base="zing"><xs:sequence/>'
+    '<xs:anyAttribute namespace="##local" notQName="##defined jang jing"'
+    ' processContents="skip"/></xs:restriction></xs:complexContent></xs:complexType>'
+    '<xs:element name="doc" type="restrictedZing"/>'
+    '<xs:attribute name="zang" type="xs:date"/>'
+    '<xs:attribute name="zong" type="xs:time"/>'
+    "</xs:schema>"
+)
+
+
+def test_defined_marker_survives_a_restriction_intersection():
+    # wild055.n1/n2
+    parser = run(DEFINED_RESTRICTION_SCHEMA, '<doc jing="jing"/>')
+    assert errors(parser) == ["wildcard-namespace"]
+    parser = run(DEFINED_RESTRICTION_SCHEMA, '<doc zang="2008-05-05"/>')
+    assert errors(parser) == ["wildcard-namespace"]
+    parser = run(DEFINED_RESTRICTION_SCHEMA, '<doc ping="pong"/>')
+    assert codes(parser) == []
+
+
+DEFINED_UNION_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:attributeGroup name="g">'
+    '<xs:anyAttribute namespace="##any" notQName="##defined jang"'
+    ' processContents="skip"/></xs:attributeGroup>'
+    '<xs:attributeGroup name="h">'
+    '<xs:anyAttribute namespace="##local" notQName="##defined"'
+    ' processContents="skip"/></xs:attributeGroup>'
+    '<xs:complexType name="zing"><xs:sequence/>'
+    '<xs:attributeGroup ref="g"/></xs:complexType>'
+    '<xs:complexType name="extendedZing"><xs:complexContent>'
+    '<xs:extension base="zing"><xs:attributeGroup ref="h"/>'
+    "</xs:extension></xs:complexContent></xs:complexType>"
+    '<xs:element name="zing" type="extendedZing"/>'
+    '<xs:attribute name="zang" type="xs:date"/>'
+    '<xs:attribute name="zong" type="xs:time"/>'
+    "</xs:schema>"
+)
+
+
+def test_extension_union_keeps_defined_when_both_sides_have_it():
+    # wild060.v2 valid (jang), n2 invalid (a global declaration)
+    parser = run(DEFINED_UNION_SCHEMA, '<zing jang="jing"/>')
+    assert codes(parser) == []
+    parser = run(DEFINED_UNION_SCHEMA, '<zing zong="12:00:00"/>')
+    assert errors(parser) == ["wildcard-namespace"]
+
+
+XSI_WILDCARD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:complexType name="computer"><xs:sequence/>'
+    '<xs:anyAttribute namespace="http://www.w3.org/2001/XMLSchema-instance"'
+    ' processContents="skip"/></xs:complexType>'
+    '<xs:element name="computer" type="computer"/>'
+    "</xs:schema>"
+)
+
+
+def test_wildcard_admitted_xsi_attribute_is_still_validated():
+    # wild042.v1: an unknown xsi-namespace attribute is wildcard content.
+    parser = run(
+        XSI_WILDCARD_SCHEMA,
+        '<computer xsi:banana="1234" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>',
+    )
+    assert codes(parser) == []
+
+
+def test_xsi_nil_value_must_be_boolean_even_when_the_wildcard_admits_it():
+    # wild042.n1: xsi:nil is governed by its built-in declaration
+    parser = run(
+        XSI_WILDCARD_SCHEMA,
+        '<computer xsi:nil="1234" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>',
+    )
+    assert errors(parser) == ["nil"]

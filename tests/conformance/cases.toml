@@ -6091,3 +6091,210 @@ instance = '''
   </xs:attributeGroup>
 </xs:schema>
 '''
+
+[[case]]
+id = "namespaces/wildcard-notnamespace-attribute-invalid"
+description = "An attribute in a namespace the notNamespace exclusion lists is rejected (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild001"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:anyAttribute notNamespace="http://apple.com/ http://devil.com/"
+                       processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<eden xmlns:evil="http://devil.com/" evil:eve="f"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "namespaces/wildcard-notqname-attribute-invalid"
+description = "An attribute named by notQName is rejected (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild027"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:anyAttribute notQName="xml:space xml:id" processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<eden a="1" xml:space="preserve"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "namespaces/wildcard-union-notqname-invalid"
+description = "An extension's wildcard union keeps a name the other operand's namespace rejects"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild046"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="a">
+    <xs:anyAttribute namespace="##local" notQName="a b c" processContents="skip"/>
+  </xs:attributeGroup>
+  <xs:attributeGroup name="b">
+    <xs:anyAttribute notNamespace="http://www.w3.org/1999/XSL/Transform"
+                     notQName="c d e xml:lang" processContents="skip"/>
+  </xs:attributeGroup>
+  <xs:complexType name="computer">
+    <xs:sequence/>
+    <xs:attributeGroup ref="a"/>
+  </xs:complexType>
+  <xs:complexType name="extendedComputer">
+    <xs:complexContent>
+      <xs:extension base="computer">
+        <xs:attributeGroup ref="b"/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="computer" type="extendedComputer"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<computer xml:lang="de"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "namespaces/wildcard-defined-attribute-invalid"
+description = "An attribute resolving to a global declaration is rejected by notQName=##defined"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild054"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="zing">
+    <xs:sequence/>
+    <xs:anyAttribute namespace="##any" notQName="##defined jang"
+                     processContents="skip"/>
+  </xs:complexType>
+  <xs:element name="zing" type="zing"/>
+  <xs:attribute name="zang" type="xs:date"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<zing zang="2008-12-12"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "structure/wildcard-notqname-element-invalid"
+description = "An element named by notQName is rejected by the wildcard particle"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild028"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any notQName="xml:space" processContents="skip"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<eden><adam/><xml:space/></eden>
+'''
+instance_valid = false
+expected_codes = ["unexpected-element"]
+
+[[case]]
+id = "structure/wildcard-defined-element-invalid"
+description = "An element resolving to a global declaration is rejected by notQName=##defined"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild052"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="zing">
+    <xs:all>
+      <xs:element name="name" type="xs:string"/>
+      <xs:any namespace="##any" notQName="##defined" processContents="skip"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:element name="zing" type="zing"/>
+  <xs:element name="zang"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<zing><name/><zang/></zing>
+'''
+instance_valid = false
+expected_codes = ["unexpected-element"]
+
+[[case]]
+id = "structure/wildcard-defined-sibling-invalid"
+description = "A repeated sibling declaration is rejected by notQName=##definedSibling"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild070"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="zing"/>
+  <xs:complexType name="zing">
+    <xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+      <xs:element name="b" type="xs:string"/>
+      <xs:element name="c" type="xs:string"/>
+      <xs:any notQName="##definedSibling" processContents="skip"
+              maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root><a/><b/><c/><a/></root>
+'''
+instance_valid = false
+expected_codes = ["order"]
+
+[[case]]
+id = "structure/xsi-nil-lexical-invalid"
+description = "xsi:nil is governed by its built-in boolean declaration, not a wildcard"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild042"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="computer">
+    <xs:sequence/>
+    <xs:anyAttribute namespace="http://www.w3.org/2001/XMLSchema-instance"
+                     processContents="skip"/>
+  </xs:complexType>
+  <xs:element name="computer" type="computer"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<computer xsi:nil="1234" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>
+'''
+instance_valid = false
+expected_codes = ["nil"]
