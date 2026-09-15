@@ -435,11 +435,15 @@ def _eliminate_pointless(particle: Particle) -> Particle:
         and particle.max_occurs == 1
         and len(particle.children) == 1
         and not (particle.children[0].kind == "sequence" and particle.children[0].synthetic)
+        and not (particle.kind == "all" and particle.children[0].kind == "any")
     ):
         # A group reference's synthetic wrapper is folded by ``_unwrap``
         # when the pair is checked; folding the literal singleton around
         # it here would flatten the group before the alignment matches
-        # whole groups (groupB003v, groupH021v).
+        # whole groups (groupB003v, groupH021v). A singleton ``all``
+        # holding a wildcard is left for the wildcard-over-all cell,
+        # which decides it by coverage (wild080's posture) instead of
+        # the bare-wildcard shortcut.
         particle = particle.children[0]
     return particle
 
