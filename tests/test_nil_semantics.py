@@ -230,3 +230,41 @@ def test_xsi_nil_boolean_spellings_are_accepted(tmp_path):
 def test_whitespace_padded_xsi_nil_value_is_accepted(tmp_path):
     parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil=" true "/>', ROOT_COMPLEX_SCHEMA)
     assert not parser.report.has_errors
+
+
+NILLABLE_ONE_ROOT_SCHEMA = ROOT_COMPLEX_SCHEMA.replace('nillable="true"', 'nillable="1"')
+NILLABLE_ONE_CHILD_SCHEMA = COMPLEX_SCHEMA.replace('nillable="true"', 'nillable="1"')
+
+
+def test_nillable_boolean_one_root_nilled_is_clean(tmp_path):
+    """``nillable="1"`` is an xs:boolean true, so xsi:nil skips the model
+    (Saxon all004.v02)."""
+    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1"/>', NILLABLE_ONE_ROOT_SCHEMA)
+    assert not parser.report.has_errors
+    assert parser.schemaRootInstance._nil_ is True
+
+
+def test_nillable_boolean_one_root_with_children_is_reported(tmp_path):
+    """The emptiness rule still applies to a ``nillable="1"`` element
+    (all004.n01)."""
+    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1"><a>7</a></r>', NILLABLE_ONE_ROOT_SCHEMA)
+    assert "nil" in codes(parser)
+
+
+def test_nillable_boolean_one_root_with_whitespace_is_reported(tmp_path):
+    """Whitespace is character content, nillable="1" or not (all004.n02)."""
+    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1"> </r>', NILLABLE_ONE_ROOT_SCHEMA)
+    assert "nil" in codes(parser)
+
+
+def test_nillable_boolean_zero_is_not_nillable(tmp_path):
+    """``nillable="0"`` is xs:boolean false, so xsi:nil is reported."""
+    schema = ROOT_COMPLEX_SCHEMA.replace('nillable="true"', 'nillable="0"')
+    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="true"/>', schema)
+    assert "nil" in codes(parser)
+
+
+def test_nillable_boolean_one_child_nilled_is_clean(tmp_path):
+    parser = parse(tmp_path, f'<r {XSI_DECL}><v xsi:nil="1"/></r>', NILLABLE_ONE_CHILD_SCHEMA)
+    assert not parser.report.has_errors
+    assert parser.schemaRootInstance._children_[0]._nil_ is True

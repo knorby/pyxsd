@@ -25,6 +25,11 @@ def _xsd_derived(value_cls: type | None, declared_cls: type | None) -> bool:
         return False
 
 
+def _isTrue(value: Any) -> bool:
+    """XSD ``xs:boolean`` truth: ``true``/``1``, case-insensitive."""
+    return value is not None and str(value).strip().lower() in ("true", "1")
+
+
 class Element(ElementRepresentative):
     """The class for the element tag.
 
@@ -373,11 +378,14 @@ class Element(ElementRepresentative):
     def isNillable(self):
         """Returns True when the element declaration is ``nillable``.
 
-        Reference sites use the referenced declaration's setting.
+        ``nillable`` is an ``xs:boolean``: ``true`` and ``1`` (in any
+        case, with surrounding whitespace) are true, ``false``/``0`` and
+        an absent attribute are false. Reference sites use the
+        referenced declaration's setting.
         """
         if getattr(self, "isElementRef", False):
             return self.referredElement.isNillable()
-        return self.tagAttributes.get("nillable") == "true"
+        return _isTrue(self.tagAttributes.get("nillable"))
 
     def isAbstract(self):
         """Returns True when the element declaration is ``abstract``.

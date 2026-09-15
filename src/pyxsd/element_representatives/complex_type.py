@@ -264,25 +264,48 @@ class ComplexType(XsdType):
         for spec in getattr(group, "wildcardAttributeSpecs", ()):
             register_wildcard(self, spec)
 
-        contributed = []
-        for element in compositor.elements:
-            if getattr(element, "isRefSite", False):
-                contributed.extend(self._flattenGroupRef(element, visited | {groupKey}))
-                continue
-            # The group's element representatives are shared by every
-            # complex type that references the group. Each reference gets its
-            # own shallow copy, so folding this reference's occurrence
-            # limits (and resolving element refs) never mutates the
-            # shared declaration.
-            use = copy.copy(element)
-            if getattr(use, "isElementRef", False):
-                # ``<xs:element ref="..."/>`` inside a named group must
-                # resolve to its global declaration exactly as it would
-                # directly inside the type.
-                self._resolveElementRef(use)
-            use.sOrC = compInfo
-            contributed.append(use)
+        contributed = self._compositorElements(compositor, compInfo, visited, groupKey)
         self._foldRefOccurrences(refSite, contributed)
+        return contributed
+
+    def _compositorElements(self, compositor, compInfo, visited, groupKey):
+        """Returns the elements a group compositor contributes, in order.
+
+        Walks the compositor's own children, descending nested
+        compositors (which never appear in ``compositor.elements``, as
+        that list holds only the immediate element and group-reference
+        children) and recursing through group references. Each element
+        is a per-use shallow copy carrying the compositor it sits in as
+        its ``sOrC``; ``visited``/``groupKey`` guard reference cycles
+        exactly as ``_flattenGroupRef`` does.
+        """
+        contributed = []
+        for child in getattr(compositor, "processedChildren", None) or ():
+            if child is None:
+                continue
+            kind = type(child).__name__
+            if kind == "Element":
+                # The group's element representatives are shared by every
+                # complex type that references the group. Each reference gets
+                # its own shallow copy, so folding this reference's occurrence
+                # limits (and resolving element refs) never mutates the
+                # shared declaration.
+                use = copy.copy(child)
+                if getattr(use, "isElementRef", False):
+                    # ``<xs:element ref="..."/>`` inside a named group must
+                    # resolve to its global declaration exactly as it would
+                    # directly inside the type.
+                    self._resolveElementRef(use)
+                use.sOrC = compInfo
+                contributed.append(use)
+            elif kind == "Group" and getattr(child, "isRefSite", False):
+                contributed.extend(self._flattenGroupRef(child, visited | {groupKey}))
+            elif kind in ("Sequence", "Choice", "All"):
+                try:
+                    nestedInfo = Compositor(child.tagType)
+                except ValueError:
+                    nestedInfo = None
+                contributed.extend(self._compositorElements(child, nestedInfo, visited, groupKey))
         return contributed
 
     def _resolveElementRef(self, refSite):

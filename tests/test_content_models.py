@@ -1826,3 +1826,204 @@ class TestWildcardDeclarationPredicates:
             )
             == []
         )
+
+
+NESTED_CHOICES_SCHEMA = (
+    XSD_HEAD
+    + """
+  <xs:group name="G1">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="id" type="xs:integer"/>
+        <xs:element name="id_str" type="xs:string"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="type" type="xs:string"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="a">
+    <xs:complexType>
+      <xs:group ref="G1"/>
+    </xs:complexType>
+  </xs:element>
+"""
+    + XSD_TAIL
+)
+
+NESTED_SEQUENCES_SCHEMA = (
+    XSD_HEAD
+    + """
+  <xs:group name="G1">
+    <xs:sequence>
+      <xs:sequence>
+        <xs:element name="date" type="xs:date"/>
+        <xs:element name="marked" type="xs:boolean"/>
+      </xs:sequence>
+      <xs:sequence>
+        <xs:element name="num" type="xs:int"/>
+      </xs:sequence>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="a">
+    <xs:complexType>
+      <xs:group ref="G1"/>
+    </xs:complexType>
+  </xs:element>
+"""
+    + XSD_TAIL
+)
+
+FLAT_CHOICE_GROUP_SCHEMA = (
+    XSD_HEAD
+    + """
+  <xs:group name="G2">
+    <xs:choice>
+      <xs:element name="a" type="xs:string"/>
+      <xs:element name="b" type="xs:string"/>
+    </xs:choice>
+  </xs:group>
+  <xs:element name="r">
+    <xs:complexType>
+      <xs:group ref="G2"/>
+    </xs:complexType>
+  </xs:element>
+"""
+    + XSD_TAIL
+)
+
+
+def _instance_errors(parser):
+    return [
+        issue
+        for issue in parser.report.for_phase("instance")
+        if issue.severity is IssueSeverity.ERROR
+    ]
+
+
+def _instance_parser(schema, instance, tmp_path):
+    (tmp_path / "schema.xsd").write_text(schema, encoding="utf-8")
+    (tmp_path / "instance.xml").write_text(instance, encoding="utf-8")
+    return PyXSD(
+        str(tmp_path / "instance.xml"),
+        str(tmp_path / "schema.xsd"),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.STRICT,
+    )
+
+
+class TestGroupDefinitionCompositor:
+    """A group definition's content model is its own direct compositor.
+
+    Every nested compositor registers on the group, so the first
+    registered entry is an inner one; the definition must record the
+    compositor child written in the schema (MGroup particles00303m1 /
+    particles00304m1).
+    """
+
+    def test_sequence_of_choices_accepts_the_second_choice(self, tmp_path):
+        parser = _instance_parser(
+            NESTED_CHOICES_SCHEMA,
+            "<a><id_str>12345678900987654321J.ABC</id_str><type>#QQQQ</type></a>",
+            tmp_path,
+        )
+        assert _instance_errors(parser) == []
+        assert [child._name_ for child in parser.schemaRootInstance._children_] == [
+            "id_str",
+            "type",
+        ]
+
+    def test_sequence_of_choices_requires_the_second_choice(self, tmp_path):
+        parser = _instance_parser(
+            NESTED_CHOICES_SCHEMA,
+            "<a><id_str>12345678900987654321J.ABC</id_str></a>",
+            tmp_path,
+        )
+        assert _instance_errors(parser)
+
+    def test_sequence_of_sequences_accepts_all_members(self, tmp_path):
+        parser = _instance_parser(
+            NESTED_SEQUENCES_SCHEMA,
+            "<a><date>2002-04-25</date><marked>true</marked><num>123</num></a>",
+            tmp_path,
+        )
+        assert _instance_errors(parser) == []
+        assert [child._name_ for child in parser.schemaRootInstance._children_] == [
+            "date",
+            "marked",
+            "num",
+        ]
+
+    def test_sequence_of_sequences_requires_the_second_sequence(self, tmp_path):
+        parser = _instance_parser(
+            NESTED_SEQUENCES_SCHEMA,
+            "<a><date>2002-04-25</date><marked>true</marked></a>",
+            tmp_path,
+        )
+        assert _instance_errors(parser)
+
+    def test_flat_choice_group_still_selects_either_branch(self, tmp_path):
+        valid = _instance_parser(FLAT_CHOICE_GROUP_SCHEMA, "<r><b>x</b></r>", tmp_path)
+        assert _instance_errors(valid) == []
+        assert [child._name_ for child in valid.schemaRootInstance._children_] == ["b"]
+        invalid = _instance_parser(FLAT_CHOICE_GROUP_SCHEMA, "<r><c>x</c></r>", tmp_path)
+        assert _instance_errors(invalid)
+
+
+GROUP_RESTRICTION_BODY = (
+    "<xs:complexType name='A'><xs:choice minOccurs='0' maxOccurs='4'>"
+    "<xs:group ref='x'/><xs:group ref='y'/></xs:choice></xs:complexType>"
+    "<xs:group name='x'><xs:sequence>"
+    "<xs:element name='x1'/><xs:element name='x2'/></xs:sequence></xs:group>"
+    "<xs:group name='y'><xs:choice>"
+    "<xs:element name='y1'/><xs:element name='y2'/></xs:choice></xs:group>"
+    "<xs:group name='G'><xs:choice>"
+    "<xs:group ref='x'/><xs:group ref='y'/></xs:choice></xs:group>"
+)
+
+
+def _empty_group_restriction(mixed: bool) -> str:
+    mixed_attr = " mixed='true'" if mixed else ""
+    return (
+        f"<xs:complexType name='elem'{mixed_attr}><xs:complexContent>"
+        "<xs:restriction base='A'>"
+        "<xs:group ref='G' minOccurs='0' maxOccurs='0'/>"
+        "</xs:restriction></xs:complexContent></xs:complexType>"
+    )
+
+
+class TestMixedContentRestriction:
+    """A mixed content type cannot restrict an element-only base type.
+
+    ``Derivation Valid (Restriction, Complex)`` clause 2.4.1 admits only
+    an element-only derived type over an element-only/mixed base, or a
+    mixed derived type over a mixed base. groupH007v (mixed, whose
+    ``maxOccurs=0`` reference makes its effective content a synthetic
+    empty sequence) is invalid; its non-mixed twin groupH008v is valid.
+    """
+
+    def test_mixed_restriction_of_element_only_base_is_reported(self, parse):
+        report = parse(GROUP_RESTRICTION_BODY + _empty_group_restriction(mixed=True))
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_element_only_restriction_of_element_only_base_is_valid(self, parse):
+        report = parse(GROUP_RESTRICTION_BODY + _empty_group_restriction(mixed=False))
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_mixed_restriction_of_mixed_base_is_valid(self, parse):
+        body = GROUP_RESTRICTION_BODY.replace(
+            "<xs:complexType name='A'>", "<xs:complexType name='A' mixed='true'>"
+        )
+        report = parse(body + _empty_group_restriction(mixed=True))
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_element_only_restriction_over_an_optional_reference_is_valid(self, parse):
+        derived = (
+            "<xs:complexType name='elem'><xs:complexContent>"
+            "<xs:restriction base='A'><xs:group ref='G' minOccurs='1'/>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        report = parse(GROUP_RESTRICTION_BODY + derived)
+        assert "particle-restriction" not in schema_codes(report)

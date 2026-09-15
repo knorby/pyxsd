@@ -6298,3 +6298,266 @@ instance = '''
 '''
 instance_valid = false
 expected_codes = ["nil"]
+
+[[case]]
+id = "structure/group-compositor-nested-choices"
+description = "A group's content model is its own sequence of choices, not the first nested choice"
+derived_from = "W3C XMLSchema1TestSuite, group 'particles' (particles00303m1)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G1">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="id" type="xs:integer"/>
+        <xs:element name="id_str" type="xs:string"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="type" type="xs:string"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="a">
+    <xs:complexType>
+      <xs:group ref="G1"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a>
+  <id_str>12345678900987654321J.ABC</id_str>
+  <type>#QQQQ</type>
+</a>
+'''
+
+[[case]]
+id = "structure/group-compositor-nested-choices-missing"
+description = "The group's second choice is required; the first nested choice alone is not the model"
+derived_from = "W3C XMLSchema1TestSuite, group 'particles' (particles00303m1 negative)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G1">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="id" type="xs:integer"/>
+        <xs:element name="id_str" type="xs:string"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="type" type="xs:string"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="a">
+    <xs:complexType>
+      <xs:group ref="G1"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a>
+  <id_str>12345678900987654321J.ABC</id_str>
+</a>
+'''
+instance_valid = false
+expected_codes = ["occurrence-min"]
+
+[[case]]
+id = "structure/group-compositor-nested-sequences"
+description = "A group's sequence of sequences keeps every member, not only the first nested sequence"
+derived_from = "W3C XMLSchema1TestSuite, group 'particles' (particles00304m1)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G1">
+    <xs:sequence>
+      <xs:sequence>
+        <xs:element name="date" type="xs:date"/>
+        <xs:element name="marked" type="xs:boolean"/>
+      </xs:sequence>
+      <xs:sequence>
+        <xs:element name="num" type="xs:int"/>
+      </xs:sequence>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="a">
+    <xs:complexType>
+      <xs:group ref="G1"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a>
+  <date>2002-04-25</date>
+  <marked>true</marked>
+  <num>123</num>
+</a>
+'''
+
+[[case]]
+id = "structure/mixed-restriction-element-only"
+description = "A mixed content type cannot restrict an element-only base (groupH007v)"
+derived_from = "W3C XMLSchema1TestSuite, group 'groupH007v'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="A">
+    <xs:choice minOccurs="0" maxOccurs="4">
+      <xs:group ref="x"/>
+      <xs:group ref="y"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:group name="x">
+    <xs:sequence>
+      <xs:element name="x1"/>
+      <xs:element name="x2"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="y">
+    <xs:choice>
+      <xs:element name="y1"/>
+      <xs:element name="y2"/>
+    </xs:choice>
+  </xs:group>
+  <xs:group name="G">
+    <xs:choice>
+      <xs:group ref="x"/>
+      <xs:group ref="y"/>
+    </xs:choice>
+  </xs:group>
+  <xs:complexType name="elem" mixed="true">
+    <xs:complexContent>
+      <xs:restriction base="A">
+        <xs:group ref="G" minOccurs="0" maxOccurs="0"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="elem" type="elem"/>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="elem"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/element-only-restriction-element-only"
+description = "The non-mixed twin of groupH007v is a valid empty restriction (groupH008v)"
+derived_from = "W3C XMLSchema1TestSuite, group 'groupH008v'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="A">
+    <xs:choice minOccurs="0" maxOccurs="4">
+      <xs:group ref="x"/>
+      <xs:group ref="y"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:group name="x">
+    <xs:sequence>
+      <xs:element name="x1"/>
+      <xs:element name="x2"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="y">
+    <xs:choice>
+      <xs:element name="y1"/>
+      <xs:element name="y2"/>
+    </xs:choice>
+  </xs:group>
+  <xs:group name="G">
+    <xs:choice>
+      <xs:group ref="x"/>
+      <xs:group ref="y"/>
+    </xs:choice>
+  </xs:group>
+  <xs:complexType name="elem">
+    <xs:complexContent>
+      <xs:restriction base="A">
+        <xs:group ref="G" minOccurs="0" maxOccurs="0"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="elem" type="elem"/>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="elem"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc>
+  <elem/>
+</doc>
+'''
+
+[[case]]
+id = "occurrence/nillable-boolean-one-nil"
+description = "nillable='1' is xs:boolean true, so xsi:nil='1' skips the content model (all004.v02)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon All all004.v02"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" nillable="1">
+    <xs:complexType mixed="1">
+      <xs:all>
+        <xs:element name="a" minOccurs="2" maxOccurs="5"/>
+        <xs:element name="b" minOccurs="2" maxOccurs="5"/>
+        <xs:element name="c" minOccurs="2" maxOccurs="unbounded"/>
+        <xs:element name="d"/>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc xsi:nil="1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></doc>
+'''
+
+[[case]]
+id = "occurrence/nillable-boolean-one-nil-content"
+description = "A nillable='1' element marked nil still may not carry content (all004.n01)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon All all004.n01"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" nillable="1">
+    <xs:complexType mixed="1">
+      <xs:all>
+        <xs:element name="a" minOccurs="2" maxOccurs="5"/>
+        <xs:element name="b" minOccurs="2" maxOccurs="5"/>
+        <xs:element name="c" minOccurs="2" maxOccurs="unbounded"/>
+        <xs:element name="d"/>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc xsi:nil="1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <a/>
+  <b/>
+  <d/>
+</doc>
+'''
+instance_valid = false
+expected_codes = ["nil"]

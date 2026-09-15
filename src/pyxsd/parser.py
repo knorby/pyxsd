@@ -613,6 +613,7 @@ class PyXSD:
             self._reportPointlessParticle(er)
         if type(er).__name__ == "ComplexType":
             self._reportParticleRestriction(er)
+            self._reportMixedRestriction(er)
             self._reportAttributeWildcardRestriction(er)
             self._reportExtensionStructure(er)
         if type(er).__name__ not in self._COMPOSITOR_KINDS:
@@ -703,6 +704,47 @@ class PyXSD:
             base_model, derived_model, resolver, self._globalElementLookup(er)
         ):
             self.report.add_error(reason, code="particle-restriction")
+
+    def _reportMixedRestriction(self, er: Any) -> None:
+        """Reports a mixed type restricting a non-mixed base type.
+
+        ``Derivation Valid (Restriction, Complex)`` clause 2.4.1 admits a
+        mixed derived content type only when the base content type is
+        mixed too (2.4.1.2); an element-only derived type may restrict an
+        element-only or mixed base (2.4.1.1). The rule bites even when
+        the derived particle is empty — a ``maxOccurs=0`` reference makes
+        the effective content a synthetic empty sequence, but the content
+        type still reads mixed (groupH007v; its non-mixed twin
+        groupH008v is valid). A simple-content restriction is not a mixed
+        complex-content shape, and an ``xs:anyType`` base is exempt
+        (clause 2.1). Skips — never errors — when the base type cannot be
+        resolved or is not a complex type definition.
+        """
+        if er.getDerivation() != "restriction":
+            return
+        if er._firstProcessedChild(er, "SimpleContent") is not None:
+            return
+        if not self._typeIsMixed(er):
+            return
+        if self._baseIsAnyType(er):
+            return
+        base_er = self._baseTypeER(er)
+        if base_er is None or not hasattr(base_er, "effectiveMixed"):
+            logger.debug(
+                "mixed restriction: base type %r of %s unresolved or not complex; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        if self._typeIsMixed(base_er):
+            return
+        self.report.add_error(
+            "particle restriction (Derivation Valid (Restriction, Complex) "
+            "clause 2.4.1): the mixed content type of "
+            f"'{getattr(er, 'name', '?')}' cannot restrict the non-mixed "
+            f"base type '{getattr(base_er, 'name', '?')}'",
+            code="particle-restriction",
+        )
 
     def _globalElementLookup(self, er: Any) -> Any:
         """A lookup from a Clark name to a top-level element declaration.

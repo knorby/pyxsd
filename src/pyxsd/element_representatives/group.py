@@ -29,6 +29,11 @@ class Group(ElementRepresentative):
         documentation.
         """
         self.isRefSite = xsdElement.get("ref") is not None
+        #: The definition's own compositor child (``sequence``/``choice``/
+        #: ``all``), recorded after the children are factored; nested
+        #: compositors also append themselves to ``sequencesOrChoices``,
+        #: so that list cannot identify the direct child.
+        self.compositor: ElementRepresentative | None = None
         if not self.isRefSite:
             # The compositor child appends itself here while the ER
             # children are processed, so this must exist first.
@@ -67,7 +72,21 @@ class Group(ElementRepresentative):
                         f"{containingType.__class__.__name__}",
                     )
         else:
+            self.compositor = self._directCompositor()
             self.getSchema().groups[self.name] = self
+
+    def _directCompositor(self):
+        """The definition's own particle child, in document order.
+
+        The group grammar allows exactly one particle child
+        (``all``/``choice``/``sequence``); nested compositors are not
+        direct children, so the first matching entry of
+        ``processedChildren`` is the definition's content model.
+        """
+        for child in self.processedChildren or ():
+            if child is not None and type(child).__name__ in ("Sequence", "Choice", "All"):
+                return child
+        return None
 
     def getContainingType(self):
         """Group definitions are containing types; reference sites
@@ -81,9 +100,9 @@ class Group(ElementRepresentative):
         """Returns the compositor ER inside a group definition, or
         ``None`` if the group has no content model.
         """
-        if self.isRefSite or not self.sequencesOrChoices:
+        if self.isRefSite:
             return None
-        return self.sequencesOrChoices[0]
+        return self.compositor
 
     def _emptiableParticle(self, visited: set) -> bool:
         """Whether this group particle can match zero elements.
