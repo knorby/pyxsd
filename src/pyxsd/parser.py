@@ -51,6 +51,7 @@ import sys
 import tokenize
 import warnings
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import IO, Any
@@ -639,8 +640,44 @@ class PyXSD:
             )
             return
         resolver = lambda particle: getattr(particle, "descriptor", None)  # noqa: E731
-        for reason in is_valid_particle_restriction(base_model, derived_model, resolver):
+        head_lookup = self._substitution_head_lookup(er)
+        for reason in is_valid_particle_restriction(
+            base_model, derived_model, resolver, head_lookup=head_lookup
+        ):
             self.report.add_error(reason, code="particle-restriction")
+
+    def _substitution_head_lookup(self, er: Any) -> Callable[[Any], Any] | None:
+        """A declaration-to-head resolver for NameAndTypeOK.
+
+        NameAndTypeOK admits a restricting element that is a (transitive)
+        member of the base element's substitution group; the walk needs
+        each member's head *declaration*, which only the schema's global
+        element table can supply. ``None`` when this schema has no
+        element table, in which case the predicate falls back to exact
+        expanded-name equality.
+        """
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return None
+        if schema is None:
+            return None
+        candidates = [
+            element
+            for element in getattr(schema, "elements", None) or []
+            if type(element).__name__ == "Element"
+        ]
+
+        def lookup(declaration: Any) -> Any:
+            head_name = declaration.getSubstitutionGroupHead(self)
+            if not head_name:
+                return None
+            resolver = getattr(declaration, "resolveReference", None)
+            if resolver is None:
+                return None
+            return resolver(head_name, candidates, parser=self)
+
+        return lookup
 
     def _reportPointlessParticle(self, er: Any) -> None:
         """Reports a pointless ``sequence``/``choice`` inside an optional group.

@@ -4719,3 +4719,146 @@ schema = '''
   </xs:complexType>
 </xs:schema>
 '''
+
+[[case]]
+id = "structure/particle-nameandtypeok-name-invalid"
+description = "An element declaration restricting another must carry the same expanded name or be a substitution-group member (NameAndTypeOK)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesIb' (particlesIb002: B name=foo, R name=bar)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="foo"/>
+      <xs:element name="e2"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="bar"/>
+          <xs:element name="e2"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+  </xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-nameandtypeok-extension-type-invalid"
+description = "A restricting element may widen its type only through restriction steps; an extension-derived type is not NameAndTypeOK"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesIj' (particlesIj008: B type=foo, R type=Z derived by extension of foo)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="foo">
+    <xs:choice>
+      <xs:element name="f1"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="bar">
+    <xs:complexContent>
+      <xs:extension base="x:foo">
+        <xs:choice>
+          <xs:element name="f3"/>
+        </xs:choice>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="c1" type="x:foo"/>
+      <xs:element name="c2"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="c1" type="x:bar"/>
+          <xs:element name="c2"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+  </xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-nameandtypeok-block-invalid"
+description = "The base element's disallowed substitutions must be a subset of the derived element's (NameAndTypeOK block clause)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesIg' (particlesIg006: B disallowed=substitution extension restriction, R disallowed=substitution)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="e2" block="substitution extension restriction"/>
+      <xs:element name="e3"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="e2" block="substitution"/>
+          <xs:element name="e3"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+  </xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-nameandtypeok-substitution-group-valid"
+description = "A restriction may swap a base element for a member of its substitution group when the member's type validly derives from the head's (valid control)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesZ' (particlesZ008: restriction via substitution group should be valid)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:simpleType name="small">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="3"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="head" type="xs:string"/>
+  <xs:element name="member" type="small" substitutionGroup="head"/>
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element ref="head"/>
+      <xs:element name="e2"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element ref="member"/>
+          <xs:element name="e2"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+  </xs:schema>
+'''

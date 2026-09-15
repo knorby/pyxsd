@@ -55,6 +55,48 @@ def combinedBlock(elementBlock: Any, declaredCls: type | None) -> frozenset[str]
     return frozenset(tokens)
 
 
+def _blocked_step(override: type, declared: type, tokens: frozenset[str]) -> bool:
+    """Whether any derivation step from *override* up to *declared* is
+    blocked.
+
+    A derivation chain is only as good as its weakest link: the corpus
+    (particlesIg003) pins an ``xsi:type`` override invalid when a
+    *transitive* step's derivation method appears in the blocked set,
+    not just the override's own final step. A generated class with no
+    recorded derivation sits either on another generated class (a
+    simpleContent extension, whose marker the class builder loses —
+    particlesElemT058 pins such a step *unblocked*) or directly on the
+    ur-type, which it restricts implicitly; only the latter counts as a
+    ``restriction`` step.
+    """
+    from pyxsd.schema_base import SchemaBase
+
+    mro = override.__mro__
+
+    def step_method(index: int, cls: type) -> str | None:
+        method = getattr(cls, "_derivation_", None)
+        if method is not None:
+            return str(method)
+        if cls is declared or cls is SchemaBase:
+            # The step *to* the declared type and the ur-type stand-in
+            # carry no marker of their own.
+            return None
+        successor = mro[index + 1] if index + 1 < len(mro) else None
+        if successor is not None and getattr(successor, "_contentKind_", None) is not None:
+            # A generated parent: the derivation marker is lost, not
+            # implicit — do not guess.
+            return None
+        return "restriction"
+
+    for index, cls in enumerate(mro):
+        if cls is declared:
+            return False
+        method = step_method(index, cls)
+        if method is not None and method in tokens:
+            return True
+    return False
+
+
 def is_validly_derived(
     override: type | None,
     declared: type | None,
@@ -79,8 +121,7 @@ def is_validly_derived(
     tokens = frozenset(blocked) if isinstance(blocked, (set, frozenset)) else blockTokens(blocked)
     if "#all" in tokens:
         return "blocked"
-    method = getattr(override, "_derivation_", None)
-    if method is not None and method in tokens:
+    if tokens and _blocked_step(override, declared, tokens):
         return "blocked"
     return None
 

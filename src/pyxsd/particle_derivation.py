@@ -23,8 +23,16 @@ Rule cells implemented so far (later sub-tasks extend this module):
   containment.
 * Element over any (RecurseAsIfGroup's base case): occurrence
   containment and the wildcard must admit the element's namespace.
-* Occurrence containment for element-over-element (``NameAndTypeOK``'s
-  common clause), for a group over a wildcard or over an element
+* ``NameAndTypeOK`` (element over element): occurrence containment,
+  expanded-name equality or transitive substitution-group membership,
+  type subsumption (the derived declaration's type must be the base
+  type or validly derived from it with no ``extension`` step),
+  ``fixed`` value preservation, ``nillable`` direction, the base's
+  disallowed substitutions as a subset of the derived's, and the base
+  declaration's identity constraints as a subset of the derived's.
+  Every declaration clause is skipped — never an error — when either
+  declaration cannot be resolved.
+* Occurrence containment for a group over a wildcard or over an element
   (``NSRecurseCheckCardinality``/``GroupOverElement``), for sequence
   over choice (``MapAndSum``) and for same-kind compositors
   (``Recurse``).
@@ -38,8 +46,7 @@ Rule cells implemented so far (later sub-tasks extend this module):
   restriction), a model group over an element (the 1.0 table forbids
   the shape, but the corpus pins the exemplars valid under the 1.1
   profile — particlesHb008/Hb011 — because the 1.1 Recurse alignment
-  absorbs them; Task 4c/4d completes this), and everything
-  ``NameAndTypeOK`` checks beyond occurrences (Task 4b).
+  absorbs them; Task 4c/4d completes this).
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ from collections.abc import Callable
 from typing import Any
 
 from pyxsd.content_model import Particle, particle_names
+from pyxsd.derivation import is_validly_derived
 from pyxsd.wildcards import WildcardSpec
 
 #: Sentinel namespace probed so ``##other`` and URI lists are compared by
@@ -96,6 +104,7 @@ _SHAPE_RULES: dict[tuple[str, str], str] = {
 }
 
 Resolver = Callable[[Particle], Any]
+HeadLookup = Callable[[Any], Any]
 
 #: Cells this sub-task deliberately leaves silent because every partial
 #: approximation of them rejects corpus-pinned valid schemas; each lands
@@ -160,6 +169,10 @@ def wildcard_subset(
         for token in spec.namespace.split():
             if token and not token.startswith("##"):
                 probes.add(token)
+    # Equivalently: the difference {u | derived admits u} minus
+    # {u | base admits u} over this probe set must be empty — the probe
+    # set is the union of both constraints' vocabularies, so probing one
+    # canonical witness per class of namespace suffices.
     for uri in probes:
         if derived_spec.allows(uri, target_namespace) and not base_spec.allows(
             uri, target_namespace
@@ -169,20 +182,26 @@ def wildcard_subset(
 
 
 def is_valid_particle_restriction(
-    base: Particle | None, derived: Particle | None, resolver: Resolver
+    base: Particle | None,
+    derived: Particle | None,
+    resolver: Resolver,
+    head_lookup: HeadLookup | None = None,
 ) -> list[str]:
     """The violation reasons for restricting ``base`` by ``derived``.
 
     Both arguments are compiled content-model trees (the base type's
     effective tree and the restricting type's own tree). ``resolver``
     maps an element particle to its declaration (or ``None``) and is
-    used to check a restricting element against a wildcard base. An
-    empty result means the restriction is valid as far as the cells
-    implemented here reach.
+    used to check a restricting element against a wildcard base and
+    for the ``NameAndTypeOK`` declaration clauses. ``head_lookup``
+    optionally maps a declaration to the declaration of its
+    substitution-group head (or ``None``); without it only exact
+    expanded-name equality admits a pair. An empty result means the
+    restriction is valid as far as the cells implemented here reach.
     """
     if base is None or derived is None:
         return []
-    return _pair_violations(base, derived, resolver, set(), top=True)
+    return _pair_violations(base, derived, resolver, set(), top=True, head_lookup=head_lookup)
 
 
 def _pair_violations(
@@ -191,6 +210,9 @@ def _pair_violations(
     resolver: Resolver,
     visited: set[tuple[int, int]],
     top: bool = False,
+    amplified: bool = False,
+    head_lookup: HeadLookup | None = None,
+    removable: bool = False,
 ) -> list[str]:
     """The violations for one aligned pair of particles, recursing into
     same-kind compositors. ``visited`` holds already-checked ``(base,
@@ -199,7 +221,9 @@ def _pair_violations(
     §3.9.6 common occurrence clause applies (inside compositors the
     compositor's own repetition multiplies the member ranges, so naive
     member containment would reject valid restrictions — the corpus
-    pins such shapes legal in mgH014/W006).
+    pins such shapes legal in mgH014/W006). ``amplified`` records that
+    some enclosing compositor repeats, silencing member-level
+    occurrence containment everywhere below it.
     """
     base = _unwrap(base)
     derived = _unwrap(derived)
@@ -233,12 +257,27 @@ def _pair_violations(
     violations: list[str] = []
     # The §3.9.6 common clause holds for the derivation pair itself.
     # Inside compositors it survives only where the corpus demands it:
-    # an element over a wildcard (the Ja-Jq invalids) and wildcard over
-    # wildcard (the Oa cluster). Other member pairs escape it — the
-    # enclosing compositor's repetition multiplies member ranges, so
-    # member-wise containment would reject valid schemas (mgH014/W006).
-    if (top or rule in ("RecurseAsIfGroup", "NSSubset")) and not contains_occurs(
-        derived.min_occurs, derived.max_occurs, base.min_occurs, base.max_occurs
+    # an element over a wildcard (the Ja-Jq invalids), wildcard over
+    # wildcard (the Oa cluster), and element pairs under compositors
+    # whose identical ranges cannot rescue a member (the member range
+    # is then the effective range). A compositor whose ranges differ
+    # between base and derived multiplies member ranges unevenly, so
+    # member-wise containment would reject valid schemas (mgH014/W006
+    # posture). A member of a *choice* with maxOccurs=0 can never be
+    # chosen, so it removes itself — a valid restriction of anything
+    # (mgH014); the corpus keeps the same shape invalid on the
+    # derivation's own pair and inside sequences (mgE006 posture).
+    containment_applies = (
+        top
+        or rule in ("RecurseAsIfGroup", "NSSubset")
+        or (rule == "NameAndTypeOK" and not amplified)
+    )
+    if (
+        containment_applies
+        and not (removable and not top and derived.max_occurs == 0)
+        and not contains_occurs(
+            derived.min_occurs, derived.max_occurs, base.min_occurs, base.max_occurs
+        )
     ):
         violations.append(
             f"particle restriction ({rule}): occurrence range "
@@ -249,8 +288,12 @@ def _pair_violations(
         violations.extend(_nssubset_violations(base, derived))
     elif rule == "RecurseAsIfGroup":
         violations.extend(_wildcard_admission_violations(base, derived, resolver))
+    elif rule == "NameAndTypeOK":
+        violations.extend(_nameandtypeok_violations(base, derived, resolver, head_lookup))
     elif rule == "Recurse":
-        violations.extend(_recurse_pairing_violations(base, derived, resolver, visited))
+        violations.extend(
+            _recurse_pairing_violations(base, derived, resolver, visited, amplified, head_lookup)
+        )
     return violations
 
 
@@ -381,8 +424,298 @@ def _wildcard_admission_violations(
     ]
 
 
+def _nameandtypeok_violations(
+    base: Particle,
+    derived: Particle,
+    resolver: Resolver,
+    head_lookup: HeadLookup | None,
+) -> list[str]:
+    """NameAndTypeOK's declaration clauses for an element pair.
+
+    Occurrence containment is handled by the caller. Every clause
+    compares the two particles' *declarations*; when either cannot be
+    resolved the clause — and with it the whole check — is skipped
+    (never an error). The corpus pins element substitution groups
+    (particlesZ008), restriction-derived type replacement (particlesIj005)
+    and dropped ``nillable``/``fixed``/``block`` restrictions as legal.
+    """
+    base_decl = resolver(base) if resolver is not None else None
+    derived_decl = resolver(derived) if resolver is not None else None
+    if base_decl is None or derived_decl is None:
+        return []
+    violations: list[str] = []
+    if not _same_or_substitution_member(base_decl, derived_decl, head_lookup):
+        violations.append(
+            f"particle restriction (NameAndTypeOK): element "
+            f"{_name_text(derived_decl)} does not match base element "
+            f"{_name_text(base_decl)} (neither the expanded names nor the "
+            f"substitution-group heads agree)"
+        )
+        return violations
+    base_cls = _type_of(base_decl)
+    derived_cls = _type_of(derived_decl)
+    type_reason = _type_clause_violation(base_cls, derived_cls)
+    if type_reason is not None:
+        violations.append(type_reason)
+    base_fixed = _call_or_none(base_decl, "getFixed")
+    if base_fixed is not None:
+        derived_fixed = _call_or_none(derived_decl, "getFixed")
+        if derived_fixed is None or not _fixed_values_agree(
+            base_fixed, base_cls, derived_fixed, derived_cls
+        ):
+            violations.append(
+                f"particle restriction (NameAndTypeOK): the base element's fixed value "
+                f"{base_fixed!r} must be preserved; the derived element carries "
+                + ("no fixed value" if derived_fixed is None else repr(derived_fixed))
+            )
+    if bool(_call_or_none(derived_decl, "isNillable")) and not _call_or_none(
+        base_decl, "isNillable"
+    ):
+        violations.append(
+            "particle restriction (NameAndTypeOK): the derived element is nillable "
+            "but the base element is not"
+        )
+    base_blocked = _disallowed_substitutions(base_decl)
+    derived_blocked = _disallowed_substitutions(derived_decl)
+    if not base_blocked <= derived_blocked:
+        violations.append(
+            f"particle restriction (NameAndTypeOK): the base element's disallowed "
+            f"substitutions {_sorted_tokens(base_blocked)} must be a subset of the "
+            f"derived element's {_sorted_tokens(derived_blocked)}"
+        )
+    if not _identity_signatures(base_decl) <= _identity_signatures(derived_decl):
+        violations.append(
+            "particle restriction (NameAndTypeOK): the base element's identity "
+            "constraints must be carried by the derived element"
+        )
+    return violations
+
+
+def _same_or_substitution_member(
+    base_decl: Any, derived_decl: Any, head_lookup: HeadLookup | None
+) -> bool:
+    """Whether the derived declaration may stand where the base's is.
+
+    Either the expanded names agree, or the derived declaration is a
+    (transitive) member of the base declaration's substitution group.
+    """
+    base_name = _expanded_name(base_decl)
+    if base_name == _expanded_name(derived_decl):
+        return True
+    if head_lookup is None or base_name is None:
+        return False
+    seen = {id(derived_decl)}
+    current = derived_decl
+    for _ in range(16):
+        # Cycles are reported by the substitution-group build; the depth
+        # cap only keeps this walk finite in spite of them.
+        current = head_lookup(current)
+        if current is None or id(current) in seen:
+            return False
+        seen.add(id(current))
+        if _expanded_name(current) == base_name:
+            return True
+    return False
+
+
+def _type_clause_violation(base_cls: Any, derived_cls: Any) -> str | None:
+    """The type-subsumption clause.
+
+    The derived declaration's type must be the base declaration's type
+    or validly derived from it; a restriction may not go through an
+    ``extension`` step (particlesIj008), so ``extension`` is the blocked
+    derivation method. Unresolvable types skip the clause. A ur-type
+    base (``xs:anyType``/its stand-in, ``xs:anySimpleType`` for simple
+    content) admits every type of the matching category
+    (particlesIj001/Ik014/stZ067), and a union base admits a derived
+    type validly derived from any of its (transitive) member types
+    (particlesaddB150/saxonSimple010).
+    """
+    if base_cls is None or derived_cls is None:
+        return None
+    if _ur_type_admits(base_cls, derived_cls):
+        return None
+    reason = is_validly_derived(derived_cls, base_cls, frozenset({"extension"}))
+    if reason is None:
+        return None
+    if reason == "not-derived" and _derived_from_union_member(derived_cls, base_cls):
+        return None
+    if reason == "blocked":
+        return (
+            "particle restriction (NameAndTypeOK): the derived element's type "
+            f"{_class_name(derived_cls)} is derived from the base element's type "
+            f"{_class_name(base_cls)} through an extension step, which a "
+            "restriction may not use"
+        )
+    return (
+        "particle restriction (NameAndTypeOK): the derived element's type "
+        f"{_class_name(derived_cls)} is not the base element's type "
+        f"{_class_name(base_cls)} and is not validly derived from it"
+    )
+
+
+def _ur_type_admits(base_cls: type, derived_cls: type) -> bool:
+    """Whether a ur-type base admits the derived type outright.
+
+    ``xs:anyType`` (and the ``SchemaBase`` stand-in for absent types)
+    admits everything; ``xs:anySimpleType`` admits every simple type.
+    """
+    from pyxsd.schema_base import SchemaBase
+    from pyxsd.xsd_data_types import AnySimpleType, AnyType
+
+    if base_cls is SchemaBase or base_cls is AnyType:
+        return True
+    if base_cls is AnySimpleType:
+        kind = getattr(derived_cls, "_contentKind_", None)
+        return kind != "complex"
+    return False
+
+
+def _derived_from_union_member(derived_cls: type, base_cls: type) -> bool:
+    """Whether the derived type is validly derived from a (transitive)
+    member type of a union base (Type Derivation OK (Simple), union
+    clause).
+
+    A restricting type may also restrict a *member that is itself a
+    union* (saxonSimple012: ``sub-chap`` restricts ``dt``, a member of
+    ``chap``): such an ancestor is a subtype of the base union exactly
+    when its own (flattened) members are all members of the base.
+    """
+    base_members = getattr(base_cls, "_unionMembers", None)
+    if not base_members:
+        return False
+    for ancestor in derived_cls.__mro__:
+        if any(isinstance(b, type) and issubclass(ancestor, b) for b in base_members):
+            return True
+        ancestor_members = getattr(ancestor, "_unionMembers", None)
+        if ancestor_members and all(
+            any(isinstance(b, type) and issubclass(member, b) for b in base_members)
+            for member in ancestor_members
+        ):
+            return True
+    return False
+
+
+def _fixed_values_agree(
+    base_fixed: Any, base_cls: Any, derived_fixed: Any, derived_cls: Any
+) -> bool:
+    """Whether the base and derived fixed values agree in the value
+    space.
+
+    Lexical spellings may differ legally (whitespace-collapsed tokens,
+    list separators, ``-1`` vs ``       -1`` — particlesaddB183), so
+    when both declared types resolve to simple-type classes the values
+    are compared as typed values; otherwise the comparison falls back
+    to the lexical form.
+    """
+    if str(base_fixed) == str(derived_fixed):
+        return True
+    if not (isinstance(base_cls, type) and isinstance(derived_cls, type)):
+        return False
+    from pyxsd.xsd_data_types import XsdDataType, xsd_value_key
+
+    if not (issubclass(base_cls, XsdDataType) and issubclass(derived_cls, XsdDataType)):
+        return False
+
+    def typed_value(cls, lexical):
+        try:
+            return cls(lexical)
+        except TypeError:
+            # Union-style classes validate through ``__new__``; their
+            # ``__init__`` (inherited from SchemaBase) takes no value.
+            return cls.__new__(cls, lexical)
+
+    try:
+        return xsd_value_key(typed_value(derived_cls, derived_fixed)) == xsd_value_key(
+            typed_value(base_cls, base_fixed)
+        )
+    except Exception:
+        return False
+
+
+def _expanded_name(declaration: Any) -> tuple[str | None, str] | None:
+    """The declaration's ``(namespace, local name)``."""
+    if declaration is None:
+        return None
+    referred = getattr(declaration, "referredElement", None)
+    if referred is not None and referred is not declaration:
+        return _expanded_name(referred)
+    local = getattr(declaration, "name", None)
+    if not local:
+        return None
+    return (_element_namespace(declaration), str(local))
+
+
+def _disallowed_substitutions(declaration: Any) -> frozenset[str]:
+    """The declaration's ``block`` tokens, ``#all`` expanded."""
+    raw = _call_or_none(declaration, "getBlock")
+    tokens = {token for token in str(raw or "").split() if token}
+    if "#all" in tokens:
+        return frozenset({"substitution", "extension", "restriction"})
+    return frozenset(tokens)
+
+
+def _identity_signatures(declaration: Any) -> frozenset[tuple[Any, ...]]:
+    """Comparable signatures of the declaration's identity constraints."""
+    identities = getattr(declaration, "identities", None) or []
+    signatures: set[tuple[Any, ...]] = set()
+    for constraint in identities:
+        signatures.add(
+            (
+                type(constraint).__name__,
+                getattr(constraint, "constraintName", None),
+                getattr(constraint, "selector", None),
+                tuple(getattr(constraint, "fieldPaths", None) or ()),
+            )
+        )
+    return frozenset(signatures)
+
+
+def _type_of(declaration: Any) -> type | None:
+    """The declaration's resolved type class (``None`` when unresolved)."""
+    getter = getattr(declaration, "getType", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter()
+    except Exception:
+        return None
+
+
+def _call_or_none(declaration: Any, method_name: str) -> Any:
+    getter = getattr(declaration, method_name, None)
+    if not callable(getter):
+        return None
+    try:
+        return getter()
+    except Exception:
+        return None
+
+
+def _name_text(declaration: Any) -> str:
+    name = _expanded_name(declaration)
+    if name is None:
+        return "(unresolved)"
+    namespace, local = name
+    return f"'{local}'" + (f" in {namespace!r}" if namespace else "")
+
+
+def _class_name(cls: Any) -> str:
+    return str(getattr(cls, "name", None) or getattr(cls, "__name__", cls))
+
+
+def _sorted_tokens(tokens: frozenset[str]) -> str:
+    return "{" + ", ".join(sorted(tokens)) + "}" if tokens else "{}"
+
+
 def _recurse_pairing_violations(
-    base: Particle, derived: Particle, resolver: Resolver, visited: set[tuple[int, int]]
+    base: Particle,
+    derived: Particle,
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    amplified: bool = False,
+    head_lookup: HeadLookup | None = None,
+    removable: bool = False,
 ) -> list[str]:
     """Recurse's pairing over same-kind compositors.
 
@@ -390,9 +723,21 @@ def _recurse_pairing_violations(
     some base member it validly restricts (the corpus pins the mapping
     as order-insensitive and length-free — particlesM002); ``all`` over
     ``all`` waits for Task 4c's order-insensitive mapping.
+
+    Members inherit ``amplified`` once this compositor's ranges differ
+    between base and derived (or an ancestor's did): the multipliers
+    then differ and member ranges cannot be compared pairwise.
     """
     if derived.kind == "all":
         return []
+    member_amplified = (
+        amplified
+        or (base.min_occurs, base.max_occurs) != (derived.min_occurs, derived.max_occurs)
+        # A vacuous compositor (maxOccurs=0) matches nothing, so its
+        # members' ranges are unconstrained (particlesW006).
+        or base.max_occurs == 0
+        or derived.max_occurs == 0
+    )
     if derived.kind == "choice":
         violations: list[str] = []
         for index, d_member in enumerate(derived.children):
@@ -400,7 +745,15 @@ def _recurse_pairing_violations(
             first_attempt: list[str] = []
             for b_member in base.children:
                 trial = set(visited)
-                candidate = _pair_violations(b_member, d_member, resolver, trial)
+                candidate = _pair_violations(
+                    b_member,
+                    d_member,
+                    resolver,
+                    trial,
+                    amplified=member_amplified,
+                    head_lookup=head_lookup,
+                    removable=True,
+                )
                 if not candidate:
                     mapped = True
                     break
@@ -419,7 +772,15 @@ def _recurse_pairing_violations(
         # the alignment needs the Recurse work's matching machinery.
         return []
     for b_member, d_member in zip(base.children, derived.children, strict=False):
-        violations = _pair_violations(b_member, d_member, resolver, visited)
+        violations = _pair_violations(
+            b_member,
+            d_member,
+            resolver,
+            visited,
+            amplified=member_amplified,
+            head_lookup=head_lookup,
+            removable=False,
+        )
         if violations:
             return violations
     return []

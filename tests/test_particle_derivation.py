@@ -2,8 +2,9 @@
 
 Unit tests over the pure predicate in ``pyxsd.particle_derivation`` plus
 schema-level tests for the corpus shapes this sub-task covers (the MS
-particlesOb NSSubset cluster and the particlesHb forbidden-transition
-cluster, with valid guards for the shapes the corpus pins legal).
+particlesOb NSSubset cluster, the particlesHb forbidden-transition
+cluster, and the particlesIa-Ik NameAndTypeOK cluster, with valid guards
+for the shapes the corpus pins legal).
 """
 
 import io
@@ -18,6 +19,7 @@ from pyxsd.particle_derivation import (
     is_valid_particle_restriction,
     wildcard_subset,
 )
+from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import WildcardSpec
 
@@ -487,3 +489,471 @@ class TestSchemaParticlesHb:
         )
         issues = particle_restriction_issues(report)
         assert issues and "RecurseAsIfGroup" in issues[0].message
+
+
+# ---------------------------------------------------------------------------
+# NameAndTypeOK (cos-particle-restrict case [1]): the element-particle vs
+# element-particle cell. Corpus clusters: particlesIa-Ik.
+# ---------------------------------------------------------------------------
+
+
+class _Restricted:
+    _derivation_ = "restriction"
+
+
+class _Extended(_Restricted):
+    _derivation_ = "extension"
+
+
+class _Unrelated:
+    pass
+
+
+class _Constraint:
+    """A stand-in identity constraint."""
+
+    def __init__(self, kind="Key", name="k", selector="a", fields=("f",)):
+        self.kind = kind
+        self.constraintName = name
+        self.selector = selector
+        self.fieldPaths = list(fields)
+
+
+class _Declaration:
+    """A stand-in element declaration for NameAndTypeOK unit tests."""
+
+    def __init__(
+        self,
+        name="e",
+        namespace=None,
+        type_=None,
+        fixed=None,
+        nillable=False,
+        block=None,
+        identities=(),
+    ):
+        self.name = name
+        self._namespace = namespace
+        self._type = type_
+        self._fixed = fixed
+        self._nillable = nillable
+        self._block = block
+        self.identities = list(identities)
+
+    def getNamespace(self):
+        return self._namespace
+
+    def getType(self):
+        return self._type
+
+    def getFixed(self):
+        return self._fixed
+
+    def isNillable(self):
+        return self._nillable
+
+    def getBlock(self):
+        return self._block
+
+
+def _resolver_of(base_decl, derived_decl):
+    def resolver(particle):
+        if particle is None:
+            return None
+        return base_decl if particle.name == "b" else derived_decl
+
+    return resolver
+
+
+def _nameandtypeok(base_decl, derived_decl, head_lookup=None):
+    base = Particle("element", name="b")
+    derived = Particle("element", name="d")
+    return is_valid_particle_restriction(
+        base, derived, resolver=_resolver_of(base_decl, derived_decl), head_lookup=head_lookup
+    )
+
+
+class TestNameAndTypeOK:
+    def test_same_expanded_name_is_valid(self):
+        # particlesIb001: B name=foo, R name=foo
+        assert not _nameandtypeok(
+            _Declaration(name="foo", namespace="http://t"),
+            _Declaration(name="foo", namespace="http://t"),
+        )
+
+    def test_name_mismatch_is_invalid(self):
+        # particlesIb002: B name=foo, R name=bar
+        reasons = _nameandtypeok(_Declaration(name="foo"), _Declaration(name="bar"))
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_namespace_mismatch_is_invalid(self):
+        # particlesIc002: same local name, different target namespaces
+        reasons = _nameandtypeok(
+            _Declaration(name="e", namespace="http://foo"),
+            _Declaration(name="e", namespace="http://bar"),
+        )
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_substitution_group_member_is_valid(self):
+        # R's declaration is a direct member of B's substitution group
+        base_decl = _Declaration(name="foo")
+        derived_decl = _Declaration(name="sub")
+        heads = {derived_decl: base_decl}
+        assert not _nameandtypeok(base_decl, derived_decl, head_lookup=heads.get)
+
+    def test_transitive_substitution_group_is_valid(self):
+        # A ← B ← C: C restricts a particle declaring A
+        head_a = _Declaration(name="a")
+        head_b = _Declaration(name="b")
+        member_c = _Declaration(name="c")
+        heads = {member_c: head_b, head_b: head_a}
+        assert not _nameandtypeok(head_a, member_c, head_lookup=heads.get)
+
+    def test_outside_substitution_group_is_invalid(self):
+        base_decl = _Declaration(name="foo")
+        other_head = _Declaration(name="other")
+        derived_decl = _Declaration(name="sub")
+        heads = {derived_decl: other_head}
+        reasons = _nameandtypeok(base_decl, derived_decl, head_lookup=heads.get)
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_same_type_is_valid(self):
+        assert not _nameandtypeok(_Declaration(type_=_Restricted), _Declaration(type_=_Restricted))
+
+    def test_restriction_derived_type_is_valid(self):
+        # particlesIj005: R's type is a restriction of B's type
+        assert not _nameandtypeok(
+            _Declaration(type_=_Restricted.__mro__[1]),
+            _Declaration(type_=_Restricted),
+        )
+
+    def test_extension_derived_type_is_invalid(self):
+        # particlesIj008: B type=foo, R type=Z derived by *extension*
+        # of foo — extension steps may not appear in a restriction
+        base_cls = _Restricted.__mro__[1]
+        reasons = _nameandtypeok(_Declaration(type_=base_cls), _Declaration(type_=_Extended))
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_base_any_type_admits_derived(self):
+        # particlesIk014: B type=anyType, R type=simpleType 'foo'
+        assert not _nameandtypeok(_Declaration(type_=SchemaBase), _Declaration(type_=_Unrelated))
+
+    def test_derived_any_type_is_invalid(self):
+        # particlesIj015/Ik015: B carries a real type, R widens to anyType
+        reasons = _nameandtypeok(_Declaration(type_=_Restricted), _Declaration(type_=SchemaBase))
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_unresolved_type_skips_the_type_clause(self):
+        # base unresolved -> the clause is skipped, never an error
+        assert not _nameandtypeok(_Declaration(type_=None), _Declaration(type_=_Unrelated))
+
+    def test_fixed_value_change_is_invalid(self):
+        # particlesIf007: B fixed=foo, R fixed=bar
+        reasons = _nameandtypeok(_Declaration(fixed="foo"), _Declaration(fixed="bar"))
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_fixed_value_may_not_be_dropped(self):
+        # particlesIf009: B fixed=foo, R fixed=absent
+        reasons = _nameandtypeok(_Declaration(fixed="foo"), _Declaration())
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_same_fixed_value_is_valid(self):
+        # particlesIf005
+        assert not _nameandtypeok(_Declaration(fixed="foo"), _Declaration(fixed="foo"))
+
+    def test_nillable_may_not_be_added(self):
+        # particlesIa006: B nillable=FALSE, R nillable=TRUE
+        reasons = _nameandtypeok(_Declaration(), _Declaration(nillable=True))
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_nillable_may_be_dropped(self):
+        # particlesIa007: B nillable=TRUE, R nillable=FALSE is legal
+        assert not _nameandtypeok(_Declaration(nillable=True), _Declaration())
+
+    def test_block_superset_of_base_is_invalid(self):
+        # particlesIg006: B disallowed=sub ext res, R disallowed=sub
+        reasons = _nameandtypeok(
+            _Declaration(block="substitution extension restriction"),
+            _Declaration(block="substitution"),
+        )
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_block_all_on_derived_is_valid(self):
+        # particlesIg005: B disallowed=sub ext res, R disallowed=#all
+        assert not _nameandtypeok(
+            _Declaration(block="substitution extension restriction"),
+            _Declaration(block="#all"),
+        )
+
+    def test_block_all_on_base_requires_full_subset(self):
+        # particlesIg007: B disallowed=#all, R disallowed=sub ext
+        reasons = _nameandtypeok(
+            _Declaration(block="#all"),
+            _Declaration(block="substitution extension"),
+        )
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_identity_constraints_must_be_carried(self):
+        # the base declaration's identity constraints are a subset of
+        # the derived declaration's
+        constraint = _Constraint()
+        reasons = _nameandtypeok(_Declaration(identities=[constraint]), _Declaration())
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_identity_constraint_superset_is_valid(self):
+        constraint = _Constraint()
+        assert not _nameandtypeok(
+            _Declaration(identities=[constraint]),
+            _Declaration(identities=[constraint, _Constraint(name="k2")]),
+        )
+
+    def test_member_occurrence_containment_inside_plain_compositor(self):
+        # particlesId003: choice(1,1)[e1(1,1), e2(1,1)] restricted by
+        # choice(1,1)[e1(0,1), e2(0,1)] — the member range widens
+        declaration = _Declaration()
+        resolver = lambda _particle: declaration  # noqa: E731
+        base = Particle(
+            "choice",
+            children=[
+                Particle("element", name="e1"),
+                Particle("element", name="e2"),
+            ],
+        )
+        derived = Particle(
+            "choice",
+            children=[
+                Particle("element", name="e1", min_occurs=0),
+                Particle("element", name="e2", min_occurs=0),
+            ],
+        )
+        reasons = is_valid_particle_restriction(base, derived, resolver=resolver)
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_member_removal_inside_plain_compositor_is_valid(self):
+        # mgH014: a choice member with maxOccurs=0 can never be chosen,
+        # so it removes itself — a valid restriction even when the base
+        # member is required
+        declaration = _Declaration()
+        resolver = lambda _particle: declaration  # noqa: E731
+        base = Particle(
+            "choice",
+            children=[
+                Particle("element", name="e1"),
+                Particle("element", name="e2"),
+            ],
+        )
+        derived = Particle(
+            "choice",
+            children=[
+                Particle("element", name="e1", min_occurs=0, max_occurs=0),
+                Particle("element", name="e2"),
+            ],
+        )
+        assert not is_valid_particle_restriction(base, derived, resolver=resolver)
+
+    def test_removal_on_the_derivation_pair_is_invalid(self):
+        # mgE006 posture: on the derivation's own pair (and inside
+        # sequences) a maxOccurs=0 member does not exempt the pair from
+        # the occurrence clause
+        declaration = _Declaration()
+        resolver = lambda _particle: declaration  # noqa: E731
+        base = Particle("element", name="e1")
+        derived = Particle("element", name="e1", min_occurs=0, max_occurs=0)
+        assert is_valid_particle_restriction(base, derived, resolver=resolver)
+
+    def test_sequence_member_removal_is_invalid(self):
+        # the maxOccurs=0 exemption is a choice-member rule only
+        declaration = _Declaration()
+        resolver = lambda _particle: declaration  # noqa: E731
+        base = Particle("sequence", children=[Particle("element", name="e1")])
+        derived = Particle(
+            "sequence",
+            children=[Particle("element", name="e1", min_occurs=0, max_occurs=0)],
+        )
+        assert is_valid_particle_restriction(base, derived, resolver=resolver)
+
+    def test_member_occurrence_widening_inside_equally_repeated_compositor_is_invalid(self):
+        # With identical compositor ranges the member range is the
+        # effective range, so widening it is a real violation
+        base = Particle(
+            "choice",
+            min_occurs=2,
+            max_occurs=4,
+            children=[Particle("element", name="e", min_occurs=1, max_occurs=3)],
+        )
+        derived = Particle(
+            "choice",
+            min_occurs=2,
+            max_occurs=4,
+            children=[Particle("element", name="e", min_occurs=4, max_occurs=5)],
+        )
+        reasons = is_valid_particle_restriction(base, derived, resolver=no_resolver)
+        assert reasons and "NameAndTypeOK" in reasons[0]
+
+    def test_member_occurrence_widening_inside_differing_repeated_compositor_is_skipped(self):
+        # When the enclosing compositors' ranges differ, the occurrence
+        # multipliers differ and member ranges cannot be compared
+        # pairwise; the corpus pins such shapes legal (mgH014/W006
+        # posture), so the check stays silent
+        base = Particle(
+            "choice",
+            min_occurs=2,
+            max_occurs=4,
+            children=[Particle("element", name="e", min_occurs=1, max_occurs=3)],
+        )
+        derived = Particle(
+            "choice",
+            min_occurs=2,
+            max_occurs=2,
+            children=[Particle("element", name="e", min_occurs=4, max_occurs=5)],
+        )
+        assert not is_valid_particle_restriction(base, derived, resolver=no_resolver)
+
+    def test_unresolvable_declarations_skip_the_declaration_clauses(self):
+        base = Particle("element", name="b")
+        derived = Particle("element", name="d")
+        assert not is_valid_particle_restriction(base, derived, resolver=no_resolver)
+
+
+class TestSchemaParticlesI:
+    def test_name_mismatch_is_invalid(self, parse):
+        # particlesIb002: B name=foo, R name=bar
+        report = parse(
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='foo'/><xs:element name='e2'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element name='bar'/><xs:element name='e2'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "NameAndTypeOK" in issues[0].message
+
+    def test_member_occurrence_widening_is_invalid(self, parse):
+        # particlesId003: base members minOccurs=1, restricted members 0
+        report = parse(
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='e1' minOccurs='1'/><xs:element name='e2' minOccurs='1'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element name='e1' minOccurs='0'/><xs:element name='e2' minOccurs='0'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "NameAndTypeOK" in issues[0].message
+
+    def test_extension_type_replacement_is_invalid(self, parse):
+        # particlesIj008: R's element widens the type by extension
+        report = parse(
+            "<xs:complexType name='foo'><xs:choice><xs:element name='f1'/></xs:choice>"
+            "</xs:complexType>"
+            "<xs:complexType name='bar'><xs:complexContent>"
+            "<xs:extension base='foo'><xs:choice><xs:element name='f3'/></xs:choice>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='c1' type='foo'/><xs:element name='c2'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element name='c1' type='bar'/><xs:element name='c2'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "NameAndTypeOK" in issues[0].message
+
+    def test_unrelated_list_types_are_invalid(self, parse):
+        # particlesIk005/006/007: two independently declared list types
+        report = parse(
+            "<xs:simpleType name='L1'><xs:list itemType='xs:string'/></xs:simpleType>"
+            "<xs:simpleType name='L2'><xs:list itemType='xs:integer'/></xs:simpleType>"
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='c1' type='L1'/><xs:element name='c2'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element name='c1' type='L2'/><xs:element name='c2'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "NameAndTypeOK" in issues[0].message
+
+    def test_fixed_value_change_is_invalid(self, parse):
+        # particlesIf007
+        report = parse(
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='e1' type='xs:string' fixed='foo'/>"
+            "<xs:element name='e2'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element name='e1' type='xs:string' fixed='bar'/>"
+            "<xs:element name='e2'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "NameAndTypeOK" in issues[0].message
+
+    def test_added_nillable_is_invalid(self, parse):
+        # particlesIa006
+        report = parse(
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='e1'/><xs:element name='e2'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element name='e1' nillable='true'/><xs:element name='e2'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "NameAndTypeOK" in issues[0].message
+
+    def test_block_narrowing_is_invalid(self, parse):
+        # particlesIg006: the base's disallowed substitutions must be a
+        # subset of the derived declaration's
+        report = parse(
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='e2' block='substitution extension restriction'/>"
+            "<xs:element name='e3'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element name='e2' block='substitution'/>"
+            "<xs:element name='e3'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "NameAndTypeOK" in issues[0].message
+
+    def test_substitution_group_member_is_valid(self, parse):
+        # a restriction may swap a base element for a member of its
+        # substitution group (the type must still validly derive)
+        report = parse(
+            "<xs:simpleType name='small'><xs:restriction base='xs:string'>"
+            "<xs:maxLength value='3'/></xs:restriction></xs:simpleType>"
+            "<xs:element name='head' type='xs:string'/>"
+            "<xs:element name='member' type='small' substitutionGroup='head'/>"
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element ref='head'/><xs:element name='e2'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element ref='member'/><xs:element name='e2'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_equivalent_restriction_is_clean(self, parse):
+        # particlesIb001/Ia001/Id004: redeclaring the same members with
+        # the same type and contained occurrences is valid
+        report = parse(
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='foo' type='xs:string'/><xs:element name='e2'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element name='foo' type='xs:string'/><xs:element name='e2'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
