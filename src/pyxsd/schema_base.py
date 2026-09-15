@@ -208,6 +208,31 @@ class SchemaBase:
         cls._report_issue(IssueSeverity.WARNING, message, code=code, element=element)
 
     @classmethod
+    def _reportStrayCharacters(cls, elementTag):
+        """Reports character data under an element-only content model.
+
+        XSD 1.1 §3.4.3.2 (Element Locally Valid (Complex Type)): an
+        element whose governing type's content type is element-only has
+        no character content other than whitespace. Mixed types and
+        simple content are not checked here (their text is legal or is
+        the value), and elements whose content model could not be
+        compiled keep the legacy tolerance. Only direct text of
+        *elementTag* is inspected; deeper nodes are checked when the
+        binder recurses into them.
+        """
+        texts = [elementTag.text]
+        texts.extend(child.tail for child in elementTag)
+        for text in texts:
+            if text is not None and text.strip():
+                cls._report_error(
+                    f"element '{elementTag.tag.split('}')[-1]}' has character "
+                    "content but its content model is element-only",
+                    code="unexpected-character",
+                    element=cls.__name__,
+                )
+                return
+
+    @classmethod
     def _node_name(cls, node):
         """The name an instance node is matched under.
 
@@ -579,6 +604,8 @@ class SchemaBase:
         targetNamespace = getattr(cls, "_targetNamespace_", None)
 
         model = getattr(instance, "_contentModel_", None)
+        if model is not None and getattr(cls, "_elementOnly_", False):
+            cls._reportStrayCharacters(elementTag)
         if model is None and hasWildcard:
             declaredNames = {cls._instance_name_of(descriptor) for descriptor in elemDescriptors}
             declaredNames.update(memberHeadMap)

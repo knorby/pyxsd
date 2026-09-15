@@ -553,3 +553,253 @@ class TestPointlessParticles:
             "<xs:group name='Q'><xs:choice/></xs:group>"
         )
         assert "pointless-particle" not in schema_codes(report)
+
+
+class TestExtensionStructure:
+    """Extension derivation structure (cos-ct-extends / cos-particle-extend).
+
+    The explicit content of an extension is appended to the base type's
+    effective content model. ``all`` may extend only ``all`` (XSD 1.1's
+    relaxation; the 1.0 forbidden shapes stay forbidden merely as
+    ``particle-restriction``), ``all``-extends-``all`` requires the two
+    ``minOccurs`` to match, and the composed ``all`` must be
+    unambiguous (Saxon all301-314, particlesFb002).
+    """
+
+    def test_all_extends_sequence_is_invalid(self, parse):
+        # Saxon all309/all312: all cannot extend a sequence base
+        report = parse(
+            "<xs:complexType name='b'><xs:sequence>"
+            "<xs:element name='a'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='d'/></xs:all>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_singleton_all_extends_sequence_is_invalid(self, parse):
+        # all312: even a singleton all is not a sequence
+        report = parse(
+            "<xs:complexType name='b'><xs:sequence>"
+            "<xs:element name='a'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='d' minOccurs='0' maxOccurs='2'/>"
+            "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_sequence_extends_all_is_invalid(self, parse):
+        # Saxon all310: a sequence suffix cannot extend an all base
+        report = parse(
+            "<xs:complexType name='b'><xs:all>"
+            "<xs:element name='a'/></xs:all></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:sequence>"
+            "<xs:element name='d'/></xs:sequence>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_singleton_sequence_extends_singleton_all_is_invalid(self, parse):
+        # all311: the singleton shapes are still invalid
+        report = parse(
+            "<xs:complexType name='b'><xs:all>"
+            "<xs:element name='a'/></xs:all></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:sequence>"
+            "<xs:element name='d' minOccurs='0' maxOccurs='2'/>"
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_all_extends_choice_is_invalid(self, parse):
+        # particlesFb002: an all suffix cannot extend a choice base
+        report = parse(
+            "<xs:complexType name='b'><xs:choice>"
+            "<xs:element name='c1'/><xs:element name='c2'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='a1'/><xs:element name='a2'/>"
+            "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_all_extends_all_min_occurs_mismatch_is_invalid(self, parse):
+        # Saxon all313: both are all groups but the minOccurs differs
+        report = parse(
+            "<xs:complexType name='b'><xs:all>"
+            "<xs:element name='child1'/></xs:all></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all minOccurs='0'>"
+            "<xs:element name='child2'/></xs:all>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        issues = [
+            issue for issue in report.for_phase("schema") if issue.code == "particle-restriction"
+        ]
+        assert issues
+        assert any("minOccurs" in issue.message for issue in issues)
+
+    def test_all_extends_all_min_occurs_equal_is_valid(self, parse):
+        # Saxon all314: both minOccurs=0 is the 1.1 relaxation
+        report = parse(
+            "<xs:complexType name='b'><xs:all minOccurs='0'>"
+            "<xs:element name='child1'/></xs:all></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all minOccurs='0'>"
+            "<xs:element name='child2'/></xs:all>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_all_extends_all_overlapping_elements_is_invalid(self, parse):
+        # Saxon all302: the composed all has two particles named 'c'
+        report = parse(
+            "<xs:complexType name='b'><xs:all>"
+            "<xs:element name='a'/><xs:element name='c'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='e'/><xs:element name='c'/>"
+            "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_all_extends_all_overlapping_wildcards_is_invalid(self, parse):
+        # Saxon all305: the base admits http://one.com/ and the
+        # extension excludes only http://two.com/, so the two composed
+        # wildcards overlap
+        report = parse(
+            "<xs:complexType name='b'><xs:all>"
+            "<xs:element name='a'/>"
+            "<xs:any namespace='http://one.com/' processContents='skip'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='e'/>"
+            "<xs:any notNamespace='http://two.com/' processContents='skip'/>"
+            "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_all_extends_all_disjoint_wildcards_is_valid(self, parse):
+        # Saxon all304: disjoint namespace constraints compose cleanly
+        report = parse(
+            "<xs:complexType name='b'><xs:all>"
+            "<xs:element name='a'/>"
+            "<xs:any namespace='http://one.com/' processContents='skip'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='e'/>"
+            "<xs:any namespace='http://two.com/' processContents='skip'/>"
+            "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_all_extends_all_clean_shapes_are_valid(self, parse):
+        # Saxon all301/all306/all307: the composed all is unambiguous
+        report = parse(
+            "<xs:complexType name='b' mixed='true'><xs:all>"
+            "<xs:element name='a' minOccurs='0' maxOccurs='5'/>"
+            "<xs:element name='b' minOccurs='0' maxOccurs='5'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='t' mixed='true'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='d' minOccurs='0' maxOccurs='1'/>"
+            "<xs:element name='e' minOccurs='0' maxOccurs='4'/>"
+            "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_all_extends_empty_mixed_all_base_is_invalid(self, parse):
+        # Saxon all308 (bug 6202): an empty mixed all base cannot be
+        # extended by an all
+        report = parse(
+            "<xs:complexType name='b' mixed='true'><xs:all/></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent mixed='true'>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='d' minOccurs='0' maxOccurs='2'/>"
+            "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" in schema_codes(report)
+
+    def test_all_extends_empty_all_base_is_valid(self, parse):
+        # mgO007: a non-mixed empty all base makes the suffix the model
+        report = parse(
+            "<xs:complexType name='b'><xs:all minOccurs='1' maxOccurs='1'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='e1'/></xs:all>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_all_extends_empty_sequence_base_is_valid(self, parse):
+        # mgO028: an empty sequence base has empty content, so the all
+        # suffix becomes the effective model
+        report = parse(
+            "<xs:complexType name='b'><xs:sequence/></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all minOccurs='0' maxOccurs='1'>"
+            "<xs:element name='e1'/></xs:all>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_all_extends_all_group_ref_suffix_is_valid(self, parse):
+        # mgO035/mgZ003: the extension suffix is a group reference to an
+        # all group over an empty all base
+        report = parse(
+            "<xs:complexType name='b'><xs:all minOccurs='1' maxOccurs='1'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:group ref='g'/>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            "<xs:group name='g'><xs:all><xs:element name='e1'/></xs:all></xs:group>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_empty_suffix_over_all_base_is_valid(self, parse):
+        # an empty sequence suffix is empty explicit content: the base
+        # particle is retained, so there is no structure error
+        report = parse(
+            "<xs:complexType name='b'><xs:all>"
+            "<xs:element name='a'/></xs:all></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:sequence/>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_all_extends_all_through_two_steps_is_valid(self, parse):
+        # a extends all, b extends a by an all: the chain composes
+        report = parse(
+            "<xs:complexType name='a'><xs:all>"
+            "<xs:element name='a1'/></xs:all></xs:complexType>"
+            "<xs:complexType name='b'><xs:complexContent>"
+            "<xs:extension base='a'><xs:all>"
+            "<xs:element name='b1'/></xs:all>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            "<xs:complexType name='c'><xs:complexContent>"
+            "<xs:extension base='b'><xs:all>"
+            "<xs:element name='c1'/></xs:all>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)
+
+    def test_sequence_extension_of_sequence_base_is_valid(self, parse):
+        # the ordinary non-all shape is not reported
+        report = parse(
+            "<xs:complexType name='b'><xs:sequence>"
+            "<xs:element name='a'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='t'><xs:complexContent>"
+            "<xs:extension base='b'><xs:sequence>"
+            "<xs:element name='d'/></xs:sequence>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "particle-restriction" not in schema_codes(report)

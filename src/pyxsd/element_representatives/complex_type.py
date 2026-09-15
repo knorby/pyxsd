@@ -8,6 +8,11 @@ from pyxsd.wildcards import register_wildcard
 logger = logging.getLogger(__name__)
 
 
+def _isTrue(value: str) -> bool:
+    """XSD ``xs:boolean`` truth: ``true`` or ``1``, case-insensitive."""
+    return str(value).strip().lower() in ("true", "1")
+
+
 class ComplexType(XsdType):
     """The class for the complexType tag."""
 
@@ -65,6 +70,23 @@ class ComplexType(XsdType):
         self.patterns = []
         super().__init__(xsdElement, parent)
         self.getSchema().complexTypes[self.name] = self
+
+    def effectiveMixed(self) -> bool:
+        """The type's effective ``mixed`` value (XSD 1.1 §3.4.2.3.3 clause 1).
+
+        The ``mixed`` attribute on ``complexContent``, when present,
+        wins over the one on ``complexType``; absent both, the value is
+        false. ``mixed`` is an ``xs:boolean``, so ``1``/``true`` are
+        true and ``0``/``false`` (and anything else) are false.
+        """
+        for child in self.processedChildren or ():
+            if child is not None and type(child).__name__ == "ComplexContent":
+                value = (getattr(child, "tagAttributes", {}) or {}).get("mixed")
+                if value is not None:
+                    return _isTrue(value)
+                break
+        value = (getattr(self, "tagAttributes", {}) or {}).get("mixed")
+        return value is not None and _isTrue(value)
 
     def getElements(self):
         """Returns a list of elements.

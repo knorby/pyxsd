@@ -820,6 +820,16 @@ class XsdType(ElementRepresentative):
         namespace["_contentKind_"] = (
             "simple" if self.__class__.__name__ == "SimpleType" else "complex"
         )
+        # Element-only content model: instance validation rejects
+        # character data unless the type is mixed or has simple content
+        # (whose text is the value).
+        mixed_method = getattr(self, "effectiveMixed", None)
+        is_mixed = bool(mixed_method()) if mixed_method is not None else False
+        has_simple_content = (
+            self.__class__.__name__ == "ComplexType"
+            and self._firstProcessedChild(self, "SimpleContent") is not None
+        )
+        namespace["_elementOnly_"] = not is_mixed and not has_simple_content
         # Derivation method and block are needed to validate xsi:type
         # overrides at instance time.
         namespace["_derivation_"] = self.getDerivation()

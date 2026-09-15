@@ -59,7 +59,14 @@ from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
 from pyxsd.binding import BindingPolicy, ParseModes
-from pyxsd.content_model import _content_children, compile_content_model
+from pyxsd.content_model import (
+    _content_children,
+    all_extension_occurrence,
+    all_members,
+    all_term,
+    compile_content_model,
+    compile_own_content,
+)
 from pyxsd.derivation import blockTokens, combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import (
     ComponentTable,
@@ -557,6 +564,7 @@ class PyXSD:
             self._reportPointlessParticle(er)
         if type(er).__name__ == "ComplexType":
             self._reportParticleRestriction(er)
+            self._reportExtensionStructure(er)
         if type(er).__name__ not in self._COMPOSITOR_KINDS:
             return
         rawParticles: list[Any] = []
@@ -618,13 +626,7 @@ class PyXSD:
                 getattr(er, "name", "?"),
             )
             return
-        base_class = None
-        for raw_name in er.superClassNames:
-            resolved = er.resolveSchemaQName(raw_name, parser=self)
-            candidate = ElementRepresentative.typeFromName(resolved, self)
-            if candidate is not None:
-                base_class = candidate
-                break
+        base_class = self._baseTypeClass(er)
         if base_class is None:
             logger.debug(
                 "particle restriction: base type %r of %s unresolved; skipped",
@@ -645,6 +647,199 @@ class PyXSD:
             base_model, derived_model, resolver, head_lookup=head_lookup
         ):
             self.report.add_error(reason, code="particle-restriction")
+
+    def _baseTypeClass(self, er: Any) -> Any | None:
+        """The generated class of the first resolvable base type."""
+        for raw_name in getattr(er, "superClassNames", []) or []:
+            resolved = er.resolveSchemaQName(raw_name, parser=self)
+            candidate = ElementRepresentative.typeFromName(resolved, self)
+            if candidate is not None:
+                return candidate
+        return None
+
+    def _baseTypeER(self, er: Any) -> Any | None:
+        """The element representative of the first resolvable base type.
+
+        Mirrors ``ElementRepresentative.typeFromName``'s lookup but
+        returns the representative itself, which still carries the XML
+        attributes (``mixed``) a generated class does not.
+        """
+        table = self.components
+        if table is None:
+            return None
+        strict = getattr(getattr(self, "mode", None), "namespaces", "legacy") == "strict"
+        for raw_name in getattr(er, "superClassNames", []) or []:
+            resolved = er.resolveSchemaQName(raw_name, parser=self)
+            if strict:
+                if namespace_of(resolved) == XSD_NS:
+                    return None
+                found = table.getFromName(
+                    local_name(resolved),
+                    kind="type",
+                    namespace=namespace_of(resolved),
+                    warn=False,
+                )
+            else:
+                found = table.getFromName(resolved, kind="type", warn=False)
+                if found is None:
+                    found = table.getFromName(str(resolved).split(":")[-1], kind="type", warn=False)
+            if found is not None:
+                return found
+        return None
+
+    def _reportExtensionStructure(self, er: Any) -> None:
+        """Reports invalid particle composition in a complex type extension.
+
+        An extension's explicit content model is appended to the base
+        type's effective content model (XSD 1.1 §3.4.2.3.3). The
+        ``all`` compositor is special: an ``all`` may extend only an
+        ``all`` (the 1.1 relaxation; ``all`` extends ``sequence``/
+        ``choice`` and the reverse are invalid even for singletons —
+        all309-312, particlesFb002), the two ``minOccurs`` must match
+        (all313), and the composed ``all`` must be unambiguous — no
+        repeated element particles (all302) and no overlapping
+        wildcards (all305). A base whose *effective* content is empty
+        takes the suffix as its model unless the base is mixed, which
+        cannot be extended by an ``all`` at all (all308, bug 6202).
+
+        Skips — never errors — when the type is not an extension, either
+        content model cannot be compiled, or the base type cannot be
+        resolved; each skip is logged at debug level with its reason.
+        """
+        if er.getDerivation() != "extension":
+            return
+        own = compile_own_content(er, self)
+        if own is None:
+            logger.debug(
+                "extension structure: content model of %s could not be compiled; skipped",
+                getattr(er, "name", "?"),
+            )
+            return
+        base_class = self._baseTypeClass(er)
+        if base_class is None:
+            logger.debug(
+                "extension structure: base type %r of %s unresolved; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        base_model = getattr(base_class, "_contentModel_", None)
+        if base_model is None:
+            logger.debug(
+                "extension structure: base type %s has no compiled content model; skipped",
+                getattr(base_class, "name", "?"),
+            )
+            return
+        own_term = all_term(own)
+        own_kind = "all" if own_term is not None else own.kind
+        base_term = all_term(base_model)
+        base_kind = "all" if base_term is not None else base_model.kind
+        if self._particleIsEmpty(base_model):
+            base_er = self._baseTypeER(er)
+            if own_kind == "all" and base_er is not None and self._typeIsMixed(base_er):
+                self.report.add_error(
+                    "extension structure: an all cannot extend empty mixed content "
+                    "(the empty mixed base puts the all inside a sequence)",
+                    code="particle-restriction",
+                )
+            return
+        if self._particleIsEmpty(own):
+            # Empty explicit content appends nothing: the base particle
+            # is the effective model, whatever its compositor.
+            return
+        if own_kind == "all" and base_kind != "all":
+            self.report.add_error(
+                f"extension structure: all cannot extend {base_kind} "
+                "(only an all may extend an all)",
+                code="particle-restriction",
+            )
+            return
+        if own_kind != "all" and base_kind == "all":
+            self.report.add_error(
+                f"extension structure: {own_kind} cannot extend all",
+                code="particle-restriction",
+            )
+            return
+        if own_kind != "all" or base_term is None:
+            return
+        occurrence = all_extension_occurrence(own)
+        if occurrence is None:
+            return
+        own_all, own_min = occurrence
+        if own_min != base_model.min_occurs:
+            self.report.add_error(
+                "extension structure: minOccurs mismatch - when an all extends an "
+                f"all both must have the same minOccurs (base={base_model.min_occurs}, "
+                f"extension={own_min})",
+                code="particle-restriction",
+            )
+        self._reportExtensionAllOverlap(all_members(base_term), all_members(own_all), er)
+
+    def _reportExtensionAllOverlap(
+        self, base_members: list[Any], own_members: list[Any], er: Any
+    ) -> None:
+        """Reports UPA violations in an all-extends-all composition.
+
+        The composed ``all`` holds the base's particles followed by the
+        extension's, so a repeated element name (all302) or two
+        overlapping wildcards (all305) make it non-deterministic. The
+        base's internal and the extension's internal duplicates are
+        already reported by the per-compositor sweep; this compares the
+        two sides.
+        """
+        base_names = {
+            member.name for member in base_members if member.kind == "element" and member.name
+        }
+        for member in own_members:
+            if member.kind == "element" and member.name and member.name in base_names:
+                self.report.add_error(
+                    "extension structure: overlapping particles in all extension - "
+                    f"element '{member.name}' appears in both the base and the "
+                    "extension all",
+                    code="particle-restriction",
+                )
+                break
+        base_wildcards = [member for member in base_members if member.kind == "any" and member.spec]
+        own_wildcards = [member for member in own_members if member.kind == "any" and member.spec]
+        try:
+            target = er.getNamespace()
+        except AttributeError:
+            target = None
+        for first in base_wildcards:
+            for second in own_wildcards:
+                if wildcard_specs_overlap(first.spec, second.spec, target):
+                    self.report.add_error(
+                        "extension structure: overlapping wildcards in all extension",
+                        code="particle-restriction",
+                    )
+                    return
+
+    @staticmethod
+    def _particleIsEmpty(model: Any) -> bool:
+        """Whether a compiled model is an *empty* explicit content model.
+
+        XSD 1.1 §3.4.2.3.3 clause 2: an absent model group, an empty
+        ``all``/``sequence``, an empty ``choice`` with ``minOccurs=0``
+        and any model group with ``maxOccurs=0`` are empty content. (An
+        empty ``choice`` with ``minOccurs=1`` is unsatisfiable, not
+        empty.)
+        """
+        if model.max_occurs == 0:
+            return True
+        if model.kind in ("sequence", "all") and not model.children:
+            return True
+        return model.kind == "choice" and not model.children and model.min_occurs == 0
+
+    @staticmethod
+    def _typeIsMixed(er: Any) -> bool:
+        """Whether a complex type's effective ``mixed`` value is true.
+
+        Delegates to the representative's own XSD 1.1 §3.4.2.3.3
+        clause 1 reading; a representative without the method (a
+        built-in, say) is not mixed.
+        """
+        mixed_method = getattr(er, "effectiveMixed", None)
+        return bool(mixed_method()) if mixed_method is not None else False
 
     def _substitution_head_lookup(self, er: Any) -> Callable[[Any], Any] | None:
         """A declaration-to-head resolver for NameAndTypeOK.

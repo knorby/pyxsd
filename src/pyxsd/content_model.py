@@ -96,6 +96,21 @@ def _content_children(er: Any) -> list[Any]:
     return children
 
 
+def compile_own_content(type_er: Any, py_xsd: Any = None) -> Particle | None:
+    """Compiles a complex type's own explicit particle tree.
+
+    Unlike :func:`compile_content_model` this never composes the base
+    type's model in: it is the type's own content model exactly as
+    written (for an extension, its suffix). Returns ``None`` when the
+    shape cannot be represented or the type has no content at all.
+    """
+    content = _content_children(type_er)
+    own = _group_particles(_compile_items(content, type_er, frozenset(), py_xsd))
+    if own is None and content:
+        return None
+    return own
+
+
 def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
     """Compiles a complex type's own particle tree, composed with its base.
 
@@ -103,10 +118,15 @@ def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
     keep their legacy flat checks. Genuinely empty types compile to an
     empty model that accepts no child elements, so stray children are
     reported.
+
+    An extension whose suffix is an ``all`` and whose base's effective
+    model is also an ``all`` composes into a single ``all`` (XSD 1.1
+    §3.4.2.3.3 clause 4.2.3.2): the base's particles lead and the
+    suffix supplies the occurrence. Every other extension is
+    ``sequence[base, own]``.
     """
-    content = _content_children(type_er)
-    own = _group_particles(_compile_items(content, type_er, frozenset(), py_xsd))
-    if own is None and content:
+    own = compile_own_content(type_er, py_xsd)
+    if own is None and _content_children(type_er):
         # Some particle could not be represented; fall back to legacy.
         return None
     derivation, base_model = _base_model(type_er, py_xsd)
@@ -116,12 +136,85 @@ def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
     if derivation == "extension" and base_model is not None:
         if own is None:
             return base_model
+        composition = all_extension_composition(base_model, own)
+        if composition is not None:
+            return composition
         return Particle("sequence", 1, 1, [base_model, own])
     if own is not None:
         return own
-    if not content and not getattr(type_er, "superClassNames", None):
+    if not _content_children(type_er) and not getattr(type_er, "superClassNames", None):
         return _empty_model()
     return None
+
+
+def all_term(particle: Particle) -> Particle | None:
+    """The ``all`` term of a particle, seeing through a group reference.
+
+    A group reference compiles to a synthetic sequence wrapper; the
+    reference is transparent in the component model, so the referenced
+    ``all`` group is the term. Returns ``None`` when the particle's
+    term is not an ``all``.
+    """
+    if particle.kind == "all":
+        return particle
+    if particle.synthetic and len(particle.children) == 1 and particle.children[0].kind == "all":
+        return particle.children[0]
+    return None
+
+
+def all_extension_composition(base_model: Particle, own: Particle) -> Particle | None:
+    """Composes an all-over-all extension into one ``all`` particle.
+
+    XSD 1.1 §3.4.2.3.3 clause 4.2.3.2: the composed ``all``'s particles
+    are the base all's followed by the extension all's, and its
+    occurrence is the extension particle's own ``minOccurs`` (with a
+    group-reference wrapper's occurrence folded in). ``None`` when
+    either side's term is not an ``all``.
+    """
+    base_term = all_term(base_model)
+    if base_term is None:
+        return None
+    occurrence = all_extension_occurrence(own)
+    if occurrence is None:
+        return None
+    own_term, minimum = occurrence
+    return Particle("all", minimum, 1, [*base_term.children, *own_term.children])
+
+
+def all_extension_occurrence(particle: Particle) -> tuple[Particle, int] | None:
+    """The ``all`` term of an extension suffix and its ``minOccurs``.
+
+    For a direct ``all`` the occurrence is the particle's own; for a
+    group-reference wrapper the reference's occurrence multiplies the
+    referenced ``all`` group's. ``None`` when the term is not an
+    ``all``.
+    """
+    if particle.kind == "all":
+        return particle, particle.min_occurs
+    if particle.synthetic and len(particle.children) == 1 and particle.children[0].kind == "all":
+        inner = particle.children[0]
+        return inner, particle.min_occurs * inner.min_occurs
+    return None
+
+
+def all_members(model: Particle) -> list[Particle]:
+    """The member particles of an ``all`` term, group references flattened.
+
+    A group reference inside an ``all`` is transparent (all007): the
+    referenced ``all`` group's members are members of the enclosing
+    ``all``. Nested ``all`` terms (from group references) are spliced in
+    at any depth; every other particle is a member as written.
+    """
+    if model.synthetic and len(model.children) == 1 and model.children[0].kind == "all":
+        return all_members(model.children[0])
+    members: list[Particle] = []
+    for child in model.children:
+        term = all_term(child)
+        if term is not None:
+            members.extend(all_members(term))
+        else:
+            members.append(child)
+    return members
 
 
 def _empty_model() -> Particle:
@@ -180,8 +273,35 @@ def _compile_item(item: Any, owner: Any, visited: frozenset[str], py_xsd: Any) -
     if className in ("Sequence", "Choice", "All"):
         minimum, maximum = _occurrence(getattr(item, "tagAttributes", {}) or {})
         children = _compile_items(_content_children(item), owner, visited, py_xsd)
+        if className == "All":
+            children = _flatten_all_group_members(children)
         return Particle(className.lower(), minimum, maximum, children)
     return None
+
+
+def _flatten_all_group_members(children: list[Particle]) -> list[Particle]:
+    """Splices a group reference's ``all`` members into the enclosing all.
+
+    A group reference inside an ``all`` must name an ``all`` group and
+    carry ``minOccurs=maxOccurs=1`` (the ``all`` rule), so the reference
+    is transparent: its group's members are members of the enclosing
+    ``all`` and match in any order (all007). A wrapper that does not
+    name an ``all`` (a malformed schema) or repeats is left in place for
+    the checks that report it.
+    """
+    flattened: list[Particle] = []
+    for child in children:
+        if (
+            child.synthetic
+            and child.min_occurs == 1
+            and child.max_occurs == 1
+            and len(child.children) == 1
+            and child.children[0].kind == "all"
+        ):
+            flattened.extend(child.children[0].children)
+        else:
+            flattened.append(child)
+    return flattened
 
 
 def _compile_any(item: Any) -> Particle:

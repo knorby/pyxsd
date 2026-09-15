@@ -5326,3 +5326,231 @@ schema = '''
   <xs:element name="doc" type="x:R"/>
 </xs:schema>
 '''
+
+[[case]]
+id = "structure/all-extension-sequence-base-invalid"
+description = "An all extension suffix cannot extend a non-empty sequence base (Saxon all309/all312)"
+derived_from = "Saxon XSD 1.1 test suite, All group all309/all312 (cos-ct-extends)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:element name="a"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="d"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-sequence-suffix-invalid"
+description = "A sequence extension suffix cannot extend an all base (Saxon all310/all311)"
+derived_from = "Saxon XSD 1.1 test suite, All group all310/all311 (cos-ct-extends)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:sequence>
+          <xs:element name="d"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-min-occurs-mismatch-invalid"
+description = "When all extends all the two minOccurs must be equal (Saxon all313)"
+derived_from = "Saxon XSD 1.1 test suite, All group all313 (cos-particle-extend)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="child1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all minOccurs="0">
+          <xs:element name="child2"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-overlapping-elements-invalid"
+description = "The all-extends-all composition repeats an element, violating UPA (Saxon all302)"
+derived_from = "Saxon XSD 1.1 test suite, All group all302 (cos-nonambig on the composed all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+      <xs:element name="c"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="e"/>
+          <xs:element name="c"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-overlapping-wildcards-invalid"
+description = "The composed all has two overlapping wildcards, violating UPA (Saxon all305)"
+derived_from = "Saxon XSD 1.1 test suite, All group all305 (cos-nonambig on the composed all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+      <xs:any namespace="http://one.com/" processContents="skip"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="e"/>
+          <xs:any notNamespace="http://two.com/" processContents="skip"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-empty-mixed-base-invalid"
+description = "An empty mixed all base cannot be extended by an all (Saxon all308, bug 6202)"
+derived_from = "Saxon XSD 1.1 test suite, All group all308 (cos-ct-extends)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base" mixed="true">
+    <xs:all/>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent mixed="true">
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="d" minOccurs="0" maxOccurs="2"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-composed-valid"
+description = "An all extending an all composes into one unordered group with the extension's occurrence (Saxon all314)"
+derived_from = "Saxon XSD 1.1 test suite, All group all314 (cos-ct-extends 4.2.3.2)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all minOccurs="0">
+      <xs:element name="child1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all minOccurs="0">
+          <xs:element name="child2"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="product" type="derived"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<product>
+  <child2/>
+  <child1/>
+</product>
+'''
+
+[[case]]
+id = "structure/all-extension-composed-partial-group-invalid"
+description = "A present all extension group requires every member, so one optional member alone is invalid (Saxon all314.n03)"
+derived_from = "Saxon XSD 1.1 test suite, All group all314 (negative instance n03)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all minOccurs="0">
+      <xs:element name="child1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all minOccurs="0">
+          <xs:element name="child2"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="product" type="derived"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<product>
+  <child1/>
+</product>
+'''
+instance_valid = false

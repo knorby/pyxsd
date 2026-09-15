@@ -177,3 +177,156 @@ class TestDerivedSimpleTypeDispatch:
     def test_derived_simple_type_invalid_value(self, tmp_path):
         parser = _parse(self.SCHEMA, "<r>abc</r>", tmp_path)
         assert "value" in _codes(parser)
+
+
+class TestAllExtensionComposition:
+    """An ``all`` extending an ``all`` composes into one unordered group.
+
+    XSD 1.1 §3.4.2.3.3 clause 4.2.3.2: the base all's particles are
+    followed by the extension all's, with the extension's ``minOccurs``.
+    Treating the extension as ``sequence[base, own]`` would require the
+    base's members to precede the extension's (rejecting a valid
+    interleaving) while letting a partially present optional group
+    through (Saxon all314).
+    """
+
+    def test_all_extension_is_order_insensitive(self, tmp_path):
+        parser = _parse(
+            '<xs:complexType name="b"><xs:all>'
+            '<xs:element name="a"/></xs:all></xs:complexType>'
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:extension base="b"><xs:all>'
+            '<xs:element name="c"/></xs:all>'
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            '<xs:element name="r" type="t"/>',
+            "<r><c/><a/></r>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_all_extension_requires_every_member_when_group_present(self, tmp_path):
+        # Saxon all314: both groups are optional, but a present group
+        # requires all of its members
+        schema = (
+            '<xs:complexType name="b"><xs:all minOccurs="0">'
+            '<xs:element name="a"/></xs:all></xs:complexType>'
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:extension base="b"><xs:all minOccurs="0">'
+            '<xs:element name="c"/></xs:all>'
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            '<xs:element name="r" type="t"/>'
+        )
+        assert not _parse(schema, "<r><c/><a/></r>", tmp_path).report.has_errors
+        assert not _parse(schema, "<r/>", tmp_path).report.has_errors
+        assert _parse(schema, "<r><a/></r>", tmp_path).report.has_errors
+        assert _parse(schema, "<r><c/></r>", tmp_path).report.has_errors
+
+    def test_all_extension_keeps_base_required_members(self, tmp_path):
+        parser = _parse(
+            '<xs:complexType name="b"><xs:all>'
+            '<xs:element name="a"/></xs:all></xs:complexType>'
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:extension base="b"><xs:all>'
+            '<xs:element name="c"/></xs:all>'
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            '<xs:element name="r" type="t"/>',
+            "<r><c/></r>",
+            tmp_path,
+        )
+        assert parser.report.has_errors
+
+
+class TestAllGroupReferenceMembers:
+    """A group reference to an ``all`` group inside an ``all`` (all007).
+
+    The reference is transparent: its group's members are members of the
+    enclosing ``all`` and may appear in any order alongside the other
+    members.
+    """
+
+    SCHEMA = (
+        '<xs:complexType name="t"><xs:all>'
+        '<xs:element name="a" minOccurs="0" maxOccurs="5"/>'
+        '<xs:group ref="allgroup"/></xs:all></xs:complexType>'
+        '<xs:group name="allgroup"><xs:all>'
+        '<xs:element name="b" minOccurs="1" maxOccurs="5"/>'
+        '<xs:element name="c" minOccurs="2" maxOccurs="unbounded"/>'
+        '<xs:element name="d" minOccurs="1" maxOccurs="1"/>'
+        "</xs:all></xs:group>"
+        '<xs:element name="r" type="t"/>'
+    )
+
+    def test_members_match_in_any_order(self, tmp_path):
+        # Saxon all007.v01 (an all001 document)
+        parser = _parse(
+            self.SCHEMA,
+            "<r><a/><b/><d/><c/><a/><c/><c/><a/><a/><b/></r>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_group_member_occurrence_limits_are_enforced(self, tmp_path):
+        # Saxon all007.n01 (too few c elements)
+        parser = _parse(
+            self.SCHEMA,
+            "<r><a/><b/><d/><a/><c/><a/><a/><b/></r>",
+            tmp_path,
+        )
+        assert parser.report.has_errors
+
+
+class TestElementOnlyCharacters:
+    """Character data under element-only complex content is invalid.
+
+    XSD §3.4.3.2 (Element Locally Valid (Complex Type)): an element with
+    an element-only content type has no character content other than
+    whitespace. Mixed types and simple content are unaffected. The
+    all-extends-all composition makes this observable (Saxon all307:
+    the same document that is valid against a mixed type is invalid
+    against its element-only twin).
+    """
+
+    def test_text_under_element_only_content_is_rejected(self, tmp_path):
+        parser = _parse(
+            _root("<xs:sequence>" + _element("a") + "</xs:sequence>"),
+            "<r>stray<a/>text</r>",
+            tmp_path,
+        )
+        assert "unexpected-character" in _codes(parser)
+
+    def test_whitespace_between_children_is_fine(self, tmp_path):
+        parser = _parse(
+            _root("<xs:sequence>" + _element("a") + "</xs:sequence>"),
+            "<r>\n  <a/>\n</r>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_mixed_content_keeps_its_text(self, tmp_path):
+        parser = _parse(
+            '<xs:element name="r"><xs:complexType mixed="true"><xs:sequence>'
+            + _element("a")
+            + "</xs:sequence></xs:complexType></xs:element>",
+            "<r>text<a/>tail</r>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_all_extension_element_only_composition_rejects_text(self, tmp_path):
+        # Saxon all307.n01: all306's document (with text) against the
+        # element-only twin of the type
+        schema = (
+            '<xs:complexType name="b"><xs:all>'
+            '<xs:element name="a" minOccurs="0" maxOccurs="5"/>'
+            '<xs:element name="b" minOccurs="0" maxOccurs="5"/>'
+            '<xs:element name="c" minOccurs="0" maxOccurs="unbounded"/>'
+            "</xs:all></xs:complexType>"
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:extension base="b"><xs:all>'
+            '<xs:element name="d" minOccurs="0" maxOccurs="1"/>'
+            '<xs:element name="e" minOccurs="0" maxOccurs="4"/>'
+            "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+            '<xs:element name="r" type="t"/>'
+        )
+        parser = _parse(schema, "<r><b/>text<a/>text<d/>text<a/></r>", tmp_path)
+        assert parser.report.has_errors
