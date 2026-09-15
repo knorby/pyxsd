@@ -167,12 +167,14 @@ class TestPredicateCells:
         derived = Particle("any", spec=ANY)
         assert is_valid_particle_restriction(base, derived, resolver=no_resolver)
 
-    def test_choice_over_element_is_fully_deferred(self):
-        # the deferred choice-over-element cell reports nothing yet, not
-        # even occurrence widening on its members; Task 4c/4d completes it
+    def test_choice_over_element_at_top_level_is_forbidden(self):
+        # the corpus pins the top-level choice-over-element shape
+        # invalid (particlesHa123): a 1..1 singleton choice would be
+        # pointless, but this choice's member widens the occurrence and
+        # the table forbids the shape outright
         base = Particle("element", name="e", min_occurs=1, max_occurs=1)
         derived = Particle("choice", children=[Particle("element", name="e", max_occurs=2)])
-        assert not is_valid_particle_restriction(base, derived, resolver=no_resolver)
+        assert is_valid_particle_restriction(base, derived, resolver=no_resolver)
 
     def test_choice_over_all_is_forbidden(self):
         # particlesHb009: choice(e1, e2) restricting all(e1, e2) — each
@@ -223,18 +225,18 @@ class TestPredicateCells:
         )
         assert not is_valid_particle_restriction(base, derived, resolver=no_resolver)
 
-    def test_group_over_element_is_not_reported(self):
-        # particlesHb008/Hb011: 1.0 forbids a group restricting an
-        # element, but the corpus pins the exemplars valid under the
-        # 1.1 profile (the 1.1 Recurse alignment absorbs the shape), so
-        # this cell is deferred to the Recurse work rather than
-        # regressing them
+    def test_group_over_element_at_top_level_is_forbidden(self):
+        # particlesHa121: a non-pointless group restricting a base
+        # element is Forbidden at the derivation's own pair; the corpus
+        # pins the exemplars valid only where an *enclosing* Recurse
+        # alignment absorbs the members (particlesHb008/Hb011, covered
+        # by test_sequence_over_element_inside_choice_maps)
         base = Particle("element", name="e")
         derived = Particle(
             "sequence",
             children=[Particle("element", name="e"), Particle("element", name="f")],
         )
-        assert not is_valid_particle_restriction(base, derived, resolver=no_resolver)
+        assert is_valid_particle_restriction(base, derived, resolver=no_resolver)
 
     def test_sequence_over_element_inside_choice_maps(self):
         # particlesHb011's shape: the repeated sequence member maps onto
@@ -499,6 +501,169 @@ class TestSchemaParticlesHb:
         )
         issues = particle_restriction_issues(report)
         assert issues and "RecurseAsIfGroup" in issues[0].message
+
+
+class TestPointlessRulesAtTopLevel:
+    """The particlesHa121-Ha189 "Apply Pointless rules at top level" matrix.
+
+    §3.9.6 clause 2.2 eliminates pointless compositors before the shape
+    table applies: a 1..1 ``sequence``/``choice``/``all`` holding one
+    member is ignored (replaced by that member), so the top-level pair is
+    the *eliminated* particles on both sides.
+    """
+
+    def test_base_sequence_over_derived_sequence_is_invalid(self, parse):
+        # particlesHa121: the singleton base sequence is pointless, so
+        # the pair is sequence-over-element — Forbidden in the table
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:element name='e1' type='xs:string'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:element name='e1' type='xs:ENTITY'/>"
+            "<xs:element name='e2' type='xs:ENTITY'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "Forbidden" in issues[0].message
+
+    def test_base_element_over_derived_singleton_all_is_valid(self, parse):
+        # particlesHa122: the derived singleton all is pointless too, so
+        # the pair is element-over-element (NameAndTypeOK, valid)
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:element name='e1' type='xs:string'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:group ref='grp'/></xs:restriction>"
+            "</xs:complexContent></xs:complexType>"
+            "<xs:group name='grp'><xs:all>"
+            "<xs:element name='e1' type='xs:string'/></xs:all></xs:group>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_optional_singleton_choice_over_element_is_invalid(self, parse):
+        # particlesHa123: the 0..1 choice is not pointless (its
+        # containing particle is not 1..1); choice-over-element is
+        # Forbidden in the table
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:element name='e1' type='xs:string'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'>"
+            "<xs:choice minOccurs='0'><xs:element name='e1' type='xs:string'/></xs:choice>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "Forbidden" in issues[0].message
+
+    def test_choice_over_choice_with_widened_bound_is_invalid(self, parse):
+        # particlesHa164: both singleton sequences are pointless; the
+        # derived choice's 2..3 bound exceeds the base choice's 2..2
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:choice maxOccurs='2'>"
+            "<xs:element name='a'/><xs:element name='b'/>"
+            "</xs:choice></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:choice maxOccurs='3'>"
+            "<xs:element name='a'/><xs:element name='b'/>"
+            "</xs:choice></xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues
+
+    def test_choice_over_choice_with_equal_bound_is_valid(self, parse):
+        # particlesHa165: the same shape with matching bounds is valid
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:choice maxOccurs='2'>"
+            "<xs:element name='a'/><xs:element name='b'/>"
+            "</xs:choice></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:choice maxOccurs='2'><xs:element name='a'/></xs:choice>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_choice_member_occurrence_widening_is_invalid(self, parse):
+        # particlesHa166: after the pointless elimination the derived
+        # member a(0..1) cannot restrict the base member a(1..1)
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:choice maxOccurs='2'>"
+            "<xs:element name='a' minOccurs='1'/><xs:element name='b'/>"
+            "</xs:choice></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:choice maxOccurs='2'><xs:element name='a' minOccurs='0'/></xs:choice>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues
+
+    def test_sequence_over_choice_with_contained_bound_is_valid(self, parse):
+        # particlesHa167: a derived sequence whose total range fits the
+        # base choice is MapAndSum-valid
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:choice maxOccurs='2'>"
+            "<xs:element name='a' minOccurs='1'/><xs:element name='b'/>"
+            "</xs:choice></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:sequence maxOccurs='2'><xs:element name='a' minOccurs='1'/></xs:sequence>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_sequence_over_choice_with_widened_bound_is_invalid(self, parse):
+        # particlesHa168: the sequence's effective range 3..3 exceeds
+        # the base choice's 2..2
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:choice maxOccurs='2'>"
+            "<xs:element name='a' minOccurs='1'/><xs:element name='b'/>"
+            "</xs:choice></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:sequence maxOccurs='3'><xs:element name='a' minOccurs='1'/></xs:sequence>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues
+
+    def test_sequence_member_occurrence_widening_is_invalid(self, parse):
+        # particlesHa169: the derived member a(0..1) is not contained in
+        # the base member a(1..1)
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:choice maxOccurs='2'>"
+            "<xs:element name='a' minOccurs='1'/><xs:element name='b'/>"
+            "</xs:choice></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:sequence maxOccurs='2'><xs:element name='a' minOccurs='0'/></xs:sequence>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues
+
+    def test_choice_over_all_with_dropped_required_member_is_invalid(self, parse):
+        # particlesHa182: the singleton derived sequence is pointless;
+        # each choice branch alone drops a required all member
+        report = parse(
+            "<xs:complexType name='base'><xs:all>"
+            "<xs:element name='a'/><xs:element name='b'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:choice><xs:element name='a'/><xs:element name='b'/></xs:choice>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues
 
 
 # ---------------------------------------------------------------------------
@@ -1277,7 +1442,10 @@ class TestRecurseUnorderedAllAll:
         assert not is_valid_particle_restriction(base, derived, _decls_resolver)
 
     def test_required_base_particle_cannot_be_left_out(self):
-        # all204 / particlesS005: a required base member may not be dropped
+        # all204 / particlesS005: a required base member may not be
+        # dropped; the derived singleton all is pointless (§3.9.6
+        # clause 2.2) so the pair is element-over-all and the
+        # RecurseAsIfGroup wrapper reports the dropped member
         base = _group(
             "all",
             _elt(_Declaration(name="a"), 0, 5),
@@ -1286,7 +1454,7 @@ class TestRecurseUnorderedAllAll:
         )
         derived = _group("all", _elt(_Declaration(name="b")))
         reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
-        assert reasons and "Recurse" in reasons[0]
+        assert reasons and "EltOverGroup" in reasons[0]
 
     def test_extra_member_is_invalid(self):
         # all205: a derived member with no base counterpart
@@ -1343,7 +1511,13 @@ class TestRecurseUnorderedAllAll:
         sub1 = _Declaration(name="A1")
         sub2 = _Declaration(name="A2")
         heads = {sub1: head, sub2: head}
-        base = _group("all", _elt(head, 10, 20))
+        base = _group(
+            "all",
+            _elt(head, 10, 20),
+            _elt(_Declaration(name="b"), 0, 5),
+            _elt(_Declaration(name="c"), 0, None),
+            _elt(_Declaration(name="d"), 0, 1),
+        )
         derived = _group("all", _elt(sub1, 3, 8), _elt(sub2, 3, 8))
         reasons = is_valid_particle_restriction(
             base, derived, _decls_resolver, head_lookup=heads.get
@@ -1356,7 +1530,13 @@ class TestRecurseUnorderedAllAll:
         sub1 = _Declaration(name="A1")
         sub2 = _Declaration(name="A2")
         heads = {sub1: head, sub2: head}
-        base = _group("all", _elt(head, 10, 20))
+        base = _group(
+            "all",
+            _elt(head, 10, 20),
+            _elt(_Declaration(name="b"), 0, 5),
+            _elt(_Declaration(name="c"), 0, None),
+            _elt(_Declaration(name="d"), 0, 1),
+        )
         derived = _group("all", _elt(sub1, 6, 15), _elt(sub2, 6, 15))
         reasons = is_valid_particle_restriction(
             base, derived, _decls_resolver, head_lookup=heads.get
@@ -1374,11 +1554,13 @@ class TestRecurseUnorderedWildcardSums:
         assert not is_valid_particle_restriction(base, derived, _decls_resolver)
 
     def test_superset_wildcard_is_invalid(self):
-        # all229
+        # all229: the singleton alls are pointless (§3.9.6 clause 2.2),
+        # so the pair is wildcard-over-wildcard and the namespace
+        # constraint must still narrow
         base = _group("all", _wild("http://two.uri/"))
         derived = _group("all", _wild("http://one.uri/ http://two.uri/"))
         reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
-        assert reasons and "Recurse" in reasons[0]
+        assert reasons and "NSSubset" in reasons[0]
 
     def test_one_base_wildcard_may_cover_two_derived(self):
         # all230: (1,1)+(1,1) ⊆ (1,5)
@@ -1648,7 +1830,8 @@ class TestSchemaRecurseCorpus:
     """Corpus-shaped schema tests for the Recurse family."""
 
     def test_all_all_required_member_left_out_is_invalid(self, parse):
-        # all204/particlesS005 shape
+        # all204/particlesS005 shape: the singleton derived all is
+        # pointless, so element-over-all reports the dropped members
         report = parse(
             "<xs:complexType name='base'><xs:all>"
             "<xs:element name='a' minOccurs='0' maxOccurs='5'/>"
@@ -1661,7 +1844,7 @@ class TestSchemaRecurseCorpus:
             "</xs:all></xs:restriction></xs:complexContent></xs:complexType>"
         )
         issues = particle_restriction_issues(report)
-        assert issues and "Recurse" in issues[0].message
+        assert issues and "EltOverGroup" in issues[0].message
 
     def test_sequence_restricting_all_reordered_is_valid(self, parse):
         # all211 shape

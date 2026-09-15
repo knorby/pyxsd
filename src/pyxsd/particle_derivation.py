@@ -379,7 +379,33 @@ def is_valid_particle_restriction(
     """
     if base is None or derived is None:
         return []
+    base = _eliminate_pointless(_unwrap_base(base))
+    derived = _eliminate_pointless(_unwrap(derived))
     return _pair_violations(base, derived, resolver, set(), top=True, head_lookup=head_lookup)
+
+
+def _eliminate_pointless(particle: Particle) -> Particle:
+    """The §3.9.6 clause 2.2 pointless-occurrence elimination.
+
+    A ``1..1`` ``sequence``/``choice``/``all`` whose ``{particles}`` has a
+    single member is pointless: it is ignored and replaced by that member
+    (1..1 multiplication is the identity, so no occurrence folding is
+    needed). The corpus's "Apply Pointless rules at top level" matrix
+    (particlesHa121-Ha189) applies the rules to the derivation's own pair
+    before the shape table, so this runs at the top of
+    :func:`is_valid_particle_restriction`; the inner pairs keep the
+    existing alignment treatment (``_unwrap``/``_unwrap_base``), which
+    the corpus pins for composite members (groupB003v's group-vs-group
+    alignment) and for the absorption reading (particlesHb008/Hb011).
+    """
+    while (
+        particle.kind in ("sequence", "choice", "all")
+        and particle.min_occurs == 1
+        and particle.max_occurs == 1
+        and len(particle.children) == 1
+    ):
+        particle = particle.children[0]
+    return particle
 
 
 def _pair_violations(
@@ -433,7 +459,14 @@ def _pair_violations(
         return []
     if rule in _DEFERRED_CELLS:
         # The cells whose partial approximations reject valid corpus
-        # schemas are silent here (details on the entry).
+        # schemas are silent on inner pairs (details on the entry). On
+        # the derivation's own pair the corpus pins the shape forbidden
+        # (particlesHa121/Ha123/Ha166), so it is reported there.
+        if top:
+            return [
+                f"particle restriction (Forbidden): a {derived.kind} particle cannot "
+                f"restrict a {base.kind} particle"
+            ]
         return []
     if rule == "EltOverGroup":
         return _elt_over_group_violations(base, derived, resolver, visited, head_lookup)
