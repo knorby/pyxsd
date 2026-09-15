@@ -2027,3 +2027,107 @@ class TestMixedContentRestriction:
         )
         report = parse(GROUP_RESTRICTION_BODY + derived)
         assert "particle-restriction" not in schema_codes(report)
+
+
+class TestAttributeUseDerivation:
+    """Attribute-use derivation on complex type restriction/extension.
+
+    The bounded slice of *Derivation Valid (Restriction, Complex)* and
+    *Derivation Valid (Extension)* that the corpus pins: a required
+    base attribute use must stay required in a restriction (XSD 1.0
+    §3.4.6 clause 3; particlesZ030_d), and an extension that redeclares
+    a base use must not change its fixed value (XSD 1.1 §3.4.6.2
+    clause 1.2; particlesZ026a).
+    """
+
+    def test_restriction_required_use_made_optional_is_invalid(self, parse):
+        # particlesZ030_d: the derived a(optional) cannot restrict the
+        # base a(required)
+        report = parse(
+            "<xs:complexType name='cs'><xs:simpleContent>"
+            "<xs:extension base='xs:string'>"
+            "<xs:attribute name='a' use='required'/>"
+            "<xs:attribute name='b' use='optional'/>"
+            "</xs:extension></xs:simpleContent></xs:complexType>"
+            "<xs:complexType name='csD'><xs:simpleContent>"
+            "<xs:restriction base='cs'>"
+            "<xs:simpleType><xs:restriction base='xs:string'/></xs:simpleType>"
+            "<xs:attribute name='a' use='optional'/>"
+            "</xs:restriction></xs:simpleContent></xs:complexType>"
+        )
+        assert "attribute-restriction" in schema_codes(report)
+
+    def test_restriction_dropped_required_use_is_valid(self, parse):
+        # Saxon assert011: omitting the base's required attribute from a
+        # restriction is accepted by the corpus and the oracle, so only
+        # a *redeclared* weaker use is reported
+        report = parse(
+            "<xs:complexType name='cs'><xs:sequence/>"
+            "<xs:attribute name='a' use='required'/></xs:complexType>"
+            "<xs:complexType name='csD'><xs:complexContent>"
+            "<xs:restriction base='cs'><xs:sequence/></xs:restriction>"
+            "</xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" not in schema_codes(report)
+
+    def test_restriction_required_use_kept_is_valid(self, parse):
+        report = parse(
+            "<xs:complexType name='cs'><xs:sequence/>"
+            "<xs:attribute name='a' use='required'/></xs:complexType>"
+            "<xs:complexType name='csD'><xs:complexContent>"
+            "<xs:restriction base='cs'><xs:sequence/>"
+            "<xs:attribute name='a' use='required'/></xs:restriction>"
+            "</xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" not in schema_codes(report)
+
+    def test_restriction_optional_use_made_required_is_valid(self, parse):
+        # strengthening an optional base use is a legal restriction
+        report = parse(
+            "<xs:complexType name='cs'><xs:sequence/>"
+            "<xs:attribute name='a' use='optional'/></xs:complexType>"
+            "<xs:complexType name='csD'><xs:complexContent>"
+            "<xs:restriction base='cs'><xs:sequence/>"
+            "<xs:attribute name='a' use='required'/></xs:restriction>"
+            "</xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" not in schema_codes(report)
+
+    def test_extension_different_fixed_value_is_invalid(self, parse):
+        # particlesZ026a: ManagedItemType redeclares StatementAssembly
+        # with a different fixed value than its base's use
+        report = parse(
+            "<xs:complexType name='ItemType'><xs:sequence/>"
+            "<xs:attribute name='StatementAssembly' type='xs:string' fixed='one'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='ManagedItemType'><xs:complexContent>"
+            "<xs:extension base='ItemType'>"
+            "<xs:attribute name='StatementAssembly' type='xs:string' fixed='two'/>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" in schema_codes(report)
+
+    def test_extension_matching_fixed_value_is_accepted(self, parse):
+        report = parse(
+            "<xs:complexType name='ItemType'><xs:sequence/>"
+            "<xs:attribute name='StatementAssembly' type='xs:string' fixed='one'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='ManagedItemType'><xs:complexContent>"
+            "<xs:extension base='ItemType'>"
+            "<xs:attribute name='StatementAssembly' type='xs:string' fixed='one'/>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" not in schema_codes(report)
+
+    def test_extension_inherited_use_is_valid(self, parse):
+        # not redeclaring the base use keeps it identical
+        report = parse(
+            "<xs:complexType name='ItemType'><xs:sequence/>"
+            "<xs:attribute name='a' type='xs:string' fixed='one'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='ManagedItemType'><xs:complexContent>"
+            "<xs:extension base='ItemType'>"
+            "<xs:attribute name='b' type='xs:string'/>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" not in schema_codes(report)

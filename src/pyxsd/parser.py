@@ -617,6 +617,7 @@ class PyXSD:
             self._reportParticleRestriction(er)
             self._reportMixedRestriction(er)
             self._reportComplexContentFromSimpleBase(er)
+            self._reportAttributeUseDerivation(er)
             self._reportAttributeWildcardRestriction(er)
             self._reportExtensionStructure(er)
             self._reportUniqueParticleAttribution(er)
@@ -821,6 +822,131 @@ class PyXSD:
             return
         for reason in upa_violations(model, self._substitution_head_lookup(er)):
             self.report.add_error(reason, code="upa")
+
+    def _reportAttributeUseDerivation(self, er: Any) -> None:
+        """Reports attribute-use derivation violations on a complex type.
+
+        The bounded slice of the attribute clauses the corpus pins:
+
+        * Restriction (XSD 1.0 §3.4.6 clause 2.1.1): a derived use that
+          redeclares a *required* base use must stay required;
+          weakening it to optional is reported (particlesZ030_d,
+          particlesZ017). Omitting the base use entirely is accepted —
+          the Saxon 1.1 Assert suite pins such restrictions valid
+          (assert011), so the literal XSD 1.0 clause 3 shape is not
+          implemented.
+        * Extension (XSD 1.1 §3.4.6.2 clause 1.2): a base use must be
+          reproduced with identical properties; a redeclaration that
+          changes the ``fixed`` value is reported (particlesZ026a).
+
+        The base's effective uses are gathered through its extension
+        chain (a restriction does not inherit uses). The check is
+        skipped when the base type cannot be resolved or carries an
+        XSD 1.1 ``inheritable`` use, which the restriction mapping
+        inherits automatically (so omitting it is legal). Attribute
+        type derivation and the remaining value-constraint clauses stay
+        out of this slice.
+        """
+        derivation = self._complexTypeDerivation(er)
+        if derivation not in ("restriction", "extension"):
+            return
+        base_er = self._baseTypeER(er)
+        if base_er is None or not hasattr(base_er, "attributes"):
+            logger.debug(
+                "attribute-use derivation: base type %r of %s unresolved or not complex; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        base_uses, inheritable = self._effectiveAttributeUses(base_er)
+        if not base_uses or inheritable:
+            return
+        own_uses = getattr(er, "attributes", None) or {}
+        if derivation == "restriction":
+            for name, derived_attr in own_uses.items():
+                base_attr = base_uses.get(name)
+                if base_attr is None or not self._attributeUseIsRequired(base_attr):
+                    continue
+                if not self._attributeUseIsRequired(derived_attr):
+                    self.report.add_error(
+                        f"attribute-use restriction: type "
+                        f"'{getattr(er, 'name', '?')}' redeclares the required "
+                        f"attribute '{name}' of its base type "
+                        f"'{getattr(base_er, 'name', '?')}' as optional",
+                        code="attribute-restriction",
+                    )
+            return
+        for name, derived_attr in own_uses.items():
+            base_attr = base_uses.get(name)
+            if base_attr is None:
+                continue
+            base_fixed = base_attr.getFixed()
+            if base_fixed is not None and derived_attr.getFixed() != base_fixed:
+                self.report.add_error(
+                    f"attribute-use extension: attribute '{name}' of type "
+                    f"'{getattr(er, 'name', '?')}' changes the fixed value "
+                    f"'{base_fixed}' of its base type "
+                    f"'{getattr(base_er, 'name', '?')}'",
+                    code="attribute-restriction",
+                )
+
+    def _effectiveAttributeUses(
+        self, er: Any, seen: set[int] | None = None
+    ) -> tuple[dict[str, Any], bool]:
+        """A type's effective attribute uses, walking its extension chain.
+
+        Returns ``(uses-by-name, has-inheritable)``. A restriction does
+        not inherit its base's uses; an extension does. ``seen`` guards
+        a derivation cycle (itself an invalid schema).
+        """
+        uses = dict(getattr(er, "attributes", None) or {})
+        has_inheritable = any(self._attributeUseIsInheritable(attr) for attr in uses.values())
+        if self._complexTypeDerivation(er) != "extension":
+            return uses, has_inheritable
+        if seen is None:
+            seen = set()
+        if id(er) in seen:
+            return uses, has_inheritable
+        seen.add(id(er))
+        base_er = self._baseTypeER(er)
+        if base_er is None or not hasattr(base_er, "attributes"):
+            return uses, has_inheritable
+        base_uses, base_inheritable = self._effectiveAttributeUses(base_er, seen)
+        for name, attr in base_uses.items():
+            uses.setdefault(name, attr)
+        return uses, has_inheritable or base_inheritable
+
+    @staticmethod
+    def _complexTypeDerivation(er: Any) -> str | None:
+        """The type's derivation method, simpleContent wrappers included.
+
+        ``XsdType.getDerivation`` reads ``complexContent`` wrappers only;
+        a ``simpleContent`` extension or restriction reports its method
+        through this helper.
+        """
+        derivation = er.getDerivation()
+        if derivation is not None:
+            return derivation
+        simple = er._firstProcessedChild(er, "SimpleContent")
+        if simple is None:
+            return None
+        for child in getattr(simple, "processedChildren", None) or ():
+            kind = type(child).__name__
+            if kind == "Extension":
+                return "extension"
+            if kind == "Restriction":
+                return "restriction"
+        return None
+
+    @staticmethod
+    def _attributeUseIsRequired(attr: Any) -> bool:
+        getter = getattr(attr, "getUse", None)
+        return callable(getter) and getter() == "required"
+
+    @staticmethod
+    def _attributeUseIsInheritable(attr: Any) -> bool:
+        attributes = getattr(attr, "tagAttributes", None) or {}
+        return str(attributes.get("inheritable") or "").strip().lower() in ("true", "1")
 
     def _globalElementLookup(self, er: Any) -> Any:
         """A lookup from a Clark name to a top-level element declaration.
