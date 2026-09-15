@@ -137,7 +137,7 @@ def parse(tmp_path, monkeypatch):
     schema_path = tmp_path / "schema.xsd"
     head = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
 
-    def _parse(schema_string: str):
+    def _parse(schema_string: str, head: str = head):
         schema_path.write_text(head + schema_string + "</xs:schema>", encoding="utf-8")
         return PyXSD(
             io.StringIO("<pyxsd-schema-probe/>"),
@@ -250,5 +250,77 @@ class TestSchemaUniqueParticleAttribution:
             "<xs:element name='e1' type='xs:string'/>"
             "<xs:element name='e2' type='xs:string' minOccurs='0'/>"
             "</xs:sequence></xs:complexType>"
+        )
+        assert not upa_issues(report)
+
+
+class TestUpaCorpusGuards:
+    """Valid corpus shapes the sweep must not reject."""
+
+    def test_blocked_head_member_does_not_overlap(self, parse):
+        # elemZ028a: c blocks substitution, so b (its would-be member) does
+        # not overlap it in the all
+        report = parse(
+            "<xs:element name='a' substitutionGroup='b' type='xs:anyType'/>"
+            "<xs:element name='b' substitutionGroup='c' type='xs:anyType'/>"
+            "<xs:element name='c' substitutionGroup='d' type='xs:anyType' block='substitution'/>"
+            "<xs:element name='d' block='substitution'/>"
+            "<xs:complexType name='base'><xs:all>"
+            "<xs:element ref='b'/><xs:element ref='c'/><xs:element ref='d'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:all>"
+            "<xs:element ref='b'/><xs:element ref='c'/><xs:element ref='d'/>"
+            "</xs:all></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not upa_issues(report)
+
+    def test_unqualified_local_is_not_its_global_substitution_overlap(self, parse):
+        # elemZ020: the local 'foo' with form='unqualified' is a different
+        # expanded name from the global substitution member 'foo'
+        head = (
+            "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='foo' xmlns:t='foo' elementFormDefault='qualified'>"
+        )
+        report = parse(
+            "<xs:element name='e1' type='xs:boolean'/>"
+            "<xs:element name='foo' substitutionGroup='e1' type='xs:boolean'/>"
+            "<xs:complexType name='B'><xs:choice maxOccurs='1000'>"
+            "<xs:element ref='e1'/>"
+            "<xs:element name='foo' type='xs:int' form='unqualified'/>"
+            "</xs:choice></xs:complexType>",
+            head=head,
+        )
+        assert not upa_issues(report)
+
+    def test_wildcards_with_exclusion_sets_are_skipped(self, parse):
+        # wild049: ##local with notQName and notNamespace=##local are
+        # disjoint, but the 1.1 exclusion algebra is out of scope
+        report = parse(
+            "<xs:complexType name='computer'><xs:all>"
+            "<xs:element name='name' type='xs:string'/>"
+            "<xs:any namespace='##local' notQName='a b c' minOccurs='0' maxOccurs='2'"
+            " processContents='skip'/>"
+            "<xs:any notNamespace='##local' notQName='x:c x:d x:e' minOccurs='0'"
+            " maxOccurs='2' processContents='skip'/>"
+            "</xs:all></xs:complexType>"
+        )
+        assert not upa_issues(report)
+
+    def test_repeated_group_ref_choice_restriction_stays_valid(self, parse):
+        # groupH021v: choice(group x*) restricting choice(group x*,
+        # group y*) keeps the group-level RecurseLax match
+        report = parse(
+            "<xs:group name='x'><xs:sequence>"
+            "<xs:element name='x1'/><xs:element name='x2'/></xs:sequence></xs:group>"
+            "<xs:group name='y'><xs:choice>"
+            "<xs:element name='y1'/><xs:element name='y2'/></xs:choice></xs:group>"
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:group ref='x' maxOccurs='unbounded'/>"
+            "<xs:group ref='y' maxOccurs='unbounded'/></xs:choice></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:group ref='x' maxOccurs='unbounded'/></xs:choice>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
         )
         assert not upa_issues(report)

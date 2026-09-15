@@ -88,6 +88,7 @@ from pyxsd.namespaces import (
 )
 from pyxsd.particle_derivation import (
     derived_wildcard_edc_violations,
+    element_namespace,
     is_valid_particle_restriction,
     wildcard_subset,
 )
@@ -699,8 +700,13 @@ class PyXSD:
             return
         resolver = lambda particle: getattr(particle, "descriptor", None)  # noqa: E731
         head_lookup = self._substitution_head_lookup(er)
+        member_lookup = self._substitution_member_lookup(er)
         for reason in is_valid_particle_restriction(
-            base_model, derived_model, resolver, head_lookup=head_lookup
+            base_model,
+            derived_model,
+            resolver,
+            head_lookup=head_lookup,
+            member_lookup=member_lookup,
         ):
             self.report.add_error(reason, code="particle-restriction")
         for reason in derived_wildcard_edc_violations(
@@ -1173,13 +1179,15 @@ class PyXSD:
             if not head_name:
                 # XSD 1.1: a local declaration whose expanded name is
                 # also declared globally inherits that global's
-                # substitution-group membership.
+                # substitution-group membership. The expanded names are
+                # form-aware: an unqualified local is *not* the same
+                # expanded name as a same-named global (elemZ020).
                 for candidate in candidates:
                     if candidate is declaration:
                         continue
-                    if candidate.name == declaration.name and candidate.getNamespace() == (
-                        declaration.getNamespace()
-                    ):
+                    if candidate.name == declaration.name and element_namespace(
+                        candidate
+                    ) == element_namespace(declaration):
                         head_name = candidate.getSubstitutionGroupHead(self)
                         resolving = candidate
                         break
@@ -1191,6 +1199,43 @@ class PyXSD:
             return resolver(head_name, candidates, parser=self)
 
         return lookup
+
+    def _substitution_member_lookup(self, er: Any) -> Callable[[Any], list[Any]] | None:
+        """A declaration-to-members resolver for the clause 2.1 expansion.
+
+        §3.9.6 clause 2.1 treats a substitution-group head's element
+        particle as a choice group with one particle per member, so the
+        particle-derivation predicate needs the reverse of
+        ``_substitution_head_lookup``: the declarations that name this
+        head. ``None`` when the schema's element table is unavailable,
+        in which case the predicate leaves the head unexpanded.
+        """
+        head_lookup = self._substitution_head_lookup(er)
+        if head_lookup is None:
+            return None
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return None
+        if schema is None:
+            return None
+        candidates = [
+            element
+            for element in getattr(schema, "elements", None) or []
+            if type(element).__name__ == "Element"
+        ]
+
+        def members(declaration: Any) -> list[Any]:
+            found = []
+            for element in candidates:
+                if element is declaration:
+                    continue
+                head = head_lookup(element)
+                if head is not None and head is declaration:
+                    found.append(element)
+            return found
+
+        return members
 
     def _reportPointlessParticle(self, er: Any) -> None:
         """Reports a pointless ``sequence``/``choice`` inside an optional group.

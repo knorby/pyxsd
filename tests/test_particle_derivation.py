@@ -2687,3 +2687,42 @@ class TestComplexContentFromSimpleBase:
             "</xs:restriction></xs:complexContent></xs:complexType>"
         )
         assert not particle_restriction_issues(report)
+
+
+class TestPointlessRulesTopLevelGuards:
+    """Valid corpus shapes the top-level pointless rules must not break."""
+
+    def test_singleton_sequence_around_group_ref_stays_valid(self, parse):
+        # groupB003v: the group-vs-group alignment must survive the
+        # pointless elimination — the singleton literal sequence around
+        # the group reference is not flattened before the alignment
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:group ref='g1'/><xs:group ref='g2' minOccurs='0'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:group name='g1'><xs:sequence>"
+            "<xs:element name='r1'/><xs:element name='r2'/></xs:sequence></xs:group>"
+            "<xs:group name='g2'><xs:sequence>"
+            "<xs:element name='r3'/><xs:element name='r4'/></xs:sequence></xs:group>"
+            "<xs:element name='elem'><xs:complexType><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:group ref='g1'/></xs:sequence>"
+            "</xs:restriction></xs:complexContent></xs:complexType></xs:element>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_choice_of_substitution_members_over_head_is_valid(self, parse):
+        # particlesZ027a: the head particle expands to a choice of its
+        # members (clause 2.1), so the member choice is a RecurseLax match
+        report = parse(
+            "<xs:element name='head'/>"
+            "<xs:element name='m1' substitutionGroup='head'/>"
+            "<xs:element name='m2' substitutionGroup='head'/>"
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:element ref='head'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='derived'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence><xs:choice>"
+            "<xs:element ref='m1'/><xs:element ref='m2'/>"
+            "</xs:choice></xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)

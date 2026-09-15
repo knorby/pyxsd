@@ -35,6 +35,8 @@ from collections.abc import Callable
 from typing import Any
 
 from pyxsd.content_model import Particle
+from pyxsd.particle_derivation import element_namespace
+from pyxsd.wildcards import wildcard_specs_overlap
 
 HeadLookup = Callable[[Any], Any]
 
@@ -151,29 +153,30 @@ def _emptiable(particle: Particle) -> bool:
     return all(_emptiable(child) for child in particle.children)
 
 
-def _element_namespace(particle: Particle) -> str | None:
-    descriptor = particle.descriptor
-    if descriptor is not None:
-        getter = getattr(descriptor, "getNamespace", None)
-        if getter is not None:
-            try:
-                return getter()
-            except Exception:
-                return None
-    return None
-
-
 def _same_expanded_name(first: Particle, second: Particle) -> bool:
-    return first.name == second.name and _element_namespace(first) == _element_namespace(second)
+    return first.name == second.name and element_namespace(first.descriptor) == element_namespace(
+        second.descriptor
+    )
+
+
+def _blocks_substitution(declaration: Any) -> bool:
+    attributes = getattr(declaration, "tagAttributes", None) or {}
+    tokens = str(attributes.get("block") or "").split()
+    return "substitution" in tokens or "#all" in tokens
 
 
 def _head_chain(declaration: Any, head_lookup: HeadLookup | None) -> set[int]:
-    """The ids of a declaration's transitive substitution-group heads."""
+    """The ids of a declaration's transitive substitution-group heads.
+
+    A head whose ``block`` excludes substitution cannot be reached by a
+    substituting member (elemZ028a: ``c`` blocks substitution, so ``b``
+    is not substitutable for it), so the chain stops there.
+    """
     heads: set[int] = set()
     current = declaration
     while head_lookup is not None and current is not None:
         head = head_lookup(current)
-        if head is None or id(head) in heads:
+        if head is None or _blocks_substitution(head) or id(head) in heads:
             return heads
         heads.add(id(head))
         current = head
@@ -198,15 +201,16 @@ def _substitution_overlap(
 def _wildcard_admits_element(wildcard: Particle, element: Particle) -> bool:
     """Whether a wildcard's namespace constraint admits an element.
 
-    Wildcards carrying ``notQName`` exclusions are treated as
-    non-overlapping: whether the name is excluded needs context a
-    schema-phase sweep does not have, and reporting the overlap could
-    reject a schema the corpus pins valid.
+    Wildcards carrying XSD 1.1 exclusion sets (``notQName``/
+    ``notNamespace``) are treated as non-overlapping: whether the name
+    is excluded needs context a schema-phase sweep does not have, and
+    reporting the overlap could reject a schema the corpus pins valid
+    (wild049/wild050; the same posture as the wildcard-overlap sweep).
     """
     spec = wildcard.spec
-    if spec is None or spec.not_qname:
+    if spec is None or spec.not_qname or spec.not_namespace:
         return False
-    return spec.admits_namespace(_element_namespace(element), None)
+    return spec.admits_namespace(element_namespace(element.descriptor), None)
 
 
 def _overlap(first: Particle, second: Particle, head_lookup: HeadLookup | None) -> bool:
@@ -217,8 +221,10 @@ def _overlap(first: Particle, second: Particle, head_lookup: HeadLookup | None) 
     if first.kind == "any" and second.kind == "any":
         if first.spec is None or second.spec is None:
             return False
-        from pyxsd.wildcards import wildcard_specs_overlap
-
+        if first.spec.not_qname or first.spec.not_namespace:
+            return False
+        if second.spec.not_qname or second.spec.not_namespace:
+            return False
         return wildcard_specs_overlap(first.spec, second.spec)
     # Element and wildcard: the element declaration takes precedence, so
     # the attribution stays unique (the reference implementation adds a

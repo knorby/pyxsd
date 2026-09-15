@@ -130,6 +130,7 @@ _SHAPE_RULES: dict[tuple[str, str], str] = {
 
 Resolver = Callable[[Particle], Any]
 HeadLookup = Callable[[Any], Any]
+MemberLookup = Callable[[Any], list[Any]]
 
 #: Cells this module deliberately leaves silent because every partial
 #: approximation of them rejects corpus-pinned valid schemas:
@@ -364,6 +365,7 @@ def is_valid_particle_restriction(
     derived: Particle | None,
     resolver: Resolver,
     head_lookup: HeadLookup | None = None,
+    member_lookup: MemberLookup | None = None,
 ) -> list[str]:
     """The violation reasons for restricting ``base`` by ``derived``.
 
@@ -374,14 +376,43 @@ def is_valid_particle_restriction(
     for the ``NameAndTypeOK`` declaration clauses. ``head_lookup``
     optionally maps a declaration to the declaration of its
     substitution-group head (or ``None``); without it only exact
-    expanded-name equality admits a pair. An empty result means the
-    restriction is valid as far as the cells implemented here reach.
+    expanded-name equality admits a pair. ``member_lookup`` maps a
+    declaration to the declarations that substitute for it (its
+    substitution-group members, direct members only); it drives the
+    §3.9.6 clause 2.1 head expansion, which turns a substitution-head
+    element particle into a choice group before the shape table decides
+    (particlesZ027a's choice of members restricting its head). An empty
+    result means the restriction is valid as far as the cells
+    implemented here reach.
     """
     if base is None or derived is None:
         return []
     base = _eliminate_pointless(_unwrap_base(base))
     derived = _eliminate_pointless(_unwrap(derived))
+    if member_lookup is not None:
+        base = _expand_substitution_head(base, member_lookup)
+        derived = _expand_substitution_head(derived, member_lookup)
     return _pair_violations(base, derived, resolver, set(), top=True, head_lookup=head_lookup)
+
+
+def _expand_substitution_head(particle: Particle, member_lookup: MemberLookup) -> Particle:
+    """The §3.9.6 clause 2.1 substitution-head expansion.
+
+    A particle whose declaration is the substitution-group affiliation
+    of one or more other declarations is treated as a choice group
+    holding the declaration itself and one particle for each member,
+    with the original particle's occurrence (the members are 1..1).
+    """
+    if particle.kind != "element" or particle.descriptor is None:
+        return particle
+    members = member_lookup(particle.descriptor)
+    if not members:
+        return particle
+    branches = [particle]
+    branches.extend(
+        Particle("element", 1, 1, [], member.name, None, descriptor=member) for member in members
+    )
+    return Particle("choice", particle.min_occurs, particle.max_occurs, branches)
 
 
 def _eliminate_pointless(particle: Particle) -> Particle:
@@ -403,7 +434,12 @@ def _eliminate_pointless(particle: Particle) -> Particle:
         and particle.min_occurs == 1
         and particle.max_occurs == 1
         and len(particle.children) == 1
+        and not (particle.children[0].kind == "sequence" and particle.children[0].synthetic)
     ):
+        # A group reference's synthetic wrapper is folded by ``_unwrap``
+        # when the pair is checked; folding the literal singleton around
+        # it here would flatten the group before the alignment matches
+        # whole groups (groupB003v, groupH021v).
         particle = particle.children[0]
     return particle
 
@@ -998,7 +1034,7 @@ def _wildcard_admission_violations(
     declaration = resolver(derived) if resolver is not None else None
     if declaration is None or not callable(getattr(declaration, "getNamespace", None)):
         return []
-    uri = _element_namespace(declaration)
+    uri = element_namespace(declaration)
     if base.spec.allows(uri, base.spec.effective_target(None)):
         return []
     return [
@@ -1201,7 +1237,7 @@ def _expanded_name(declaration: Any) -> tuple[str | None, str] | None:
     local = getattr(declaration, "name", None)
     if not local:
         return None
-    return (_element_namespace(declaration), str(local))
+    return (element_namespace(declaration), str(local))
 
 
 def _disallowed_substitutions(declaration: Any) -> frozenset[str]:
@@ -1868,7 +1904,7 @@ def _wildcard_contained_in(unit: Particle, member: Particle) -> bool:
     return wildcard_subset(spec, other, target)
 
 
-def _element_namespace(declaration: Any) -> str | None:
+def element_namespace(declaration: Any) -> str | None:
     """The {target namespace} an element declaration is checked against.
 
     Reference sites take the referred declaration's namespace. A
@@ -1887,7 +1923,7 @@ def _element_namespace(declaration: Any) -> str | None:
         return None
     referred = getattr(declaration, "referredElement", None)
     if referred is not None and referred is not declaration:
-        return _element_namespace(referred)
+        return element_namespace(referred)
     explicit = getattr(getattr(declaration, "xsdElement", None), "get", None)
     if callable(explicit):
         target = explicit("targetNamespace")
