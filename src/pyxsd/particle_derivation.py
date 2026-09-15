@@ -73,7 +73,7 @@ from collections.abc import Callable
 from typing import Any
 
 from pyxsd.content_model import Particle
-from pyxsd.derivation import is_validly_derived
+from pyxsd.derivation import derived_from_union_member, is_validly_derived
 from pyxsd.namespaces import local_name
 from pyxsd.wildcards import (
     DISALLOWED_DEFINED,
@@ -1088,7 +1088,7 @@ def _type_clause_violation(base_cls: Any, derived_cls: Any) -> str | None:
     reason = is_validly_derived(derived_cls, base_cls, frozenset({"extension"}))
     if reason is None:
         return None
-    if reason == "not-derived" and _derived_from_union_member(derived_cls, base_cls):
+    if reason == "not-derived" and derived_from_union_member(derived_cls, base_cls):
         return None
     if reason == "blocked":
         return (
@@ -1118,31 +1118,6 @@ def _ur_type_admits(base_cls: type, derived_cls: type) -> bool:
     if base_cls is AnySimpleType:
         kind = getattr(derived_cls, "_contentKind_", None)
         return kind != "complex"
-    return False
-
-
-def _derived_from_union_member(derived_cls: type, base_cls: type) -> bool:
-    """Whether the derived type is validly derived from a (transitive)
-    member type of a union base (Type Derivation OK (Simple), union
-    clause).
-
-    A restricting type may also restrict a *member that is itself a
-    union* (saxonSimple012: ``sub-chap`` restricts ``dt``, a member of
-    ``chap``): such an ancestor is a subtype of the base union exactly
-    when its own (flattened) members are all members of the base.
-    """
-    base_members = getattr(base_cls, "_unionMembers", None)
-    if not base_members:
-        return False
-    for ancestor in derived_cls.__mro__:
-        if any(isinstance(b, type) and issubclass(ancestor, b) for b in base_members):
-            return True
-        ancestor_members = getattr(ancestor, "_unionMembers", None)
-        if ancestor_members and all(
-            any(isinstance(b, type) and issubclass(member, b) for b in base_members)
-            for member in ancestor_members
-        ):
-            return True
     return False
 
 

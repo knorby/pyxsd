@@ -5,10 +5,16 @@ from pyxsd import xsi
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import (
     first_required_name,
+    locally_declared_element,
     match_content_associations,
     particle_names,
 )
-from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
+from pyxsd.derivation import (
+    combinedBlock,
+    derivationMessage,
+    derived_from_union_member,
+    is_validly_derived,
+)
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import WildcardSpec
@@ -150,6 +156,10 @@ class SchemaBase:
     _name_: str
     _attribs_: dict[str, str]
     _value_: list[str] | None
+    #: True on a subtree bound by a ``processContents="skip"`` wildcard
+    #: (skipped content; identity constraints ignore it). Only skipped
+    #: instances carry the assignment; readers use ``getattr(..., False)``.
+    _skipped_: bool
 
     def __init_subclass__(cls, **kwargs):
         """Collects the descriptor bookkeeping for a new subclass.
@@ -418,18 +428,26 @@ class SchemaBase:
         cls._bindWildcardChild(instance, subElement, spec)
 
     @classmethod
-    def _bindWildcardChild(cls, instance, subElement, spec) -> None:
+    def _bindWildcardChild(cls, instance, subElement, spec, memberHeadMap=None) -> None:
         """Binds one child accepted by an element wildcard.
 
         ``skip`` (and legacy mode) binds generically. ``lax`` validates
         against a matching global declaration when one exists and binds
         generically otherwise. ``strict`` reports
-        ``wildcard-no-declaration`` when no declaration matches.
+        ``wildcard-no-declaration`` when no declaration matches. A
+        strict or lax match is also checked against the XSD 1.1 dynamic
+        tighter EDC rule (:meth:`_checkDynamicEDC`).
         """
         parser = getattr(cls, "pyXSD", None)
         mode = getattr(parser, "mode", None)
-        if getattr(mode, "namespaces", "legacy") != "strict" or spec.process_contents == "skip":
+        if getattr(mode, "namespaces", "legacy") != "strict":
             instance._children_.append(cls.makeGenericInstance(subElement))
+            return
+        if spec.process_contents == "skip":
+            # Skipped content has no governing type definition and takes
+            # no part in identity-constraint checking ("skipped", XSD 1.1
+            # §3.3.4.2; the wild101-104 reading).
+            instance._children_.append(cls.makeGenericInstance(subElement, skipped=True))
             return
         local = local_name(subElement.tag)
         uri = namespace_of(subElement.tag)
@@ -447,9 +465,14 @@ class SchemaBase:
             descriptor.pyXSD = parser
             subElCls = cls._classForChild(descriptor, subElement)
             if subElCls is not None:
+                cls._checkDynamicEDC(instance, subElement, subElCls, descriptor, memberHeadMap)
                 cls._addChildInstance(instance, subElement, subElCls, descriptor)
                 return
         if spec.process_contents == "lax":
+            governing = None
+            if xsi.xsi_type_name(subElement) is not None:
+                governing = cls._classForChild(None, subElement)
+            cls._checkDynamicEDC(instance, subElement, governing, descriptor, memberHeadMap)
             instance._children_.append(cls.makeGenericInstance(subElement))
             return
         cls._report_error(
@@ -458,6 +481,97 @@ class SchemaBase:
             element=cls.__name__,
         )
         instance._children_.append(cls.makeGenericInstance(subElement))
+
+    @classmethod
+    def _checkDynamicEDC(
+        cls,
+        instance,
+        subElement,
+        governing_cls,
+        descriptor=None,
+        memberHeadMap=None,
+    ) -> None:
+        """The XSD 1.1 dynamic tighter EDC rule for one wildcard child.
+
+        Element Locally Valid (Complex Type) clause 5: when an element
+        is admitted by a wildcard, its governing type definition (the
+        ``xsi:type`` class or the wildcard-selected declaration's type)
+        must be the same as, or validly substitutable for, the type the
+        content model locally declares for the element's expanded name.
+        ``processContents="skip"`` never reaches this check (a skipped
+        element has no governing type definition). Unresolvable types
+        skip rather than reject.
+        """
+        if governing_cls is None:
+            return
+        local_cls = cls._locallyDeclaredElementType(instance, subElement, descriptor, memberHeadMap)
+        if local_cls is None:
+            return
+        if is_validly_derived(governing_cls, local_cls) is None:
+            return
+        if derived_from_union_member(governing_cls, local_cls):
+            # A governing type that is (derived from) a member of a
+            # locally declared union is compatible (wild066: xs:date is
+            # a member of union(xs:date, xs:time); wild067's xs:duration
+            # is not).
+            return
+        elementName = cls._node_name(subElement)
+        governingName = getattr(governing_cls, "name", None) or getattr(
+            governing_cls, "__name__", governing_cls
+        )
+        localTypeName = getattr(local_cls, "name", None) or getattr(
+            local_cls, "__name__", local_cls
+        )
+        cls._report_error(
+            f"element '{elementName}' is admitted by a wildcard and its governing "
+            f"type '{governingName}' is not validly derived from the type "
+            f"'{localTypeName}' that the content model locally declares for it",
+            code="element-consistent",
+            element=cls.__name__,
+        )
+
+    @classmethod
+    def _locallyDeclaredElementType(
+        cls,
+        instance,
+        subElement,
+        descriptor=None,
+        memberHeadMap=None,
+    ):
+        """The type the content model locally declares for a node's name.
+
+        Walks the generated type hierarchy: a restriction replaces the
+        base's particle tree, but the locally declared type recurses to
+        the base type definition before it is absent (XSD 1.1 §3.8.6.3,
+        wild068). A substitution-group member of a declared head is
+        *implicitly* contained by the model, and the member's own
+        declaration carries the locally declared type.
+        """
+        nodeName = cls._node_name(subElement)
+        head = (memberHeadMap or {}).get(nodeName)
+        for klass in type(instance).__mro__:
+            model = klass.__dict__.get("_contentModel_")
+            if model is None:
+                continue
+            declaration = locally_declared_element(model, nodeName)
+            if declaration is not None:
+                return cls._declarationType(declaration)
+            if head is not None and locally_declared_element(model, head) is not None:
+                return cls._declarationType(descriptor)
+        return None
+
+    @staticmethod
+    def _declarationType(declaration):
+        """The declared type class of a declaration, or ``None``."""
+        if declaration is None:
+            return None
+        getter = getattr(declaration, "getType", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Instance tree construction
@@ -849,7 +963,7 @@ class SchemaBase:
                 # particle. Bind it through that particle even when a
                 # declaration with the same name exists elsewhere in the
                 # model: position decides, not the name.
-                cls._bindWildcardChild(instance, subElement, admitted.spec)
+                cls._bindWildcardChild(instance, subElement, admitted.spec, memberHeadMap)
                 continue
 
             matched = False
@@ -915,7 +1029,7 @@ class SchemaBase:
                     else:
                         wildcardSpec = WildcardSpec()
                 if wildcardSpec is not None:
-                    cls._bindWildcardChild(instance, subElement, wildcardSpec)
+                    cls._bindWildcardChild(instance, subElement, wildcardSpec, memberHeadMap)
                 elif _mode_for(cls).undeclared_content == "generic":
                     instance._children_.append(cls.makeGenericInstance(subElement))
         return instance
@@ -1676,7 +1790,7 @@ class SchemaBase:
         return instance
 
     @classmethod
-    def makeGenericInstance(cls, elementTag):
+    def makeGenericInstance(cls, elementTag, skipped=False):
         """Builds a pass-through instance for wildcard (``xs:any``)
         content.
 
@@ -1687,12 +1801,20 @@ class SchemaBase:
         instance's type declares a wildcard.
 
         - ``elementTag`` - the undeclared xml element to store raw.
+        - ``skipped`` - mark the subtree as bound by a
+          ``processContents="skip"`` wildcard. The marker (checked by
+          the identity-constraint walk) is only set when true, so
+          ordinary generic instances are unchanged.
         """
         instance = SchemaBase()
         instance._name_ = cls._node_name(elementTag)
         instance._attribs_ = dict(elementTag.attrib)
+        if skipped:
+            instance._skipped_ = True
         cls.addValueTo(instance, elementTag)
-        instance._children_ = [cls.makeGenericInstance(child) for child in elementTag]
+        instance._children_ = [
+            cls.makeGenericInstance(child, skipped=skipped) for child in elementTag
+        ]
         return instance
 
     # ------------------------------------------------------------------

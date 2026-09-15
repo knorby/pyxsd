@@ -19,6 +19,32 @@ from typing import Any
 # did.
 _BOOLEAN_INTEGER_EXCEPTION = ("Boolean", "Integer")
 
+#: Built-in types pyxsd stores under ``String`` for textual binding, but
+#: that XSD defines as primitives (or as list types) and therefore does
+#: *not* derive from ``xs:string``/``xs:normalizedString``/``xs:token``.
+#: The storage lattice makes them subclasses, so the relation has to be
+#: corrected here (wild062.n3: an ``xsi:type="xs:time"`` governing type
+#: is not substitutable for a locally declared ``xs:string``).
+_STRING_STORAGE_PRIMITIVES = (
+    "AnyURI",
+    "QName",
+    "NOTATION",
+    "HexBinary",
+    "Base64Binary",
+    "DateTime",
+    "Date",
+    "Time",
+    "GYear",
+    "GYearMonth",
+    "GMonth",
+    "GMonthDay",
+    "GDay",
+    "Duration",
+    "IDREFS",
+    "ENTITIES",
+    "NMTOKENS",
+)
+
 
 def blockTokens(value: Any) -> frozenset[str]:
     """Splits an XSD ``block``/``final`` attribute into its tokens."""
@@ -46,6 +72,78 @@ def _builtinNotDerived(override: type, declared: type) -> bool:
         and _pythonDerived(declared, integer)
         and not _pythonDerived(declared, boolean)
     )
+
+
+def _integerDerivesFromDecimal(override: type, declared: type) -> bool:
+    """The XSD ``xs:decimal`` → ``xs:integer`` step, missing from Python.
+
+    XSD derives the whole integer family from ``xs:decimal``, but the
+    Python lattice maps ``xs:integer`` onto ``int`` and ``xs:decimal``
+    onto ``decimal.Decimal``, which are unrelated classes. Only the
+    built-in ``xs:decimal`` itself bridges: a user type derived from it
+    is a restriction, and an integer is not derived from just any
+    restriction of decimal.
+    """
+    from pyxsd import xsd_data_types
+
+    decimal = getattr(xsd_data_types, "Decimal", None)
+    integer = getattr(xsd_data_types, "Integer", None)
+    if decimal is None or integer is None or declared is not decimal:
+        return False
+    return _pythonDerived(override, integer)
+
+
+def _stringPrimitiveNotDerived(override: type, declared: type) -> bool:
+    """Whether the storage lattice wrongly derives *override* from *declared*.
+
+    Fires only for an XSD string-family *declared* type and an
+    *override* that XSD defines as a primitive or list type: the Python
+    ``str`` hierarchy derives them from ``String`` where XSD does not.
+    """
+    from pyxsd import xsd_data_types
+
+    string = getattr(xsd_data_types, "String", None)
+    if string is None:
+        return False
+    try:
+        if not issubclass(declared, string):
+            return False
+    except TypeError:
+        return False
+    for name in _STRING_STORAGE_PRIMITIVES:
+        primitive = getattr(xsd_data_types, name, None)
+        if primitive is not None and _pythonDerived(override, primitive):
+            return True
+    return False
+
+
+def derived_from_union_member(derived: type | None, base: type | None) -> bool:
+    """Whether *derived* is validly derived from a (transitive) member
+    type of a union base (Type Derivation OK (Simple), union clause).
+
+    A restricting type may also restrict a *member that is itself a
+    union* (saxonSimple012: ``sub-chap`` restricts ``dt``, a member of
+    ``chap``): such an ancestor is a subtype of the base union exactly
+    when its own (flattened) members are all members of the base. Used
+    by the particle-derivation type clause and by the dynamic EDC check
+    (wild066: a governing ``xs:date`` is compatible with a locally
+    declared ``union(xs:date, xs:time)``).
+    """
+    if derived is None or base is None:
+        return False
+    base_members = getattr(base, "_unionMembers", None)
+    if not base_members:
+        return False
+    for ancestor in derived.__mro__:
+        if any(isinstance(b, type) and issubclass(ancestor, b) for b in base_members):
+            return True
+        ancestor_members = getattr(ancestor, "_unionMembers", None)
+        if ancestor_members and all(
+            any(isinstance(b, type) and issubclass(member, b) for b in base_members)
+            for member in ancestor_members
+        ):
+            return True
+    return False
 
 
 def combinedBlock(elementBlock: Any, declaredCls: type | None) -> frozenset[str]:
@@ -113,8 +211,12 @@ def is_validly_derived(
     if override is declared:
         return None
     derived = _pythonDerived(override, declared)
-    if derived and _builtinNotDerived(override, declared):
+    if derived and (
+        _builtinNotDerived(override, declared) or _stringPrimitiveNotDerived(override, declared)
+    ):
         derived = False
+    if not derived and _integerDerivesFromDecimal(override, declared):
+        derived = True
     if not derived:
         return "not-derived"
 

@@ -614,3 +614,203 @@ class TestIdentityFieldCardinality:
             tmp_path,
         )
         assert any(issue.code == "identity-key" for issue in parser.report.issues)
+
+
+_SAMPLE_NS = "http://example.com/sample"
+
+
+def _parse11(schema_text, instance_text, tmp_path):
+    """Parses an inline instance against an inline schema under the
+    standards (namespaced) policy, where skip wildcards are in effect."""
+    from pyxsd.binding import ParseModes
+
+    schema_path = tmp_path / "schema.xsd"
+    schema_path.write_text(schema_text)
+    instance_path = tmp_path / "instance.xml"
+    instance_path.write_text(instance_text)
+    return PyXSD(
+        instance_path,
+        xsdFile=schema_path,
+        xmlFileOutput="_No_Output_",
+        transformOutputName="_No_Output_",
+        mode=ParseModes.NAMESPACED,
+    )
+
+
+def _skipped_content_schema(constraints: str) -> str:
+    """The wild101-wild104 shape: a ``wrapper`` whose type admits any
+    content with ``processContents="skip"``, and a ``doc`` carrying
+    identity constraints over ``.//s:note``."""
+    return (
+        f'<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        f' xmlns:s="{_SAMPLE_NS}" targetNamespace="{_SAMPLE_NS}"'
+        f' elementFormDefault="qualified">'
+        '  <xs:element name="doc">'
+        "    <xs:complexType>"
+        "      <xs:sequence>"
+        '        <xs:choice maxOccurs="unbounded">'
+        '          <xs:element ref="s:note"/>'
+        '          <xs:element ref="s:ref"/>'
+        '          <xs:element ref="s:wrapper"/>'
+        "        </xs:choice>"
+        "      </xs:sequence>"
+        "    </xs:complexType>"
+        f"{constraints}"
+        "  </xs:element>"
+        '  <xs:element name="note">'
+        "    <xs:complexType>"
+        '      <xs:attribute name="id" type="xs:string" use="optional"/>'
+        "    </xs:complexType>"
+        "  </xs:element>"
+        '  <xs:element name="ref">'
+        "    <xs:complexType>"
+        '      <xs:attribute name="to" type="xs:string" use="optional"/>'
+        "    </xs:complexType>"
+        "  </xs:element>"
+        '  <xs:element name="wrapper">'
+        '    <xs:complexType mixed="true">'
+        "      <xs:sequence>"
+        '        <xs:any maxOccurs="unbounded" minOccurs="0"'
+        ' namespace="##any" processContents="skip"/>'
+        "      </xs:sequence>"
+        "    </xs:complexType>"
+        "  </xs:element>"
+        "</xs:schema>"
+    )
+
+
+_KEY = (
+    '    <xs:key name="id-keys">'
+    '      <xs:selector xpath=".//s:note"/>'
+    '      <xs:field xpath="@id"/>'
+    "    </xs:key>\n"
+)
+
+_UNIQUE = (
+    '    <xs:unique name="id-keys">'
+    '      <xs:selector xpath=".//s:note"/>'
+    '      <xs:field xpath="@id"/>'
+    "    </xs:unique>\n"
+)
+
+_KEYREF = (
+    _KEY + '    <xs:keyref name="ref-keys" refer="s:id-keys">'
+    '      <xs:selector xpath=".//s:ref"/>'
+    '      <xs:field xpath="@to"/>'
+    "    </xs:keyref>\n"
+)
+
+_DOC_OPEN = f'<doc xmlns="{_SAMPLE_NS}">'
+
+
+class TestIdentityConstraintsSkipSkippedWildcardContent:
+    """Content matched by a ``processContents="skip"`` wildcard is
+    skipped (XSD 1.1 §3.3.4.2), so identity constraints must not select
+    it: a missing or duplicate field value there is legal, and a keyref
+    does not resolve through it. The declared ``wrapper`` element itself
+    is not skipped."""
+
+    def test_key_ignores_a_missing_field_in_skipped_content(self, tmp_path):
+        # wild101.v2: the note inside wrapper has no id.
+        parser = _parse11(
+            _skipped_content_schema(_KEY),
+            _DOC_OPEN + '<note id="note1"/><wrapper><note/></wrapper></doc>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_key_ignores_a_duplicate_value_in_skipped_content(self, tmp_path):
+        # wild101.v3: the skipped note repeats the declared note's id.
+        parser = _parse11(
+            _skipped_content_schema(_KEY),
+            _DOC_OPEN + '<note id="note1"/><wrapper><note id="note1"/></wrapper></doc>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_key_still_reports_a_duplicate_in_declared_content(self, tmp_path):
+        # wild101.n1: both duplicates are declared content.
+        parser = _parse11(
+            _skipped_content_schema(_KEY),
+            _DOC_OPEN + '<note id="note1"/><note id="note1"/>'
+            '<wrapper><note id="note3"/></wrapper></doc>',
+            tmp_path,
+        )
+        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+
+    def test_key_still_reports_a_missing_field_in_declared_content(self, tmp_path):
+        # wild101.n2: the missing id is in declared content.
+        parser = _parse11(
+            _skipped_content_schema(_KEY),
+            _DOC_OPEN + '<note id="note1"/><note/><wrapper><note id="note2"/></wrapper></doc>',
+            tmp_path,
+        )
+        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+
+    def test_unique_ignores_a_duplicate_value_in_skipped_content(self, tmp_path):
+        # wild102.v3 (the unique twin of wild101.v3).
+        parser = _parse11(
+            _skipped_content_schema(_UNIQUE),
+            _DOC_OPEN + '<note id="note1"/><wrapper><note id="note1"/></wrapper></doc>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_unique_ignores_a_missing_field_in_skipped_content(self, tmp_path):
+        # wild102.v2 (the unique twin of wild101.v2).
+        parser = _parse11(
+            _skipped_content_schema(_UNIQUE),
+            _DOC_OPEN + '<note id="note1"/><wrapper><note/></wrapper></doc>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_unique_still_reports_a_duplicate_in_declared_content(self, tmp_path):
+        # wild102.n1: both duplicates are declared content.
+        parser = _parse11(
+            _skipped_content_schema(_UNIQUE),
+            _DOC_OPEN + '<note id="note1"/><note id="note1"/>'
+            '<wrapper><note id="note3"/></wrapper></doc>',
+            tmp_path,
+        )
+        assert any(issue.code == "identity-unique" for issue in parser.report.issues)
+
+    def test_keyref_does_not_resolve_through_skipped_content(self, tmp_path):
+        # A ref inside the skip wildcard is not part of the keyref's
+        # selection, so its unmatched value is legal.
+        parser = _parse11(
+            _skipped_content_schema(_KEYREF),
+            _DOC_OPEN + '<note id="note1"/><wrapper><ref to="missing"/></wrapper></doc>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_keyref_still_resolves_declared_content(self, tmp_path):
+        # Control: the same ref as declared content fails the keyref.
+        parser = _parse11(
+            _skipped_content_schema(_KEYREF),
+            _DOC_OPEN + '<note id="note1"/><ref to="missing"/></doc>',
+            tmp_path,
+        )
+        assert any(issue.code == "identity-keyref" for issue in parser.report.issues)
+
+    def test_declared_wrapper_element_itself_is_not_skipped(self, tmp_path):
+        # wild101-104 skip only the wildcard content *inside* wrapper:
+        # a key selecting the wrapper elements still sees them, so a
+        # duplicate wrapper id is reported.
+        schema = _skipped_content_schema(
+            '    <xs:key name="wrap-keys">'
+            '      <xs:selector xpath=".//s:wrapper"/>'
+            '      <xs:field xpath="@id"/>'
+            "    </xs:key>\n"
+        ).replace(
+            '<xs:complexType mixed="true">',
+            '<xs:complexType mixed="true">'
+            '<xs:attribute name="id" type="xs:string" use="optional"/>',
+        )
+        parser = _parse11(
+            schema,
+            _DOC_OPEN + '<wrapper id="w1"/><wrapper id="w1"/></doc>',
+            tmp_path,
+        )
+        assert any(issue.code == "identity-key" for issue in parser.report.issues)

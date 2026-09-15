@@ -7,6 +7,24 @@ from pyxsd.namespaces import local_name, namespace_of
 logger = logging.getLogger(__name__)
 
 
+def _xsd_derived(value_cls: type | None, declared_cls: type | None) -> bool:
+    """Whether *value_cls* is validly derived from *declared_cls* in XSD.
+
+    Mirrors the storage check: an ``xsi:type`` value may be a Python
+    subclass of the declared type, or XSD-derived where the Python
+    lattice does not mirror the XSD hierarchy (``xs:integer`` from
+    ``xs:decimal``, wild064.v2). Unresolvable pairs are not derived.
+    """
+    if value_cls is None or declared_cls is None:
+        return False
+    from pyxsd.derivation import is_validly_derived
+
+    try:
+        return is_validly_derived(value_cls, declared_cls) is None
+    except Exception:
+        return False
+
+
 class Element(ElementRepresentative):
     """The class for the element tag.
 
@@ -269,13 +287,17 @@ class Element(ElementRepresentative):
         descriptor-protocol behavior.
         """
         if not isinstance(value, self.getType()):
-            # Under the ``raw`` invalid-value policy a primitive child
-            # whose lexical value failed validation is bound as a plain
-            # string so no data is lost; the validation report still
-            # records the problem.
+            # An xsi:type value may be XSD-derived without being a Python
+            # subclass (the xs:decimal → xs:integer step). Under the
+            # ``raw`` invalid-value policy a primitive child whose
+            # lexical value failed validation is bound as a plain string
+            # so no data is lost; the validation report still records
+            # the problem.
             parser = getattr(self, "pyXSD", None)
             policy = getattr(parser, "mode", None)
-            if getattr(policy, "invalid_value", "drop") != "raw":
+            if getattr(policy, "invalid_value", "drop") != "raw" and not _xsd_derived(
+                type(value), self.getType()
+            ):
                 raise TypeError(
                     f"{value!r} is not an instance of the type of element "
                     f"{self.name!r} ({self.getType().__name__})"

@@ -70,6 +70,29 @@ def parse(tmp_path, monkeypatch):
     return _parse
 
 
+@pytest.fixture
+def validate(tmp_path):
+    """Parse an inline instance against an inline schema and return the parser."""
+    schema_path = tmp_path / "schema.xsd"
+    instance_path = tmp_path / "instance.xml"
+
+    def _validate(schema_string: str, instance_string: str) -> PyXSD:
+        schema_path.write_text(schema_string, encoding="utf-8")
+        instance_path.write_text(instance_string, encoding="utf-8")
+        return PyXSD(
+            str(instance_path),
+            str(schema_path),
+            xmlFileOutput=False,
+            mode=ParseModes.NAMESPACED,
+        )
+
+    return _validate
+
+
+def instance_codes(parser) -> set[str]:
+    return {issue.code for issue in parser.report.for_phase("instance")}
+
+
 # ---------------------------------------------------------------------------
 # Rule 1: the data model
 # ---------------------------------------------------------------------------
@@ -900,3 +923,325 @@ class TestStaticTighterEDC:
             "</xs:sequence></xs:complexType>"
         )
         assert not report.has_errors
+
+
+# ---------------------------------------------------------------------------
+# Rule 5: dynamic tighter EDC (corpus characterization)
+# ---------------------------------------------------------------------------
+
+_INSTANCE_XSI = (
+    "xmlns:xs='http://www.w3.org/2001/XMLSchema' "
+    "xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance'"
+)
+
+
+class TestDynamicTighterEDC:
+    """Element Locally Valid (Complex Type) clause 5, the instance-phase
+    counterpart of cos-element-consistent ("dynamic EDC", bug 5970).
+
+    An element admitted by a strict or lax wildcard whose expanded name
+    also matches a declaration in the content model is assessed against
+    the wildcard-selected (or ``xsi:type``) governing type; that type
+    must be the same as, or validly derived from, the model's declared
+    type for the name. ``processContents="skip"`` is exempt (skipped
+    items have no governing type definition). The corpus shapes are
+    condensed from the Saxon ``Wild`` suite (wild062-064, wild067,
+    wild068, wild075-077) and IBM EDCWildcard s3_8_6.
+    """
+
+    def _doc_body(self, local_e: str, global_e: str, wildcard: str) -> str:
+        return (
+            "<xs:complexType name='zing'><xs:sequence>"
+            f"<xs:element name='e' type='{local_e}'/>"
+            "<xs:element name='f' type='xs:string'/>"
+            f"<xs:any namespace='##local' processContents='{wildcard}'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:element name='doc' type='zing'/>"
+            f"<xs:element name='e' type='{global_e}'/>"
+        )
+
+    def test_wild062_n1_unrelated_governing_type_is_invalid(self, validate):
+        # wild062.n1: the second e is admitted by the lax wildcard and
+        # governed by the global e (xs:time); the local e is xs:date.
+        parser = validate(
+            XSD_HEAD + self._doc_body("xs:date", "xs:time", "lax") + XSD_TAIL,
+            "<doc><e>2008-11-03</e><f/><e>12:20:02</e></doc>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def test_wild062_n2_governing_xsi_type_is_invalid(self, validate):
+        # wild062.n2: xsi:type="xs:time" names the governing type, which
+        # is still not derived from the local xs:date.
+        parser = validate(
+            XSD_HEAD + self._doc_body("xs:date", "xs:time", "lax") + XSD_TAIL,
+            f"<doc><e>2008-11-03</e><f/><e {_INSTANCE_XSI} xsi:type='xs:time'>12:20:02</e></doc>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def test_wild062_n3_xsi_type_on_a_wildcard_child_is_invalid(self, validate):
+        # wild062.n3: the second f has no global declaration; the
+        # instance-specified xs:time is the governing type and is not
+        # derived from the local f's xs:string.
+        parser = validate(
+            XSD_HEAD + self._doc_body("xs:date", "xs:time", "lax") + XSD_TAIL,
+            f"<doc><e>2008-11-03</e><f/><f {_INSTANCE_XSI} xsi:type='xs:time'>12:20:02</f></doc>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def test_wild062_v1_undeclared_wildcard_child_is_valid(self, validate):
+        # wild062.v1: g is undeclared; a lax wildcard skips it, so there
+        # is no governing type definition and clause 5 does not apply.
+        parser = validate(
+            XSD_HEAD + self._doc_body("xs:date", "xs:time", "lax") + XSD_TAIL,
+            "<doc><e>2008-11-03</e><f/><g>12:20:02</g></doc>",
+        )
+        assert not parser.report.has_errors
+
+    def _integer_body(self, wildcard: str = "lax") -> str:
+        return (
+            "<xs:complexType name='zing'><xs:sequence>"
+            "<xs:element name='e' type='xs:integer'/>"
+            "<xs:element name='f' type='xs:integer'/>"
+            f"<xs:any namespace='##local' processContents='{wildcard}'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:element name='doc' type='zing'/>"
+            "<xs:element name='e' type='xs:positiveInteger'/>"
+        )
+
+    def test_wild063_n1_governing_value_is_still_validated(self, validate):
+        # wild063.n1: positiveInteger is derived from integer, so the
+        # EDC clause passes; the lax wildcard still validates -12 against
+        # the global positiveInteger it selects. Pins that the global
+        # declaration survives a same-named local one.
+        parser = validate(
+            XSD_HEAD + self._integer_body() + XSD_TAIL,
+            "<doc><e>-12</e><f>42</f><e>-12</e></doc>",
+        )
+        assert parser.report.has_errors
+
+    def test_wild063_v1_derived_governing_type_is_valid(self, validate):
+        # wild063.v1: a positive value is fine for the selected global.
+        parser = validate(
+            XSD_HEAD + self._integer_body() + XSD_TAIL,
+            "<doc><e>-12</e><f>42</f><e>12</e></doc>",
+        )
+        assert not parser.report.has_errors
+
+    def test_wild063_n2_base_governing_type_is_invalid(self, validate):
+        # wild063.n2: xs:decimal (a base of xs:integer) does not satisfy
+        # the direction of the clause.
+        parser = validate(
+            XSD_HEAD + self._integer_body() + XSD_TAIL,
+            f"<doc><e>-12</e><f>42</f><f {_INSTANCE_XSI} xsi:type='xs:decimal'>12.5</f></doc>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def test_wild063_v2_derived_xsi_type_is_valid(self, validate):
+        # wild063.v2: xs:byte is derived from the local xs:integer.
+        parser = validate(
+            XSD_HEAD + self._integer_body() + XSD_TAIL,
+            f"<doc><e>-12</e><f>42</f><f {_INSTANCE_XSI} xsi:type='xs:byte'>3</f></doc>",
+        )
+        assert not parser.report.has_errors
+
+    def _substitution_body(self) -> str:
+        return (
+            XSD_HEAD + "<xs:complexType name='zing'><xs:sequence>"
+            "<xs:element name='e' type='xs:integer'/>"
+            "<xs:element name='f' type='xs:integer'/>"
+            "<xs:any namespace='##local' processContents='lax'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:element name='doc' type='zing'/>"
+            "<xs:element name='e' type='xs:decimal'/>"
+            "<xs:element name='g' substitutionGroup='e' type='xs:byte'/>" + XSD_TAIL
+        )
+
+    def test_wild064_n1_base_governing_type_is_invalid(self, validate):
+        # wild064.n1: the wildcard-selected global e is xs:decimal, a
+        # base of the local xs:integer (93.7 is a valid decimal, so the
+        # EDC clause is the deciding rule).
+        parser = validate(
+            self._substitution_body(),
+            "<doc><e>-12</e><f>42</f><e>93.7</e></doc>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def test_wild064_v1_substitution_member_is_valid(self, validate):
+        # wild064.v1: g is implicitly contained (it is in e's
+        # substitution group) and both its governing and locally
+        # declared type are xs:byte.
+        parser = validate(
+            self._substitution_body(),
+            "<doc><e>-12</e><f>42</f><g>6</g></doc>",
+        )
+        assert not parser.report.has_errors
+
+    def test_wild064_v2_xsi_type_derived_from_the_local_type_is_valid(self, validate):
+        # wild064.v2: xs:int is derived from the local xs:integer even
+        # though the selected global e is xs:decimal.
+        parser = validate(
+            self._substitution_body(),
+            f"<doc><e>-12</e><f>42</f><e {_INSTANCE_XSI} xsi:type='xs:int'>93</e></doc>",
+        )
+        assert not parser.report.has_errors
+
+    def test_wild066_v1_union_member_governing_type_is_valid(self, validate):
+        # wild066.v1: the governing global e is xs:date, a member of the
+        # locally declared union(xs:date, xs:time), so the clause is
+        # satisfied (the union analogue of the derived-type direction).
+        parser = validate(
+            XSD_HEAD + "<xs:complexType name='zing'><xs:sequence>"
+            "<xs:element name='e'><xs:simpleType>"
+            "<xs:union memberTypes='xs:date xs:time'/>"
+            "</xs:simpleType></xs:element>"
+            "<xs:element name='f' type='xs:integer'/>"
+            "<xs:any namespace='##local' processContents='lax'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:element name='doc' type='zing'/>"
+            "<xs:element name='e' type='xs:date'/>" + XSD_TAIL,
+            "<doc><e>12:12:00</e><f>42</f><e>2008-11-02</e></doc>",
+        )
+        assert not parser.report.has_errors
+
+    def test_wild067_union_governing_type_is_invalid(self, validate):
+        # wild067.n1: xs:duration is not a member of the local union.
+        parser = validate(
+            XSD_HEAD + "<xs:complexType name='zing'><xs:sequence>"
+            "<xs:element name='e'><xs:simpleType>"
+            "<xs:union memberTypes='xs:date xs:time'/>"
+            "</xs:simpleType></xs:element>"
+            "<xs:element name='f' type='xs:integer'/>"
+            "<xs:any namespace='##local' processContents='lax'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:element name='doc' type='zing'/>"
+            "<xs:element name='e' type='xs:duration'/>" + XSD_TAIL,
+            "<doc><e>12:12:00</e><f>42</f><e>PT12H</e></doc>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def test_wild068_base_type_particle_is_still_locally_declared(self, validate):
+        # wild068.n1: zang's restriction drops the e particle, but the
+        # locally declared type recurses to the base type (zing) before
+        # it is absent, so the duration governing type is still
+        # inconsistent.
+        parser = validate(
+            XSD_HEAD + "<xs:complexType name='zing'><xs:sequence>"
+            "<xs:element name='e' minOccurs='0'><xs:simpleType>"
+            "<xs:union memberTypes='xs:date xs:time'/>"
+            "</xs:simpleType></xs:element>"
+            "<xs:element name='f' type='xs:integer'/>"
+            "<xs:any namespace='##local' processContents='lax'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:complexType name='zang'><xs:complexContent>"
+            "<xs:restriction base='zing'><xs:sequence>"
+            "<xs:element name='f' type='xs:integer'/>"
+            "<xs:any namespace='##local' processContents='lax'/>"
+            "</xs:sequence></xs:restriction>"
+            "</xs:complexContent></xs:complexType>"
+            "<xs:element name='doc' type='zang'/>"
+            "<xs:element name='e' type='xs:duration'/>" + XSD_TAIL,
+            "<doc><f>42</f><e>PT12H</e></doc>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def _wild075_body(self, process_contents: str) -> str:
+        return (
+            XSD_HEAD + "<xs:element name='root' type='zing'/>"
+            "<xs:complexType name='zing'><xs:sequence>"
+            "<xs:element name='a' type='xs:integer'/>"
+            f"<xs:any namespace='##local' processContents='{process_contents}'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:element name='a' type='xs:date'/>" + XSD_TAIL
+        )
+
+    def test_wild075_strict_wildcard_governing_type_is_invalid(self, validate):
+        # wild075.n1 (also wild076.n1's instance, via the test-set's
+        # shared href): the second a is governed by the global a
+        # (xs:date) and the local a is xs:integer.
+        parser = validate(
+            self._wild075_body("strict"),
+            "<root><a>23</a><a>2010-10-16</a></root>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def test_wild076_lax_wildcard_governing_type_is_invalid(self, validate):
+        # wild076.n1 against wild076.xsd: same shape with a lax wildcard.
+        parser = validate(
+            self._wild075_body("lax"),
+            "<root><a>23</a><a>2010-10-16</a></root>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def test_wild077_skip_wildcard_is_exempt_from_the_edc_clause(self, validate):
+        # wild077/wild080: a skip wildcard leaves the second a with no
+        # governing type definition, so the clause does not fire.
+        parser = validate(
+            self._wild075_body("skip"),
+            "<root><a>23</a><a>2010-10-16</a></root>",
+        )
+        assert not parser.report.has_errors
+
+    def _edc_wildcard_body(self) -> str:
+        return (
+            "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'"
+            " targetNamespace='urn:b' xmlns:b='urn:b'"
+            " elementFormDefault='qualified'>"
+            "<xs:complexType name='t'><xs:sequence>"
+            "<xs:element name='x' type='xs:string' minOccurs='0'/>"
+            "<xs:any namespace='urn:b' processContents='lax' minOccurs='0'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:element name='x' type='xs:integer'/>"
+            "<xs:element name='root' type='b:t'/>"
+            "</xs:schema>"
+        )
+
+    def test_s3_8_6_v01_governing_integer_against_local_string_is_invalid(self, validate):
+        # IBM EDCWildcard s3_8_6v01i. The test metadata's expectation
+        # was changed to "invalid" in response to bug #12130 (the
+        # directory name "valid" predates that): the lax wildcard
+        # selects the global xs:integer x, and the same-named local
+        # particle is xs:string. The brief's "v01 valid" is inverted;
+        # the corpus wins.
+        parser = validate(
+            self._edc_wildcard_body(),
+            "<root xmlns='urn:b'><x>a</x><x>3</x></root>",
+        )
+        assert parser.report.has_errors
+        assert "element-consistent" in instance_codes(parser)
+
+    def test_s3_8_6_ii01_governing_integer_value_is_invalid(self, validate):
+        # s3_8_6ii01i: the same EDC violation, and "v" is not an
+        # integer either.
+        parser = validate(
+            self._edc_wildcard_body(),
+            "<root xmlns='urn:b'><x>a</x><x>v</x></root>",
+        )
+        assert parser.report.has_errors
+
+    def test_governing_type_derived_from_the_local_type_is_valid(self, validate):
+        # A valid control: the global x is xs:string, so the same-named
+        # local particle's type is not violated by the wildcard-selected
+        # declaration.
+        parser = validate(
+            "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'"
+            " targetNamespace='urn:b' xmlns:b='urn:b'"
+            " elementFormDefault='qualified'>"
+            "<xs:complexType name='t'><xs:sequence>"
+            "<xs:element name='x' type='xs:string' minOccurs='0'/>"
+            "<xs:any namespace='urn:b' processContents='lax' minOccurs='0'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:element name='x' type='xs:token'/>"
+            "<xs:element name='root' type='b:t'/>"
+            "</xs:schema>",
+            "<root xmlns='urn:b'><x>a</x><x>3</x></root>",
+        )
+        assert not parser.report.has_errors

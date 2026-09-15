@@ -66,7 +66,16 @@ def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> N
 
 
 def _walk(instance: Any, scopes: KeyScopes, report: ValidationReport) -> None:
-    """Applies the constraints of ``instance`` and recurses downward."""
+    """Applies the constraints of ``instance`` and recurses downward.
+
+    A subtree bound by a ``processContents="skip"`` wildcard is skipped
+    (XSD 1.1 §3.3.4.2): the walk neither applies the (absent)
+    declaration's constraints to it nor lets its descendants serve as
+    key/unique/keyref selections. ``_childrenOf`` hides skipped
+    subtrees, so this guard only fires when the walk starts inside one.
+    """
+    if getattr(instance, "_skipped_", False):
+        return None
     descriptor = getattr(instance, "_descriptor_", None)
     identities = list(getattr(descriptor, "identities", []) or []) if descriptor is not None else []
 
@@ -357,8 +366,18 @@ def _descendantOrSelfNodes(node: Any) -> list[Any]:
 
 
 def _childrenOf(node: Any) -> list[Any]:
-    """Returns the bound child instances of a bound node."""
-    return list(getattr(node, "_children_", None) or [])
+    """Returns the bound child instances of a bound node.
+
+    Subtrees bound by a ``processContents="skip"`` wildcard are not
+    part of identity-constraint selection (XSD 1.1 §3.3.4.2), so they
+    are hidden from the walk, the descendant-or-self axis and every
+    child step.
+    """
+    return [
+        child
+        for child in (getattr(node, "_children_", None) or [])
+        if not getattr(child, "_skipped_", False)
+    ]
 
 
 def _nameOf(node: Any) -> str:

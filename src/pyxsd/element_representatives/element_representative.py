@@ -1174,23 +1174,36 @@ class ElementRepresentative:
 
         Each parser owns a :class:`ComponentTable` (created by the
         schema ER), so a later parser cannot see or overwrite earlier
-        declarations. Declarations are keyed by name and kind: the
-        first declaration of a given (kind, name) wins, while a
-        different kind may register the same name.
+        declarations. Declarations are keyed by name and kind, and the
+        first declaration of a given (kind, name) wins — except that a
+        local (or global) **element** declaration must not shadow a
+        same-named declaration of the other scope: wildcard admission
+        and the XSD 1.1 dynamic EDC rule resolve the global declaration
+        a wildcard selects, and a local particle sharing the expanded
+        name is a distinct component (wild063/wild076). A different
+        kind may always register the same name.
         """
         table = _tableFor(obj)
         entries = table.setdefault(name, [])
         kind = componentKind(obj)
         namespace = obj.getNamespace()
-        if any(
-            componentKind(entry) == kind and entry.getNamespace() == namespace for entry in entries
-        ):
+        global_ = obj.isGlobalDeclaration()
+
+        def conflicts(entry) -> bool:
+            if componentKind(entry) != kind or entry.getNamespace() != namespace:
+                return False
+            if kind == "element":
+                return entry.isGlobalDeclaration() == global_
+            return True
+
+        if any(conflicts(entry) for entry in entries):
             logger.debug(
-                "an element representative named %r (kind %r, namespace %r) is "
-                "already registered; keeping the first one",
+                "an element representative named %r (kind %r, namespace %r, "
+                "global %r) is already registered; keeping the first one",
                 name,
                 kind,
                 namespace,
+                global_,
             )
             return
         entries.append(obj)

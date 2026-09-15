@@ -523,6 +523,25 @@ def particle_names(model: Particle | None) -> set[str]:
     return names
 
 
+def locally_declared_element(model: Particle | None, name: str) -> Any:
+    """The element declaration *name* contained by *model*, or ``None``.
+
+    Returns the declaration whose particle carries the instance name
+    *name* (a direct or indirect containment, XSD 1.1 §3.8.6.3). The
+    caller supplies the type's base models separately: a locally
+    declared type recurses to the base type definition before it can be
+    absent (wild068). Substitution-group membership is *implicit*
+    containment and needs the schema's member map, so that half is
+    resolved by the caller.
+    """
+    if model is None:
+        return None
+    for particle in _iter_particles(model):
+        if particle.kind == "element" and particle.name == name:
+            return particle.descriptor
+    return None
+
+
 def first_required_name(model: Particle | None) -> str | None:
     """The first particle that must occur at least once, if any."""
     if model is None:
