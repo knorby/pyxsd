@@ -1041,6 +1041,42 @@ class TestRecurseSequenceAlignment:
         derived = _group("sequence", _elt(_Declaration(name="f")))
         assert not is_valid_particle_restriction(base, derived, _decls_resolver)
 
+    def test_absorbing_within_supply_is_valid(self):
+        # the base compositor supplies two copies of its member (2 x 1), so
+        # two derived members may share it
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            min_occurs=1,
+            max_occurs=2,
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="a"), 0, 1),
+        )
+        assert not is_valid_particle_restriction(base, derived, no_resolver)
+
+    def test_absorbing_beyond_supply_fails(self):
+        # the base supplies at most two copies of its member (2 x 1); a
+        # derived sequence demanding five may not absorb them all
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            min_occurs=1,
+            max_occurs=2,
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="a"), 0, 1),
+        )
+        reasons = is_valid_particle_restriction(base, derived, no_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
     def test_equal_length_still_pairs_positionally(self):
         # particlesW011: same members, same order
         base = _group(

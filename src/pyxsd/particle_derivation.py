@@ -888,36 +888,53 @@ def _sequence_alignment_violations(
     A base member the enclosing compositor can supply more than once
     may serve several consecutive derived members — the 1.1 absorption
     reading, which lets ``seq{a, b}`` restrict a repeated choice of
-    the substitution-group heads (particlesZ028). Reordering is never
-    allowed (particlesW007/W013), nor is an extra derived member
+    the substitution-group heads (particlesZ028) — but never more
+    derived members than the member's occurrence supply: the product
+    of the compositor's and the member's maximum occurrences bounds
+    how many copies exist. Reordering is never allowed
+    (particlesW007/W013), nor is an extra derived member
     (particlesW012).
     """
     base_children = base.children
     derived_children = derived.children
-    memo: dict[tuple[int, int], bool] = {}
+    memo: dict[tuple[int, int, int], bool] = {}
     dead_ends: list[tuple[int, int, list[str]]] = []
 
-    def repeatable(position: int) -> bool:
-        """Whether base_children[position] can serve a second derived member.
+    def supply(position: int) -> int | None:
+        """How many copies base_children[position] can contribute.
 
         The compositor repeats its whole content, so the member's
-        effective supply is the product of the two maximums (``None``
-        meaning unbounded); two or more copies admit a shared mapping.
+        effective supply is the product of the two maximums; ``None``
+        means unbounded.
         """
         member = base_children[position]
         if base.max_occurs is None or member.max_occurs is None:
-            return True
-        return base.max_occurs * member.max_occurs >= 2
+            return None
+        return base.max_occurs * member.max_occurs
 
-    def walk(index: int, position: int) -> bool:
-        key = (index, position)
+    def walk(index: int, position: int, used: int) -> bool:
+        """Whether derived_children[index:] aligns from position onward.
+
+        ``used`` counts the derived members already served by
+        base_children[position]: the alignment is order-preserving, so
+        every use of one base member is consecutive on the derived
+        side, and a reuse may not exceed the member's supply. An
+        unbounded supply makes the counter irrelevant, so it is
+        normalized out of the memo key.
+        """
+        exhausted = position >= len(base_children)
+        available = None if exhausted else supply(position)
+        key = (index, position, 0 if exhausted or available is None else used)
         if key in memo:
             return memo[key]
         if index == len(derived_children):
+            # An empty tail matches zero members, so a derived sequence
+            # that stopped exactly at the end is aligned (all(...) over
+            # the empty slice is vacuously true).
             ok = all(member.min_occurs == 0 for member in base_children[position:])
             memo[key] = ok
             return ok
-        if position == len(base_children):
+        if exhausted:
             memo[key] = False
             return False
         member = derived_children[index]
@@ -932,20 +949,22 @@ def _sequence_alignment_violations(
             removable=False,
             check_occurs=check_occurs,
         )
-        if not reasons and (
-            walk(index + 1, position + 1) or (repeatable(position) and walk(index + 1, position))
-        ):
-            memo[key] = True
-            return True
+        if not reasons:
+            if walk(index + 1, position + 1, 0):
+                memo[key] = True
+                return True
+            if (available is None or used < available) and walk(index + 1, position, used + 1):
+                memo[key] = True
+                return True
         if reasons:
             dead_ends.append((index, position, reasons))
-        if base_children[position].min_occurs == 0 and walk(index, position + 1):
+        if base_children[position].min_occurs == 0 and walk(index, position + 1, 0):
             memo[key] = True
             return True
         memo[key] = False
         return False
 
-    if walk(0, 0):
+    if walk(0, 0, 0):
         return []
     if dead_ends:
         index, _position, reasons = min(dead_ends, key=lambda end: (end[0], end[1]))
