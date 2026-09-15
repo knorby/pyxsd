@@ -670,6 +670,9 @@ class PyXSD:
         restriction, the base type cannot be resolved to a compiled
         type, or either tree could not be compiled (the legacy flat
         fallback); each skip is logged at debug level with its reason.
+        A ``RecursionError`` from a pathologically large or nested pair
+        is likewise caught and logged, leaving the pair unverified
+        rather than crashing the parse.
         """
         if er.getDerivation() != "restriction":
             return
@@ -702,17 +705,28 @@ class PyXSD:
         resolver = lambda particle: getattr(particle, "descriptor", None)  # noqa: E731
         head_lookup = self._substitution_head_lookup(er)
         member_lookup = self._substitution_member_lookup(er)
-        for reason in is_valid_particle_restriction(
-            base_model,
-            derived_model,
-            resolver,
-            head_lookup=head_lookup,
-            member_lookup=member_lookup,
-        ):
-            self.report.add_error(reason, code="particle-restriction")
-        for reason in derived_wildcard_edc_violations(
-            base_model, derived_model, resolver, self._globalElementLookup(er)
-        ):
+        try:
+            reasons = list(
+                is_valid_particle_restriction(
+                    base_model,
+                    derived_model,
+                    resolver,
+                    head_lookup=head_lookup,
+                    member_lookup=member_lookup,
+                )
+            )
+            reasons.extend(
+                derived_wildcard_edc_violations(
+                    base_model, derived_model, resolver, self._globalElementLookup(er)
+                )
+            )
+        except RecursionError:
+            logger.debug(
+                "particle restriction: recursion limit hit checking %s; skipped",
+                getattr(er, "name", "?"),
+            )
+            return
+        for reason in reasons:
             self.report.add_error(reason, code="particle-restriction")
 
     def _reportMixedRestriction(self, er: Any) -> None:

@@ -22,6 +22,7 @@ from pyxsd.particle_derivation import (
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import WildcardSpec
+from pyxsd.xsd_data_types import Date
 
 ANY = WildcardSpec(namespace="##any")
 LOCAL = WildcardSpec(namespace="##local")
@@ -684,6 +685,18 @@ class _Unrelated:
     pass
 
 
+class _DateRestriction(Date):
+    """A user restriction of ``xs:date`` (a string-storage primitive)."""
+
+    _derivation_ = "restriction"
+
+
+class _DeepDateRestriction(_DateRestriction):
+    """A restriction of ``_DateRestriction``: same storage family."""
+
+    _derivation_ = "restriction"
+
+
 class _Constraint:
     """A stand-in identity constraint."""
 
@@ -800,6 +813,15 @@ class TestNameAndTypeOK:
         assert not _nameandtypeok(
             _Declaration(type_=_Restricted.__mro__[1]),
             _Declaration(type_=_Restricted),
+        )
+
+    def test_same_family_storage_restriction_type_is_valid(self):
+        # Both types restrict xs:date and are stored as String
+        # subclasses; the storage-lattice correction must not fire when
+        # the declared type shares the primitive.
+        assert not _nameandtypeok(
+            _Declaration(type_=_DateRestriction),
+            _Declaration(type_=_DeepDateRestriction),
         )
 
     def test_extension_derived_type_is_invalid(self):
@@ -1069,6 +1091,24 @@ class TestSchemaParticlesI:
         )
         issues = particle_restriction_issues(report)
         assert issues and "NameAndTypeOK" in issues[0].message
+
+    def test_same_family_storage_restriction_types_are_valid(self, parse):
+        # Both element types restrict xs:date and are stored as String
+        # subclasses; the pair must not read as unrelated because the
+        # declared type shares the primitive (the false NameAndTypeOK).
+        report = parse(
+            "<xs:simpleType name='D1'><xs:restriction base='xs:date'>"
+            "<xs:minInclusive value='2000-01-01'/></xs:restriction></xs:simpleType>"
+            "<xs:simpleType name='D2'><xs:restriction base='D1'>"
+            "<xs:minInclusive value='2001-01-01'/></xs:restriction></xs:simpleType>"
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:element name='d' type='D1'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:element name='d' type='D2'/></xs:sequence>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
 
     def test_added_nillable_is_invalid(self, parse):
         # particlesIa006
@@ -2724,5 +2764,41 @@ class TestPointlessRulesTopLevelGuards:
             "<xs:restriction base='base'><xs:sequence><xs:choice>"
             "<xs:element ref='m1'/><xs:element ref='m2'/>"
             "</xs:choice></xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+
+class TestLargeModelBudget:
+    """The matcher's recursion is bounded.
+
+    A restriction content model of a thousand members would otherwise
+    exhaust Python's recursion limit and crash ``PyXSD.__init__``; past
+    the budget the pair is left unverified (skip, not reject).
+    """
+
+    @staticmethod
+    def _members(count: int) -> list[Particle]:
+        return [Particle("element", 1, 1, [], f"e{index}") for index in range(count)]
+
+    def test_large_sequence_alignment_returns_unverified_not_recursion_error(self):
+        base = Particle("sequence", 1, 1, self._members(1200))
+        derived = Particle("sequence", 1, 1, self._members(1200))
+        assert is_valid_particle_restriction(base, derived, resolver=no_resolver) == []
+
+    def test_large_choice_mapping_returns_unverified_not_recursion_error(self):
+        base = Particle("choice", 1, 1, self._members(1200))
+        derived = Particle("choice", 1, 1, self._members(1200))
+        assert is_valid_particle_restriction(base, derived, resolver=no_resolver) == []
+
+    def test_large_schema_restriction_does_not_crash(self, parse):
+        members = "".join(
+            f"<xs:element name='e{index}' type='xs:string'/>" for index in range(1200)
+        )
+        report = parse(
+            f"<xs:complexType name='base'><xs:sequence>{members}</xs:sequence>"
+            "</xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            f"<xs:restriction base='base'><xs:sequence>{members}</xs:sequence>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
         )
         assert not particle_restriction_issues(report)

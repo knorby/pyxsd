@@ -25,6 +25,7 @@ from pyxsd.wildcards import (
     WildcardSpec,
     wildcard_declaration_problems,
     wildcard_spec,
+    wildcard_specs_overlap,
 )
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
@@ -193,6 +194,50 @@ class TestWildcardSpecParsing:
 
         spec = wildcard_spec({"notQName": "xsl:stylesheet"}, resolve_qname=resolve)
         assert spec.not_qname == frozenset({"xsl:stylesheet"})
+
+
+class TestWildcardSpecOverlap:
+    """The namespace-overlap predicate with 1.1 exclusions.
+
+    ``notNamespace`` complements the constraint the ``namespace``
+    attribute would give, so two wildcards whose written constraints
+    look overlapping can still be disjoint (and vice versa). Two
+    exclusion sets always share namespaces: each excludes finitely
+    many.
+    """
+
+    def test_namespace_admitted_only_where_the_other_excludes_is_disjoint(self):
+        admitted = WildcardSpec(namespace="urn:x")
+        excluded = WildcardSpec(not_namespace=frozenset({"urn:x"}))
+        assert not wildcard_specs_overlap(admitted, excluded)
+        assert not wildcard_specs_overlap(excluded, admitted)
+
+    def test_exclusion_still_overlaps_a_namespace_it_admits(self):
+        # Saxon all305: the base admits http://one.com/, the extension
+        # excludes only http://two.com/, so one.com is shared.
+        admitted = WildcardSpec(namespace="http://one.com/")
+        excluded = WildcardSpec(not_namespace=frozenset({"http://two.com/"}))
+        assert wildcard_specs_overlap(admitted, excluded)
+
+    def test_two_exclusion_specs_overlap(self):
+        first = WildcardSpec(not_namespace=frozenset({"urn:a"}))
+        second = WildcardSpec(not_namespace=frozenset({"urn:b"}))
+        assert wildcard_specs_overlap(first, second)
+
+    def test_exclusion_of_the_only_admitted_namespace_is_disjoint(self):
+        admitted = WildcardSpec(namespace="##local")
+        excluded = WildcardSpec(not_namespace=frozenset({"##local"}))
+        assert not wildcard_specs_overlap(admitted, excluded)
+
+    def test_literal_disjoint_namespaces_stay_disjoint(self):
+        assert not wildcard_specs_overlap(
+            WildcardSpec(namespace="urn:a"), WildcardSpec(namespace="urn:b")
+        )
+
+    def test_plain_overlap_is_unchanged(self):
+        assert wildcard_specs_overlap(
+            WildcardSpec(namespace="urn:a"), WildcardSpec(namespace="urn:a")
+        )
 
 
 class TestWildcardDeclarationGrammar:
@@ -925,6 +970,46 @@ class TestStaticTighterEDC:
         assert not report.has_errors
 
 
+class TestExtensionAllOverlapWithExclusions:
+    """All-extends-all wildcard overlap reads XSD 1.1 exclusions.
+
+    The composed ``all`` holds the base wildcards and the extension
+    wildcards; a base ``namespace`` wildcard and an extension
+    ``notNamespace`` wildcard are disjoint exactly when every namespace
+    the base admits is excluded. The Saxon all305 shape stays invalid.
+    """
+
+    _BASE_SHELL = (
+        "<xs:complexType name='base'><xs:all>"
+        "<xs:element name='a' type='xs:string'/>"
+        "<xs:any namespace='{base}' processContents='skip'/>"
+        "</xs:all></xs:complexType>"
+        "<xs:complexType name='derived'><xs:complexContent>"
+        "<xs:extension base='base'><xs:all>"
+        "<xs:any {extension} processContents='skip'/>"
+        "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
+    )
+
+    def test_disjoint_not_namespace_extension_wildcard_is_valid(self, parse):
+        report = parse(self._BASE_SHELL.format(base="urn:x", extension="notNamespace='urn:x'"))
+        assert not particle_restriction_issues(report)
+
+    def test_literal_disjoint_extension_wildcards_are_valid(self, parse):
+        report = parse(self._BASE_SHELL.format(base="urn:a", extension="namespace='urn:b'"))
+        assert not particle_restriction_issues(report)
+
+    def test_overlapping_not_namespace_extension_wildcard_is_invalid(self, parse):
+        # Saxon all305: the exclusion lists two.com, the base admits
+        # one.com, so the composed all is ambiguous.
+        report = parse(
+            self._BASE_SHELL.format(
+                base="http://one.com/", extension="notNamespace='http://two.com/'"
+            )
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "overlapping wildcards" in issues[0].message
+
+
 # ---------------------------------------------------------------------------
 # Rule 5: dynamic tighter EDC (corpus characterization)
 # ---------------------------------------------------------------------------
@@ -990,6 +1075,21 @@ class TestDynamicTighterEDC:
         )
         assert parser.report.has_errors
         assert "element-consistent" in instance_codes(parser)
+
+    def test_wild062_same_family_storage_restriction_is_valid(self, validate):
+        # The storage lattice makes xs:duration a String subclass, so a
+        # user restriction of it is too; the declared type is the same
+        # primitive, which the lattice correction must not read as an
+        # unrelated override.
+        schema = (
+            XSD_HEAD + "<xs:simpleType name='Dur'><xs:restriction base='xs:duration'/>"
+            "</xs:simpleType>" + self._doc_body("xs:duration", "xs:duration", "lax") + XSD_TAIL
+        )
+        parser = validate(
+            schema,
+            f"<doc><e>P1D</e><f/><e {_INSTANCE_XSI} xsi:type='Dur'>P1Y</e></doc>",
+        )
+        assert not parser.report.has_errors
 
     def test_wild062_v1_undeclared_wildcard_child_is_valid(self, validate):
         # wild062.v1: g is undeclared; a lax wildcard skips it, so there

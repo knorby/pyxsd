@@ -1311,6 +1311,13 @@ def _sorted_tokens(tokens: frozenset[str]) -> str:
 #: content models of this size do not occur in the corpus).
 _UNORDERED_NODE_BUDGET = 20000
 
+#: Recursion-depth budget for the choice/sequence matchers; past it the
+#: pair is left unverified rather than rejected (skip-not-reject
+#: posture — a valid restriction content model of a thousand members
+#: would otherwise exhaust Python's recursion limit and crash the
+#: parse).
+_ALIGNMENT_DEPTH_BUDGET = 500
+
 
 def _recurse_pairing_violations(
     base: Particle,
@@ -1411,6 +1418,8 @@ def _choice_mapping_violations(
     branch another one needs forces a different overall mapping.
     Group-ref choices among the derived members contribute their own
     branches to this choice's alternatives (``_choice_branches``).
+    Past ``_ALIGNMENT_DEPTH_BUDGET`` branches the mapping is left
+    unverified rather than rejected.
     """
     used: set[int] = set()
     dead_ends: list[tuple[int, list[str]]] = []
@@ -1419,6 +1428,10 @@ def _choice_mapping_violations(
 
     def assign(index: int) -> bool:
         if index == len(derived_children):
+            return True
+        if index >= _ALIGNMENT_DEPTH_BUDGET:
+            # Out of budget: the remaining branches are left unverified
+            # (skip, not reject).
             return True
         member = derived_children[index]
         for position, candidate in enumerate(base_children):
@@ -1500,7 +1513,9 @@ def _sequence_alignment_violations(
     copies exist, and every mapping of a derived member onto the base
     member — the plain advance as much as a reuse — consumes one of
     them. Reordering is never allowed (particlesW007/W013), nor is an
-    extra derived member (particlesW012).
+    extra derived member (particlesW012). Past
+    ``_ALIGNMENT_DEPTH_BUDGET`` alignment steps the pair is left
+    unverified rather than rejected.
     """
     base_children = base.children
     derived_children = derived.children
@@ -1535,6 +1550,10 @@ def _sequence_alignment_violations(
         unbounded supply makes the counter irrelevant, so it is
         normalized out of the memo key.
         """
+        if index + position >= _ALIGNMENT_DEPTH_BUDGET:
+            # Out of budget: the alignment is left unverified (skip, not
+            # reject).
+            return True
         exhausted = position >= len(base_children)
         available = None if exhausted else supply(position)
         key = (index, position, 0 if exhausted or available is None else used)

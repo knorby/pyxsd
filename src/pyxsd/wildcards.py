@@ -636,6 +636,29 @@ def _wildcard_admission(
     )
 
 
+def _exclusion_overlap(
+    first: WildcardSpec, second: WildcardSpec, target_namespace: str | None
+) -> bool:
+    """Namespace overlap when either side carries ``notNamespace``.
+
+    ``notNamespace`` replaces the ``namespace`` constraint with its
+    complement, so both sides are normalized through
+    :func:`_namespace_constraint`: two complements always intersect
+    (each excludes finitely many namespaces), and a complement
+    intersects an enumerated constraint when one of its members is not
+    excluded.
+    """
+    kind_a, members_a = _namespace_constraint(first, target_namespace)
+    kind_b, members_b = _namespace_constraint(second, target_namespace)
+    if kind_a == "any" or kind_b == "any":
+        return True
+    if kind_a == "not" and kind_b == "not":
+        return True
+    if kind_a == "not":
+        return any(uri not in members_a for uri in members_b)
+    return any(uri not in members_b for uri in members_a)
+
+
 def wildcard_specs_overlap(
     first: WildcardSpec,
     second: WildcardSpec,
@@ -651,7 +674,13 @@ def wildcard_specs_overlap(
     ``##local`` only overlaps ``##local`` (and ``##any``), never
     ``##other``; ``##targetNamespace`` overlaps ``##targetNamespace`` and
     a URI list containing the target namespace, but never ``##other``.
+    A wildcard carrying XSD 1.1 ``notNamespace`` is compared by its
+    complemented constraint, so it is disjoint from a wildcard that
+    admits only excluded namespaces (and two complements always
+    overlap).
     """
+    if first.not_namespace or second.not_namespace:
+        return _exclusion_overlap(first, second, target_namespace)
     kind_a, uris_a, local_a, target_a = _wildcard_admission(first, target_namespace)
     kind_b, uris_b, local_b, target_b = _wildcard_admission(second, target_namespace)
     if kind_a == "any" or kind_b == "any":

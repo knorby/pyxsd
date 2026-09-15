@@ -5567,6 +5567,60 @@ schema_valid = false
 expected_codes = ["particle-restriction"]
 
 [[case]]
+id = "structure/all-extension-disjoint-not-namespace-wildcards-valid"
+description = "An all extension wildcard excluding the namespace the base wildcard admits is disjoint, so the composed all is deterministic (XSD 1.1)"
+derived_from = "Saxon XSD 1.1 test suite, All group all305 (the disjoint notNamespace control)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+      <xs:any namespace="urn:x" processContents="skip"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="e"/>
+          <xs:any notNamespace="urn:x" processContents="skip"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/all-extension-disjoint-literal-wildcards-valid"
+description = "Two all-extension wildcards admitting disjoint literal namespaces compose deterministically (Saxon all005 control)"
+derived_from = "Saxon XSD 1.1 test suite, All group all305 (the literal-disjoint control)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+      <xs:any namespace="urn:a" processContents="skip"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="e"/>
+          <xs:any namespace="urn:b" processContents="skip"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+
+[[case]]
 id = "structure/all-extension-empty-mixed-base-invalid"
 description = "An empty mixed all base cannot be extended by an all (Saxon all308, bug 6202)"
 derived_from = "Saxon XSD 1.1 test suite, All group all308 (cos-ct-extends)"

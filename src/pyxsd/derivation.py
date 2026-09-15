@@ -99,6 +99,11 @@ def _stringPrimitiveNotDerived(override: type, declared: type) -> bool:
     Fires only for an XSD string-family *declared* type and an
     *override* that XSD defines as a primitive or list type: the Python
     ``str`` hierarchy derives them from ``String`` where XSD does not.
+    A declared type that is itself derived from the same primitive is
+    not corrected: a user restriction of ``xs:date`` is a ``Date``
+    subclass too, and it *is* validly derived from another ``xs:date``
+    restriction (only cross-family pairs, like ``xs:time`` over
+    ``xs:string``, are unrelated).
     """
     from pyxsd import xsd_data_types
 
@@ -112,7 +117,11 @@ def _stringPrimitiveNotDerived(override: type, declared: type) -> bool:
         return False
     for name in _STRING_STORAGE_PRIMITIVES:
         primitive = getattr(xsd_data_types, name, None)
-        if primitive is not None and _pythonDerived(override, primitive):
+        if (
+            primitive is not None
+            and _pythonDerived(override, primitive)
+            and not _pythonDerived(declared, primitive)
+        ):
             return True
     return False
 
