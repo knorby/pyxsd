@@ -1354,8 +1354,9 @@ class PyXSD:
         model of a complex type, not to an orphan group definition: the
         corpus pins an ambiguous wildcard sequence inside a group that
         nothing references as *valid* (addB194), and the oracle accepts
-        it. A group some reference site names becomes part of a type's
-        model, so its compositors are still checked; a reference that
+        it. A group a complex type's model actually reaches — directly
+        or through a chain of group references — becomes part of that
+        model, so its compositors are still checked. A reference that
         cannot be resolved here counts as no reference (its contents
         belong to another document's own sweep).
         """
@@ -1365,7 +1366,17 @@ class PyXSD:
         return id(container) not in self._referencedGroupIds(er)
 
     def _referencedGroupIds(self, er: Any) -> set[int]:
-        """The ids of group definitions named by at least one reference site."""
+        """The ids of group definitions a complex type's model can reach.
+
+        UPA is a property of a complex type definition's content model,
+        so only group definitions on a path from some complex type are
+        swept. The seed set is every complex type declaration in the
+        document; the walk then follows each ``group`` reference from
+        the referencing model into the definition it names, so a chain
+        of referenced groups is covered while a group named only by
+        another unreferenced group stays an orphan (I1: the reference
+        relation is not one-hop).
+        """
         try:
             schema = er.getSchema()
         except AttributeError:
@@ -1373,7 +1384,7 @@ class PyXSD:
         cached = getattr(self, "_referencedGroupIdCache", None)
         if cached is not None and cached[0] is schema:
             return cached[1]
-        referenced: set[int] = set()
+        types: list[Any] = []
         seen: set[int] = set()
         stack = [schema]
         while stack:
@@ -1381,11 +1392,25 @@ class PyXSD:
             if node is None or id(node) in seen:
                 continue
             seen.add(id(node))
-            if type(node).__name__ == "Group" and getattr(node, "isRefSite", False):
-                definition = self._groupRefDefinition(node)
-                if definition is not None:
-                    referenced.add(id(definition))
+            if type(node).__name__ == "ComplexType":
+                types.append(node)
             stack.extend(getattr(node, "processedChildren", None) or ())
+        referenced: set[int] = set()
+        walked: set[int] = set()
+        for complexType in types:
+            stack = [complexType]
+            while stack:
+                node = stack.pop()
+                if node is None or id(node) in walked:
+                    continue
+                walked.add(id(node))
+                if type(node).__name__ == "Group" and getattr(node, "isRefSite", False):
+                    definition = self._groupRefDefinition(node)
+                    if definition is not None:
+                        referenced.add(id(definition))
+                        stack.append(definition)
+                    continue
+                stack.extend(getattr(node, "processedChildren", None) or ())
         self._referencedGroupIdCache = (schema, referenced)
         return referenced
 

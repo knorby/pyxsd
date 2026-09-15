@@ -1344,6 +1344,35 @@ class TestWildcardNonDeterminism:
         )
         assert "wildcard-invalid" in schema_codes(report)
 
+    def test_transitively_unreferenced_group_content_is_not_reported(self, parse):
+        # group reference is not transitive: 'inner' is named by a ref
+        # site, but that site lives in an orphan group, so nothing in a
+        # complex type declaration's model reaches 'inner' - valid (I1)
+        report = parse(
+            "<xs:group name='outer'><xs:sequence>"
+            "<xs:group ref='inner'/>"
+            "</xs:sequence></xs:group>"
+            "<xs:group name='inner'><xs:sequence>"
+            "<xs:any namespace='##other' maxOccurs='2'/>"
+            "<xs:any namespace='A'/>"
+            "</xs:sequence></xs:group>"
+        )
+        assert "wildcard-invalid" not in schema_codes(report)
+
+    def test_transitively_referenced_group_content_is_reported(self, parse):
+        # a type reaches 'inner' through 'outer', so UPA applies
+        report = parse(
+            "<xs:complexType name='t'><xs:group ref='outer'/></xs:complexType>"
+            "<xs:group name='outer'><xs:sequence>"
+            "<xs:group ref='inner'/>"
+            "</xs:sequence></xs:group>"
+            "<xs:group name='inner'><xs:sequence>"
+            "<xs:any namespace='##other' maxOccurs='2'/>"
+            "<xs:any namespace='A'/>"
+            "</xs:sequence></xs:group>"
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
 
 class TestAttributeWildcardAlgebra:
     """Rule 8: the pure intersection/union helpers for attribute wildcards.
