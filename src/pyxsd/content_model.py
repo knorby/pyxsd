@@ -269,7 +269,7 @@ def _compile_item(item: Any, owner: Any, visited: frozenset[str], py_xsd: Any) -
     if className == "Element":
         return _compile_element(item, py_xsd)
     if className == "Any":
-        return _compile_any(item)
+        return _compile_any(item, py_xsd)
     if className in ("Sequence", "Choice", "All"):
         minimum, maximum = _occurrence(getattr(item, "tagAttributes", {}) or {})
         children = _compile_items(_content_children(item), owner, visited, py_xsd)
@@ -304,13 +304,15 @@ def _flatten_all_group_members(children: list[Particle]) -> list[Particle]:
     return flattened
 
 
-def _compile_any(item: Any) -> Particle:
+def _compile_any(item: Any, py_xsd: Any = None) -> Particle:
     """Compiles an ``xs:any`` wildcard into an ``any`` particle.
 
     The wildcard's namespace constraint rides along in ``spec``, along
     with the target namespace of the document that declared it (so
     ``##targetNamespace``/``##other`` keep their source meaning when a
-    derived type inherits the wildcard).
+    derived type inherits the wildcard). The XSD 1.1 ``notQName`` names
+    are expanded through the namespace context so the binding can
+    compare them against instance expanded names.
     """
     attributes = getattr(item, "tagAttributes", {}) or {}
     minimum, maximum = _occurrence(attributes)
@@ -324,8 +326,33 @@ def _compile_any(item: Any) -> Particle:
             attributes,
             is_attribute=False,
             target_namespace=item.getNamespace(),
+            resolve_qname=_wildcard_qname_resolver(item, py_xsd),
         ),
     )
+
+
+def _wildcard_qname_resolver(item: Any, py_xsd: Any) -> Any:
+    """A QName expander for a wildcard's ``notQName`` values, or ``None``.
+
+    Uses the parser's recorded prefix bindings for the declaring
+    document; without them (a detached or legacy compile) the raw
+    tokens are kept, so callers stay silent rather than raising.
+    """
+    parser = py_xsd
+    if parser is None:
+        try:
+            parser = getattr(item.getSchema(), "pyXSD", None)
+        except AttributeError:
+            return None
+    context = getattr(parser, "namespaceContext", None)
+    element = getattr(item, "xsdElement", None)
+    if context is None or element is None:
+        return None
+
+    def resolve(token):
+        return context.resolve(element, token)
+
+    return resolve
 
 
 def _compile_element(item: Any, py_xsd: Any) -> Particle | None:

@@ -86,7 +86,11 @@ from pyxsd.namespaces import (
     namespace_of,
     parse_with_namespaces,
 )
-from pyxsd.particle_derivation import is_valid_particle_restriction, wildcard_subset
+from pyxsd.particle_derivation import (
+    derived_wildcard_edc_violations,
+    is_valid_particle_restriction,
+    wildcard_subset,
+)
 from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.validation import ValidationReport
@@ -666,6 +670,44 @@ class PyXSD:
             base_model, derived_model, resolver, head_lookup=head_lookup
         ):
             self.report.add_error(reason, code="particle-restriction")
+        for reason in derived_wildcard_edc_violations(
+            base_model, derived_model, resolver, self._globalElementLookup(er)
+        ):
+            self.report.add_error(reason, code="particle-restriction")
+
+    def _globalElementLookup(self, er: Any) -> Any:
+        """A lookup from a Clark name to a top-level element declaration.
+
+        Feeds the XSD 1.1 static tighter EDC check (the binding the
+        derived type's wildcard resolves to). Names that name no global
+        declaration return ``None``, which the check reads as "nothing
+        to compare".
+        """
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return lambda name: None
+        elements = [
+            element
+            for element in getattr(schema, "elements", None) or ()
+            if type(element).__name__ == "Element" and element.name
+        ]
+
+        def lookup(name: str) -> Any:
+            local = local_name(name)
+            uri = namespace_of(name)
+            for element in elements:
+                if getattr(element, "name", None) != local:
+                    continue
+                try:
+                    element_uri = element.getNamespace()
+                except AttributeError:
+                    element_uri = None
+                if element_uri == uri:
+                    return element
+            return None
+
+        return lookup
 
     def _reportAttributeWildcardRestriction(self, er: Any) -> None:
         """Reports a restriction that does not narrow the base wildcard.

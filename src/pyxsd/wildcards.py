@@ -23,6 +23,14 @@ NAMESPACE_OTHER = "##other"
 NAMESPACE_LOCAL = "##local"
 NAMESPACE_TARGET = "##targetNamespace"
 
+#: The XSD 1.1 ``notQName`` keywords. They denote names *defined* in the
+#: instance's schema context (``##defined``) and names declared in the
+#: wildcard's own content model (``##definedSibling``); both are stored
+#: verbatim and only applied when a caller supplies the corresponding
+#: name set (the binding phase).
+DISALLOWED_DEFINED = "##defined"
+DISALLOWED_SIBLING = "##definedSibling"
+
 #: The ``processContents`` values; anything else is treated as ``strict``.
 PROCESS_CONTENTS = frozenset({"skip", "lax", "strict"})
 
@@ -61,12 +69,23 @@ class WildcardSpec:
     wildcard was *declared in*. ``##targetNamespace`` and ``##other``
     resolve against that document, not against a schema that later
     inherits the wildcard through an extension or restriction.
+
+    The XSD 1.1 exclusion sets are ``not_namespace`` (raw namespace
+    tokens: literal URIs plus ``##local``/``##targetNamespace``, which
+    replace the ``namespace`` constraint) and ``not_qname`` (expanded
+    names as Clark strings, a bare ``{uri}`` entry for "every local in
+    ``uri``", and the ``##defined``/``##definedSibling`` keywords stored
+    verbatim). ``not_namespace`` is an alternative to ``namespace``:
+    when it is present the wildcard admits exactly the namespaces it
+    does not list.
     """
 
     namespace: str = NAMESPACE_ANY
     process_contents: str = "strict"
     is_attribute: bool = False
     target_namespace: Any = _UNSET
+    not_namespace: frozenset[str] = frozenset()
+    not_qname: frozenset[str] = frozenset()
 
     def effective_target(self, target_namespace: str | None) -> str | None:
         """The namespace ``##targetNamespace``/``##other`` resolve to."""
@@ -113,12 +132,190 @@ class WildcardSpec:
                 return True
         return False
 
+    def excludes_namespace(self, uri: str | None, target_namespace: str | None) -> bool:
+        """Whether the ``notNamespace`` list excludes ``uri``.
+
+        ``##local`` stands for the absent namespace; ``##targetNamespace``
+        resolves the same way the main constraint does (against the
+        spec's recorded source namespace, or ``target_namespace`` when
+        it carries none).
+        """
+        target = self.effective_target(target_namespace)
+        for token in self.not_namespace:
+            if token == NAMESPACE_LOCAL:
+                if uri is None:
+                    return True
+            elif token == NAMESPACE_TARGET:
+                if uri == target:
+                    return True
+            elif not token.startswith("##") and token == uri:
+                return True
+        return False
+
+    def admits_namespace(self, uri: str | None, target_namespace: str | None) -> bool:
+        """Whether the wildcard's namespace constraint admits ``uri``.
+
+        The XSD 1.1 ``notNamespace`` attribute is an alternative to
+        ``namespace`` (the two are mutually exclusive in a schema
+        document): when it is present the constraint has the "not"
+        variety and only the exclusion list decides admission.
+        """
+        if self.not_namespace:
+            return not self.excludes_namespace(uri, target_namespace)
+        return self.allows(uri, target_namespace)
+
+    def excludes_name(
+        self,
+        name: str,
+        *,
+        defined: Any = None,
+        siblings: Any = None,
+    ) -> bool:
+        """Whether ``notQName`` excludes the expanded ``name``.
+
+        ``name`` is a Clark name or a bare local for the absent
+        namespace. A bare ``{uri}`` entry excludes every local in
+        ``uri``. The ``##defined`` / ``##definedSibling`` keywords are
+        applied only when the corresponding set is supplied (the
+        binding phase knows the instance's schema context); with the set
+        ``None`` the keyword is not applied. Each set holds names in the
+        same Clark/bare form as ``name``.
+        """
+        if DISALLOWED_DEFINED in self.not_qname and defined is not None and name in defined:
+            return True
+        if DISALLOWED_SIBLING in self.not_qname and siblings is not None and name in siblings:
+            return True
+        uri, local = split_name(name)
+        for token in self.not_qname:
+            match = disallowed_name_parts(token)
+            if match is None:
+                continue
+            token_uri, token_local = match
+            if token_uri == uri and (token_local is None or token_local == local):
+                return True
+        return False
+
+    def allows_name(
+        self,
+        name: str,
+        target_namespace: str | None,
+        *,
+        defined: Any = None,
+        siblings: Any = None,
+    ) -> bool:
+        """Whether an expanded name satisfies this wildcard.
+
+        ``name`` is a Clark name (``{uri}local``) or a bare local for
+        the absent namespace. The name is allowed when its namespace is
+        admitted by the namespace constraint (including the 1.1
+        ``notNamespace`` exclusions) and it is not excluded by
+        ``notQName``.
+        """
+        uri, _local = split_name(name)
+        if not self.admits_namespace(uri, target_namespace):
+            return False
+        return not self.excludes_name(name, defined=defined, siblings=siblings)
+
+
+def split_name(name: str) -> tuple[str | None, str]:
+    """The ``(namespace, local)`` parts of a Clark name or bare local."""
+    if name.startswith("{"):
+        uri, _, local = name[1:].partition("}")
+        return uri or None, local
+    return None, name
+
+
+def disallowed_name_parts(token: str) -> tuple[str | None, str | None] | None:
+    """``(namespace, local)`` for a ``notQName`` member.
+
+    ``local`` is ``None`` when the token is a bare ``{uri}`` entry,
+    which excludes every local in ``uri`` (the ``{uri}*`` form is
+    normalized to this at parse time). ``None`` as the whole result
+    means the token cannot name a real expanded name — a reserved
+    keyword or a raw token whose prefix could not be resolved — and it
+    therefore never matches an instance name.
+    """
+    if token.startswith("{"):
+        uri, _, local = token[1:].partition("}")
+        if local in ("", "*"):
+            return uri or None, None
+        return uri or None, local
+    if ":" in token or token.startswith("##"):
+        return None
+    return None, token
+
+
+def excluded_locals(spec: WildcardSpec, uri: str | None) -> frozenset[str]:
+    """The local names in ``uri`` the spec's exact ``notQName`` entries cover."""
+    found: set[str] = set()
+    for token in spec.not_qname:
+        match = disallowed_name_parts(token)
+        if match is None:
+            continue
+        token_uri, token_local = match
+        if token_uri == uri and token_local is not None:
+            found.add(token_local)
+    return frozenset(found)
+
+
+def excludes_all_locals(spec: WildcardSpec, uri: str | None) -> bool:
+    """Whether a bare ``{uri}`` entry excludes every local in ``uri``."""
+    for token in spec.not_qname:
+        match = disallowed_name_parts(token)
+        if match is None:
+            continue
+        token_uri, token_local = match
+        if token_uri == uri and token_local is None:
+            return True
+    return False
+
+
+def _normalize_not_qname(expanded: str) -> str:
+    """Normalizes an expanded ``notQName`` token.
+
+    The ``{uri}*`` form (every local in ``uri``) is stored as the bare
+    Clark name ``{uri}`` so one representation covers both spellings.
+    """
+    if expanded.endswith("}*"):
+        return expanded[:-1]
+    return expanded
+
+
+def _parse_not_qname(raw: Any, resolve_qname: Any) -> tuple[str, ...]:
+    """The stored tokens of a raw ``notQName`` attribute.
+
+    Reserved keywords and already-expanded Clark names are kept as
+    written; a lexical QName is passed through ``resolve_qname`` when
+    one is supplied (the caller owns prefix resolution — this module
+    stays free of pyxsd imports). A token whose resolution fails is kept
+    raw: the declaration check reports it, and a raw token simply never
+    matches an expanded name.
+    """
+    if raw is None:
+        return ()
+    tokens: list[str] = []
+    for token in str(raw).split():
+        if token.startswith("{") or token.startswith("##"):
+            tokens.append(_normalize_not_qname(token))
+            continue
+        if resolve_qname is not None:
+            try:
+                expanded = resolve_qname(token)
+            except Exception:
+                tokens.append(token)
+                continue
+            tokens.append(_normalize_not_qname(str(expanded)))
+            continue
+        tokens.append(token)
+    return tuple(tokens)
+
 
 def wildcard_spec(
     attributes: Mapping[str, Any],
     *,
     is_attribute: bool = False,
     target_namespace: Any = _UNSET,
+    resolve_qname: Any = None,
 ) -> WildcardSpec:
     """Builds a :class:`WildcardSpec` from an ER's ``tagAttributes``.
 
@@ -127,17 +324,28 @@ def wildcard_spec(
     a malformed value cannot silently disable validation. Pass the
     declaring document's ``targetNamespace`` as ``target_namespace`` so
     namespace keywords keep their source meaning.
+
+    ``resolve_qname`` optionally maps a lexical QName in ``notQName`` to
+    its expanded (Clark) form; the caller injects it because prefix
+    bindings live in the parsing layer. Without it, ``notQName`` tokens
+    are stored as written.
     """
     raw_namespace = attributes.get("namespace")
     raw_process = attributes.get("processContents")
     process = str(raw_process).strip() if raw_process is not None else "strict"
     if process not in PROCESS_CONTENTS:
         process = "strict"
+    raw_not_namespace = attributes.get("notNamespace")
+    not_namespace = (
+        frozenset(str(raw_not_namespace).split()) if raw_not_namespace is not None else frozenset()
+    )
     return WildcardSpec(
         namespace=NAMESPACE_ANY if raw_namespace is None else str(raw_namespace),
         process_contents=process,
         is_attribute=is_attribute,
         target_namespace=target_namespace,
+        not_namespace=not_namespace,
+        not_qname=frozenset(_parse_not_qname(attributes.get("notQName"), resolve_qname)),
     )
 
 
@@ -180,8 +388,92 @@ def invalid_process_contents(value: str | None) -> str | None:
     return str(value)
 
 
+def invalid_not_namespace(value: str | None) -> str | None:
+    """The offending token when ``notNamespace`` is not a legal constraint.
+
+    ``notNamespace`` is an alternative to ``namespace`` and takes the
+    same list vocabulary: whitespace-separated URI references plus
+    ``##local`` and ``##targetNamespace``. Unlike ``namespace`` it never
+    takes ``##any``/``##other`` (the "any" and "other" constraints have
+    no exclusion-list spelling); duplicates are legal. An empty (or
+    absent) value is not reported here.
+    """
+    if value is None:
+        return None
+    for token in str(value).split():
+        if token in (NAMESPACE_LOCAL, NAMESPACE_TARGET):
+            continue
+        if token.startswith("##"):
+            return token
+    return None
+
+
+def invalid_not_qname(value: str | None, *, resolve_qname: Any = None) -> str | None:
+    """The offending token when ``notQName`` is not a legal name list.
+
+    Legal entries are ``##defined``/``##definedSibling`` or a lexical
+    QName. A QName has at most one colon between a non-empty prefix and
+    a non-empty local part; when ``resolve_qname`` is supplied the
+    prefix must also resolve (the ``xml`` prefix counts as declared and
+    is supplied by the ambient namespace context). Unprefixed names are
+    QNames too (in the absent namespace, or the default namespace when
+    one is in scope). An already-expanded Clark token is accepted as an
+    internal computed form.
+    """
+    if value is None:
+        return None
+    for token in str(value).split():
+        if token in (DISALLOWED_DEFINED, DISALLOWED_SIBLING):
+            continue
+        if token.startswith("##"):
+            return token
+        if token.startswith("{"):
+            continue
+        prefix, colon, local = token.partition(":")
+        if colon and (not prefix or not local or ":" in local):
+            return token
+        if resolve_qname is not None:
+            try:
+                resolve_qname(token)
+            except Exception:
+                return token
+    return None
+
+
+def not_qname_consistency_problems(
+    spec: WildcardSpec, *, target_namespace: str | None = None
+) -> list[tuple[str, str]]:
+    """Reports ``notQName`` names outside the admitted namespaces.
+
+    XSD 1.1 Wildcard Properties Correct clause 4: the namespace of each
+    QName member of {disallowed names} must be allowed by the
+    {namespace constraint}. The keyword members are exempt. The check
+    reads the namespace constraint only — a name is of course excluded
+    by its own ``notQName`` entry, which is not the question here.
+    """
+    target = spec.effective_target(target_namespace)
+    problems: list[tuple[str, str]] = []
+    for token in sorted(spec.not_qname):
+        match = disallowed_name_parts(token)
+        if match is None:
+            continue
+        uri, _local = match
+        if not spec.admits_namespace(uri, target):
+            problems.append(
+                (
+                    "wildcard-invalid",
+                    f"notQName name '{token}' lies in a namespace the wildcard's "
+                    "namespace constraint does not admit",
+                )
+            )
+    return problems
+
+
 def wildcard_declaration_problems(
-    attributes: Mapping[str, Any], *, is_attribute: bool
+    attributes: Mapping[str, Any],
+    *,
+    is_attribute: bool,
+    resolve_qname: Any = None,
 ) -> list[tuple[str, str]]:
     """The schema problems in one wildcard's XML attributes.
 
@@ -189,8 +481,11 @@ def wildcard_declaration_problems(
 
     * ``wildcard-invalid`` for an illegal namespace-constraint token, a
       ``processContents`` value other than ``skip``/``lax``/``strict``,
-      or an occurrence attribute on ``xs:anyAttribute`` (which is not a
-      particle);
+      occurrence attributes on ``xs:anyAttribute`` (which is not a
+      particle), the XSD 1.1 ``namespace``/``notNamespace`` co-presence,
+      or an illegal ``notNamespace``/``notQName`` token (an unknown
+      ``##`` keyword, a malformed QName, or a QName whose prefix does
+      not resolve);
     * ``invalid-attribute`` for an unqualified XML attribute outside the
       wildcard's allowed set. Qualified attributes (Clark names) are
       foreign and never reported, and namespace declarations are not
@@ -198,6 +493,9 @@ def wildcard_declaration_problems(
 
     An empty ``namespace`` constraint is not reported: the corpus pins
     such a schema valid (wildZ010), even though it admits nothing.
+    ``resolve_qname`` is the optional prefix resolver the 1.1
+    ``notQName`` check uses; without it, prefix resolution is skipped
+    (the binding layer's own resolution still applies).
     """
     tag = "xs:anyAttribute" if is_attribute else "xs:any"
     allowed = ANY_ATTRIBUTE_XML_ATTRIBUTES if is_attribute else ANY_XML_ATTRIBUTES
@@ -212,6 +510,35 @@ def wildcard_declaration_problems(
                 f"'{token}' is not a legal token",
             )
         )
+    raw_not_namespace = attributes.get("notNamespace")
+    if raw_namespace is not None and raw_not_namespace is not None:
+        problems.append(
+            (
+                "wildcard-invalid",
+                f"<{tag}> must not carry both a namespace and a notNamespace attribute",
+            )
+        )
+    elif raw_not_namespace is not None:
+        bad_token = invalid_not_namespace(raw_not_namespace)
+        if bad_token is not None:
+            problems.append(
+                (
+                    "wildcard-invalid",
+                    f"<{tag}> notNamespace '{raw_not_namespace}' is not legal: "
+                    f"'{bad_token}' is not a legal token",
+                )
+            )
+    raw_not_qname = attributes.get("notQName")
+    if raw_not_qname is not None:
+        bad_token = invalid_not_qname(raw_not_qname, resolve_qname=resolve_qname)
+        if bad_token is not None:
+            problems.append(
+                (
+                    "wildcard-invalid",
+                    f"<{tag}> notQName '{raw_not_qname}' is not legal: "
+                    f"'{bad_token}' is not a QName or a reserved keyword",
+                )
+            )
     raw_process = attributes.get("processContents")
     if invalid_process_contents(raw_process) is not None:
         problems.append(
@@ -259,6 +586,22 @@ def register_wildcard(containing_type: Any, spec: WildcardSpec) -> None:
         specs.append(spec)
     containing_type.wildcardElementSpecs = specs
     containing_type.hasWildcardElements = True
+
+
+def replace_wildcard(containing_type: Any, old: WildcardSpec, new: WildcardSpec) -> None:
+    """Swaps a registered wildcard spec for its refined form.
+
+    The XSD 1.1 ``notQName`` names can only be expanded once the parsing
+    layer's prefix bindings are available, which is after the ER
+    constructors have registered their raw spec. The swap replaces the
+    same *object* (identity, not equality: an unrelated equal spec must
+    not be touched).
+    """
+    attribute = "wildcardAttributeSpecs" if old.is_attribute else "wildcardElementSpecs"
+    specs = getattr(containing_type, attribute, None)
+    if not specs:
+        return
+    setattr(containing_type, attribute, [new if spec is old else spec for spec in specs])
 
 
 def _wildcard_admission(
@@ -565,6 +908,8 @@ def effective_attribute_wildcard(
 __all__ = [
     "ANY_ATTRIBUTE_XML_ATTRIBUTES",
     "ANY_XML_ATTRIBUTES",
+    "DISALLOWED_DEFINED",
+    "DISALLOWED_SIBLING",
     "NAMESPACE_ANY",
     "NAMESPACE_LOCAL",
     "NAMESPACE_OTHER",
@@ -572,11 +917,19 @@ __all__ = [
     "PROCESS_CONTENTS",
     "PROCESS_SEVERITY",
     "WildcardSpec",
+    "disallowed_name_parts",
     "effective_attribute_wildcard",
+    "excluded_locals",
+    "excludes_all_locals",
     "intersect_wildcard_specs",
     "invalid_namespace_constraint",
+    "invalid_not_namespace",
+    "invalid_not_qname",
     "invalid_process_contents",
+    "not_qname_consistency_problems",
     "register_wildcard",
+    "replace_wildcard",
+    "split_name",
     "union_wildcard_specs",
     "wildcard_declaration_problems",
     "wildcard_spec",

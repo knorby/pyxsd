@@ -76,7 +76,12 @@ import re
 from pyxsd import xsd_data_types
 from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, namespace_of
 from pyxsd.schema_context import context_or_ambient, last_components
-from pyxsd.wildcards import wildcard_declaration_problems
+from pyxsd.wildcards import (
+    not_qname_consistency_problems,
+    replace_wildcard,
+    wildcard_declaration_problems,
+    wildcard_spec,
+)
 from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
@@ -519,15 +524,63 @@ class ElementRepresentative:
 
         Shared by ``Any`` and ``AnyAttribute``: the namespace-constraint
         token grammar, the ``processContents`` value, occurrence
-        attributes on ``xs:anyAttribute`` and the unqualified XML
+        attributes on ``xs:anyAttribute``, the XSD 1.1
+        ``namespace``/``notNamespace`` co-presence, the 1.1
+        ``notNamespace``/``notQName`` token grammar (prefixes resolved
+        through the schema's recorded bindings) and the unqualified XML
         attributes outside the wildcard's allowed set. The raw
         ``xsdElement`` attributes are inspected (not ``tagAttributes``)
         so the reserved ``name`` attribute is seen too.
+
+        The check also refines the registered :class:`WildcardSpec` with
+        the expanded ``notQName`` names (the ER constructor runs before
+        the prefix bindings are attached), and reports the 1.1 Wildcard
+        Properties Correct consistency rule: every ``notQName`` name must
+        lie in a namespace the wildcard admits. Both fall back to the
+        raw tokens — logging, never raising — when no namespace context
+        is available.
         """
+        resolver = self._wildcardQNameResolver()
         for code, message in wildcard_declaration_problems(
-            self.xsdElement.attrib, is_attribute=is_attribute
+            self.xsdElement.attrib, is_attribute=is_attribute, resolve_qname=resolver
         ):
             self._reportSchemaError(message, code=code)
+        spec = wildcard_spec(
+            self.tagAttributes,
+            is_attribute=is_attribute,
+            target_namespace=self.getNamespace(),
+            resolve_qname=resolver,
+        )
+        old = getattr(self, "wildcardSpec", None)
+        if old is not None and spec != old:
+            self.wildcardSpec = spec
+            containing = self.getContainingType()
+            if containing is not None:
+                replace_wildcard(containing, old, spec)
+        for code, message in not_qname_consistency_problems(spec):
+            self._reportSchemaError(message, code=code)
+
+    def _wildcardQNameResolver(self):
+        """A QName expander for ``notQName`` values, or ``None``.
+
+        Prefix bindings are recorded per element by the parsing layer,
+        so resolution has to run after the schema context is attached;
+        without it (an ER built in isolation) ``None`` tells the caller
+        to keep the raw tokens and stay silent.
+        """
+        try:
+            schema = self.getSchema()
+        except AttributeError:
+            return None
+        context = getattr(schema, "namespaceContext", None)
+        element = getattr(self, "xsdElement", None)
+        if context is None or element is None:
+            return None
+
+        def resolve(token):
+            return context.resolve(element, token)
+
+        return resolve
 
     def checkDeclarationLegality(self):
         """Reports semantic declaration-legality problems.

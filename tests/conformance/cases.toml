@@ -2111,6 +2111,106 @@ instance_valid = false
 expected_codes = ["wildcard-no-declaration"]
 
 [[case]]
+id = "namespaces/wildcard-notnamespace-conflict-invalid"
+description = "namespace and notNamespace on one wildcard are mutually exclusive (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild007/wild008 and IBM S3_10_1si01/S3_10_6si01"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:anyAttribute namespace="##other" notNamespace="##targetNamespace" processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "namespaces/wildcard-notnamespace-restriction-invalid"
+description = "A restriction may not admit a namespace the base attribute wildcard's notNamespace excludes"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild021"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:sequence/>
+    <xs:anyAttribute notNamespace="http://cain.com/ http://abel.com/ http://adam.com/" processContents="lax"/>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B">
+        <xs:sequence/>
+        <xs:anyAttribute notNamespace="http://adam.com/" processContents="lax"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="R"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "namespaces/wildcard-notqname-unadmitted-namespace-invalid"
+description = "A notQName name must lie in a namespace the wildcard admits (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild033 and IBM S3_10_6si02"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="computer">
+    <xs:sequence/>
+    <xs:anyAttribute processContents="lax" notNamespace="##targetNamespace" notQName="CPU"/>
+  </xs:complexType>
+  <xs:element name="computer" type="computer"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "namespaces/wildcard-notqname-undeclared-prefix-invalid"
+description = "A notQName prefix must be bound in scope (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild036"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="computer">
+    <xs:sequence/>
+    <xs:anyAttribute processContents="lax" notNamespace="http://www.w3.org/2001/XMLSchema-instance" notQName="xsl:stylesheet"/>
+  </xs:complexType>
+  <xs:element name="computer" type="computer"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "namespaces/wildcard-notnamespace-valid"
+description = "notNamespace excludes one namespace and leaves the rest admitted, duplicates are legal"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild009 (duplicate tokens)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns:t="urn:t"
+           elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:anyAttribute notNamespace="urn:bad urn:bad ##local" processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t" xmlns:o="urn:o" o:ok="1"/>
+'''
+
+[[case]]
 id = "namespaces/qname-identity-invalid"
 description = "xs:unique on an xs:QName attribute treats equal expanded names as duplicates"
 derived_from = "W3C XMLSchema1TestSuite (identity constraint, QName values)"

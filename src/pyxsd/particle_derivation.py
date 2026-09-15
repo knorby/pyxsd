@@ -74,7 +74,15 @@ from typing import Any
 
 from pyxsd.content_model import Particle
 from pyxsd.derivation import is_validly_derived
-from pyxsd.wildcards import WildcardSpec
+from pyxsd.namespaces import local_name
+from pyxsd.wildcards import (
+    DISALLOWED_DEFINED,
+    DISALLOWED_SIBLING,
+    WildcardSpec,
+    disallowed_name_parts,
+    excluded_locals,
+    excludes_all_locals,
+)
 
 #: Sentinel namespace probed so ``##other`` and URI lists are compared by
 #: extension rather than by spelling: a constraint that admits a
@@ -155,21 +163,31 @@ def contains_occurs(
 def wildcard_subset(
     derived_spec: WildcardSpec, base_spec: WildcardSpec, target_namespace: str | None = None
 ) -> bool:
-    """Whether the derived wildcard's namespace constraint is a subset.
+    """Whether the derived wildcard's constraint is a subset.
 
-    The subset relation is probed against a canonical namespace set —
+    The namespace relation is probed against a canonical namespace set —
     the absent namespace, the target namespace, a foreign probe URI and
     every literal URI in either constraint — so list constraints are
     compared by extension (``##any`` ⊇ ``##local ##targetNamespace uri``
     and ``{foo}`` ⊆ ``{foo bar}`` hold while ``{abce}`` ⊆ ``{foo bar}``
     does not) instead of by string equality. Each spec resolves
     ``##targetNamespace``/``##other`` against its own recorded source
-    namespace, falling back to ``target_namespace`` when it carries none.
+    namespace, falling back to ``target_namespace`` when it carries
+    none.
+
+    The XSD 1.1 exclusion sets are part of the relation (§3.10.6.2
+    Wildcard Subset): the namespace probes go through
+    :meth:`WildcardSpec.admits_namespace`, so a ``notNamespace``
+    exclusion counts, and the ``{disallowed names}`` clause then requires
+    every QName the base disallows to be disallowed by the derived as
+    well (or to lie outside the derived's admitted namespaces) and the
+    ``##defined``/``##definedSibling`` keywords to be inherited by the
+    derived.
     """
     probes: set[str | None] = {None, target_namespace, _FOREIGN_PROBE_URI}
     for spec in (derived_spec, base_spec):
         probes.add(spec.effective_target(target_namespace))
-        for token in spec.namespace.split():
+        for token in (*spec.namespace.split(), *spec.not_namespace):
             if token and not token.startswith("##"):
                 probes.add(token)
     # Equivalently: the difference {u | derived admits u} minus
@@ -177,11 +195,163 @@ def wildcard_subset(
     # set is the union of both constraints' vocabularies, so probing one
     # canonical witness per class of namespace suffices.
     for uri in probes:
-        if derived_spec.allows(uri, target_namespace) and not base_spec.allows(
+        if derived_spec.admits_namespace(uri, target_namespace) and not base_spec.admits_namespace(
             uri, target_namespace
         ):
             return False
+    for token in base_spec.not_qname:
+        if token in (DISALLOWED_DEFINED, DISALLOWED_SIBLING):
+            if token not in derived_spec.not_qname:
+                return False
+            continue
+        match = disallowed_name_parts(token)
+        if match is None:
+            # A raw token whose prefix could not be resolved (or a stray
+            # keyword) cannot be compared; the declaration check reports
+            # it and the derivation stays silent rather than raising.
+            continue
+        uri, local = match
+        if not derived_spec.admits_namespace(uri, target_namespace):
+            # The base's disallowed QName is outside the derived's
+            # admitted namespaces, so the derived cannot admit it.
+            continue
+        if local is None:
+            if not excludes_all_locals(derived_spec, uri):
+                return False
+        elif local not in excluded_locals(derived_spec, uri):
+            return False
     return True
+
+
+def derived_wildcard_edc_violations(
+    base_model: Particle | None,
+    derived_model: Particle | None,
+    resolver: Resolver,
+    global_lookup: Callable[[str], Any] | None = None,
+) -> list[str]:
+    """The XSD 1.1 tighter-EDC violations across a restriction.
+
+    Content Type Restricts (Complex Content) clause 2 requires the base
+    type's default binding for every instance element to subsume the
+    derived type's binding (XSD 1.1 §3.4.6.4). When the derived model
+    routes a name to a strict or lax wildcard, the binding resolves to
+    the top-level element declaration of that expanded name; when the
+    base model declares an element particle with the same name, the
+    element is bound to that declaration there. The top-level
+    declaration's type must then be validly substitutable as a
+    restriction for the base particle's type, or the derivation is
+    invalid (wild069 is the pinning case).
+
+    Only names with no element particle of their own in the derived
+    model are considered: an element particle takes precedence over a
+    wildcard in the derived model just as in the base. Only wildcards
+    that are members of an unordered (``all``) group are checked: in an
+    order-sensitive model the element particle may be positionally
+    unreachable (the corpus pins wild068's sequence shape valid while
+    its ``all`` twin wild069 is invalid), and deciding reachability is
+    beyond this static approximation. Skip wildcards are exempt
+    (wild077/wild080, IBM s3_10_1v07), and declarations carrying
+    ``xs:alternative`` type tables are out of scope (Area H). Every
+    resolution failure skips the pair rather than reporting, and at
+    most one violation is returned.
+    """
+    if base_model is None or derived_model is None or global_lookup is None:
+        return []
+    base_declarations: dict[tuple[str | None, str], list[Any]] = {}
+    for particle in _walk_particles(base_model):
+        if particle.kind != "element":
+            continue
+        declaration = _safe_resolve(resolver, particle)
+        name = _expanded_name(declaration)
+        if name is None:
+            continue
+        base_declarations.setdefault(name, []).append(declaration)
+    derived_names: set[tuple[str | None, str]] = set()
+    for particle in _walk_particles(derived_model):
+        if particle.kind != "element":
+            continue
+        name = _expanded_name(_safe_resolve(resolver, particle))
+        if name is not None:
+            derived_names.add(name)
+    for particle in _all_member_wildcards(derived_model):
+        spec = particle.spec
+        if spec is None or spec.process_contents == "skip":
+            continue
+        target = spec.effective_target(None)
+        for name, declarations in base_declarations.items():
+            if name in derived_names:
+                continue
+            global_name = _clark_name(name)
+            if not spec.allows_name(global_name, target):
+                continue
+            global_declaration = global_lookup(global_name)
+            if global_declaration is None or _has_type_alternatives(global_declaration):
+                continue
+            global_type = _type_of(global_declaration)
+            if global_type is None:
+                continue
+            for declaration in declarations:
+                if _has_type_alternatives(declaration):
+                    continue
+                local_type = _type_of(declaration)
+                if local_type is None:
+                    continue
+                if _type_clause_violation(local_type, global_type) is None:
+                    continue
+                return [
+                    "particle restriction (cos-element-consistent): the derived "
+                    f"wildcard '{spec.namespace}' admits '{global_name}', which the "
+                    f"base content model declares as element '{name[1]}'; the "
+                    "top-level declaration the wildcard resolves to has a type that "
+                    "is not a valid restriction of the base element's type"
+                ]
+    return []
+
+
+def _walk_particles(particle: Particle):
+    """Every particle in the tree, this one included."""
+    yield particle
+    for child in particle.children:
+        yield from _walk_particles(child)
+
+
+def _all_member_wildcards(particle: Particle, in_all: bool = False):
+    """Every wildcard member of an ``all`` group, at any nesting depth."""
+    if particle.kind == "any" and in_all:
+        yield particle
+        return
+    child_in_all = in_all or particle.kind == "all"
+    for child in particle.children:
+        yield from _all_member_wildcards(child, child_in_all)
+
+
+def _safe_resolve(resolver: Resolver, particle: Particle) -> Any:
+    if resolver is None:
+        return None
+    try:
+        return resolver(particle)
+    except Exception:
+        return None
+
+
+def _clark_name(name: tuple[str | None, str]) -> str:
+    namespace, local = name
+    return f"{{{namespace}}}{local}" if namespace else local
+
+
+def _has_type_alternatives(declaration: Any) -> bool:
+    """Whether an element declaration carries ``xs:alternative`` children."""
+    seen: set[int] = set()
+    current = declaration
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        element = getattr(current, "xsdElement", None)
+        if element is not None:
+            for child in element:
+                if local_name(child.tag) == "alternative":
+                    return True
+        current = getattr(current, "referredElement", None)
+    return False
 
 
 def is_valid_particle_restriction(
@@ -1565,9 +1735,16 @@ def _wildcard_probes(specs: list[WildcardSpec], target: str | None) -> set[str |
     probes: set[str | None] = {None, target, _FOREIGN_PROBE_URI}
     for spec in specs:
         probes.add(spec.effective_target(target))
-        for token in spec.namespace.split():
+        for token in (*spec.namespace.split(), *spec.not_namespace):
             if token and not token.startswith("##"):
                 probes.add(token)
+        for token in spec.not_qname:
+            match = disallowed_name_parts(token)
+            if match is None:
+                continue
+            uri, _local = match
+            if uri is not None:
+                probes.add(uri)
     return probes
 
 
@@ -1576,53 +1753,106 @@ def _wildcard_split_coverable(unit: Particle, base: Particle) -> bool:
 
     Every namespace the unit admits must be admitted by some base
     wildcard, and no overlapped base wildcard's processContents may be
-    weakened (all238). Without this split reading, the pathologically
-    overlapping all237 could not restrict its base at all.
+    weakened (all238). The coverage is name-level (XSD 1.1 §3.10.6.2):
+    the name space of a namespace the unit admits is covered when no
+    name is excluded by every overlapped base wildcard but admitted by
+    the unit (wild048/wild051 reject; wild049/wild050 cover). Without
+    this reading the pathologically overlapping all237 could not
+    restrict its base at all.
     """
     spec = unit.spec
     if spec is None:
         return False
+    target = spec.effective_target(None)
     overlapped = [
         member.spec
         for member in base.children
         if member.kind == "any"
         and member.spec is not None
-        and _wildcards_overlap(spec, member.spec)
+        and _wildcards_overlap(spec, member.spec, target)
     ]
     if not overlapped:
         return False
-    target = spec.effective_target(None)
     severity = _PROCESS_SEVERITY.get(spec.process_contents, 2)
     for other in overlapped:
         if severity < _PROCESS_SEVERITY.get(other.process_contents, 2):
             return False
     for uri in _wildcard_probes([spec, *overlapped], target):
-        if spec.allows(uri, target) and not any(other.allows(uri, target) for other in overlapped):
+        if not spec.admits_namespace(uri, target):
+            continue
+        if not _namespace_names_covered(spec, overlapped, uri, target):
             return False
     return True
 
 
-def _wildcards_overlap(first: WildcardSpec, second: WildcardSpec) -> bool:
+def _namespace_names_covered(
+    spec: WildcardSpec,
+    candidates: list[WildcardSpec],
+    uri: str | None,
+    target: str | None,
+) -> bool:
+    """Whether the candidates jointly admit every name the spec admits in ``uri``.
+
+    A name is covered when at least one candidate admits it. Equivalently
+    the uncovered names are the intersection of the candidates'
+    exclusions: a name admitted by the spec but excluded by *every*
+    candidate is uncovered. The finite exact exclusions are intersected;
+    the ``##defined``/``##definedSibling`` keywords are name sets the
+    schema phase cannot enumerate, so only the structural case is
+    decided — when every candidate excludes the keyword's set, the spec
+    must exclude it too.
+    """
+    if excludes_all_locals(spec, uri):
+        return True
+    admitting = [candidate for candidate in candidates if candidate.admits_namespace(uri, target)]
+    if not admitting:
+        return False
+    finite: set[str] | None = None
+    every_defined = True
+    every_sibling = True
+    for candidate in admitting:
+        every_defined = every_defined and DISALLOWED_DEFINED in candidate.not_qname
+        every_sibling = every_sibling and DISALLOWED_SIBLING in candidate.not_qname
+        if excludes_all_locals(candidate, uri):
+            # The candidate admits no name in ``uri``; it contributes
+            # nothing to the intersection.
+            continue
+        names = set(excluded_locals(candidate, uri))
+        finite = names if finite is None else (finite & names)
+    if finite is None:
+        # Every admitting candidate excludes every local in ``uri`` (a
+        # bare ``{uri}`` entry): the intersection of their exclusions is
+        # the whole name space, so the spec's names there are uncovered
+        # unless it too excludes everything (handled above).
+        return False
+    uncovered = frozenset(finite)
+    if uncovered and not uncovered <= excluded_locals(spec, uri):
+        return False
+    if every_defined and DISALLOWED_DEFINED not in spec.not_qname:
+        return False
+    return not (every_sibling and DISALLOWED_SIBLING not in spec.not_qname)
+
+
+def _wildcards_overlap(
+    first: WildcardSpec, second: WildcardSpec, target: str | None = None
+) -> bool:
     """Whether two wildcard constraints admit a common namespace."""
-    target = first.effective_target(None)
+    if target is None:
+        target = first.effective_target(None)
     return any(
-        first.allows(uri, target) and second.allows(uri, target)
+        first.admits_namespace(uri, target) and second.admits_namespace(uri, target)
         for uri in _wildcard_probes([first, second], target)
     )
 
 
 def _wildcard_contained_in(unit: Particle, member: Particle) -> bool:
-    """Whether the unit's whole namespace constraint sits in one base member."""
+    """Whether the unit's whole constraint sits in one base member."""
     spec = unit.spec
     other = member.spec
     if spec is None or other is None:
         return False
     target = spec.effective_target(None)
-    return all(
-        other.allows(uri, target)
-        for uri in _wildcard_probes([spec, other], target)
-        if spec.allows(uri, target)
-    )
+    return wildcard_subset(spec, other, target)
 
 
 def _element_namespace(declaration: Any) -> str | None:
