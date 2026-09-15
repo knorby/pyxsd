@@ -652,9 +652,13 @@ class PyXSD:
         NameAndTypeOK admits a restricting element that is a (transitive)
         member of the base element's substitution group; the walk needs
         each member's head *declaration*, which only the schema's global
-        element table can supply. ``None`` when this schema has no
-        element table, in which case the predicate falls back to exact
-        expanded-name equality.
+        element table can supply. Under XSD 1.1 a local declaration with
+        no ``substitutionGroup`` of its own shares the membership of a
+        global declaration with the same expanded name (all226; XSD 1.1
+        bug 5296), so the lookup falls back to such a global before
+        giving up. ``None`` when this schema has no element table, in
+        which case the predicate falls back to exact expanded-name
+        equality.
         """
         try:
             schema = er.getSchema()
@@ -670,9 +674,23 @@ class PyXSD:
 
         def lookup(declaration: Any) -> Any:
             head_name = declaration.getSubstitutionGroupHead(self)
+            resolving = declaration
+            if not head_name:
+                # XSD 1.1: a local declaration whose expanded name is
+                # also declared globally inherits that global's
+                # substitution-group membership.
+                for candidate in candidates:
+                    if candidate is declaration:
+                        continue
+                    if candidate.name == declaration.name and candidate.getNamespace() == (
+                        declaration.getNamespace()
+                    ):
+                        head_name = candidate.getSubstitutionGroupHead(self)
+                        resolving = candidate
+                        break
             if not head_name:
                 return None
-            resolver = getattr(declaration, "resolveReference", None)
+            resolver = getattr(resolving, "resolveReference", None)
             if resolver is None:
                 return None
             return resolver(head_name, candidates, parser=self)

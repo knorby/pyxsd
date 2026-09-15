@@ -4862,3 +4862,130 @@ schema = '''
   <xs:element name="doc" type="x:testing"/>
   </xs:schema>
 '''
+
+[[case]]
+id = "structure/particle-recurse-drop-required-invalid"
+description = "An all:all restriction may not drop a base member that cannot match zero instances (Recurse)"
+derived_from = "W3C XML Schema Test Suite, Saxonica group 'All' (all204: missing element d) and MS group 'particlesS' (particlesS005)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a" minOccurs="0" maxOccurs="5"/>
+      <xs:element name="b" minOccurs="1" maxOccurs="5"/>
+      <xs:element name="d" minOccurs="1" maxOccurs="1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:all>
+          <xs:element name="b" minOccurs="2" maxOccurs="4"/>
+        </xs:all>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-recurse-unordered-sequence-valid"
+description = "A derived sequence may restrict an all with a different member order when every mapped occurrence is contained (RecurseUnordered, valid control)"
+derived_from = "W3C XML Schema Test Suite, Saxonica group 'All' (all211) and MS group 'particlesU' (particlesU003)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a" minOccurs="0" maxOccurs="5"/>
+      <xs:element name="b" minOccurs="1" maxOccurs="5"/>
+      <xs:element name="d" minOccurs="1" maxOccurs="1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:sequence>
+          <xs:element name="d" minOccurs="1" maxOccurs="1"/>
+          <xs:element name="b" minOccurs="3" maxOccurs="4"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-recurse-sequence-alignment-invalid"
+description = "A sequence:sequence restriction may not drop a base member that cannot match zero instances (Recurse alignment)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesW' (particlesW010: c is NOT emptiable, R has (a, b))"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:element name="a"/>
+      <xs:element name="b"/>
+      <xs:element name="c"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:sequence>
+          <xs:element name="a"/>
+          <xs:element name="b"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-recurse-choice-extra-branch-invalid"
+description = "A choice:choice restriction may not add a branch that restricts no base branch (Recurse injective mapping)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesT' (particlesT008: R has (a | b | c | d))"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="a"/>
+      <xs:element name="b"/>
+      <xs:element name="c"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="a"/>
+          <xs:element name="b"/>
+          <xs:element name="c"/>
+          <xs:element name="d"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+</xs:schema>
+'''
+schema_valid = false

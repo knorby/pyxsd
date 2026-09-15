@@ -418,7 +418,8 @@ class TestSchemaParticlesHb:
         assert issues and "Forbidden" in issues[0].message
 
     def test_choice_over_all_is_invalid(self, parse):
-        # particlesHb009: choice(e1, e2) restricting all(e1, e2)
+        # particlesHb009: choice(e1, e2) restricting all(e1, e2) — neither
+        # branch can occur while satisfying the all's required members
         report = parse(
             "<xs:complexType name='base'><xs:all>"
             "<xs:element name='e1'/><xs:element name='e2'/>"
@@ -430,7 +431,7 @@ class TestSchemaParticlesHb:
             "</xs:restriction></xs:complexContent></xs:complexType>"
         )
         issues = particle_restriction_issues(report)
-        assert issues and "Forbidden" in issues[0].message
+        assert issues and "Recurse" in issues[0].message
 
     def test_element_over_all_with_contained_occurrence_is_valid(self, parse):
         # particlesK001: an element restricting an all with contained
@@ -955,5 +956,686 @@ class TestSchemaParticlesI:
             "<xs:restriction base='base'><xs:choice>"
             "<xs:element name='foo' type='xs:string'/><xs:element name='e2'/>"
             "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+
+def _elt(decl, min_occurs=1, max_occurs=1):
+    """An element particle carrying a stand-in declaration."""
+    return Particle(
+        "element", min_occurs=min_occurs, max_occurs=max_occurs, name=decl.name, descriptor=decl
+    )
+
+
+def _decls_resolver(particle):
+    return particle.descriptor
+
+
+def _wild(namespace, min_occurs=1, max_occurs=1, process_contents="strict"):
+    return Particle(
+        "any",
+        min_occurs=min_occurs,
+        max_occurs=max_occurs,
+        spec=WildcardSpec(namespace=namespace, process_contents=process_contents),
+    )
+
+
+def _group(kind, *children, min_occurs=1, max_occurs=1):
+    return Particle(kind, min_occurs=min_occurs, max_occurs=max_occurs, children=list(children))
+
+
+class TestRecurseSequenceAlignment:
+    """Recurse over sequence:sequence — order-preserving, skippable extras."""
+
+    def test_optional_bases_absent_ok(self):
+        # particlesW008: B has (a, b, c), b and c emptiable, R has (a)
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b"), 0, 1),
+            _elt(_Declaration(name="c"), 0, 1),
+        )
+        derived = _group("sequence", _elt(_Declaration(name="a")))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_required_base_particle_cannot_be_left_out(self):
+        # particlesW010: c is NOT emptiable, R has (a, b)
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+        )
+        derived = _group("sequence", _elt(_Declaration(name="a")), _elt(_Declaration(name="b")))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_extra_member_is_invalid(self):
+        # particlesW012: R has (a, b, c, d)
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+            _elt(_Declaration(name="d")),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_reordered_members_are_invalid(self):
+        # particlesW007: B has (a, b), R has (b, a) — order matters
+        base = _group("sequence", _elt(_Declaration(name="a")), _elt(_Declaration(name="b")))
+        derived = _group("sequence", _elt(_Declaration(name="b")), _elt(_Declaration(name="a")))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_leading_optional_member_may_be_dropped(self):
+        # wild068: the derived sequence drops an optional *leading* member
+        base = _group("sequence", _elt(_Declaration(name="e"), 0, 1), _elt(_Declaration(name="f")))
+        derived = _group("sequence", _elt(_Declaration(name="f")))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_equal_length_still_pairs_positionally(self):
+        # particlesW011: same members, same order
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_repeated_base_member_may_serve_two_derived_members(self):
+        # particlesZ028 absorption: seq{a, b} restricting a repeated choice of
+        # the substitution-group heads — the choice is served twice
+        head = _Declaration(name="aba")
+        sub_a = _Declaration(name="a")
+        sub_b = _Declaration(name="b")
+        heads = {sub_a: head, sub_b: head}
+        base = _group(
+            "sequence",
+            _group(
+                "sequence",
+                _group("choice", _elt(head, 1, 1), _elt(_Declaration(name="abb"), 1, 1)),
+                min_occurs=0,
+                max_occurs=None,
+            ),
+            _elt(_Declaration(name="d"), 0, 1),
+        )
+        derived = _group(
+            "sequence",
+            _group(
+                "sequence",
+                _elt(sub_a),
+                _elt(sub_b),
+                min_occurs=0,
+                max_occurs=1,
+            ),
+            _elt(_Declaration(name="d"), 0, 1),
+        )
+        assert not is_valid_particle_restriction(
+            base, derived, _decls_resolver, head_lookup=heads.get
+        )
+
+
+class TestRecurseChoiceMapping:
+    """RecurseLax over choice:choice — injective, order-insensitive."""
+
+    def test_mapping_is_injective(self):
+        # two derived branches may not consume the same base branch
+        base = _group("choice", _elt(_Declaration(name="a")), _elt(_Declaration(name="b")))
+        derived = _group(
+            "choice", _elt(_Declaration(name="a"), 0, 1), _elt(_Declaration(name="a"), 0, 1)
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_non_emptiable_branch_may_be_left_out(self):
+        # particlesT005: B has (a | b | c), c NOT emptiable, R has (a)
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+        )
+        derived = _group("choice", _elt(_Declaration(name="a")))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_reordered_branches_are_valid(self):
+        # particlesT002 under the 1.1 profile: order-insensitive
+        base = _group("choice", _elt(_Declaration(name="a")), _elt(_Declaration(name="b")))
+        derived = _group("choice", _elt(_Declaration(name="b")), _elt(_Declaration(name="a")))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_unmappable_branch_is_invalid(self):
+        # particlesT008: R has (a | b | c | d)
+        base = _group(
+            "choice",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+        )
+        derived = _group(
+            "choice",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+            _elt(_Declaration(name="d")),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_substitution_group_branches_consume_distinct_base_branches(self):
+        # each derived branch restricts a *distinct* base branch
+        head = _Declaration(name="a")
+        sub1 = _Declaration(name="a1")
+        sub2 = _Declaration(name="a2")
+        heads = {sub1: head, sub2: head}
+        base = _group("choice", _elt(head), _elt(_Declaration(name="b")))
+        derived = _group("choice", _elt(sub1), _elt(sub2))
+        reasons = is_valid_particle_restriction(
+            base, derived, _decls_resolver, head_lookup=heads.get
+        )
+        assert reasons and "Recurse" in reasons[0]
+
+
+class TestRecurseUnorderedAllAll:
+    """Recurse over all:all — order-insensitive with per-member sums."""
+
+    def test_reordered_and_dropped_optional_is_valid(self):
+        # all201: R all{d, b, c} over B all{a(0,5), b, c, d}
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a"), 0, 5),
+            _elt(_Declaration(name="b"), 1, 5),
+            _elt(_Declaration(name="c"), 2, None),
+            _elt(_Declaration(name="d")),
+        )
+        derived = _group(
+            "all",
+            _elt(_Declaration(name="d")),
+            _elt(_Declaration(name="b"), 3, 4),
+            _elt(_Declaration(name="c"), 2, 4),
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_reordered_members_are_valid(self):
+        # particlesS002 under 1.1: B has (a, b), R has (b, a)
+        base = _group("all", _elt(_Declaration(name="a")), _elt(_Declaration(name="b")))
+        derived = _group("all", _elt(_Declaration(name="b")), _elt(_Declaration(name="a")))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_required_base_particle_cannot_be_left_out(self):
+        # all204 / particlesS005: a required base member may not be dropped
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a"), 0, 5),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="d")),
+        )
+        derived = _group("all", _elt(_Declaration(name="b")))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_extra_member_is_invalid(self):
+        # all205: a derived member with no base counterpart
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a"), 0, 5),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+        )
+        derived = _group(
+            "all",
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+            _elt(_Declaration(name="f"), 0, 1),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_member_occurrence_widening_is_invalid(self):
+        # all202/all203: b(0,4) drops the base minimum; d(1,5) exceeds the base maximum
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a"), 0, 5),
+            _elt(_Declaration(name="b"), 1, 5),
+            _elt(_Declaration(name="d")),
+        )
+        derived = _group(
+            "all",
+            _elt(_Declaration(name="b"), 0, 4),
+            _elt(_Declaration(name="d"), 1, 5),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_two_members_may_share_one_base_member(self):
+        # all221: A1(6,8) + A2(6,8) both restrict base a(10,20); sums are contained
+        head = _Declaration(name="a")
+        sub1 = _Declaration(name="A1")
+        sub2 = _Declaration(name="A2")
+        heads = {sub1: head, sub2: head}
+        base = _group(
+            "all",
+            _elt(head, 10, 20),
+            _elt(_Declaration(name="b"), 0, 5),
+        )
+        derived = _group("all", _elt(sub1, 6, 8), _elt(sub2, 6, 8))
+        assert not is_valid_particle_restriction(
+            base, derived, _decls_resolver, head_lookup=heads.get
+        )
+
+    def test_shared_base_member_sum_minimum_is_checked(self):
+        # all223: 3+3 < the base's 10 required occurrences
+        head = _Declaration(name="a")
+        sub1 = _Declaration(name="A1")
+        sub2 = _Declaration(name="A2")
+        heads = {sub1: head, sub2: head}
+        base = _group("all", _elt(head, 10, 20))
+        derived = _group("all", _elt(sub1, 3, 8), _elt(sub2, 3, 8))
+        reasons = is_valid_particle_restriction(
+            base, derived, _decls_resolver, head_lookup=heads.get
+        )
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_shared_base_member_sum_maximum_is_checked(self):
+        # all224: 15+15 > the base's 20 maximum
+        head = _Declaration(name="a")
+        sub1 = _Declaration(name="A1")
+        sub2 = _Declaration(name="A2")
+        heads = {sub1: head, sub2: head}
+        base = _group("all", _elt(head, 10, 20))
+        derived = _group("all", _elt(sub1, 6, 15), _elt(sub2, 6, 15))
+        reasons = is_valid_particle_restriction(
+            base, derived, _decls_resolver, head_lookup=heads.get
+        )
+        assert reasons and "Recurse" in reasons[0]
+
+
+class TestRecurseUnorderedWildcardSums:
+    """Wildcard accounting in the unordered mapping (all228-244)."""
+
+    def test_subset_wildcard_is_valid(self):
+        # all228: {two} ⊆ {one two}
+        base = _group("all", _wild("http://one.uri/ http://two.uri/"))
+        derived = _group("all", _wild("http://two.uri/"))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_superset_wildcard_is_invalid(self):
+        # all229
+        base = _group("all", _wild("http://two.uri/"))
+        derived = _group("all", _wild("http://one.uri/ http://two.uri/"))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_one_base_wildcard_may_cover_two_derived(self):
+        # all230: (1,1)+(1,1) ⊆ (1,5)
+        base = _group("all", _wild("http://one.uri/ http://two.uri/", 1, 5))
+        derived = _group("all", _wild("http://one.uri/", 1, 1), _wild("http://two.uri/", 1, 1))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_covered_wildcards_sum_maximum_is_checked(self):
+        # all235: (1,3)+(1,3) ⊄ (1,5)
+        base = _group("all", _wild("http://one.uri/ http://two.uri/", 1, 5))
+        derived = _group("all", _wild("http://one.uri/", 1, 3), _wild("http://two.uri/", 1, 3))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_covered_wildcards_sum_minimum_is_checked(self):
+        # all236: (2,unb)+(2,unb) does not reach the base's minimum 5
+        base = _group("all", _wild("http://one.uri/ http://two.uri/", 5, None))
+        derived = _group(
+            "all",
+            _wild("http://one.uri/", 2, None),
+            _wild("http://two.uri/", 2, None),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_overlapping_wildcards_split_across_bases(self):
+        # all237: three derived wildcards over two overlapping base wildcards
+        base = _group(
+            "all",
+            _wild("http://one.uri/ http://two.uri/", 5, None),
+            _wild("http://three.uri/", 0, 2),
+        )
+        derived = _group(
+            "all",
+            _wild("http://one.uri/", 3, None),
+            _wild("http://two.uri/", 2, 2),
+            _wild("http://three.uri/", 2, 2),
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_split_wildcard_may_starve_a_base_minimum(self):
+        # all244: the split {two three} wildcard can put zero items in {one two},
+        # so the base's required five are not always reachable
+        base = _group(
+            "all",
+            _wild("http://one.uri/ http://two.uri/", 5, None),
+            _wild("http://three.uri/", 0, 2),
+        )
+        derived = _group(
+            "all",
+            _wild("http://one.uri/", 3, None),
+            _wild("http://two.uri/ http://three.uri/", 2, 2),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_split_wildcard_may_not_weaken_process_contents(self):
+        # all238: the part of the split wildcard landing in the strict base
+        # wildcard may not be lax
+        base = _group(
+            "all",
+            _wild("http://one.uri/ http://two.uri/", 5, None, "strict"),
+            _wild("http://three.uri/", 0, 2, "strict"),
+        )
+        derived = _group(
+            "all",
+            _wild("http://one.uri/", 3, None, "strict"),
+            _wild("http://two.uri/ http://three.uri/", 2, 2, "lax"),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+
+class TestRecurseUnorderedSequenceOverAll:
+    """RecurseUnordered: a derived sequence restricting an all base."""
+
+    def _base_all(self):
+        return _group(
+            "all",
+            _elt(_Declaration(name="a"), 0, 5),
+            _elt(_Declaration(name="b"), 1, 5),
+            _elt(_Declaration(name="c"), 2, None),
+            _elt(_Declaration(name="d")),
+        )
+
+    def test_reordered_sequence_is_valid(self):
+        # all211 / particlesU003
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="d")),
+            _elt(_Declaration(name="b"), 3, 4),
+            _elt(_Declaration(name="c"), 2, 4),
+        )
+        assert not is_valid_particle_restriction(self._base_all(), derived, _decls_resolver)
+
+    def test_duplicate_element_in_sequence_is_valid(self):
+        # all216: 'a' appears twice in the derived sequence
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="d")),
+            _elt(_Declaration(name="b"), 3, 4),
+            _elt(_Declaration(name="c"), 2, 4),
+            _elt(_Declaration(name="a")),
+        )
+        assert not is_valid_particle_restriction(self._base_all(), derived, _decls_resolver)
+
+    def test_member_max_widening_is_invalid(self):
+        # particlesU001: e2(1,2) over e2(1,1)
+        base = _group("all", _elt(_Declaration(name="e1")), _elt(_Declaration(name="e2")))
+        derived = _group(
+            "sequence", _elt(_Declaration(name="e1")), _elt(_Declaration(name="e2"), 1, 2)
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_member_min_widening_is_invalid(self):
+        # particlesU002: e1(2,2) over e1(1,1)
+        base = _group("all", _elt(_Declaration(name="e1")), _elt(_Declaration(name="e2")))
+        derived = _group(
+            "sequence", _elt(_Declaration(name="e1"), 2, 2), _elt(_Declaration(name="e2"))
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_optional_base_absent_ok(self):
+        # particlesU004: c is emptiable
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c"), 0, 1),
+        )
+        derived = _group("sequence", _elt(_Declaration(name="b")), _elt(_Declaration(name="a")))
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_required_base_particle_cannot_be_left_out(self):
+        # particlesU006: c is NOT emptiable
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a")),
+            _elt(_Declaration(name="b")),
+            _elt(_Declaration(name="c")),
+        )
+        derived = _group("sequence", _elt(_Declaration(name="a")), _elt(_Declaration(name="b")))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_unknown_member_is_invalid(self):
+        # particlesU008: e4 has no base counterpart
+        base = _group(
+            "all",
+            _elt(_Declaration(name="e1")),
+            _elt(_Declaration(name="e2"), 0, 1),
+            _elt(_Declaration(name="e3")),
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="e4")),
+            _elt(_Declaration(name="e2"), 0, 1),
+            _elt(_Declaration(name="e3")),
+            _elt(_Declaration(name="e1")),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_choice_member_restricts_through_its_branches(self):
+        # all234: the choice's branches map individually onto the base members
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a"), 0, 5),
+            _elt(_Declaration(name="b"), 1, 5),
+            _elt(_Declaration(name="c"), 0, None),
+            _elt(_Declaration(name="d"), 0, 1),
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="b"), 1, 3),
+            _group(
+                "choice",
+                _elt(_Declaration(name="d")),
+                _elt(_Declaration(name="c")),
+                _elt(_Declaration(name="a")),
+            ),
+            _elt(_Declaration(name="b"), 1, 2),
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+
+class TestChoiceOverAllBranches:
+    """all:choice — every branch must restrict the all on its own."""
+
+    def test_all_optional_base_with_full_choice_is_valid(self):
+        # all231
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a"), 0, 5),
+            _elt(_Declaration(name="b"), 0, 5),
+            _elt(_Declaration(name="c"), 0, None),
+            _elt(_Declaration(name="d"), 0, 1),
+        )
+        derived = _group(
+            "choice",
+            _elt(_Declaration(name="d")),
+            _elt(_Declaration(name="b"), 3, 4),
+            _elt(_Declaration(name="c"), 2, 4),
+            _elt(_Declaration(name="a"), 0, 5),
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_sequence_branches_covering_the_required_member_are_valid(self):
+        # all232
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a"), 0, 5),
+            _elt(_Declaration(name="b"), 1, 5),
+            _elt(_Declaration(name="c"), 0, None),
+            _elt(_Declaration(name="d"), 0, 1),
+        )
+        derived = _group(
+            "choice",
+            _group("sequence", _elt(_Declaration(name="d")), _elt(_Declaration(name="b"), 3, 4)),
+            _group("sequence", _elt(_Declaration(name="c")), _elt(_Declaration(name="b"), 3, 4)),
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_branch_exceeding_a_base_maximum_is_invalid(self):
+        # all233: the third branch's a(1,8) exceeds a(0,5)
+        base = _group(
+            "all",
+            _elt(_Declaration(name="a"), 0, 5),
+            _elt(_Declaration(name="b"), 1, 5),
+            _elt(_Declaration(name="c"), 0, None),
+            _elt(_Declaration(name="d"), 0, 1),
+        )
+        derived = _group(
+            "choice",
+            _group("sequence", _elt(_Declaration(name="d")), _elt(_Declaration(name="b"), 3, 4)),
+            _group("sequence", _elt(_Declaration(name="c")), _elt(_Declaration(name="b"), 3, 4)),
+            _group(
+                "sequence",
+                _elt(_Declaration(name="a"), 1, 8),
+                _elt(_Declaration(name="b"), 3, 4),
+            ),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_branch_missing_a_required_member_is_invalid(self):
+        # particlesHb009: neither branch can appear while satisfying the all
+        base = _group("all", _elt(_Declaration(name="e1")), _elt(_Declaration(name="e2")))
+        derived = _group("choice", _elt(_Declaration(name="e1")), _elt(_Declaration(name="e2")))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons
+
+    def test_wildcard_branch_over_element_all_is_invalid(self):
+        # particlesHb002: the branch reaches namespaces no base member admits
+        base = _group(
+            "all", _elt(_Declaration(name="e1"), 0, 1), _elt(_Declaration(name="e2"), 0, 1)
+        )
+        derived = _group("choice", _wild("##any"))
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons
+
+
+class TestSchemaRecurseCorpus:
+    """Corpus-shaped schema tests for the Recurse family."""
+
+    def test_all_all_required_member_left_out_is_invalid(self, parse):
+        # all204/particlesS005 shape
+        report = parse(
+            "<xs:complexType name='base'><xs:all>"
+            "<xs:element name='a' minOccurs='0' maxOccurs='5'/>"
+            "<xs:element name='b' minOccurs='1' maxOccurs='5'/>"
+            "<xs:element name='d' minOccurs='1' maxOccurs='1'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:all>"
+            "<xs:element name='b' minOccurs='2' maxOccurs='4'/>"
+            "</xs:all></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "Recurse" in issues[0].message
+
+    def test_sequence_restricting_all_reordered_is_valid(self, parse):
+        # all211 shape
+        report = parse(
+            "<xs:complexType name='base'><xs:all>"
+            "<xs:element name='a' minOccurs='0' maxOccurs='5'/>"
+            "<xs:element name='b' minOccurs='1' maxOccurs='5'/>"
+            "<xs:element name='d' minOccurs='1' maxOccurs='1'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:element name='d' minOccurs='1' maxOccurs='1'/>"
+            "<xs:element name='b' minOccurs='3' maxOccurs='4'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_sequence_required_member_left_out_is_invalid(self, parse):
+        # particlesW010 shape
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:element name='a'/><xs:element name='b'/><xs:element name='c'/>"
+            "</xs:sequence></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:sequence>"
+            "<xs:element name='a'/><xs:element name='b'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "Recurse" in issues[0].message
+
+    def test_choice_adding_branch_is_invalid(self, parse):
+        # particlesT008 shape
+        report = parse(
+            "<xs:complexType name='base'><xs:choice>"
+            "<xs:element name='a'/><xs:element name='b'/><xs:element name='c'/>"
+            "</xs:choice></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:element name='a'/><xs:element name='b'/>"
+            "<xs:element name='c'/><xs:element name='d'/>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "Recurse" in issues[0].message
+
+    def test_choice_branch_exceeding_all_maximum_is_invalid(self, parse):
+        # all233 shape
+        report = parse(
+            "<xs:complexType name='base'><xs:all>"
+            "<xs:element name='a' minOccurs='0' maxOccurs='5'/>"
+            "<xs:element name='b' minOccurs='1' maxOccurs='5'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:choice>"
+            "<xs:sequence><xs:element name='a' minOccurs='1' maxOccurs='8'/>"
+            "<xs:element name='b' minOccurs='3' maxOccurs='4'/></xs:sequence>"
+            "</xs:choice></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "Recurse" in issues[0].message
+
+    def test_equal_all_restriction_is_valid(self, parse):
+        # particlesS001 shape
+        report = parse(
+            "<xs:complexType name='base'><xs:all>"
+            "<xs:element name='a' minOccurs='0' maxOccurs='5'/>"
+            "<xs:element name='b' minOccurs='1' maxOccurs='5'/>"
+            "</xs:all></xs:complexType>"
+            "<xs:complexType name='testing'><xs:complexContent>"
+            "<xs:restriction base='base'><xs:all>"
+            "<xs:element name='b' minOccurs='2' maxOccurs='4'/>"
+            "<xs:element name='a' minOccurs='0' maxOccurs='1'/>"
+            "</xs:all></xs:restriction></xs:complexContent></xs:complexType>"
         )
         assert not particle_restriction_issues(report)

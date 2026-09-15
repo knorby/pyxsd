@@ -36,17 +36,23 @@ Rule cells implemented so far (later sub-tasks extend this module):
   (``NSRecurseCheckCardinality``/``GroupOverElement``), for sequence
   over choice (``MapAndSum``) and for same-kind compositors
   (``Recurse``).
-* ``Recurse`` pairing: sequences positionally; choices by mapping each
-  derived member onto some base member it validly restricts
-  (order-insensitive). ``all`` over ``all`` waits for Task 4c's
-  order-insensitive mapping.
+* ``Recurse`` pairing: sequences align order-preservingly (derived
+  members map onto a subsequence of the base members, in order; base
+  members left out must be able to match zero instances); choices map
+  each derived member onto a *distinct* base member it validly
+  restricts (order-insensitive, injective); ``all`` over ``all`` and a
+  sequence over an ``all`` (RecurseUnordered) map order-insensitively
+  with the mapped members' occurrence ranges summed per base member,
+  every required base member covered, and split coverage for a derived
+  wildcard spread over several base wildcards. A choice over an ``all``
+  restricts it when every branch restricts the ``all`` on its own.
 * Deliberately silent until the later sub-tasks: element over a model
   group (RecurseAsIfGroup needs the deep occurrence arithmetic of
   particlesM003 — naive containment there would reject a valid
   restriction), a model group over an element (the 1.0 table forbids
   the shape, but the corpus pins the exemplars valid under the 1.1
   profile — particlesHb008/Hb011 — because the 1.1 Recurse alignment
-  absorbs them; Task 4c/4d completes this).
+  absorbs them; Task 4d completes this).
 """
 
 from __future__ import annotations
@@ -54,7 +60,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from pyxsd.content_model import Particle, particle_names
+from pyxsd.content_model import Particle
 from pyxsd.derivation import is_validly_derived
 from pyxsd.wildcards import WildcardSpec
 
@@ -95,7 +101,7 @@ _SHAPE_RULES: dict[tuple[str, str], str] = {
     ("sequence", "any"): "NSRecurseCheckCardinality",
     ("sequence", "choice"): "MapAndSum",
     ("sequence", "sequence"): "Recurse",
-    ("sequence", "all"): "SequenceOverAll",
+    ("sequence", "all"): "RecurseUnordered",
     ("all", "element"): "GroupOverElement",
     ("all", "any"): "NSRecurseCheckCardinality",
     ("all", "choice"): "Forbidden",
@@ -115,22 +121,19 @@ HeadLookup = Callable[[Any], Any]
 #:   would reject); Task 4d.
 #: * ``GroupOverElement`` — 1.0 forbids the shape, but the corpus pins
 #:   the exemplars valid under the 1.1 profile (particlesHb008/Hb011)
-#:   via 1.1's Recurse alignment; Task 4c/4d.
+#:   via 1.1's Recurse alignment; Task 4d.
 #: * ``NSRecurseCheckCardinality`` — its occurrence clause weighs the
 #:   group members' multiplicity against the wildcard's range, so plain
 #:   containment rejects valid schemas (particlesHa070, Q013, R009);
 #:   Task 4d.
 #: * ``MapAndSum`` — partitions the derived sequence over the base
 #:   choice with occurrence arithmetic (particlesV003); Task 4d.
-#: * ``SequenceOverAll`` — RecurseUnordered's order-insensitive mapping
-#:   (all211, particlesU003, wild047); Task 4c/4d.
 _DEFERRED_CELLS = frozenset(
     {
         "EltOverGroup",
         "GroupOverElement",
         "NSRecurseCheckCardinality",
         "MapAndSum",
-        "SequenceOverAll",
     }
 )
 
@@ -213,6 +216,7 @@ def _pair_violations(
     amplified: bool = False,
     head_lookup: HeadLookup | None = None,
     removable: bool = False,
+    check_occurs: bool = True,
 ) -> list[str]:
     """The violations for one aligned pair of particles, recursing into
     same-kind compositors. ``visited`` holds already-checked ``(base,
@@ -223,7 +227,10 @@ def _pair_violations(
     member containment would reject valid restrictions — the corpus
     pins such shapes legal in mgH014/W006). ``amplified`` records that
     some enclosing compositor repeats, silencing member-level
-    occurrence containment everywhere below it.
+    occurrence containment everywhere below it. ``check_occurs``
+    silences *all* per-pair occurrence containment — the unordered
+    RecurseUnordered matcher passes ``False`` and accounts the mapped
+    members' ranges by sum instead (all221/all230).
     """
     base = _unwrap(base)
     derived = _unwrap(derived)
@@ -243,11 +250,11 @@ def _pair_violations(
             f"restrict a {base.kind} particle"
         ]
     if rule in ("WildcardOverAll", "ChoiceOverAll"):
-        over_all = _over_all_violations(base, derived)
+        over_all = _over_all_violations(base, derived, resolver, visited, head_lookup)
         if over_all:
             return over_all
-        # The 1.1 relaxation holds; the pair still waits for the Recurse
-        # work to verify the members, so nothing more is reported.
+        # The 1.1 relaxation holds; the branch checks have verified the
+        # members, so nothing more is reported.
         return []
     if rule in _DEFERRED_CELLS:
         # The cells whose full rules need the later sub-tasks' machinery
@@ -274,6 +281,7 @@ def _pair_violations(
     )
     if (
         containment_applies
+        and check_occurs
         and not (removable and not top and derived.max_occurs == 0)
         and not contains_occurs(
             derived.min_occurs, derived.max_occurs, base.min_occurs, base.max_occurs
@@ -290,34 +298,47 @@ def _pair_violations(
         violations.extend(_wildcard_admission_violations(base, derived, resolver))
     elif rule == "NameAndTypeOK":
         violations.extend(_nameandtypeok_violations(base, derived, resolver, head_lookup))
-    elif rule == "Recurse":
+    elif rule in ("Recurse", "RecurseUnordered"):
         violations.extend(
-            _recurse_pairing_violations(base, derived, resolver, visited, amplified, head_lookup)
+            _recurse_pairing_violations(
+                base,
+                derived,
+                resolver,
+                visited,
+                amplified,
+                head_lookup,
+                rule,
+                check_occurs,
+            )
         )
     return violations
 
 
-def _over_all_violations(base: Particle, derived: Particle) -> list[str]:
+def _over_all_violations(
+    base: Particle,
+    derived: Particle,
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    head_lookup: HeadLookup | None,
+) -> list[str]:
     """The wildcard-over-all / choice-over-all transition.
 
     XSD 1.0 forbids the shape outright; the corpus keeps it forbidden
     when the derived side escapes the all's language (particlesHb002's
     ``choice(any ##any)`` reaches namespaces no member of its element
-    base admits, particlesHb009's choice branches drop a required
-    member), and accepts it under the 1.1 profile when every branch of
-    the derived choice carries each required base member and every
-    wildcard it reaches is covered by a base wildcard (all231/all232).
-    Anything subtler waits for the Recurse work.
+    base admits), and accepts it under the 1.1 profile when it stays
+    inside: a bare wildcard is covered when the all has no required
+    members and one of its wildcards admits everything the derived
+    wildcard admits (all218), and a choice restricts the all when
+    *every* branch restricts the all on its own (RecurseUnordered per
+    branch — all231/all232 valid, all233's over-wide third branch and
+    particlesHb009's required-member-dropping branches invalid).
     """
     forbidden = [
         f"particle restriction (Forbidden): a {derived.kind} particle cannot "
         f"restrict an all particle"
     ]
     required = [child for child in base.children if child.min_occurs >= 1]
-    if any(member.kind != "element" for member in required):
-        # A non-element required member cannot be matched branch-by-
-        # branch with the machinery this sub-task has.
-        return forbidden
     if derived.kind == "any":
         # A bare wildcard is covered only when the all has no required
         # members and one of its wildcards admits everything the
@@ -328,13 +349,20 @@ def _over_all_violations(base: Particle, derived: Particle) -> list[str]:
         return forbidden
     if derived.kind != "choice":
         return forbidden
-    for member in required:
-        for branch in derived.children:
-            if member.name not in particle_names(branch):
-                return forbidden
-    for wildcard in _wildcard_particles(derived):
-        if not _wildcard_covered(wildcard, base):
-            return forbidden
+    for index, branch in enumerate(derived.children):
+        reasons = _unordered_violations(
+            base,
+            branch,
+            resolver,
+            set(visited),
+            True,
+            head_lookup,
+            "Recurse",
+            False,
+            branch=index,
+        )
+        if reasons:
+            return reasons
     return []
 
 
@@ -380,7 +408,12 @@ def _unwrap(particle: Particle) -> Particle:
 
 
 def _nssubset_violations(base: Particle, derived: Particle) -> list[str]:
-    """The NSSubset conditions beyond occurrence containment."""
+    """The NSSubset conditions beyond occurrence containment.
+
+    Occurrence containment for the pair is applied by the caller's
+    generic clause (gated by ``check_occurs`` there): the
+    RecurseUnordered matcher accounts mapped ranges by sum instead.
+    """
     base_spec = base.spec
     derived_spec = derived.spec
     if base_spec is None or derived_spec is None:
@@ -708,6 +741,12 @@ def _sorted_tokens(tokens: frozenset[str]) -> str:
     return "{" + ", ".join(sorted(tokens)) + "}" if tokens else "{}"
 
 
+#: Backtracking node budget for the unordered matcher; past it the pair
+#: is left unverified rather than rejected (skip-not-reject posture —
+#: content models of this size do not occur in the corpus).
+_UNORDERED_NODE_BUDGET = 20000
+
+
 def _recurse_pairing_violations(
     base: Particle,
     derived: Particle,
@@ -715,75 +754,455 @@ def _recurse_pairing_violations(
     visited: set[tuple[int, int]],
     amplified: bool = False,
     head_lookup: HeadLookup | None = None,
-    removable: bool = False,
+    rule_name: str = "Recurse",
+    check_occurs: bool = True,
 ) -> list[str]:
-    """Recurse's pairing over same-kind compositors.
+    """Recurse's pairing over same-kind compositors (and over ``all``).
 
-    Sequences pair positionally; choices map each derived member onto
-    some base member it validly restricts (the corpus pins the mapping
-    as order-insensitive and length-free — particlesM002); ``all`` over
-    ``all`` waits for Task 4c's order-insensitive mapping.
+    Sequences align order-preservingly — each derived member restricts
+    a base member at its in-order position, and base members left out
+    must be able to match zero instances (particlesW008 valid, W010
+    invalid). Choices map each derived member onto a *distinct* base
+    member it validly restricts — order-insensitive and injective
+    (particlesT002/T005 valid, T008 invalid, and a derived branch may
+    not consume another's base branch). An ``all`` base — with an
+    ``all`` or a sequence derived from it (RecurseUnordered) — maps
+    order-insensitively with per-base-member occurrence sums (all201,
+    particlesU003).
+    """
+    if base.kind == "all":
+        return _unordered_violations(
+            base, derived, resolver, visited, amplified, head_lookup, rule_name, check_occurs
+        )
+    member_amplified = _member_amplified(base, derived, amplified)
+    if derived.kind == "choice" and base.kind == "choice":
+        return _choice_mapping_violations(
+            base, derived, resolver, visited, member_amplified, head_lookup, check_occurs
+        )
+    if derived.kind == "sequence" and base.kind == "sequence":
+        return _sequence_alignment_violations(
+            base, derived, resolver, visited, member_amplified, head_lookup, check_occurs
+        )
+    # Remaining shapes (an all or other compositor derived over a
+    # sequence/choice base) are forbidden transitions handled by the
+    # shape table before this dispatch, or deferred cells.
+    return []
+
+
+def _member_amplified(base: Particle, derived: Particle, amplified: bool) -> bool:
+    """Whether this compositor's members cannot be occurrence-compared.
 
     Members inherit ``amplified`` once this compositor's ranges differ
     between base and derived (or an ancestor's did): the multipliers
-    then differ and member ranges cannot be compared pairwise.
+    then differ and member ranges cannot be compared pairwise. A
+    vacuous compositor (maxOccurs=0) matches nothing, so its members'
+    ranges are unconstrained (particlesW006).
     """
-    if derived.kind == "all":
-        return []
-    member_amplified = (
+    return (
         amplified
         or (base.min_occurs, base.max_occurs) != (derived.min_occurs, derived.max_occurs)
-        # A vacuous compositor (maxOccurs=0) matches nothing, so its
-        # members' ranges are unconstrained (particlesW006).
         or base.max_occurs == 0
         or derived.max_occurs == 0
     )
-    if derived.kind == "choice":
-        violations: list[str] = []
-        for index, d_member in enumerate(derived.children):
-            mapped = False
-            first_attempt: list[str] = []
-            for b_member in base.children:
-                trial = set(visited)
-                candidate = _pair_violations(
-                    b_member,
-                    d_member,
-                    resolver,
-                    trial,
-                    amplified=member_amplified,
-                    head_lookup=head_lookup,
-                    removable=True,
-                )
-                if not candidate:
-                    mapped = True
-                    break
-                if not first_attempt:
-                    first_attempt = candidate
-            if not mapped:
-                reasons = "; ".join(first_attempt) or "the base choice has no members"
-                violations.append(
-                    f"particle restriction (Recurse): derived choice member {index} "
-                    f"validly restricts no member of the base choice ({reasons})"
-                )
-        return violations
-    if len(derived.children) != len(base.children):
-        # Positional pairing assumes aligned members; a derived sequence
-        # that drops optional base members (wild068) or otherwise shifts
-        # the alignment needs the Recurse work's matching machinery.
+
+
+def _choice_mapping_violations(
+    base: Particle,
+    derived: Particle,
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    amplified: bool,
+    head_lookup: HeadLookup | None,
+    check_occurs: bool,
+) -> list[str]:
+    """RecurseLax: an injective, order-insensitive member mapping.
+
+    Every derived branch must validly restrict some base branch, and
+    no two derived branches may consume the same base branch
+    (RecurseLax's bijective mapping). Backtracking tries each unused
+    base branch per derived branch, so a branch that only fits a base
+    branch another one needs forces a different overall mapping.
+    """
+    used: set[int] = set()
+    dead_ends: list[tuple[int, list[str]]] = []
+    derived_children = derived.children
+    base_children = base.children
+
+    def assign(index: int) -> bool:
+        if index == len(derived_children):
+            return True
+        member = derived_children[index]
+        for position, candidate in enumerate(base_children):
+            if position in used:
+                # Injectivity: no two derived branches may consume the
+                # same base branch.
+                continue
+            trial = set(visited)
+            reasons = _pair_violations(
+                candidate,
+                member,
+                resolver,
+                trial,
+                amplified=amplified,
+                head_lookup=head_lookup,
+                removable=True,
+                check_occurs=check_occurs,
+            )
+            if not reasons:
+                used.add(position)
+                if assign(index + 1):
+                    return True
+                used.discard(position)
+            elif not any(failed[0] == index for failed in dead_ends):
+                dead_ends.append((index, reasons))
+        return False
+
+    if assign(0):
         return []
-    for b_member, d_member in zip(base.children, derived.children, strict=False):
-        violations = _pair_violations(
-            b_member,
-            d_member,
+    if dead_ends:
+        index, reasons = min(dead_ends, key=lambda failed: failed[0])
+        detail = "; ".join(reasons)
+    else:
+        index, detail = 0, "the base choice has no members"
+    return [
+        f"particle restriction (Recurse): derived choice member {index} validly "
+        f"restricts no unused member of the base choice ({detail})"
+    ]
+
+
+def _sequence_alignment_violations(
+    base: Particle,
+    derived: Particle,
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    amplified: bool,
+    head_lookup: HeadLookup | None,
+    check_occurs: bool,
+) -> list[str]:
+    """Recurse over sequence:sequence — the order-preserving alignment.
+
+    Each derived member must restrict some base member at or after the
+    previous alignment, and every base member the alignment steps over
+    must be able to match zero instances (an optional member may be
+    dropped — particlesW008 — a required one may not — particlesW010).
+    A base member the enclosing compositor can supply more than once
+    may serve several consecutive derived members — the 1.1 absorption
+    reading, which lets ``seq{a, b}`` restrict a repeated choice of
+    the substitution-group heads (particlesZ028). Reordering is never
+    allowed (particlesW007/W013), nor is an extra derived member
+    (particlesW012).
+    """
+    base_children = base.children
+    derived_children = derived.children
+    memo: dict[tuple[int, int], bool] = {}
+    dead_ends: list[tuple[int, int, list[str]]] = []
+
+    def repeatable(position: int) -> bool:
+        """Whether base_children[position] can serve a second derived member.
+
+        The compositor repeats its whole content, so the member's
+        effective supply is the product of the two maximums (``None``
+        meaning unbounded); two or more copies admit a shared mapping.
+        """
+        member = base_children[position]
+        if base.max_occurs is None or member.max_occurs is None:
+            return True
+        return base.max_occurs * member.max_occurs >= 2
+
+    def walk(index: int, position: int) -> bool:
+        key = (index, position)
+        if key in memo:
+            return memo[key]
+        if index == len(derived_children):
+            ok = all(member.min_occurs == 0 for member in base_children[position:])
+            memo[key] = ok
+            return ok
+        if position == len(base_children):
+            memo[key] = False
+            return False
+        member = derived_children[index]
+        trial = set(visited)
+        reasons = _pair_violations(
+            base_children[position],
+            member,
             resolver,
-            visited,
-            amplified=member_amplified,
+            trial,
+            amplified=amplified,
             head_lookup=head_lookup,
             removable=False,
+            check_occurs=check_occurs,
         )
-        if violations:
-            return violations
-    return []
+        if not reasons and (
+            walk(index + 1, position + 1) or (repeatable(position) and walk(index + 1, position))
+        ):
+            memo[key] = True
+            return True
+        if reasons:
+            dead_ends.append((index, position, reasons))
+        if base_children[position].min_occurs == 0 and walk(index, position + 1):
+            memo[key] = True
+            return True
+        memo[key] = False
+        return False
+
+    if walk(0, 0):
+        return []
+    if dead_ends:
+        index, _position, reasons = min(dead_ends, key=lambda end: (end[0], end[1]))
+        detail = "; ".join(reasons)
+        return [
+            f"particle restriction (Recurse): derived sequence member {index} "
+            f"validly restricts no in-order member of the base sequence ({detail})"
+        ]
+    return [
+        "particle restriction (Recurse): the derived sequence does not align with "
+        "the base sequence — it has a member the base sequence's order cannot place"
+    ]
+
+
+def _unordered_units(particle: Particle) -> list[Particle]:
+    """The derived-side units the unordered matcher aligns.
+
+    A sequence over an ``all`` contributes one unit per member; a
+    choice member contributes its *branches* — each alternative must
+    restrict the all on its own, since an instance uses exactly one
+    (all234). Anything else is a single unit.
+    """
+    if particle.kind in ("sequence", "all"):
+        units: list[Particle] = []
+        for child in particle.children:
+            if child.kind == "choice":
+                units.extend(child.children)
+            else:
+                units.append(child)
+        return units
+    if particle.kind == "choice":
+        return list(particle.children)
+    return [particle]
+
+
+def _unordered_violations(
+    base: Particle,
+    derived: Particle,
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    amplified: bool,
+    head_lookup: HeadLookup | None,
+    rule_name: str,
+    check_occurs: bool,
+    branch: int | None = None,
+) -> list[str]:
+    """RecurseUnordered: order-insensitive matching over an ``all`` base.
+
+    Each derived unit must validly restrict some base member, and every
+    required base member must be restricted by at least one unit — an
+    optional (minOccurs=0) base member may be dropped (all204 vs
+    all201). Units may share a base member; the shared member's range
+    must then contain the *sum* of the units' ranges (all221 valid,
+    all223/all224 invalid). Where, and only where, a unit restricts no
+    single base member but is a wildcard, it may be *split* across the
+    base wildcards its namespace constraint overlaps — provided every
+    namespace it admits is admitted by some base wildcard, no overlapped
+    base wildcard's processContents is weakened, and the split cannot
+    leave a required base member's minimum unreachable (all237 valid;
+    all244 invalid because the split can starve the base's minimum).
+    """
+    where = f"choice branch {branch} " if branch is not None else ""
+    prefix = f"particle restriction ({rule_name}): {where}"
+    units = _unordered_units(derived)
+    base_members = base.children
+    candidates: list[list[int]] = []
+    for unit in units:
+        fits: list[int] = []
+        for position, candidate in enumerate(base_members):
+            trial = set(visited)
+            reasons = _pair_violations(
+                candidate,
+                unit,
+                resolver,
+                trial,
+                amplified=True,
+                head_lookup=head_lookup,
+                removable=False,
+                check_occurs=False,
+            )
+            if not reasons:
+                fits.append(position)
+        candidates.append(fits)
+    split_capable = {
+        index
+        for index, unit in enumerate(units)
+        if not candidates[index] and unit.kind == "any" and _wildcard_split_coverable(unit, base)
+    }
+    budget = _UNORDERED_NODE_BUDGET
+    first_accounting: list[str] = []
+
+    def accounting(assignment: list[int | None]) -> list[str]:
+        minima: dict[int, int] = {}
+        maxima: dict[int, int | None] = {}
+        for index, position in enumerate(assignment):
+            if position is None:
+                # A split wildcard's occurrences may land in any
+                # overlapped base wildcard's namespaces, so it adds
+                # minimum pressure only where it is fully contained.
+                unit = units[index]
+                for member_position, member in enumerate(base_members):
+                    if _wildcard_contained_in(unit, member):
+                        minima[member_position] = minima.get(member_position, 0) + unit.min_occurs
+                continue
+            unit = units[index]
+            minima[position] = minima.get(position, 0) + unit.min_occurs
+            current = maxima.get(position, 0)
+            maxima[position] = (
+                None if current is None or unit.max_occurs is None else current + unit.max_occurs
+            )
+        for position, total_min in minima.items():
+            member = base_members[position]
+            if not contains_occurs(
+                total_min, maxima.get(position), member.min_occurs, member.max_occurs
+            ):
+                reasons = [
+                    prefix + f"the derived members restricting base member '{member.name}' have "
+                    f"combined occurrence range "
+                    f"{_occurrence_text(total_min, maxima.get(position))} "
+                    f"which is not contained in {_occurrence_text(member.min_occurs, member.max_occurs)}"
+                ]
+                if not first_accounting:
+                    first_accounting.extend(reasons)
+                return reasons
+        for position, member in enumerate(base_members):
+            if member.min_occurs >= 1 and position not in minima and position not in maxima:
+                reasons = [
+                    prefix + f"base member '{member.name}' requires at least {member.min_occurs} "
+                    "occurrence(s) but no derived member restricts it"
+                ]
+                if not first_accounting:
+                    first_accounting.extend(reasons)
+                return reasons
+        return []
+
+    def assign(index: int, assignment: list[int | None]) -> list[str] | None:
+        nonlocal budget
+        if index == len(units):
+            return accounting(assignment)
+        for position in candidates[index]:
+            budget -= 1
+            if budget < 0:
+                # Out of budget: leave the rest unverified (skip, not
+                # reject).
+                return None
+            assignment[index] = position
+            reasons = assign(index + 1, assignment)
+            if not reasons:
+                return None
+        if index in split_capable:
+            assignment[index] = None
+            return assign(index + 1, assignment)
+        assignment[index] = None
+        if first_accounting:
+            return first_accounting
+        unit = units[index]
+        detail = "; ".join(
+            _unordered_probe_reasons(units[index], base_members, resolver, visited, head_lookup)
+        )
+        label = f"'{unit.name}' " if unit.kind == "element" else ""
+        return [
+            prefix + f"derived member {index} {label}validly restricts no member of the base all "
+            f"({detail})"
+        ]
+
+    result = assign(0, [None] * len(units))
+    return result or []
+
+
+def _unordered_probe_reasons(
+    unit: Particle,
+    base_members: list[Particle],
+    resolver: Resolver,
+    visited: set[tuple[int, int]],
+    head_lookup: HeadLookup | None,
+) -> list[str]:
+    """Why one derived unit fits no base member (for the message)."""
+    for candidate in base_members:
+        trial = set(visited)
+        reasons = _pair_violations(
+            candidate,
+            unit,
+            resolver,
+            trial,
+            amplified=True,
+            head_lookup=head_lookup,
+            removable=False,
+            check_occurs=False,
+        )
+        if reasons:
+            return reasons
+    return ["the base all has no members"]
+
+
+def _wildcard_probes(specs: list[WildcardSpec], target: str | None) -> set[str | None]:
+    """The canonical probe set over which wildcard coverage is decided."""
+    probes: set[str | None] = {None, target, _FOREIGN_PROBE_URI}
+    for spec in specs:
+        probes.add(spec.effective_target(target))
+        for token in spec.namespace.split():
+            if token and not token.startswith("##"):
+                probes.add(token)
+    return probes
+
+
+def _wildcard_split_coverable(unit: Particle, base: Particle) -> bool:
+    """Whether a derived wildcard may be spread over the base wildcards.
+
+    Every namespace the unit admits must be admitted by some base
+    wildcard, and no overlapped base wildcard's processContents may be
+    weakened (all238). Without this split reading, the pathologically
+    overlapping all237 could not restrict its base at all.
+    """
+    spec = unit.spec
+    if spec is None:
+        return False
+    overlapped = [
+        member.spec
+        for member in base.children
+        if member.kind == "any"
+        and member.spec is not None
+        and _wildcards_overlap(spec, member.spec)
+    ]
+    if not overlapped:
+        return False
+    target = spec.effective_target(None)
+    severity = _PROCESS_SEVERITY.get(spec.process_contents, 2)
+    for other in overlapped:
+        if severity < _PROCESS_SEVERITY.get(other.process_contents, 2):
+            return False
+    for uri in _wildcard_probes([spec, *overlapped], target):
+        if spec.allows(uri, target) and not any(other.allows(uri, target) for other in overlapped):
+            return False
+    return True
+
+
+def _wildcards_overlap(first: WildcardSpec, second: WildcardSpec) -> bool:
+    """Whether two wildcard constraints admit a common namespace."""
+    target = first.effective_target(None)
+    return any(
+        first.allows(uri, target) and second.allows(uri, target)
+        for uri in _wildcard_probes([first, second], target)
+    )
+
+
+def _wildcard_contained_in(unit: Particle, member: Particle) -> bool:
+    """Whether the unit's whole namespace constraint sits in one base member."""
+    spec = unit.spec
+    other = member.spec
+    if spec is None or other is None:
+        return False
+    target = spec.effective_target(None)
+    return all(
+        other.allows(uri, target)
+        for uri in _wildcard_probes([spec, other], target)
+        if spec.allows(uri, target)
+    )
 
 
 def _element_namespace(declaration: Any) -> str | None:
