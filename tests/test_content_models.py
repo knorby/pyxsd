@@ -1440,6 +1440,33 @@ class TestAttributeWildcardAlgebra:
         assert not self.admits(result, None)
         assert self.admits(result, "foo")
 
+    def test_intersection_of_computed_other_local_keeps_absent(self):
+        # A computed ``##other … ##local`` base (an extension union)
+        # admits the absent namespace, so intersecting it with another
+        # local-admitting set keeps that admission.
+        base = self.attr("##other ##local", target=self.TARGET)
+        result = intersect_wildcard_specs(base, self.attr("##local foo bar"), self.TARGET)
+        assert result.namespace == "bar foo ##local"
+        assert self.admits(result, None)
+        assert self.admits(result, "foo")
+        assert not self.admits(result, self.TARGET)
+
+    def test_intersection_of_two_computed_other_locals_keeps_absent(self):
+        base = self.attr("##other ##local", target=self.TARGET)
+        own = self.attr(f"##other {self.TARGET} ##local", target=self.TARGET)
+        result = intersect_wildcard_specs(base, own, self.TARGET)
+        assert self.admits(result, None)
+        assert self.admits(result, "other")
+        assert not self.admits(result, self.TARGET)
+
+    def test_intersection_of_computed_other_local_with_non_local_set_drops_absent(self):
+        # Only one side admits the absent namespace: the intersection
+        # must not.
+        base = self.attr("##other ##local", target=self.TARGET)
+        result = intersect_wildcard_specs(base, self.attr("foo bar"), self.TARGET)
+        assert not self.admits(result, None)
+        assert self.admits(result, "foo")
+
     def test_intersection_takes_the_weaker_process_contents(self):
         result = intersect_wildcard_specs(
             self.attr("##any", process="strict"),

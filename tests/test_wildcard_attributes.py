@@ -424,6 +424,42 @@ def test_restriction_intersects_with_a_permissive_base():
     assert codes(good) == []
 
 
+RESTRICTION_OF_EXTENSION_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+    ' targetNamespace="urn:t" xmlns:t="urn:t">'
+    ' <xs:complexType name="base"><xs:sequence/>'
+    '  <xs:anyAttribute namespace="##other" processContents="lax"/>'
+    " </xs:complexType>"
+    ' <xs:complexType name="mid"><xs:complexContent>'
+    '  <xs:extension base="t:base"><xs:sequence/>'
+    '   <xs:anyAttribute namespace="##local b c" processContents="lax"/>'
+    "  </xs:extension></xs:complexContent></xs:complexType>"
+    ' <xs:complexType name="derived"><xs:complexContent>'
+    '  <xs:restriction base="t:mid"><xs:sequence/>'
+    '   <xs:anyAttribute namespace="##local b c" processContents="lax"/>'
+    "  </xs:restriction></xs:complexContent></xs:complexType>"
+    ' <xs:element name="doc" type="t:derived"/>'
+    "</xs:schema>"
+)
+
+
+def test_restriction_of_an_extension_keeps_the_absent_namespace():
+    # ``mid`` is an extension whose wildcard admits the absent namespace
+    # (##other unioned with ##local b c); restricting it with ##local b c
+    # keeps the absent namespace, so an unqualified attribute is admitted.
+    good = run(
+        RESTRICTION_OF_EXTENSION_SCHEMA,
+        '<t:doc xmlns:t="urn:t" att="x"/>',
+    )
+    assert codes(good) == []
+
+    bad = run(
+        RESTRICTION_OF_EXTENSION_SCHEMA,
+        '<t:doc xmlns:t="urn:t" xmlns:o="urn:o" o:a="1"/>',
+    )
+    assert errors(bad) == ["wildcard-namespace"]
+
+
 # --- Rule 4: xsd:anyType roots admit undeclared children -------------------
 
 ANY_TYPE_SCHEMA = (

@@ -420,14 +420,18 @@ def intersect_wildcard_specs(
     Namespace constraints intersect (errata E1-10): ``##any`` yields the
     other side, two ``##other`` constraints exclude the union of their
     exclusions, ``##other`` against a list keeps the listed namespaces
-    the ``##other`` does not exclude, and two lists intersect. The
-    intersection takes the *weaker* ``processContents`` of the two
-    (``skip`` < ``lax`` < ``strict``); the caller decides whether a
-    derived type may weaken its base by comparing severities.
+    the ``##other`` does not exclude, and two lists intersect. The absent
+    namespace is admitted only when *both* constraints admit it — a
+    computed ``##other … ##local`` (an extension union) does — and is
+    written as ``##local`` in the result. The intersection takes the
+    *weaker* ``processContents`` of the two (``skip`` < ``lax`` <
+    ``strict``); the caller decides whether a derived type may weaken its
+    base by comparing severities.
     """
     kind_base, uris_base, local_base = _constraint_parts(base, target_namespace)
     kind_own, uris_own, local_own = _constraint_parts(own, target_namespace)
     severity = min(_severity(base.process_contents), _severity(own.process_contents))
+    local = local_base and local_own
     if kind_base == "any" and kind_own == "any":
         return _combine(base, own, NAMESPACE_ANY, severity, target_namespace)
     if kind_base == "any":
@@ -439,15 +443,17 @@ def intersect_wildcard_specs(
         target = base.effective_target(target_namespace)
         if target is None:
             target = own.effective_target(target_namespace)
-        return _combine(base, own, _other_namespace(excluded, target), severity, target)
+        namespace = _other_namespace(excluded, target)
+        if local:
+            namespace = f"{namespace} {NAMESPACE_LOCAL}"
+        return _combine(base, own, namespace, severity, target)
     if kind_base == "other":
-        namespace = " ".join(sorted(uris_own - uris_base))
-        return _combine(base, own, namespace, severity, target_namespace)
+        tokens = sorted(uris_own - uris_base) + ([NAMESPACE_LOCAL] if local else [])
+        return _combine(base, own, " ".join(tokens), severity, target_namespace)
     if kind_own == "other":
-        namespace = " ".join(sorted(uris_base - uris_own))
-        return _combine(base, own, namespace, severity, target_namespace)
+        tokens = sorted(uris_base - uris_own) + ([NAMESPACE_LOCAL] if local else [])
+        return _combine(base, own, " ".join(tokens), severity, target_namespace)
     uris = uris_base & uris_own
-    local = local_base and local_own
     tokens = sorted(uris) + ([NAMESPACE_LOCAL] if local else [])
     return _combine(base, own, " ".join(tokens), severity, target_namespace)
 
