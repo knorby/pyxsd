@@ -888,12 +888,14 @@ def _sequence_alignment_violations(
     A base member the enclosing compositor can supply more than once
     may serve several consecutive derived members — the 1.1 absorption
     reading, which lets ``seq{a, b}`` restrict a repeated choice of
-    the substitution-group heads (particlesZ028) — but never more
-    derived members than the member's occurrence supply: the product
-    of the compositor's and the member's maximum occurrences bounds
-    how many copies exist. Reordering is never allowed
-    (particlesW007/W013), nor is an extra derived member
-    (particlesW012).
+    the substitution-group heads (particlesZ028) — but the number of
+    derived members mapped onto one base member is capped by that
+    member's occurrence supply (the product of the compositor's and
+    the member's maximum occurrences): the supply bounds how many
+    copies exist, and every mapping of a derived member onto the base
+    member — the plain advance as much as a reuse — consumes one of
+    them. Reordering is never allowed (particlesW007/W013), nor is an
+    extra derived member (particlesW012).
     """
     base_children = base.children
     derived_children = derived.children
@@ -905,20 +907,26 @@ def _sequence_alignment_violations(
 
         The compositor repeats its whole content, so the member's
         effective supply is the product of the two maximums; ``None``
-        means unbounded.
+        means unbounded — including the vacuous case: a compositor or
+        member with ``maxOccurs=0`` matches nothing, so it has no
+        meaningful copy count and its members stay unconstrained (the
+        corpus pins such shapes legal in particlesW006/particlesJd005).
         """
         member = base_children[position]
         if base.max_occurs is None or member.max_occurs is None:
             return None
-        return base.max_occurs * member.max_occurs
+        product = base.max_occurs * member.max_occurs
+        return None if product == 0 else product
 
     def walk(index: int, position: int, used: int) -> bool:
         """Whether derived_children[index:] aligns from position onward.
 
         ``used`` counts the derived members already served by
-        base_children[position]: the alignment is order-preserving, so
+        base_children[position]; the alignment is order-preserving, so
         every use of one base member is consecutive on the derived
-        side, and a reuse may not exceed the member's supply. An
+        side. Mapping derived_children[index] onto the member is use
+        number ``used + 1`` and requires ``used < supply`` — that guard
+        covers the plain advance exactly as much as a reuse. An
         unbounded supply makes the counter irrelevant, so it is
         normalized out of the memo key.
         """
@@ -949,15 +957,19 @@ def _sequence_alignment_violations(
             removable=False,
             check_occurs=check_occurs,
         )
-        if not reasons:
-            if walk(index + 1, position + 1, 0):
-                memo[key] = True
-                return True
-            if (available is None or used < available) and walk(index + 1, position, used + 1):
-                memo[key] = True
-                return True
         if reasons:
             dead_ends.append((index, position, reasons))
+        elif (available is None or used < available) and (
+            # Mapping this derived member onto the base member consumes
+            # copy number used + 1 of the member's supply; the guard
+            # therefore gates the advance branch (which starts a fresh
+            # alignment after the map) and the reuse branch (which
+            # leaves the member available for the next derived member)
+            # alike.
+            walk(index + 1, position + 1, 0) or walk(index + 1, position, used + 1)
+        ):
+            memo[key] = True
+            return True
         if base_children[position].min_occurs == 0 and walk(index, position + 1, 0):
             memo[key] = True
             return True

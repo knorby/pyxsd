@@ -1077,6 +1077,60 @@ class TestRecurseSequenceAlignment:
         reasons = is_valid_particle_restriction(base, derived, no_resolver)
         assert reasons and "Recurse" in reasons[0]
 
+    def test_supply_one_vs_two_absorbed_fails(self):
+        # boundary: supply 1 (1 x 1) admits exactly one derived member; a
+        # second may not map, not even by the plain advance branch. A
+        # single-member seq(1,1) base would be unwrapped to its bare
+        # element before the alignment runs (the GroupOverElement
+        # deferral), so the boundary is pinned on a two-member base
+        # where the alignment decides.
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="b")),
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="b")),
+        )
+        reasons = is_valid_particle_restriction(base, derived, _decls_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
+    def test_supply_one_admits_one(self):
+        # the valid side of the supply-1 boundary: one derived member
+        # against the single permitted copy
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="b")),
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="b")),
+        )
+        assert not is_valid_particle_restriction(base, derived, _decls_resolver)
+
+    def test_supply_two_vs_three_absorbed_fails(self):
+        # boundary: supply 2 (2 x 1) admits exactly two derived members; a
+        # third may not map, not even by the plain advance branch
+        base = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            min_occurs=1,
+            max_occurs=2,
+        )
+        derived = _group(
+            "sequence",
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="a"), 0, 1),
+            _elt(_Declaration(name="a"), 0, 1),
+        )
+        reasons = is_valid_particle_restriction(base, derived, no_resolver)
+        assert reasons and "Recurse" in reasons[0]
+
     def test_equal_length_still_pairs_positionally(self):
         # particlesW011: same members, same order
         base = _group(
