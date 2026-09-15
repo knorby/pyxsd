@@ -532,33 +532,53 @@ class ElementRepresentative:
         ``xsdElement`` attributes are inspected (not ``tagAttributes``)
         so the reserved ``name`` attribute is seen too.
 
-        The check also refines the registered :class:`WildcardSpec` with
-        the expanded ``notQName`` names (the ER constructor runs before
-        the prefix bindings are attached), and reports the 1.1 Wildcard
-        Properties Correct consistency rule: every ``notQName`` name must
-        lie in a namespace the wildcard admits. Both fall back to the
-        raw tokens — logging, never raising — when no namespace context
-        is available.
+        The registered :class:`WildcardSpec` is refined with the expanded
+        ``notQName`` names (see :meth:`refineWildcardSpec`; the parser
+        runs a pre-pass so derivation checks see the refined specs even
+        before the declaration walk reaches this ER), and the 1.1
+        Wildcard Properties Correct consistency rule is reported: every
+        ``notQName`` name must lie in a namespace the wildcard admits.
+        Both fall back to the raw tokens — logging, never raising — when
+        no namespace context is available.
         """
         resolver = self._wildcardQNameResolver()
         for code, message in wildcard_declaration_problems(
             self.xsdElement.attrib, is_attribute=is_attribute, resolve_qname=resolver
         ):
             self._reportSchemaError(message, code=code)
+        self.refineWildcardSpec()
+        spec = getattr(self, "wildcardSpec", None)
+        if spec is not None:
+            for code, message in not_qname_consistency_problems(spec):
+                self._reportSchemaError(message, code=code)
+
+    def refineWildcardSpec(self) -> None:
+        """Expands the wildcard spec's 1.1 ``notQName`` names, if any.
+
+        The ER constructors register a raw spec before the schema's
+        prefix bindings are attached, but the attribute-wildcard
+        derivation check and the binding consult the *registered* list.
+        The parser calls this on every ER right after attaching the
+        namespace context (before any content-model check), so the list
+        holds the expanded spec; calling it again is a no-op. A
+        non-wildcard ER, a missing spec or a missing namespace context
+        leaves the spec untouched.
+        """
+        old = getattr(self, "wildcardSpec", None)
+        if old is None:
+            return
         spec = wildcard_spec(
             self.tagAttributes,
-            is_attribute=is_attribute,
+            is_attribute=old.is_attribute,
             target_namespace=self.getNamespace(),
-            resolve_qname=resolver,
+            resolve_qname=self._wildcardQNameResolver(),
         )
-        old = getattr(self, "wildcardSpec", None)
-        if old is not None and spec != old:
-            self.wildcardSpec = spec
-            containing = self.getContainingType()
-            if containing is not None:
-                replace_wildcard(containing, old, spec)
-        for code, message in not_qname_consistency_problems(spec):
-            self._reportSchemaError(message, code=code)
+        if spec == old:
+            return
+        self.wildcardSpec = spec
+        containing = self.getContainingType()
+        if containing is not None:
+            replace_wildcard(containing, old, spec)
 
     def _wildcardQNameResolver(self):
         """A QName expander for ``notQName`` values, or ``None``.

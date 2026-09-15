@@ -215,10 +215,15 @@ def wildcard_subset(
             # The base's disallowed QName is outside the derived's
             # admitted namespaces, so the derived cannot admit it.
             continue
+        covers_all = excludes_all_locals(derived_spec, uri)
         if local is None:
-            if not excludes_all_locals(derived_spec, uri):
+            # A base bare entry excludes every local in ``uri``; only a
+            # derived bare entry covers it.
+            if not covers_all:
                 return False
-        elif local not in excluded_locals(derived_spec, uri):
+        elif not covers_all and local not in excluded_locals(derived_spec, uri):
+            # A derived bare entry (all locals) covers an exact base
+            # name; an exact derived entry covers only its own name.
             return False
     return True
 

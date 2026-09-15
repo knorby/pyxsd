@@ -425,6 +425,20 @@ class TestWildcardSubsetExclusions:
         assert not wildcard_subset(WildcardSpec(not_qname=frozenset({"{urn:x}a"})), base)
         assert wildcard_subset(WildcardSpec(not_qname=frozenset({"{urn:x}"})), base)
 
+    def test_derived_bare_entry_covers_a_base_exact_entry(self):
+        # A bare {urn:x} entry excludes every local in urn:x, so it
+        # covers a base's exact {urn:x}a exclusion.
+        base = WildcardSpec(not_qname=frozenset({"{urn:x}a"}))
+        derived = WildcardSpec(not_qname=frozenset({"{urn:x}"}))
+        assert wildcard_subset(derived, base)
+
+    def test_derived_bare_entry_covers_several_base_exact_entries(self):
+        base = WildcardSpec(not_qname=frozenset({"{urn:x}a", "{urn:x}b", "{urn:y}c"}))
+        derived = WildcardSpec(not_qname=frozenset({"{urn:x}"}))
+        assert not wildcard_subset(derived, base)
+        ok = WildcardSpec(not_qname=frozenset({"{urn:x}", "{urn:y}c"}))
+        assert wildcard_subset(ok, base)
+
     def test_unadmitted_base_qname_is_vacuous(self):
         # The base's excluded name lies outside the derived's admitted
         # namespaces, so the derived cannot admit it anyway.
@@ -474,6 +488,50 @@ class TestAttributeWildcardRestrictionWithExclusions:
             "<xs:complexType name='R'><xs:complexContent><xs:restriction base='B'>"
             "<xs:sequence/><xs:anyAttribute namespace='http://eve.com/' "
             "processContents='lax'/></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not report.has_errors
+
+    def test_prefixed_not_qname_exclusion_dropped_in_restriction_is_invalid(self, parse):
+        # The base disallows x:a; the derived wildcard drops the
+        # exclusion and so admits a name the base disallows
+        report = parse(
+            "<xs:complexType name='B'><xs:sequence/>"
+            "<xs:anyAttribute namespace='##any' notQName='x:a' processContents='skip'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent><xs:restriction base='B'>"
+            "<xs:sequence/><xs:anyAttribute namespace='##any' processContents='skip'/>"
+            "</xs:restriction></xs:complexContent></xs:complexType>",
+            head="<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:x='http://extra.com/'>",
+        )
+        assert "wildcard-invalid" in schema_codes(report)
+
+    def test_prefixed_not_qname_exclusion_kept_in_restriction_is_valid(self, parse):
+        report = parse(
+            "<xs:complexType name='B'><xs:sequence/>"
+            "<xs:anyAttribute namespace='##any' notQName='x:a' processContents='skip'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent><xs:restriction base='B'>"
+            "<xs:sequence/><xs:anyAttribute namespace='##any' notQName='x:a x:b' "
+            "processContents='skip'/></xs:restriction></xs:complexContent></xs:complexType>",
+            head="<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:x='http://extra.com/'>",
+        )
+        assert not report.has_errors
+
+    def test_derived_star_exclusion_covering_a_base_exact_name_is_valid(self, parse):
+        # x:* resolves to the bare {http://extra.com/} entry, which
+        # excludes every local in the namespace and so covers the base's
+        # exact x:a exclusion
+        report = parse(
+            "<xs:complexType name='B'><xs:sequence/>"
+            "<xs:anyAttribute namespace='##any' notQName='x:a' processContents='skip'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent><xs:restriction base='B'>"
+            "<xs:sequence/><xs:anyAttribute namespace='##any' notQName='x:*' "
+            "processContents='skip'/></xs:restriction></xs:complexContent></xs:complexType>",
+            head="<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:x='http://extra.com/'>",
         )
         assert not report.has_errors
 

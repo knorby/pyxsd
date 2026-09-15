@@ -446,6 +446,11 @@ class PyXSD:
         # declaration checks run: the atomicity check resolves
         # ``itemType``/``memberTypes`` through the in-scope namespaces.
         schemaER.namespaceContext = self.namespaceContext
+        # Expand the 1.1 notQName names on every wildcard before the
+        # declaration walk: the attribute-wildcard derivation check runs
+        # when a complex type is visited, ahead of the AnyAttribute ERs
+        # that declared the specs, and must see the expanded names.
+        self._refineWildcardSpecs(schemaER)
         # This parser owns the component table the ER run registered
         # into; expose it on the parser and on the context so registry
         # lookups (xsi:type dispatch, tests, and the declaration-issue
@@ -484,6 +489,30 @@ class PyXSD:
         self._checkValueConstraints(schemaER)
 
         return None
+
+    def _refineWildcardSpecs(self, schema_root: Any) -> None:
+        """Expands the XSD 1.1 ``notQName`` names on every wildcard ER.
+
+        The ER constructors run before the schema's prefix bindings are
+        attached, so they register a raw spec; the declaration walk's
+        wildcard grammar/consistency check and the derivation checks
+        consult the registered spec, and the attribute-wildcard
+        derivation check runs on a complex type *before* the walk
+        reaches the type's ``xs:anyAttribute`` children. Refining every
+        wildcard once here (same traversal as the walk) makes the
+        registered specs expanded for all consumers, binding included.
+        """
+        seen: set[int] = set()
+        stack = [schema_root]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            refine = getattr(er, "refineWildcardSpec", None)
+            if callable(refine):
+                refine()
+            stack.extend(getattr(er, "processedChildren", None) or ())
 
     def _reportDeclarationIssues(self, schemaER: Any) -> None:
         """Reports declarations that cannot carry a usable name and
