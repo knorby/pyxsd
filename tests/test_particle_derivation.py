@@ -2616,3 +2616,74 @@ class TestSchemaCombinatorialCorpus:
             "</xs:choice></xs:complexType>"
         )
         assert any(issue.code == "all-rule" for issue in report.for_phase("schema"))
+
+
+class TestComplexContentFromSimpleBase:
+    """Deriving complex content from a simple-content base type.
+
+    XSD 1.1 §3.4.6.2 clause 1.4 (extension) and §3.4.6.3 clause 2.2
+    (restriction) only admit the shape when both sides carry the same
+    simple content (1.4.1/2.2.2.1), both are empty (1.4.2/2.3.2), or the
+    derived side is element-only/mixed over an element-only/mixed base
+    (1.4.3/2.4.1). A complex-content derivation from a simple-content
+    base satisfies none of them; XSD 1.0 admitted the extension shape,
+    which is why particlesZ031 is a version split.
+    """
+
+    def test_extension_of_simple_content_is_invalid(self, parse):
+        # particlesZ031: complexContent extension over simpleContent
+        report = parse(
+            "<xs:complexType name='Type1'><xs:simpleContent>"
+            "<xs:extension base='xs:string'>"
+            "<xs:attribute name='Field1' type='xs:string'/>"
+            "</xs:extension></xs:simpleContent></xs:complexType>"
+            "<xs:complexType name='Type2'><xs:complexContent>"
+            "<xs:extension base='Type1'>"
+            "<xs:attribute name='Field2' type='xs:string'/>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues
+
+    def test_empty_sequence_restriction_of_simple_content_is_invalid(self, parse):
+        # particlesZ039: an empty sequence is empty complex content,
+        # which cannot restrict simple content
+        report = parse(
+            "<xs:complexType name='cTypeBase'><xs:simpleContent>"
+            "<xs:extension base='xs:string'>"
+            "<xs:attribute name='attr1' type='xs:string'/>"
+            "</xs:extension></xs:simpleContent></xs:complexType>"
+            "<xs:complexType name='cTypeDerived'><xs:complexContent>"
+            "<xs:restriction base='cTypeBase'><xs:sequence/>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues
+
+    def test_simple_content_restriction_of_simple_content_is_valid(self, parse):
+        # the valid control: the same simple type restricted by facets
+        report = parse(
+            "<xs:complexType name='B'><xs:simpleContent>"
+            "<xs:extension base='xs:string'>"
+            "<xs:attribute name='a' type='xs:string'/>"
+            "</xs:extension></xs:simpleContent></xs:complexType>"
+            "<xs:complexType name='R'><xs:simpleContent>"
+            "<xs:restriction base='B'>"
+            "<xs:simpleType><xs:restriction base='xs:string'>"
+            "<xs:maxLength value='4'/>"
+            "</xs:restriction></xs:simpleType>"
+            "</xs:restriction></xs:simpleContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_complex_content_restriction_of_complex_base_is_valid(self, parse):
+        # the other control: explicit complex content over a complex base
+        report = parse(
+            "<xs:complexType name='B'><xs:sequence>"
+            "<xs:element name='e1' minOccurs='0'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='R'><xs:complexContent>"
+            "<xs:restriction base='B'><xs:sequence>"
+            "<xs:element name='e1' minOccurs='0'/></xs:sequence>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)

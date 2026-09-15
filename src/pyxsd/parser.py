@@ -93,6 +93,7 @@ from pyxsd.particle_derivation import (
 )
 from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
+from pyxsd.upa import upa_violations
 from pyxsd.validation import ValidationReport
 from pyxsd.wildcards import (
     NAMESPACE_ANY,
@@ -614,8 +615,10 @@ class PyXSD:
         if type(er).__name__ == "ComplexType":
             self._reportParticleRestriction(er)
             self._reportMixedRestriction(er)
+            self._reportComplexContentFromSimpleBase(er)
             self._reportAttributeWildcardRestriction(er)
             self._reportExtensionStructure(er)
+            self._reportUniqueParticleAttribution(er)
         if type(er).__name__ not in self._COMPOSITOR_KINDS:
             return
         if type(er).__name__ in ("Sequence", "Choice"):
@@ -745,6 +748,73 @@ class PyXSD:
             f"base type '{getattr(base_er, 'name', '?')}'",
             code="particle-restriction",
         )
+
+    def _reportComplexContentFromSimpleBase(self, er: Any) -> None:
+        """Reports complex content derived from a simple-content base.
+
+        ``Derivation Valid (Extension)`` clause 1.4 and ``Derivation
+        Valid (Restriction, Complex)`` clause 2.2 admit a complex-content
+        derivation of a complex type only when both sides carry the same
+        simple content, both are empty, or the derived content is
+        element-only/mixed over an element-only/mixed base. Explicit
+        complex content (an empty sequence included) over a base whose
+        content type is simple satisfies none of them, so both the
+        extension and the restriction shapes are errors under the XSD
+        1.1 harness profile (particlesZ031 is the 1.0-valid/1.1-invalid
+        split; particlesZ039 is the restriction twin). A base that is
+        not a complex type with simple content — ``xs:anyType``, a
+        complex base, or an unresolvable reference — is skipped.
+        """
+        if er.getDerivation() not in ("extension", "restriction"):
+            return
+        if er._firstProcessedChild(er, "SimpleContent") is not None:
+            return
+        if er._firstProcessedChild(er, "ComplexContent") is None:
+            return
+        if self._baseIsAnyType(er):
+            return
+        base_er = self._baseTypeER(er)
+        if base_er is None or not hasattr(base_er, "processedChildren"):
+            logger.debug(
+                "complex content from simple base: base type %r of %s "
+                "unresolved or not complex; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        if base_er._firstProcessedChild(base_er, "SimpleContent") is None:
+            return
+        self.report.add_error(
+            "particle restriction (Derivation Valid, complex type "
+            f"'{getattr(er, 'name', '?')}' adopts explicit complex content "
+            f"but its base type '{getattr(base_er, 'name', '?')}' has simple "
+            "content)",
+            code="particle-restriction",
+        )
+
+    def _reportUniqueParticleAttribution(self, er: Any) -> None:
+        """Reports an ambiguous effective content model (cos-nonambig).
+
+        Unique Particle Attribution is a property of a complex type's
+        *effective* content model, so the sweep runs over the compiled
+        model — the base type's tree composed with an extension's own
+        suffix, which is where an inherited wildcard and a suffix
+        wildcard can overlap (particlesZ022). The pure sweep lives in
+        :mod:`pyxsd.upa`; it reports the first ambiguity. A type whose
+        model could not be compiled, or a model with nothing to compare,
+        is skipped.
+        """
+        if type(er).__name__ != "ComplexType":
+            return
+        model = compile_content_model(er, self)
+        if model is None:
+            logger.debug(
+                "unique particle attribution: content model of %s could not be compiled; skipped",
+                getattr(er, "name", "?"),
+            )
+            return
+        for reason in upa_violations(model, self._substitution_head_lookup(er)):
+            self.report.add_error(reason, code="upa")
 
     def _globalElementLookup(self, er: Any) -> Any:
         """A lookup from a Clark name to a top-level element declaration.
