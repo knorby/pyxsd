@@ -91,7 +91,9 @@ from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.validation import ValidationReport
 from pyxsd.wildcards import (
+    NAMESPACE_ANY,
     PROCESS_SEVERITY,
+    WildcardSpec,
     effective_attribute_wildcard,
     invalid_namespace_constraint,
     wildcard_specs_overlap,
@@ -99,6 +101,7 @@ from pyxsd.wildcards import (
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 from pyxsd.xsd_data_types import (
     AnySimpleType,
+    AnyType,
     NCName,
     XsdDataType,
     qname_context,
@@ -2809,7 +2812,14 @@ class PyXSD:
                 else:
                     # The root element's declared type is a primitive
                     # (simple) data type: build a typed instance directly.
-                    subInstance = self._primitiveRootInstance(subCls, rootElement)
+                    # ``xs:anyType`` is the exception: its lax ``##any``
+                    # content wildcard admits undeclared children, so they
+                    # are bound through that wildcard instead of being
+                    # rejected as simple-typed content.
+                    if subCls is AnyType and list(self.xmlRoot):
+                        subInstance = self._anyTypeRootInstance(subCls, rootElement, schemaClass)
+                    else:
+                        subInstance = self._primitiveRootInstance(subCls, rootElement)
                 # xsi:type may replace the declared root type, so the root
                 # instance is stored directly instead of validated against
                 # the declared element type.
@@ -2818,6 +2828,63 @@ class PyXSD:
                 self._checkIdentityConstraints(subInstance)
 
         return subInstance
+
+    def _anyTypeRootInstance(self, dataTypeClass: Any, rootElement: Any, binder: Any) -> Any:
+        """Builds the root instance for an ``xsd:anyType``-typed element.
+
+        ``xs:anyType`` is the ur-type: its content is mixed character
+        data plus a lax ``##any`` wildcard over element children, and
+        every attribute is admissible. A root with child elements is
+        therefore not "a simple type containing child elements";
+        children are bound through the lax wildcard (a global
+        declaration or a child ``xsi:type`` is honored, anything else
+        is generic). The ``xsi:nil`` emptiness rules match the
+        primitive root path.
+        """
+        rootName = (
+            self.xmlRoot.tag
+            if getattr(self.mode, "namespaces", "legacy") == "strict"
+            else self.xmlRoot.tag.split("}")[-1]
+        )
+        nilled = xsi.xsi_nil_is_true(self.xmlRoot)
+        if nilled and not rootElement.isNillable():
+            self.report.add_error(
+                f"the root element '{rootName}' is not nillable but carries xsi:nil",
+                code="nil",
+                element=rootName,
+            )
+            nilled = False
+        if nilled:
+            nilContent = nil_content_kind(self.xmlRoot)
+            if nilContent == "elements":
+                self.report.add_error(
+                    f"the root element '{rootName}' is marked nil but contains child elements",
+                    code="nil",
+                    element=rootName,
+                )
+            elif nilContent == "characters":
+                self.report.add_error(
+                    f"the root element '{rootName}' is marked nil but contains character content",
+                    code="nil",
+                    element=rootName,
+                )
+
+        instance = dataTypeClass._unvalidated()
+        instance._name_ = rootName
+        instance._attribs_ = {
+            xsi.xsi_attr_key(key): val for key, val in self.xmlRoot.attrib.items()
+        }
+        if nilled:
+            instance._value_ = None
+            instance._children_ = []
+            return instance
+        text = self.xmlRoot.text
+        instance._value_ = [text] if text else None
+        instance._children_ = []
+        wildcard = WildcardSpec(namespace=NAMESPACE_ANY, process_contents="lax")
+        for child in self.xmlRoot:
+            binder._bindAnyTypeChild(instance, child, wildcard)
+        return instance
 
     def _primitiveRootInstance(self, dataTypeClass: Any, rootElement: Any) -> Any:
         """Builds a typed instance for a root element whose declared

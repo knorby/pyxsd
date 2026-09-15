@@ -341,6 +341,37 @@ class SchemaBase:
         return True
 
     @classmethod
+    def _bindAnyTypeChild(cls, instance, subElement, spec) -> None:
+        """Binds one child of an ``xsd:anyType`` element.
+
+        ``xs:anyType``'s wildcard is lax, so an undeclared child is
+        ordinarily not assessed. An explicit ``xsi:type`` names the
+        child's type, though, and the normal type-resolution path is
+        used for it (a declared child is handled by
+        :meth:`_bindWildcardChild` itself). Everything else is bound
+        generically.
+        """
+        parser = getattr(cls, "pyXSD", None)
+        mode = getattr(parser, "mode", None)
+        if (
+            getattr(mode, "namespaces", "legacy") == "strict"
+            and xsi.xsi_type_name(subElement) is not None
+        ):
+            components = getattr(parser, "components", None)
+            declared = _global_declaration(
+                components,
+                local_name(subElement.tag),
+                "element",
+                namespace_of(subElement.tag),
+            )
+            if declared is None:
+                subElCls = cls._classForChild(None, subElement)
+                if isinstance(subElCls, type) and issubclass(subElCls, SchemaBase):
+                    instance._children_.append(subElCls.makeInstanceFromTag(subElement))
+                    return
+        cls._bindWildcardChild(instance, subElement, spec)
+
+    @classmethod
     def _bindWildcardChild(cls, instance, subElement, spec) -> None:
         """Binds one child accepted by an element wildcard.
 
@@ -524,28 +555,46 @@ class SchemaBase:
                     self._attribs_[matchName] = elementTag.attrib[matchName]
             # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
             # namespace mode every undeclared attribute is accepted raw; in
-            # strict mode the wildcard's namespace constraint must admit the
-            # attribute, and ``processContents`` decides whether a global
-            # declaration is required.
+            # strict mode the type's effective wildcard must admit the
+            # attribute's namespace, and ``processContents`` decides whether
+            # a global declaration is required. An attribute the wildcard
+            # rejects is reported (``wildcard-namespace``) and remembered so
+            # ``checkAttributes`` does not add a redundant warning.
             if getattr(self, "hasWildcardAttributes_", False):
                 cls = type(self)
                 strict = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
-                specs = self._wildcard_attribute_specs(self) if strict else []
                 targetNamespace = getattr(cls, "_targetNamespace_", None) if strict else None
                 parser = getattr(cls, "pyXSD", None)
+                rejected: set[str] = set()
                 for attr, value in elementTag.attrib.items():
                     if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
                         continue
                     if attr in usedAttributes:
                         continue
                     if strict:
-                        spec = self._wildcard_match(specs, attr, targetNamespace)
+                        spec = getattr(cls, "effectiveAttributeWildcard_", None)
                         if spec is None:
+                            # A class built before the effective wildcard
+                            # was stamped: fall back to the collected specs.
+                            specs = self._wildcard_attribute_specs(self)
+                            spec = self._wildcard_match(specs, attr, targetNamespace)
+                        if spec is None:
+                            continue
+                        if not spec.allows(namespace_of(attr), targetNamespace):
+                            cls._report_error(
+                                f"attribute '{local_name(attr)}' is not allowed "
+                                "by the attribute wildcard",
+                                code="wildcard-namespace",
+                                element=cls.__name__,
+                            )
+                            rejected.add(attr)
                             continue
                         if not self._checkWildcardAttribute(attr, value, spec, parser):
                             continue
                     self._attribs_[attr] = value
                     usedAttributes.append(attr)
+                if rejected:
+                    self._wildcardRejectedAttributes_ = rejected
         return usedAttributes
 
     @classmethod
@@ -1663,8 +1712,9 @@ class SchemaBase:
                 element=elementName,
             )
         elif len(usedAttrs) < len(attrInElementTag):
+            rejected = getattr(self, "_wildcardRejectedAttributes_", ())
             for attrET in attrInElementTag:
-                if attrET not in usedAttrs:
+                if attrET not in usedAttrs and attrET not in rejected:
                     self._report_warning(
                         f"attribute '{attrET}' is not declared in the schema and was not parsed",
                         code="unexpected-attribute",

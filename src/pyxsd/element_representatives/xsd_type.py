@@ -10,6 +10,12 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
+from pyxsd.wildcards import (
+    effective_attribute_wildcard,
+    intersect_wildcard_specs,
+    register_wildcard,
+    union_wildcard_specs,
+)
 from pyxsd.xsd_data_types import NOTATION, AnySimpleType, XsdDataType, XsdList, qname_context
 
 logger = logging.getLogger(__name__)
@@ -311,6 +317,10 @@ class XsdType(ElementRepresentative):
                 self._report_ref_error(message, code="unknown-attributeGroup")
                 continue
             groupKey = getattr(group, "expandedName", None) or groupName
+            for spec in getattr(group, "wildcardElementSpecs", ()):
+                register_wildcard(self, spec)
+            for spec in getattr(group, "wildcardAttributeSpecs", ()):
+                register_wildcard(self, spec)
             for attrName, attr in self._collectAttributeGroup(
                 group, frozenset({groupKey}), pyXSD
             ).items():
@@ -415,8 +425,15 @@ class XsdType(ElementRepresentative):
 
         Direct declarations win over those pulled in from a nested
         ``attributeGroup`` reference. Circular references are skipped
-        rather than recursed into.
+        rather than recursed into. Every visited group's wildcards are
+        registered on the referring type, so an ``xs:anyAttribute``
+        inside a group definition reaches the type's effective
+        attribute wildcard.
         """
+        for spec in getattr(group, "wildcardElementSpecs", ()):
+            register_wildcard(self, spec)
+        for spec in getattr(group, "wildcardAttributeSpecs", ()):
+            register_wildcard(self, spec)
         collected = dict(group.attributes)
         for refSite in getattr(group, "attributeGroupRefs", []):
             nestedName = refSite.ref.split(":")[-1]
@@ -438,11 +455,52 @@ class XsdType(ElementRepresentative):
                 )
                 self._report_ref_error(message, code="circular-attributeGroup")
                 continue
+            for spec in getattr(nested, "wildcardElementSpecs", ()):
+                register_wildcard(self, spec)
+            for spec in getattr(nested, "wildcardAttributeSpecs", ()):
+                register_wildcard(self, spec)
             for attrName, attr in self._collectAttributeGroup(
                 nested, visited | {nestedKey}, pyXSD
             ).items():
                 collected.setdefault(attrName, attr)
         return collected
+
+    def _effectiveAttributeWildcard(self, bases):
+        """Computes the type's effective attribute wildcard.
+
+        The type's own wildcards — a local ``xs:anyAttribute`` plus the
+        ones its attribute groups contribute — combine by intersection
+        (errata E1-10). The result then combines with the first base
+        class's effective wildcard: an extension unions the two, a
+        restriction (or any other derivation) intersects them, and a
+        single contribution stands alone. Returns ``None`` when no
+        wildcard applies. A base class without the stamped effective
+        wildcard falls back to its own stamped specs, so classes built
+        before the stamp existed behave like their declarations.
+        """
+        ownSpecs = getattr(self, "wildcardAttributeSpecs", None)
+        target = self.getNamespace()
+        own = effective_attribute_wildcard(ownSpecs, target) if ownSpecs else None
+        baseSpec = None
+        for base in bases:
+            if not isinstance(base, type):
+                continue
+            baseSpec = base.__dict__.get("effectiveAttributeWildcard_")
+            if baseSpec is None:
+                baseOwn = base.__dict__.get("wildcardAttributeSpecs_")
+                if baseOwn:
+                    baseSpec = effective_attribute_wildcard(
+                        baseOwn, base.__dict__.get("_targetNamespace_")
+                    )
+            if baseSpec is not None:
+                break
+        if own is None:
+            return baseSpec
+        if baseSpec is None:
+            return own
+        if self.getDerivation() == "extension":
+            return union_wildcard_specs(baseSpec, own, target)
+        return intersect_wildcard_specs(baseSpec, own, target)
 
     def _report_ref_error(self, message, *, code):
         """Records a schema-reference problem on the parser's report.
@@ -801,7 +859,14 @@ class XsdType(ElementRepresentative):
         elements = list(self.getElements())
         if getattr(self, "hasWildcardElements", False):
             namespace["hasWildcardElements_"] = True
-        if getattr(self, "hasWildcardAttributes", False):
+        # The effective attribute wildcard folds in the wildcards the
+        # attribute groups contribute and combines with the base class's
+        # (extension unions, restriction intersects). A type without a
+        # wildcard of its own still inherits its base's.
+        effectiveWildcard = self._effectiveAttributeWildcard(bases)
+        if effectiveWildcard is not None:
+            namespace["effectiveAttributeWildcard_"] = effectiveWildcard
+        if getattr(self, "hasWildcardAttributes", False) or effectiveWildcard is not None:
             namespace["hasWildcardAttributes_"] = True
         elementSpecs = getattr(self, "wildcardElementSpecs", None)
         if elementSpecs:

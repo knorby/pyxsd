@@ -462,14 +462,19 @@ def union_wildcard_specs(
     Both wildcards apply to the derived type, so the union admits every
     namespace either side admits (errata E1-10): ``##any`` wins, two
     ``##other`` constraints exclude only the intersection of their
-    exclusions (the result is ``##any`` when no namespace is excluded by
-    both), and a list unions into / against the other side. The union
+    exclusions, and a list unions into / against the other side. The union
     takes the *stronger* ``processContents``: a single combined spec
     must not weaken an obligation that either source wildcard imposes.
+
+    A union admits the absent namespace only when a source wildcard
+    admits it (``##local``/``##any``): when the exclusion sets cancel
+    but neither side admits the absent namespace, the result is the
+    "every present namespace, not absent" constraint, not ``##any``.
     """
     kind_base, uris_base, local_base = _constraint_parts(base, target_namespace)
     kind_own, uris_own, local_own = _constraint_parts(own, target_namespace)
     severity = max(_severity(base.process_contents), _severity(own.process_contents))
+    local = local_base or local_own
     if kind_base == "any" or kind_own == "any":
         return _combine(base, own, NAMESPACE_ANY, severity, target_namespace)
     if kind_base == "other" and kind_own == "other":
@@ -478,24 +483,58 @@ def union_wildcard_specs(
         if target is None:
             target = own.effective_target(target_namespace)
         if not excluded:
-            return _combine(base, own, NAMESPACE_ANY, severity, target_namespace)
-        return _combine(base, own, _other_namespace(excluded, target), severity, target)
+            return _absent_union_result(base, own, local, severity, target_namespace)
+        return _other_union_result(base, own, excluded, target, local, severity)
     if kind_base == "other" or kind_own == "other":
         other_excluded = uris_base if kind_base == "other" else uris_own
         admitted = uris_own if kind_base == "other" else uris_base
-        local = local_own if kind_base == "other" else local_base
         excluded = other_excluded - admitted
         if not excluded:
-            return _combine(base, own, NAMESPACE_ANY, severity, target_namespace)
-        target = target_namespace
-        namespace = _other_namespace(excluded, target)
-        if local:
-            namespace = f"{namespace} {NAMESPACE_LOCAL}"
-        return _combine(base, own, namespace, severity, target)
+            return _absent_union_result(base, own, local, severity, target_namespace)
+        target = base.effective_target(target_namespace)
+        if target is None:
+            target = own.effective_target(target_namespace)
+        return _other_union_result(base, own, excluded, target, local, severity)
     uris = uris_base | uris_own
-    local = local_base or local_own
     tokens = sorted(uris) + ([NAMESPACE_LOCAL] if local else [])
     return _combine(base, own, " ".join(tokens), severity, target_namespace)
+
+
+def _absent_union_result(
+    base: WildcardSpec,
+    own: WildcardSpec,
+    local: bool,
+    severity: int,
+    target_namespace: str | None,
+) -> WildcardSpec:
+    """The union result when no present namespace stays excluded."""
+    if local:
+        return _combine(base, own, NAMESPACE_ANY, severity, target_namespace)
+    # Every present namespace, the absent namespace still excluded:
+    # ``##other`` with no target admits exactly that.
+    return _combine(base, own, NAMESPACE_OTHER, severity, None)
+
+
+def _other_union_result(
+    base: WildcardSpec,
+    own: WildcardSpec,
+    excluded: frozenset[str],
+    target: str | None,
+    local: bool,
+    severity: int,
+) -> WildcardSpec:
+    """A union result with a non-empty present-namespace exclusion set."""
+    if target is not None and target in excluded:
+        namespace = _other_namespace(excluded, target)
+        spec_target = target
+    else:
+        # The stored target must not over-exclude: write every excluded
+        # namespace as a literal and carry no target.
+        namespace = _other_namespace(excluded, None)
+        spec_target = None
+    if local:
+        namespace = f"{namespace} {NAMESPACE_LOCAL}"
+    return _combine(base, own, namespace, severity, spec_target)
 
 
 def effective_attribute_wildcard(

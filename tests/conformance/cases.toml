@@ -5867,3 +5867,127 @@ schema = '''
 '''
 schema_valid = false
 expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-attribute-namespace-invalid"
+description = "An attribute whose namespace the effective wildcard rejects is an error"
+derived_from = "XSD 1.1 Structures §3.4.2.4 (Attribute Wildcard) with errata E1-10"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns:t="urn:t">
+  <xs:attributeGroup name="extra">
+    <xs:anyAttribute namespace="urn:ok" processContents="skip"/>
+  </xs:attributeGroup>
+  <xs:complexType name="doc">
+    <xs:sequence/>
+    <xs:attributeGroup ref="t:extra"/>
+  </xs:complexType>
+  <xs:element name="doc" type="t:doc"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc xmlns="urn:t" xmlns:o="urn:other" o:extra="1"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "structure/wildcard-attribute-namespace-valid"
+description = "An attribute the effective wildcard admits binds without a diagnostic"
+derived_from = "XSD 1.1 Structures §3.4.2.4 (Attribute Wildcard) with errata E1-10"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns:t="urn:t">
+  <xs:attributeGroup name="extra">
+    <xs:anyAttribute namespace="urn:ok" processContents="skip"/>
+  </xs:attributeGroup>
+  <xs:complexType name="doc">
+    <xs:sequence/>
+    <xs:attributeGroup ref="t:extra"/>
+  </xs:complexType>
+  <xs:element name="doc" type="t:doc"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc xmlns="urn:t" xmlns:o="urn:ok" o:extra="1"/>
+'''
+
+[[case]]
+id = "structure/wildcard-attribute-group-intersection-invalid"
+description = "A local ##any intersected with a group's ##targetNamespace rejects other namespaces"
+derived_from = "XSD 1.1 Structures §3.10.6 (Attribute Wildcard Intersection)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="a" xmlns:a="a" xmlns:b="b">
+  <xs:import namespace="b" schemaLocation="groups.xsd"/>
+  <xs:attributeGroup name="g-a">
+    <xs:anyAttribute namespace="##targetNamespace" processContents="lax"/>
+  </xs:attributeGroup>
+  <xs:complexType name="metadata">
+    <xs:sequence/>
+    <xs:attributeGroup ref="a:g-a"/>
+    <xs:attributeGroup ref="b:g-b"/>
+    <xs:anyAttribute namespace="##any" processContents="lax"/>
+  </xs:complexType>
+  <xs:element name="doc" type="a:metadata"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a:doc xmlns:a="a" xmlns:x="x" x:blah="1"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+[case.files]
+"groups.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="b">
+  <xs:attributeGroup name="g-b">
+    <xs:anyAttribute namespace="##any"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/wildcard-attribute-group-intersection-valid"
+description = "The intersected wildcard admits attributes of the shared target namespace"
+derived_from = "XSD 1.1 Structures §3.10.6 (Attribute Wildcard Intersection)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="a" xmlns:a="a" xmlns:b="b">
+  <xs:import namespace="b" schemaLocation="groups.xsd"/>
+  <xs:attributeGroup name="g-a">
+    <xs:anyAttribute namespace="##targetNamespace" processContents="lax"/>
+  </xs:attributeGroup>
+  <xs:complexType name="metadata">
+    <xs:sequence/>
+    <xs:attributeGroup ref="a:g-a"/>
+    <xs:attributeGroup ref="b:g-b"/>
+    <xs:anyAttribute namespace="##any" processContents="lax"/>
+  </xs:complexType>
+  <xs:element name="doc" type="a:metadata"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a:doc xmlns:a="a" a:blah="1"/>
+'''
+[case.files]
+"groups.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="b">
+  <xs:attributeGroup name="g-b">
+    <xs:anyAttribute namespace="##any"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''

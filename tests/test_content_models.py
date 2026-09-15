@@ -1472,13 +1472,23 @@ class TestAttributeWildcardAlgebra:
         assert not self.admits(result, None)
 
     def test_union_of_other_and_enumeration_can_widen_to_any(self):
-        # the set side admits the only namespace the ##other excludes
+        # the set side admits the only namespace the ##other excludes and
+        # the absent namespace, so the union is everything
         base = self.attr("##other", target=self.TARGET)
-        result = union_wildcard_specs(base, self.attr(f"{self.TARGET} foo"), self.TARGET)
+        result = union_wildcard_specs(base, self.attr(f"##local {self.TARGET} foo"), self.TARGET)
         assert result.namespace == "##any"
         assert self.admits(result, self.TARGET)
         assert self.admits(result, "bar")
         assert self.admits(result, None)
+
+    def test_union_of_other_and_enumeration_keeps_absent_excluded(self):
+        # even when the exclusions cancel, a union of constraints that both
+        # exclude the absent namespace still excludes it
+        base = self.attr("##other", target=self.TARGET)
+        result = union_wildcard_specs(base, self.attr(f"{self.TARGET} foo"), self.TARGET)
+        assert self.admits(result, self.TARGET)
+        assert self.admits(result, "bar")
+        assert not self.admits(result, None)
 
     def test_union_takes_the_stronger_process_contents(self):
         result = union_wildcard_specs(
