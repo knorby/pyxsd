@@ -198,21 +198,6 @@ def _substitution_overlap(
     return id(first_decl) in _head_chain(second_decl, head_lookup)
 
 
-def _wildcard_admits_element(wildcard: Particle, element: Particle) -> bool:
-    """Whether a wildcard's namespace constraint admits an element.
-
-    Wildcards carrying XSD 1.1 exclusion sets (``notQName``/
-    ``notNamespace``) are treated as non-overlapping: whether the name
-    is excluded needs context a schema-phase sweep does not have, and
-    reporting the overlap could reject a schema the corpus pins valid
-    (wild049/wild050; the same posture as the wildcard-overlap sweep).
-    """
-    spec = wildcard.spec
-    if spec is None or spec.not_qname or spec.not_namespace:
-        return False
-    return spec.admits_namespace(element_namespace(element.descriptor), None)
-
-
 def _overlap(first: Particle, second: Particle, head_lookup: HeadLookup | None) -> bool:
     if first.kind == "element" and second.kind == "element":
         if _same_expanded_name(first, second):
