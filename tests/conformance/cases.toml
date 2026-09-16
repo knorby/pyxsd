@@ -2189,6 +2189,7 @@ expected_codes = ["wildcard-invalid"]
 
 [[case]]
 id = "namespaces/wildcard-notnamespace-valid"
+xsd11 = true
 description = "notNamespace excludes one namespace and leaves the rest admitted, duplicates are legal"
 derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild009 (duplicate tokens)"
 mode = "namespaced"
@@ -3727,6 +3728,7 @@ expected_codes = ["declaration-attribute"]
 
 [[case]]
 id = "legality/attribute-prohibited-with-fixed"
+xsd11 = true
 description = "XSD 1.1 forbids use='prohibited' together with fixed (attKb009)"
 derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute declaration properties)"
 schema = '''
@@ -4590,6 +4592,7 @@ expected_codes = ["all-rule"]
 
 [[case]]
 id = "structure/all-relaxed-particles-valid"
+xsd11 = true
 description = "Under XSD 1.1 element particles of xs:all may carry relaxed minOccurs/maxOccurs (all001 shape)"
 derived_from = "W3C XMLSchema1TestSuite (Saxonica All/all001: relaxed minOccurs and maxOccurs)"
 schema = '''
@@ -4929,6 +4932,7 @@ schema_valid = false
 
 [[case]]
 id = "structure/particle-nameandtypeok-substitution-group-valid"
+mode = "namespaced"
 description = "A restriction may swap a base element for a member of its substitution group when the member's type validly derives from the head's (valid control)"
 derived_from = "W3C XMLSchema1TestSuite, group 'particlesZ' (particlesZ008: restriction via substitution group should be valid)"
 schema = '''
@@ -4942,10 +4946,10 @@ schema = '''
     </xs:restriction>
   </xs:simpleType>
   <xs:element name="head" type="xs:string"/>
-  <xs:element name="member" type="small" substitutionGroup="head"/>
+  <xs:element name="member" type="x:small" substitutionGroup="x:head"/>
   <xs:complexType name="base">
     <xs:choice>
-      <xs:element ref="head"/>
+      <xs:element ref="x:head"/>
       <xs:element name="e2"/>
     </xs:choice>
   </xs:complexType>
@@ -4953,7 +4957,7 @@ schema = '''
     <xs:complexContent>
       <xs:restriction base="x:base">
         <xs:choice>
-          <xs:element ref="member"/>
+          <xs:element ref="x:member"/>
           <xs:element name="e2"/>
         </xs:choice>
       </xs:restriction>
@@ -4996,6 +5000,7 @@ schema_valid = false
 
 [[case]]
 id = "structure/particle-recurse-unordered-sequence-valid"
+xsd11 = true
 description = "A derived sequence may restrict an all with a different member order when every mapped occurrence is contained (RecurseUnordered, valid control)"
 derived_from = "W3C XML Schema Test Suite, Saxonica group 'All' (all211) and MS group 'particlesU' (particlesU003)"
 schema = '''
@@ -5568,6 +5573,7 @@ expected_codes = ["particle-restriction"]
 
 [[case]]
 id = "structure/all-extension-disjoint-not-namespace-wildcards-valid"
+xsd11 = true
 description = "An all extension wildcard excluding the namespace the base wildcard admits is disjoint, so the composed all is deterministic (XSD 1.1)"
 derived_from = "Saxon XSD 1.1 test suite, All group all305 (the disjoint notNamespace control)"
 schema = '''
@@ -5595,6 +5601,7 @@ schema = '''
 
 [[case]]
 id = "structure/all-extension-disjoint-literal-wildcards-valid"
+xsd11 = true
 description = "Two all-extension wildcards admitting disjoint literal namespaces compose deterministically (Saxon all005 control)"
 derived_from = "Saxon XSD 1.1 test suite, All group all305 (the literal-disjoint control)"
 schema = '''
@@ -5647,6 +5654,7 @@ expected_codes = ["particle-restriction"]
 
 [[case]]
 id = "structure/all-extension-composed-valid"
+xsd11 = true
 description = "An all extending an all composes into one unordered group with the extension's occurrence (Saxon all314)"
 derived_from = "Saxon XSD 1.1 test suite, All group all314 (cos-ct-extends 4.2.3.2)"
 schema = '''
@@ -5679,6 +5687,7 @@ instance = '''
 
 [[case]]
 id = "structure/all-extension-composed-partial-group-invalid"
+xsd11 = true
 description = "A present all extension group requires every member, so one optional member alone is invalid (Saxon all314.n03)"
 derived_from = "Saxon XSD 1.1 test suite, All group all314 (negative instance n03)"
 schema = '''
@@ -5711,6 +5720,7 @@ instance_valid = false
 
 [[case]]
 id = "structure/element-only-character-invalid"
+xsd11 = true
 description = "Character data under an element-only all-extends-all composition is rejected (Saxon all307.n01)"
 derived_from = "Saxon XSD 1.1 test suite, All group all306/all307 (Element Locally Valid (Complex Type))"
 schema = '''
@@ -6148,6 +6158,7 @@ instance = '''
 
 [[case]]
 id = "namespaces/wildcard-notnamespace-attribute-invalid"
+xsd11 = true
 description = "An attribute in a namespace the notNamespace exclusion lists is rejected (XSD 1.1)"
 derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild001"
 mode = "namespaced"
@@ -6172,6 +6183,7 @@ expected_codes = ["wildcard-namespace"]
 
 [[case]]
 id = "namespaces/wildcard-notqname-attribute-invalid"
+xsd11 = true
 description = "An attribute named by notQName is rejected (XSD 1.1)"
 derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild027"
 mode = "namespaced"
@@ -6195,6 +6207,7 @@ expected_codes = ["wildcard-namespace"]
 
 [[case]]
 id = "namespaces/wildcard-union-notqname-invalid"
+xsd11 = true
 description = "An extension's wildcard union keeps a name the other operand's namespace rejects"
 derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild046"
 mode = "namespaced"
@@ -6231,6 +6244,7 @@ expected_codes = ["wildcard-namespace"]
 
 [[case]]
 id = "namespaces/wildcard-defined-attribute-invalid"
+xsd11 = true
 description = "An attribute resolving to a global declaration is rejected by notQName=##defined"
 derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild054"
 mode = "namespaced"
@@ -6255,6 +6269,7 @@ expected_codes = ["wildcard-namespace"]
 
 [[case]]
 id = "structure/wildcard-notqname-element-invalid"
+xsd11 = true
 description = "An element named by notQName is rejected by the wildcard particle"
 derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild028"
 mode = "namespaced"
@@ -6280,6 +6295,7 @@ expected_codes = ["unexpected-element"]
 
 [[case]]
 id = "structure/wildcard-defined-element-invalid"
+xsd11 = true
 description = "An element resolving to a global declaration is rejected by notQName=##defined"
 derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild052"
 mode = "namespaced"
@@ -6305,6 +6321,7 @@ expected_codes = ["unexpected-element"]
 
 [[case]]
 id = "structure/wildcard-defined-sibling-invalid"
+xsd11 = true
 description = "A repeated sibling declaration is rejected by notQName=##definedSibling"
 derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild070"
 mode = "namespaced"
@@ -6564,6 +6581,7 @@ instance = '''
 
 [[case]]
 id = "occurrence/nillable-boolean-one-nil"
+xsd11 = true
 description = "nillable='1' is xs:boolean true, so xsi:nil='1' skips the content model (all004.v02)"
 derived_from = "W3C XMLSchema1TestSuite, Saxon All all004.v02"
 schema = '''
@@ -6588,6 +6606,7 @@ instance = '''
 
 [[case]]
 id = "occurrence/nillable-boolean-one-nil-content"
+xsd11 = true
 description = "A nillable='1' element marked nil still may not carry content (all004.n01)"
 derived_from = "W3C XMLSchema1TestSuite, Saxon All all004.n01"
 schema = '''

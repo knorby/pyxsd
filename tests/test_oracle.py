@@ -8,16 +8,20 @@ check. Run it locally after ``uv sync --group dev``::
 
     PYXSD_RUN_ORACLE=1 uv run pytest tests/test_oracle.py -q
 
-``xmlschema`` is a well-tested independent XSD 1.0 implementation. Where
+``xmlschema`` is a well-tested independent implementation. Where
 the two disagree, the disagreement is printed with the case id and
 direction so the result can be triaged. Internal crashes on either side
 are failures: "both crashed" is not agreement. Only xmlschema's own
 parse/namespace/validation errors are treated as verdicts; any other
 exception fails the test. Each case runs under the binding policy named
 by its manifest ``mode`` (``legacy`` by default), so the ``namespaced``
-cases exercise namespace-aware matching alongside the oracle. The one
-remaining expected difference is a schema-composition warning/error
-mismatch; pyxsd's other documented limitations (identity XPath
+cases exercise namespace-aware matching alongside the oracle.
+
+Cases flagged ``xsd11 = true`` in the manifest are XSD 1.1-only and are
+compared against ``xmlschema.XMLSchema11``; the default oracle parser is
+XSD 1.0 and rejects 1.1 constructs outright. A short list of intentional
+per-case differences is kept in ``_DOCUMENTED_DIVERGENCES``, each with
+its reason. pyxsd's other documented limitations (identity XPath
 predicates, user facets, remote schemas) are not exercised by the
 corpus.
 """
@@ -69,6 +73,20 @@ _DOCUMENTED_DIVERGENCES = {
         "xmlschema downgrades a missing include to a warning; pyxsd reports "
         "the schema-compose error"
     ),
+    "composition/import-namespace-mismatch-invalid": (
+        "xmlschema accepts an import whose namespace does not match the "
+        "imported schema's target namespace; pyxsd enforces src-import and "
+        "reports the schema-compose error"
+    ),
+    "legality/annotation-invalid-xml-lang": (
+        "xmlschema does not validate the xml:lang lexical space of "
+        "xs:documentation; the W3C annotF001 case expects invalid"
+    ),
+    "structure/emptiable-choice-required-ref-valid": (
+        "xmlschema's meta-schema rejects occurrence attributes on a model "
+        "group inside a named xs:group; the schema-for-schemas allows them "
+        "and the MS particlesHa valid control relies on it"
+    ),
 }
 
 
@@ -106,8 +124,12 @@ def _oracle_verdict(case, directory):
     other exception propagates so an oracle crash cannot masquerade as
     agreement with pyxsd.
     """
+    # XSD 1.1-only cases (``xsd11 = true`` in the manifest) are compared
+    # against the 1.1 parser; the default oracle parser is XSD 1.0 and
+    # rejects 1.1 constructs outright.
+    oracle_cls = xmlschema.XMLSchema11 if case.get("xsd11") else xmlschema.XMLSchema
     try:
-        schema = xmlschema.XMLSchema(str(directory / "schema.xsd"))
+        schema = oracle_cls(str(directory / "schema.xsd"))
     except _ORACLE_ERRORS:
         return False, None
     if "instance" not in case:
