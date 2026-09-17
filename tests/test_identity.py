@@ -290,15 +290,14 @@ class TestXPathSubset:
 
 
 class TestUnsupportedPaths:
-    """Unsupported path constructs are skipped with report warnings."""
+    """Paths outside the subset are schema-phase ``xpath-invalid`` errors."""
 
-    def test_predicate_selector_is_skipped_with_warning(self, tmp_path):
+    def test_predicate_selector_is_schema_invalid(self, tmp_path):
         schema = _catalog_schema(constraints=_key(selector="item[@id]"))
         instance = '<catalog>\n  <item id="a1"><code>c-1</code></item>\n</catalog>\n'
         parser = _parse(schema, instance, tmp_path)
-        warnings = [issue.code for issue in parser.report.warnings]
-        assert "identity-unsupported" in warnings
-        assert not parser.report.has_errors
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "xpath-invalid" in codes
 
     def test_empty_selector(self, tmp_path):
         """An empty ``xpath`` is a schema error (the constraint's
@@ -322,26 +321,23 @@ class TestUnsupportedPaths:
         codes = {issue.code for issue in parser.report.for_phase("schema")}
         assert "declaration-attribute" in codes
 
-    def test_absolute_selector_is_unsupported(self, tmp_path):
+    def test_absolute_selector_xpath_invalid(self, tmp_path):
         schema = _catalog_schema(constraints=_key(selector="/item"))
         parser = _parse(schema, '<catalog><item id="a1"><code>c</code></item></catalog>', tmp_path)
-        warnings = [issue.code for issue in parser.report.warnings]
-        assert "identity-unsupported" in warnings
-        assert not parser.report.has_errors
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "xpath-invalid" in codes
 
-    def test_field_predicate_is_unsupported(self, tmp_path):
+    def test_field_predicate_is_a_schema_error(self, tmp_path):
         schema = _catalog_schema(constraints=_key(field="@id[1]"))
         parser = _parse(schema, '<catalog><item id="a1"><code>c</code></item></catalog>', tmp_path)
-        warnings = [issue.code for issue in parser.report.warnings]
-        assert "identity-unsupported" in warnings
-        assert not parser.report.has_errors
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "xpath-invalid" in codes
 
-    def test_absolute_field_is_unsupported(self, tmp_path):
+    def test_absolute_field_is_a_schema_error(self, tmp_path):
         schema = _catalog_schema(constraints=_key(field="/item/@id"))
         parser = _parse(schema, '<catalog><item id="a1"><code>c</code></item></catalog>', tmp_path)
-        warnings = [issue.code for issue in parser.report.warnings]
-        assert "identity-unsupported" in warnings
-        assert not parser.report.has_errors
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "xpath-invalid" in codes
 
     def test_dot_after_steps_field(self, tmp_path):
         """A field like ``item/.`` evaluates to the item's own value."""

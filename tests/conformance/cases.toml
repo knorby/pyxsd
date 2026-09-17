@@ -6887,3 +6887,161 @@ schema = '''
 </xs:schema>'''
 schema_valid = false
 expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "xpath-subset/mid-path-descendant"
+description = "a//b is illegal in the XSD 1.1 xpath subset (idI028 shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI028)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="a" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:key name="k"><xs:selector xpath="a//b"/><xs:field xpath="@id"/></xs:key>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["xpath-invalid"]
+
+[[case]]
+id = "xpath-subset/absolute-selector"
+description = "An absolute path is outside the xpath subset (idI003/idD014)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idD014)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1"><xs:selector xpath="/uniqueElement"/><xs:field xpath="@id"/></xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["xpath-invalid"]
+
+[[case]]
+id = "xpath-subset/predicate-field"
+description = "Predicates are outside the xpath subset (idI152)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI152)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:key name="k"><xs:selector xpath="c"/><xs:field xpath="imp:iid[predicate]"/></xs:key>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["xpath-invalid"]
+
+[[case]]
+id = "xpath-subset/self-axis-selector"
+description = "The self axis is outside the xpath subset (idI145)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI145)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1"><xs:selector xpath="self::*"/><xs:field xpath="@id"/></xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["xpath-invalid"]
+
+[[case]]
+id = "xpath-subset/descendant-axis-field"
+description = "The descendant axis is outside the xpath subset (idI147)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI147)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:key name="k"><xs:selector xpath="c"/><xs:field xpath="descendant::*"/></xs:key>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["xpath-invalid"]
+
+[[case]]
+id = "xpath-subset/unbound-prefix"
+description = "A path prefix not bound in scope is a schema error (idI010)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI010)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:key name="k"><xs:selector xpath="imp:iid"/><xs:field xpath="@id"/></xs:key>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["xpath-invalid"]
+
+[[case]]
+id = "xpath-subset/attribute-step-not-final"
+description = "An attribute step is only legal as the final step of a field"
+derived_from = "XSD 1.1 §3.11.6.3 field production"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:key name="k"><xs:selector xpath="c"/><xs:field xpath="a/@b/c"/></xs:key>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["xpath-invalid"]
+
+[[case]]
+id = "xpath-subset/bogus-xpath-default-namespace"
+description = "A ##-keyword xpathDefaultNamespace outside the allowed set is a schema error"
+derived_from = "XSD 1.1 §3.11.4 xpathDefaultNamespace"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1" xpathDefaultNamespace="##bogus">
+    <xs:selector xpath="c"/><xs:field xpath="@id"/>
+  </xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["xpath-invalid"]
+
+[[case]]
+id = "xpath-subset/grammar-accepts-the-subset"
+description = "The admitted shapes (names, wildcards, prefixes, .//, axes, @, unions) parse cleanly"
+derived_from = "W3C XMLSchema1TestSuite, groups 'IdentityConstraint' (idI002/idI009/idI029/idI073, idJ022, idL017)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:x="urn:x">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="a" maxOccurs="10"/>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1"><xs:selector xpath="."/><xs:field xpath="@id"/></xs:unique>
+  <xs:key name="k1"><xs:selector xpath="child::a"/><xs:field xpath="attribute::id"/></xs:key>
+  <xs:key name="k2"><xs:selector xpath="a | c"/><xs:field xpath="@x:* | @id"/></xs:key>
+  <xs:key name="k3"><xs:selector xpath=".//a"/><xs:field xpath="@id"/></xs:key>
+  <xs:key name="k4"><xs:selector xpath="*"/><xs:field xpath="x:a"/></xs:key>
+  <xs:key name="k5"><xs:selector xpath="a"/><xs:field xpath="@id | @x:id"/></xs:key>
+  </xs:element>
+</xs:schema>'''
+schema_valid = true
+
+[[case]]
+id = "xpath-subset/xpath-default-namespace-target-namespace"
+description = "xpathDefaultNamespace=##targetNamespace resolves unprefixed path names"
+derived_from = "W3C XMLSchema1TestSuite, group 'XPathDefaultNSonKeyKeyRefUnique' (s3_11_2)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:root" xmlns="urn:root"
+           xpathDefaultNamespace="##targetNamespace">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1"><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = true

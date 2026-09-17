@@ -17,6 +17,7 @@ bound, in :mod:`pyxsd.identity`.
 import logging
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.xpath_subset import XPathError, parse_xpath_subset
 from pyxsd.xsd_data_types import NCName
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,32 @@ class IdentityConstraint(ElementRepresentative):
             if child is not None:
                 return child.xpath
         return ""
+
+    @property
+    def parsedSelectorPath(self):
+        """Returns the first selector child's parsed path, or ``None``.
+
+        ``None`` means the schema-phase parse failed (an
+        ``xpath-invalid`` error is already on the report) or no
+        selector child exists.
+        """
+        for child in self._childrenOfKind("Selector"):
+            if child is not None:
+                return getattr(child, "parsedXPath", None)
+        return None
+
+    @property
+    def parsedFieldPaths(self):
+        """Returns the field children's parsed paths.
+
+        The tuple is aligned with ``fieldPaths``; a ``None`` slot means
+        that field's schema-phase parse failed.
+        """
+        return tuple(
+            getattr(child, "parsedXPath", None)
+            for child in self._childrenOfKind("Field")
+            if child is not None
+        )
 
     def _childrenOfKind(self, kind):
         """Returns the processed children whose class is ``kind``."""
@@ -210,6 +237,12 @@ class _PathTerm(ElementRepresentative):
         The tags carry only ``xpath`` (plus the XSD 1.1
         ``xpathDefaultNamespace`` reservation): any other unqualified
         attribute and a missing or empty ``xpath`` are schema errors.
+        A present ``xpath`` is parsed at schema phase under the
+        declaration site's namespace bindings and effective
+        ``xpathDefaultNamespace``; a path outside the subset is an
+        ``xpath-invalid`` schema error and the constraint is left
+        without a parsed path (the instance-phase evaluation then
+        skips it).
         """
         allowed = frozenset(self._ALLOWED_ATTRIBUTES)
         for raw in self._unqualifiedAttributes():
@@ -224,6 +257,84 @@ class _PathTerm(ElementRepresentative):
                 f"<{self.rawTag}> requires a non-empty xpath attribute",
                 code="declaration-attribute",
             )
+            return
+        self.parsedXPath = self._parseDeclarationXPath(xpath)
+
+    def _parseDeclarationXPath(self, xpath):
+        """Parses the ``xpath`` attribute at schema phase.
+
+        Uses the declaration site's prefix bindings, the schema's
+        target namespace and the effective ``xpathDefaultNamespace``.
+        Returns the parsed path, or ``None`` after reporting an
+        ``xpath-invalid`` schema error.
+        """
+        try:
+            return parse_xpath_subset(
+                xpath,
+                self._declarationNamespaces(),
+                self._xpathDefaultNamespace(),
+                self._schemaTargetNamespace(),
+            )
+        except XPathError as exc:
+            self._reportSchemaError(
+                f"<{self.rawTag}> xpath '{xpath.strip()}' is outside the "
+                f"identity-constraint XPath subset: {exc}",
+                code="xpath-invalid",
+            )
+            return None
+
+    def _declarationNamespaces(self):
+        """Returns the in-scope prefix bindings at the declaration site."""
+        try:
+            schema = self.getSchema()
+        except AttributeError:
+            return {}
+        context = getattr(schema, "namespaceContext", None)
+        if context is None:
+            return {}
+        return context.bindings_for(self.xsdElement)
+
+    def _schemaTargetNamespace(self):
+        """Returns the declaring schema document's target namespace."""
+        try:
+            return self.getSchema().getNamespace()
+        except AttributeError:
+            return None
+
+    def _xpathDefaultNamespace(self):
+        """Returns the namespace unprefixed element names resolve to.
+
+        The effective ``xpathDefaultNamespace``: the selector/field's
+        own attribute, else the containing constraint's, else the
+        schema's, else ``##defaultNamespace``. The keyword forms
+        resolve against the declaration site (``##defaultNamespace``
+        is the schema document's in-scope default namespace,
+        ``##targetNamespace`` the target namespace, ``##local`` the no
+        namespace) and any other value is a literal namespace URI.
+        """
+        value = self._rawXpathDefaultNamespace()
+        if value is None or value == "##defaultNamespace":
+            return self._declarationNamespaces().get("")
+        if value == "##targetNamespace":
+            return self._schemaTargetNamespace()
+        if value == "##local":
+            return None
+        if value.startswith("##"):
+            raise XPathError(f"invalid xpathDefaultNamespace value '{value}'")
+        return value
+
+    def _rawXpathDefaultNamespace(self):
+        """Returns the raw ``xpathDefaultNamespace`` value in force."""
+        for owner in (self, self.parent):
+            attributes = getattr(owner, "tagAttributes", None) or {}
+            value = attributes.get("xpathDefaultNamespace")
+            if value is not None and value.strip():
+                return value.strip()
+        try:
+            schema = self.getSchema()
+        except AttributeError:
+            return None
+        return schema.xsdElement.get("xpathDefaultNamespace")
 
     def _unqualifiedAttributes(self):
         """Yields the unqualified attribute names of the raw element."""
@@ -234,6 +345,26 @@ class _PathTerm(ElementRepresentative):
 
 class Selector(_PathTerm):
     """The class for the selector tag inside an identity constraint."""
+
+    def checkDeclarationLegality(self):
+        """Extends the shared checks with the selector's role rules.
+
+        The selector grammar (XSD 1.1 §3.11.6.2) admits element steps
+        only — attribute steps belong to fields (idI149).
+        """
+        super().checkDeclarationLegality()
+        parsed = getattr(self, "parsedXPath", None)
+        if parsed is None:
+            return
+        if any(
+            step[0] == "attribute" for _descendant, steps in parsed.alternatives for step in steps
+        ):
+            self._reportSchemaError(
+                "<selector> xpath must not select attribute nodes; "
+                "attribute steps are only allowed in <field>",
+                code="xpath-invalid",
+            )
+            self.parsedXPath = None
 
     def getName(self):
         """Returns a bookkeeping name for the selector."""

@@ -7,20 +7,25 @@ instance records the element representative it was built from in
 ``_descriptor_``, which is what connects the schema-side constraints
 to the instance-side nodes.
 
-The supported XPath subset covers the common shapes used in identity
-constraints:
+The supported XPath subset covers the XSD 1.1 selector/field grammar
+(see :mod:`pyxsd.xpath_subset` for the exact admission rules):
 
 - child steps separated by ``/`` (``item``, ``order/line``),
 - ``.`` for the context node (``./item`` is the same as ``item``),
-- ``*`` as a wildcard child step,
-- ``.//`` for descendant-or-self (``.//item``),
-- fields ending in ``@attribute``, an element name (the element's
-  simple content) or ``.`` (the selected node itself).
+- ``*`` and ``prefix:*`` wildcard child steps, with namespace prefixes
+  resolved through the declaration site's bindings and the XPath
+  default namespace,
+- ``.//`` (or ``//``) for descendant-or-self (``.//item``), leading
+  only,
+- full ``child::``/``attribute::`` axis steps and abbreviated
+  ``@attribute`` steps (an attribute step ends the path),
+- top-level unions (``a | @b``).
 
-Namespace prefixes in steps are ignored (matching is by local name),
-consistent with the rest of the parser. Predicates (``[...]``) and
-absolute paths (``/``) are not supported and cause the constraint to
-be skipped with a report warning.
+Paths outside the subset are rejected at schema phase with an
+``xpath-invalid`` error by the element representatives; the evaluation
+here only ever sees validated :class:`~pyxsd.xpath_subset.ParsedXPath`
+paths (or raw strings from test stand-ins, which go through the same
+parser and degrade to an ``identity-unsupported`` warning).
 
 Identity constraints are scoped to the element occurrence that owns
 them: a repeating element with a key declaration gets an independent
@@ -33,8 +38,10 @@ lexically different spellings of one value match.
 import logging
 from typing import Any
 
+from pyxsd.namespaces import local_name
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
+from pyxsd.xpath_subset import ParsedXPath, XPathError, parse_xpath_subset
 from pyxsd.xsd_data_types import XsdDataType, xsd_comparable_key
 
 logger = logging.getLogger(__name__)
@@ -42,6 +49,11 @@ logger = logging.getLogger(__name__)
 _MISSING: Any = object()
 _UNSUPPORTED: Any = object()
 _AMBIGUOUS: Any = object()
+
+#: Marks constraint objects without a schema-phase parsed path (plain
+#: path-string stand-ins, as used by tests): those take the legacy
+#: string-parsing route at evaluation time.
+_ABSENT: Any = object()
 
 KeyScopes = tuple[dict[str, set[tuple[Any, ...]]], ...]
 
@@ -186,6 +198,36 @@ def _checkKeyref(
     return None
 
 
+def _selectNodes(node: Any, constraint: Any, report: ValidationReport) -> list[Any] | None:
+    """Returns the nodes a constraint's selector covers, or ``None``.
+
+    ``None`` means the selector could not be evaluated; the reason is
+    already on the report (a schema-phase ``xpath-invalid`` error, or an
+    ``identity-unsupported`` warning for string-only constraint
+    stand-ins).
+    """
+    selector = constraint.selector
+    if not selector:
+        report.add_warning(
+            f"identity constraint '{constraint.constraintName}' has no selector; "
+            "it will not be checked",
+            code="identity-unsupported",
+        )
+        return None
+    parsed = getattr(constraint, "parsedSelectorPath", _ABSENT)
+    if parsed is _ABSENT:
+        parsed = _legacyParsePath(selector, constraint, report, "selector")
+        if parsed is None:
+            return None
+    elif parsed is None:
+        return None
+    return [
+        match
+        for descendant, steps in parsed.alternatives
+        for match in _evalAlternative(node, descendant, steps)
+    ]
+
+
 def _fieldValues(
     selectedNode: Any,
     constraint: Any,
@@ -195,13 +237,23 @@ def _fieldValues(
 
     Returns ``_MISSING`` (no value), ``_AMBIGUOUS`` (a field selects
     more than one value; reported as an error) or ``_UNSUPPORTED``
-    (path not supported; warning already recorded).
+    (path not supported; the reason is already on the report).
     """
-    values: list[tuple[Any, ...]] = []
-    for fieldPath in constraint.fieldPaths:
-        result = _evalField(selectedNode, fieldPath, constraint, report)
-        if result is _UNSUPPORTED:
+    fieldPaths = constraint.fieldPaths
+    parsedFields = getattr(constraint, "parsedFieldPaths", _ABSENT)
+    values: list[Any] = []
+    for index, fieldPath in enumerate(fieldPaths):
+        if parsedFields is _ABSENT:
+            parsed = _legacyParsePath(fieldPath, constraint, report, "field")
+        else:
+            parsed = (
+                parsedFields[index]
+                if parsedFields is not None and index < len(parsedFields)
+                else None
+            )
+        if parsed is None:
             return _UNSUPPORTED
+        result = _evalField(selectedNode, parsed)
         if not result:
             return _MISSING
         if len(result) > 1:
@@ -217,138 +269,130 @@ def _fieldValues(
     return tuple(values)
 
 
-def _selectNodes(node: Any, constraint: Any, report: ValidationReport) -> list[Any] | None:
-    """Returns the nodes a constraint's selector covers, or ``None``.
+def _legacyParsePath(
+    path: str,
+    constraint: Any,
+    report: ValidationReport,
+    kind: str,
+) -> ParsedXPath | None:
+    """Parses a raw path string for a constraint without a schema-phase
+    parse, warning ``identity-unsupported`` when it is outside the
+    subset.
 
-    ``None`` means the selector could not be evaluated (unsupported
-    construct); a warning has already been recorded in that case.
+    Constraint stand-ins (tests) carry plain strings; the historical
+    behavior — a warning and a skipped constraint — is preserved.
     """
-    selector = constraint.selector
-    if not selector:
+    if "[" in path:
         report.add_warning(
-            f"identity constraint '{constraint.constraintName}' has no selector; "
-            "it will not be checked",
-            code="identity-unsupported",
-        )
-        return None
-    if "[" in selector:
-        report.add_warning(
-            f"the selector '{selector}' of identity constraint "
+            f"the {kind} '{path}' of identity constraint "
             f"'{constraint.constraintName}' uses a predicate, which pyxsd does "
             "not support; the constraint will not be checked",
             code="identity-unsupported",
         )
         return None
-    descendant, steps = _parsePath(selector)
-    if steps is None:
+    try:
+        return parse_xpath_subset(path, {}, None, None)
+    except XPathError:
         report.add_warning(
-            f"the selector '{selector}' of identity constraint "
+            f"the {kind} '{path}' of identity constraint "
             f"'{constraint.constraintName}' is not a supported path; the "
             "constraint will not be checked",
             code="identity-unsupported",
         )
         return None
+
+
+def _evalAlternative(node: Any, descendant: bool, steps: tuple[tuple[str, ...], ...]) -> list[Any]:
+    """Evaluates one parsed path alternative against a bound node."""
+    view = _stepView(steps)
     if descendant:
         return [
             match
             for candidate in _descendantOrSelfNodes(node)
-            for match in _evalSteps(candidate, steps)
+            for match in _evalSteps(candidate, view)
         ]
-    return _evalSteps(node, steps)
+    return _evalSteps(node, view)
 
 
-def _evalField(selectedNode: Any, fieldPath: str, constraint: Any, report: ValidationReport) -> Any:
-    """Returns the values one field selects on one node.
+def _stepView(steps: tuple[tuple[str, ...], ...]) -> list[str]:
+    """Translates parsed steps into the evaluator's path view.
 
-    A list of zero or more values is returned; ``_UNSUPPORTED`` when the
-    path cannot be evaluated. Fields that select more than one value are
-    diagnosed by the caller via the list length.
+    Element steps keep their Clark name — child matching tries the
+    exact name first and falls back to the local name — while a
+    namespace wildcard collapses to ``*`` and an attribute step becomes
+    ``@name`` (bound attribute values are keyed by local name).
     """
-    if "[" in fieldPath:
-        report.add_warning(
-            f"the field '{fieldPath}' of identity constraint "
-            f"'{constraint.constraintName}' uses a predicate, which pyxsd does "
-            "not support; the constraint will not be checked",
-            code="identity-unsupported",
-        )
-        return _UNSUPPORTED
-    descendant, steps = _parsePath(fieldPath)
-    if steps is None:
-        report.add_warning(
-            f"the field '{fieldPath}' of identity constraint "
-            f"'{constraint.constraintName}' is not a supported path; the "
-            "constraint will not be checked",
-            code="identity-unsupported",
-        )
-        return _UNSUPPORTED
-    if steps and steps[-1].startswith("@"):
-        attributeName = steps[-1][1:]
-        if len(steps) > 1:
-            nodes = (
-                [
-                    match
-                    for candidate in _descendantOrSelfNodes(selectedNode)
-                    for match in _evalSteps(candidate, steps[:-1])
-                ]
-                if descendant
-                else _evalSteps(selectedNode, steps[:-1])
-            )
-        else:
-            nodes = [selectedNode] if not descendant else list(_descendantOrSelfNodes(selectedNode))
-        return [
-            value
-            for node in nodes
-            for value in [_attributeValue(node, attributeName)]
-            if value is not None
-        ]
-    # A field ending in ``.`` was already reduced to the element steps
-    # before it (or nothing at all, meaning the selected node itself)
-    # by ``_parsePath``, so the remaining case is a field naming an
-    # element: the value is that element's simple content.
-    nodes = (
-        [
-            match
-            for candidate in _descendantOrSelfNodes(selectedNode)
-            for match in _evalSteps(candidate, steps)
-        ]
-        if descendant
-        else _evalSteps(selectedNode, steps)
-    )
-    return [value for node in nodes for value in [_nodeValue(node)] if value is not None]
-
-
-def _parsePath(path: str) -> tuple[bool, list[str] | None]:
-    """Splits an XPath-subset path into (descendant, steps).
-
-    Returns ``(descendant, steps)`` where ``steps`` is the list of
-    child steps (prefixes stripped, ``.`` steps removed), or
-    ``(False, None)`` when the path is not supported.
-    """
-    if path.startswith("/"):
-        return False, None
-    parts = path.split("/")
-    descendant = any(part == "" for part in parts)
-    steps = []
-    for part in parts:
-        if part in ("", "."):
+    view: list[str] = []
+    for step in steps:
+        kind = step[0]
+        name = step[1] if len(step) > 1 else ""
+        if kind == "self":
             continue
-        if part == "*":
-            steps.append("*")
+        if kind == "attribute":
+            view.append(f"@{name if name == '*' else local_name(name)}")
+        elif name == "*" or name.endswith("}*"):
+            view.append("*")
         else:
-            steps.append(part.split(":")[-1])
-    return descendant, steps
+            view.append(name)
+    return view
+
+
+def _evalField(selectedNode: Any, parsed: ParsedXPath) -> list[Any]:
+    """Returns the values one parsed field selects on one node.
+
+    A list of zero or more values is returned. Union alternatives
+    concatenate; fields that select more than one value are diagnosed
+    by the caller via the list length.
+    """
+    values: list[Any] = []
+    for descendant, steps in parsed.alternatives:
+        view = _stepView(steps)
+        if view and view[-1].startswith("@"):
+            attributeName = view[-1][1:]
+            if len(view) > 1:
+                nodes = (
+                    [
+                        match
+                        for candidate in _descendantOrSelfNodes(selectedNode)
+                        for match in _evalSteps(candidate, view[:-1])
+                    ]
+                    if descendant
+                    else _evalSteps(selectedNode, view[:-1])
+                )
+            else:
+                nodes = list(_descendantOrSelfNodes(selectedNode)) if descendant else [selectedNode]
+            values += [
+                value
+                for node in nodes
+                for value in _attributeValues(node, attributeName)
+                if value is not None
+            ]
+        else:
+            # A field ending in ``.`` reduced to the element steps
+            # before it (or nothing at all, meaning the selected node
+            # itself), so the remaining case is a field naming an
+            # element: the value is that element's simple content.
+            nodes = _evalAlternative(selectedNode, descendant, steps)
+            values += [value for node in nodes for value in [_nodeValue(node)] if value is not None]
+    return values
 
 
 def _evalSteps(node: Any, steps: list[str]) -> list[Any]:
-    """Walks child steps from ``node`` and returns the matching nodes."""
+    """Walks child steps from ``node`` and returns the matching nodes.
+
+    A Clark-named step matches the exact expanded name first and falls
+    back to the local name, preserving the historical namespace-
+    insensitive matching of bound children.
+    """
     nodes = [node]
     for step in steps:
+        stepLocal = local_name(step)
         nextNodes = []
         for current in nodes:
             for child in _childrenOf(current):
                 childName = _nameOf(child)
                 localName = childName.split("}", 1)[-1] if childName.startswith("{") else childName
-                if step == "*" or childName == step or localName == step:
+                if step == "*" or childName == step or localName == stepLocal:
                     nextNodes.append(child)
         nodes = nextNodes
     return nodes
@@ -406,6 +450,19 @@ def _attributeValue(node: Any, attributeName: str) -> Any | None:
         if value is not None:
             return value
     return None
+
+
+def _attributeValues(node: Any, attributeName: str) -> tuple[Any, ...]:
+    """Returns the values an attribute step selects on one node.
+
+    A named step selects that one attribute; the ``*`` wildcard selects
+    every attribute the node carries.
+    """
+    if attributeName != "*":
+        value = _attributeValue(node, attributeName)
+        return (value,) if value is not None else ()
+    attribs = getattr(node, "_attribs_", None) or {}
+    return tuple(attribs.values())
 
 
 def _nodeValue(node: Any) -> Any | None:
