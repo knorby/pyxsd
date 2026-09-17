@@ -21,8 +21,9 @@ The admitted subset, as arbitrated by the XSTS corpus (idI*/idJ*/idL*,
 XPathDefaultNSonKeyKeyRefUnique) under XSD 1.1 §3.11.6:
 
 - a top-level union of paths (``a | @b``), in selectors and fields;
-- an optional leading descendant-or-self prefix, spelled ``.//`` or
-  ``//`` (addB080) — never in the middle of a path;
+- an optional leading descendant-or-self prefix ``.//`` (the grammar
+  requires the ``.`` token: ``Path ::= ('.' '//')? Step ...``) — never
+  in the middle of a path and never as a bare ``//``;
 - steps ``.``, ``qname``, ``prefix:*``, ``*``, full child-axis syntax
   (``child::qname``, idI009), full attribute-axis syntax
   (``attribute::qname``, idL017) and abbreviated attribute steps
@@ -32,9 +33,9 @@ XPathDefaultNSonKeyKeyRefUnique) under XSD 1.1 §3.11.6:
   rejects the corpus-illegal forms such as ``prefix :*``.
 
 Rejected, with corpus ids: predicates (idI152), absolute paths
-(idI003, idD014), ``self::``/``descendant::``/``descendant-or-self::``
-axes (idI145-150, idJ205-210), function calls (idE014) and mid-path
-``//`` (idI028, idJ052).
+(idI003, idD014), bare ``//`` (idI004), ``self::``/``descendant::``/
+``descendant-or-self::`` axes (idI145-150, idJ205-210), function calls
+(idE014) and mid-path ``//`` (idI028, idJ052).
 """
 
 from __future__ import annotations
@@ -165,14 +166,11 @@ def _walk(
         _walk(children[1], steps, leading=False, default_ns=default_ns)
         return descendant
     if kind == _SLASH_SLASH:
-        # Only the leading descendant-or-self prefix is admitted:
-        # ``.//x`` (context item first) and ``//x`` (bare).
-        if not leading:
-            raise XPathError("'//' is only allowed as the leading './/' of a path")
-        if len(children) == 1:
-            _walk(children[0], steps, leading=False, default_ns=default_ns)
-            return True
-        if len(children) == 2 and type(children[0]).__name__ == _CONTEXT_ITEM:
+        # Only the leading descendant-or-self prefix ``.//x`` is
+        # admitted: the grammar requires the ``.`` token
+        # (``Path ::= ('.' '//')? Step ...``), so a bare ``//x`` is a
+        # subset violation (idI004).
+        if leading and len(children) == 2 and type(children[0]).__name__ == _CONTEXT_ITEM:
             _walk(children[1], steps, leading=False, default_ns=default_ns)
             return True
         raise XPathError("'//' is only allowed as the leading './/' of a path")

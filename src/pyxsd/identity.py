@@ -15,7 +15,7 @@ The supported XPath subset covers the XSD 1.1 selector/field grammar
 - ``*`` and ``prefix:*`` wildcard child steps, with namespace prefixes
   resolved through the declaration site's bindings and the XPath
   default namespace,
-- ``.//`` (or ``//``) for descendant-or-self (``.//item``), leading
+- ``.//`` for descendant-or-self (``.//item``), leading
   only,
 - full ``child::``/``attribute::`` axis steps and abbreviated
   ``@attribute`` steps (an attribute step ends the path),
@@ -246,11 +246,7 @@ def _fieldValues(
         if parsedFields is _ABSENT:
             parsed = _legacyParsePath(fieldPath, constraint, report, "field")
         else:
-            parsed = (
-                parsedFields[index]
-                if parsedFields is not None and index < len(parsedFields)
-                else None
-            )
+            parsed = parsedFields[index] if index < len(parsedFields) else None
         if parsed is None:
             return _UNSUPPORTED
         result = _evalField(selectedNode, parsed)
