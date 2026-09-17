@@ -1420,27 +1420,48 @@ class SchemaBase:
         """Parses a child as a substitution-group member, if it is one.
 
         Matches the xml child name against the members registered
-        under each declared element (the head). Returns True when the
-        child was handled. Members blocked by the head's ``block``
-        attribute are reported and rejected.
+        under each declared element (the head). Membership is
+        transitive, so the members of *every* transitive head of a
+        declared element are admissible where that element is declared
+        (a member of a member may stand in for the root head). Returns
+        True when the child was handled. Members blocked by the head's
+        ``block`` attribute are reported and rejected.
         """
         subElementName = cls._node_name(subElement)
         declared = {descriptor.name: descriptor for descriptor in elemDescriptors}
         declaredExpanded = {
             getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
         }
-        for headName, members in cls._schemaSubstitutionGroups(elemDescriptors).items():
+        substitutionGroups = cls._schemaSubstitutionGroups(elemDescriptors)
+        if not substitutionGroups:
+            return False
+        for headName in substitutionGroups:
             headDescriptor = declared.get(headName) or declaredExpanded.get(headName)
             if headDescriptor is None:
                 continue
-            for memberER in members:
+            # Transitive member closure of the declared head: the head
+            # itself, its direct members, their members, and so on.
+            closure: list = []
+            frontier = [headName]
+            seenHeads = {headName}
+            while frontier:
+                current = frontier.pop()
+                for memberER in substitutionGroups.get(current, ()):
+                    closure.append(memberER)
+                    nextHead = getattr(memberER, "expandedName", None) or getattr(
+                        memberER, "name", None
+                    )
+                    if nextHead is not None and nextHead not in seenHeads:
+                        seenHeads.add(nextHead)
+                        frontier.append(nextHead)
+            for memberER in closure:
                 if cls._instance_name_of(memberER) != subElementName:
                     continue
                 block = headDescriptor.getBlock()
                 if block and ("substitution" in block.split() or block == "#all"):
                     cls._report_error(
                         f"substitution-group member '{subElementName}' is "
-                        f"blocked by head element '{headName}' (block={block!r})",
+                        f"blocked by head element '{headDescriptor.name}' (block={block!r})",
                         code="blocked",
                         element=cls.__name__,
                     )
@@ -1452,20 +1473,33 @@ class SchemaBase:
                 if subElCls is None:
                     return False
                 # An xsi:type on the member overrides the member's
-                # declared type, provided it is validly derived.
+                # declared type, provided it is validly derived. The
+                # override is resolved (and its derivation checked)
+                # exactly as for a directly declared element, so an
+                # invalid or unresolvable xsi:type is reported instead
+                # of silently keeping the declared type.
                 xsiTypeName = xsi.xsi_type_name(subElement)
                 if xsiTypeName is not None:
-                    override = ElementRepresentative.typeFromName(
-                        xsiTypeName, getattr(cls, "pyXSD", None)
-                    )
-                    if override is not None:
-                        blocked = combinedBlock(memberER.getBlock(), subElCls)
-                        reason = is_valid_xsi_type(override, subElCls, blocked)
-                        if reason is None:
-                            subElCls = override
+                    pyXSD = getattr(cls, "pyXSD", None)
+                    resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
+                    if resolvedName is not None:
+                        override = ElementRepresentative.typeFromName(resolvedName, pyXSD)
+                        if override is not None:
+                            blocked = combinedBlock(memberER.getBlock(), subElCls)
+                            reason = is_valid_xsi_type(override, subElCls, blocked)
+                            if reason is None:
+                                subElCls = override
+                            else:
+                                cls._report_error(
+                                    derivationMessage(override, subElCls, reason),
+                                    code="xsi-type",
+                                    element=cls.__name__,
+                                )
                         else:
                             cls._report_error(
-                                derivationMessage(override, subElCls, reason),
+                                f"xsi:type '{xsiTypeName}' on element "
+                                f"'{subElementName}' does not correspond to a "
+                                "type in the schema",
                                 code="xsi-type",
                                 element=cls.__name__,
                             )

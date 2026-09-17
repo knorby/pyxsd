@@ -266,8 +266,15 @@ class PyXSD:
         self._redefineOrigins: dict[tuple[str, str, str], tuple[str, ...]] = {}
         # Namespaces for which a schema was supplied or successfully
         # loaded. A namespace-only import of one of these is satisfied by
-        # that schema rather than an unresolved hint.
+        # that supply rather than an unresolved hint.
         self._resolvedImports: set[str] = set()
+        # Resolved paths of schemas collected from the instance's
+        # ``xsi:schemaLocation``/``noNamespaceSchemaLocation`` hints.
+        # Hints are advisory: one that cannot be loaded is a
+        # ``schema-hint`` warning, while an explicitly supplied
+        # ``namespace_schemas`` entry stays an ``import-unresolved``
+        # error (the distinction Task 9's strictness pass builds on).
+        self._hintSchemaPaths: set[str] = set()
         # Target namespaces of the schema documents in the composition.
         # A namespace-only import of a namespace another document in the
         # collection declares is satisfied by it; only the importing
@@ -2388,6 +2395,10 @@ class PyXSD:
                 if str(path) in seen:
                     continue
                 seen.add(str(path))
+                # Remember the hint-derived additions: a hint that
+                # cannot be loaded downgrades to a ``schema-hint``
+                # warning (see ``_spliceAdditionalSchemas``).
+                self._hintSchemaPaths.add(str(path))
                 additions.append((pair_namespace, path))
         return additions
 
@@ -2396,14 +2407,27 @@ class PyXSD:
 
         These are ``namespace_schemas`` entries and extra
         ``xsi:schemaLocation`` pairs; each is loaded like an import so
-        its components keep their own target namespace.
+        its components keep their own target namespace. The two sources
+        differ in authority: a ``namespace_schemas`` entry is an
+        explicit caller input whose failure stays an ``import-unresolved``
+        error, while an instance ``xsi:schemaLocation`` pair is an
+        advisory hint whose failure downgrades to a ``schema-hint``
+        warning. Document-level ``xs:import``/``xs:include`` failures
+        keep their own separate severity through ``_spliceComposedSchemas``.
         """
         for namespace, path in getattr(self, "_additionalSchemas", []):
             tag = ET.Element(clark(XSD_NS, "import"), {"schemaLocation": str(path)})
             if namespace:
                 tag.set("namespace", namespace)
+            is_hint = str(path) in self._hintSchemaPaths
             self._spliceIncludedSchema(
-                tag, schemaRoot, baseDir, visited, isImport=True, missing_severity="error"
+                tag,
+                schemaRoot,
+                baseDir,
+                visited,
+                isImport=True,
+                missing_severity="warning" if is_hint else "error",
+                missing_code="schema-hint" if is_hint else None,
             )
 
     def _spliceComposedSchemas(
@@ -2483,6 +2507,7 @@ class PyXSD:
         isImport: bool,
         missing_severity: str = "warning",
         checkImportNamespace: bool = False,
+        missing_code: str | None = None,
     ) -> None:
         """Splices the named components of one included/imported schema.
 
@@ -2491,10 +2516,16 @@ class PyXSD:
 
         ``missing_severity`` controls how an unreadable referenced
         document is reported. A schema document's own include/import is
-        a hint (warning); a schema the *caller* explicitly supplied (a
-        ``namespace_schemas`` entry or an instance ``xsi:schemaLocation``
-        pair, spliced via ``_spliceAdditionalSchemas``) is a required
-        input, so a missing one stays an error.
+        a hint (warning); a schema the *caller* explicitly supplied via
+        ``namespace_schemas`` is a required input, so a missing one
+        stays an error. An instance ``xsi:schemaLocation`` pair is also
+        caller-visible, but it is an advisory hint: its failure is a
+        ``schema-hint`` warning (``missing_code``), not an error.
+
+        ``missing_code`` overrides the issue code used when the
+        referenced document cannot be opened (only the not-found case;
+        a document that exists but is malformed stays an error under
+        the caller's regular code).
 
         ``checkImportNamespace`` is true for an ``xs:import`` written in
         a schema document: the import's ``namespace`` attribute must
@@ -2555,6 +2586,7 @@ class PyXSD:
             baseDir,
             error_code="import-unresolved" if isImport else "schema-compose",
             missing_severity=missing_severity,
+            missing_code=missing_code,
         )
         if includedRoot is None:
             return None
@@ -2641,15 +2673,18 @@ class PyXSD:
         baseDir: Path,
         error_code: str = "schema-compose",
         missing_severity: str = "error",
+        missing_code: str | None = None,
     ) -> Any | None:
         """Parses one included schema file; returns its root or ``None``.
 
         A file that cannot be opened is *resource-not-found*: XSD treats
         an unresolvable ``schemaLocation`` as a non-fatal hint, so the
         caller decides (``missing_severity``) whether that is a warning
-        or an error. A file that exists but is not well-formed XML is a
-        rule violation and is always an error. Composition proceeds
-        without the missing file.
+        or an error, and (``missing_code``) under which code — an
+        advisory ``xsi:schemaLocation`` hint reports ``schema-hint``
+        while everything else keeps its regular code. A file that
+        exists but is not well-formed XML is a rule violation and is
+        always an error. Composition proceeds without the missing file.
         """
         includedPath = baseDir / location
         try:
@@ -2657,10 +2692,11 @@ class PyXSD:
                 root = parse_with_namespaces(includedFile, self.namespaceContext)
         except OSError as e:
             message = f"the schema '{location}' could not be opened: {e}"
+            code = missing_code if missing_code is not None else error_code
             if missing_severity == "warning":
-                self.report.add_warning(message, code=error_code, phase="schema")
+                self.report.add_warning(message, code=code, phase="schema")
             else:
-                self.report.add_error(message, code=error_code, phase="schema")
+                self.report.add_error(message, code=code, phase="schema")
             return None
         except ET.ParseError as e:
             self.report.add_error(
