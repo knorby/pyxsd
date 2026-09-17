@@ -301,6 +301,8 @@ class TestUnsupportedPaths:
         assert not parser.report.has_errors
 
     def test_empty_selector(self, tmp_path):
+        """An empty ``xpath`` is a schema error (the constraint's
+        representation is illegal), not merely an unchecked warning."""
         schema = (
             f"<xs:schema {_xs}>\n"
             '  <xs:element name="codes">\n'
@@ -317,9 +319,8 @@ class TestUnsupportedPaths:
             "</xs:schema>\n"
         )
         parser = _parse(schema, "<codes><code>a</code></codes>", tmp_path)
-        warnings = [issue.code for issue in parser.report.warnings]
-        assert "identity-unsupported" in warnings
-        assert not parser.report.has_errors
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "declaration-attribute" in codes
 
     def test_absolute_selector_is_unsupported(self, tmp_path):
         schema = _catalog_schema(constraints=_key(selector="/item"))

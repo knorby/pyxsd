@@ -6634,3 +6634,256 @@ instance = '''
 '''
 instance_valid = false
 expected_codes = ["nil"]
+
+[[case]]
+id = "identity-legality/unique-illegal-attribute"
+description = "xs:unique with an attribute outside its legal set is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idA-family attribute sets)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1" bogus="1"><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "identity-legality/key-missing-name"
+description = "xs:key without a name attribute is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (key without mandatory name)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:key><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:key>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-name"]
+
+[[case]]
+id = "identity-legality/keyref-missing-refer"
+description = "xs:keyref requires a non-empty refer attribute"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (keyref without refer)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:keyref name="r1"><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:keyref>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "identity-legality/selector-illegal-child"
+description = "xs:selector may not contain a field child"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (selector content, idD018)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1">
+    <xs:selector xpath="c"><xs:field xpath="@id"/></xs:selector>
+    <xs:field xpath="@id"/>
+  </xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "identity-legality/field-illegal-attribute"
+description = "xs:field with a name attribute is a schema error (idE006)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idE006)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1">
+    <xs:selector xpath="c"/>
+    <xs:field xpath="@id" name="fooID"/>
+  </xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "identity-legality/duplicate-constraint-names"
+description = "Two constraints with the same name on one element collide"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (identity-constraint symbol space)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1"><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:unique>
+  <xs:unique name="u1"><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "identity-legality/second-selector"
+description = "A second xs:selector child is illegal (idA046)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idA046)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1">
+    <xs:selector xpath="c"/>
+    <xs:selector xpath="."/>
+    <xs:field xpath="@id"/>
+  </xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "identity-legality/constraint-name-not-ncname"
+description = "A constraint name must be an NCName (idA030)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idA030)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="a:b"><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "identity-legality/selector-illegal-attribute"
+description = "xs:selector with an attribute outside xpath is a schema error (idD006)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idD006)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1">
+    <xs:selector xpath="c" name="fooID"/>
+    <xs:field xpath="@id"/>
+  </xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "identity-legality/constraint-in-group"
+description = "An identity constraint may only be declared inside an element (idA026)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idA026)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g">
+    <xs:sequence>
+      <xs:unique name="u1"><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:unique>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "identity-legality/two-annotations"
+description = "At most one annotation child is allowed on a constraint"
+derived_from = "W3C XMLSchema1TestSuite, groups 'IdentityConstraint'/'IdConstrDefs' (annotation00101m3)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1">
+    <xs:annotation><xs:documentation/></xs:annotation>
+    <xs:annotation><xs:documentation/></xs:annotation>
+    <xs:selector xpath="c"/>
+    <xs:field xpath="@id"/>
+  </xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "identity-legality/field-before-selector"
+description = "xs:field must follow xs:selector (idA044)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idA044)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1">
+    <xs:field xpath="@id"/>
+    <xs:selector xpath="c"/>
+  </xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-order"]
+
+[[case]]
+id = "identity-legality/key-without-field"
+description = "A key with a selector but no field is a schema error (idA039)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idA039)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:key name="k1"><xs:selector xpath="c"/></xs:key>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "identity-legality/unique-without-selector"
+description = "A unique with only fields is a schema error (idA047)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idA047)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1"><xs:field xpath="@id"/></xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "identity-legality/selector-empty-xpath"
+description = "xs:selector requires a non-empty xpath attribute (idD012)"
+derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idD012)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="c" maxOccurs="10"/>
+  </xs:sequence></xs:complexType>
+  <xs:unique name="u1">
+    <xs:selector xpath=""/>
+    <xs:field xpath="@id"/>
+  </xs:unique>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
