@@ -12,11 +12,13 @@ from io import StringIO
 import pytest
 
 from conftest import run_parser
+from pyxsd.binding import ParseModes
 from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     registry,
 )
 from pyxsd.parser import PyXSD
+from pyxsd.validation import IssueSeverity
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
@@ -29,6 +31,18 @@ def _parse_text(schema, instance="<r/>"):
         xmlFileOutput="_No_Output_",
         transformOutputName="_No_Output_",
     )
+
+
+def _schema_errors(report):
+    return [issue for issue in report.for_phase("schema") if issue.severity is IssueSeverity.ERROR]
+
+
+def _schema_warning_codes(report):
+    return {
+        issue.code
+        for issue in report.for_phase("schema")
+        if issue.severity is IssueSeverity.WARNING
+    }
 
 
 class TestParserLocalRegistry:
@@ -131,7 +145,7 @@ class TestComposeFixture:
 class TestCompositionErrors:
     """Error paths of the composition machinery."""
 
-    def test_missing_include_file_is_reported(self, tmp_path):
+    def test_missing_include_file_is_warning(self, tmp_path):
         schema = (
             '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">\n'
             '  <xs:include schemaLocation="no-such-file.xsd"/>\n'
@@ -146,8 +160,10 @@ class TestCompositionErrors:
             xmlFileOutput="_No_Output_",
             transformOutputName="_No_Output_",
         )
-        codes = [issue.code for issue in parser.report.errors]
-        assert "schema-compose" in codes
+        # XSD treats an unresolvable schemaLocation as a hint, not an
+        # error: the schema is still valid and only a warning is raised.
+        assert not _schema_errors(parser.report)
+        assert "schema-compose" in _schema_warning_codes(parser.report)
 
     def test_malformed_include_is_reported(self, tmp_path):
         (tmp_path / "bad.xsd").write_text("<xs:schema><not closed")
@@ -353,3 +369,420 @@ class TestCompositionCorrectness:
         )
         assert not parser.report.has_errors
         assert parser.schemaRootInstance._attribs_ == {"a": "1", "b": "2"}
+
+
+# ---------------------------------------------------------------------------
+# Unresolved-resource severity (Task 11)
+
+
+class TestUnresolvedResourceSeverity:
+    """A ``schemaLocation`` that cannot be retrieved is a hint, not an error.
+
+    XSD treats an unresolvable schema reference as non-fatal: the schema
+    remains valid and the parser reports a schema-phase warning. Rule
+    violations in the composing document must still poison it.
+    """
+
+    def _parser(self, tmp_path, schema, files=None, mode=None):
+        (tmp_path / "schema.xsd").write_text(schema, encoding="utf-8")
+        for name, content in (files or {}).items():
+            (tmp_path / name).write_text(content, encoding="utf-8")
+        (tmp_path / "instance.xml").write_text("<root/>", encoding="utf-8")
+        return PyXSD(
+            tmp_path / "instance.xml",
+            xsdFile=tmp_path / "schema.xsd",
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=mode or ParseModes.NAMESPACED,
+        )
+
+    def test_missing_include_is_warning_not_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:include schemaLocation="0"/>'
+            '<xs:element name="root"/></xs:schema>',
+        )
+        assert not _schema_errors(parser.report)
+        assert "schema-compose" in _schema_warning_codes(parser.report)
+
+    def test_missing_import_warns(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:import namespace="urn:x" schemaLocation="0"/>'
+            '<xs:element name="root"/></xs:schema>',
+        )
+        assert not _schema_errors(parser.report)
+        assert "import-unresolved" in _schema_warning_codes(parser.report)
+
+    def test_missing_redefine_is_warning_not_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine schemaLocation="0"/>'
+            '<xs:element name="root"/></xs:schema>',
+        )
+        assert not _schema_errors(parser.report)
+        assert "schema-compose" in _schema_warning_codes(parser.report)
+
+    def test_namespace_only_import_is_warning(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:import namespace="urn:unused"/>'
+            '<xs:element name="root"/></xs:schema>',
+        )
+        assert not _schema_errors(parser.report)
+        assert "import-unresolved" in _schema_warning_codes(parser.report)
+
+    def test_malformed_include_errors(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:include schemaLocation="bad.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"bad.xsd": "<xs:schema><not closed"},
+        )
+        assert "schema-compose" in {i.code for i in _schema_errors(parser.report)}
+
+    def test_include_without_schema_location_is_still_an_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:include/><xs:element name="root"/></xs:schema>',
+        )
+        assert "schema-compose" in {i.code for i in _schema_errors(parser.report)}
+
+    def test_redefine_without_schema_location_is_still_an_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine/><xs:element name="root"/></xs:schema>',
+        )
+        assert "schema-compose" in {i.code for i in _schema_errors(parser.report)}
+
+    def test_include_namespace_mismatch_is_still_an_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">'
+            '<xs:include schemaLocation="other.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"other.xsd": f'<xs:schema {XS} targetNamespace="urn:b"/>'},
+        )
+        assert "compose-namespace" in {i.code for i in _schema_errors(parser.report)}
+
+    def test_redefine_with_content_and_missing_base_is_an_error(self, tmp_path):
+        # Redefining a component requires the base document: a missing
+        # base cannot be verified, so the schema is not valid.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine schemaLocation="0">'
+            '<xs:group name="g"><xs:sequence><xs:element name="e"/>'
+            "</xs:sequence></xs:group></xs:redefine>"
+            '<xs:element name="root"/></xs:schema>',
+        )
+        assert "schema-compose" in {i.code for i in _schema_errors(parser.report)}
+
+    def test_redefine_annotations_are_allowed_with_missing_base(self, tmp_path):
+        # W3C annotB025: duplicate annotation on xs:redefine is valid, so
+        # only the missing-resource warning remains.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine schemaLocation="0">'
+            "<xs:annotation/><xs:annotation/></xs:redefine>"
+            '<xs:element name="root"/></xs:schema>',
+        )
+        assert not _schema_errors(parser.report)
+        assert "schema-compose" in _schema_warning_codes(parser.report)
+
+    def test_include_duplicate_annotation_is_an_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:include schemaLocation="base.xsd">'
+            "<xs:annotation/><xs:annotation/></xs:include>"
+            '<xs:element name="root"/></xs:schema>',
+            files={"base.xsd": f"<xs:schema {XS}/>"},
+        )
+        assert "schema-compose" in {i.code for i in _schema_errors(parser.report)}
+
+    def test_import_duplicate_annotation_is_an_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:import namespace="urn:b" schemaLocation="base.xsd">'
+            "<xs:annotation/><xs:annotation/></xs:import>"
+            '<xs:element name="root"/></xs:schema>',
+            files={"base.xsd": f'<xs:schema {XS} targetNamespace="urn:b"/>'},
+        )
+        assert "schema-compose" in {i.code for i in _schema_errors(parser.report)}
+
+    def test_self_import_is_an_error(self, tmp_path):
+        # Importing a schema's own target namespace is a rule violation;
+        # with a reference into that namespace the unresolved import is
+        # fatal rather than a hint.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">'
+            '<xs:import namespace="urn:a"/>'
+            '<xs:complexType name="ct"><xs:sequence>'
+            '<xs:element ref="a:e"/></xs:sequence></xs:complexType>'
+            '<xs:element name="e" type="xs:string"/>'
+            '<xs:element name="root" type="ct"/></xs:schema>',
+        )
+        assert "import-unresolved" in {i.code for i in _schema_errors(parser.report)}
+        assert "import-unresolved" not in _schema_warning_codes(parser.report)
+
+    def test_reference_into_unresolved_import_is_an_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} xmlns:b="urn:b">'
+            '<xs:import namespace="urn:b"/>'
+            '<xs:element name="root">'
+            "<xs:complexType><xs:sequence>"
+            '<xs:element ref="b:x"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+            "</xs:schema>",
+        )
+        assert "import-unresolved" in {i.code for i in _schema_errors(parser.report)}
+        assert "import-unresolved" not in _schema_warning_codes(parser.report)
+
+    def test_duplicate_id_on_import_and_declaration_is_an_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f"<xs:schema {XS}>"
+            '<xs:import namespace="urn:b" id="a"/>'
+            '<xs:group name="grp" id="a"><xs:sequence>'
+            '<xs:element name="e"/></xs:sequence></xs:group>'
+            '<xs:element name="root"/></xs:schema>',
+        )
+        assert "declaration-duplicate" in {i.code for i in _schema_errors(parser.report)}
+
+
+# ---------------------------------------------------------------------------
+# Composition and redefine legality (Task 12)
+
+
+class TestComposeInvalid:
+    """Structural ``xs:redefine`` / ``xs:import`` rule violations.
+
+    These are the composition rules that hold regardless of whether the
+    referenced resource resolves: a redefine must name a component that
+    exists in the base, the same base component must not be redefined
+    twice, an import's ``namespace`` must match the imported document,
+    a redefine's base must share the redefining schema's namespace (or
+    be a chameleon), and a chameleon self-reference must be qualified
+    into the redefining namespace.
+    """
+
+    def _parser(self, tmp_path, schema, files=None):
+        (tmp_path / "schema.xsd").write_text(schema, encoding="utf-8")
+        for name, content in (files or {}).items():
+            (tmp_path / name).write_text(content, encoding="utf-8")
+        (tmp_path / "instance.xml").write_text("<root/>", encoding="utf-8")
+        return PyXSD(
+            tmp_path / "instance.xml",
+            xsdFile=tmp_path / "schema.xsd",
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=ParseModes.NAMESPACED,
+        )
+
+    def _error_codes(self, parser):
+        return {i.code for i in _schema_errors(parser.report)}
+
+    def test_redefine_of_missing_base_component_is_error(self, tmp_path):
+        # The base document defines group ``g``; redefining group ``h``
+        # would *add* a new component, which a redefine must not do.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine schemaLocation="base.xsd">'
+            '<xs:group name="h"><xs:sequence>'
+            '<xs:element name="e"/></xs:sequence></xs:group>'
+            '</xs:redefine><xs:element name="root"/></xs:schema>',
+            files={
+                "base.xsd": f'<xs:schema {XS}><xs:group name="g">'
+                '<xs:sequence><xs:element name="e"/></xs:sequence>'
+                "</xs:group></xs:schema>"
+            },
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_duplicate_same_base_component_is_error(self, tmp_path):
+        base = (
+            f'<xs:schema {XS} targetNamespace="urn:t" xmlns="urn:t">'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:element name="a"/></xs:sequence></xs:group>'
+            "</xs:schema>"
+        )
+        redefiner = (
+            f'<xs:schema {XS} targetNamespace="urn:t" xmlns="urn:t">'
+            '<xs:redefine schemaLocation="base.xsd">'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:group ref="g"/><xs:element name="b"/>'
+            "</xs:sequence></xs:group></xs:redefine></xs:schema>"
+        )
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} targetNamespace="urn:t" xmlns="urn:t">'
+            '<xs:include schemaLocation="a.xsd"/>'
+            '<xs:include schemaLocation="b.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"base.xsd": base, "a.xsd": redefiner, "b.xsd": redefiner},
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_chain_is_not_duplicate(self, tmp_path):
+        # A redefine may legitimately redefine a component that was itself
+        # redefined by its own base document (a chain); only a second
+        # redefine of the *same* base document is a conflict.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine schemaLocation="a.xsd">'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:group ref="g"/><xs:element name="c"/>'
+            "</xs:sequence></xs:group></xs:redefine>"
+            '<xs:element name="root"/></xs:schema>',
+            files={
+                "a.xsd": f'<xs:schema {XS}><xs:redefine schemaLocation="base.xsd">'
+                '<xs:group name="g"><xs:sequence>'
+                '<xs:group ref="g"/><xs:element name="b"/>'
+                "</xs:sequence></xs:group></xs:redefine></xs:schema>",
+                "base.xsd": f'<xs:schema {XS}><xs:group name="g">'
+                '<xs:sequence><xs:element name="a"/></xs:sequence>'
+                "</xs:group></xs:schema>",
+            },
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
+    def test_import_namespace_mismatch_is_error(self, tmp_path):
+        # An import with a namespace attribute cannot absorb a document
+        # that declares no target namespace (that is an include).
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} xmlns:b="urn:b">'
+            '<xs:import namespace="urn:b" schemaLocation="base.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"base.xsd": f'<xs:schema {XS}><xs:element name="e"/></xs:schema>'},
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_import_namespace_match_is_valid(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} xmlns:b="urn:b">'
+            '<xs:import namespace="urn:b" schemaLocation="base.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={
+                "base.xsd": f'<xs:schema {XS} targetNamespace="urn:b">'
+                '<xs:element name="e"/></xs:schema>'
+            },
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
+    def test_redefine_base_namespace_mismatch_is_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">'
+            '<xs:redefine schemaLocation="base.xsd">'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:element name="e"/></xs:sequence></xs:group>'
+            '</xs:redefine><xs:element name="root"/></xs:schema>',
+            files={
+                "base.xsd": f'<xs:schema {XS} targetNamespace="urn:b">'
+                '<xs:group name="g"><xs:sequence>'
+                '<xs:element name="e"/></xs:sequence></xs:group>'
+                "</xs:schema>"
+            },
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_chameleon_redefine_unqualified_self_reference_is_error(self, tmp_path):
+        # A no-namespace base redefined by a namespaced schema has its
+        # component ported into the redefining namespace, so the self
+        # reference must be qualified into it; an unqualified ``ref``
+        # names no component there.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">'
+            '<xs:redefine schemaLocation="base.xsd">'
+            '<xs:group name="g"><xs:choice>'
+            '<xs:group ref="g"/><xs:element name="b"/>'
+            "</xs:choice></xs:group></xs:redefine>"
+            '<xs:element name="root"/></xs:schema>',
+            files={
+                "base.xsd": f'<xs:schema {XS}><xs:group name="g">'
+                '<xs:sequence><xs:element name="a"/></xs:sequence>'
+                "</xs:group></xs:schema>"
+            },
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_chameleon_redefine_qualified_self_reference_is_valid(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">'
+            '<xs:redefine schemaLocation="base.xsd">'
+            '<xs:group name="g"><xs:choice>'
+            '<xs:group ref="a:g"/><xs:element name="b"/>'
+            "</xs:choice></xs:group></xs:redefine>"
+            '<xs:element name="root"/></xs:schema>',
+            files={
+                "base.xsd": f'<xs:schema {XS}><xs:group name="g">'
+                '<xs:sequence><xs:element name="a"/></xs:sequence>'
+                "</xs:group></xs:schema>"
+            },
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
+    def _attribute_group_redefine(self, tmp_path, base_body, derived_body):
+        return self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine schemaLocation="base.xsd">'
+            f'<xs:attributeGroup name="ag">{derived_body}</xs:attributeGroup>'
+            '</xs:redefine><xs:element name="root"/></xs:schema>',
+            files={
+                "base.xsd": f'<xs:schema {XS}><xs:attributeGroup name="ag">'
+                f"{base_body}</xs:attributeGroup></xs:schema>"
+            },
+        )
+
+    def test_attribute_group_redefine_adds_attribute_is_error(self, tmp_path):
+        parser = self._attribute_group_redefine(
+            tmp_path,
+            '<xs:attribute name="a" type="xs:string"/>',
+            '<xs:attribute name="a" type="xs:string"/><xs:attribute name="b" type="xs:string"/>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_attribute_group_redefine_reorders_is_error(self, tmp_path):
+        parser = self._attribute_group_redefine(
+            tmp_path,
+            '<xs:attribute name="a"/><xs:attribute name="b"/>',
+            '<xs:attribute name="b"/><xs:attribute name="a"/>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_attribute_group_redefine_drops_fixed_is_error(self, tmp_path):
+        parser = self._attribute_group_redefine(
+            tmp_path,
+            '<xs:attribute name="a" type="xs:string" fixed="x"/>',
+            '<xs:attribute name="a" type="xs:string" default="x"/>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_attribute_group_redefine_self_reference_duplicate_is_error(self, tmp_path):
+        parser = self._attribute_group_redefine(
+            tmp_path,
+            '<xs:attribute name="a" type="xs:string"/>',
+            '<xs:attributeGroup ref="ag"/><xs:attribute name="a" type="xs:string"/>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_attribute_group_redefine_valid_restriction_is_accepted(self, tmp_path):
+        parser = self._attribute_group_redefine(
+            tmp_path,
+            '<xs:attribute name="a"/><xs:attribute name="b"/>',
+            '<xs:attribute name="a"/><xs:attribute name="b"/>',
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
+    def test_attribute_group_redefine_valid_extension_is_accepted(self, tmp_path):
+        parser = self._attribute_group_redefine(
+            tmp_path,
+            '<xs:attribute name="a" type="xs:string"/>',
+            '<xs:attributeGroup ref="ag"/><xs:attribute name="b" type="xs:string"/>',
+        )
+        assert "compose-invalid" not in self._error_codes(parser)

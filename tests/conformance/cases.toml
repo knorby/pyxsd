@@ -1299,8 +1299,230 @@ instance = '''
 '''
 
 [[case]]
+id = "composition/redefine-missing-component-invalid"
+description = "A redefine may not add a component the base does not define"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (src-redefine)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:redefine schemaLocation="redefined.xsd">
+    <xs:group name="absentGroup">
+      <xs:sequence><xs:element name="e" type="xs:string"/></xs:sequence>
+    </xs:group>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"redefined.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="presentGroup">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-duplicate-invalid"
+description = "The same component of one base schema may not be redefined twice"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (conflicting redefines)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns="urn:t">
+  <xs:include schemaLocation="a.xsd"/>
+  <xs:include schemaLocation="b.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns="urn:t">
+  <xs:group name="g">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+"a.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns="urn:t">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="g">
+      <xs:sequence>
+        <xs:group ref="g"/>
+        <xs:element name="b" type="xs:string"/>
+      </xs:sequence>
+    </xs:group>
+  </xs:redefine>
+</xs:schema>
+'''
+"b.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns="urn:t">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="g">
+      <xs:sequence>
+        <xs:group ref="g"/>
+        <xs:element name="c" type="xs:string"/>
+      </xs:sequence>
+    </xs:group>
+  </xs:redefine>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/import-namespace-mismatch-invalid"
+description = "An import namespace must match the imported schema's target namespace"
+derived_from = "W3C XMLSchema1TestSuite, group 'import' (namespace errors)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:b="urn:example:other">
+  <xs:import namespace="urn:example:other" schemaLocation="other.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"other.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="e"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-chameleon-unqualified-selfref-invalid"
+description = "A chameleon redefine self reference must be qualified into the redefining namespace"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (chameleon)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="g">
+      <xs:choice>
+        <xs:group ref="g"/>
+        <xs:element name="b" type="xs:string"/>
+      </xs:choice>
+    </xs:group>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-chameleon-qualified-selfref-valid"
+description = "A qualified chameleon redefine self reference is accepted"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (chameleon)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="g">
+      <xs:choice>
+        <xs:group ref="a:g"/>
+        <xs:element name="b" type="xs:string"/>
+      </xs:choice>
+    </xs:group>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-attribute-group-superset-invalid"
+description = "An attributeGroup redefine without a self reference may not add attributes"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (attributeGroup)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:attributeGroup name="ag">
+      <xs:attribute name="a" type="xs:string"/>
+      <xs:attribute name="b" type="xs:string"/>
+    </xs:attributeGroup>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="ag">
+    <xs:attribute name="a" type="xs:string"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/redefine-attribute-group-extension-valid"
+description = "An attributeGroup redefine with a self reference extends the original"
+derived_from = "W3C XMLSchema1TestSuite, group 'redefine' (attributeGroup)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:attributeGroup name="ag">
+      <xs:attributeGroup ref="ag"/>
+      <xs:attribute name="b" type="xs:string"/>
+    </xs:attributeGroup>
+  </xs:redefine>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+[case.files]
+"base.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="ag">
+    <xs:attribute name="a" type="xs:string"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+
+[[case]]
 id = "composition/include-missing"
-description = "Include pointing at a missing file is reported with code schema-compose"
+description = "An include whose schemaLocation cannot be resolved is a warning, not an error"
 derived_from = "W3C XMLSchema1TestSuite, group 'include' (unresolvable)"
 schema = '''
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1309,8 +1531,40 @@ schema = '''
   <xs:element name="root"/>
 </xs:schema>
 '''
+schema_valid = true
+
+[[case]]
+id = "composition/import-missing"
+description = "An import whose schemaLocation cannot be resolved is a warning, not an error"
+derived_from = "W3C XMLSchema1TestSuite, group 'import' (unresolvable)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:o="urn:example:other">
+  <xs:import namespace="urn:example:other" schemaLocation="absent.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
+schema_valid = true
+
+[[case]]
+id = "composition/malformed-include-invalid"
+description = "An include of an existing but malformed schema remains a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'include' (malformed)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="bad.xsd"/>
+  <xs:element name="root"/>
+</xs:schema>
+'''
 schema_valid = false
 expected_codes = ["schema-compose"]
+
+[case.files]
+"bad.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><unclosed>
+'''
 
 [[case]]
 id = "composition/include-cycle"
@@ -1855,6 +2109,107 @@ instance = '''
 '''
 instance_valid = false
 expected_codes = ["wildcard-no-declaration"]
+
+[[case]]
+id = "namespaces/wildcard-notnamespace-conflict-invalid"
+description = "namespace and notNamespace on one wildcard are mutually exclusive (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild007/wild008 and IBM S3_10_1si01/S3_10_6si01"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:anyAttribute namespace="##other" notNamespace="##targetNamespace" processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "namespaces/wildcard-notnamespace-restriction-invalid"
+description = "A restriction may not admit a namespace the base attribute wildcard's notNamespace excludes"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild021"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:sequence/>
+    <xs:anyAttribute notNamespace="http://cain.com/ http://abel.com/ http://adam.com/" processContents="lax"/>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B">
+        <xs:sequence/>
+        <xs:anyAttribute notNamespace="http://adam.com/" processContents="lax"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="R"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "namespaces/wildcard-notqname-unadmitted-namespace-invalid"
+description = "A notQName name must lie in a namespace the wildcard admits (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild033 and IBM S3_10_6si02"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="computer">
+    <xs:sequence/>
+    <xs:anyAttribute processContents="lax" notNamespace="##targetNamespace" notQName="CPU"/>
+  </xs:complexType>
+  <xs:element name="computer" type="computer"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "namespaces/wildcard-notqname-undeclared-prefix-invalid"
+description = "A notQName prefix must be bound in scope (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild036"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="computer">
+    <xs:sequence/>
+    <xs:anyAttribute processContents="lax" notNamespace="http://www.w3.org/2001/XMLSchema-instance" notQName="xsl:stylesheet"/>
+  </xs:complexType>
+  <xs:element name="computer" type="computer"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "namespaces/wildcard-notnamespace-valid"
+xsd11 = true
+description = "notNamespace excludes one namespace and leaves the rest admitted, duplicates are legal"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild009 (duplicate tokens)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns:t="urn:t"
+           elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:anyAttribute notNamespace="urn:bad urn:bad ##local" processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:t" xmlns:o="urn:o" o:ok="1"/>
+'''
 
 [[case]]
 id = "namespaces/qname-identity-invalid"
@@ -2592,6 +2947,137 @@ schema_valid = false
 expected_codes = ["facet"]
 
 [[case]]
+id = "facets/integer-fraction-digits-fixed"
+description = "fractionDigits is fixed to 0 on an integer-derived base"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (fractionDigits fixed value)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:byte">
+      <xs:fractionDigits value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>1</r>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "facets/mutually-exclusive-upper-bounds"
+description = "maxInclusive and maxExclusive cannot both constrain one restriction"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (facet combination)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:byte">
+      <xs:maxInclusive value="5"/>
+      <xs:maxExclusive value="5"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>1</r>
+'''
+schema_valid = false
+expected_codes = ["facet-conflict"]
+
+[[case]]
+id = "facets/min-greater-than-max"
+description = "A lower bound above the upper bound leaves an empty value space"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (facet combination)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="7"/>
+      <xs:maxInclusive value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>1</r>
+'''
+schema_valid = false
+expected_codes = ["facet-conflict"]
+
+[[case]]
+id = "facets/empty-value-space-vs-base-bounds"
+description = "maxExclusive below a bounded base's own minimum is an empty value space"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (empty value space)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:positiveInteger">
+      <xs:maxExclusive value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>1</r>
+'''
+schema_valid = false
+expected_codes = ["facet-conflict"]
+
+[[case]]
+id = "facets/list-min-length-below-one"
+description = "A list base fixes minLength at 1, so minLength 0 is a conflict"
+derived_from = "W3C XMLSchema1TestSuite, group 'restriction' (list fixed minLength)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:restriction base="xs:NMTOKENS">
+      <xs:minLength value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<r>alpha</r>
+'''
+schema_valid = false
+expected_codes = ["facet-conflict"]
+
+[[case]]
+id = "facets/generic-list-zero-length"
+description = "A generic list accepts the empty list, so its length 0 restriction is legal"
+derived_from = "W3C XMLSchema1TestSuite, group 'list' (generic list value space)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="IntList">
+    <xs:list itemType="xs:int"/>
+  </xs:simpleType>
+  <xs:simpleType name="EmptyList">
+    <xs:restriction base="IntList">
+      <xs:length value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="r" type="EmptyList"/>
+</xs:schema>
+'''
+
+[[case]]
 id = "attributes/untyped-attribute-any-simple-type"
 description = "An attribute declaration without a type and without an inline simpleType takes anySimpleType"
 derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (type defaulting)"
@@ -2658,3 +3144,3493 @@ instance = '''
 '''
 instance_valid = false
 expected_codes = ["invalid-attribute"]
+
+[[case]]
+id = "legality/complexType-unknown-child"
+description = "An element other than the legal complexType children is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (child grammar)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:bogus/>
+  </xs:complexType>
+  <xs:element name="root" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/complexType-duplicate-simpleContent"
+description = "A complexType with two simpleContent children is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (single content kind)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:simpleContent><xs:extension base="xs:string"/></xs:simpleContent>
+    <xs:simpleContent><xs:extension base="xs:string"/></xs:simpleContent>
+  </xs:complexType>
+  <xs:element name="root" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/complexType-annotation-out-of-order"
+description = "An annotation after another complexType child is out of order"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (annotation first)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:simpleContent><xs:extension base="xs:string"/></xs:simpleContent>
+    <xs:annotation><xs:documentation/></xs:annotation>
+  </xs:complexType>
+  <xs:element name="root" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-order"]
+
+[[case]]
+id = "legality/notation-non-annotation-child"
+description = "A notation may not contain an all compositor (notatF002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notation' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:notation name="jpeg" public="image/jpeg" system="viewer.exe">
+    <xs:all/>
+  </xs:notation>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/notation-foreign-child"
+description = "Arbitrary foreign XML is not legal notation content (notatG002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notation' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:notation name="jpeg" public="image/jpeg" system="viewer.exe">
+    <a><b/></a>
+  </xs:notation>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/notation-annotation-allowed"
+description = "A single annotation is the only legal notation child (notatF004)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notation' (annotation child)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:notation name="foo" public="jpeg" system="system.exe">
+    <xs:annotation/>
+  </xs:notation>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/notation-duplicate-annotation"
+description = "A notation may contain at most one annotation"
+derived_from = "W3C XMLSchema1TestSuite, group 'notation' (single annotation)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:notation name="foo" public="jpeg" system="system.exe">
+    <xs:annotation/><xs:annotation/>
+  </xs:notation>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/annotation-nested"
+description = "An annotation may not contain another annotation (annotB001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotation' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:annotation>
+    <xs:annotation><xs:appinfo>Application Information</xs:appinfo></xs:annotation>
+    <xs:appinfo>Application Information</xs:appinfo>
+    <xs:documentation>Documentation</xs:documentation>
+  </xs:annotation>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/annotation-appinfo-documentation-allowed"
+description = "An annotation may contain appinfo and documentation children"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotation' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:annotation>
+    <xs:appinfo>Application Information</xs:appinfo>
+    <xs:documentation>Documentation</xs:documentation>
+  </xs:annotation>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/schema-unknown-child"
+description = "An element other than the legal schema children is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'schema' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:bogus/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/schema-repeated-annotations"
+description = "A schema may carry more than one top-level annotation"
+derived_from = "W3C XMLSchema1TestSuite, group 'schema' (annotation repetition)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:annotation/><xs:annotation/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/schema-trailing-annotation"
+description = "A top-level annotation may follow the declarations"
+derived_from = "W3C XMLSchema1TestSuite, group 'schema' (trailing annotation)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:annotation/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/foreign-annotation-in-permissive-container"
+description = "Arbitrary foreign XML in an appinfo/documentation body is not an order violation"
+derived_from = "pyxsd regression guard for the annotation-order check (permissive bodies)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:f="urn:foreign">
+  <xs:annotation>
+    <xs:appinfo><f:annotation/></xs:appinfo>
+    <xs:documentation><f:annotation/></xs:documentation>
+  </xs:annotation>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/sequence-annotation-out-of-order"
+description = "Annotation after a sequence child is out of order (untabulated container)"
+derived_from = "W3C XMLSchema1TestSuite, group 'sequence' (annotation first)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+      <xs:annotation><xs:documentation/></xs:annotation>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-order"]
+
+[[case]]
+id = "legality/simpleType-facet-outside-restriction"
+description = "A constraining facet directly inside simpleType is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (facets belong in restriction)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:length value="3"/>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/simpleType-restriction-and-list"
+description = "A simpleType may not combine restriction and list"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (single derivation)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:restriction base="xs:string"/>
+    <xs:list itemType="xs:string"/>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-order"]
+
+[[case]]
+id = "legality/list-duplicate-simpleType"
+description = "A list may declare at most one inline item simpleType"
+derived_from = "W3C XMLSchema1TestSuite, group 'list' (single inline item type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:list>
+      <xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>
+    </xs:list>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/union-multiple-simpleTypes"
+description = "A union may declare several inline member simpleTypes"
+derived_from = "W3C XMLSchema1TestSuite, group 'union' (inline members)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:union>
+      <xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType><xs:restriction base="xs:int"/></xs:simpleType>
+    </xs:union>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/restriction-unknown-facet"
+description = "A restriction may not carry a non-facet element (stF007 duration)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (facet set)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="t">
+    <xs:restriction base="xs:string">
+      <xs:duration value="P1D"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/extension-facet"
+description = "An extension may not carry a constraining facet (ctE005 length)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (extension content)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:complexContent>
+      <xs:extension base="xs:anyType"><xs:length value="3"/></xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/restriction-two-particles"
+description = "A restriction holds a single particle; choice and group are exclusive"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (ctG027)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:complexContent>
+      <xs:restriction base="xs:anyType"><xs:choice/><xs:group ref="g"/></xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/extension-two-particles"
+description = "An extension holds a single particle; two group references repeat it"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (ctH003)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:complexContent>
+      <xs:extension base="xs:anyType">
+        <xs:group ref="g"/><xs:group ref="h"/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/complexType-content-kind-alternatives"
+description = "simpleContent and complexContent are mutually exclusive (ctB006/ctB019)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (single content kind)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:simpleContent/><xs:complexContent/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/complexType-choice-and-group"
+description = "A complexType particle slot is an alternative (ctB063)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (single particle)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:choice/><xs:group ref="g"/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/attribute-in-attribute"
+description = "An attribute declaration cannot contain another attribute (attP001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="att">
+    <xs:attribute name="att1" type="xs:string"/>
+  </xs:attribute>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attribute-element-child"
+description = "An element is not a legal attribute child (attP002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="att"><xs:element name="elem"/></xs:attribute>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attribute-simple-type-allowed"
+description = "An inline simpleType is the legal child of an attribute"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (inline type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="att">
+    <xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>
+  </xs:attribute>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/element-attribute-child"
+description = "An attribute declaration is not a legal element child (attQ002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="e"><xs:attribute name="att"/></xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/element-group-child"
+description = "A group reference is not a legal element child (groupO024)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="A"><xs:sequence/></xs:group>
+  <xs:element name="e"><xs:group ref="A"/></xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/element-type-and-identity-allowed"
+description = "An element may combine an inline type with identity constraints"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (content model)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="e">
+    <xs:complexType><xs:sequence><xs:element name="a"/></xs:sequence></xs:complexType>
+    <xs:key name="k"><xs:selector xpath="a"/><xs:field xpath="."/></xs:key>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/group-duplicate-particle"
+description = "A global group holds exactly one particle (addB083)"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (single particle)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G"><xs:choice/><xs:choice/></xs:group>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/group-distinct-particles"
+description = "A global group cannot combine two different particles"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (single particle)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G"><xs:choice/><xs:sequence/></xs:group>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/group-attribute-child"
+description = "An attribute is not a legal group child (groupO013)"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G"><xs:sequence/><xs:attribute name="a"/></xs:group>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attributeGroup-group-child"
+description = "A group reference is not a legal attributeGroup child (groupO025)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attributeGroup' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="foo"><xs:sequence/></xs:group>
+  <xs:attributeGroup name="ag">
+    <xs:group ref="foo"/><xs:attribute name="att"/>
+  </xs:attributeGroup>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attributeGroup-notation-child"
+description = "A notation is not a legal attributeGroup child (notatF013)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attributeGroup' (child grammar)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="ag">
+    <xs:notation name="n" public="p" system="s"/>
+  </xs:attributeGroup>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-child"]
+
+[[case]]
+id = "legality/attributeGroup-attributes-allowed"
+description = "An attributeGroup may carry attributes, nested groups and a wildcard"
+derived_from = "W3C XMLSchema1TestSuite, group 'attributeGroup' (content model)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="inner"><xs:attribute name="b"/></xs:attributeGroup>
+  <xs:attributeGroup name="ag">
+    <xs:attribute name="a"/><xs:attributeGroup ref="inner"/><xs:anyAttribute/>
+  </xs:attributeGroup>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/attribute-default-and-fixed"
+description = "An attribute declaration may not carry both default and fixed (attKa001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="ga" type="xs:integer" fixed="1" default="1"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-prohibited-with-fixed"
+xsd11 = true
+description = "XSD 1.1 forbids use='prohibited' together with fixed (attKb009)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="ct">
+    <xs:attribute name="ca" type="xs:string" use="prohibited" fixed="x"/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-global-use"
+description = "A global attribute declaration must not carry use (attO013)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="ga" type="xs:string" use="required"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-default-invalid-for-type"
+description = "An attribute default value must be in its type's lexical space (attO003)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute locally valid)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="ct">
+    <xs:attribute name="ca" type="xs:integer" default="abc"/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-name-not-ncname"
+description = "An attribute declaration name must be an NCName (attC009)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (name lexical space)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="a:b:c" type="xs:string"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/attribute-required-fixed-allowed"
+description = "use='required' with fixed is legal; only prohibited conflicts"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (attribute use)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="ct">
+    <xs:attribute name="ca" type="xs:string" use="required" fixed="1.1"/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/element-final-substitution"
+description = "substitution is not a legal element final token (elemF004)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (element declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" final="substitution"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-block-invalid-token"
+description = "A block token outside the allowed list is illegal (elemC009)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (element declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" block="foo"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-final-extension-restriction-allowed"
+description = "final='extension restriction' is a legal element definition"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (element declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" final="extension restriction"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/element-min-greater-than-max"
+description = "minOccurs must not exceed maxOccurs (elemJ019)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (element declaration properties)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" type="bar"/>
+  <xs:complexType name="bar"><xs:sequence>
+    <xs:element name="name" minOccurs="2" maxOccurs="1"/>
+  </xs:sequence></xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/local-element-abstract"
+description = "A local element declaration must not carry abstract (schZ001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'schema' (invalid localElement attributes)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root"><xs:complexType><xs:all>
+    <xs:element name="noAbstract" type="xs:string" abstract="true"/>
+  </xs:all></xs:complexType></xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/notation-missing-public-system"
+description = "A notation needs a public or system identifier (notatB001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notations' (notation declaration)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:notation name="foo"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/notation-duplicate-id"
+description = "Notation ids must be unique within a schema document (notatA007)"
+derived_from = "W3C XMLSchema1TestSuite, group 'notations' (ID uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:notation id="foo25" name="jpeg" public="image/jpeg"/>
+  <xs:notation id="foo25" name="jpeg2" public="image/jpeg"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/notation-public-system-allowed"
+description = "A notation with public and system identifiers is legal"
+derived_from = "W3C XMLSchema1TestSuite, group 'notations' (notation declaration)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/annotation-invalid-xml-lang"
+description = "documentation xml:lang must be a valid language (annotF001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotations' (annotation attributes)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:annotation><xs:documentation xml:lang=""/></xs:annotation>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/annotation-empty-source-allowed"
+description = "An empty documentation source is a valid anyURI (annotB003)"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotations' (annotation attributes)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:annotation><xs:documentation source=""/></xs:annotation>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/duplicate-complexType-name"
+description = "Two complexType definitions may not share a name (ctI001)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="fooType">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="fooType">
+    <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="fooType"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-type-symbol-space"
+description = "Simple and complex type definitions share one symbol space (ctI002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="fooType"><xs:restriction base="xs:string"/></xs:simpleType>
+  <xs:complexType name="fooType">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="fooType"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-global-element-name"
+description = "Two global element declarations may not share a name"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-global-attribute-name"
+description = "Two global attribute declarations may not share a name"
+derived_from = "W3C XMLSchema1TestSuite, group 'attribute' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="ga" type="xs:string"/>
+  <xs:attribute name="ga" type="xs:string"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-group-name"
+description = "Two model group definitions may not share a name"
+derived_from = "W3C XMLSchema1TestSuite, group 'group' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g"><xs:sequence/></xs:group>
+  <xs:group name="g"><xs:sequence/></xs:group>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-attributeGroup-name"
+description = "Two attribute group definitions may not share a name"
+derived_from = "W3C XMLSchema1TestSuite, group 'attributeGroup' (symbol space uniqueness)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="ag"><xs:attribute name="a" type="xs:string"/></xs:attributeGroup>
+  <xs:attributeGroup name="ag"><xs:attribute name="b" type="xs:string"/></xs:attributeGroup>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/duplicate-annotation-in-all"
+description = "An all content model may carry at most one annotation (annotB004)"
+derived_from = "W3C XMLSchema1TestSuite, group 'annotations' (all content model)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:all>
+        <xs:annotation><xs:documentation/></xs:annotation>
+        <xs:annotation><xs:documentation/></xs:annotation>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "legality/element-and-type-share-name-allowed"
+description = "An element declaration and a type may share a name (ctI003)"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (distinct symbol spaces)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attribute name="fooType" type="xs:string"/>
+  <xs:complexType name="fooType">
+    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="fooType"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/local-element-names-repeat-allowed"
+description = "The same local element name may appear in two complex types (name00301m1)"
+derived_from = "W3C XMLSchema1TestSuite, group 'element' (local declaration scoping)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="type1">
+    <xs:sequence><xs:element name="Local" type="xs:boolean"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="type2">
+    <xs:sequence><xs:element name="Local" type="xs:decimal"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/repeated-elements-in-all-allowed"
+description = "An all content model holds several distinct element children"
+derived_from = "W3C XMLSchema1TestSuite, group 'complexType' (all content model)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:all>
+        <xs:element name="a" type="xs:string"/>
+        <xs:element name="b" type="xs:string"/>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/list-item-type-must-be-atomic"
+description = "A list whose item type is itself a list is reported with code atomic-required"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stJ019: list itemType refers to listType)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="inner">
+    <xs:list itemType="xs:int"/>
+  </xs:simpleType>
+  <xs:simpleType name="Bad">
+    <xs:list itemType="inner"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["atomic-required"]
+
+[[case]]
+id = "legality/union-member-type-must-be-simple"
+description = "A union whose member type is a complex type is reported with code atomic-required"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stK003: union memberTypes refers to complexType)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="inner">
+    <xs:simpleContent><xs:extension base="xs:integer"/></xs:simpleContent>
+  </xs:complexType>
+  <xs:simpleType name="Bad">
+    <xs:union memberTypes="inner"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["atomic-required"]
+
+[[case]]
+id = "legality/union-member-type-union-valid"
+description = "A union member type may itself be a union (stK002's member is a union)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (union member flattening)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="inner">
+    <xs:union memberTypes="xs:int xs:string"/>
+  </xs:simpleType>
+  <xs:simpleType name="Good">
+    <xs:union memberTypes="inner"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Good"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/union-member-type-undefined"
+description = "A union member naming an undefined type is reported with code unknown-type (stK002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stK002: undefined member type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Bad">
+    <xs:union memberTypes="xs:timeDuration"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Bad"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["unknown-type"]
+
+[[case]]
+id = "legality/list-item-type-union-of-atomics-valid"
+description = "A list item type may be a union whose members are all atomic (stJ002)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stJ002: list itemType refers to union type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="myType">
+    <xs:union>
+      <xs:simpleType><xs:restriction base="xs:integer"/></xs:simpleType>
+      <xs:simpleType><xs:restriction base="xs:NMTOKEN"/></xs:simpleType>
+    </xs:union>
+  </xs:simpleType>
+  <xs:simpleType name="Good">
+    <xs:list itemType="myType"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Good"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/union-member-type-list-valid"
+description = "A list is a legal union member type (stK004)"
+derived_from = "W3C XMLSchema1TestSuite, group 'simpleType' (stK004: union memberTypes refers to list type)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="myType">
+    <xs:list>
+      <xs:simpleType><xs:restriction base="xs:integer"/></xs:simpleType>
+    </xs:list>
+  </xs:simpleType>
+  <xs:simpleType name="Good">
+    <xs:union memberTypes="myType"/>
+  </xs:simpleType>
+  <xs:element name="r" type="Good"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "legality/element-default-invalid-for-user-simple-type"
+description = "An element default must satisfy a user-defined simpleType's facets (valueConstraint00401m8)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (valueConstraint00401m8)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="answer">
+    <xs:restriction base="xs:boolean"><xs:pattern value="true"/></xs:restriction>
+  </xs:simpleType>
+  <xs:element name="E" type="answer" default="false"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-default-and-fixed-are-exclusive"
+description = "An element may not carry both default and fixed (valueConstraint00301m3)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (valueConstraint00301m3)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="xs:string" default="0" fixed="0"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-type-and-inline-type-are-exclusive"
+description = "An element may not name a type and declare an inline complexType (typeDef00501m2)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (typeDef00501m2)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="Type">
+    <xs:complexType><xs:sequence>
+      <xs:element name="Local" minOccurs="0"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+  <xs:complexType name="Type"><xs:sequence>
+    <xs:element name="Local" minOccurs="0"/>
+  </xs:sequence></xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/substitution-member-blocked-by-head-final"
+description = "A member's type derivation must not be excluded by the head's final (substGrpExcl00202m2)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (substGrpExcl00202m2)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="Head" type="HeadType" final="extension"/>
+  <xs:complexType name="HeadType"><xs:sequence>
+    <xs:element name="Ear"/>
+  </xs:sequence></xs:complexType>
+  <xs:element name="Member3" substitutionGroup="Head">
+    <xs:complexType><xs:complexContent>
+      <xs:extension base="HeadType"><xs:sequence>
+        <xs:element name="Nose"/>
+      </xs:sequence></xs:extension>
+    </xs:complexContent></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/cyclic-substitution-group"
+description = "A substitution-group membership cycle is an invalid schema (suntest xsd009.e)"
+derived_from = "W3C XMLSchema1TestSuite, group 'combined' (xsd009.e cyclic substitution group)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="foo" substitutionGroup="bar"/>
+  <xs:element name="bar" substitutionGroup="foo"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["circular-substitution-group"]
+
+[[case]]
+id = "legality/attribute-fixed-invalid-for-user-simple-type"
+description = "An attribute fixed value must satisfy a user-defined simpleType (attP006)"
+derived_from = "Microsoft XMLSchema1TestSuite, group 'attribute' (attP006)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="mySimpleType">
+    <xs:restriction base="xs:int">
+      <xs:enumeration value="1"/><xs:enumeration value="2"/><xs:enumeration value="3"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="ct">
+    <xs:attribute name="att" type="mySimpleType" fixed=""/>
+  </xs:complexType>
+  <xs:element name="root" type="ct"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "legality/element-default-valid-for-user-simple-type"
+description = "An element default within a user-defined simpleType's value space is legal (valueConstraint00401m7)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ElemDecl' (valueConstraint00401m7)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="answer">
+    <xs:restriction base="xs:boolean"><xs:pattern value="true"/></xs:restriction>
+  </xs:simpleType>
+  <xs:element name="E" type="answer" default="true"/>
+</xs:schema>
+'''
+schema_valid = true
+
+[[case]]
+id = "composition/chameleon-simple-content-extension-valid"
+description = "A no-namespace included schema adopts the includer's target namespace, so its own unprefixed base type reference resolves (W3C ctE018)"
+derived_from = "W3C XMLSchema1TestSuite, group 'ctE018' (chameleon simpleContent extension)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:t" targetNamespace="urn:t">
+  <xs:include schemaLocation="chameleon.xsd"/>
+  <xs:element name="root" type="fooType"/>
+</xs:schema>
+'''
+[case.files]
+"chameleon.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="myType">
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+  <xs:complexType name="fooType">
+    <xs:simpleContent>
+      <xs:extension base="myType">
+        <xs:attribute name="a" type="xs:int"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/chameleon-nested-include-valid"
+description = "A chameleon include nested inside another chameleon inherits the outermost target namespace, so the absorbed group resolves (W3C schD10)"
+derived_from = "W3C XMLSchema1TestSuite, group 'schD10' (chameleon include)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:t" targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:include schemaLocation="outer.xsd"/>
+  <xs:complexType name="a-ct">
+    <xs:sequence>
+      <xs:group ref="c-g2"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="root" type="a-ct"/>
+</xs:schema>
+'''
+[case.files]
+"outer.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="inner.xsd"/>
+  <xs:group name="grp">
+    <xs:choice>
+      <xs:group ref="c-g2"/>
+    </xs:choice>
+  </xs:group>
+  <xs:complexType name="b-ct">
+    <xs:group ref="c-g2"/>
+  </xs:complexType>
+</xs:schema>
+'''
+"inner.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="c-g2">
+    <xs:sequence>
+      <xs:element name="foo" type="xs:string"/>
+    </xs:sequence>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/attribute-group-ref-same-local-name-valid"
+description = "Two imported attributeGroups sharing a local name stay distinct by namespace, so both refs resolve (W3C attgB014)"
+derived_from = "W3C XMLSchema1TestSuite, group 'attgB014' (imported attributeGroup refs)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="urn:foo" xmlns:y="urn:bar">
+  <xs:import namespace="urn:foo" schemaLocation="foo.xsd"/>
+  <xs:import namespace="urn:bar" schemaLocation="bar.xsd"/>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:attributeGroup ref="x:car"/>
+      <xs:attributeGroup ref="y:car"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+[case.files]
+"foo.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:foo" attributeFormDefault="qualified">
+  <xs:attributeGroup name="car">
+    <xs:attribute name="model" type="xs:string"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+"bar.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:bar" attributeFormDefault="qualified">
+  <xs:attributeGroup name="car">
+    <xs:attribute name="age" type="xs:int"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+
+[[case]]
+id = "composition/conflicting-redefines-in-two-namespaces-invalid"
+description = "Two imports redefine the same group from a chameleon base into different namespaces; the refs must not be resolved away, so the conflicting redefines stay rejected (W3C schN6)"
+derived_from = "W3C XMLSchema1TestSuite, group 'schN6' (conflicting redefines across namespaces)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:d" xmlns="urn:d">
+  <xs:import namespace="urn:a" schemaLocation="a.xsd"/>
+  <xs:import namespace="urn:b" schemaLocation="b.xsd"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["unknown-group"]
+[case.files]
+"a.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:a" xmlns="urn:a" elementFormDefault="qualified">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="c-g2">
+      <xs:choice>
+        <xs:element name="c21" type="xs:string" maxOccurs="2"/>
+        <xs:element name="c22" type="xs:string" maxOccurs="2"/>
+      </xs:choice>
+    </xs:group>
+  </xs:redefine>
+  <xs:complexType name="a-ct">
+    <xs:sequence>
+      <xs:group ref="c-g2"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="e1" type="a-ct"/>
+</xs:schema>
+'''
+"b.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:b" xmlns="urn:b" elementFormDefault="qualified">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:group name="c-g2">
+      <xs:choice>
+        <xs:group ref="c-g2"/>
+        <xs:element name="c23" type="xs:int" maxOccurs="2"/>
+        <xs:element name="c24" type="xs:string" maxOccurs="2"/>
+      </xs:choice>
+    </xs:group>
+  </xs:redefine>
+  <xs:complexType name="b-ct">
+    <xs:group ref="c-g2"/>
+  </xs:complexType>
+  <xs:element name="e1" type="b-ct"/>
+</xs:schema>
+'''
+"base.xsd" = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="c-g2">
+    <xs:choice>
+      <xs:element name="c21" type="xs:int" maxOccurs="3"/>
+      <xs:element name="c22" type="xs:int" maxOccurs="3"/>
+    </xs:choice>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/all-max-occurs-invalid"
+description = "xs:all carries maxOccurs=2; the all itself must have maxOccurs=1 (mgAb shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'modelGroups' (all: maxOccurs = 2)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="t"/>
+  <xs:complexType name="t">
+    <xs:all maxOccurs="2">
+      <xs:element name="e"/>
+    </xs:all>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["all-rule"]
+
+[[case]]
+id = "structure/all-duplicate-identical-invalid"
+description = "Two identical element declarations under xs:all are a UPA violation (mgQ shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'modelGroups' (identical declarations under all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="t"/>
+  <xs:complexType name="t">
+    <xs:all>
+      <xs:element name="e1" type="xs:string"/>
+      <xs:element name="e1" type="xs:string"/>
+    </xs:all>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["all-rule"]
+
+[[case]]
+id = "structure/all-duplicate-types-invalid"
+description = "Same element name twice under xs:all with different types violates Element Declarations Consistent (mgR shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'modelGroups' (identical names, different types, under all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="t"/>
+  <xs:complexType name="t">
+    <xs:all>
+      <xs:element name="e1" type="xs:string"/>
+      <xs:element name="e1" type="xs:integer"/>
+    </xs:all>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["all-rule"]
+
+[[case]]
+id = "structure/all-nested-in-sequence-invalid"
+description = "xs:all can only be the root of a content model; nesting it under xs:sequence is illegal (mgA shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'modelGroups' (all: with parent sequence)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:all>
+          <xs:element name="e"/>
+        </xs:all>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["all-rule"]
+
+[[case]]
+id = "structure/all-relaxed-particles-valid"
+xsd11 = true
+description = "Under XSD 1.1 element particles of xs:all may carry relaxed minOccurs/maxOccurs (all001 shape)"
+derived_from = "W3C XMLSchema1TestSuite (Saxonica All/all001: relaxed minOccurs and maxOccurs)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:all>
+        <xs:element name="a" minOccurs="0" maxOccurs="5"/>
+        <xs:element name="b" minOccurs="2" maxOccurs="unbounded"/>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/pointless-empty-choice-invalid"
+description = "An empty choice inside a group referenced with minOccurs=0 is a pointless particle and must be eliminated (particlesHa008 shape)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesHa' (ignore pointless occurences of 'choice': choice (C) is empty and the group within which (C) appears has minOccurs of 0)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc" type="xs:string"/>
+  <xs:group name="P">
+    <xs:sequence>
+      <xs:group ref="x:Q" minOccurs="0"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="Q">
+    <xs:choice minOccurs="0"/>
+  </xs:group>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["pointless-particle"]
+
+[[case]]
+id = "structure/emptiable-choice-required-ref-valid"
+description = "The same emptiable choice under a group reference without minOccurs=0 stays legal (valid control for the pointless-particle rule)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesHa' (valid control: the optional-reference context is what makes the particle pointless)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc" type="xs:string"/>
+  <xs:group name="P">
+    <xs:sequence>
+      <xs:group ref="x:Q"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="Q">
+    <xs:choice minOccurs="0"/>
+  </xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-nssubset-process-contents-invalid"
+description = "A wildcard restriction may not weaken processContents; ##any/strict restricted by an unqualified lax wildcard is invalid (NSSubset)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesOb' (particlesOb001: B's namespace=##any, R's namespace=absent, processContents=lax)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="B">
+    <xs:choice>
+      <xs:any namespace="##any" minOccurs="1" maxOccurs="1"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:choice>
+          <xs:any minOccurs="1" maxOccurs="1" processContents="lax"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/particle-nssubset-namespace-invalid"
+description = "A wildcard restriction may only narrow the namespace constraint; ##local restricted by the default (absent = ##any) wildcard is invalid (NSSubset)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesOb' (particlesOb019: B's namespace=##local, R's namespace=absent)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="B">
+    <xs:choice>
+      <xs:any namespace="##local" minOccurs="1" maxOccurs="1"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:choice>
+          <xs:any minOccurs="1" maxOccurs="1"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/particle-forbidden-any-over-element-invalid"
+description = "A wildcard cannot restrict an element declaration (forbidden transition any:elt)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesHb' (particlesHb001: Forbidden: drived by restriction any : elt)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="e1" minOccurs="2" maxOccurs="10"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:any minOccurs="3" maxOccurs="9"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/particle-choice-over-all-invalid"
+description = "A choice cannot restrict an all whose required members its branches drop (forbidden transition choice:all)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesHb' (particlesHb009: Forbidden: drived by restriction choice : all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="e1"/>
+      <xs:element name="e2"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="e1"/>
+          <xs:element name="e2"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/particle-nssubset-contained-valid"
+description = "A wildcard restriction that narrows ##any to ##other with a contained occurrence range and unchanged processContents is valid (valid control for the NSSubset rule)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesOb' (particlesOb003: B's namespace=##any, R's namespace=##other, occurrence 4..6 in 1..10)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="B">
+    <xs:choice>
+      <xs:any namespace="##any" minOccurs="1" maxOccurs="10"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:choice>
+          <xs:any namespace="##other" minOccurs="4" maxOccurs="6"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-nameandtypeok-name-invalid"
+description = "An element declaration restricting another must carry the same expanded name or be a substitution-group member (NameAndTypeOK)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesIb' (particlesIb002: B name=foo, R name=bar)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="foo"/>
+      <xs:element name="e2"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="bar"/>
+          <xs:element name="e2"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+  </xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-nameandtypeok-extension-type-invalid"
+description = "A restricting element may widen its type only through restriction steps; an extension-derived type is not NameAndTypeOK"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesIj' (particlesIj008: B type=foo, R type=Z derived by extension of foo)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="foo">
+    <xs:choice>
+      <xs:element name="f1"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="bar">
+    <xs:complexContent>
+      <xs:extension base="x:foo">
+        <xs:choice>
+          <xs:element name="f3"/>
+        </xs:choice>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="c1" type="x:foo"/>
+      <xs:element name="c2"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="c1" type="x:bar"/>
+          <xs:element name="c2"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+  </xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-nameandtypeok-block-invalid"
+description = "The base element's disallowed substitutions must be a subset of the derived element's (NameAndTypeOK block clause)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesIg' (particlesIg006: B disallowed=substitution extension restriction, R disallowed=substitution)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="e2" block="substitution extension restriction"/>
+      <xs:element name="e3"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="e2" block="substitution"/>
+          <xs:element name="e3"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+  </xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-nameandtypeok-substitution-group-valid"
+mode = "namespaced"
+description = "A restriction may swap a base element for a member of its substitution group when the member's type validly derives from the head's (valid control)"
+derived_from = "W3C XMLSchema1TestSuite, group 'particlesZ' (particlesZ008: restriction via substitution group should be valid)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:simpleType name="small">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="3"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="head" type="xs:string"/>
+  <xs:element name="member" type="x:small" substitutionGroup="x:head"/>
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element ref="x:head"/>
+      <xs:element name="e2"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element ref="x:member"/>
+          <xs:element name="e2"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+  </xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-recurse-drop-required-invalid"
+description = "An all:all restriction may not drop a base member that cannot match zero instances (Recurse)"
+derived_from = "W3C XML Schema Test Suite, Saxonica group 'All' (all204: missing element d) and MS group 'particlesS' (particlesS005)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a" minOccurs="0" maxOccurs="5"/>
+      <xs:element name="b" minOccurs="1" maxOccurs="5"/>
+      <xs:element name="d" minOccurs="1" maxOccurs="1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:all>
+          <xs:element name="b" minOccurs="2" maxOccurs="4"/>
+        </xs:all>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-recurse-unordered-sequence-valid"
+xsd11 = true
+description = "A derived sequence may restrict an all with a different member order when every mapped occurrence is contained (RecurseUnordered, valid control)"
+derived_from = "W3C XML Schema Test Suite, Saxonica group 'All' (all211) and MS group 'particlesU' (particlesU003)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a" minOccurs="0" maxOccurs="5"/>
+      <xs:element name="b" minOccurs="1" maxOccurs="5"/>
+      <xs:element name="d" minOccurs="1" maxOccurs="1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:sequence>
+          <xs:element name="d" minOccurs="1" maxOccurs="1"/>
+          <xs:element name="b" minOccurs="3" maxOccurs="4"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-recurse-sequence-alignment-invalid"
+description = "A sequence:sequence restriction may not drop a base member that cannot match zero instances (Recurse alignment)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesW' (particlesW010: c is NOT emptiable, R has (a, b))"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:element name="a"/>
+      <xs:element name="b"/>
+      <xs:element name="c"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:sequence>
+          <xs:element name="a"/>
+          <xs:element name="b"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-recurse-choice-extra-branch-invalid"
+description = "A choice:choice restriction may not add a branch that restricts no base branch (Recurse injective mapping)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesT' (particlesT008: R has (a | b | c | d))"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting"
+           elementFormDefault="qualified">
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="a"/>
+      <xs:element name="b"/>
+      <xs:element name="c"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="x:base">
+        <xs:choice>
+          <xs:element name="a"/>
+          <xs:element name="b"/>
+          <xs:element name="c"/>
+          <xs:element name="d"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-element-over-choice-wide-occurrence-invalid"
+description = "An element restricting a choice member whose occurrence is multiplied by the choice's 2..3 range is invalid when the element occurs only once (Elt:Choice RecurseAsIfGroup)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesL' (particlesL001: B's choice minOccurs=2, R's element minOccurs=1)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:choice minOccurs="2" maxOccurs="3">
+        <xs:element name="c1"/>
+        <xs:element name="c2"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="d1"/>
+        <xs:element name="d2"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:element name="c1"/>
+          <xs:element name="d1"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-element-over-choice-contained-valid"
+description = "An element restricting one member of a choice is valid when the member's range contains it (Elt:Choice RecurseAsIfGroup valid control)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesL' (particlesL003/particlesL006 shapes)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="c1" maxOccurs="2"/>
+        <xs:element name="c2" maxOccurs="2"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="d1" maxOccurs="2"/>
+        <xs:element name="d2" maxOccurs="2"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:element name="c1" maxOccurs="2"/>
+          <xs:element name="d1" maxOccurs="2"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-element-over-all-member-widening-invalid"
+description = "An element restricting a member of an all may not widen the member's occurrence range (Elt:All RecurseAsIfGroup)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesK' (particlesK004: B all has a1 1..1, R has a1 2..2)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a0" minOccurs="0"/>
+      <xs:element name="a1" minOccurs="1" maxOccurs="1"/>
+      <xs:element name="a2" minOccurs="0"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:element name="a1" minOccurs="2" maxOccurs="2"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-mapandsum-product-widening-invalid"
+description = "A sequence restricting a choice has an effective total range of its own maxOccurs times its member count; widening the product past the base's range is invalid (MapAndSum)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesV' (particlesV005: B choice maxOccurs=2, R sequence maxOccurs=2 with two members)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:choice minOccurs="0" maxOccurs="2">
+      <xs:element name="e1" maxOccurs="3"/>
+      <xs:element name="e2" maxOccurs="3"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence maxOccurs="2">
+          <xs:element name="e1" maxOccurs="2"/>
+          <xs:element name="e2" maxOccurs="2"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-mapandsum-contained-valid"
+description = "A two-member sequence at 2..4 has effective range 4..8, contained in a base choice's 3..9 (MapAndSum valid control)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesV' (particlesV003 shape)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:choice minOccurs="3" maxOccurs="9">
+      <xs:element name="e1"/>
+      <xs:element name="e2"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence minOccurs="2" maxOccurs="4">
+          <xs:element name="e1"/>
+          <xs:element name="e2"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-nscard-wildcard-range-widening-invalid"
+description = "A group restricting a wildcard may not exceed the wildcard's occurrence range through its effective total range (NSRecurseCheckCardinality)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesQ' (particlesQ006: B's any maxOccurs=3, R's nested sequence maxOccurs=4)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:any namespace="##any" minOccurs="0" maxOccurs="3"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:sequence minOccurs="0" maxOccurs="4">
+            <xs:element name="e1"/>
+          </xs:sequence>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-nscard-wildcard-range-contained-valid"
+description = "A nested sequence at 1..2 with two 2..2 members has effective range 4..8, contained in a wildcard's 4..8 (NSRecurseCheckCardinality valid control)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesQ' (particlesQ013 shape)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:any namespace="##any" minOccurs="4" maxOccurs="8"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence>
+          <xs:sequence minOccurs="1" maxOccurs="2">
+            <xs:element name="e1" minOccurs="2" maxOccurs="2"/>
+            <xs:element name="e2" minOccurs="2" maxOccurs="2"/>
+          </xs:sequence>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/particle-group-ref-choice-extra-branch-invalid"
+description = "A derived choice whose group reference expands to a branch the base choice lacks is invalid (the referenced choice's branches are the referencing choice's alternatives)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesIb' (particlesIb006: group ref G1 wrapping choice(foo|bar) against base choice(foo|test))"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G1">
+    <xs:choice>
+      <xs:element name="foo"/>
+      <xs:element name="bar"/>
+    </xs:choice>
+  </xs:group>
+  <xs:complexType name="base">
+    <xs:choice>
+      <xs:element name="foo"/>
+      <xs:element name="test"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:complexType name="testing">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:choice>
+          <xs:group ref="G1"/>
+        </xs:choice>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="testing"/>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-edc-group-ref-conflict-invalid"
+description = "The same element name declared with different types directly and through a group reference violates Element Declarations Consistent (mgR022)"
+derived_from = "W3C XML Schema Test Suite, MS group 'modelGroups' (mgR022: choice of element e1 string and group ref to sequence of element e1 integer)"
+expected_codes = ["all-rule"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="foo"/>
+  <xs:group name="group">
+    <xs:sequence>
+      <xs:element name="e1" type="xs:integer"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:complexType name="foo">
+    <xs:choice>
+      <xs:element name="e1" type="xs:string"/>
+      <xs:group ref="group"/>
+    </xs:choice>
+  </xs:complexType>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-form-local-vs-global-name-invalid"
+description = "An unqualified local c1 and a reference to the global c1 of the same local name have different expanded names; the ref cannot restrict the local (Elt:Choice RecurseAsIfGroup)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesL' (particlesL010: R is of different global element than in B)"
+expected_codes = ["particle-restriction"]
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:element name="c1"/>
+  <xs:complexType name="B">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="c1"/>
+        <xs:element name="c2"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="d1"/>
+        <xs:element name="d2"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:sequence>
+          <xs:element ref="x:c1"/>
+          <xs:element name="d1"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice>
+        <xs:element name="elem" type="x:R"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+
+[[case]]
+id = "structure/particle-vacuous-element-targetns-wildcard-valid"
+description = "A maxOccurs=0 element matches nothing, so a ##targetNamespace wildcard cannot exclude it (Elt:Any NSCompat vacuous control)"
+derived_from = "W3C XML Schema Test Suite, MS group 'particlesJq' (particlesJq010 shape)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:x="http://xsdtesting" targetNamespace="http://xsdtesting">
+  <xs:complexType name="B">
+    <xs:sequence>
+      <xs:any namespace="##targetNamespace" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="x:B">
+        <xs:sequence>
+          <xs:element name="e1" minOccurs="0" maxOccurs="0"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="x:R"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/all-extension-sequence-base-invalid"
+description = "An all extension suffix cannot extend a non-empty sequence base (Saxon all309/all312)"
+derived_from = "Saxon XSD 1.1 test suite, All group all309/all312 (cos-ct-extends)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence>
+      <xs:element name="a"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="d"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-sequence-suffix-invalid"
+description = "A sequence extension suffix cannot extend an all base (Saxon all310/all311)"
+derived_from = "Saxon XSD 1.1 test suite, All group all310/all311 (cos-ct-extends)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:sequence>
+          <xs:element name="d"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-min-occurs-mismatch-invalid"
+description = "When all extends all the two minOccurs must be equal (Saxon all313)"
+derived_from = "Saxon XSD 1.1 test suite, All group all313 (cos-particle-extend)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="child1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all minOccurs="0">
+          <xs:element name="child2"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-overlapping-elements-invalid"
+description = "The all-extends-all composition repeats an element, violating UPA (Saxon all302)"
+derived_from = "Saxon XSD 1.1 test suite, All group all302 (cos-nonambig on the composed all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+      <xs:element name="c"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="e"/>
+          <xs:element name="c"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-overlapping-wildcards-invalid"
+description = "The composed all has two overlapping wildcards, violating UPA (Saxon all305)"
+derived_from = "Saxon XSD 1.1 test suite, All group all305 (cos-nonambig on the composed all)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+      <xs:any namespace="http://one.com/" processContents="skip"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="e"/>
+          <xs:any notNamespace="http://two.com/" processContents="skip"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-disjoint-not-namespace-wildcards-valid"
+xsd11 = true
+description = "An all extension wildcard excluding the namespace the base wildcard admits is disjoint, so the composed all is deterministic (XSD 1.1)"
+derived_from = "Saxon XSD 1.1 test suite, All group all305 (the disjoint notNamespace control)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+      <xs:any namespace="urn:x" processContents="skip"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="e"/>
+          <xs:any notNamespace="urn:x" processContents="skip"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/all-extension-disjoint-literal-wildcards-valid"
+xsd11 = true
+description = "Two all-extension wildcards admitting disjoint literal namespaces compose deterministically (Saxon all005 control)"
+derived_from = "Saxon XSD 1.1 test suite, All group all305 (the literal-disjoint control)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a"/>
+      <xs:any namespace="urn:a" processContents="skip"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="e"/>
+          <xs:any namespace="urn:b" processContents="skip"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/all-extension-empty-mixed-base-invalid"
+description = "An empty mixed all base cannot be extended by an all (Saxon all308, bug 6202)"
+derived_from = "Saxon XSD 1.1 test suite, All group all308 (cos-ct-extends)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base" mixed="true">
+    <xs:all/>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent mixed="true">
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="d" minOccurs="0" maxOccurs="2"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/all-extension-composed-valid"
+xsd11 = true
+description = "An all extending an all composes into one unordered group with the extension's occurrence (Saxon all314)"
+derived_from = "Saxon XSD 1.1 test suite, All group all314 (cos-ct-extends 4.2.3.2)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all minOccurs="0">
+      <xs:element name="child1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all minOccurs="0">
+          <xs:element name="child2"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="product" type="derived"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<product>
+  <child2/>
+  <child1/>
+</product>
+'''
+
+[[case]]
+id = "structure/all-extension-composed-partial-group-invalid"
+xsd11 = true
+description = "A present all extension group requires every member, so one optional member alone is invalid (Saxon all314.n03)"
+derived_from = "Saxon XSD 1.1 test suite, All group all314 (negative instance n03)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all minOccurs="0">
+      <xs:element name="child1"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all minOccurs="0">
+          <xs:element name="child2"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="product" type="derived"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<product>
+  <child1/>
+</product>
+'''
+instance_valid = false
+
+[[case]]
+id = "structure/element-only-character-invalid"
+xsd11 = true
+description = "Character data under an element-only all-extends-all composition is rejected (Saxon all307.n01)"
+derived_from = "Saxon XSD 1.1 test suite, All group all306/all307 (Element Locally Valid (Complex Type))"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:all>
+      <xs:element name="a" minOccurs="0" maxOccurs="5"/>
+      <xs:element name="b" minOccurs="0" maxOccurs="5"/>
+      <xs:element name="c" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:all>
+          <xs:element name="d" minOccurs="0" maxOccurs="1"/>
+          <xs:element name="e" minOccurs="0" maxOccurs="4"/>
+        </xs:all>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc><b/>text<a/>text<d/>text<a/></doc>
+'''
+instance_valid = false
+expected_codes = ["unexpected-character"]
+
+[[case]]
+id = "structure/mixed-base-empty-extension-valid"
+description = "An attribute-only extension of a mixed base keeps the base's mixed content type (3.4.2.3.3 clause 4.2.2)"
+derived_from = "XSD 1.1 Structures §3.4.2.3.3 (effective content of complex type extension)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base" mixed="true">
+    <xs:sequence>
+      <xs:element name="a" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="derived">
+    <xs:complexContent>
+      <xs:extension base="base">
+        <xs:attribute name="x" type="xs:string"/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="derived"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc>text<a/></doc>
+'''
+
+[[case]]
+id = "structure/wildcard-namespace-token-invalid"
+description = "A wildcard namespace constraint may not mix the ##any/##other keywords with other tokens (MS wildC049)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildC' (namespace constraint token grammar)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##any ##other"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-unknown-namespace-token-invalid"
+description = "An unknown ## keyword is not a legal namespace constraint token (MS wildK002)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildK' (anyAttribute namespace tokens)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:anyAttribute namespace="##anyAttribute"/>
+  </xs:complexType>
+  <xs:element name="doc" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-process-contents-invalid"
+description = "processContents must be exactly skip, lax or strict (MS wildD075)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildD' (processContents grammar)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any processContents="lax skip"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/any-occurrence-lexical-invalid"
+description = "minOccurs/maxOccurs on xs:any are checked like any other particle (MS wildB014)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildB' (occurrence attributes on any)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any maxOccurs=""/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["invalid-occurs"]
+
+[[case]]
+id = "structure/any-occurrence-range-invalid"
+description = "minOccurs must not exceed maxOccurs on xs:any (MS wildB027)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildB' (occurrence range on any)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any minOccurs="2" maxOccurs="1"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "structure/any-attribute-occurrence-invalid"
+description = "xs:anyAttribute is not a particle and takes no occurrence attributes (MS wildQ002)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildQ' (occurrence attributes on anyAttribute)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="t">
+    <xs:anyAttribute minOccurs="2"/>
+  </xs:complexType>
+  <xs:element name="doc" type="t"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-double-annotation-invalid"
+description = "A wildcard may carry at most one annotation (MS wildE002)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildE' (wildcard annotation cardinality)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any>
+          <xs:annotation><xs:documentation>one</xs:documentation></xs:annotation>
+          <xs:annotation><xs:documentation>two</xs:documentation></xs:annotation>
+        </xs:any>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["declaration-duplicate"]
+
+[[case]]
+id = "structure/wildcard-unknown-attribute-invalid"
+description = "An unqualified XML attribute outside a wildcard's allowed set is a schema error (MS wildI003)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildI' (foreign and invalid attributes on any)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any id="bar" namespace="##other" processContents="lax" foo="bar"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["invalid-attribute"]
+
+[[case]]
+id = "structure/wildcard-qualified-foreign-attribute-valid"
+description = "A qualified attribute in a non-schema namespace is a foreign attribute and legal on a wildcard (MS wildI001)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildI' (foreign attributes on any)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:a="http://foo">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any id="bar" namespace="##other" processContents="lax" a:b="c"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/wildcard-upa-choice-invalid"
+description = "Two overlapping wildcards in one choice are non-deterministic (MS wildI009)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildI' (UPA with wildcards)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:choice maxOccurs="10">
+        <xs:any namespace="##other" processContents="lax"/>
+        <xs:any namespace="A"/>
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-upa-sequence-valid"
+description = "Single-occurrence overlapping wildcards in a sequence are deterministic (MS wildI011)"
+derived_from = "W3C XMLSchema1TestSuite, Wildcards 'wildI' (deterministic wildcard sequence)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://xsdtesting">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##other" processContents="lax"/>
+        <xs:any namespace="A" processContents="lax"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/wildcard-attribute-restriction-narrow-valid"
+description = "A restriction may narrow the base attribute wildcard and strengthen processContents"
+derived_from = "XSD 1.1 Structures §3.4.6.3 (Derivation Valid (Restriction, Complex))"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence/>
+    <xs:anyAttribute namespace="##any" processContents="lax"/>
+  </xs:complexType>
+  <xs:complexType name="narrowed">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence/>
+        <xs:anyAttribute namespace="foo" processContents="strict"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="narrowed"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/wildcard-attribute-restriction-widen-invalid"
+description = "A restriction may not widen the base type's attribute wildcard namespace constraint"
+derived_from = "XSD 1.1 Structures §3.4.6.3 (Derivation Valid (Restriction, Complex))"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="base">
+    <xs:sequence/>
+    <xs:anyAttribute namespace="foo"/>
+  </xs:complexType>
+  <xs:complexType name="widened">
+    <xs:complexContent>
+      <xs:restriction base="base">
+        <xs:sequence/>
+        <xs:anyAttribute namespace="foo bar"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="widened"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "structure/wildcard-attribute-namespace-invalid"
+description = "An attribute whose namespace the effective wildcard rejects is an error"
+derived_from = "XSD 1.1 Structures §3.4.2.4 (Attribute Wildcard) with errata E1-10"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns:t="urn:t">
+  <xs:attributeGroup name="extra">
+    <xs:anyAttribute namespace="urn:ok" processContents="skip"/>
+  </xs:attributeGroup>
+  <xs:complexType name="doc">
+    <xs:sequence/>
+    <xs:attributeGroup ref="t:extra"/>
+  </xs:complexType>
+  <xs:element name="doc" type="t:doc"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc xmlns="urn:t" xmlns:o="urn:other" o:extra="1"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "structure/wildcard-attribute-namespace-valid"
+description = "An attribute the effective wildcard admits binds without a diagnostic"
+derived_from = "XSD 1.1 Structures §3.4.2.4 (Attribute Wildcard) with errata E1-10"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:t" xmlns:t="urn:t">
+  <xs:attributeGroup name="extra">
+    <xs:anyAttribute namespace="urn:ok" processContents="skip"/>
+  </xs:attributeGroup>
+  <xs:complexType name="doc">
+    <xs:sequence/>
+    <xs:attributeGroup ref="t:extra"/>
+  </xs:complexType>
+  <xs:element name="doc" type="t:doc"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc xmlns="urn:t" xmlns:o="urn:ok" o:extra="1"/>
+'''
+
+[[case]]
+id = "structure/wildcard-attribute-group-intersection-invalid"
+description = "A local ##any intersected with a group's ##targetNamespace rejects other namespaces"
+derived_from = "XSD 1.1 Structures §3.10.6 (Attribute Wildcard Intersection)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="a" xmlns:a="a" xmlns:b="b">
+  <xs:import namespace="b" schemaLocation="groups.xsd"/>
+  <xs:attributeGroup name="g-a">
+    <xs:anyAttribute namespace="##targetNamespace" processContents="lax"/>
+  </xs:attributeGroup>
+  <xs:complexType name="metadata">
+    <xs:sequence/>
+    <xs:attributeGroup ref="a:g-a"/>
+    <xs:attributeGroup ref="b:g-b"/>
+    <xs:anyAttribute namespace="##any" processContents="lax"/>
+  </xs:complexType>
+  <xs:element name="doc" type="a:metadata"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a:doc xmlns:a="a" xmlns:x="x" x:blah="1"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+[case.files]
+"groups.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="b">
+  <xs:attributeGroup name="g-b">
+    <xs:anyAttribute namespace="##any"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+
+[[case]]
+id = "structure/wildcard-attribute-group-intersection-valid"
+description = "The intersected wildcard admits attributes of the shared target namespace"
+derived_from = "XSD 1.1 Structures §3.10.6 (Attribute Wildcard Intersection)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="a" xmlns:a="a" xmlns:b="b">
+  <xs:import namespace="b" schemaLocation="groups.xsd"/>
+  <xs:attributeGroup name="g-a">
+    <xs:anyAttribute namespace="##targetNamespace" processContents="lax"/>
+  </xs:attributeGroup>
+  <xs:complexType name="metadata">
+    <xs:sequence/>
+    <xs:attributeGroup ref="a:g-a"/>
+    <xs:attributeGroup ref="b:g-b"/>
+    <xs:anyAttribute namespace="##any" processContents="lax"/>
+  </xs:complexType>
+  <xs:element name="doc" type="a:metadata"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a:doc xmlns:a="a" a:blah="1"/>
+'''
+[case.files]
+"groups.xsd" = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="b">
+  <xs:attributeGroup name="g-b">
+    <xs:anyAttribute namespace="##any"/>
+  </xs:attributeGroup>
+</xs:schema>
+'''
+
+[[case]]
+id = "namespaces/wildcard-notnamespace-attribute-invalid"
+xsd11 = true
+description = "An attribute in a namespace the notNamespace exclusion lists is rejected (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild001"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:anyAttribute notNamespace="http://apple.com/ http://devil.com/"
+                       processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<eden xmlns:evil="http://devil.com/" evil:eve="f"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "namespaces/wildcard-notqname-attribute-invalid"
+xsd11 = true
+description = "An attribute named by notQName is rejected (XSD 1.1)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild027"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:anyAttribute notQName="xml:space xml:id" processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<eden a="1" xml:space="preserve"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "namespaces/wildcard-union-notqname-invalid"
+xsd11 = true
+description = "An extension's wildcard union keeps a name the other operand's namespace rejects"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild046"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="a">
+    <xs:anyAttribute namespace="##local" notQName="a b c" processContents="skip"/>
+  </xs:attributeGroup>
+  <xs:attributeGroup name="b">
+    <xs:anyAttribute notNamespace="http://www.w3.org/1999/XSL/Transform"
+                     notQName="c d e xml:lang" processContents="skip"/>
+  </xs:attributeGroup>
+  <xs:complexType name="computer">
+    <xs:sequence/>
+    <xs:attributeGroup ref="a"/>
+  </xs:complexType>
+  <xs:complexType name="extendedComputer">
+    <xs:complexContent>
+      <xs:extension base="computer">
+        <xs:attributeGroup ref="b"/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="computer" type="extendedComputer"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<computer xml:lang="de"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "namespaces/wildcard-defined-attribute-invalid"
+xsd11 = true
+description = "An attribute resolving to a global declaration is rejected by notQName=##defined"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild054"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="zing">
+    <xs:sequence/>
+    <xs:anyAttribute namespace="##any" notQName="##defined jang"
+                     processContents="skip"/>
+  </xs:complexType>
+  <xs:element name="zing" type="zing"/>
+  <xs:attribute name="zang" type="xs:date"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<zing zang="2008-12-12"/>
+'''
+instance_valid = false
+expected_codes = ["wildcard-namespace"]
+
+[[case]]
+id = "structure/wildcard-notqname-element-invalid"
+xsd11 = true
+description = "An element named by notQName is rejected by the wildcard particle"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild028"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any notQName="xml:space" processContents="skip"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<eden><adam/><xml:space/></eden>
+'''
+instance_valid = false
+expected_codes = ["unexpected-element"]
+
+[[case]]
+id = "structure/wildcard-defined-element-invalid"
+xsd11 = true
+description = "An element resolving to a global declaration is rejected by notQName=##defined"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild052"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="zing">
+    <xs:all>
+      <xs:element name="name" type="xs:string"/>
+      <xs:any namespace="##any" notQName="##defined" processContents="skip"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:element name="zing" type="zing"/>
+  <xs:element name="zang"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<zing><name/><zang/></zing>
+'''
+instance_valid = false
+expected_codes = ["unexpected-element"]
+
+[[case]]
+id = "structure/wildcard-defined-sibling-invalid"
+xsd11 = true
+description = "A repeated sibling declaration is rejected by notQName=##definedSibling"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild070"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="zing"/>
+  <xs:complexType name="zing">
+    <xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+      <xs:element name="b" type="xs:string"/>
+      <xs:element name="c" type="xs:string"/>
+      <xs:any notQName="##definedSibling" processContents="skip"
+              maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<root><a/><b/><c/><a/></root>
+'''
+instance_valid = false
+expected_codes = ["order"]
+
+[[case]]
+id = "structure/xsi-nil-lexical-invalid"
+description = "xsi:nil is governed by its built-in boolean declaration, not a wildcard"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Wild wild042"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="computer">
+    <xs:sequence/>
+    <xs:anyAttribute namespace="http://www.w3.org/2001/XMLSchema-instance"
+                     processContents="skip"/>
+  </xs:complexType>
+  <xs:element name="computer" type="computer"/>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<computer xsi:nil="1234" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>
+'''
+instance_valid = false
+expected_codes = ["nil"]
+
+[[case]]
+id = "structure/group-compositor-nested-choices"
+description = "A group's content model is its own sequence of choices, not the first nested choice"
+derived_from = "W3C XMLSchema1TestSuite, group 'particles' (particles00303m1)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G1">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="id" type="xs:integer"/>
+        <xs:element name="id_str" type="xs:string"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="type" type="xs:string"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="a">
+    <xs:complexType>
+      <xs:group ref="G1"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a>
+  <id_str>12345678900987654321J.ABC</id_str>
+  <type>#QQQQ</type>
+</a>
+'''
+
+[[case]]
+id = "structure/group-compositor-nested-choices-missing"
+description = "The group's second choice is required; the first nested choice alone is not the model"
+derived_from = "W3C XMLSchema1TestSuite, group 'particles' (particles00303m1 negative)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G1">
+    <xs:sequence>
+      <xs:choice>
+        <xs:element name="id" type="xs:integer"/>
+        <xs:element name="id_str" type="xs:string"/>
+      </xs:choice>
+      <xs:choice>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="type" type="xs:string"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="a">
+    <xs:complexType>
+      <xs:group ref="G1"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a>
+  <id_str>12345678900987654321J.ABC</id_str>
+</a>
+'''
+instance_valid = false
+expected_codes = ["occurrence-min"]
+
+[[case]]
+id = "structure/group-compositor-nested-sequences"
+description = "A group's sequence of sequences keeps every member, not only the first nested sequence"
+derived_from = "W3C XMLSchema1TestSuite, group 'particles' (particles00304m1)"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="G1">
+    <xs:sequence>
+      <xs:sequence>
+        <xs:element name="date" type="xs:date"/>
+        <xs:element name="marked" type="xs:boolean"/>
+      </xs:sequence>
+      <xs:sequence>
+        <xs:element name="num" type="xs:int"/>
+      </xs:sequence>
+    </xs:sequence>
+  </xs:group>
+  <xs:element name="a">
+    <xs:complexType>
+      <xs:group ref="G1"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<a>
+  <date>2002-04-25</date>
+  <marked>true</marked>
+  <num>123</num>
+</a>
+'''
+
+[[case]]
+id = "structure/mixed-restriction-element-only"
+description = "A mixed content type cannot restrict an element-only base (groupH007v)"
+derived_from = "W3C XMLSchema1TestSuite, group 'groupH007v'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="A">
+    <xs:choice minOccurs="0" maxOccurs="4">
+      <xs:group ref="x"/>
+      <xs:group ref="y"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:group name="x">
+    <xs:sequence>
+      <xs:element name="x1"/>
+      <xs:element name="x2"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="y">
+    <xs:choice>
+      <xs:element name="y1"/>
+      <xs:element name="y2"/>
+    </xs:choice>
+  </xs:group>
+  <xs:group name="G">
+    <xs:choice>
+      <xs:group ref="x"/>
+      <xs:group ref="y"/>
+    </xs:choice>
+  </xs:group>
+  <xs:complexType name="elem" mixed="true">
+    <xs:complexContent>
+      <xs:restriction base="A">
+        <xs:group ref="G" minOccurs="0" maxOccurs="0"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="elem" type="elem"/>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="elem"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "structure/element-only-restriction-element-only"
+description = "The non-mixed twin of groupH007v is a valid empty restriction (groupH008v)"
+derived_from = "W3C XMLSchema1TestSuite, group 'groupH008v'"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="A">
+    <xs:choice minOccurs="0" maxOccurs="4">
+      <xs:group ref="x"/>
+      <xs:group ref="y"/>
+    </xs:choice>
+  </xs:complexType>
+  <xs:group name="x">
+    <xs:sequence>
+      <xs:element name="x1"/>
+      <xs:element name="x2"/>
+    </xs:sequence>
+  </xs:group>
+  <xs:group name="y">
+    <xs:choice>
+      <xs:element name="y1"/>
+      <xs:element name="y2"/>
+    </xs:choice>
+  </xs:group>
+  <xs:group name="G">
+    <xs:choice>
+      <xs:group ref="x"/>
+      <xs:group ref="y"/>
+    </xs:choice>
+  </xs:group>
+  <xs:complexType name="elem">
+    <xs:complexContent>
+      <xs:restriction base="A">
+        <xs:group ref="G" minOccurs="0" maxOccurs="0"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="elem" type="elem"/>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="elem"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc>
+  <elem/>
+</doc>
+'''
+
+[[case]]
+id = "occurrence/nillable-boolean-one-nil"
+xsd11 = true
+description = "nillable='1' is xs:boolean true, so xsi:nil='1' skips the content model (all004.v02)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon All all004.v02"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" nillable="1">
+    <xs:complexType mixed="1">
+      <xs:all>
+        <xs:element name="a" minOccurs="2" maxOccurs="5"/>
+        <xs:element name="b" minOccurs="2" maxOccurs="5"/>
+        <xs:element name="c" minOccurs="2" maxOccurs="unbounded"/>
+        <xs:element name="d"/>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc xsi:nil="1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></doc>
+'''
+
+[[case]]
+id = "occurrence/nillable-boolean-one-nil-content"
+xsd11 = true
+description = "A nillable='1' element marked nil still may not carry content (all004.n01)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon All all004.n01"
+schema = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" nillable="1">
+    <xs:complexType mixed="1">
+      <xs:all>
+        <xs:element name="a" minOccurs="2" maxOccurs="5"/>
+        <xs:element name="b" minOccurs="2" maxOccurs="5"/>
+        <xs:element name="c" minOccurs="2" maxOccurs="unbounded"/>
+        <xs:element name="d"/>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<doc xsi:nil="1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <a/>
+  <b/>
+  <d/>
+</doc>
+'''
+instance_valid = false
+expected_codes = ["nil"]

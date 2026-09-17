@@ -1,4 +1,5 @@
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.xsd_data_types import NCName
 
 
 class Notation(ElementRepresentative):
@@ -6,9 +7,13 @@ class Notation(ElementRepresentative):
 
     A notation declaration records its ``name``, ``public`` and
     ``system`` values from ``tagAttributes``; it has no content model
-    and takes no part in instance parsing beyond making schemas that
-    declare or reference notations load.
+    beyond an optional leading annotation.
     """
+
+    #: ``notation`` may carry a single ``annotation`` child and nothing
+    #: else (XSD 1.0/1.1).
+    _ALLOWED_CHILDREN = ("annotation",)
+    _MAX_ONE_CHILDREN = ("annotation",)
 
     def __init__(self, xsdElement, parent):
         """See ElementRepresentative for documentation.
@@ -28,3 +33,25 @@ class Notation(ElementRepresentative):
     def getName(self):
         """Returns the notation's schema name."""
         return self.xsdElement.get("name")
+
+    def checkDeclarationLegality(self):
+        """Reports notation attribute (XML) constraints.
+
+        A notation must carry at least one of ``public``/``system`` and
+        its ``name`` must be a valid NCName. The ``id`` (lexical and
+        uniqueness) is checked generically by the parser.
+        """
+        if self.tagAttributes.get("public") is None and self.tagAttributes.get("system") is None:
+            self._reportSchemaError(
+                f"notation '{self.name}' must have a public or system identifier",
+                code="declaration-attribute",
+            )
+        name = self.xsdElement.get("name")
+        if name is not None:
+            try:
+                NCName(name)
+            except TypeError:
+                self._reportSchemaError(
+                    f"notation name '{name}' is not a valid NCName",
+                    code="declaration-attribute",
+                )

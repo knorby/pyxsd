@@ -333,10 +333,17 @@ class FacetConstraints:
 
 @dataclass(frozen=True)
 class FacetBuildResult:
-    """The constraints built for one type plus any schema-level problems."""
+    """The constraints built for one type plus any schema-level problems.
+
+    ``errors`` are single-facet legality problems (reported with the
+    ``facet`` code); ``conflicts`` are combination problems — mutually
+    exclusive facets, an empty value space — reported with the
+    ``facet-conflict`` code.
+    """
 
     constraints: FacetConstraints
     errors: tuple[str, ...] = ()
+    conflicts: tuple[str, ...] = ()
 
 
 # --- applicability ---------------------------------------------------------
@@ -376,17 +383,119 @@ def _is_list(base: type) -> bool:
     return issubclass(base, (_ListString, XsdList))
 
 
+#: Built-in list types whose value space is one or more items, so they fix
+#: ``minLength`` to 1.  A generic list accepts the empty list (zero items).
+_FIXED_MIN_LENGTH_LISTS = frozenset({"NMTOKENS", "IDREFS", "ENTITIES"})
+
+
+def _base_min_length(base: type | None) -> int | None:
+    """A fixed ``minLength`` on a built-in *base*, if it has one.
+
+    Only ``NMTOKENS``, ``IDREFS`` and ``ENTITIES`` fix ``minLength`` to 1;
+    a generic list type's value space is zero or more items, so its
+    minimum stays 0.
+    """
+    if base is None:
+        return None
+    for klass in getattr(base, "__mro__", (base,)):
+        name = klass.__dict__.get("name") or klass.__name__
+        if name in _FIXED_MIN_LENGTH_LISTS:
+            return 1
+    return None
+
+
 def _is_numeric_or_temporal(base: type) -> bool:
     return issubclass(base, (int, float, decimal.Decimal, Duration, DateTime, Date, Time))
 
 
 def _is_decimal(base: type) -> bool:
-    # The digit facets apply to every type derived from decimal, which
+    # ``totalDigits`` applies to every type derived from decimal, which
     # includes the whole integer family (pyxsd models those as ``int``
     # subclasses) but not float/double or boolean.
     if issubclass(base, (Boolean, bool)):
         return False
     return issubclass(base, (decimal.Decimal, int))
+
+
+def _is_integer(base: type) -> bool:
+    """Whether *base* is derived from ``xs:integer``.
+
+    ``xs:boolean`` is a Python ``bool``/``int`` subclass but is not an
+    integer-derived XSD type.
+    """
+    if issubclass(base, (Boolean, bool)):
+        return False
+    return issubclass(base, int)
+
+
+#: Inclusive bounds fixed by the integer-derived built-ins whose value
+#: space is encoded in ``__new__`` rather than a ``_min``/``_max`` class
+#: attribute.
+_INTEGER_FIXED_BOUNDS: dict[str, tuple[int | None, int | None]] = {
+    "positiveInteger": (1, None),
+    "nonNegativeInteger": (0, None),
+    "negativeInteger": (None, -1),
+    "nonPositiveInteger": (None, 0),
+}
+
+
+def _base_fixed_bounds(base: type | None) -> tuple[Any | None, Any | None, Any | None, Any | None]:
+    """The bounds a built-in *base* fixes on its value space.
+
+    Returns ``(min_inclusive, min_exclusive, max_inclusive, max_exclusive)``.
+    Only the integer-derived built-ins fix a bound; every other built-in
+    datatype is unbounded.
+    """
+    if base is None:
+        return (None, None, None, None)
+    low = getattr(base, "_min", None)
+    high = getattr(base, "_max", None)
+    if low is not None or high is not None:
+        return (low, None, high, None)
+    for klass in getattr(base, "__mro__", (base,)):
+        name = klass.__dict__.get("name") or klass.__name__
+        if name in _INTEGER_FIXED_BOUNDS:
+            low, high = _INTEGER_FIXED_BOUNDS[name]
+            return (low, None, high, None)
+    return (None, None, None, None)
+
+
+def _effective_lower(inclusive: Any | None, exclusive: Any | None) -> tuple[Any, bool] | None:
+    """The tighter lower bound as ``(value, is_exclusive)``, or ``None``."""
+    if inclusive is None and exclusive is None:
+        return None
+    if inclusive is None:
+        return (exclusive, True)
+    if exclusive is None:
+        return (inclusive, False)
+    try:
+        if exclusive > inclusive:
+            return (exclusive, True)
+    except TypeError:
+        return (exclusive, True)
+    # Equal bounds: the exclusive one is stricter.
+    if exclusive == inclusive:
+        return (inclusive, True)
+    return (inclusive, False)
+
+
+def _effective_upper(inclusive: Any | None, exclusive: Any | None) -> tuple[Any, bool] | None:
+    """The tighter upper bound as ``(value, is_exclusive)``, or ``None``."""
+    if inclusive is None and exclusive is None:
+        return None
+    if inclusive is None:
+        return (exclusive, True)
+    if exclusive is None:
+        return (inclusive, False)
+    try:
+        if exclusive < inclusive:
+            return (exclusive, True)
+    except TypeError:
+        return (exclusive, True)
+    # Equal bounds: the exclusive one is stricter.
+    if exclusive == inclusive:
+        return (inclusive, True)
+    return (inclusive, False)
 
 
 def _is_qname_like(base: type) -> bool:
@@ -563,6 +672,7 @@ def build_constraints(
     error while the rest of the schema still compiles.
     """
     errors: list[str] = []
+    conflicts: list[str] = []
     parent = parent or FacetConstraints()
     allowed: set[str] = set()
     if base is not None:
@@ -606,6 +716,20 @@ def build_constraints(
             errors.append("cannot specify both 'length' and 'minLength'")
     if min_length is not None and max_length is not None and min_length > max_length:
         errors.append(f"maxLength {max_length} is less than minLength {min_length}")
+    base_min_length = _base_min_length(base)
+    if base_min_length is not None:
+        # A list base fixes minLength to 1, so a restriction cannot lower
+        # the minimum or cap the maximum below it.
+        for facet, value in (
+            ("length", length),
+            ("minLength", min_length),
+            ("maxLength", max_length),
+        ):
+            if value is not None and value < base_min_length:
+                conflicts.append(
+                    f"facet {facet!r} value {value} is less than the base type's "
+                    f"minimum {base_min_length}"
+                )
     if "length" not in allowed:
         length = None
     if "minLength" not in allowed:
@@ -701,10 +825,57 @@ def build_constraints(
     max_inclusive = _tighten_max(parse_bound("maxInclusive"), parent.max_inclusive)
     max_exclusive = _tighten_max(parse_bound("maxExclusive"), parent.max_exclusive)
 
+    # The two lower bounds and the two upper bounds are mutually exclusive
+    # within one restriction step.
+    if facet_value("maxInclusive") is not None and facet_value("maxExclusive") is not None:
+        conflicts.append("cannot specify both 'maxInclusive' and 'maxExclusive'")
+    if facet_value("minInclusive") is not None and facet_value("minExclusive") is not None:
+        conflicts.append("cannot specify both 'minInclusive' and 'minExclusive'")
+
+    # Fold in the bounds the built-in base itself fixes, then require the
+    # effective interval to be non-empty: a lower bound above the upper
+    # one, or equal bounds with an exclusive side.
+    base_min_inclusive, base_min_exclusive, base_max_inclusive, base_max_exclusive = (
+        _base_fixed_bounds(base)
+    )
+    lower = _effective_lower(
+        _tighten_min(min_inclusive, base_min_inclusive),
+        _tighten_min(min_exclusive, base_min_exclusive),
+    )
+    upper = _effective_upper(
+        _tighten_max(max_inclusive, base_max_inclusive),
+        _tighten_max(max_exclusive, base_max_exclusive),
+    )
+    if lower is not None and upper is not None:
+        lower_value, lower_is_exclusive = lower
+        upper_value, upper_is_exclusive = upper
+        try:
+            empty = lower_value > upper_value or (
+                lower_value == upper_value and (lower_is_exclusive or upper_is_exclusive)
+            )
+        except TypeError:
+            empty = False
+        if empty:
+            conflicts.append("the declared bounds leave no value in the base type's value space")
+
     total_digits_value = _facet_positive_int(facet_value("totalDigits"), "totalDigits", errors)
     fraction_digits_value = _facet_non_negative_int(
         facet_value("fractionDigits"), "fractionDigits", errors
     )
+    if (
+        fraction_digits_value is not None
+        and fraction_digits_value != 0
+        and base is not None
+        and _is_integer(base)
+    ):
+        # ``fractionDigits`` is fixed to 0 on every integer-derived type:
+        # the base's value space has no fractional part, so a restriction
+        # may restate the fixed value but not change it.
+        base_label = getattr(base, "name", None) or base.__name__
+        errors.append(
+            f"facet 'fractionDigits' value {fraction_digits_value!r} is not allowed "
+            f"for base type {base_label!r} (fixed to 0 on integer types)"
+        )
     total_digits = _min_optional(
         total_digits_value if "totalDigits" in allowed else None,
         parent.total_digits,
@@ -750,7 +921,9 @@ def build_constraints(
         total_digits=total_digits,
         fraction_digits=fraction_digits,
     )
-    return FacetBuildResult(constraints=constraints, errors=tuple(errors))
+    return FacetBuildResult(
+        constraints=constraints, errors=tuple(errors), conflicts=tuple(conflicts)
+    )
 
 
 def _tighten_min(own: Any | None, inherited: Any | None) -> Any | None:

@@ -1,8 +1,12 @@
 import logging
 from typing import Any
 
-from pyxsd.element_representatives.element_representative import ElementRepresentative
-from pyxsd.xsd_data_types import AnySimpleType, Boolean, XsdDataType
+from pyxsd.element_representatives.element_representative import (
+    _PRIMITIVE_TYPES,
+    ElementRepresentative,
+)
+from pyxsd.namespaces import XSI_NS
+from pyxsd.xsd_data_types import AnySimpleType, Boolean, NCName, QName, XsdDataType
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +30,13 @@ class Attribute(ElementRepresentative):
     unless they raise an error, so developers should bear in mind these
     methods when modifying the program.
     """
+
+    #: Child grammar of an ``attribute`` declaration: an optional
+    #: annotation and at most one inline ``simpleType``. (The
+    #: ``type``/inline-type conflict is an attribute check, not a child
+    #: -grammar one.)
+    _ALLOWED_CHILDREN = ("annotation", "simpleType")
+    _MAX_ONE_CHILDREN = ("annotation", "simpleType")
 
     # The owning parser is attached during clsFor.  Annotation only:
     # the attribute is assigned dynamically.
@@ -101,6 +112,9 @@ class Attribute(ElementRepresentative):
         attribute child can exist that is not a type, then this
         function will screw it up; however, as far as the developers
         knew at the time of writing this program, they cannot.
+
+        A child the grammar rejects is not factored; ``_acceptChild``
+        records it on ``unexpectedChildTags`` for the parser to report.
         """
         children = list(self.xsdElement)
 
@@ -108,6 +122,9 @@ class Attribute(ElementRepresentative):
             return None
 
         for child in children:
+            if not self._acceptChild(child):
+                self.processedChildren.append(None)
+                continue
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
             # An unknown child (for example an ``xsd:notation``) does
@@ -135,6 +152,11 @@ class Attribute(ElementRepresentative):
         The instance of PyXSD is attached to every element and attribute
         while the classes for the schema types are being built.
         Clearly, this function is used after the main ER run.
+
+        An attribute declared inside a global ``attributeGroup`` is never
+        installed as a class descriptor, so it never receives ``pyXSD``;
+        fall back to the owning schema's parser (as ``Element.getType``
+        does) so value-constraint validation can still resolve its type.
         """
         if getattr(self, "isAttributeRef", False):
             referred = getattr(self, "referredAttribute", None)
@@ -151,11 +173,12 @@ class Attribute(ElementRepresentative):
         # Resolve the QName first so strict mode disambiguates types
         # that share a local name across namespaces; in legacy mode this
         # is the same raw-type lookup as before.
+        parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
         resolved = self.resolvedTypeName()
-        if resolved is not None and resolved in self.pyXSD.classes:
-            return self.pyXSD.classes[resolved]
+        if parser is not None and resolved is not None and resolved in parser.classes:
+            return parser.classes[resolved]
 
-        return self.typeFromName(resolved, self.pyXSD)
+        return self.typeFromName(resolved, parser)
 
     def __get__(self, obj, objtype=None):
         """Gets an attribute value from the obj's dictionary.
@@ -268,3 +291,240 @@ class Attribute(ElementRepresentative):
             if referred is not None:
                 return referred.getFixed()
         return None
+
+    #: Legal values of the ``use`` attribute (XSD 1.0/1.1).
+    _USE_VALUES = frozenset({"optional", "required", "prohibited"})
+    #: Attributes a reference site must not redeclare.
+    _REF_FORBIDDEN = ("type", "form")
+
+    def checkDeclarationLegality(self):
+        """Reports attribute-declaration attribute (XML) constraints.
+
+        Covers the "Attribute Declaration Properties Correct" schema
+        representation constraint at the XML level: ``default``/``fixed``
+        consistency and value validity, ``use``/``form`` legality and
+        the global-only rule, ``ref`` conflicts, name/id lexical space
+        and the XSI-namespace prohibition.
+        """
+        self._checkAttributeDefaultFixed()
+        self._checkAttributeUse()
+        self._checkAttributeForm()
+        self._checkAttributeRef()
+        self._checkAttributeType()
+        self._checkAttributeName()
+        self._checkAttributeNamespace()
+
+    def _checkAttributeDefaultFixed(self) -> None:
+        if "default" in self.tagAttributes and "fixed" in self.tagAttributes:
+            self._reportSchemaError(
+                f"attribute '{self.name}' must not carry both a default and a fixed value",
+                code="declaration-attribute",
+            )
+
+    def _checkAttributeUse(self) -> None:
+        use = self.tagAttributes.get("use")
+        if use is None:
+            return
+        if self.isGlobalDeclaration():
+            self._reportSchemaError(
+                f"global attribute '{self.name}' must not carry a use attribute",
+                code="declaration-attribute",
+            )
+            return
+        if use not in self._USE_VALUES:
+            self._reportSchemaError(
+                f"attribute '{self.name}' has an invalid use value '{use}'; "
+                "expected optional, required or prohibited",
+                code="declaration-attribute",
+            )
+            return
+        if "default" in self.tagAttributes and use != "optional":
+            self._reportSchemaError(
+                f"attribute '{self.name}' with a default value must have use='optional'",
+                code="declaration-attribute",
+            )
+        elif "fixed" in self.tagAttributes and use == "prohibited":
+            self._reportSchemaError(
+                f"attribute '{self.name}' with a fixed value must not use use='prohibited'",
+                code="declaration-attribute",
+            )
+
+    def _checkAttributeForm(self) -> None:
+        form = self.tagAttributes.get("form")
+        if form is None:
+            return
+        if self.isGlobalDeclaration():
+            self._reportSchemaError(
+                f"global attribute '{self.name}' must not carry a form attribute",
+                code="declaration-attribute",
+            )
+        elif form not in ("qualified", "unqualified"):
+            self._reportSchemaError(
+                f"attribute '{self.name}' has an invalid form value '{form}'",
+                code="declaration-attribute",
+            )
+
+    def _checkAttributeRef(self) -> None:
+        ref = self.tagAttributes.get("ref")
+        if self.isGlobalDeclaration():
+            if ref is not None:
+                self._reportSchemaError(
+                    f"global attribute '{self.name}' must not carry a ref attribute",
+                    code="declaration-attribute",
+                )
+            return
+        if ref is None:
+            return
+        if self.xsdElement.get("name") is not None:
+            self._reportSchemaError(
+                f"attribute reference '{ref}' must not also declare a name",
+                code="declaration-attribute",
+            )
+        for attr in self._REF_FORBIDDEN:
+            if attr in self.tagAttributes:
+                self._reportSchemaError(
+                    f"attribute reference '{ref}' must not also carry '{attr}'",
+                    code="declaration-attribute",
+                )
+        if "simpleType" in self.childTags:
+            self._reportSchemaError(
+                f"attribute reference '{ref}' must not also declare a simpleType",
+                code="declaration-attribute",
+            )
+        self._checkRefFixedOverride(ref)
+
+    def _checkRefFixedOverride(self, ref: str) -> None:
+        fixed = self.tagAttributes.get("fixed")
+        if fixed is None:
+            return
+        referred = self._referredAttribute(ref)
+        if referred is None:
+            return
+        referredFixed = referred.tagAttributes.get("fixed")
+        if referredFixed is not None and referredFixed != fixed:
+            self._reportSchemaError(
+                f"attribute reference '{ref}' fixed value '{fixed}' does not "
+                f"match the referenced declaration's '{referredFixed}'",
+                code="declaration-attribute",
+            )
+
+    def _referredAttribute(self, ref: str) -> Any:
+        table = getattr(self.getSchema(), "components", None)
+        if table is None:
+            return None
+        local = ref.split(":", 1)[-1]
+        for entry in table.get(local) or ():
+            if type(entry).__name__ == "Attribute" and entry.isGlobalDeclaration():
+                return entry
+        return None
+
+    def _checkAttributeType(self) -> None:
+        raw = self.xsdElement.get("type")
+        if raw is None or getattr(self, "isAttributeRef", False):
+            return
+        if self._invalidQName(raw):
+            self._reportSchemaError(
+                f"attribute '{self.name}' has an invalid type QName '{raw}'",
+                code="declaration-attribute",
+            )
+            return
+        if "simpleType" in self.childTags:
+            self._reportSchemaError(
+                f"attribute '{self.name}' may not carry both a type and an inline simpleType",
+                code="declaration-attribute",
+            )
+        resolved = self._resolvedType(raw)
+        if type(resolved).__name__ == "ComplexType":
+            self._reportSchemaError(
+                f"attribute '{self.name}' type '{raw}' is a complex type; "
+                "attribute types must be simple",
+                code="declaration-attribute",
+            )
+
+    def _checkAttributeName(self) -> None:
+        name = self.xsdElement.get("name")
+        if name is None:
+            return
+        if name == "xmlns" or self._invalidNCName(name):
+            self._reportSchemaError(
+                f"attribute name '{name}' is not a valid NCName",
+                code="declaration-attribute",
+            )
+
+    def _checkAttributeNamespace(self) -> None:
+        if getattr(self, "isAttributeRef", False):
+            return
+        try:
+            uri = self._declaredNamespace()
+        except (AttributeError, RuntimeError):
+            return
+        if uri == XSI_NS:
+            self._reportSchemaError(
+                f"attribute '{self.name}' must not be in the XML Schema instance namespace",
+                code="declaration-attribute",
+            )
+
+    def _declaredNamespace(self) -> str | None:
+        """Returns this declaration's XSD target namespace, if any.
+
+        Unlike :meth:`getNamespace`, a local declaration contributes to
+        the target namespace only when its effective ``form`` is
+        ``qualified`` (explicitly or through ``attributeFormDefault``).
+        """
+        schema = self.getSchema()
+        if schema is None:
+            return None
+        if self.isGlobalDeclaration():
+            # ``getNamespace`` is override-aware, which matters for the
+            # synthetic XML-namespace attribute declarations the parser
+            # injects under the schema root.
+            return self.getNamespace()
+        uri = schema.getNamespace()
+        if uri is None:
+            return None
+        if self._localDeclarationIsQualified(schema, is_attribute=True):
+            return uri
+        return None
+
+    def _resolvedType(self, raw: str) -> Any:
+        """Returns the datatype class or type representative named by ``raw``.
+
+        Built-ins resolve from ``_PRIMITIVE_TYPES`` (when prefixed with
+        ``xs``/``xsd`` or when no user type claims the local name); a
+        user-defined simple or complex type resolves to its
+        representative so a complex one can be rejected. Returns ``None``
+        when nothing matches.
+        """
+        if ":" in raw:
+            prefix, local = raw.split(":", 1)
+            if prefix in ("xs", "xsd"):
+                return _PRIMITIVE_TYPES.get(local)
+        else:
+            local = raw
+        table = getattr(self.getSchema(), "components", None)
+        if table is not None:
+            for entry in table.get(local) or ():
+                if type(entry).__name__ in ("SimpleType", "ComplexType"):
+                    return entry
+        return _PRIMITIVE_TYPES.get(local)
+
+    @staticmethod
+    def _invalidQName(value: str) -> bool:
+        if value.startswith("{"):
+            # An already-expanded (Clark) name, as the parser writes for
+            # the synthetic XML-namespace attribute declarations. Accept
+            # it when it is well formed.
+            return "}" not in value
+        try:
+            QName(value)
+        except TypeError:
+            return True
+        return False
+
+    @staticmethod
+    def _invalidNCName(value: str) -> bool:
+        try:
+            NCName(value)
+        except TypeError:
+            return True
+        return False

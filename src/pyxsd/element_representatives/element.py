@@ -7,6 +7,29 @@ from pyxsd.namespaces import local_name, namespace_of
 logger = logging.getLogger(__name__)
 
 
+def _xsd_derived(value_cls: type | None, declared_cls: type | None) -> bool:
+    """Whether *value_cls* is validly derived from *declared_cls* in XSD.
+
+    Mirrors the storage check: an ``xsi:type`` value may be a Python
+    subclass of the declared type, or XSD-derived where the Python
+    lattice does not mirror the XSD hierarchy (``xs:integer`` from
+    ``xs:decimal``, wild064.v2). Unresolvable pairs are not derived.
+    """
+    if value_cls is None or declared_cls is None:
+        return False
+    from pyxsd.derivation import is_validly_derived
+
+    try:
+        return is_validly_derived(value_cls, declared_cls) is None
+    except Exception:
+        return False
+
+
+def _isTrue(value: Any) -> bool:
+    """XSD ``xs:boolean`` truth: ``true``/``1``, case-insensitive."""
+    return value is not None and str(value).strip().lower() in ("true", "1")
+
+
 class Element(ElementRepresentative):
     """The class for the element tag.
 
@@ -29,6 +52,30 @@ class Element(ElementRepresentative):
     ``SchemaBase.__init_subclass__`` records the binding in the class's
     ``_elementNames_`` bookkeeping.
     """
+
+    #: Child grammar of an ``element`` declaration: an optional
+    #: annotation, at most one inline type, XSD 1.1 ``alternative`` type
+    #: alternatives and identity constraints. Global and local element
+    #: declarations share this content model.
+    _ALLOWED_CHILDREN = (
+        "annotation",
+        "simpleType",
+        "complexType",
+        "key",
+        "keyref",
+        "unique",
+        "alternative",
+    )
+    _MAX_ONE_CHILDREN = ("annotation", "simpleType", "complexType")
+    #: ``alternative`` precedes the identity constraints in the XSD 1.1
+    #: content model (saxonData CTA cta0045).
+    _CHILD_ORDER = (
+        ("simpleType", "complexType"),
+        ("alternative",),
+        ("key", "keyref", "unique"),
+    )
+    #: The inline-type slot holds mutually exclusive alternatives.
+    _ONE_OF_SLOTS = frozenset({0})
 
     # Set by ComplexType._resolveElementRef for ``ref`` sites; the
     # owning parser is attached during clsFor.  Annotations only: the
@@ -86,7 +133,9 @@ class Element(ElementRepresentative):
 
         Reference elements carry no content model of their own (only
         annotations, which carry no parse-relevant information), so
-        their children are not made into ERs.
+        their children are not made into ERs. A non-reference element's
+        children are filtered through ``_acceptChild`` so an illegal
+        child is reported rather than factored.
         """
         if getattr(self, "isElementRef", False):
             return None
@@ -96,6 +145,9 @@ class Element(ElementRepresentative):
             return None
 
         for child in children:
+            if not self._acceptChild(child):
+                self.processedChildren.append(None)
+                continue
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
             childClassName = processedChild.__class__.__name__ if processedChild is not None else ""
@@ -240,13 +292,17 @@ class Element(ElementRepresentative):
         descriptor-protocol behavior.
         """
         if not isinstance(value, self.getType()):
-            # Under the ``raw`` invalid-value policy a primitive child
-            # whose lexical value failed validation is bound as a plain
-            # string so no data is lost; the validation report still
-            # records the problem.
+            # An xsi:type value may be XSD-derived without being a Python
+            # subclass (the xs:decimal → xs:integer step). Under the
+            # ``raw`` invalid-value policy a primitive child whose
+            # lexical value failed validation is bound as a plain string
+            # so no data is lost; the validation report still records
+            # the problem.
             parser = getattr(self, "pyXSD", None)
             policy = getattr(parser, "mode", None)
-            if getattr(policy, "invalid_value", "drop") != "raw":
+            if getattr(policy, "invalid_value", "drop") != "raw" and not _xsd_derived(
+                type(value), self.getType()
+            ):
                 raise TypeError(
                     f"{value!r} is not an instance of the type of element "
                     f"{self.name!r} ({self.getType().__name__})"
@@ -322,11 +378,14 @@ class Element(ElementRepresentative):
     def isNillable(self):
         """Returns True when the element declaration is ``nillable``.
 
-        Reference sites use the referenced declaration's setting.
+        ``nillable`` is an ``xs:boolean``: ``true`` and ``1`` (in any
+        case, with surrounding whitespace) are true, ``false``/``0`` and
+        an absent attribute are false. Reference sites use the
+        referenced declaration's setting.
         """
         if getattr(self, "isElementRef", False):
             return self.referredElement.isNillable()
-        return self.tagAttributes.get("nillable") == "true"
+        return _isTrue(self.tagAttributes.get("nillable"))
 
     def isAbstract(self):
         """Returns True when the element declaration is ``abstract``.
@@ -365,3 +424,134 @@ class Element(ElementRepresentative):
         if namespace_of(resolved) is None:
             return local_name(resolved)
         return resolved
+
+    #: Element ``final`` accepts only these tokens, plus ``#all`` alone.
+    #: Notably ``substitution`` is *not* a legal final token.
+    _FINAL_TOKENS = ("extension", "restriction")
+    #: Element ``block`` additionally accepts ``substitution``.
+    _BLOCK_TOKENS = ("extension", "restriction", "substitution")
+    #: Attributes only a non-reference local element may not carry.
+    _LOCAL_ONLY_FORBIDDEN = ("abstract", "final", "substitutionGroup")
+    #: Attributes a reference site must not redeclare.
+    _REF_FORBIDDEN = (
+        "type",
+        "form",
+        "default",
+        "fixed",
+        "nillable",
+        "abstract",
+        "block",
+        "final",
+        "substitutionGroup",
+    )
+
+    def checkDeclarationLegality(self):
+        """Reports element-declaration attribute (XML) constraints.
+
+        Covers the ``final``/``block`` token lists, the ``minOccurs``/
+        ``maxOccurs`` ordering, the global-only attributes and the
+        conflicts a ``ref`` reference site must not introduce (the
+        reference site's content model is not factored, so those are
+        checked from the raw attributes here).
+        """
+        self._checkElementOccurs()
+        self._checkElementRef()
+        if getattr(self, "isElementRef", False):
+            return
+        self._checkElementValueConstraint()
+        self._checkElementTypeConflict()
+        if self.isGlobalDeclaration():
+            self._checkElementFinalAndBlock()
+        else:
+            self._checkLocalElementAttributes()
+
+    def _checkElementValueConstraint(self) -> None:
+        """Reports an element that carries both ``default`` and ``fixed``.
+
+        An element declaration's {value constraint} is either a default
+        or a fixed value; the XSD XML representation forbids both
+        (e-props-correct, value-constraint consistency). The lexical
+        value itself is validated after type classes are built, so a
+        user-defined simple type's facets apply too.
+        """
+        if "default" in self.tagAttributes and "fixed" in self.tagAttributes:
+            self._reportSchemaError(
+                f"element '{self.name}' must not carry both a default and a fixed value",
+                code="declaration-attribute",
+            )
+
+    def _checkElementTypeConflict(self) -> None:
+        """Reports an element that names a type and declares an inline type.
+
+        The ``type`` attribute and an inline ``simpleType``/``complexType``
+        are mutually exclusive in the XML representation of an element
+        declaration. The raw attribute is read from the element because
+        ``processChildren`` overwrites ``tagAttributes['type']`` with the
+        inline type's generated name.
+        """
+        if self.xsdElement.get("type") is None:
+            return
+        if any(tag in ("simpleType", "complexType") for tag in self.childTags):
+            self._reportSchemaError(
+                f"element '{self.name}' may not carry both a type and an inline type",
+                code="declaration-attribute",
+            )
+
+    def _checkElementOccurs(self) -> None:
+        minimum = self.getMinOccurs()
+        maximum = self.getMaxOccurs()
+        if minimum > maximum:
+            self._reportSchemaError(
+                f"element '{self.name}' has minOccurs={minimum} greater than maxOccurs={maximum}",
+                code="declaration-attribute",
+            )
+
+    def _checkElementFinalAndBlock(self) -> None:
+        final = self.tagAttributes.get("final")
+        if final is not None and self._invalidTokenList(final, self._FINAL_TOKENS):
+            self._reportSchemaError(
+                f"element '{self.name}' has an invalid final value '{final}'; "
+                "expected extension, restriction or #all",
+                code="declaration-attribute",
+            )
+        block = self.tagAttributes.get("block")
+        if block is not None and self._invalidTokenList(block, self._BLOCK_TOKENS):
+            self._reportSchemaError(
+                f"element '{self.name}' has an invalid block value '{block}'; "
+                "expected extension, restriction, substitution or #all",
+                code="declaration-attribute",
+            )
+
+    def _checkLocalElementAttributes(self) -> None:
+        for attr in self._LOCAL_ONLY_FORBIDDEN:
+            if attr in self.tagAttributes:
+                self._reportSchemaError(
+                    f"local element '{self.name}' must not carry '{attr}'",
+                    code="declaration-attribute",
+                )
+
+    def _checkElementRef(self) -> None:
+        if not getattr(self, "isElementRef", False):
+            return
+        if self.isGlobalDeclaration():
+            self._reportSchemaError(
+                f"global element '{self.name}' must not carry a ref attribute",
+                code="declaration-attribute",
+            )
+        if self.xsdElement.get("name") is not None:
+            self._reportSchemaError(
+                f"element reference '{self.ref}' must not also declare a name",
+                code="declaration-attribute",
+            )
+        for attr in self._REF_FORBIDDEN:
+            if attr in self.tagAttributes:
+                self._reportSchemaError(
+                    f"element reference '{self.ref}' must not also carry '{attr}'",
+                    code="declaration-attribute",
+                )
+        for child in self.xsdElement:
+            if local_name(child.tag) in ("simpleType", "complexType"):
+                self._reportSchemaError(
+                    f"element reference '{self.ref}' must not also declare an inline type",
+                    code="declaration-attribute",
+                )

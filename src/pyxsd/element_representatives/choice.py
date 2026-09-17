@@ -4,6 +4,10 @@ from pyxsd.element_representatives.element_representative import ElementRepresen
 class Choice(ElementRepresentative):
     """The class for the choice tag."""
 
+    #: A ``choice`` may carry at most one ``annotation``; its particle
+    #: children (element/group/choice/sequence/any) may repeat.
+    _MAX_ONE_CHILDREN = ("annotation",)
+
     def __init__(self, xsdElement, parent):
         """Adds itself to the sequencesOrChoices list in its containing
         complexType.  Makes a blank list for element children.  Uses the
@@ -41,3 +45,26 @@ class Choice(ElementRepresentative):
         'unbounded' values to 99999, since it needs to be an integer.
         """
         return self._occursValue("maxOccurs")
+
+    def checkDeclarationLegality(self):
+        """Reports occurrence-range sanity on this compositor.
+
+        ``minOccurs`` must not exceed ``maxOccurs``. Reading the values
+        also reports lexical failures through ``_occursValue``
+        (``invalid-occurs``), so garbage in either attribute is never
+        silently ignored.
+        """
+        self._checkParticleOccurs()
+
+    def _emptiableParticle(self, visited: set) -> bool:
+        """A choice can match zero when optional, via all-empty children,
+        or — only for the empty choice — never: an empty choice with
+        ``minOccurs >= 1`` is unsatisfiable rather than emptiable,
+        unlike an empty sequence, whose iterations match zero elements.
+        """
+        if self._silentOccurs("minOccurs") == 0:
+            return True
+        children = self._particleChildren()
+        if not children:
+            return False
+        return all(child._emptiableParticle(visited) for child in children)

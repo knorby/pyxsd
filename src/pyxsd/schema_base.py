@@ -5,10 +5,16 @@ from pyxsd import xsi
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import (
     first_required_name,
+    locally_declared_element,
     match_content_associations,
     particle_names,
 )
-from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
+from pyxsd.derivation import (
+    combinedBlock,
+    derivationMessage,
+    derived_from_union_member,
+    is_validly_derived,
+)
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import WildcardSpec
@@ -46,6 +52,47 @@ def _global_declaration(components, local: str, kind: str, uri: str | None):
             continue
         return entry
     return None
+
+
+def _defined_declaration_names(parser: Any, kind: str) -> frozenset[str]:
+    """Expanded names of the schema's top-level declarations of ``kind``.
+
+    The ``##defined`` wildcard keyword disallows names that resolve to
+    an element (or attribute) declaration (XSD 1.1 §3.10.4.1 clauses
+    2.1/2.2), so only global declarations count: a local declaration
+    sharing the name does not exclude it (the corpus pins wild052.v2).
+    The set is computed once per parser — schemas can hold thousands of
+    declarations — and holds instance names in the same Clark/bare form
+    the matcher compares. The implicit ``xml:*`` attribute declarations
+    are not user schema declarations, so they never make a name defined
+    (wild054.v1 pins ``xml:lang`` admitted).
+    """
+    if parser is None:
+        return frozenset()
+    cache = getattr(parser, "_definedWildcardNames_", None)
+    if cache is None:
+        collected: dict[str, set[str]] = {"element": set(), "attribute": set()}
+        components = getattr(parser, "components", None) or {}
+        for entries in components.values():
+            for entry in entries:
+                entry_kind = componentKind(entry)
+                if entry_kind not in collected:
+                    continue
+                is_global = getattr(entry, "isGlobalDeclaration", None)
+                if is_global is None or not is_global():
+                    continue
+                namespace = getattr(entry, "getNamespace", None)
+                try:
+                    if namespace is None or namespace() == XML_NS:
+                        continue
+                    name = entry.instanceName(is_attribute=entry_kind == "attribute", parser=parser)
+                except Exception:
+                    continue
+                if name:
+                    collected[entry_kind].add(name)
+        cache = {key: frozenset(value) for key, value in collected.items()}
+        parser._definedWildcardNames_ = cache
+    return cache.get(kind, frozenset())
 
 
 def nil_content_kind(element: Any) -> str | None:
@@ -109,6 +156,10 @@ class SchemaBase:
     _name_: str
     _attribs_: dict[str, str]
     _value_: list[str] | None
+    #: True on a subtree bound by a ``processContents="skip"`` wildcard
+    #: (skipped content; identity constraints ignore it). Only skipped
+    #: instances carry the assignment; readers use ``getattr(..., False)``.
+    _skipped_: bool
 
     def __init_subclass__(cls, **kwargs):
         """Collects the descriptor bookkeeping for a new subclass.
@@ -208,6 +259,31 @@ class SchemaBase:
         cls._report_issue(IssueSeverity.WARNING, message, code=code, element=element)
 
     @classmethod
+    def _reportStrayCharacters(cls, elementTag):
+        """Reports character data under an element-only content model.
+
+        XSD 1.1 §3.4.3.2 (Element Locally Valid (Complex Type)): an
+        element whose governing type's content type is element-only has
+        no character content other than whitespace. Mixed types and
+        simple content are not checked here (their text is legal or is
+        the value), and elements whose content model could not be
+        compiled keep the legacy tolerance. Only direct text of
+        *elementTag* is inspected; deeper nodes are checked when the
+        binder recurses into them.
+        """
+        texts = [elementTag.text]
+        texts.extend(child.tail for child in elementTag)
+        for text in texts:
+            if text is not None and text.strip():
+                cls._report_error(
+                    f"element '{elementTag.tag.split('}')[-1]}' has character "
+                    "content but its content model is element-only",
+                    code="unexpected-character",
+                    element=cls.__name__,
+                )
+                return
+
+    @classmethod
     def _node_name(cls, node):
         """The name an instance node is matched under.
 
@@ -266,16 +342,21 @@ class SchemaBase:
 
     @classmethod
     def _wildcard_match(
-        cls, specs: list[WildcardSpec], node_name: str, target_namespace: str | None
+        cls,
+        specs: list[WildcardSpec],
+        node_name: str,
+        target_namespace: str | None,
+        defined: frozenset[str] | None = None,
     ) -> WildcardSpec | None:
         """The first wildcard constraint admitting ``node_name``.
 
         ``node_name`` must be a Clark/expanded name; ``None`` means no
-        wildcard admits the node.
+        wildcard admits the node. The XSD 1.1 ``notQName`` exclusions and
+        the ``##defined`` keyword are applied when the caller supplies
+        the schema's top-level declaration names.
         """
-        uri = namespace_of(node_name)
         for spec in specs:
-            if spec.allows(uri, target_namespace):
+            if spec.allows_name(node_name, target_namespace, defined=defined):
                 return spec
         return None
 
@@ -316,18 +397,57 @@ class SchemaBase:
         return True
 
     @classmethod
-    def _bindWildcardChild(cls, instance, subElement, spec) -> None:
+    def _bindAnyTypeChild(cls, instance, subElement, spec) -> None:
+        """Binds one child of an ``xsd:anyType`` element.
+
+        ``xs:anyType``'s wildcard is lax, so an undeclared child is
+        ordinarily not assessed. An explicit ``xsi:type`` names the
+        child's type, though, and the normal type-resolution path is
+        used for it (a declared child is handled by
+        :meth:`_bindWildcardChild` itself). Everything else is bound
+        generically.
+        """
+        parser = getattr(cls, "pyXSD", None)
+        mode = getattr(parser, "mode", None)
+        if (
+            getattr(mode, "namespaces", "legacy") == "strict"
+            and xsi.xsi_type_name(subElement) is not None
+        ):
+            components = getattr(parser, "components", None)
+            declared = _global_declaration(
+                components,
+                local_name(subElement.tag),
+                "element",
+                namespace_of(subElement.tag),
+            )
+            if declared is None:
+                subElCls = cls._classForChild(None, subElement)
+                if isinstance(subElCls, type) and issubclass(subElCls, SchemaBase):
+                    instance._children_.append(subElCls.makeInstanceFromTag(subElement))
+                    return
+        cls._bindWildcardChild(instance, subElement, spec)
+
+    @classmethod
+    def _bindWildcardChild(cls, instance, subElement, spec, memberHeadMap=None) -> None:
         """Binds one child accepted by an element wildcard.
 
         ``skip`` (and legacy mode) binds generically. ``lax`` validates
         against a matching global declaration when one exists and binds
         generically otherwise. ``strict`` reports
-        ``wildcard-no-declaration`` when no declaration matches.
+        ``wildcard-no-declaration`` when no declaration matches. A
+        strict or lax match is also checked against the XSD 1.1 dynamic
+        tighter EDC rule (:meth:`_checkDynamicEDC`).
         """
         parser = getattr(cls, "pyXSD", None)
         mode = getattr(parser, "mode", None)
-        if getattr(mode, "namespaces", "legacy") != "strict" or spec.process_contents == "skip":
+        if getattr(mode, "namespaces", "legacy") != "strict":
             instance._children_.append(cls.makeGenericInstance(subElement))
+            return
+        if spec.process_contents == "skip":
+            # Skipped content has no governing type definition and takes
+            # no part in identity-constraint checking ("skipped", XSD 1.1
+            # §3.3.4.2; the wild101-104 reading).
+            instance._children_.append(cls.makeGenericInstance(subElement, skipped=True))
             return
         local = local_name(subElement.tag)
         uri = namespace_of(subElement.tag)
@@ -345,9 +465,14 @@ class SchemaBase:
             descriptor.pyXSD = parser
             subElCls = cls._classForChild(descriptor, subElement)
             if subElCls is not None:
+                cls._checkDynamicEDC(instance, subElement, subElCls, descriptor, memberHeadMap)
                 cls._addChildInstance(instance, subElement, subElCls, descriptor)
                 return
         if spec.process_contents == "lax":
+            governing = None
+            if xsi.xsi_type_name(subElement) is not None:
+                governing = cls._classForChild(None, subElement)
+            cls._checkDynamicEDC(instance, subElement, governing, descriptor, memberHeadMap)
             instance._children_.append(cls.makeGenericInstance(subElement))
             return
         cls._report_error(
@@ -356,6 +481,97 @@ class SchemaBase:
             element=cls.__name__,
         )
         instance._children_.append(cls.makeGenericInstance(subElement))
+
+    @classmethod
+    def _checkDynamicEDC(
+        cls,
+        instance,
+        subElement,
+        governing_cls,
+        descriptor=None,
+        memberHeadMap=None,
+    ) -> None:
+        """The XSD 1.1 dynamic tighter EDC rule for one wildcard child.
+
+        Element Locally Valid (Complex Type) clause 5: when an element
+        is admitted by a wildcard, its governing type definition (the
+        ``xsi:type`` class or the wildcard-selected declaration's type)
+        must be the same as, or validly substitutable for, the type the
+        content model locally declares for the element's expanded name.
+        ``processContents="skip"`` never reaches this check (a skipped
+        element has no governing type definition). Unresolvable types
+        skip rather than reject.
+        """
+        if governing_cls is None:
+            return
+        local_cls = cls._locallyDeclaredElementType(instance, subElement, descriptor, memberHeadMap)
+        if local_cls is None:
+            return
+        if is_validly_derived(governing_cls, local_cls) is None:
+            return
+        if derived_from_union_member(governing_cls, local_cls):
+            # A governing type that is (derived from) a member of a
+            # locally declared union is compatible (wild066: xs:date is
+            # a member of union(xs:date, xs:time); wild067's xs:duration
+            # is not).
+            return
+        elementName = cls._node_name(subElement)
+        governingName = getattr(governing_cls, "name", None) or getattr(
+            governing_cls, "__name__", governing_cls
+        )
+        localTypeName = getattr(local_cls, "name", None) or getattr(
+            local_cls, "__name__", local_cls
+        )
+        cls._report_error(
+            f"element '{elementName}' is admitted by a wildcard and its governing "
+            f"type '{governingName}' is not validly derived from the type "
+            f"'{localTypeName}' that the content model locally declares for it",
+            code="element-consistent",
+            element=cls.__name__,
+        )
+
+    @classmethod
+    def _locallyDeclaredElementType(
+        cls,
+        instance,
+        subElement,
+        descriptor=None,
+        memberHeadMap=None,
+    ):
+        """The type the content model locally declares for a node's name.
+
+        Walks the generated type hierarchy: a restriction replaces the
+        base's particle tree, but the locally declared type recurses to
+        the base type definition before it is absent (XSD 1.1 §3.8.6.3,
+        wild068). A substitution-group member of a declared head is
+        *implicitly* contained by the model, and the member's own
+        declaration carries the locally declared type.
+        """
+        nodeName = cls._node_name(subElement)
+        head = (memberHeadMap or {}).get(nodeName)
+        for klass in type(instance).__mro__:
+            model = klass.__dict__.get("_contentModel_")
+            if model is None:
+                continue
+            declaration = locally_declared_element(model, nodeName)
+            if declaration is not None:
+                return cls._declarationType(declaration)
+            if head is not None and locally_declared_element(model, head) is not None:
+                return cls._declarationType(descriptor)
+        return None
+
+    @staticmethod
+    def _declarationType(declaration):
+        """The declared type class of a declaration, or ``None``."""
+        if declaration is None:
+            return None
+        getter = getattr(declaration, "getType", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Instance tree construction
@@ -483,9 +699,21 @@ class SchemaBase:
             for attr in elementTag.attrib:
                 if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
                     displayKey = xsi.xsi_attr_key(attr)
-                    setattr(self, displayKey, elementTag.attrib[attr])
+                    value = elementTag.attrib[attr]
+                    if displayKey == "xsi:nil":
+                        # xsi:nil is governed by its built-in xs:boolean
+                        # declaration, not by any wildcard that admits
+                        # the xsi namespace (wild042.n1).
+                        invalidNil = xsi.invalid_xsi_nil_value(value)
+                        if invalidNil is not None:
+                            type(self)._report_error(
+                                f"xsi:nil value '{invalidNil}' is not a valid boolean",
+                                code="nil",
+                                element=type(self).__name__,
+                            )
+                    setattr(self, displayKey, value)
                     usedAttributes.append(displayKey)
-                    self._attribs_[displayKey] = elementTag.attrib[attr]
+                    self._attribs_[displayKey] = value
             for name in self.descAttributeNames():
                 descriptor = self.descAttributes()[name]
                 matchName = self._instance_name_of(descriptor, is_attribute=True)
@@ -499,28 +727,47 @@ class SchemaBase:
                     self._attribs_[matchName] = elementTag.attrib[matchName]
             # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
             # namespace mode every undeclared attribute is accepted raw; in
-            # strict mode the wildcard's namespace constraint must admit the
-            # attribute, and ``processContents`` decides whether a global
-            # declaration is required.
+            # strict mode the type's effective wildcard must admit the
+            # attribute's namespace, and ``processContents`` decides whether
+            # a global declaration is required. An attribute the wildcard
+            # rejects is reported (``wildcard-namespace``) and remembered so
+            # ``checkAttributes`` does not add a redundant warning.
             if getattr(self, "hasWildcardAttributes_", False):
                 cls = type(self)
                 strict = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
-                specs = self._wildcard_attribute_specs(self) if strict else []
                 targetNamespace = getattr(cls, "_targetNamespace_", None) if strict else None
                 parser = getattr(cls, "pyXSD", None)
+                defined = _defined_declaration_names(parser, "attribute") if strict else None
+                rejected: set[str] = set()
                 for attr, value in elementTag.attrib.items():
                     if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
                         continue
                     if attr in usedAttributes:
                         continue
                     if strict:
-                        spec = self._wildcard_match(specs, attr, targetNamespace)
+                        spec = getattr(cls, "effectiveAttributeWildcard_", None)
                         if spec is None:
+                            # A class built before the effective wildcard
+                            # was stamped: fall back to the collected specs.
+                            specs = self._wildcard_attribute_specs(self)
+                            spec = self._wildcard_match(specs, attr, targetNamespace, defined)
+                        if spec is None:
+                            continue
+                        if not spec.allows_name(attr, targetNamespace, defined=defined):
+                            cls._report_error(
+                                f"attribute '{local_name(attr)}' is not allowed "
+                                "by the attribute wildcard",
+                                code="wildcard-namespace",
+                                element=cls.__name__,
+                            )
+                            rejected.add(attr)
                             continue
                         if not self._checkWildcardAttribute(attr, value, spec, parser):
                             continue
                     self._attribs_[attr] = value
                     usedAttributes.append(attr)
+                if rejected:
+                    self._wildcardRejectedAttributes_ = rejected
         return usedAttributes
 
     @classmethod
@@ -577,8 +824,15 @@ class SchemaBase:
         strictNamespaces = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
         wildcardSpecs = cls._wildcard_element_specs(instance) if hasWildcard else []
         targetNamespace = getattr(cls, "_targetNamespace_", None)
+        definedElements = (
+            _defined_declaration_names(getattr(cls, "pyXSD", None), "element")
+            if hasWildcard and strictNamespaces
+            else None
+        )
 
         model = getattr(instance, "_contentModel_", None)
+        if model is not None and getattr(cls, "_elementOnly_", False):
+            cls._reportStrayCharacters(elementTag)
         if model is None and hasWildcard:
             declaredNames = {cls._instance_name_of(descriptor) for descriptor in elemDescriptors}
             declaredNames.update(memberHeadMap)
@@ -589,7 +843,10 @@ class SchemaBase:
                     declaredChildren.append(subElement)
                 elif (
                     strictNamespaces
-                    and cls._wildcard_match(wildcardSpecs, nodeName, targetNamespace) is not None
+                    and cls._wildcard_match(
+                        wildcardSpecs, nodeName, targetNamespace, definedElements
+                    )
+                    is not None
                 ) or not strictNamespaces:
                     continue
                 else:
@@ -605,6 +862,7 @@ class SchemaBase:
                 name_of=cls._node_name,
                 target_namespace=targetNamespace,
                 namespace_checked=strictNamespaces,
+                defined=definedElements,
             )
         else:
             complete, leftover, childMatches = False, None, []
@@ -640,7 +898,10 @@ class SchemaBase:
                     if not strictNamespaces:
                         return True
                     return (
-                        cls._wildcard_match(wildcardSpecs, node_name, targetNamespace) is not None
+                        cls._wildcard_match(
+                            wildcardSpecs, node_name, targetNamespace, definedElements
+                        )
+                        is not None
                     )
 
                 for subElement in leftover:
@@ -702,7 +963,7 @@ class SchemaBase:
                 # particle. Bind it through that particle even when a
                 # declaration with the same name exists elsewhere in the
                 # model: position decides, not the name.
-                cls._bindWildcardChild(instance, subElement, admitted.spec)
+                cls._bindWildcardChild(instance, subElement, admitted.spec, memberHeadMap)
                 continue
 
             matched = False
@@ -763,12 +1024,12 @@ class SchemaBase:
                 elif hasWildcard:
                     if strictNamespaces:
                         wildcardSpec = cls._wildcard_match(
-                            wildcardSpecs, subElementName, targetNamespace
+                            wildcardSpecs, subElementName, targetNamespace, definedElements
                         )
                     else:
                         wildcardSpec = WildcardSpec()
                 if wildcardSpec is not None:
-                    cls._bindWildcardChild(instance, subElement, wildcardSpec)
+                    cls._bindWildcardChild(instance, subElement, wildcardSpec, memberHeadMap)
                 elif _mode_for(cls).undeclared_content == "generic":
                     instance._children_.append(cls.makeGenericInstance(subElement))
         return instance
@@ -1529,7 +1790,7 @@ class SchemaBase:
         return instance
 
     @classmethod
-    def makeGenericInstance(cls, elementTag):
+    def makeGenericInstance(cls, elementTag, skipped=False):
         """Builds a pass-through instance for wildcard (``xs:any``)
         content.
 
@@ -1540,12 +1801,20 @@ class SchemaBase:
         instance's type declares a wildcard.
 
         - ``elementTag`` - the undeclared xml element to store raw.
+        - ``skipped`` - mark the subtree as bound by a
+          ``processContents="skip"`` wildcard. The marker (checked by
+          the identity-constraint walk) is only set when true, so
+          ordinary generic instances are unchanged.
         """
         instance = SchemaBase()
         instance._name_ = cls._node_name(elementTag)
         instance._attribs_ = dict(elementTag.attrib)
+        if skipped:
+            instance._skipped_ = True
         cls.addValueTo(instance, elementTag)
-        instance._children_ = [cls.makeGenericInstance(child) for child in elementTag]
+        instance._children_ = [
+            cls.makeGenericInstance(child, skipped=skipped) for child in elementTag
+        ]
         return instance
 
     # ------------------------------------------------------------------
@@ -1636,8 +1905,9 @@ class SchemaBase:
                 element=elementName,
             )
         elif len(usedAttrs) < len(attrInElementTag):
+            rejected = getattr(self, "_wildcardRejectedAttributes_", ())
             for attrET in attrInElementTag:
-                if attrET not in usedAttrs:
+                if attrET not in usedAttrs and attrET not in rejected:
                     self._report_warning(
                         f"attribute '{attrET}' is not declared in the schema and was not parsed",
                         code="unexpected-attribute",

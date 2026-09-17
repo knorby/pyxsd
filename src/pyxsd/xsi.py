@@ -17,6 +17,13 @@ XSI_NIL = f"{{{XSI_NAMESPACE}}}nil"
 
 _TRUE = re.compile(r"^(true|1)$", re.IGNORECASE)
 
+#: The lexical space of ``xs:boolean``; the built-in ``xsi:nil``
+#: declaration (XSD 1.1 §3.2.7.2) is typed by it. Matching is
+#: case-insensitive so the historical lenient reading of the attribute
+#: is preserved; only a value outside the boolean vocabulary is
+#: reported.
+_NIL_VALUE = re.compile(r"^(true|false|1|0)$", re.IGNORECASE)
+
 
 def xsi_attr_key(attr: str) -> str:
     """Maps an XSI-namespace attribute name to its display spelling.
@@ -54,3 +61,19 @@ def xsi_nil_is_true(elementTag: Any) -> bool:
     if value is None:
         return False
     return value.strip().lower() in ("true", "1")
+
+
+def invalid_xsi_nil_value(value: Any) -> str | None:
+    """The value when ``xsi:nil`` is outside the boolean lexical space.
+
+    The built-in ``xsi:nil`` attribute declaration is typed
+    ``xs:boolean``, so its value must be ``true``/``false``/``1``/``0``
+    regardless of any wildcard that admits the xsi namespace
+    (wild042.n1). Surrounding whitespace is allowed (collapsed by the
+    datatype's whiteSpace facet). Returns ``None`` for a valid value.
+    """
+    if value is None:
+        return None
+    if _NIL_VALUE.match(str(value).strip()):
+        return None
+    return str(value)

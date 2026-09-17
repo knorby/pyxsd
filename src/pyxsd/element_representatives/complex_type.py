@@ -8,8 +8,61 @@ from pyxsd.wildcards import register_wildcard
 logger = logging.getLogger(__name__)
 
 
+def _isTrue(value: str) -> bool:
+    """XSD ``xs:boolean`` truth: ``true`` or ``1``, case-insensitive."""
+    return str(value).strip().lower() in ("true", "1")
+
+
+#: The model-group particles the empty-explicit-content rule recognises.
+_MODEL_GROUP_KINDS = ("Group", "All", "Choice", "Sequence")
+
+#: The particle children that make a model group non-empty.
+_PARTICLE_KINDS = ("Group", "All", "Choice", "Sequence", "Element", "Any")
+
+
 class ComplexType(XsdType):
     """The class for the complexType tag."""
+
+    #: Child grammar of ``complexType`` (XSD 1.0/1.1): an optional
+    #: annotation, openContent, a single content kind
+    #: (simpleContent/complexContent or a particle), attributes, an
+    #: anyAttribute and assertions.
+    _ALLOWED_CHILDREN = (
+        "annotation",
+        "openContent",
+        "simpleContent",
+        "complexContent",
+        "group",
+        "all",
+        "choice",
+        "sequence",
+        "attribute",
+        "attributeGroup",
+        "anyAttribute",
+        "assert",
+    )
+    _MAX_ONE_CHILDREN = (
+        "annotation",
+        "openContent",
+        "simpleContent",
+        "complexContent",
+        "anyAttribute",
+    )
+    _CHILD_ORDER = (
+        ("annotation",),
+        ("openContent",),
+        ("simpleContent", "complexContent"),
+        ("group", "all", "choice", "sequence"),
+        ("attribute", "attributeGroup"),
+        ("anyAttribute",),
+        ("assert",),
+    )
+    #: A simpleContent/complexContent slot excludes later particle and
+    #: attribute slots.
+    _EXCLUSIVE_SLOTS = frozenset({2})
+    #: The content-kind slot (simpleContent/complexContent) and the
+    #: particle slot (group/all/choice/sequence) are each alternatives.
+    _ONE_OF_SLOTS = frozenset({2, 3})
 
     def __init__(self, xsdElement, parent):
         """Keeps a list of sequences, choices, and alls that are
@@ -24,6 +77,95 @@ class ComplexType(XsdType):
         self.patterns = []
         super().__init__(xsdElement, parent)
         self.getSchema().complexTypes[self.name] = self
+
+    def effectiveMixed(self, _seen: set[int] | None = None) -> bool:
+        """The type's effective ``mixed`` value (XSD 1.1 §3.4.2.3.3).
+
+        Clause 1: the ``mixed`` attribute on ``complexContent``, when
+        present, wins over the one on ``complexType``; absent both, the
+        value is false (``mixed`` is an ``xs:boolean``: ``1``/``true``
+        are true, anything else is false). Clause 4.2.2: an extension
+        whose explicit content is empty takes the *base's* content type,
+        so a mixed base keeps its character-data allowance through an
+        attribute-only or bare extension. ``_seen`` guards a derivation
+        cycle (itself an invalid schema).
+        """
+        value = self._ownMixed()
+        if value or self.getDerivation() != "extension":
+            return value
+        if not self._explicitContentEmpty():
+            return value
+        base = self._baseComplexType(_seen)
+        if base is None:
+            return False
+        return base.effectiveMixed((_seen or set()) | {id(self)})
+
+    def _ownMixed(self) -> bool:
+        """The ``mixed`` value written on this type (clause 1)."""
+        for child in self.processedChildren or ():
+            if child is not None and type(child).__name__ == "ComplexContent":
+                value = (getattr(child, "tagAttributes", {}) or {}).get("mixed")
+                if value is not None:
+                    return _isTrue(value)
+                break
+        value = (getattr(self, "tagAttributes", {}) or {}).get("mixed")
+        return value is not None and _isTrue(value)
+
+    def _explicitContentEmpty(self) -> bool:
+        """Whether the type's explicit content is empty (clause 2).
+
+        The particle children live on ``extension``/``restriction`` when
+        a ``complexContent`` wrapper is present, otherwise on the type.
+        Clause 2.1: no model group at all, an empty ``all``/``sequence``,
+        an empty ``choice`` with ``minOccurs=0``, or any model group
+        with ``maxOccurs=0`` is empty explicit content. A ``group``
+        reference is always a particle (its referenced content is not
+        inlined here).
+        """
+        holder = self
+        complex_content = self._firstProcessedChild(self, "ComplexContent")
+        if complex_content is not None:
+            holder = (
+                self._firstProcessedChild(complex_content, "Extension")
+                or self._firstProcessedChild(complex_content, "Restriction")
+                or complex_content
+            )
+        particles = [
+            child
+            for child in getattr(holder, "processedChildren", None) or ()
+            if child is not None and type(child).__name__ in _MODEL_GROUP_KINDS
+        ]
+        if not particles:
+            return True
+        particle = particles[0]
+        # Silent occurrence reads: a garbage value is reported once on
+        # the owning declaration, not here.
+        if particle._silentOccurs("maxOccurs") == 0:
+            return True
+        kind = type(particle).__name__
+        if kind == "Group":
+            return False
+        members = [
+            child
+            for child in getattr(particle, "processedChildren", None) or ()
+            if child is not None and type(child).__name__ in _PARTICLE_KINDS
+        ]
+        if members:
+            return False
+        if kind in ("All", "Sequence"):
+            return True
+        return particle._silentOccurs("minOccurs") == 0
+
+    def _baseComplexType(self, _seen: set[int] | None = None) -> "ComplexType | None":
+        """The first base type that is a complex type, or ``None``."""
+        for name in getattr(self, "superClassNames", None) or ():
+            _, representative = self.varietyOfReference(name)
+            if representative is None or type(representative).__name__ != "ComplexType":
+                continue
+            if _seen and id(representative) in _seen:
+                return None
+            return representative
+        return None
 
     def getElements(self):
         """Returns a list of elements.
@@ -122,25 +264,48 @@ class ComplexType(XsdType):
         for spec in getattr(group, "wildcardAttributeSpecs", ()):
             register_wildcard(self, spec)
 
-        contributed = []
-        for element in compositor.elements:
-            if getattr(element, "isRefSite", False):
-                contributed.extend(self._flattenGroupRef(element, visited | {groupKey}))
-                continue
-            # The group's element representatives are shared by every
-            # complex type that references the group. Each reference gets its
-            # own shallow copy, so folding this reference's occurrence
-            # limits (and resolving element refs) never mutates the
-            # shared declaration.
-            use = copy.copy(element)
-            if getattr(use, "isElementRef", False):
-                # ``<xs:element ref="..."/>`` inside a named group must
-                # resolve to its global declaration exactly as it would
-                # directly inside the type.
-                self._resolveElementRef(use)
-            use.sOrC = compInfo
-            contributed.append(use)
+        contributed = self._compositorElements(compositor, compInfo, visited, groupKey)
         self._foldRefOccurrences(refSite, contributed)
+        return contributed
+
+    def _compositorElements(self, compositor, compInfo, visited, groupKey):
+        """Returns the elements a group compositor contributes, in order.
+
+        Walks the compositor's own children, descending nested
+        compositors (which never appear in ``compositor.elements``, as
+        that list holds only the immediate element and group-reference
+        children) and recursing through group references. Each element
+        is a per-use shallow copy carrying the compositor it sits in as
+        its ``sOrC``; ``visited``/``groupKey`` guard reference cycles
+        exactly as ``_flattenGroupRef`` does.
+        """
+        contributed = []
+        for child in getattr(compositor, "processedChildren", None) or ():
+            if child is None:
+                continue
+            kind = type(child).__name__
+            if kind == "Element":
+                # The group's element representatives are shared by every
+                # complex type that references the group. Each reference gets
+                # its own shallow copy, so folding this reference's occurrence
+                # limits (and resolving element refs) never mutates the
+                # shared declaration.
+                use = copy.copy(child)
+                if getattr(use, "isElementRef", False):
+                    # ``<xs:element ref="..."/>`` inside a named group must
+                    # resolve to its global declaration exactly as it would
+                    # directly inside the type.
+                    self._resolveElementRef(use)
+                use.sOrC = compInfo
+                contributed.append(use)
+            elif kind == "Group" and getattr(child, "isRefSite", False):
+                contributed.extend(self._flattenGroupRef(child, visited | {groupKey}))
+            elif kind in ("Sequence", "Choice", "All"):
+                try:
+                    nestedInfo = Compositor(child.tagType)
+                except ValueError:
+                    nestedInfo = None
+                contributed.extend(self._compositorElements(child, nestedInfo, visited, groupKey))
         return contributed
 
     def _resolveElementRef(self, refSite):

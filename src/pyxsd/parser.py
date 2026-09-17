@@ -50,6 +50,8 @@ import re
 import sys
 import tokenize
 import warnings
+from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import IO, Any
@@ -57,7 +59,16 @@ from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
 from pyxsd.binding import BindingPolicy, ParseModes
-from pyxsd.derivation import combinedBlock, derivationMessage, is_validly_derived
+from pyxsd.content_model import (
+    Particle,
+    _content_children,
+    all_extension_occurrence,
+    all_members,
+    all_term,
+    compile_content_model,
+    compile_own_content,
+)
+from pyxsd.derivation import blockTokens, combinedBlock, derivationMessage, is_validly_derived
 from pyxsd.element_representatives.element_representative import (
     ComponentTable,
     ElementRepresentative,
@@ -67,16 +78,42 @@ from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.namespaces import (
     XML_NS,
     XSD_NS,
+    XSI_NS,
     NamespaceContext,
     NamespaceError,
     clark,
+    local_name,
+    namespace_of,
     parse_with_namespaces,
+)
+from pyxsd.particle_derivation import (
+    derived_wildcard_edc_violations,
+    element_namespace,
+    is_valid_particle_restriction,
+    wildcard_subset,
 )
 from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
+from pyxsd.upa import upa_violations
 from pyxsd.validation import ValidationReport
+from pyxsd.wildcards import (
+    NAMESPACE_ANY,
+    PROCESS_SEVERITY,
+    WildcardSpec,
+    effective_attribute_wildcard,
+    invalid_namespace_constraint,
+    wildcard_specs_overlap,
+)
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
-from pyxsd.xsd_data_types import AnySimpleType, qname_context, whitespace_mode, xsd_value_key
+from pyxsd.xsd_data_types import (
+    AnySimpleType,
+    AnyType,
+    NCName,
+    XsdDataType,
+    qname_context,
+    whitespace_mode,
+    xsd_value_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +128,21 @@ _COMPOSABLE_TAGS = {
     "attribute",
     "notation",
 }
+
+#: Namespace of the XSD 1.1 conditional-inclusion attributes
+#: (``vc:minVersion`` etc.). Version selectors may legitimately leave
+#: several same-named declarations for different versions.
+_VC_NS = "http://www.w3.org/2007/XMLSchema-versioning"
+
+
+def _qnameLocal(value: str) -> str:
+    """Returns the local part of a lexical QName or Clark name."""
+    return local_name(value.rpartition(":")[2])
+
+
+def _stackPrefix(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
+    """Whether *shorter* is a prefix of *longer* (document ancestry)."""
+    return len(shorter) <= len(longer) and longer[: len(shorter)] == shorter
 
 
 class PyXSD:
@@ -109,6 +161,12 @@ class PyXSD:
     xsdFile: str | Path | os.PathLike[str] | IO[str] | None
     xmlFileOutput: str | Path | bool
     schemaRootInstance: Any
+
+    #: ER class names for the identity-constraint definitions. Their
+    #: names share one symbol space scoped to the containing element
+    #: declaration (XSD 1.0 §3.11), unlike the per-target-namespace
+    #: symbol spaces of the global components.
+    _IDENTITY_KINDS = ("Key", "Keyref", "Unique")
 
     def __init__(
         self,
@@ -180,6 +238,34 @@ class PyXSD:
         # Source-document form defaults per spliced component:
         # id(xsdElement) -> (elementFormDefault, attributeFormDefault).
         self._formDefaults: dict[int, tuple[str | None, str | None]] = {}
+        # Element identities that came from an included/imported schema
+        # document. ``id`` uniqueness is an XML (per-document) rule, so
+        # components spliced from another document must not be compared
+        # against the main document's ids.
+        self._composedElementIds: set[int] = set()
+        # ``id`` attributes on the main document's composition directives
+        # (include/import/redefine). The directives are removed before the
+        # ER walk, but their ids still take part in the document's xs:ID
+        # uniqueness, so declaration ids are compared against them.
+        self._directiveIds: dict[str, Any] = {}
+        # The include/redefine ancestry of the document currently being
+        # composed (resolved paths, outermost first). Used to tell an
+        # independent second redefine of a component (a conflict) from a
+        # nested one reached through a shared include (the suite leaves
+        # the latter implementation-defined).
+        self._composeStack: list[str] = []
+        # For each redefined ``(base path, kind, name)``, the
+        # ``_composeStack`` snapshot at its first redefine.
+        self._redefineOrigins: dict[tuple[str, str, str], tuple[str, ...]] = {}
+        # Namespaces for which a schema was supplied or successfully
+        # loaded. A namespace-only import of one of these is satisfied by
+        # that schema rather than an unresolved hint.
+        self._resolvedImports: set[str] = set()
+        # Target namespaces of the schema documents in the composition.
+        # A namespace-only import of a namespace another document in the
+        # collection declares is satisfied by it; only the importing
+        # document's own target namespace does not count.
+        self._composedTargetNamespaces: set[str] = set()
         # The parser's thread-local construction context: schema
         # construction and instance binding run inside it, so concurrent
         # parsers cannot observe each other's overrides or tables. The
@@ -330,7 +416,14 @@ class PyXSD:
         # spliced twice (diamond includes) and a repeat encounter is not
         # an error.
         self._composedDocuments: set[str] = set(visited)
-        self._spliceComposedSchemas(root, baseDir, visited)
+        # A namespace is satisfied if a schema for it was supplied up
+        # front, so such a namespace-only import is not unresolved.
+        self._resolvedImports.update(ns for ns in self.namespaceSchemas if ns)
+        self._resolvedImports.update(ns for ns, _ in getattr(self, "_additionalSchemas", []) if ns)
+        mainTargetNamespace = root.get("targetNamespace")
+        if mainTargetNamespace:
+            self._composedTargetNamespaces.add(mainTargetNamespace)
+        self._spliceComposedSchemas(root, baseDir, visited, mainDocument=True)
         self._spliceAdditionalSchemas(root, baseDir, visited)
         if getattr(self.mode, "namespaces", "legacy") == "strict":
             self._injectXmlNamespaceAttributes(root)
@@ -350,19 +443,27 @@ class PyXSD:
         # record schema-reference problems (group/attributeGroup
         # references) on the validation report.
         schemaER.pyXSD = self
-        self._reportDeclarationIssues(schemaER)
         # The captured prefix bindings let every declaration resolve the
-        # QNames written in its own document.
+        # QNames written in its own document. Install them before the
+        # declaration checks run: the atomicity check resolves
+        # ``itemType``/``memberTypes`` through the in-scope namespaces.
         schemaER.namespaceContext = self.namespaceContext
+        # Expand the 1.1 notQName names on every wildcard before the
+        # declaration walk: the attribute-wildcard derivation check runs
+        # when a complex type is visited, ahead of the AnyAttribute ERs
+        # that declared the specs, and must see the expanded names.
+        self._refineWildcardSpecs(schemaER)
         # This parser owns the component table the ER run registered
         # into; expose it on the parser and on the context so registry
-        # lookups (xsi:type dispatch, tests) use this parser's
-        # declarations rather than a previous parser's.
+        # lookups (xsi:type dispatch, tests, and the declaration-issue
+        # walk's type resolution) use this parser's declarations rather
+        # than a previous parser's.
         self.components = schemaER.components
         self.schemaContext.components = self.components
-        # Module-level lookups after this parse (ElementRepresentative
+        # Module-level lookups from here on (ElementRepresentative
         # .getFromName, the registry proxy) see this parser's table.
         remember_components(self.components)
+        self._reportDeclarationIssues(schemaER)
 
         # The schema root is itself the instance class used to dispatch
         # the document root's element declarations.
@@ -386,8 +487,34 @@ class PyXSD:
                 logger.debug("Class created for the %s type...", typeER.name)
 
         self._buildSubstitutionGroups(schemaER)
+        self._checkSubstitutionGroupExclusions(schemaER)
+        self._checkValueConstraints(schemaER)
 
         return None
+
+    def _refineWildcardSpecs(self, schema_root: Any) -> None:
+        """Expands the XSD 1.1 ``notQName`` names on every wildcard ER.
+
+        The ER constructors run before the schema's prefix bindings are
+        attached, so they register a raw spec; the declaration walk's
+        wildcard grammar/consistency check and the derivation checks
+        consult the registered spec, and the attribute-wildcard
+        derivation check runs on a complex type *before* the walk
+        reaches the type's ``xs:anyAttribute`` children. Refining every
+        wildcard once here (same traversal as the walk) makes the
+        registered specs expanded for all consumers, binding included.
+        """
+        seen: set[int] = set()
+        stack = [schema_root]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            refine = getattr(er, "refineWildcardSpec", None)
+            if callable(refine):
+                refine()
+            stack.extend(getattr(er, "processedChildren", None) or ())
 
     def _reportDeclarationIssues(self, schemaER: Any) -> None:
         """Reports declarations that cannot carry a usable name and
@@ -411,6 +538,8 @@ class PyXSD:
             "Unique",
         )
         seen: set[int] = set()
+        seenIds: dict[str, Any] = dict(self._directiveIds)
+        declared: dict[tuple[str, Any, str], Any] = {}
         stack = [schemaER]
         while stack:
             er = stack.pop()
@@ -427,17 +556,1436 @@ class PyXSD:
                     f"{type(er).__name__} declaration is missing a name",
                     code="declaration-name",
                 )
-            for tag in getattr(er, "unexpectedChildTags", None) or ():
-                self.report.add_error(
-                    f"{type(er).__name__} '{getattr(er, 'constraintName', er.name)}' "
-                    f"has an illegal child '{tag}'",
-                    code="unexpected-identity-child",
-                )
+            self._checkChildGrammar(er)
+            self._checkDeclarationId(er, seenIds)
+            self._checkDuplicateName(er, declared)
+            er.checkDeclarationLegality()
+            self._reportContentModelIssues(er)
             misplacement = getattr(er, "misplacement", None)
             if misplacement is not None:
                 code, message = misplacement
                 self.report.add_error(message, code=code)
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    #: ``xs:anyType``'s effective content: a mixed sequence holding an
+    #: unrestricted wildcard. It stands in for the built-in type's model
+    #: during extension-structure checks (the built-in has no compiled
+    #: class model); it is neither empty nor an ``all``, so an ``all``
+    #: suffix over it is reported while sequence/choice suffixes are not.
+    _ANY_TYPE_CONTENT = Particle("sequence", 1, 1, [Particle("any")])
+
+    #: Compositor ERs whose particle sets the content-model sweep checks.
+    _COMPOSITOR_KINDS = ("All", "Sequence", "Choice")
+
+    #: Compositors the pointless-particle rule (particlesHa) applies to.
+    _POINTLESS_KINDS = ("Sequence", "Choice")
+
+    def _reportContentModelIssues(self, er: Any) -> None:
+        """Reports duplicate or conflicting particles inside one compositor.
+
+        Element declaration particles are collected transitively through
+        nested compositor children — never through an element
+        declaration's *type* (a different content model) and never
+        through a group reference (spliced in later). Two particles with
+        the same expanded name but different type declarations violate
+        Element Declarations Consistent in any compositor; under an
+        ``all`` any two particles with the same expanded name violate
+        UPA (identical or not — identical duplicates elsewhere are
+        deterministic and legal), as do an element in the substitution
+        group of another and two overlapping wildcards. Each conflicting
+        name is reported once per compositor.
+
+        Complex types derived by restriction with a particle
+        additionally run the particle-valid restriction check
+        (``_reportParticleRestriction``, cos-particle-restrict).
+
+        ``sequence``/``choice`` compositors with an empty particle set
+        inside a group referenced with ``minOccurs="0"`` additionally
+        violate the pointless-particle rule
+        (``_reportPointlessParticle``).
+
+        Reference sites are resolved against the document's global
+        element declarations: references to the same declaration share
+        its type, and a reference that cannot be resolved here (it
+        names an import, say) is left out of the comparison — its type
+        is unknown, and guessing from the raw QName would compare
+        prefixes instead of declarations.
+        """
+        if type(er).__name__ in self._POINTLESS_KINDS:
+            self._reportPointlessParticle(er)
+        if type(er).__name__ == "ComplexType":
+            self._reportParticleRestriction(er)
+            self._reportMixedRestriction(er)
+            self._reportComplexContentFromSimpleBase(er)
+            self._reportAttributeUseDerivation(er)
+            self._reportAttributeWildcardRestriction(er)
+            self._reportExtensionStructure(er)
+            self._reportUniqueParticleAttribution(er)
+        if type(er).__name__ not in self._COMPOSITOR_KINDS:
+            return
+        if type(er).__name__ in ("Sequence", "Choice"):
+            self._checkWildcardParticleOverlap(er)
+        rawParticles: list[Any] = []
+        self._collectParticles(er, rawParticles, set())
+        resolved = self._resolveParticles(rawParticles)
+        byName: dict[tuple[str, str], list[tuple[str, Any]]] = {}
+        for name, typeKey, particle in resolved:
+            byName.setdefault(name, []).append((typeKey, particle))
+        isAll = type(er).__name__ == "All"
+        for (_, local), sameName in byName.items():
+            if len(sameName) < 2:
+                continue
+            typeKeys = {typeKey for typeKey, _ in sameName}
+            if len(typeKeys) > 1:
+                self.report.add_error(
+                    f"element declarations consistent: element '{local}' is "
+                    "declared with conflicting types "
+                    f"{sorted(key for key in typeKeys if key) or ['(anonymous)']} "
+                    "in the same content model",
+                    code="all-rule",
+                )
+                continue
+            if isAll:
+                self.report.add_error(
+                    f"content model is ambiguous: element '{local}' appears more "
+                    "than once in an all",
+                    code="all-rule",
+                )
+        if isAll:
+            self._checkSubstitutionOverlap(resolved)
+            self._checkAllWildcardOverlap(er)
+
+    def _reportParticleRestriction(self, er: Any) -> None:
+        """Reports particle-invalid restriction derivations.
+
+        For a complex type whose derivation is a restriction carrying a
+        particle (cos-particle-restrict, XSD 1.0 §3.9.6), compiles the
+        restricting type's own tree and the base type's effective tree
+        and hands them to the pure predicate in
+        ``pyxsd.particle_derivation``. Every violation is reported as
+        ``particle-restriction`` with the deciding rule name in the
+        message.
+
+        Skips — never errors — when the type is not a particle
+        restriction, the base type cannot be resolved to a compiled
+        type, or either tree could not be compiled (the legacy flat
+        fallback); each skip is logged at debug level with its reason.
+        A ``RecursionError`` from a pathologically large or nested pair
+        is likewise caught and logged, leaving the pair unverified
+        rather than crashing the parse.
+        """
+        if er.getDerivation() != "restriction":
+            return
+        if not _content_children(er):
+            # No particle slot (simple-content restriction, facets only):
+            # the particle rules do not apply.
+            return
+        derived_model = compile_content_model(er, self)
+        if derived_model is None:
+            logger.debug(
+                "particle restriction: content model of %s could not be compiled; skipped",
+                getattr(er, "name", "?"),
+            )
+            return
+        base_class = self._baseTypeClass(er)
+        if base_class is None:
+            logger.debug(
+                "particle restriction: base type %r of %s unresolved; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        base_model = getattr(base_class, "_contentModel_", None)
+        if base_model is None:
+            logger.debug(
+                "particle restriction: base type %s has no compiled content model; skipped",
+                getattr(base_class, "name", "?"),
+            )
+            return
+        resolver = lambda particle: getattr(particle, "descriptor", None)  # noqa: E731
+        head_lookup = self._substitution_head_lookup(er)
+        member_lookup = self._substitution_member_lookup(er)
+        try:
+            reasons = list(
+                is_valid_particle_restriction(
+                    base_model,
+                    derived_model,
+                    resolver,
+                    head_lookup=head_lookup,
+                    member_lookup=member_lookup,
+                )
+            )
+            reasons.extend(
+                derived_wildcard_edc_violations(
+                    base_model, derived_model, resolver, self._globalElementLookup(er)
+                )
+            )
+        except RecursionError:
+            logger.debug(
+                "particle restriction: recursion limit hit checking %s; skipped",
+                getattr(er, "name", "?"),
+            )
+            return
+        for reason in reasons:
+            self.report.add_error(reason, code="particle-restriction")
+
+    def _reportMixedRestriction(self, er: Any) -> None:
+        """Reports a mixed type restricting a non-mixed base type.
+
+        ``Derivation Valid (Restriction, Complex)`` clause 2.4.1 admits a
+        mixed derived content type only when the base content type is
+        mixed too (2.4.1.2); an element-only derived type may restrict an
+        element-only or mixed base (2.4.1.1). The rule bites even when
+        the derived particle is empty — a ``maxOccurs=0`` reference makes
+        the effective content a synthetic empty sequence, but the content
+        type still reads mixed (groupH007v; its non-mixed twin
+        groupH008v is valid). A simple-content restriction is not a mixed
+        complex-content shape, and an ``xs:anyType`` base is exempt
+        (clause 2.1). Skips — never errors — when the base type cannot be
+        resolved or is not a complex type definition.
+        """
+        if er.getDerivation() != "restriction":
+            return
+        if er._firstProcessedChild(er, "SimpleContent") is not None:
+            return
+        if not self._typeIsMixed(er):
+            return
+        if self._baseIsAnyType(er):
+            return
+        base_er = self._baseTypeER(er)
+        if base_er is None or not hasattr(base_er, "effectiveMixed"):
+            logger.debug(
+                "mixed restriction: base type %r of %s unresolved or not complex; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        if self._typeIsMixed(base_er):
+            return
+        self.report.add_error(
+            "particle restriction (Derivation Valid (Restriction, Complex) "
+            "clause 2.4.1): the mixed content type of "
+            f"'{getattr(er, 'name', '?')}' cannot restrict the non-mixed "
+            f"base type '{getattr(base_er, 'name', '?')}'",
+            code="particle-restriction",
+        )
+
+    def _reportComplexContentFromSimpleBase(self, er: Any) -> None:
+        """Reports complex content derived from a simple-content base.
+
+        ``Derivation Valid (Extension)`` clause 1.4 and ``Derivation
+        Valid (Restriction, Complex)`` clause 2.2 admit a complex-content
+        derivation of a complex type only when both sides carry the same
+        simple content, both are empty, or the derived content is
+        element-only/mixed over an element-only/mixed base. Explicit
+        complex content (an empty sequence included) over a base whose
+        content type is simple satisfies none of them, so both the
+        extension and the restriction shapes are errors under the XSD
+        1.1 harness profile (particlesZ031 is the 1.0-valid/1.1-invalid
+        split; particlesZ039 is the restriction twin). A base that is
+        not a complex type with simple content — ``xs:anyType``, a
+        complex base, or an unresolvable reference — is skipped.
+        """
+        if er.getDerivation() not in ("extension", "restriction"):
+            return
+        if er._firstProcessedChild(er, "SimpleContent") is not None:
+            return
+        if er._firstProcessedChild(er, "ComplexContent") is None:
+            return
+        if self._baseIsAnyType(er):
+            return
+        base_er = self._baseTypeER(er)
+        if base_er is None or not hasattr(base_er, "processedChildren"):
+            logger.debug(
+                "complex content from simple base: base type %r of %s "
+                "unresolved or not complex; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        if base_er._firstProcessedChild(base_er, "SimpleContent") is None:
+            return
+        self.report.add_error(
+            "particle restriction (Derivation Valid, complex type "
+            f"'{getattr(er, 'name', '?')}' adopts explicit complex content "
+            f"but its base type '{getattr(base_er, 'name', '?')}' has simple "
+            "content)",
+            code="particle-restriction",
+        )
+
+    def _reportUniqueParticleAttribution(self, er: Any) -> None:
+        """Reports an ambiguous effective content model (cos-nonambig).
+
+        Unique Particle Attribution is a property of a complex type's
+        *effective* content model, so the sweep runs over the compiled
+        model — the base type's tree composed with an extension's own
+        suffix, which is where an inherited wildcard and a suffix
+        wildcard can overlap (particlesZ022). The pure sweep lives in
+        :mod:`pyxsd.upa`; it reports the first ambiguity. A type whose
+        model could not be compiled, or a model with nothing to compare,
+        is skipped.
+        """
+        if type(er).__name__ != "ComplexType":
+            return
+        model = compile_content_model(er, self)
+        if model is None:
+            logger.debug(
+                "unique particle attribution: content model of %s could not be compiled; skipped",
+                getattr(er, "name", "?"),
+            )
+            return
+        for reason in upa_violations(model, self._substitution_head_lookup(er)):
+            self.report.add_error(reason, code="upa")
+
+    def _reportAttributeUseDerivation(self, er: Any) -> None:
+        """Reports attribute-use derivation violations on a complex type.
+
+        The bounded slice of the attribute clauses the corpus pins:
+
+        * Restriction (XSD 1.0 §3.4.6 clause 2.1.1): a derived use that
+          redeclares a *required* base use must stay required;
+          weakening it to optional is reported (particlesZ030_d,
+          particlesZ017). Omitting the base use entirely is accepted —
+          the Saxon 1.1 Assert suite pins such restrictions valid
+          (assert011), so the literal XSD 1.0 clause 3 shape is not
+          implemented.
+        * Extension (XSD 1.1 §3.4.6.2 clause 1.2): a base use must be
+          reproduced with identical properties; a redeclaration that
+          changes the ``fixed`` value is reported (particlesZ026a).
+
+        The base's effective uses are gathered through its extension
+        chain (a restriction does not inherit uses). The check is
+        skipped when the base type cannot be resolved or carries an
+        XSD 1.1 ``inheritable`` use, which the restriction mapping
+        inherits automatically (so omitting it is legal). Attribute
+        type derivation and the remaining value-constraint clauses stay
+        out of this slice.
+        """
+        derivation = self._complexTypeDerivation(er)
+        if derivation not in ("restriction", "extension"):
+            return
+        base_er = self._baseTypeER(er)
+        if base_er is None or not hasattr(base_er, "attributes"):
+            logger.debug(
+                "attribute-use derivation: base type %r of %s unresolved or not complex; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        base_uses, inheritable = self._effectiveAttributeUses(base_er)
+        if not base_uses or inheritable:
+            return
+        own_uses = getattr(er, "attributes", None) or {}
+        if derivation == "restriction":
+            for name, derived_attr in own_uses.items():
+                base_attr = base_uses.get(name)
+                if base_attr is None or not self._attributeUseIsRequired(base_attr):
+                    continue
+                if not self._attributeUseIsRequired(derived_attr):
+                    self.report.add_error(
+                        f"attribute-use restriction: type "
+                        f"'{getattr(er, 'name', '?')}' redeclares the required "
+                        f"attribute '{name}' of its base type "
+                        f"'{getattr(base_er, 'name', '?')}' as optional",
+                        code="attribute-restriction",
+                    )
+            return
+        for name, derived_attr in own_uses.items():
+            base_attr = base_uses.get(name)
+            if base_attr is None:
+                continue
+            base_fixed = base_attr.getFixed()
+            if base_fixed is not None and derived_attr.getFixed() != base_fixed:
+                self.report.add_error(
+                    f"attribute-use extension: attribute '{name}' of type "
+                    f"'{getattr(er, 'name', '?')}' changes the fixed value "
+                    f"'{base_fixed}' of its base type "
+                    f"'{getattr(base_er, 'name', '?')}'",
+                    code="attribute-restriction",
+                )
+
+    def _effectiveAttributeUses(
+        self, er: Any, seen: set[int] | None = None
+    ) -> tuple[dict[str, Any], bool]:
+        """A type's effective attribute uses, walking its extension chain.
+
+        Returns ``(uses-by-name, has-inheritable)``. A restriction does
+        not inherit its base's uses; an extension does. ``seen`` guards
+        a derivation cycle (itself an invalid schema).
+        """
+        uses = dict(getattr(er, "attributes", None) or {})
+        has_inheritable = any(self._attributeUseIsInheritable(attr) for attr in uses.values())
+        if self._complexTypeDerivation(er) != "extension":
+            return uses, has_inheritable
+        if seen is None:
+            seen = set()
+        if id(er) in seen:
+            return uses, has_inheritable
+        seen.add(id(er))
+        base_er = self._baseTypeER(er)
+        if base_er is None or not hasattr(base_er, "attributes"):
+            return uses, has_inheritable
+        base_uses, base_inheritable = self._effectiveAttributeUses(base_er, seen)
+        for name, attr in base_uses.items():
+            uses.setdefault(name, attr)
+        return uses, has_inheritable or base_inheritable
+
+    @staticmethod
+    def _complexTypeDerivation(er: Any) -> str | None:
+        """The type's derivation method, simpleContent wrappers included.
+
+        ``XsdType.getDerivation`` reads ``complexContent`` wrappers only;
+        a ``simpleContent`` extension or restriction reports its method
+        through this helper.
+        """
+        derivation = er.getDerivation()
+        if derivation is not None:
+            return derivation
+        simple = er._firstProcessedChild(er, "SimpleContent")
+        if simple is None:
+            return None
+        for child in getattr(simple, "processedChildren", None) or ():
+            kind = type(child).__name__
+            if kind == "Extension":
+                return "extension"
+            if kind == "Restriction":
+                return "restriction"
+        return None
+
+    @staticmethod
+    def _attributeUseIsRequired(attr: Any) -> bool:
+        getter = getattr(attr, "getUse", None)
+        return callable(getter) and getter() == "required"
+
+    @staticmethod
+    def _attributeUseIsInheritable(attr: Any) -> bool:
+        attributes = getattr(attr, "tagAttributes", None) or {}
+        return str(attributes.get("inheritable") or "").strip().lower() in ("true", "1")
+
+    def _globalElementLookup(self, er: Any) -> Any:
+        """A lookup from a Clark name to a top-level element declaration.
+
+        Feeds the XSD 1.1 static tighter EDC check (the binding the
+        derived type's wildcard resolves to). Names that name no global
+        declaration return ``None``, which the check reads as "nothing
+        to compare".
+        """
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return lambda name: None
+        elements = [
+            element
+            for element in getattr(schema, "elements", None) or ()
+            if type(element).__name__ == "Element" and element.name
+        ]
+
+        def lookup(name: str) -> Any:
+            local = local_name(name)
+            uri = namespace_of(name)
+            for element in elements:
+                if getattr(element, "name", None) != local:
+                    continue
+                try:
+                    element_uri = element.getNamespace()
+                except AttributeError:
+                    element_uri = None
+                if element_uri == uri:
+                    return element
+            return None
+
+        return lookup
+
+    def _reportAttributeWildcardRestriction(self, er: Any) -> None:
+        """Reports a restriction that does not narrow the base wildcard.
+
+        The derived type's effective attribute wildcard (its local
+        ``anyAttribute`` plus the ones its attribute groups contribute,
+        intersected) must be a valid restriction of the base type's
+        effective wildcard: the namespace constraint may only narrow and
+        ``processContents`` must not weaken. A derived type that declares
+        no attribute wildcard of its own accepts fewer attributes and is
+        always a valid restriction, so only a type whose complete
+        wildcard is non-absent is checked. Skips — never errors — when
+        the base type cannot be resolved or carries no attribute
+        wildcard of its own (an empty derived wildcard admits nothing,
+        making the semantic rule depend on more than the constraint
+        shape).
+        """
+        if er.getDerivation() != "restriction":
+            return
+        ownSpecs = getattr(er, "wildcardAttributeSpecs", None)
+        if not ownSpecs:
+            return
+        baseER = self._baseTypeER(er)
+        if baseER is None:
+            logger.debug(
+                "attribute wildcard restriction: base type %r of %s unresolved; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        baseSpecs = getattr(baseER, "wildcardAttributeSpecs", None)
+        if not baseSpecs:
+            # The base has no attribute wildcard; whether a derived
+            # wildcard is a valid restriction is a semantic question
+            # (an empty derived wildcard admits nothing and is fine), so
+            # the structural comparison below has nothing to check.
+            logger.debug(
+                "attribute wildcard restriction: base type %s has no attribute wildcard; skipped",
+                getattr(baseER, "name", "?"),
+            )
+            return
+        target = er.getNamespace()
+        own = effective_attribute_wildcard(ownSpecs, target)
+        base = effective_attribute_wildcard(baseSpecs, baseER.getNamespace())
+        if own is None or base is None:
+            return
+        if not wildcard_subset(own, base, target):
+            self.report.add_error(
+                f"restriction of type '{er.name}' widens the base attribute "
+                f"wildcard namespace constraint ('{own.namespace}' is not a "
+                f"subset of '{base.namespace}')",
+                code="wildcard-invalid",
+            )
+            return
+        if PROCESS_SEVERITY.get(own.process_contents, 2) < PROCESS_SEVERITY.get(
+            base.process_contents, 2
+        ):
+            self.report.add_error(
+                f"restriction of type '{er.name}' weakens the base attribute "
+                f"wildcard processContents ('{own.process_contents}' is weaker "
+                f"than '{base.process_contents}')",
+                code="wildcard-invalid",
+            )
+
+    def _baseTypeClass(self, er: Any) -> Any | None:
+        """The generated class of the first resolvable base type."""
+        for raw_name in getattr(er, "superClassNames", []) or []:
+            resolved = er.resolveSchemaQName(raw_name, parser=self)
+            candidate = ElementRepresentative.typeFromName(resolved, self)
+            if candidate is not None:
+                return candidate
+        return None
+
+    def _baseTypeER(self, er: Any) -> Any | None:
+        """The element representative of the first resolvable base type.
+
+        Mirrors ``ElementRepresentative.typeFromName``'s lookup but
+        returns the representative itself, which still carries the XML
+        attributes (``mixed``) a generated class does not.
+        """
+        table = self.components
+        if table is None:
+            return None
+        strict = getattr(getattr(self, "mode", None), "namespaces", "legacy") == "strict"
+        for raw_name in getattr(er, "superClassNames", []) or []:
+            resolved = er.resolveSchemaQName(raw_name, parser=self)
+            if strict:
+                if namespace_of(resolved) == XSD_NS:
+                    return None
+                found = table.getFromName(
+                    local_name(resolved),
+                    kind="type",
+                    namespace=namespace_of(resolved),
+                    warn=False,
+                )
+            else:
+                found = table.getFromName(resolved, kind="type", warn=False)
+                if found is None:
+                    found = table.getFromName(str(resolved).split(":")[-1], kind="type", warn=False)
+            if found is not None:
+                return found
+        return None
+
+    def _baseIsAnyType(self, er: Any) -> bool:
+        """Whether the first base type is the built-in ``xs:anyType``.
+
+        ``xs:anyType`` has no generated class, so ``_baseTypeClass``
+        cannot resolve it; the extension-structure check reads it as its
+        effective mixed-sequence content instead. A user type named
+        ``anyType`` never matches (the reference must be in the XML
+        Schema namespace or carry the ``xs:``/``xsd:`` spelling in
+        legacy mode).
+        """
+        for raw_name in getattr(er, "superClassNames", []) or []:
+            resolved = er.resolveSchemaQName(raw_name, parser=self)
+            if namespace_of(resolved) == XSD_NS and local_name(resolved) == "anyType":
+                return True
+            if namespace_of(resolved) is not None or not isinstance(raw_name, str):
+                continue
+            prefix, _, local = raw_name.strip().partition(":")
+            if local == "anyType" and prefix in ("xs", "xsd"):
+                return True
+        return False
+
+    def _reportExtensionStructure(self, er: Any) -> None:
+        """Reports invalid particle composition in a complex type extension.
+
+        An extension's explicit content model is appended to the base
+        type's effective content model (XSD 1.1 §3.4.2.3.3). The
+        ``all`` compositor is special: an ``all`` may extend only an
+        ``all`` (the 1.1 relaxation; ``all`` extends ``sequence``/
+        ``choice`` and the reverse are invalid even for singletons —
+        all309-312, particlesFb002), the two ``minOccurs`` must match
+        (all313), and the composed ``all`` must be unambiguous — no
+        repeated element particles (all302) and no overlapping
+        wildcards (all305). A base whose *effective* content is empty
+        takes the suffix as its model unless the base is mixed, which
+        cannot be extended by an ``all`` at all (all308, bug 6202).
+
+        Skips — never errors — when the type is not an extension, when
+        it has no explicit content (nothing to append), or when either
+        content model cannot be compiled or the base type cannot be
+        resolved; each skip is logged at debug level with its reason.
+        """
+        if er.getDerivation() != "extension":
+            return
+        own = compile_own_content(er, self)
+        if own is None:
+            if _content_children(er):
+                logger.debug(
+                    "extension structure: content model of %s could not be compiled; skipped",
+                    getattr(er, "name", "?"),
+                )
+            else:
+                logger.debug(
+                    "extension structure: %s has no explicit content; skipped",
+                    getattr(er, "name", "?"),
+                )
+            return
+        base_is_any_type = self._baseIsAnyType(er)
+        base_class = None if base_is_any_type else self._baseTypeClass(er)
+        if not base_is_any_type and base_class is None:
+            logger.debug(
+                "extension structure: base type %r of %s unresolved; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        base_model = (
+            self._ANY_TYPE_CONTENT
+            if base_is_any_type
+            else getattr(base_class, "_contentModel_", None)
+        )
+        if base_model is None:
+            logger.debug(
+                "extension structure: base type %s has no compiled content model; skipped",
+                getattr(base_class, "name", "?"),
+            )
+            return
+        own_term = all_term(own)
+        own_kind = "all" if own_term is not None else own.kind
+        base_term = all_term(base_model)
+        base_kind = "all" if base_term is not None else base_model.kind
+        if self._particleIsEmpty(base_model):
+            base_er = self._baseTypeER(er)
+            if own_kind == "all" and base_er is not None and self._typeIsMixed(base_er):
+                self.report.add_error(
+                    "particle restriction (cos-ct-extends): an all cannot extend "
+                    "empty mixed content (the empty mixed base puts the all inside "
+                    "a sequence)",
+                    code="particle-restriction",
+                )
+            return
+        if self._particleIsEmpty(own):
+            # Empty explicit content appends nothing: the base particle
+            # is the effective model, whatever its compositor.
+            return
+        if own_kind == "all" and base_kind != "all":
+            self.report.add_error(
+                f"particle restriction (cos-ct-extends): all cannot extend {base_kind} "
+                "(only an all may extend an all)",
+                code="particle-restriction",
+            )
+            return
+        if own_kind != "all" and base_kind == "all":
+            self.report.add_error(
+                f"particle restriction (cos-ct-extends): {own_kind} cannot extend all",
+                code="particle-restriction",
+            )
+            return
+        if own_kind != "all" or base_term is None:
+            return
+        occurrence = all_extension_occurrence(own)
+        if occurrence is None:
+            return
+        own_all, own_min = occurrence
+        if own_min != base_model.min_occurs:
+            self.report.add_error(
+                "particle restriction (cos-particle-extend): minOccurs mismatch - "
+                "when an all extends an all both must have the same minOccurs "
+                f"(base={base_model.min_occurs}, extension={own_min})",
+                code="particle-restriction",
+            )
+        self._reportExtensionAllOverlap(all_members(base_term), all_members(own_all), er)
+
+    def _reportExtensionAllOverlap(
+        self, base_members: list[Any], own_members: list[Any], er: Any
+    ) -> None:
+        """Reports UPA violations in an all-extends-all composition.
+
+        The composed ``all`` holds the base's particles followed by the
+        extension's, so a repeated element name (all302) or two
+        overlapping wildcards (all305) make it non-deterministic. The
+        base's internal and the extension's internal duplicates are
+        already reported by the per-compositor sweep; this compares the
+        two sides.
+        """
+        base_names = {
+            member.name for member in base_members if member.kind == "element" and member.name
+        }
+        for member in own_members:
+            if member.kind == "element" and member.name and member.name in base_names:
+                self.report.add_error(
+                    "particle restriction (cos-nonambig): overlapping particles in "
+                    f"all extension - element '{member.name}' appears in both the "
+                    "base and the extension all",
+                    code="particle-restriction",
+                )
+                break
+        base_wildcards = [member for member in base_members if member.kind == "any" and member.spec]
+        own_wildcards = [member for member in own_members if member.kind == "any" and member.spec]
+        try:
+            target = er.getNamespace()
+        except AttributeError:
+            target = None
+        for first in base_wildcards:
+            for second in own_wildcards:
+                if wildcard_specs_overlap(first.spec, second.spec, target):
+                    self.report.add_error(
+                        "particle restriction (cos-nonambig): overlapping wildcards "
+                        "in all extension",
+                        code="particle-restriction",
+                    )
+                    return
+
+    @staticmethod
+    def _particleIsEmpty(model: Any) -> bool:
+        """Whether a compiled model is an *empty* explicit content model.
+
+        XSD 1.1 §3.4.2.3.3 clause 2: an absent model group, an empty
+        ``all``/``sequence``, an empty ``choice`` with ``minOccurs=0``
+        and any model group with ``maxOccurs=0`` are empty content. (An
+        empty ``choice`` with ``minOccurs=1`` is unsatisfiable, not
+        empty.)
+        """
+        if model.max_occurs == 0:
+            return True
+        if model.kind in ("sequence", "all") and not model.children:
+            return True
+        return model.kind == "choice" and not model.children and model.min_occurs == 0
+
+    @staticmethod
+    def _typeIsMixed(er: Any) -> bool:
+        """Whether a complex type's effective ``mixed`` value is true.
+
+        Delegates to the representative's own XSD 1.1 §3.4.2.3.3
+        clause 1 reading; a representative without the method (a
+        built-in, say) is not mixed.
+        """
+        mixed_method = getattr(er, "effectiveMixed", None)
+        return bool(mixed_method()) if mixed_method is not None else False
+
+    def _substitution_head_lookup(self, er: Any) -> Callable[[Any], Any] | None:
+        """A declaration-to-head resolver for NameAndTypeOK.
+
+        NameAndTypeOK admits a restricting element that is a (transitive)
+        member of the base element's substitution group; the walk needs
+        each member's head *declaration*, which only the schema's global
+        element table can supply. Under XSD 1.1 a local declaration with
+        no ``substitutionGroup`` of its own shares the membership of a
+        global declaration with the same expanded name (all226; XSD 1.1
+        bug 5296), so the lookup falls back to such a global before
+        giving up. ``None`` when this schema has no element table, in
+        which case the predicate falls back to exact expanded-name
+        equality.
+        """
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return None
+        if schema is None:
+            return None
+        candidates = [
+            element
+            for element in getattr(schema, "elements", None) or []
+            if type(element).__name__ == "Element"
+        ]
+
+        def lookup(declaration: Any) -> Any:
+            head_name = declaration.getSubstitutionGroupHead(self)
+            resolving = declaration
+            if not head_name:
+                # XSD 1.1: a local declaration whose expanded name is
+                # also declared globally inherits that global's
+                # substitution-group membership. The expanded names are
+                # form-aware: an unqualified local is *not* the same
+                # expanded name as a same-named global (elemZ020).
+                for candidate in candidates:
+                    if candidate is declaration:
+                        continue
+                    if candidate.name == declaration.name and element_namespace(
+                        candidate
+                    ) == element_namespace(declaration):
+                        head_name = candidate.getSubstitutionGroupHead(self)
+                        resolving = candidate
+                        break
+            if not head_name:
+                return None
+            resolver = getattr(resolving, "resolveReference", None)
+            if resolver is None:
+                return None
+            return resolver(head_name, candidates, parser=self)
+
+        return lookup
+
+    def _substitution_member_lookup(self, er: Any) -> Callable[[Any], list[Any]] | None:
+        """A declaration-to-members resolver for the clause 2.1 expansion.
+
+        §3.9.6 clause 2.1 treats a substitution-group head's element
+        particle as a choice group with one particle per member, so the
+        particle-derivation predicate needs the reverse of
+        ``_substitution_head_lookup``: the declarations that name this
+        head. ``None`` when the schema's element table is unavailable,
+        in which case the predicate leaves the head unexpanded.
+        """
+        head_lookup = self._substitution_head_lookup(er)
+        if head_lookup is None:
+            return None
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return None
+        if schema is None:
+            return None
+        candidates = [
+            element
+            for element in getattr(schema, "elements", None) or []
+            if type(element).__name__ == "Element"
+        ]
+
+        def members(declaration: Any) -> list[Any]:
+            found = []
+            for element in candidates:
+                if element is declaration:
+                    continue
+                head = head_lookup(element)
+                if head is not None and head is declaration:
+                    found.append(element)
+            return found
+
+        return members
+
+    def _reportPointlessParticle(self, er: Any) -> None:
+        """Reports a pointless ``sequence``/``choice`` inside an optional group.
+
+        The particlesHa rule: a compositor with *no particle children*
+        (``{particles}`` is empty) whose ``minOccurs`` lets it match
+        zero — the ERs' ``emptiable`` property — is pointless when the
+        group definition containing it is referenced with
+        ``minOccurs="0"``, because the optional reference can always be
+        satisfied without it. Such a particle must be eliminated
+        (particlesHa008). Deliberately conservative shapes beyond that
+        are not reported: a compositor with children can still match
+        content even when every child is optional or ``maxOccurs="0"``,
+        so eliminating it could change the content model's language
+        (MS pins such schemas valid — groupL007 — and real-world
+        schemas, ECMA-376 among them, use the shape heavily), and an
+        empty compositor with ``minOccurs="1"`` is unsatisfiable rather
+        than eliminable. ``all`` compositors are not reported — their
+        legality is the ``all-rule``.
+        """
+        if er._particleChildren() or not getattr(er, "emptiable", False):
+            return
+        definition = self._containingGroupDefinition(er)
+        if definition is None:
+            return
+        for refSite in self._groupRefSites(definition):
+            if self._isOptionalParticle(refSite):
+                self.report.add_error(
+                    f"pointless particle: the empty {er.rawTag} in group "
+                    f"'{definition.name}' matches no elements and the "
+                    "group reference is optional (minOccurs=0); the "
+                    "particle is pointless and must be eliminated",
+                    code="pointless-particle",
+                )
+                return
+
+    def _containingGroupDefinition(self, er: Any) -> Any | None:
+        """The group definition a compositor's occurrence context hangs on.
+
+        Walks up through enclosing compositors (their own occurrence
+        does not make an emptiable child required) and returns the
+        group definition the chain ends in, or ``None`` for any other
+        container (a complex type root, say) or a malformed chain.
+        """
+        node = er.parent
+        while node is not None:
+            kind = type(node).__name__
+            if kind in self._COMPOSITOR_KINDS:
+                node = node.parent
+                continue
+            if kind == "Group" and not getattr(node, "isRefSite", False):
+                return node
+            return None
+        return None
+
+    def _groupRefSites(self, definition: Any) -> list[Any]:
+        """The group reference sites in this schema that name *definition*.
+
+        The whole document tree is scanned (definitions do not record
+        who references them); a reference that cannot be resolved to
+        this definition — including one naming an import — is skipped.
+        """
+        try:
+            schema = definition.getSchema()
+        except AttributeError:
+            return []
+        refs: list[Any] = []
+        stack = [schema] if schema is not None else []
+        seen: set[int] = set()
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "Group" and getattr(er, "isRefSite", False):
+                try:
+                    if definition.resolveGroupRef(er) is definition:
+                        refs.append(er)
+                except NamespaceError:
+                    continue
+            stack.extend(getattr(er, "processedChildren", None) or ())
+        return refs
+
+    def _isOptionalParticle(self, particle: Any) -> bool:
+        """Whether a particle's raw ``minOccurs`` is 0 (silent read)."""
+        return getattr(particle, "minOccurs", None) == "0"
+
+    def _globalElements(self, er: Any) -> list[Any]:
+        """The schema document's global element declarations."""
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return []
+        return [
+            element
+            for element in getattr(schema, "elements", None) or ()
+            if type(element).__name__ == "Element" and element.name
+        ]
+
+    def _resolveParticles(self, particles: list[Any]) -> list[tuple[tuple[str, str], str, Any]]:
+        """Maps particles to ``(expanded name, type key, particle)``.
+
+        A reference site adopts the referred declaration's expanded name
+        and a shared ``decl:`` type key; a reference that does not
+        resolve against this document's globals is dropped (its type is
+        unknown). A name site keeps its declared name and the raw (or
+        inline-generated) ``type`` attribute as its key.
+        """
+        globals_ = self._globalElements(particles[0] if particles else None)
+        resolved: list[tuple[tuple[str, str], str, Any]] = []
+        for particle in particles:
+            if getattr(particle, "isElementRef", False):
+                referred = None
+                resolver = getattr(particle, "resolveReference", None)
+                if resolver is not None:
+                    referred = resolver(
+                        getattr(particle, "ref", None),
+                        globals_,
+                        parser=getattr(particle.getSchema(), "pyXSD", None),
+                    )
+                if referred is None:
+                    continue
+                try:
+                    namespace = referred.getNamespace() or ""
+                except AttributeError:
+                    namespace = ""
+                name = (namespace, referred.name or "")
+                resolved.append((name, f"decl:{referred.expandedName}", particle))
+                continue
+            try:
+                namespace = particle.getNamespace() or ""
+            except AttributeError:
+                namespace = ""
+            name = (namespace, getattr(particle, "name", None) or "")
+            typeKey = particle.tagAttributes.get("type") or ""
+            resolved.append((name, typeKey, particle))
+        return resolved
+
+    def _collectParticles(self, er: Any, out: list[Any], visited: set[int]) -> None:
+        """Collects element particles under *er* transitively.
+
+        Descends nested compositors and — because a group reference's
+        content model is spliced into the referencing type's model —
+        through group references to their definition's compositor
+        (mgR022's conflicting ``e1`` sits inside a referenced sequence).
+        A reference that cannot be resolved here (it names an import)
+        is skipped: its contents belong to that document's own sweep.
+        """
+        for child in getattr(er, "processedChildren", None) or ():
+            if child is None or id(child) in visited:
+                continue
+            visited.add(id(child))
+            kind = type(child).__name__
+            if kind == "Element":
+                out.append(child)
+            elif kind in self._COMPOSITOR_KINDS:
+                self._collectParticles(child, out, visited)
+            elif kind == "Group" and getattr(child, "isRefSite", False):
+                definition = self._groupRefDefinition(child)
+                if definition is None:
+                    continue
+                compositor = definition.getCompositor()
+                if compositor is not None and id(compositor) not in visited:
+                    visited.add(id(compositor))
+                    self._collectParticles(compositor, out, visited)
+
+    def _groupRefDefinition(self, refSite: Any) -> Any | None:
+        """The group definition a reference site names, or ``None``.
+
+        Mirrors the content-model compiler's resolution: QName-aware
+        where the document supplies a namespace context, then the
+        schema's group table by full reference and local name.
+        """
+        ref = getattr(refSite, "ref", None)
+        if not ref:
+            return None
+        try:
+            schema = refSite.getSchema()
+        except AttributeError:
+            return None
+        groups = getattr(schema, "groups", None)
+        if not groups:
+            return None
+        resolver = getattr(refSite, "resolveReference", None)
+        if resolver is not None:
+            resolved = resolver(ref, groups.values(), parser=getattr(schema, "pyXSD", None))
+            if resolved is not None:
+                return resolved
+        return groups.get(ref) or groups.get(ref.split(":")[-1])
+
+    def _checkSubstitutionOverlap(self, resolved: list[tuple[tuple[str, str], str, Any]]) -> None:
+        """Reports a substitution-group member meeting its head in an all.
+
+        A member can stand wherever its head appears, so head and member
+        under one ``all`` is ambiguous (all241). The head is read from
+        the particle's own ``substitutionGroup`` attribute, or — for a
+        reference site — from the referred global declaration. A head
+        whose {block} excludes substitution cannot be substituted here,
+        so the pair is deterministic and not reported (elemZ028a). Only
+        the immediate head step is consulted; chains are left to the
+        substitution-group machinery.
+        """
+        headsByLocal: dict[str, str] = {}
+        blockedHeads: set[str] = set()
+        schema = None
+        try:
+            schema = resolved[0][2].getSchema() if resolved else None
+        except AttributeError:
+            schema = None
+        if schema is not None:
+            for element in getattr(schema, "elements", None) or ():
+                if type(element).__name__ != "Element" or not element.name:
+                    continue
+                block = element.tagAttributes.get("block") or ""
+                if "substitution" in block.split() or "#all" in block.split():
+                    blockedHeads.add(element.name)
+                head = element.tagAttributes.get("substitutionGroup")
+                if head:
+                    headsByLocal.setdefault(element.name, head.split(":")[-1])
+        locals = {local for _, local in (name for name, _, _ in resolved)}
+        for (_, local), _, particle in resolved:
+            head = particle.tagAttributes.get("substitutionGroup")
+            if not head:
+                head = headsByLocal.get(local)
+            if not head:
+                continue
+            headLocal = head.split(":")[-1]
+            if headLocal in blockedHeads:
+                continue
+            if headLocal in locals:
+                self.report.add_error(
+                    f"content model is ambiguous: element '{headLocal}' has a "
+                    "substitution group member in the same all",
+                    code="all-rule",
+                )
+                return
+
+    def _checkAllWildcardOverlap(self, er: Any) -> None:
+        """Reports two overlapping wildcards under one all (all243).
+
+        Wildcards carrying XSD 1.1 ``notNamespace``/``notQName``
+        constraints are skipped: their exclusion sets can make
+        namespace-overlapping wildcards disjoint (wild049), and the
+        1.1 wildcard algebra is out of scope here.
+        """
+        wildcards = [
+            child
+            for child in getattr(er, "processedChildren", None) or ()
+            if child is not None
+            and child.__class__.__name__ == "Any"
+            and child.xsdElement.get("notNamespace") is None
+            and child.xsdElement.get("notQName") is None
+        ]
+        try:
+            target = er.getNamespace()
+        except AttributeError:
+            target = None
+        for index, first in enumerate(wildcards):
+            for second in wildcards[index + 1 :]:
+                if wildcard_specs_overlap(first.wildcardSpec, second.wildcardSpec, target):
+                    self.report.add_error(
+                        "content model is ambiguous: an all contains two overlapping wildcards",
+                        code="all-rule",
+                    )
+                    return
+
+    def _checkWildcardParticleOverlap(self, er: Any) -> None:
+        """Reports non-deterministic wildcard pairs in a sequence/choice.
+
+        Two element wildcards in one content model whose namespace
+        constraints overlap violate Unique Particle Attribution when both
+        can match an item at the same point: in a ``choice`` every
+        alternative is live at once, while in a ``sequence`` the earlier
+        wildcard creates the ambiguity only when it can match again
+        (``maxOccurs`` > 1) or be skipped (``minOccurs`` = 0) while every
+        particle between the two is emptiable (wildI013/I014 are
+        non-deterministic; the single-occurrence wildI011 and the
+        second-repeats wildI012 are deterministic and stay valid).
+        Wildcards carrying XSD 1.1 ``notNamespace``/``notQName`` are
+        skipped (their exclusion sets are a separate task), as is a
+        malformed namespace constraint — the declaration check already
+        reported that token.
+        """
+        children = [
+            child
+            for child in er._particleChildren()
+            if not (
+                child.__class__.__name__ == "Any"
+                and (
+                    child.xsdElement.get("notNamespace") is not None
+                    or child.xsdElement.get("notQName") is not None
+                )
+            )
+        ]
+        wildcards = [
+            (index, child)
+            for index, child in enumerate(children)
+            if child.__class__.__name__ == "Any"
+        ]
+        if len(wildcards) < 2:
+            return
+        if self._unreferencedGroupContent(er):
+            return
+        try:
+            target = er.getNamespace()
+        except AttributeError:
+            target = None
+        isChoice = type(er).__name__ == "Choice"
+        for position, (index, first) in enumerate(wildcards):
+            if not isChoice and not self._wildcardMatchableAgain(first):
+                continue
+            for laterIndex, second in wildcards[position + 1 :]:
+                if not isChoice and not all(
+                    getattr(child, "emptiable", False) for child in children[index + 1 : laterIndex]
+                ):
+                    continue
+                firstSpec = first.wildcardSpec
+                secondSpec = second.wildcardSpec
+                if invalid_namespace_constraint(firstSpec.namespace) is not None:
+                    continue
+                if invalid_namespace_constraint(secondSpec.namespace) is not None:
+                    continue
+                if wildcard_specs_overlap(firstSpec, secondSpec, target):
+                    self.report.add_error(
+                        "content model is ambiguous: two wildcards with "
+                        "overlapping namespace constraints are not deterministic",
+                        code="wildcard-invalid",
+                    )
+                    return
+
+    @staticmethod
+    def _wildcardMatchableAgain(particle: Any) -> bool:
+        """Whether a sequence wildcard is still live when the next is.
+
+        A wildcard that can repeat (``maxOccurs`` > 1) is live again
+        after one match, and a skippable one (``minOccurs`` = 0) is live
+        next to the following particle from the start. The silent reads
+        avoid duplicating the declaration walk's ``invalid-occurs``
+        report for a garbage occurrence value.
+        """
+        return particle._silentOccurs("maxOccurs") > 1 or particle._silentOccurs("minOccurs") == 0
+
+    def _unreferencedGroupContent(self, er: Any) -> bool:
+        """Whether *er*'s content model belongs to an unreferenced group.
+
+        Unique Particle Attribution applies to the effective content
+        model of a complex type, not to an orphan group definition: the
+        corpus pins an ambiguous wildcard sequence inside a group that
+        nothing references as *valid* (addB194), and the oracle accepts
+        it. A group a complex type's model actually reaches — directly
+        or through a chain of group references — becomes part of that
+        model, so its compositors are still checked. A reference that
+        cannot be resolved here counts as no reference (its contents
+        belong to another document's own sweep).
+        """
+        container = er.getContainingType()
+        if container is None or type(container).__name__ != "Group":
+            return False
+        return id(container) not in self._referencedGroupIds(er)
+
+    def _referencedGroupIds(self, er: Any) -> set[int]:
+        """The ids of group definitions a complex type's model can reach.
+
+        UPA is a property of a complex type definition's content model,
+        so only group definitions on a path from some complex type are
+        swept. The seed set is every complex type declaration in the
+        document; the walk then follows each ``group`` reference from
+        the referencing model into the definition it names, so a chain
+        of referenced groups is covered while a group named only by
+        another unreferenced group stays an orphan (I1: the reference
+        relation is not one-hop).
+        """
+        try:
+            schema = er.getSchema()
+        except AttributeError:
+            return set()
+        cached = getattr(self, "_referencedGroupIdCache", None)
+        if cached is not None and cached[0] is schema:
+            return cached[1]
+        types: list[Any] = []
+        seen: set[int] = set()
+        stack = [schema]
+        while stack:
+            node = stack.pop()
+            if node is None or id(node) in seen:
+                continue
+            seen.add(id(node))
+            if type(node).__name__ == "ComplexType":
+                types.append(node)
+            stack.extend(getattr(node, "processedChildren", None) or ())
+        referenced: set[int] = set()
+        walked: set[int] = set()
+        for complexType in types:
+            stack = [complexType]
+            while stack:
+                node = stack.pop()
+                if node is None or id(node) in walked:
+                    continue
+                walked.add(id(node))
+                if type(node).__name__ == "Group" and getattr(node, "isRefSite", False):
+                    definition = self._groupRefDefinition(node)
+                    if definition is not None:
+                        referenced.add(id(definition))
+                        stack.append(definition)
+                    continue
+                stack.extend(getattr(node, "processedChildren", None) or ())
+        self._referencedGroupIdCache = (schema, referenced)
+        return referenced
+
+    def _checkDeclarationId(self, er: Any, seenIds: dict[str, Any]) -> None:
+        """Reports lexical/duplicate ``id`` attributes on declarations.
+
+        Every ``id`` on a schema component is an ``xs:ID``: it must be a
+        valid NCName and unique within its schema document. Uniqueness is
+        scoped to the main document because "document" is the unit of the
+        XML ID rule; components spliced in from includes/imports are not
+        compared against it (``_composedElementIds``). The walk visits
+        every representative once, so uniqueness is tracked here rather
+        than on each subclass.
+        """
+        value = getattr(er, "id", None)
+        if value is None:
+            return
+        try:
+            NCName(value)
+        except TypeError:
+            self.report.add_error(
+                f"id '{value}' on <{er.rawTag}> is not a valid NCName",
+                code="declaration-attribute",
+                element=er.rawTag,
+                phase="schema",
+            )
+            return
+        element = getattr(er, "xsdElement", None)
+        if element is not None and id(element) in self._composedElementIds:
+            # A component from an included/imported document: ``id``
+            # uniqueness is scoped to a single schema document, so it is
+            # not compared against the main document's ids.
+            return
+        if value in seenIds:
+            self.report.add_error(
+                f"duplicate id '{value}' on <{er.rawTag}>",
+                code="declaration-duplicate",
+                element=er.rawTag,
+                phase="schema",
+            )
+            return
+        seenIds[value] = er
+
+    def _checkDuplicateName(self, er: Any, declared: dict[tuple[str, Any, str], Any]) -> None:
+        """Reports a named component declared twice in one symbol space.
+
+        XSD 1.0 §2.5 gives each target namespace one symbol space per
+        global component kind, except that simple and complex type
+        definitions share one; element, attribute, model group and
+        attribute group definitions each have their own. A second
+        declaration of the same name in a symbol space is the reported
+        error. Identity-constraint names (``key``/``keyref``/
+        ``unique``) share one symbol space scoped to their containing
+        element declaration. Local element and attribute declarations
+        are scoped to their containing complex type and are not
+        compared here.
+        """
+        element = getattr(er, "xsdElement", None)
+        name = element.get("name") if element is not None else None
+        if not name:
+            return
+        if element is not None and id(element) in self._composedElementIds:
+            # A component spliced in from an included, imported or
+            # redefined document is not compared against the main
+            # schema's components. Composition may legitimately expose a
+            # name twice (nested redefines, a re-parsed document), so the
+            # check is scoped to the main document, matching the ``id``
+            # uniqueness scope in ``_checkDeclarationId``.
+            return
+        if self._inConditionalInclusion(er):
+            # XSD 1.1 conditional-inclusion declarations (``vc:*``) may
+            # share a name, selected by version or availability. Without
+            # evaluating the selectors, do not report the duplicate.
+            return
+        typeName = type(er).__name__
+        if typeName in self._IDENTITY_KINDS:
+            parent = getattr(er, "parent", None)
+            if parent is None or type(parent).__name__ != "Element":
+                return
+            key = ("identity", id(parent), name)
+            label = "identity constraint"
+        else:
+            kind = componentKind(er)
+            if kind is None or not er.isGlobalDeclaration():
+                return
+            namespace = er.getNamespace()
+            if namespace == XML_NS:
+                # The XML-namespace attributes (xml:lang, xml:space, ...)
+                # are registered as built-ins before the ER run and may
+                # also be imported from the XML namespace schema; a
+                # repeat there is not an authoring error.
+                return
+            key = (kind, namespace, name)
+            label = {
+                "element": "element",
+                "attribute": "attribute",
+                "type": "type",
+                "group": "group",
+                "attributeGroup": "attributeGroup",
+            }[kind]
+        if key in declared:
+            self.report.add_error(
+                f"duplicate {label} declaration '{name}'",
+                code="declaration-duplicate",
+                element=er.rawTag,
+                phase="schema",
+            )
+            return
+        declared[key] = er
+
+    @staticmethod
+    def _inConditionalInclusion(er: Any) -> bool:
+        """Whether *er* or an ancestor carries an ``vc:*`` attribute.
+
+        Conditional inclusion can produce declarations that do not
+        coexist for any single schema version, so their names must not be
+        compared without evaluating the version selectors.
+        """
+        node = er
+        while node is not None:
+            element = getattr(node, "xsdElement", None)
+            if element is not None and any(
+                key.startswith(f"{{{_VC_NS}}}") for key in element.attrib
+            ):
+                return True
+            node = getattr(node, "parent", None)
+        return False
+
+    def _checkChildGrammar(self, er: Any) -> None:
+        """Reports a declaration's children against its grammar table.
+
+        The table lives on the element representative: ``_ALLOWED_CHILDREN``
+        (illegal children), ``_MAX_ONE_CHILDREN`` (duplicates),
+        ``_CHILD_ORDER``/``_EXCLUSIVE_SLOTS`` (ordering). A class without
+        an ``_ALLOWED_CHILDREN`` table is not checked for illegal
+        children; its duplicate/order tables default to empty unless it
+        declares otherwise.
+        """
+        if er._ALLOWED_CHILDREN is not None:
+            for tag in er.unexpectedChildTags:
+                self.report.add_error(
+                    f"<{tag}> is not allowed inside <{er.rawTag}>",
+                    code="declaration-child",
+                    element=er.rawTag,
+                    phase="schema",
+                )
+        counts = Counter(er.childTags)
+        for tag in er._MAX_ONE_CHILDREN:
+            if counts[tag] > 1:
+                self.report.add_error(
+                    f"<{er.rawTag}> may contain at most one <{tag}>",
+                    code="declaration-duplicate",
+                    element=er.rawTag,
+                    phase="schema",
+                )
+        # Every declaration requires a present ``annotation`` to be its
+        # first schema child; only the schema root is exempt (it allows
+        # annotations before and after declarations). ``childTags`` holds
+        # schema-namespace children only, so a foreign element named
+        # ``annotation`` never triggers this.
+        if (
+            er._ANNOTATION_FIRST
+            and "annotation" in counts
+            and er.childTags.index("annotation") != 0
+        ):
+            self.report.add_error(
+                f"<annotation> must be the first child of <{er.rawTag}>",
+                code="declaration-order",
+                element=er.rawTag,
+                phase="schema",
+            )
+        if er._CHILD_ORDER:
+            slot_of = {tag: i for i, slot in enumerate(er._CHILD_ORDER) for tag in slot}
+            seen = [slot_of[t] for t in er.childTags if t != "annotation" and t in slot_of]
+            if seen != sorted(seen):
+                self.report.add_error(
+                    f"children of <{er.rawTag}> are out of order",
+                    code="declaration-order",
+                    element=er.rawTag,
+                    phase="schema",
+                )
+            occupied = set(seen)
+            for slot in er._EXCLUSIVE_SLOTS:
+                if slot in occupied and any(x > slot for x in occupied):
+                    self.report.add_error(
+                        f"<{er.rawTag}> with this content kind cannot also "
+                        "contain later declarations",
+                        code="declaration-order",
+                        element=er.rawTag,
+                        phase="schema",
+                    )
+            # A "one of" slot is an alternative: two *distinct* tags in the
+            # same slot are illegal (``choice``+``group``), even though the
+            # per-tag max-one check above sees each only once.
+            for slot in er._ONE_OF_SLOTS:
+                slotTags = {t for t in er.childTags if t != "annotation" and slot_of.get(t) == slot}
+                if len(slotTags) > 1:
+                    choices = ", ".join(f"<{tag}>" for tag in sorted(slotTags))
+                    self.report.add_error(
+                        f"<{er.rawTag}> may contain only one of {choices}",
+                        code="declaration-duplicate",
+                        element=er.rawTag,
+                        phase="schema",
+                    )
 
     def _buildSubstitutionGroups(self, schemaER: Any) -> None:
         """Maps substitution-group heads to their member elements.
@@ -471,6 +2019,159 @@ class PyXSD:
                 continue
             schemaER.substitutionGroups.setdefault(head, []).append(element)
         logger.debug("Substitution groups built: %s", list(schemaER.substitutionGroups))
+        self._reportSubstitutionGroupCycles(elements)
+
+    def _reportSubstitutionGroupCycles(self, elements: list[Any]) -> None:
+        """Reports substitution-group membership cycles.
+
+        A cycle in the ``substitutionGroup`` graph (foo heads bar heads
+        foo) has no well-founded head, so the schema is invalid. Each
+        element that reaches a cycle while following its head chain is
+        reported once; trivial self-reference is included.
+        """
+        byName: dict[str, Any] = {}
+        for element in elements:
+            if element.name:
+                byName.setdefault(element.name, element)
+            expanded = getattr(element, "expandedName", None)
+            if expanded:
+                byName.setdefault(expanded, element)
+        for element in elements:
+            if element.getSubstitutionGroupHead(self) is None:
+                continue
+            visited: set[int] = set()
+            current = element
+            while current is not None and id(current) not in visited:
+                visited.add(id(current))
+                headName = current.getSubstitutionGroupHead(self)
+                head = byName.get(headName) if headName is not None else None
+                if head is None:
+                    break
+                if head is element:
+                    self.report.add_error(
+                        f"element '{element.name}' is part of a cyclic substitution group",
+                        code="circular-substitution-group",
+                        element=element.name,
+                        phase="schema",
+                    )
+                    break
+                current = head
+
+    def _checkSubstitutionGroupExclusions(self, schemaER: Any) -> None:
+        """Reports a substitution member whose derivation the head blocks.
+
+        e-props-correct requires a member's type to be validly derived
+        from the head's type given the head element's {substitution group
+        exclusions}, which the XML representation spells ``final`` (or
+        the schema's ``finalDefault``). Runs after class building so the
+        generated classes carry the derivation hierarchy and method.
+        """
+        finalDefault = schemaER.tagAttributes.get("finalDefault")
+        elements = [e for e in schemaER.elements if type(e).__name__ == "Element"]
+        byName: dict[str, Any] = {}
+        for element in elements:
+            if element.name:
+                byName.setdefault(element.name, element)
+            if getattr(element, "expandedName", None):
+                byName.setdefault(element.expandedName, element)
+        for member in elements:
+            headName = member.getSubstitutionGroupHead(self)
+            head = byName.get(headName) if headName is not None else None
+            if head is None or head is member:
+                continue
+            final = head.tagAttributes.get("final")
+            if final is None:
+                final = finalDefault
+            excluded = blockTokens(final)
+            if not excluded:
+                continue
+            memberCls = self._declaredTypeClass(member)
+            headCls = self._declaredTypeClass(head)
+            if memberCls is None or headCls is None:
+                continue
+            if is_validly_derived(memberCls, headCls, excluded) == "blocked":
+                self.report.add_error(
+                    f"element '{member.name}' has a type whose derivation from "
+                    f"substitution head '{head.name}' is excluded by final='{final}'",
+                    code="declaration-attribute",
+                    element=member.name,
+                    phase="schema",
+                )
+
+    @staticmethod
+    def _declaredTypeClass(element: Any) -> Any:
+        """Returns an element's generated type class, or ``None``."""
+        try:
+            cls = element.getType()
+        except (AttributeError, TypeError):
+            return None
+        return cls if isinstance(cls, type) else None
+
+    def _checkValueConstraints(self, schemaER: Any) -> None:
+        """Validates element/attribute ``default``/``fixed`` values.
+
+        Runs after generated classes are built so a value is checked
+        against the declaration's actual type: a user-defined simpleType
+        is validated through its constructor (built-in lexical space plus
+        every restricting facet), and a complex type with simple content
+        delegates to its content type. Built-in types take the same path.
+        A declaration whose type has no simple value space (element-only
+        complex content, or an unresolved type) is skipped.
+        """
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ in ("Element", "Attribute"):
+                self._checkDeclarationValueConstraint(er)
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkDeclarationValueConstraint(self, er: Any) -> None:
+        factory = self._valueConstraintFactory(er)
+        if factory is None:
+            return
+        label = type(er).__name__.lower()
+        for attr in ("default", "fixed"):
+            value = er.tagAttributes.get(attr)
+            if value is None:
+                continue
+            try:
+                factory(value)
+            except (TypeError, ValueError):
+                self.report.add_error(
+                    f"{label} '{er.name}' {attr} value '{value}' is not valid for its type",
+                    code="declaration-attribute",
+                    element=er.name,
+                    phase="schema",
+                )
+            except Exception:  # pragma: no cover - defensive
+                # A constructor raising anything else is a pyxsd bug, not
+                # a schema error; do not turn it into a false rejection.
+                logger.debug("could not validate %s value %r of %r", attr, value, er.name)
+
+    @staticmethod
+    def _valueConstraintFactory(er: Any) -> Any:
+        """Returns the class that validates a declaration's lexical value.
+
+        ``None`` when the declaration's type has no simple value space,
+        which leaves element-only complex content and unresolved types
+        unchecked.
+        """
+        try:
+            cls = er.getType()
+        except (AttributeError, TypeError):
+            return None
+        if not isinstance(cls, type):
+            return None
+        content = getattr(cls, "_simpleContentType_", None)
+        if isinstance(content, type):
+            cls = content
+        if not issubclass(cls, XsdDataType):
+            return None
+        return cls
 
     def _schemaCompositionContext(self) -> tuple[Path, set[str]]:
         """Returns the (baseDir, visited) context for schema composition.
@@ -527,9 +2228,17 @@ class PyXSD:
             tag = ET.Element(clark(XSD_NS, "import"), {"schemaLocation": str(path)})
             if namespace:
                 tag.set("namespace", namespace)
-            self._spliceIncludedSchema(tag, schemaRoot, baseDir, visited, isImport=True)
+            self._spliceIncludedSchema(
+                tag, schemaRoot, baseDir, visited, isImport=True, missing_severity="error"
+            )
 
-    def _spliceComposedSchemas(self, schemaRoot: Any, baseDir: Path, visited: set[str]) -> None:
+    def _spliceComposedSchemas(
+        self,
+        schemaRoot: Any,
+        baseDir: Path,
+        visited: set[str],
+        mainDocument: bool = False,
+    ) -> None:
         """Merges composed schemas into ``schemaRoot`` before class building.
 
         ``xs:include`` (same target namespace or none - the chameleon
@@ -543,9 +2252,16 @@ class PyXSD:
 
         The composition tags are removed from the tree afterwards so
         the ER factory does not warn about them.
+
+        ``mainDocument`` is true only for the top-level call: the ids of
+        the main document's directives are recorded so declaration ids
+        can be checked against them (an included document's directives
+        belong to a different XML document).
         """
         for child in list(schemaRoot):
             local = child.tag.split("}")[-1]
+            if local in ("include", "redefine", "import") and mainDocument:
+                self._noteDirectiveId(child)
             if local == "include":
                 schemaRoot.remove(child)
                 self._spliceIncludedSchema(child, schemaRoot, baseDir, visited, isImport=False)
@@ -559,8 +2275,30 @@ class PyXSD:
                     # conventional spelling; the built-in types are
                     # always available here.
                     continue
-                self._spliceIncludedSchema(child, schemaRoot, baseDir, visited, isImport=True)
+                self._spliceIncludedSchema(
+                    child, schemaRoot, baseDir, visited, isImport=True, checkImportNamespace=True
+                )
         return None
+
+    def _noteDirectiveId(self, tag: Any) -> None:
+        """Records a main-document composition directive's ``id``.
+
+        A directive's id is an ``xs:ID`` too; because the directive is
+        removed before the ER walk, declaration ids are compared against
+        this set instead. A directive that repeats an earlier id is
+        itself reported here.
+        """
+        value = tag.get("id")
+        if not value:
+            return
+        if value in self._directiveIds:
+            self.report.add_error(
+                f"duplicate id '{value}' on <{tag.tag.split('}')[-1]}>",
+                code="declaration-duplicate",
+                phase="schema",
+            )
+            return
+        self._directiveIds[value] = tag
 
     def _spliceIncludedSchema(
         self,
@@ -569,34 +2307,53 @@ class PyXSD:
         baseDir: Path,
         visited: set[str],
         isImport: bool,
+        missing_severity: str = "warning",
+        checkImportNamespace: bool = False,
     ) -> None:
         """Splices the named components of one included/imported schema.
 
         Handles locating and parsing the file, cycle detection and the
         namespace checks; the actual splicing is shared with redefine.
+
+        ``missing_severity`` controls how an unreadable referenced
+        document is reported. A schema document's own include/import is
+        a hint (warning); a schema the *caller* explicitly supplied (a
+        ``namespace_schemas`` entry or an instance ``xsi:schemaLocation``
+        pair, spliced via ``_spliceAdditionalSchemas``) is a required
+        input, so a missing one stays an error.
+
+        ``checkImportNamespace`` is true for an ``xs:import`` written in
+        a schema document: the import's ``namespace`` attribute must
+        match the referenced document's target namespace (an import
+        cannot absorb a no-namespace document; that is an include).
+        Caller-supplied schemas are exempt because their namespace label
+        is not an authoring statement in the schema.
         """
+        self._checkDirectiveAnnotation(tag, isImport)
         location = tag.get("schemaLocation")
+        strict = getattr(self.mode, "namespaces", "legacy") == "strict"
         if not location:
             if isImport:
                 # ``schemaLocation`` is optional on xs:import: a
                 # namespace-only import is a hint with no document to
                 # load. In strict mode it is unresolved unless a schema
-                # for the namespace was supplied.
+                # for the namespace was supplied. A namespace that the
+                # importing document actually references is fatal; an
+                # unused hint is only a warning.
                 namespace = tag.get("namespace")
-                if (
-                    getattr(self.mode, "namespaces", "legacy") == "strict"
-                    and namespace
-                    and namespace != XML_NS
-                    and namespace not in self.namespaceSchemas
-                    and namespace
-                    not in {ns for ns, _ in getattr(self, "_additionalSchemas", []) if ns}
-                ):
-                    self.report.add_error(
-                        f"the import for namespace '{namespace}' has no "
-                        "schemaLocation and no schema was supplied for it",
-                        code="import-unresolved",
-                        phase="schema",
+                if strict and namespace and namespace not in (XML_NS, XSD_NS, XSI_NS):
+                    otherTargets = self._composedTargetNamespaces - {
+                        schemaRoot.get("targetNamespace")
+                    }
+                    supplied = (
+                        namespace in self.namespaceSchemas
+                        or namespace in self._resolvedImports
+                        or namespace in otherTargets
+                        or namespace
+                        in {ns for ns, _ in getattr(self, "_additionalSchemas", []) if ns}
                     )
+                    if not supplied:
+                        self._reportUnresolvedImport(namespace, schemaRoot)
                 logger.debug("namespace-only xs:import with no schemaLocation; skipping")
                 return None
             self.report.add_error(
@@ -623,11 +2380,48 @@ class PyXSD:
             location,
             baseDir,
             error_code="import-unresolved" if isImport else "schema-compose",
+            missing_severity=missing_severity,
         )
         if includedRoot is None:
             return None
         mainNS = schemaRoot.get("targetNamespace")
         includedNS = includedRoot.get("targetNamespace")
+        if isImport:
+            # A schema for the namespace was loaded, so a namespace-only
+            # import of the same URI is satisfied rather than unresolved.
+            if tag.get("namespace"):
+                self._resolvedImports.add(tag.get("namespace"))
+            if includedNS:
+                self._resolvedImports.add(includedNS)
+        if not isImport and includedNS is None and mainNS is not None:
+            # Chameleon pre-processing (XSD 1.1 §4.2.3 and Appendix F.1):
+            # a document with no targetNamespace that is included by a
+            # namespaced schema adopts the including target namespace, and
+            # its unqualified QName references are rewritten into it. The
+            # attribute is set on the tree so nested chameleon includes
+            # inherit the same namespace.
+            includedRoot.set("targetNamespace", mainNS)
+            self._applyChameleonNamespace(includedRoot, mainNS)
+            includedNS = mainNS
+        if includedNS:
+            self._composedTargetNamespaces.add(includedNS)
+        if (
+            isImport
+            and checkImportNamespace
+            and tag.get("namespace") is not None
+            and includedNS != tag.get("namespace")
+        ):
+            # An import carrying a namespace attribute must reference a
+            # document with exactly that target namespace. A document
+            # with no target namespace is absorbed by include, not
+            # import; a different namespace is the wrong document.
+            self.report.add_error(
+                f"the imported schema '{location}' declares targetNamespace "
+                f"'{includedNS or 'none'}', which does not match the import's "
+                f"namespace '{tag.get('namespace')}'",
+                code="compose-invalid",
+                phase="schema",
+            )
         if not isImport and includedNS not in (None, mainNS):
             self.report.add_error(
                 f"the schema '{location}' declares targetNamespace "
@@ -652,39 +2446,188 @@ class PyXSD:
             componentNamespace = includedNS if includedNS is not None else tag.get("namespace")
         else:
             componentNamespace = includedNS if includedNS is not None else mainNS
-        self._spliceComposedSchemas(
-            includedRoot, includedPath.parent, visited | {str(includedPath)}
-        )
+        self._composeStack.append(key)
+        try:
+            self._spliceComposedSchemas(
+                includedRoot, includedPath.parent, visited | {str(includedPath)}
+            )
+        finally:
+            self._composeStack.pop()
+        # Record provenance before the components are appended to the
+        # main root: ``id`` uniqueness is scoped to a schema document.
+        for element in includedRoot.iter():
+            self._composedElementIds.add(id(element))
         self._appendNamedComponents(includedRoot, schemaRoot, componentNamespace)
         self._composedDocuments.add(key)
         return None
 
     def _parseIncludedSchema(
-        self, location: str, baseDir: Path, error_code: str = "schema-compose"
+        self,
+        location: str,
+        baseDir: Path,
+        error_code: str = "schema-compose",
+        missing_severity: str = "error",
     ) -> Any | None:
         """Parses one included schema file; returns its root or ``None``.
 
-        Failures (unreadable file, malformed xml) are recorded as
-        ``error_code`` errors and the composition proceeds without the
-        missing file.
+        A file that cannot be opened is *resource-not-found*: XSD treats
+        an unresolvable ``schemaLocation`` as a non-fatal hint, so the
+        caller decides (``missing_severity``) whether that is a warning
+        or an error. A file that exists but is not well-formed XML is a
+        rule violation and is always an error. Composition proceeds
+        without the missing file.
         """
         includedPath = baseDir / location
         try:
             with open(includedPath, "rb") as includedFile:
                 root = parse_with_namespaces(includedFile, self.namespaceContext)
         except OSError as e:
-            self.report.add_error(
-                f"the schema '{location}' could not be opened: {e}",
-                code=error_code,
-            )
+            message = f"the schema '{location}' could not be opened: {e}"
+            if missing_severity == "warning":
+                self.report.add_warning(message, code=error_code, phase="schema")
+            else:
+                self.report.add_error(message, code=error_code, phase="schema")
             return None
         except ET.ParseError as e:
             self.report.add_error(
                 f"the schema '{location}' is not well-formed XML: {e}",
                 code=error_code,
+                phase="schema",
             )
             return None
         return root
+
+    def _checkDirectiveAnnotation(self, tag: Any, isImport: bool) -> None:
+        """Reports a repeated ``annotation`` child on include/import.
+
+        The schema-for-schemas allows at most one ``annotation`` on
+        ``xs:include`` and ``xs:import`` (unlike ``xs:redefine``, where
+        the W3C suite accepts repeats - annotB025). This is a directive
+        rule independent of whether the referenced resource resolves.
+        """
+        local = "import" if isImport else "include"
+        count = sum(
+            1
+            for child in tag
+            if isinstance(child.tag, str) and child.tag == clark(XSD_NS, "annotation")
+        )
+        if count > 1:
+            self.report.add_error(
+                f"<{local}> may carry at most one <annotation>; found {count}",
+                code="schema-compose",
+                phase="schema",
+            )
+
+    def _referencedNamespaces(self, schemaRoot: Any) -> set[str]:
+        """Returns the namespaces named by QName-valued schema attributes.
+
+        Used to decide whether an unresolved namespace-only import is
+        actually needed: a reference into the namespace that cannot be
+        satisfied makes the schema invalid, an unreferenced hint does
+        not.
+        """
+        namespaces: set[str] = set()
+        for element in schemaRoot.iter():
+            tag = element.tag
+            if not isinstance(tag, str) or not tag.startswith(f"{{{XSD_NS}}}"):
+                continue
+            tokens = [element.get(attribute) for attribute in self._CHAMELEON_QNAME_ATTRIBUTES]
+            for attribute in self._CHAMELEON_QNAME_LIST_ATTRIBUTES:
+                value = element.get(attribute)
+                if value:
+                    tokens.extend(value.split())
+            for token in tokens:
+                if not token or token.startswith("##"):
+                    continue
+                try:
+                    resolved = self.namespaceContext.resolve(element, token)
+                except NamespaceError:
+                    continue
+                uri = namespace_of(resolved)
+                if uri is not None:
+                    namespaces.add(uri)
+        return namespaces
+
+    def _reportUnresolvedImport(self, namespace: str, schemaRoot: Any) -> None:
+        """Reports one unresolved namespace-only ``xs:import``.
+
+        A namespace-only import is a hint: if a component from its
+        namespace is referenced by the importing document and nothing
+        satisfied the namespace, the schema is invalid; otherwise it is
+        only a warning. The reference scan is scoped to the document
+        that declared the import, because an import is only needed for
+        references made by its own schema document.
+        """
+        if namespace in self._referencedNamespaces(schemaRoot):
+            self.report.add_error(
+                f"the import for namespace '{namespace}' has no "
+                "schemaLocation and a component from that namespace "
+                "is referenced",
+                code="import-unresolved",
+                phase="schema",
+            )
+        else:
+            self.report.add_warning(
+                f"the import for namespace '{namespace}' has no "
+                "schemaLocation and no schema was supplied for it",
+                code="import-unresolved",
+                phase="schema",
+            )
+
+    #: QName-valued schema attributes that chameleon pre-processing
+    #: rewrites (XSD 1.1 Appendix F.1). Each holds a single QName.
+    _CHAMELEON_QNAME_ATTRIBUTES = (
+        "ref",
+        "base",
+        "type",
+        "refer",
+        "itemType",
+        "defaultAttributes",
+    )
+    #: QName-valued schema attributes that hold a whitespace-separated list.
+    _CHAMELEON_QNAME_LIST_ATTRIBUTES = ("memberTypes", "substitutionGroup", "notQName")
+
+    def _applyChameleonNamespace(self, includedRoot: Any, namespace: str) -> None:
+        """Simulates XSD chameleon pre-processing (Appendix F.1).
+
+        A no-namespace document absorbed into *namespace* has every QName
+        reference that carries no namespace rewritten into it; references
+        that already name a namespace (by prefix or default declaration)
+        are left untouched. Applying the transform to the tree lets the
+        ordinary ER run resolve the absorbed components and nested
+        chameleon includes inherit the same target namespace.
+        """
+        for element in includedRoot.iter():
+            tag = element.tag
+            if not isinstance(tag, str) or not tag.startswith(f"{{{XSD_NS}}}"):
+                continue
+            for attribute in self._CHAMELEON_QNAME_ATTRIBUTES:
+                value = element.get(attribute)
+                if value is None:
+                    continue
+                rewritten = self._chameleonQName(element, value, namespace)
+                if rewritten != value:
+                    element.set(attribute, rewritten)
+            for attribute in self._CHAMELEON_QNAME_LIST_ATTRIBUTES:
+                value = element.get(attribute)
+                if value is None:
+                    continue
+                tokens = [
+                    self._chameleonQName(element, token, namespace) for token in value.split()
+                ]
+                element.set(attribute, " ".join(tokens))
+
+    def _chameleonQName(self, element: Any, token: str, namespace: str) -> str:
+        """Rewrites one lexical QName with an absent namespace, else keeps it."""
+        if not token or token.startswith(("##", "{")):
+            return token
+        try:
+            resolved = self.namespaceContext.resolve(element, token)
+        except NamespaceError:
+            return token
+        if namespace_of(resolved) is None:
+            return clark(namespace, local_name(resolved))
+        return token
 
     def _appendNamedComponents(
         self, includedRoot: Any, schemaRoot: Any, namespace: str | None
@@ -734,10 +2677,42 @@ class PyXSD:
                 code="schema-compose",
             )
             return None
-        includedRoot = self._parseIncludedSchema(location, baseDir)
+        includedRoot = self._parseIncludedSchema(location, baseDir, missing_severity="warning")
         if includedRoot is None:
+            # A redefine that actually redefines a component needs its
+            # base document: without it the redefined component cannot be
+            # found, which is a composition rule violation (not merely an
+            # unresolvable hint). A block carrying only annotations is
+            # just the missing-resource warning (W3C a009/annotB025).
+            hasContent = any(
+                isinstance(child.tag, str) and child.tag.split("}")[-1] != "annotation"
+                for child in list(redefineTag)
+            )
+            if hasContent:
+                self.report.add_error(
+                    f"the base schema '{location}' for the redefinition could not be opened",
+                    code="schema-compose",
+                    phase="schema",
+                )
             return None
+        mainNS = schemaRoot.get("targetNamespace")
+        includedNS = includedRoot.get("targetNamespace")
+        if includedNS:
+            self._composedTargetNamespaces.add(includedNS)
         includedPath = (baseDir / location).resolve()
+        if includedNS is not None and mainNS is not None and includedNS != mainNS:
+            # A redefine may target a document in the redefining schema's
+            # namespace or a no-namespace (chameleon) document; redefining
+            # a third namespace would introduce the renamed components
+            # into the wrong namespace. A no-namespace redefiner is the
+            # disputed circular case (W3C schU1), left unresolved.
+            self.report.add_error(
+                f"the redefined schema '{location}' declares targetNamespace "
+                f"'{includedNS}', which does not match the redefining schema's "
+                f"namespace ({mainNS or 'none'})",
+                code="compose-invalid",
+                phase="schema",
+            )
         if str(includedPath) in visited:
             self.report.add_warning(
                 f"the schema '{location}' is already being composed; "
@@ -745,13 +2720,17 @@ class PyXSD:
                 code="compose-cycle",
             )
             return None
-        redefinedNames = set()
+        redefined: list[tuple[str, str]] = []
         for child in list(redefineTag):
             local = child.tag.split("}")[-1]
             if local in ("complexType", "simpleType", "group", "attributeGroup") and child.get(
                 "name"
             ):
-                redefinedNames.add(child.get("name"))
+                redefined.append((local, child.get("name")))
+        self._checkRedefineTargets(includedRoot, location, redefined)
+        self._checkRedefineDuplicates(includedPath, location, redefined)
+        self._checkRedefineRestrictions(includedRoot, location, redefineTag)
+        redefinedNames = {name for _, name in redefined}
         for component in list(includedRoot):
             local = component.tag.split("}")[-1]
             name = component.get("name")
@@ -760,28 +2739,327 @@ class PyXSD:
                 and name in redefinedNames
             ):
                 component.set("name", f"{name}|base")
-        self._spliceComposedSchemas(
-            includedRoot, includedPath.parent, visited | {str(includedPath)}
-        )
-        self._appendNamedComponents(includedRoot, schemaRoot, schemaRoot.get("targetNamespace"))
+        self._composeStack.append(str(includedPath))
+        try:
+            self._spliceComposedSchemas(
+                includedRoot, includedPath.parent, visited | {str(includedPath)}
+            )
+        finally:
+            self._composeStack.pop()
+        # The redefined document's components come from another schema
+        # document; scope ``id`` uniqueness provenance to it.
+        for element in includedRoot.iter():
+            self._composedElementIds.add(id(element))
+        self._appendNamedComponents(includedRoot, schemaRoot, mainNS)
+        self._rebindRedefineReferences(redefineTag, redefinedNames, includedNS, mainNS)
+        for child in list(redefineTag):
+            schemaRoot.append(child)
+        return None
+
+    def _checkRedefineTargets(
+        self, includedRoot: Any, location: str, redefined: list[tuple[str, str]]
+    ) -> None:
+        """Reports a redefine of a component the base document lacks.
+
+        A redefine may only modify an existing component, never add a
+        new one. The base's own direct declarations and the definitions
+        carried by its nested redefines are considered. If the base also
+        includes other documents the target may live there, so the check
+        is skipped rather than risk a false positive.
+        """
+        if any(
+            isinstance(child.tag, str) and child.tag.split("}")[-1] == "include"
+            for child in list(includedRoot)
+        ):
+            return
+        declared = self._declaredComponentKinds(includedRoot)
+        for kind, name in redefined:
+            if (kind, name) not in declared:
+                self.report.add_error(
+                    f"the component '{name}' in <redefine> is not defined "
+                    f"in the redefined schema '{location}'",
+                    code="compose-invalid",
+                    phase="schema",
+                )
+
+    _COMPOSABLE_REDEFINE_KINDS = ("complexType", "simpleType", "group", "attributeGroup")
+
+    def _declaredComponentKinds(self, root: Any) -> set[tuple[str, str]]:
+        """Returns ``(kind, name)`` for the global components *root* declares.
+
+        A nested ``xs:redefine`` counts as declaring the components it
+        defines, because after composition they belong to *root*'s
+        namespace.
+        """
+        kinds: set[tuple[str, str]] = set()
+        for child in list(root):
+            if not isinstance(child.tag, str):
+                continue
+            local = child.tag.split("}")[-1]
+            if local in self._COMPOSABLE_REDEFINE_KINDS and child.get("name"):
+                kinds.add((local, child.get("name")))
+            elif local == "redefine":
+                for grandchild in list(child):
+                    if not isinstance(grandchild.tag, str):
+                        continue
+                    grandLocal = grandchild.tag.split("}")[-1]
+                    if grandLocal in self._COMPOSABLE_REDEFINE_KINDS and grandchild.get("name"):
+                        kinds.add((grandLocal, grandchild.get("name")))
+        return kinds
+
+    def _checkRedefineDuplicates(
+        self, includedPath: Path, location: str, redefined: list[tuple[str, str]]
+    ) -> None:
+        """Reports a base component redefined twice in the composition.
+
+        Two schema documents that both redefine the same component of
+        the same base document conflict: each redefine replaces the
+        component, so the result is ambiguous. A redefine chain is not a
+        conflict because the outer redefine targets the inner redefining
+        document, a different base. A redefine reached through a shared
+        include (one redefining document composing the other) is also
+        not reported: the suite marks such circular/nested redefines
+        implementation-defined and pyxsd preserves its historical
+        resolution.
+        """
+        current = tuple(self._composeStack)
+        seen: list[tuple[str, str, str]] = []
+        for kind, name in redefined:
+            key = (str(includedPath), kind, name)
+            origin = self._redefineOrigins.get(key)
+            if origin is None:
+                seen.append(key)
+                continue
+            if _stackPrefix(origin, current) or _stackPrefix(current, origin):
+                continue
+            self.report.add_error(
+                f"the component '{name}' of the redefined schema "
+                f"'{location}' is redefined more than once",
+                code="compose-invalid",
+                phase="schema",
+            )
+        for key in seen:
+            self._redefineOrigins[key] = current
+
+    def _checkRedefineRestrictions(
+        self, includedRoot: Any, location: str, redefineTag: Any
+    ) -> None:
+        """Reports an attributeGroup redefine that is not a valid restriction.
+
+        For an ``attributeGroup`` redefinition without a self reference the
+        new content must be a valid restriction of the original: it may
+        not add attributes, must keep them in the original order, must
+        preserve a non-optional ``use`` and a base ``fixed`` value, and
+        must keep every required base attribute. A self reference pulls in
+        the original attributes, so a declared attribute that the original
+        already contributes is a duplicate. Only the base document's own
+        declaration is inspected; if it cannot be found (or uses
+        unresolved refs) the check is skipped rather than guessing.
+        """
+        for declaration in list(redefineTag):
+            if (
+                not isinstance(declaration.tag, str)
+                or declaration.tag.split("}")[-1] != "attributeGroup"
+            ):
+                continue
+            name = declaration.get("name")
+            if not name:
+                continue
+            baseDecl = self._findBaseComponent(includedRoot, "attributeGroup", name)
+            if baseDecl is None:
+                continue
+            baseUses = self._attributeUses(baseDecl)
+            if baseUses is None:
+                continue
+            declared: list[tuple[str, Any]] = []
+            hasSelfReference = False
+            skip = False
+            for child in list(declaration):
+                if not isinstance(child.tag, str):
+                    continue
+                local = child.tag.split("}")[-1]
+                if local == "attribute":
+                    if child.get("ref") is not None:
+                        # A referenced attribute cannot be compared
+                        # structurally.
+                        skip = True
+                        break
+                    childName = child.get("name")
+                    if childName:
+                        declared.append((childName, child))
+                elif local == "attributeGroup":
+                    ref = child.get("ref")
+                    if ref is not None and _qnameLocal(ref) == name:
+                        hasSelfReference = True
+                    else:
+                        # A reference to another group hides its
+                        # attributes; the content cannot be compared.
+                        skip = True
+                        break
+            if skip:
+                continue
+            if hasSelfReference:
+                baseNames = {baseName for baseName, _ in baseUses}
+                for childName, _ in declared:
+                    if childName in baseNames:
+                        self.report.add_error(
+                            f"the attribute '{childName}' is already contributed "
+                            f"by the redefined attributeGroup '{name}'",
+                            code="compose-invalid",
+                            phase="schema",
+                        )
+                continue
+            basePositions = {baseName: index for index, (baseName, _) in enumerate(baseUses)}
+            baseByName = dict(baseUses)
+            derivedNames = [childName for childName, _ in declared]
+            for baseName, baseAttr in baseUses:
+                if baseName not in derivedNames and baseAttr.get("use") == "required":
+                    self.report.add_error(
+                        f"the required attribute '{baseName}' of the redefined "
+                        f"attributeGroup '{name}' is missing",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+            position = 0
+            for childName, childAttr in declared:
+                if childName not in basePositions:
+                    self.report.add_error(
+                        f"the attribute '{childName}' is not in the redefined "
+                        f"attributeGroup '{name}'",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+                    continue
+                nextPosition = basePositions[childName]
+                if nextPosition < position:
+                    self.report.add_error(
+                        f"the attributes of the redefined attributeGroup "
+                        f"'{name}' are not in the original order",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+                    break
+                position = nextPosition
+                baseAttr = baseByName[childName]
+                if baseAttr.get("use") not in (None, "optional") and childAttr.get(
+                    "use"
+                ) != baseAttr.get("use"):
+                    self.report.add_error(
+                        f"the attribute '{childName}' of the redefined "
+                        f"attributeGroup '{name}' changes its use",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+                if baseAttr.get("fixed") is not None and childAttr.get("fixed") is None:
+                    self.report.add_error(
+                        f"the attribute '{childName}' of the redefined "
+                        f"attributeGroup '{name}' drops its fixed value",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+
+    def _findBaseComponent(self, root: Any, kind: str, name: str) -> Any | None:
+        """Returns *root*'s declaration of ``(kind, name)`` if it has one.
+
+        A direct declaration is preferred; a definition carried by a
+        nested ``xs:redefine`` also belongs to the document's namespace
+        after composition, so it is accepted as a fallback.
+        """
+        for child in list(root):
+            if not isinstance(child.tag, str):
+                continue
+            local = child.tag.split("}")[-1]
+            if local == kind and child.get("name") == name:
+                return child
+            if local == "redefine":
+                for grandchild in list(child):
+                    if (
+                        isinstance(grandchild.tag, str)
+                        and grandchild.tag.split("}")[-1] == kind
+                        and grandchild.get("name") == name
+                    ):
+                        return grandchild
+        return None
+
+    def _attributeUses(self, declaration: Any) -> list[tuple[str, Any]] | None:
+        """Returns ``(name, element)`` for a declaration's direct attributes.
+
+        ``None`` means the declaration cannot be compared structurally: it
+        contains an attribute or attributeGroup reference whose target is
+        resolved elsewhere.
+        """
+        uses: list[tuple[str, Any]] = []
+        for child in list(declaration):
+            if not isinstance(child.tag, str):
+                continue
+            local = child.tag.split("}")[-1]
+            if local == "attributeGroup" or (local == "attribute" and child.get("ref") is not None):
+                return None
+            if local == "attribute":
+                childName = child.get("name")
+                if childName:
+                    uses.append((childName, child))
+        return uses
+
+    def _rebindRedefineReferences(
+        self,
+        redefineTag: Any,
+        redefinedNames: set[str],
+        includedNS: str | None,
+        mainNS: str | None,
+    ) -> None:
+        """Rewrites a redefine block's self-references to the original.
+
+        ``base``/``ref`` values that name a redefined component refer to
+        the *original* in the redefining block, so they are repointed at
+        the renamed ``Name|base`` component. In a chameleon redefine the
+        base component is ported into the redefining namespace, so an
+        unqualified self-reference names no namespace and is reported
+        instead of being silently rebound.
+        """
         for child in list(redefineTag):
             for element in child.iter():
+                if not isinstance(element.tag, str):
+                    continue
+                tagLocal = element.tag.split("}")[-1]
                 base = element.get("base")
                 if base and base.split(":")[-1] in redefinedNames:
                     element.set("base", f"{base.split(':')[-1]}|base")
-                # Inside a redefine block a reference to the redefined
-                # group/attributeGroup means the *original*, so rebind it
-                # to the renamed |base definition instead of the new one
-                # (which would be a circular reference).
                 localRef = element.get("ref")
                 if (
-                    element.tag.split("}")[-1] in ("group", "attributeGroup")
+                    tagLocal in ("group", "attributeGroup")
                     and localRef
                     and localRef.split(":")[-1] in redefinedNames
                 ):
                     element.set("ref", f"{localRef.split(':')[-1]}|base")
-            schemaRoot.append(child)
-        return None
+                if includedNS is not None or mainNS is None:
+                    continue
+                candidates = []
+                if base and _qnameLocal(base) in redefinedNames:
+                    candidates.append(base)
+                if (
+                    tagLocal in ("group", "attributeGroup")
+                    and localRef
+                    and _qnameLocal(localRef) in redefinedNames
+                ):
+                    candidates.append(localRef)
+                for value in candidates:
+                    if self._qnameNamespace(element, value) is None:
+                        self.report.add_error(
+                            f"the redefinition self reference '{value}' "
+                            "must be qualified into the redefining "
+                            f"namespace '{mainNS}'",
+                            code="compose-invalid",
+                            phase="schema",
+                        )
+
+    def _qnameNamespace(self, element: Any, value: str) -> str | None:
+        """Resolves one QName to its namespace, or ``None`` if unbound/absent."""
+        try:
+            resolved = self.namespaceContext.resolve(element, value)
+        except NamespaceError:
+            return None
+        return namespace_of(resolved)
 
     def _checkIdentityConstraints(self, rootInstance: Any) -> None:
         """Runs the identity-constraint check over the bound tree."""
@@ -902,7 +3180,14 @@ class PyXSD:
                 else:
                     # The root element's declared type is a primitive
                     # (simple) data type: build a typed instance directly.
-                    subInstance = self._primitiveRootInstance(subCls, rootElement)
+                    # ``xs:anyType`` is the exception: its lax ``##any``
+                    # content wildcard admits undeclared children, so they
+                    # are bound through that wildcard instead of being
+                    # rejected as simple-typed content.
+                    if subCls is AnyType and list(self.xmlRoot):
+                        subInstance = self._anyTypeRootInstance(subCls, rootElement, schemaClass)
+                    else:
+                        subInstance = self._primitiveRootInstance(subCls, rootElement)
                 # xsi:type may replace the declared root type, so the root
                 # instance is stored directly instead of validated against
                 # the declared element type.
@@ -911,6 +3196,63 @@ class PyXSD:
                 self._checkIdentityConstraints(subInstance)
 
         return subInstance
+
+    def _anyTypeRootInstance(self, dataTypeClass: Any, rootElement: Any, binder: Any) -> Any:
+        """Builds the root instance for an ``xsd:anyType``-typed element.
+
+        ``xs:anyType`` is the ur-type: its content is mixed character
+        data plus a lax ``##any`` wildcard over element children, and
+        every attribute is admissible. A root with child elements is
+        therefore not "a simple type containing child elements";
+        children are bound through the lax wildcard (a global
+        declaration or a child ``xsi:type`` is honored, anything else
+        is generic). The ``xsi:nil`` emptiness rules match the
+        primitive root path.
+        """
+        rootName = (
+            self.xmlRoot.tag
+            if getattr(self.mode, "namespaces", "legacy") == "strict"
+            else self.xmlRoot.tag.split("}")[-1]
+        )
+        nilled = xsi.xsi_nil_is_true(self.xmlRoot)
+        if nilled and not rootElement.isNillable():
+            self.report.add_error(
+                f"the root element '{rootName}' is not nillable but carries xsi:nil",
+                code="nil",
+                element=rootName,
+            )
+            nilled = False
+        if nilled:
+            nilContent = nil_content_kind(self.xmlRoot)
+            if nilContent == "elements":
+                self.report.add_error(
+                    f"the root element '{rootName}' is marked nil but contains child elements",
+                    code="nil",
+                    element=rootName,
+                )
+            elif nilContent == "characters":
+                self.report.add_error(
+                    f"the root element '{rootName}' is marked nil but contains character content",
+                    code="nil",
+                    element=rootName,
+                )
+
+        instance = dataTypeClass._unvalidated()
+        instance._name_ = rootName
+        instance._attribs_ = {
+            xsi.xsi_attr_key(key): val for key, val in self.xmlRoot.attrib.items()
+        }
+        if nilled:
+            instance._value_ = None
+            instance._children_ = []
+            return instance
+        text = self.xmlRoot.text
+        instance._value_ = [text] if text else None
+        instance._children_ = []
+        wildcard = WildcardSpec(namespace=NAMESPACE_ANY, process_contents="lax")
+        for child in self.xmlRoot:
+            binder._bindAnyTypeChild(instance, child, wildcard)
+        return instance
 
     def _primitiveRootInstance(self, dataTypeClass: Any, rootElement: Any) -> Any:
         """Builds a typed instance for a root element whose declared

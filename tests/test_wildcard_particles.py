@@ -151,3 +151,255 @@ def test_legacy_mode_excess_wildcard_content_is_reported(tmp_path):
         mode=ParseModes.STRICT,
     )
     assert parser.report.has_errors
+
+
+# --- XSD 1.1 exclusions reach element wildcard admission ---------------------
+
+NOT_NAMESPACE_ELEMENT_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any notNamespace="http://apple.com/ http://devil.com/"
+                processContents="skip" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+
+
+def test_not_namespace_element_wildcard_rejects_the_excluded_namespace(tmp_path):
+    # wild002.n1
+    parser = parse(
+        tmp_path,
+        '<eden xmlns:evil="http://devil.com/"><adam/><evil:eve/></eden>',
+        schema_xml=NOT_NAMESPACE_ELEMENT_SCHEMA,
+    )
+    assert parser.report.has_errors
+    parser = parse(
+        tmp_path,
+        '<eden xmlns:c="http://genesis.com/"><adam/><c:cain/></eden>',
+        schema_xml=NOT_NAMESPACE_ELEMENT_SCHEMA,
+    )
+    assert not parser.report.has_errors
+
+
+NOT_QNAME_ELEMENT_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any notQName="xml:space" processContents="skip"
+                minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+
+
+def test_not_qname_element_wildcard_rejects_an_exact_expanded_name(tmp_path):
+    # wild028.n1
+    parser = parse(
+        tmp_path,
+        "<eden><adam/><xml:space/></eden>",
+        schema_xml=NOT_QNAME_ELEMENT_SCHEMA,
+    )
+    assert parser.report.has_errors
+    parser = parse(
+        tmp_path,
+        "<eden><adam/><eve/></eden>",
+        schema_xml=NOT_QNAME_ELEMENT_SCHEMA,
+    )
+    assert not parser.report.has_errors
+
+
+POSITIONAL_NOT_QNAME_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="eden">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="a" type="xs:string"/>
+        <xs:element name="a" type="xs:string"/>
+        <xs:element name="a" type="xs:string"/>
+        <xs:any notQName="a" processContents="skip" minOccurs="1" maxOccurs="1"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+
+
+def test_excluded_name_cannot_fill_a_wildcard_occurrence(tmp_path):
+    # wild029.n1
+    parser = parse(
+        tmp_path,
+        "<eden><a/><a/><a/><a/></eden>",
+        schema_xml=POSITIONAL_NOT_QNAME_SCHEMA,
+    )
+    assert parser.report.has_errors
+    parser = parse(
+        tmp_path,
+        "<eden><a/><a/><a/><b/></eden>",
+        schema_xml=POSITIONAL_NOT_QNAME_SCHEMA,
+    )
+    assert not parser.report.has_errors
+
+
+DEFINED_ELEMENT_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="zing">
+    <xs:all>
+      <xs:element name="name" type="xs:string"/>
+      <xs:any namespace="##any" notQName="##defined" processContents="skip"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:element name="zing" type="zing"/>
+  <xs:element name="zang"/>
+</xs:schema>
+"""
+
+
+def test_defined_marker_rejects_global_element_declarations(tmp_path):
+    # wild052.n1/n2
+    parser = parse(
+        tmp_path,
+        "<zing><name/><zing/></zing>",
+        schema_xml=DEFINED_ELEMENT_SCHEMA,
+    )
+    assert parser.report.has_errors
+    parser = parse(
+        tmp_path,
+        "<zing><name/><zang/></zing>",
+        schema_xml=DEFINED_ELEMENT_SCHEMA,
+    )
+    assert parser.report.has_errors
+
+
+def test_defined_marker_does_not_cover_local_declarations(tmp_path):
+    # wild052.v2: the local ``name`` declaration is not a top-level one
+    parser = parse(
+        tmp_path,
+        "<zing><name/><name/></zing>",
+        schema_xml=DEFINED_ELEMENT_SCHEMA,
+    )
+    assert not parser.report.has_errors
+
+
+DEFINED_SIBLING_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="zing"/>
+  <xs:complexType name="zing">
+    <xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+      <xs:element name="b" type="xs:string"/>
+      <xs:element name="c" type="xs:string"/>
+      <xs:any notQName="##definedSibling" processContents="skip"
+              maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>
+"""
+
+
+def test_defined_sibling_rejects_a_repeated_sibling(tmp_path):
+    # wild070.n1/n2
+    parser = parse(
+        tmp_path,
+        "<root><a/><b/><c/><a/></root>",
+        schema_xml=DEFINED_SIBLING_SCHEMA,
+    )
+    assert parser.report.has_errors
+    parser = parse(
+        tmp_path,
+        "<root><a/><b/><c/><d/><a/></root>",
+        schema_xml=DEFINED_SIBLING_SCHEMA,
+    )
+    assert parser.report.has_errors
+
+
+def test_defined_sibling_admits_nonsibling_content(tmp_path):
+    # wild070.v1
+    parser = parse(
+        tmp_path,
+        "<root><a/><b/><c/><d/><e/></root>",
+        schema_xml=DEFINED_SIBLING_SCHEMA,
+    )
+    assert not parser.report.has_errors
+
+
+DEFINED_SIBLING_SUBSTITUTION_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root" type="zing"/>
+  <xs:complexType name="zing">
+    <xs:all>
+      <xs:element ref="a" minOccurs="0"/>
+      <xs:element name="b" type="xs:string" minOccurs="0"/>
+      <xs:any notQName="##definedSibling" processContents="skip"
+              minOccurs="0" maxOccurs="unbounded"/>
+    </xs:all>
+  </xs:complexType>
+  <xs:element name="a" type="xs:string"/>
+  <xs:element name="A" substitutionGroup="a"/>
+</xs:schema>
+"""
+
+
+def test_defined_sibling_includes_substitution_group_members(tmp_path):
+    # wild072.n1/n2
+    parser = parse(
+        tmp_path,
+        "<root><a/><a/></root>",
+        schema_xml=DEFINED_SIBLING_SUBSTITUTION_SCHEMA,
+    )
+    assert parser.report.has_errors
+    parser = parse(
+        tmp_path,
+        "<root><a/><A/></root>",
+        schema_xml=DEFINED_SIBLING_SUBSTITUTION_SCHEMA,
+    )
+    assert parser.report.has_errors
+
+
+def test_defined_sibling_substitution_member_is_admitted_at_its_particle(tmp_path):
+    # wild072.v1: A fills the referenced head's particle; d/e are wildcard
+    parser = parse(
+        tmp_path,
+        "<root><A/><b/><d/><e/></root>",
+        schema_xml=DEFINED_SIBLING_SUBSTITUTION_SCHEMA,
+    )
+    assert not parser.report.has_errors
+
+
+DEFINED_SIBLING_NOT_NAMESPACE_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="product" type="ProductType"/>
+  <xs:complexType name="ProductType">
+    <xs:sequence>
+      <xs:element name="number" type="xs:string"/>
+      <xs:element name="name" type="xs:string"/>
+      <xs:any minOccurs="0" maxOccurs="unbounded"
+              notNamespace="http://www.w3.org/1999/xhtml"
+              notQName="##definedSibling"
+              processContents="lax"/>
+    </xs:sequence>
+  </xs:complexType>
+</xs:schema>
+"""
+
+
+def test_defined_sibling_with_a_namespace_constraint(tmp_path):
+    # wild084.n1
+    parser = parse(
+        tmp_path,
+        "<product><number>557</number><name>x</name><number>12345</number></product>",
+        schema_xml=DEFINED_SIBLING_NOT_NAMESPACE_SCHEMA,
+    )
+    assert parser.report.has_errors
+    parser = parse(
+        tmp_path,
+        "<product><number>557</number><name>x</name><extra>y</extra></product>",
+        schema_xml=DEFINED_SIBLING_NOT_NAMESPACE_SCHEMA,
+    )
+    assert not parser.report.has_errors

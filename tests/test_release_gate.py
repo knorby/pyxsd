@@ -14,6 +14,7 @@ from io import StringIO
 import pytest
 
 import pyxsd.element_representatives.element_representative as ermod
+from pyxsd.binding import ParseModes
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.exceptions import PyXSDError
 from pyxsd.parser import PyXSD
@@ -57,6 +58,10 @@ FACET_SCHEMA = f"""\
     <xs:restriction base="xs:int">
       <xs:minInclusive value="0"/>
       <xs:maxInclusive value="10"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="rangeIntExclusive">
+    <xs:restriction base="xs:int">
       <xs:minExclusive value="-1"/>
       <xs:maxExclusive value="11"/>
     </xs:restriction>
@@ -93,8 +98,10 @@ class TestFacetElementRepresentatives:
         range_type = _schema_er().simpleTypes["rangeInt"]
         assert range_type.minInclusive == "0"
         assert range_type.maxInclusive == "10"
-        assert range_type.minExclusive == "-1"
-        assert range_type.maxExclusive == "11"
+
+        exclusive_type = _schema_er().simpleTypes["rangeIntExclusive"]
+        assert exclusive_type.minExclusive == "-1"
+        assert exclusive_type.maxExclusive == "11"
 
     def test_list_facet_records_item_type(self, tmp_path):
         _parse(FACET_SCHEMA, "<doc><a>abcd</a></doc>", tmp_path)
@@ -166,7 +173,14 @@ class TestElementRepresentativeHelpers:
 
 
 class TestXsdTypeEdges:
-    def test_union_with_unresolvable_member_skips_it(self, tmp_path, caplog):
+    def test_union_with_unresolvable_named_member_reports_and_skips_it(self, tmp_path):
+        """A ``memberTypes`` name that resolves to no type is an error.
+
+        pyxsd stays lax: it reports ``unknown-type`` and still builds the
+        union from the members that did resolve, so the instance parses.
+        (An inline member that hits a name-resolution gap is still only
+        warned about; see ``makeUnionClass``.)
+        """
         schema = f"""\
 <xs:schema {XS}>
   <xs:element name="doc">
@@ -183,13 +197,54 @@ class TestXsdTypeEdges:
 </xs:schema>
 """
         parser = _parse(schema, "<doc><v>2024-01-02</v></doc>", tmp_path)
-        assert not parser.report.has_errors
-        assert any("noSuchType" in record.getMessage() for record in caplog.records)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "unknown-type" in codes
 
         root = _root_instance(parser)
         member = root.v
         assert member.memberValue == "2024-01-02"
         assert len(member._unionMembers) == 1
+
+    def test_union_inline_member_resolution_gap_warns_and_skips_it(self, tmp_path, caplog):
+        """An inline member that hits the generated-name resolution gap is
+        only warned about, never reported; the named members still build.
+
+        The gap is namespace-specific: in namespaced mode ``typeFromName``
+        looks up the brace-less generated name with no namespace, while the
+        inline type is registered under the target namespace.
+        """
+        schema = f"""\
+<xs:schema {XS} targetNamespace="urn:t" xmlns:t="urn:t" elementFormDefault="qualified">
+  <xs:attribute name="lang">
+    <xs:simpleType>
+      <xs:union memberTypes="xs:language">
+        <xs:simpleType>
+          <xs:restriction base="xs:string"><xs:enumeration value=""/></xs:restriction>
+        </xs:simpleType>
+      </xs:union>
+    </xs:simpleType>
+  </xs:attribute>
+  <xs:element name="root">
+    <xs:complexType><xs:attribute ref="t:lang"/></xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(schema)
+        caplog.set_level(logging.WARNING)
+        parser = PyXSD(
+            StringIO('<t:root xmlns:t="urn:t"/>'),
+            xsdFile=schema_path,
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=ParseModes.NAMESPACED,
+        )
+        assert not parser.report.has_errors
+        assert any(
+            "lang|simpleType|union|simpleType" in record.getMessage() for record in caplog.records
+        )
+        union_cls = parser.classes["lang|simpleType"]
+        assert len(union_cls._unionMembers) == 1
 
     def test_union_equality_hash_and_repr(self, tmp_path):
         schema = f"""\

@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import itertools
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
-from pyxsd.namespaces import namespace_of
-from pyxsd.wildcards import WildcardSpec, wildcard_spec
+from pyxsd.wildcards import DISALLOWED_SIBLING, WildcardSpec, wildcard_spec
 
 _UNBOUNDED_THRESHOLD = 99999
 
@@ -47,6 +47,17 @@ class Particle:
     name: str | None = None
     spec: WildcardSpec | None = None
     descriptor: Any = None
+    #: True for the ``sequence`` wrapper the compiler emits around a
+    #: group reference's compositor. The reference is transparent in the
+    #: component model — the compositor takes the reference site's
+    #: occurrence — so derivation checks fold the two ranges together
+    #: instead of treating the wrapper as a literal sequence.
+    synthetic: bool = False
+    #: For an ``any`` particle whose spec carries the
+    #: ``##definedSibling`` keyword, the expanded names of every element
+    #: declaration in the type's own content model (substitution-group
+    #: members included). ``None`` when the keyword does not apply.
+    siblings: frozenset[str] | None = None
 
     def is_element(self) -> bool:
         return self.kind == "element"
@@ -90,6 +101,101 @@ def _content_children(er: Any) -> list[Any]:
     return children
 
 
+def compile_own_content(type_er: Any, py_xsd: Any = None) -> Particle | None:
+    """Compiles a complex type's own explicit particle tree.
+
+    Unlike :func:`compile_content_model` this never composes the base
+    type's model in: it is the type's own content model exactly as
+    written (for an extension, its suffix). Returns ``None`` when the
+    shape cannot be represented or the type has no content at all.
+    """
+    content = _content_children(type_er)
+    own = _group_particles(_compile_items(content, type_er, frozenset(), py_xsd))
+    if own is None and content:
+        return None
+    _annotate_defined_siblings(own, py_xsd)
+    return own
+
+
+def _iter_particles(model: Particle) -> Iterator[Particle]:
+    """Yields ``model`` and every descendant particle."""
+    stack = [model]
+    while stack:
+        particle = stack.pop()
+        yield particle
+        stack.extend(particle.children)
+
+
+def _substitution_member_names(descriptor: Any, py_xsd: Any) -> list[str]:
+    """Instance names of the global elements whose head is ``descriptor``.
+
+    The compiled model stores a reference site's *head* declaration; the
+    ``##definedSibling`` name set also covers the head's substitution
+    group members (XSD 1.1 §3.10.4.1 clause 3.6, "implicitly
+    contained"). An unresolvable schema or declaration contributes
+    nothing (skip, never reject).
+    """
+    if descriptor is None:
+        return []
+    try:
+        schema = descriptor.getSchema()
+    except Exception:
+        return []
+    elements = getattr(schema, "elements", None) or ()
+    head_names = {getattr(descriptor, "name", None), getattr(descriptor, "expandedName", None)}
+    names: list[str] = []
+    for element in elements:
+        if type(element).__name__ != "Element":
+            continue
+        try:
+            head = element.getSubstitutionGroupHead(py_xsd)
+        except Exception:
+            continue
+        if head is None or head not in head_names:
+            continue
+        try:
+            name = element.instanceName(parser=py_xsd)
+        except Exception:
+            continue
+        if name:
+            names.append(name)
+    return names
+
+
+def _annotate_defined_siblings(model: Particle | None, py_xsd: Any) -> None:
+    """Stamps wildcard particles' ``##definedSibling`` name sets.
+
+    The keyword disallows every element declaration in the wildcard's
+    own content model, whether declared directly or reached through a
+    nested compositor or group reference, plus the substitution-group
+    members of a referenced head. The annotation is computed after the
+    type's own model is compiled (before any base composition), so a
+    wildcard sees the content model it was declared in.
+    """
+    if model is None:
+        return
+    marked = [
+        particle
+        for particle in _iter_particles(model)
+        if particle.kind == "any"
+        and particle.spec is not None
+        and DISALLOWED_SIBLING in particle.spec.not_qname
+    ]
+    if not marked:
+        return
+    names: set[str] = set()
+    for particle in _iter_particles(model):
+        if particle.kind != "element" or not particle.name:
+            continue
+        names.add(particle.name)
+        names.update(_substitution_member_names(particle.descriptor, py_xsd))
+    if not names:
+        return
+    siblings = frozenset(names)
+    for particle in marked:
+        particle.siblings = siblings
+
+
 def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
     """Compiles a complex type's own particle tree, composed with its base.
 
@@ -97,10 +203,15 @@ def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
     keep their legacy flat checks. Genuinely empty types compile to an
     empty model that accepts no child elements, so stray children are
     reported.
+
+    An extension whose suffix is an ``all`` and whose base's effective
+    model is also an ``all`` composes into a single ``all`` (XSD 1.1
+    §3.4.2.3.3 clause 4.2.3.2): the base's particles lead and the
+    suffix supplies the occurrence. Every other extension is
+    ``sequence[base, own]``.
     """
-    content = _content_children(type_er)
-    own = _group_particles(_compile_items(content, type_er, frozenset(), py_xsd))
-    if own is None and content:
+    own = compile_own_content(type_er, py_xsd)
+    if own is None and _content_children(type_er):
         # Some particle could not be represented; fall back to legacy.
         return None
     derivation, base_model = _base_model(type_er, py_xsd)
@@ -110,12 +221,85 @@ def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
     if derivation == "extension" and base_model is not None:
         if own is None:
             return base_model
+        composition = all_extension_composition(base_model, own)
+        if composition is not None:
+            return composition
         return Particle("sequence", 1, 1, [base_model, own])
     if own is not None:
         return own
-    if not content and not getattr(type_er, "superClassNames", None):
+    if not _content_children(type_er) and not getattr(type_er, "superClassNames", None):
         return _empty_model()
     return None
+
+
+def all_term(particle: Particle) -> Particle | None:
+    """The ``all`` term of a particle, seeing through a group reference.
+
+    A group reference compiles to a synthetic sequence wrapper; the
+    reference is transparent in the component model, so the referenced
+    ``all`` group is the term. Returns ``None`` when the particle's
+    term is not an ``all``.
+    """
+    if particle.kind == "all":
+        return particle
+    if particle.synthetic and len(particle.children) == 1 and particle.children[0].kind == "all":
+        return particle.children[0]
+    return None
+
+
+def all_extension_composition(base_model: Particle, own: Particle) -> Particle | None:
+    """Composes an all-over-all extension into one ``all`` particle.
+
+    XSD 1.1 §3.4.2.3.3 clause 4.2.3.2: the composed ``all``'s particles
+    are the base all's followed by the extension all's, and its
+    occurrence is the extension particle's own ``minOccurs`` (with a
+    group-reference wrapper's occurrence folded in). ``None`` when
+    either side's term is not an ``all``.
+    """
+    base_term = all_term(base_model)
+    if base_term is None:
+        return None
+    occurrence = all_extension_occurrence(own)
+    if occurrence is None:
+        return None
+    own_term, minimum = occurrence
+    return Particle("all", minimum, 1, [*base_term.children, *own_term.children])
+
+
+def all_extension_occurrence(particle: Particle) -> tuple[Particle, int] | None:
+    """The ``all`` term of an extension suffix and its ``minOccurs``.
+
+    For a direct ``all`` the occurrence is the particle's own; for a
+    group-reference wrapper the reference's occurrence multiplies the
+    referenced ``all`` group's. ``None`` when the term is not an
+    ``all``.
+    """
+    if particle.kind == "all":
+        return particle, particle.min_occurs
+    if particle.synthetic and len(particle.children) == 1 and particle.children[0].kind == "all":
+        inner = particle.children[0]
+        return inner, particle.min_occurs * inner.min_occurs
+    return None
+
+
+def all_members(model: Particle) -> list[Particle]:
+    """The member particles of an ``all`` term, group references flattened.
+
+    A group reference inside an ``all`` is transparent (all007): the
+    referenced ``all`` group's members are members of the enclosing
+    ``all``. Nested ``all`` terms (from group references) are spliced in
+    at any depth; every other particle is a member as written.
+    """
+    if model.synthetic and len(model.children) == 1 and model.children[0].kind == "all":
+        return all_members(model.children[0])
+    members: list[Particle] = []
+    for child in model.children:
+        term = all_term(child)
+        if term is not None:
+            members.extend(all_members(term))
+        else:
+            members.append(child)
+    return members
 
 
 def _empty_model() -> Particle:
@@ -170,21 +354,50 @@ def _compile_item(item: Any, owner: Any, visited: frozenset[str], py_xsd: Any) -
     if className == "Element":
         return _compile_element(item, py_xsd)
     if className == "Any":
-        return _compile_any(item)
+        return _compile_any(item, py_xsd)
     if className in ("Sequence", "Choice", "All"):
         minimum, maximum = _occurrence(getattr(item, "tagAttributes", {}) or {})
         children = _compile_items(_content_children(item), owner, visited, py_xsd)
+        if className == "All":
+            children = _flatten_all_group_members(children)
         return Particle(className.lower(), minimum, maximum, children)
     return None
 
 
-def _compile_any(item: Any) -> Particle:
+def _flatten_all_group_members(children: list[Particle]) -> list[Particle]:
+    """Splices a group reference's ``all`` members into the enclosing all.
+
+    A group reference inside an ``all`` must name an ``all`` group and
+    carry ``minOccurs=maxOccurs=1`` (the ``all`` rule), so the reference
+    is transparent: its group's members are members of the enclosing
+    ``all`` and match in any order (all007). A wrapper that does not
+    name an ``all`` (a malformed schema) or repeats is left in place for
+    the checks that report it.
+    """
+    flattened: list[Particle] = []
+    for child in children:
+        if (
+            child.synthetic
+            and child.min_occurs == 1
+            and child.max_occurs == 1
+            and len(child.children) == 1
+            and child.children[0].kind == "all"
+        ):
+            flattened.extend(child.children[0].children)
+        else:
+            flattened.append(child)
+    return flattened
+
+
+def _compile_any(item: Any, py_xsd: Any = None) -> Particle:
     """Compiles an ``xs:any`` wildcard into an ``any`` particle.
 
     The wildcard's namespace constraint rides along in ``spec``, along
     with the target namespace of the document that declared it (so
     ``##targetNamespace``/``##other`` keep their source meaning when a
-    derived type inherits the wildcard).
+    derived type inherits the wildcard). The XSD 1.1 ``notQName`` names
+    are expanded through the namespace context so the binding can
+    compare them against instance expanded names.
     """
     attributes = getattr(item, "tagAttributes", {}) or {}
     minimum, maximum = _occurrence(attributes)
@@ -198,8 +411,33 @@ def _compile_any(item: Any) -> Particle:
             attributes,
             is_attribute=False,
             target_namespace=item.getNamespace(),
+            resolve_qname=_wildcard_qname_resolver(item, py_xsd),
         ),
     )
+
+
+def _wildcard_qname_resolver(item: Any, py_xsd: Any) -> Any:
+    """A QName expander for a wildcard's ``notQName`` values, or ``None``.
+
+    Uses the parser's recorded prefix bindings for the declaring
+    document; without them (a detached or legacy compile) the raw
+    tokens are kept, so callers stay silent rather than raising.
+    """
+    parser = py_xsd
+    if parser is None:
+        try:
+            parser = getattr(item.getSchema(), "pyXSD", None)
+        except AttributeError:
+            return None
+    context = getattr(parser, "namespaceContext", None)
+    element = getattr(item, "xsdElement", None)
+    if context is None or element is None:
+        return None
+
+    def resolve(token):
+        return context.resolve(element, token)
+
+    return resolve
 
 
 def _compile_element(item: Any, py_xsd: Any) -> Particle | None:
@@ -266,8 +504,11 @@ def _compile_group_ref(
     if inner is None:
         return None
     minimum, maximum = _occurrence(getattr(ref_site, "tagAttributes", {}) or {})
-    # The reference repeats the whole group as a unit.
-    return Particle("sequence", minimum, maximum, [inner])
+    # The reference repeats the whole group as a unit. The wrapper is
+    # marked synthetic: the reference is not a real sequence particle,
+    # it stands in for the referenced compositor at the reference
+    # site's occurrence (derivation checks fold the ranges together).
+    return Particle("sequence", minimum, maximum, [inner], synthetic=True)
 
 
 def particle_names(model: Particle | None) -> set[str]:
@@ -280,6 +521,25 @@ def particle_names(model: Particle | None) -> set[str]:
     for child in model.children:
         names |= particle_names(child)
     return names
+
+
+def locally_declared_element(model: Particle | None, name: str) -> Any:
+    """The element declaration *name* contained by *model*, or ``None``.
+
+    Returns the declaration whose particle carries the instance name
+    *name* (a direct or indirect containment, XSD 1.1 §3.8.6.3). The
+    caller supplies the type's base models separately: a locally
+    declared type recurses to the base type definition before it can be
+    absent (wild068). Substitution-group membership is *implicit*
+    containment and needs the schema's member map, so that half is
+    resolved by the caller.
+    """
+    if model is None:
+        return None
+    for particle in _iter_particles(model):
+        if particle.kind == "element" and particle.name == name:
+            return particle.descriptor
+    return None
 
 
 def first_required_name(model: Particle | None) -> str | None:
@@ -340,20 +600,29 @@ class _MatchContext(NamedTuple):
     a declared name when the wildcard is the particle active at that
     point (so a repeated declaration can flow into a later element
     particle), and declared particles consume their names where they
-    appear in the model.
+    appear in the model. ``defined`` holds the expanded names of the
+    schema's top-level declarations for the ``##defined`` keyword
+    (``None`` when the caller cannot supply it, which leaves the keyword
+    unapplied).
     """
 
     member_head_map: dict[str, str]
     name_of: Any
     target_namespace: str | None
     namespace_checked: bool
+    defined: frozenset[str] | None = None
 
 
 def _accepts(node_name: str, particle: Particle, ctx: _MatchContext) -> bool:
     if particle.kind == "any":
         if not ctx.namespace_checked or particle.spec is None:
             return True
-        return particle.spec.allows(namespace_of(node_name), ctx.target_namespace)
+        return particle.spec.allows_name(
+            node_name,
+            ctx.target_namespace,
+            defined=ctx.defined,
+            siblings=particle.siblings,
+        )
     head = ctx.member_head_map.get(node_name, node_name)
     return particle.name == head
 
@@ -477,6 +746,15 @@ def _ends_repeated(
         for start in frontier:
             advanced |= _ends_one(particle, nodes, start, ctx, memo, depth)
         if count >= particle.min_occurs:
+            if advanced <= results:
+                # A repetition step that reaches only positions already
+                # reachable within the occurrence bounds cannot lead to a
+                # fresh one: every later step starts from these positions
+                # and stays inside the accumulated result. Unbounded
+                # repeats whose one-step sets shrink (Z034/Z036) would
+                # otherwise walk a frontier of ~len(nodes) positions for
+                # every remaining repetition, per starting position.
+                break
             results |= advanced
         if advanced == frontier and count >= particle.min_occurs:
             # A zero-width particle has reached its fixed point; further
@@ -612,6 +890,7 @@ def match_content_associations(
     name_of: Any = _name_of,
     target_namespace: str | None = None,
     namespace_checked: bool = False,
+    defined: frozenset[str] | None = None,
 ) -> tuple[bool, list[Any], list[ChildMatch]]:
     """Matches children and reports which particle admitted each node.
 
@@ -620,6 +899,8 @@ def match_content_associations(
     strict namespace mode. ``namespace_checked`` turns on namespace
     checking for wildcard particles (strict namespace mode); in legacy
     mode a wildcard absorbs any name no declared particle claims.
+    ``defined`` supplies the schema's top-level declaration names for
+    the ``##defined`` keyword.
 
     Returns ``(complete, leftover, associations)``: ``complete`` is True
     when the whole model is satisfied and consumes every node;
@@ -633,6 +914,7 @@ def match_content_associations(
         name_of,
         target_namespace,
         namespace_checked,
+        defined,
     )
     memo: dict[Any, frozenset[int]] = {}
     ends = _ends_repeated(model, nodes, 0, ctx, memo, 0)
@@ -654,6 +936,7 @@ def match_content(
     name_of: Any = _name_of,
     target_namespace: str | None = None,
     namespace_checked: bool = False,
+    defined: frozenset[str] | None = None,
 ) -> tuple[bool, list[Any]]:
     """Matches child elements against a compiled content model.
 
@@ -668,5 +951,6 @@ def match_content(
         name_of,
         target_namespace,
         namespace_checked,
+        defined,
     )
     return complete, leftover

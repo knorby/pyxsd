@@ -76,6 +76,12 @@ import re
 from pyxsd import xsd_data_types
 from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, namespace_of
 from pyxsd.schema_context import context_or_ambient, last_components
+from pyxsd.wildcards import (
+    not_qname_consistency_problems,
+    replace_wildcard,
+    wildcard_declaration_problems,
+    wildcard_spec,
+)
 from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
@@ -221,8 +227,8 @@ class _RegistryProxy:
     def clear(self):
         self._active().clear()
 
-    def getFromName(self, name, kind=None):
-        return self._active().getFromName(name, kind)
+    def getFromName(self, name, kind=None, namespace=ANY_NAMESPACE, warn=True):
+        return self._active().getFromName(name, kind, namespace, warn)
 
     def getFromNameNS(self, name, kind=None, namespace=ANY_NAMESPACE):
         return self._active().getFromName(name, kind, namespace)
@@ -256,6 +262,33 @@ class ElementRepresentative:
     # class because an attribute took the natural accessor name
     # (element/attribute name collision). See ``XsdType.clsFor``.
     _aliased_: bool = False
+
+    #: Child tag grammar for this element. ``None`` means the class does
+    #: not constrain its children (each child is factored into its own
+    #: representative); a tuple restricts the legal local names.
+    _ALLOWED_CHILDREN: tuple[str, ...] | None = None
+    #: Local names of children that may appear at most once.
+    _MAX_ONE_CHILDREN: tuple[str, ...] = ()
+    #: Ordered grammar slots. Each slot is a tuple of tags sharing that
+    #: position; the children (by tag) must occupy slots in
+    #: non-decreasing order. ``annotation`` is position-independent and
+    #: handled separately.
+    _CHILD_ORDER: tuple[tuple[str, ...], ...] = ()
+    #: Slots that, when occupied, forbid any later slot (for example
+    #: ``simpleContent``/``complexContent`` excludes particles and
+    #: attributes).
+    _EXCLUSIVE_SLOTS: frozenset[int] = frozenset()
+    #: Slots that hold alternatives: occupying such a slot with two
+    #: *distinct* tags is illegal even though each tag appears only once
+    #: (for example ``simpleContent``+``complexContent``, or
+    #: ``choice``+``group``). Slots that may legitimately hold many
+    #: children ``(attribute, attributeGroup)`` are deliberately omitted.
+    _ONE_OF_SLOTS: frozenset[int] = frozenset()
+    #: When true (the XSD rule for every declaration), a schema-namespace
+    #: ``annotation`` child must be the first schema child. The schema
+    #: root sets this false: its content model allows annotations in any
+    #: position, and repeatedly.
+    _ANNOTATION_FIRST: bool = True
 
     def __init__(self, xsdElement, parent):
         """See the documentation for the ElementRepresentative system at
@@ -291,6 +324,9 @@ class ElementRepresentative:
             setattr(self, name, value)
             self.tagAttributes[name] = value
 
+        self.childTags = []
+        self.unexpectedChildTags = []
+        self.rawTag = self.tagType
         self.processChildren()
 
     def __str__(self):
@@ -302,12 +338,48 @@ class ElementRepresentative:
             self.__dict__.get("name", "???"),
         )
 
+    def _acceptChild(self, child):
+        """Records a child's tag and reports whether its grammar allows it.
+
+        Only schema-namespace children are recorded on ``childTags``; the
+        duplicate/order/annotation checks operate on schema components, so
+        a foreign child whose local name happens to be ``annotation``
+        (arbitrary XML in an ``appinfo``/``documentation`` body, say)
+        never drives grammar-order reporting. When ``_ALLOWED_CHILDREN``
+        is set, a child whose local name is not in the table, or which is
+        not in the XML Schema namespace, is not a schema component of this
+        element; its tag is recorded on ``unexpectedChildTags`` for the
+        parser to report later and the caller must not factor it.
+
+        Subclasses that need bespoke child handling (``Element`` and
+        ``Attribute`` set ``self.type`` from an inline type child) share
+        this helper so the table is never bypassed.
+        """
+        inSchema = namespace_of(child.tag) == XSD_NS
+        tag = local_name(child.tag)
+        if inSchema:
+            self.childTags.append(tag)
+        if self._ALLOWED_CHILDREN is not None and (
+            not inSchema or tag not in self._ALLOWED_CHILDREN
+        ):
+            self.unexpectedChildTags.append(tag)
+            return False
+        return True
+
     def processChildren(self):
-        """Calls the ``factory`` on all of the children of an element."""
+        """Calls the ``factory`` on all of the children of an element.
+
+        See ``_acceptChild`` for the grammar filtering; a child the
+        grammar rejects is recorded on ``unexpectedChildTags`` and is not
+        factored (``processedChildren`` holds ``None`` for its slot).
+        """
         children = list(self.xsdElement)
         if not children:
             return None
         for child in children:
+            if not self._acceptChild(child):
+                self.processedChildren.append(None)
+                continue
             processedChild = ElementRepresentative.factory(child, self)
             self.processedChildren.append(processedChild)
         return None
@@ -447,6 +519,119 @@ class ElementRepresentative:
         else:
             logger.error("%s[%s] %s", self.name, code, message)
 
+    def _checkWildcardDeclaration(self, *, is_attribute: bool) -> None:
+        """Reports wildcard XML-attribute grammar problems.
+
+        Shared by ``Any`` and ``AnyAttribute``: the namespace-constraint
+        token grammar, the ``processContents`` value, occurrence
+        attributes on ``xs:anyAttribute``, the XSD 1.1
+        ``namespace``/``notNamespace`` co-presence, the 1.1
+        ``notNamespace``/``notQName`` token grammar (prefixes resolved
+        through the schema's recorded bindings) and the unqualified XML
+        attributes outside the wildcard's allowed set. The raw
+        ``xsdElement`` attributes are inspected (not ``tagAttributes``)
+        so the reserved ``name`` attribute is seen too.
+
+        The registered :class:`WildcardSpec` is refined with the expanded
+        ``notQName`` names (see :meth:`refineWildcardSpec`; the parser
+        runs a pre-pass so derivation checks see the refined specs even
+        before the declaration walk reaches this ER), and the 1.1
+        Wildcard Properties Correct consistency rule is reported: every
+        ``notQName`` name must lie in a namespace the wildcard admits.
+        Both fall back to the raw tokens — logging, never raising — when
+        no namespace context is available.
+        """
+        resolver = self._wildcardQNameResolver()
+        for code, message in wildcard_declaration_problems(
+            self.xsdElement.attrib, is_attribute=is_attribute, resolve_qname=resolver
+        ):
+            self._reportSchemaError(message, code=code)
+        self.refineWildcardSpec()
+        spec = getattr(self, "wildcardSpec", None)
+        if spec is not None:
+            for code, message in not_qname_consistency_problems(spec):
+                self._reportSchemaError(message, code=code)
+
+    def refineWildcardSpec(self) -> None:
+        """Expands the wildcard spec's 1.1 ``notQName`` names, if any.
+
+        The ER constructors register a raw spec before the schema's
+        prefix bindings are attached, but the attribute-wildcard
+        derivation check and the binding consult the *registered* list.
+        The parser calls this on every ER right after attaching the
+        namespace context (before any content-model check), so the list
+        holds the expanded spec; calling it again is a no-op. A
+        non-wildcard ER, a missing spec or a missing namespace context
+        leaves the spec untouched.
+        """
+        old = getattr(self, "wildcardSpec", None)
+        if old is None:
+            return
+        spec = wildcard_spec(
+            self.tagAttributes,
+            is_attribute=old.is_attribute,
+            target_namespace=self.getNamespace(),
+            resolve_qname=self._wildcardQNameResolver(),
+        )
+        if spec == old:
+            return
+        self.wildcardSpec = spec
+        containing = self.getContainingType()
+        if containing is not None:
+            replace_wildcard(containing, old, spec)
+
+    def _wildcardQNameResolver(self):
+        """A QName expander for ``notQName`` values, or ``None``.
+
+        Prefix bindings are recorded per element by the parsing layer,
+        so resolution has to run after the schema context is attached;
+        without it (an ER built in isolation) ``None`` tells the caller
+        to keep the raw tokens and stay silent.
+        """
+        try:
+            schema = self.getSchema()
+        except AttributeError:
+            return None
+        context = getattr(schema, "namespaceContext", None)
+        element = getattr(self, "xsdElement", None)
+        if context is None or element is None:
+            return None
+
+        def resolve(token):
+            return context.resolve(element, token)
+
+        return resolve
+
+    def checkDeclarationLegality(self):
+        """Reports semantic declaration-legality problems.
+
+        The child-grammar tables cover which children a declaration may
+        contain; this hook covers the *attribute* constraints of the
+        XSD component's XML representation (for example
+        ``default``/``fixed`` consistency, ``use`` legality or the
+        lexical space of a name). Subclasses override it; the default
+        does nothing. The parser calls it once per representative after
+        the ER tree is built, when ``getSchema().pyXSD`` is attached and
+        ``_reportSchemaError`` can reach the report.
+        """
+        return None
+
+    @staticmethod
+    def _invalidTokenList(value, allowed):
+        """Whether an XSD token-list attribute is lexically illegal.
+
+        ``#all`` is only legal on its own; otherwise every
+        whitespace-separated token must be in ``allowed``. An empty (or
+        absent) value is legal and means the default. Shared by the
+        ``final``/``block`` checks on elements and types.
+        """
+        tokens = value.split()
+        if not tokens:
+            return False
+        if "#all" in tokens:
+            return tokens != ["#all"]
+        return any(token not in allowed for token in tokens)
+
     def _occursValue(self, attrName):
         """Returns the integer value of ``minOccurs``/``maxOccurs``.
 
@@ -484,6 +669,106 @@ class ElementRepresentative:
         'unbounded'.
         """
         return self._occursValue("maxOccurs")
+
+    def _checkParticleOccurs(self) -> None:
+        """Reports an occurrence range whose minimum exceeds its maximum.
+
+        Shared by the particle ERs (``sequence``/``choice``; ``group``
+        reference sites use the reference's name in the message).
+        Reading the values also reports lexical failures through
+        ``_occursValue`` (``invalid-occurs``), so a garbage attribute is
+        never silently ignored. ``all`` bounds are compositor-legality
+        and carry their own code (``all-rule``), so ``all`` does not
+        call this helper.
+        """
+        minimum = self.getMinOccurs()
+        maximum = self.getMaxOccurs()
+        if minimum > maximum:
+            self._reportSchemaError(
+                f"{self.rawTag} '{self.name}' has minOccurs={minimum} greater "
+                f"than maxOccurs={maximum}",
+                code="declaration-attribute",
+            )
+
+    def _silentOccurs(self, attrName):
+        """Reads ``minOccurs``/``maxOccurs`` without reporting.
+
+        Like ``_occursValue`` but garbage lexical values read as the
+        default 1 instead of raising ``invalid-occurs`` — the
+        declaration walk reports lexical failures on the owning
+        declaration exactly once, so lazy readers (emptiability) must
+        stay silent to avoid duplicate issues.
+        """
+        raw = getattr(self, attrName, 1)
+        text = str(raw).strip()
+        if attrName == "maxOccurs" and text == "unbounded":
+            return 99999
+        if self._OCCURS_PATTERN.fullmatch(text):
+            return int(text)
+        return 1
+
+    @property
+    def emptiable(self):
+        """Whether this particle can match zero elements.
+
+        Elements and wildcards are emptiable exactly when their
+        ``minOccurs`` is 0; compositors and groups override
+        ``_emptiableParticle``. A group reference resolves its
+        emptiability lazily through the group it names, so group
+        cycles must be guarded by the caller-supplied visited set.
+        """
+        return self._emptiableParticle(set())
+
+    def _emptiableParticle(self, visited: set) -> bool:
+        return self._silentOccurs("minOccurs") == 0
+
+    def _particleChildren(self) -> list:
+        """The particle children of a compositor (annotations skipped)."""
+        kinds = ("Element", "Group", "Choice", "Sequence", "All", "Any")
+        return [
+            child
+            for child in self.processedChildren or ()
+            if child is not None and type(child).__name__ in kinds
+        ]
+
+    def _compositorEmptiable(self, visited: set) -> bool:
+        """A compositor can match zero when its own occurrence allows it,
+        or when it has no particles or every particle child can (the
+        particlesHa emptiability rule).
+
+        For ``sequence``/``all`` an empty particle set always matches
+        zero (each iteration matches zero elements); ``choice``
+        overrides because an empty choice with ``minOccurs >= 1``
+        cannot match at all.
+        """
+        if self._silentOccurs("minOccurs") == 0:
+            return True
+        children = self._particleChildren()
+        return not children or all(child._emptiableParticle(visited) for child in children)
+
+    def resolveGroupRef(self, refSite):
+        """Returns the group definition a group reference site names.
+
+        Prefers QName-aware resolution (``resolveReference``) and falls
+        back to the ``schema.groups`` table by full reference and local
+        name, mirroring the content-model compiler. Returns ``None``
+        when the reference cannot be resolved.
+        """
+        ref = getattr(refSite, "ref", None)
+        if not ref:
+            return None
+        schema = self.getSchema()
+        if schema is None:
+            return None
+        groups = getattr(schema, "groups", None)
+        if not groups:
+            return None
+        resolver = getattr(refSite, "resolveReference", None)
+        if resolver is not None:
+            resolved = resolver(ref, groups.values(), parser=getattr(schema, "pyXSD", None))
+            if resolved is not None:
+                return resolved
+        return groups.get(ref) or groups.get(ref.split(":")[-1])
 
     def getContainingType(self):
         """Returns the parent's ``getContainingType()``.
@@ -638,6 +923,11 @@ class ElementRepresentative:
         context = getattr(self.getSchema(), "namespaceContext", None)
         if context is None:
             return value
+        # QName-valued schema attributes are of type ``xs:QName`` (or a
+        # list of them), whose whiteSpace facet is ``collapse``, so
+        # surrounding whitespace is not part of the reference.
+        if isinstance(value, str):
+            value = value.strip()
         try:
             return context.resolve(self.xsdElement, value)
         except NamespaceError as e:
@@ -676,6 +966,187 @@ class ElementRepresentative:
             return candidate
         return None
 
+    def simpleVariety(self, _seen=None):
+        """Returns the XSD {variety} of this type representative.
+
+        ``"atomic"``, ``"list"``, ``"union"`` or ``"complex"``; ``None``
+        when the representative is neither a simple nor a complex type.
+        A restriction inherits the variety of its base, so a restriction
+        of a list is still a list and one of a union is still a union.
+        ``_seen`` guards against a derivation cycle.
+        """
+        kind = type(self).__name__
+        if kind == "ComplexType":
+            return "complex"
+        if kind != "SimpleType":
+            return None
+        if _seen is None:
+            _seen = set()
+        if id(self) in _seen:
+            return None
+        _seen = _seen | {id(self)}
+        for child in self.processedChildren or ():
+            if child is None:
+                continue
+            childKind = type(child).__name__
+            if childKind == "List":
+                return "list"
+            if childKind == "Union":
+                return "union"
+        for child in self.processedChildren or ():
+            if child is None or type(child).__name__ != "Restriction":
+                continue
+            base = child.tagAttributes.get("base")
+            if base is None:
+                # A restriction may derive from an inline simple type.
+                for grandchild in child.processedChildren or ():
+                    if grandchild is not None and type(grandchild).__name__ == "SimpleType":
+                        return grandchild.simpleVariety(_seen)
+                return None
+            variety, _ = self.varietyOfReference(base, _seen)
+            return variety
+        return "atomic"
+
+    def varietyOfReference(self, value, _seen=None):
+        """Returns the {variety} of the type named by a lexical QName.
+
+        Returns a ``(variety, representative)`` pair; the representative
+        is ``None`` for a built-in type or an unresolvable name. Built-ins
+        are recognised by the XML Schema namespace URI (so any prefix
+        bound to it works), with the legacy ``xs:``/``xsd:`` spelling as
+        a fallback. A built-in list type (``IDREFS`` and friends) reports
+        ``"list"``, and the two ur-types report ``"non-atomic"``.
+        """
+        if _seen is None:
+            _seen = set()
+        resolved = self.resolveSchemaQName(value)
+        local = local_name(resolved)
+        uri = namespace_of(resolved)
+        isBuiltin = uri == XSD_NS or (isinstance(value, str) and value.startswith(("xs:", "xsd:")))
+        if isBuiltin or (uri is None and local in _PRIMITIVE_TYPES):
+            return _builtinVariety(local), None
+        er = self.resolveReference(value, self._globalTypeCandidates())
+        if er is None:
+            return None, None
+        return er.simpleVariety(_seen), er
+
+    def unionTransitiveMembershipHasNoList(self, unionER, _seen=None):
+        """Whether a union's transitive membership holds no list type.
+
+        XSD 1.1 §3.16.6.2 lets a list take a union as its item type when
+        no type of variety ``list`` appears anywhere in the union's
+        transitive membership; nested unions are followed recursively.
+        A complex or other non-simple member is illegal as well (``list``
+        item types must be simple). Atomic and unresolved members are
+        acceptable here (an unresolved name is reported separately as
+        ``unknown-type``).
+        """
+        if _seen is None:
+            _seen = set()
+        _seen = _seen | {id(unionER)}
+        for memberName in getattr(unionER, "unionSpec", ()) or ():
+            variety, memberER = self.varietyOfReference(memberName, _seen)
+            if not self._membershipVarietyHasNoList(variety, memberER, _seen):
+                return False
+        for child in unionER.processedChildren or ():
+            if (
+                child is not None
+                and type(child).__name__ == "SimpleType"
+                and not self._membershipVarietyHasNoList(child.simpleVariety(_seen), child, _seen)
+            ):
+                return False
+        return True
+
+    def _membershipVarietyHasNoList(self, variety, memberER, _seen):
+        """Whether one member's variety is legal under the list item rule.
+
+        Atomic and unresolved members are acceptable; a union is
+        acceptable when its own transitive membership has no list; a list
+        or complex type is not.
+        """
+        if variety in (None, "atomic"):
+            return True
+        if variety == "union":
+            return memberER is not None and self.unionTransitiveMembershipHasNoList(memberER, _seen)
+        return False
+
+    def _globalTypeCandidates(self):
+        """Returns the global simple and complex type representatives.
+
+        Both kinds share the ``type`` symbol space. The parser-owned
+        component table keeps one entry per expanded name, so it is
+        preferred; the per-schema dictionaries are the fallback. The
+        list is cached on the schema because the component set does not
+        change after the ER tree is built.
+        """
+        schema = self.getSchema()
+        cached = getattr(schema, "_globalTypeCandidatesCache", None)
+        if cached is not None:
+            return cached
+        table = getattr(schema, "components", None)
+        candidates = []
+        if isinstance(table, ComponentTable):
+            for entries in table.values():
+                for entry in entries:
+                    if componentKind(entry) == "type" and entry.checkTopLevelType():
+                        candidates.append(entry)
+        else:
+            candidates.extend(getattr(schema, "simpleTypes", {}).values())
+            candidates.extend(getattr(schema, "complexTypes", {}).values())
+        schema._globalTypeCandidatesCache = candidates
+        return candidates
+
+    def _globalComponentCandidates(self, kind, legacy_values, *, parser=None):
+        """Returns the global candidates a reference may resolve to.
+
+        In ``strict`` namespace mode the per-schema ``attributeGroups``
+        dictionary is keyed by local name, so two definitions that share a
+        local name in different namespaces (for example ``x:car`` and
+        ``y:car``) collapse onto a single entry. The parser-owned component
+        table preserves both by expanded name, so gather the global
+        definitions of *kind* from it instead.
+
+        A local name is only taken from the component table when it is
+        declared more than once *in different namespaces* — the case the
+        local-name mapping cannot represent. Otherwise the historical
+        mapping is used, so duplicate expanded names (typically a
+        circular ``xs:redefine`` chain, which the suite leaves
+        implementation-defined) keep their existing resolution.
+
+        In ``legacy`` mode the historical mapping is used unchanged.
+        """
+        if parser is None:
+            parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
+        mode = getattr(parser, "mode", None)
+        legacy = legacy_values if isinstance(legacy_values, dict) else None
+        if getattr(mode, "namespaces", "legacy") != "strict":
+            return list(legacy.values()) if legacy is not None else legacy_values
+        table = getattr(self.getSchema(), "components", None)
+        if not isinstance(table, ComponentTable):
+            return list(legacy.values()) if legacy is not None else legacy_values
+        byLocal: dict[str, list] = {}
+        for entries in table.values():
+            for entry in entries:
+                if componentKind(entry) == kind and entry.checkTopLevelType():
+                    byLocal.setdefault(entry.name, []).append(entry)
+        candidates = []
+        for local, entries in byLocal.items():
+            namespaces = {entry.getNamespace() for entry in entries}
+            if len(entries) >= 2 and len(namespaces) >= 2:
+                # Same local name in two namespaces: only the component
+                # table can distinguish them.
+                candidates.extend(entries)
+                continue
+            legacyEntry = legacy.get(local) if legacy is not None else None
+            candidates.append(legacyEntry if legacyEntry is not None else entries[0])
+        return candidates
+
+    def _globalAttributeGroupCandidates(self, *, parser=None):
+        """Global ``xs:attributeGroup`` definitions, namespace-aware."""
+        return self._globalComponentCandidates(
+            "attributeGroup", self.getSchema().attributeGroups, parser=parser
+        )
+
     def resolvedTypeName(self):
         """Returns the ``type`` attribute resolved to a Clark name.
 
@@ -703,23 +1174,36 @@ class ElementRepresentative:
 
         Each parser owns a :class:`ComponentTable` (created by the
         schema ER), so a later parser cannot see or overwrite earlier
-        declarations. Declarations are keyed by name and kind: the
-        first declaration of a given (kind, name) wins, while a
-        different kind may register the same name.
+        declarations. Declarations are keyed by name and kind, and the
+        first declaration of a given (kind, name) wins — except that a
+        local (or global) **element** declaration must not shadow a
+        same-named declaration of the other scope: wildcard admission
+        and the XSD 1.1 dynamic EDC rule resolve the global declaration
+        a wildcard selects, and a local particle sharing the expanded
+        name is a distinct component (wild063/wild076). A different
+        kind may always register the same name.
         """
         table = _tableFor(obj)
         entries = table.setdefault(name, [])
         kind = componentKind(obj)
         namespace = obj.getNamespace()
-        if any(
-            componentKind(entry) == kind and entry.getNamespace() == namespace for entry in entries
-        ):
+        global_ = obj.isGlobalDeclaration()
+
+        def conflicts(entry) -> bool:
+            if componentKind(entry) != kind or entry.getNamespace() != namespace:
+                return False
+            if kind == "element":
+                return entry.isGlobalDeclaration() == global_
+            return True
+
+        if any(conflicts(entry) for entry in entries):
             logger.debug(
-                "an element representative named %r (kind %r, namespace %r) is "
-                "already registered; keeping the first one",
+                "an element representative named %r (kind %r, namespace %r, "
+                "global %r) is already registered; keeping the first one",
                 name,
                 kind,
                 namespace,
+                global_,
             )
             return
         entries.append(obj)
@@ -781,6 +1265,28 @@ _PRIMITIVE_TYPES = {
     and "name" in klass.__dict__
     and klass is not xsd_data_types.TypeList
 }
+
+
+#: Built-in XSD types whose {variety} is list rather than atomic.
+_BUILTIN_LIST_TYPES = frozenset({"IDREFS", "ENTITIES", "NMTOKENS"})
+
+#: Built-in XSD types that have no atomic value space (the ur-types).
+_NON_ATOMIC_BUILTINS = frozenset({"anySimpleType", "anyType"})
+
+
+def _builtinVariety(localName):
+    """Returns the {variety} of a built-in XSD type by local name.
+
+    Every built-in is an atomic simple type except the three named list
+    types and the two ur-types, which have no atomic value space.
+    """
+    if localName in _NON_ATOMIC_BUILTINS:
+        return "non-atomic"
+    if localName in _BUILTIN_LIST_TYPES:
+        return "list"
+    return "atomic"
+
+
 # The active parser's component table, keyed by name. Each ``PyXSD``
 # parse installs its own :class:`ComponentTable` here so registrations
 # during class building and detached lookups (``getFromName``) see the

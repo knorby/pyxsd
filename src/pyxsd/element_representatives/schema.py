@@ -14,6 +14,52 @@ class Schema(ComplexType):
     Subclass of ComplexType, because it is so similar to it.
     """
 
+    # ``Schema`` reuses the ``ComplexType`` implementation but not its
+    # child grammar: the schema's children are the top-level declaration
+    # set. The table below is the Real Schema child grammar (XSD 1.0/1.1).
+    _ALLOWED_CHILDREN = (
+        "annotation",
+        "include",
+        "import",
+        "redefine",
+        "override",
+        "defaultOpenContent",
+        "notation",
+        "attribute",
+        "element",
+        "simpleType",
+        "complexType",
+        "group",
+        "attributeGroup",
+    )
+    #: ``annotation`` may appear repeatedly and in any position on the
+    #: schema element (before the composition tags and before/after each
+    #: declaration), so it is deliberately not a "max one" child; the
+    #: order table below keeps imports/includes ahead of declarations
+    #: (the generic order check ignores ``annotation``).
+    _MAX_ONE_CHILDREN = ("defaultOpenContent",)
+    _CHILD_ORDER = (
+        ("include", "import", "redefine", "override"),
+        ("annotation",),
+        ("defaultOpenContent",),
+        (
+            "notation",
+            "attribute",
+            "element",
+            "simpleType",
+            "complexType",
+            "group",
+            "attributeGroup",
+        ),
+    )
+    _EXCLUSIVE_SLOTS = frozenset()
+    #: The declaration slot holds many kinds of top-level declaration, so
+    #: unlike ``ComplexType`` no slot is a "one of" alternative.
+    _ONE_OF_SLOTS = frozenset()
+    #: The schema root allows annotations in any position (and repeated),
+    #: so the generic "annotation must be first" rule does not apply.
+    _ANNOTATION_FIRST = False
+
     def __init__(self, xsdElement, parent):
         """Stores all the attributeGroups, complexTypes, and simpleTypes
         in the document in dictionaries. Also has a list of top-level

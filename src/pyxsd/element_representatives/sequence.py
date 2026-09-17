@@ -4,6 +4,10 @@ from pyxsd.element_representatives.element_representative import ElementRepresen
 class Sequence(ElementRepresentative):
     """The class for the sequence tag."""
 
+    #: A ``sequence`` may carry at most one ``annotation``; its particle
+    #: children (element/group/choice/sequence/any) may repeat.
+    _MAX_ONE_CHILDREN = ("annotation",)
+
     def __init__(self, xsdElement, parent):
         """Adds itself to the sequencesOrChoices list in its containing
         complexType.  Makes a blank list for element children.  Uses the
@@ -27,3 +31,17 @@ class Sequence(ElementRepresentative):
         compositors = getattr(self.getContainingType(), "sequencesOrChoices", None)
         sequenceNum = len(compositors) + 1 if compositors is not None else 1
         return f"sequence{sequenceNum}"
+
+    def checkDeclarationLegality(self):
+        """Reports occurrence-range sanity on this compositor.
+
+        ``minOccurs`` must not exceed ``maxOccurs``. Reading the values
+        also reports lexical failures through ``_occursValue``
+        (``invalid-occurs``), so garbage in either attribute is never
+        silently ignored.
+        """
+        self._checkParticleOccurs()
+
+    def _emptiableParticle(self, visited: set) -> bool:
+        """A sequence can match zero when empty or all-empty children."""
+        return self._compositorEmptiable(visited)
