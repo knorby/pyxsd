@@ -15,15 +15,98 @@ bound, in :mod:`pyxsd.identity`.
 """
 
 import logging
+from typing import TYPE_CHECKING, Any
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.namespaces import clark
 from pyxsd.xpath_subset import XPathError, parse_xpath_subset
 from pyxsd.xsd_data_types import NCName
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
 
-class IdentityConstraint(ElementRepresentative):
+class _DeclarationSite:
+    """Namespace helpers for constraints and their selector/field terms.
+
+    Both the constraint tags and the ``selector``/``field`` terms
+    resolve QNames written in their own document against the
+    declaration site's in-scope prefix bindings, the declaring
+    document's target namespace and the effective
+    ``xpathDefaultNamespace`` (XSD 1.1 §3.13.2 host-element
+    precedence: the term's own attribute, else the containing
+    constraint's, else the schema's).
+    """
+
+    if TYPE_CHECKING:
+        #: Provided by ``ElementRepresentative``; declared here only
+        #: for the type checker (the mixin never shadows them).
+        getSchema: Callable[[], Any]
+        getNamespace: Callable[[], Any]
+
+    def _declarationNamespaces(self):
+        """Returns the in-scope prefix bindings at the declaration site."""
+        try:
+            schema = self.getSchema()
+        except AttributeError:
+            return {}
+        context = getattr(schema, "namespaceContext", None)
+        if context is None:
+            return {}
+        return context.bindings_for(self.xsdElement)  # type: ignore[attr-defined]
+
+    def _schemaTargetNamespace(self):
+        """Returns the declaring schema document's target namespace."""
+        try:
+            return self.getSchema().getNamespace()
+        except AttributeError:
+            return None
+
+    def _xpathDefaultNamespace(self):
+        """Returns the namespace unprefixed element names resolve to.
+
+        The effective ``xpathDefaultNamespace``: the term's or
+        constraint's own attribute, else the containing constraint's,
+        else the schema's (XSD 1.1 §3.13.2 host-element precedence).
+        With no ``xpathDefaultNamespace`` declared anywhere the
+        ``<schema>`` element's declared default ``##local`` applies,
+        so unprefixed names are in no namespace (idG029: a
+        default-``xmlns`` binding alone does not qualify selector
+        names). The ``##defaultNamespace`` keyword form resolves to
+        the declaration site's in-scope default namespace
+        (``##targetNamespace`` the target namespace, ``##local`` the
+        no namespace) and any other value is a literal namespace URI.
+        """
+        value = self._rawXpathDefaultNamespace()
+        if value is None:
+            return None
+        if value == "##defaultNamespace":
+            return self._declarationNamespaces().get("")
+        if value == "##targetNamespace":
+            return self._schemaTargetNamespace()
+        if value == "##local":
+            return None
+        if value.startswith("##"):
+            raise XPathError(f"invalid xpathDefaultNamespace value '{value}'")
+        return value
+
+    def _rawXpathDefaultNamespace(self):
+        """Returns the raw ``xpathDefaultNamespace`` value in force."""
+        for owner in (self, getattr(self, "parent", None)):
+            attributes = getattr(owner, "tagAttributes", None) or {}
+            value = attributes.get("xpathDefaultNamespace")
+            if value is not None and value.strip():
+                return value.strip()
+        try:
+            schema = self.getSchema()
+        except AttributeError:
+            return None
+        return schema.xsdElement.get("xpathDefaultNamespace")
+
+
+class IdentityConstraint(_DeclarationSite, ElementRepresentative):
     """Base class for the key, unique and keyref tags."""
 
     #: Local names of tags that may appear inside an identity
@@ -212,6 +295,76 @@ class IdentityConstraint(ElementRepresentative):
     def _checkRefer(self):
         """Only ``keyref`` carries ``refer``; the base does nothing."""
 
+    def _constraintClarkName(self):
+        """Returns the constraint's Clark name, or ``None`` unnamed.
+
+        Identity-constraint definitions are identified by their name
+        and the target namespace of the schema document that declares
+        them (XSD 1.1 §3.11.1), so ``refer`` and ``ref`` QNames
+        resolve against exactly that pair. ``getNamespace()`` reflects
+        the declaring document — included and imported components
+        carry their own document's namespace, not the host's.
+        """
+        name = self.constraintName
+        if not name:
+            return None
+        return clark(self.getNamespace(), name)
+
+    def _referClarkName(self):
+        """Resolves the keyref's ``refer`` QName to a Clark name.
+
+        ``None`` means the QName itself does not resolve (an unbound
+        prefix, or an unusable ``xpathDefaultNamespace``).
+        """
+        refer = (self.tagAttributes.get("refer") or "").strip()
+        if not refer:
+            return None
+        return self._resolveComponentQName(refer)
+
+    def _refClarkName(self):
+        """Resolves a reference site's ``ref`` QName to a Clark name.
+
+        ``None`` means the reference does not resolve (empty, or a
+        prefix that is not declared).
+        """
+        ref = (self.tagAttributes.get("ref") or "").strip()
+        if not ref:
+            return None
+        return self._resolveComponentQName(ref)
+
+    def _resolveComponentQName(self, qname):
+        """Resolves a QName-valued identity-constraint attribute.
+
+        ``refer`` and ``ref`` name schema components, so their QNames
+        resolve like ``type`` and ``ref`` elsewhere: a prefix through
+        the declaration site's in-scope bindings, an unprefixed name
+        through the declaration site's in-scope default namespace.
+        Declaring an ``xpathDefaultNamespace`` (self → constraint →
+        schema precedence) overrides that default for the constraint's
+        references: ``##defaultNamespace`` keeps the in-scope default
+        namespace, ``##targetNamespace`` the document's target
+        namespace, ``##local`` no namespace, and any other value is a
+        literal namespace URI. ``None`` means the name does not
+        resolve.
+        """
+        qname = qname.strip()
+        prefix, separator, local = qname.partition(":")
+        if separator:
+            namespace = self._declarationNamespaces().get(prefix)
+            if namespace is None:
+                return None
+            return clark(namespace, local)
+        default = self._rawXpathDefaultNamespace()
+        if default in (None, "", "##defaultNamespace"):
+            return clark(self._declarationNamespaces().get(""), qname)
+        if default == "##targetNamespace":
+            return clark(self.getNamespace(), qname)
+        if default == "##local":
+            return qname
+        if default.startswith("##"):
+            return None
+        return clark(default, qname)
+
     def _unqualifiedAttributes(self):
         """Yields the unqualified attribute names of the raw element."""
         for raw in self.xsdElement.attrib:
@@ -219,7 +372,7 @@ class IdentityConstraint(ElementRepresentative):
                 yield raw
 
 
-class _PathTerm(ElementRepresentative):
+class _PathTerm(_DeclarationSite, ElementRepresentative):
     """Shared representation rules for the selector and field tags."""
 
     #: Only an annotation may appear inside a selector or field;
@@ -282,65 +435,6 @@ class _PathTerm(ElementRepresentative):
                 code="xpath-invalid",
             )
             return None
-
-    def _declarationNamespaces(self):
-        """Returns the in-scope prefix bindings at the declaration site."""
-        try:
-            schema = self.getSchema()
-        except AttributeError:
-            return {}
-        context = getattr(schema, "namespaceContext", None)
-        if context is None:
-            return {}
-        return context.bindings_for(self.xsdElement)
-
-    def _schemaTargetNamespace(self):
-        """Returns the declaring schema document's target namespace."""
-        try:
-            return self.getSchema().getNamespace()
-        except AttributeError:
-            return None
-
-    def _xpathDefaultNamespace(self):
-        """Returns the namespace unprefixed element names resolve to.
-
-        The effective ``xpathDefaultNamespace``: the selector/field's
-        own attribute, else the containing constraint's, else the
-        schema's (XSD 1.1 §3.13.2 host-element precedence). With no
-        ``xpathDefaultNamespace`` declared anywhere the ``<schema>``
-        element's declared default ``##local`` applies, so unprefixed
-        names are in no namespace (idG029: a default-``xmlns`` binding
-        alone does not qualify selector names). The ``##defaultNamespace``
-        keyword form resolves to the declaration site's in-scope
-        default namespace (``##targetNamespace`` the target namespace,
-        ``##local`` the no namespace) and any other value is a literal
-        namespace URI.
-        """
-        value = self._rawXpathDefaultNamespace()
-        if value is None:
-            return None
-        if value == "##defaultNamespace":
-            return self._declarationNamespaces().get("")
-        if value == "##targetNamespace":
-            return self._schemaTargetNamespace()
-        if value == "##local":
-            return None
-        if value.startswith("##"):
-            raise XPathError(f"invalid xpathDefaultNamespace value '{value}'")
-        return value
-
-    def _rawXpathDefaultNamespace(self):
-        """Returns the raw ``xpathDefaultNamespace`` value in force."""
-        for owner in (self, self.parent):
-            attributes = getattr(owner, "tagAttributes", None) or {}
-            value = attributes.get("xpathDefaultNamespace")
-            if value is not None and value.strip():
-                return value.strip()
-        try:
-            schema = self.getSchema()
-        except AttributeError:
-            return None
-        return schema.xsdElement.get("xpathDefaultNamespace")
 
     def _unqualifiedAttributes(self):
         """Yields the unqualified attribute names of the raw element."""

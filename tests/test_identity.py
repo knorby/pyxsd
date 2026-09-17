@@ -528,7 +528,7 @@ class TestKeyrefReferLegality:
         )
         parser = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
         codes = {issue.code for issue in parser.report.for_phase("schema")}
-        assert "declaration-refer" in codes
+        assert "identity-refer" in codes
 
     def test_refer_naming_a_keyref_is_an_error(self, tmp_path):
         schema = self._schema(
@@ -543,7 +543,7 @@ class TestKeyrefReferLegality:
         )
         parser = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
         codes = {issue.code for issue in parser.report.for_phase("schema")}
-        assert "declaration-refer" in codes
+        assert "identity-refer" in codes
 
     def test_field_count_mismatch_is_a_schema_error(self, tmp_path):
         schema = self._schema(
@@ -559,7 +559,7 @@ class TestKeyrefReferLegality:
         )
         parser = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
         codes = {issue.code for issue in parser.report.for_phase("schema")}
-        assert "declaration-refer" in codes
+        assert "identity-refer" in codes
 
     def test_matching_refer_and_field_count_is_legal(self, tmp_path):
         schema = self._schema(
@@ -574,7 +574,259 @@ class TestKeyrefReferLegality:
         )
         parser = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
         codes = {issue.code for issue in parser.report.for_phase("schema")}
-        assert "declaration-refer" not in codes
+        assert "identity-refer" not in codes
+
+    def test_refer_to_key_in_another_namespace_is_a_schema_error(self, tmp_path):
+        """A prefixed ``refer`` resolving to a foreign namespace finds
+        no key even when a same-named key exists: keys are matched by
+        Clark name, not by local name."""
+        schema = (
+            f"<xs:schema {_xs} xmlns:o='urn:other'>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="uid" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="val" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:key name="foreignKey"><xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/></xs:key>\n'
+            '    <xs:keyref name="kr" refer="o:foreignKey">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:keyref>\n"
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        parser = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "identity-refer" in codes
+
+    def test_refer_with_undeclared_prefix_is_a_schema_error(self, tmp_path):
+        schema = self._schema(
+            '    <xs:keyref name="kr" refer="nope:k">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:keyref>\n"
+            '    <xs:key name="k">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:key>\n"
+        )
+        parser = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "identity-refer" in codes
+
+    def test_refer_to_key_in_target_namespace_resolves(self, tmp_path):
+        """A prefixed ``refer`` naming a key in the keyref's own target
+        namespace resolves by Clark name."""
+        target = 'xmlns:t="urn:t" targetNamespace="urn:t"'
+        schema = (
+            f"<xs:schema {_xs} {target}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="uid" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="val" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:key name="k"><xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/></xs:key>\n'
+            '    <xs:keyref name="kr" refer="t:k">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:keyref>\n"
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = '<t:root xmlns:t="urn:t"><t:uid val="1"/></t:root>'
+        parser = _parse(schema, instance, tmp_path)
+        assert not parser.report.has_errors
+
+
+class TestKeyrefScopeTree:
+    """Keyrefs validate against per-occurrence key tables recorded
+    during the walk (XSD 1.1 §3.11.4): the tables of the scope
+    occurrences enclosing the keyref union, and no other occurrence's
+    table is ever consulted."""
+
+    def test_keyref_descendant_scope(self, tmp_path):
+        """A keyref's scope occurrence sees the table of the key
+        declared on an enclosing element: the key's ``.//`` selector
+        assembles its table from descendant occurrences."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="shipper" maxOccurs="unbounded">\n'
+            "      <xs:complexType><xs:sequence>\n"
+            '        <xs:element name="ref" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "        </xs:element>\n"
+            "      </xs:sequence></xs:complexType>\n"
+            '      <xs:keyref name="r" refer="k"><xs:selector xpath="ref"/>'
+            '<xs:field xpath="@id"/></xs:keyref>\n'
+            "    </xs:element>\n"
+            '    <xs:element name="item">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '  <xs:key name="k"><xs:selector xpath=".//item"/>'
+            '<xs:field xpath="@id"/></xs:key>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = '<root><shipper><ref id="i1"/></shipper><item id="i1"/></root>'
+        parser = _parse(schema, instance, tmp_path)
+        assert not parser.report.has_errors
+
+    def test_keyref_does_not_see_tables_outside_its_scope(self, tmp_path):
+        """A key declared on a sibling subtree is outside the keyref's
+        scope: its table is never consulted (no global flatten)."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="keyBranch" maxOccurs="unbounded">\n'
+            "      <xs:complexType><xs:sequence>\n"
+            '        <xs:element name="item" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "        </xs:element>\n"
+            "      </xs:sequence></xs:complexType>\n"
+            '      <xs:key name="k"><xs:selector xpath="item"/>'
+            '<xs:field xpath="@id"/></xs:key>\n'
+            "    </xs:element>\n"
+            '    <xs:element name="refBranch" maxOccurs="unbounded">\n'
+            "      <xs:complexType><xs:sequence>\n"
+            '        <xs:element name="ref" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "        </xs:element>\n"
+            "      </xs:sequence></xs:complexType>\n"
+            '      <xs:keyref name="r" refer="k"><xs:selector xpath="ref"/>'
+            '<xs:field xpath="@id"/></xs:keyref>\n'
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType></xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = (
+            '<root><keyBranch><item id="v1"/></keyBranch>'
+            '<refBranch><ref id="v1"/></refBranch></root>'
+        )
+        parser = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert "identity-keyref" in codes
+
+    def test_keyref_matches_union_of_same_named_scopes(self, tmp_path):
+        """A value present only in an outer occurrence's table still
+        matches: the qualifying tables of all enclosing scope
+        occurrences of the referenced constraint union (the old
+        nearest-scope-only lookup wrongly rejected this)."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="node">\n'
+            "    <xs:complexType><xs:sequence>\n"
+            '      <xs:element name="item" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "      </xs:element>\n"
+            '      <xs:element name="ref" minOccurs="0" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="ref" type="xs:string"/></xs:complexType>\n'
+            "      </xs:element>\n"
+            '      <xs:element ref="node" minOccurs="0" maxOccurs="unbounded"/>\n'
+            "    </xs:sequence></xs:complexType>\n"
+            '    <xs:key name="k"><xs:selector xpath=".//item"/>'
+            '<xs:field xpath="@id"/></xs:key>\n'
+            '    <xs:keyref name="r" refer="k"><xs:selector xpath="ref"/>'
+            '<xs:field xpath="@ref"/></xs:keyref>\n'
+            "  </xs:element>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element ref="node" maxOccurs="unbounded"/>\n'
+            "  </xs:sequence></xs:complexType></xs:element>\n"
+            "</xs:schema>"
+        )
+        # "x" is an item of the *outer* node occurrence only: the
+        # innermost occurrence's own table is {y}, so only the union
+        # over the scope chain finds it.
+        instance = (
+            '<root><node><item id="x"/><node><item id="y"/><ref ref="x"/></node></node></root>'
+        )
+        parser = _parse(schema, instance, tmp_path)
+        assert not parser.report.has_errors
+
+    def test_keyref_ref_site_borrows_its_target(self, tmp_path):
+        """An XSD 1.1 ``<xs:keyref ref="..."/>`` site acts as the named
+        keyref: it borrows its selector, fields and refer."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="box" maxOccurs="unbounded">\n'
+            "      <xs:complexType><xs:sequence>\n"
+            '        <xs:element name="item" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "        </xs:element>\n"
+            '        <xs:element name="link" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="ref" type="xs:string"/></xs:complexType>\n'
+            "        </xs:element>\n"
+            "      </xs:sequence></xs:complexType>\n"
+            '      <xs:keyref name="kr" refer="k"><xs:selector xpath="link"/>'
+            '<xs:field xpath="@ref"/></xs:keyref>\n'
+            "    </xs:element>\n"
+            '    <xs:element name="mirror"><xs:complexType><xs:sequence>\n'
+            '      <xs:element name="box2" maxOccurs="unbounded">\n'
+            "        <xs:complexType><xs:sequence>\n"
+            '          <xs:element name="item" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "          </xs:element>\n"
+            '          <xs:element name="link" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="ref" type="xs:string"/></xs:complexType>\n'
+            "          </xs:element>\n"
+            "        </xs:sequence></xs:complexType>\n"
+            '        <xs:keyref ref="kr"/>\n'
+            "      </xs:element>\n"
+            "    </xs:sequence></xs:complexType></xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '  <xs:key name="k"><xs:selector xpath=".//item"/>'
+            '<xs:field xpath="@id"/></xs:key>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = (
+            '<root><box><item id="a"/><link ref="a"/></box>'
+            '<mirror><box2><item id="b"/><link ref="b"/></box2></mirror></root>'
+        )
+        parser = _parse(schema, instance, tmp_path)
+        assert not parser.report.has_errors
+
+    def test_keyref_ref_to_wrong_category_is_a_schema_error(self, tmp_path):
+        """``<xs:keyref ref>`` must name a keyref (§3.11.3.5): naming a
+        key is an ``identity-refer`` schema error."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="box">\n'
+            "      <xs:complexType><xs:sequence>\n"
+            '        <xs:element name="item">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "        </xs:element>\n"
+            "      </xs:sequence></xs:complexType>\n"
+            '      <xs:key name="k"><xs:selector xpath="item"/>'
+            '<xs:field xpath="@id"/></xs:key>\n'
+            '      <xs:keyref ref="k"/>\n'
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType></xs:element>\n"
+            "</xs:schema>"
+        )
+        parser = _parse(schema, '<root><box><item id="1"/></box></root>', tmp_path)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "identity-refer" in codes
 
 
 class TestUnsupportedPaths:

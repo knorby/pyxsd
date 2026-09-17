@@ -575,18 +575,31 @@ class PyXSD:
             stack.extend(getattr(er, "processedChildren", None) or ())
 
     def _checkKeyrefReferences(self, schemaER: Any) -> None:
-        """Checks every ``keyref``'s ``refer`` against the schema's keys.
+        """Checks every keyref's ``refer`` and every constraint
+        reference site's ``ref`` against the schema's constraints.
 
-        XSD 1.0 §3.11.5 / 1.1 §3.13.5: the ``refer`` QName must resolve
-        to a *key* or *unique* identity-constraint definition (a
-        keyref is not a valid target, idH035) and the keyref must carry
-        the same number of fields as the constraint it references
-        (idH013/idH014). The referenced constraint may be declared on
-        any element in the schema: instance-level scoping decides which
-        occurrence's table it resolves against.
+        XSD 1.0 §3.11.5 / 1.1 §3.13.5: the ``refer`` QName must
+        resolve to a *key* or *unique* identity-constraint definition
+        (a keyref is not a valid target, idH035) and the keyref must
+        carry the same number of fields as the constraint it
+        references (idH013/idH014). ``refer`` resolves as a component
+        QName: a prefix through the declaration site's in-scope
+        bindings, an unprefixed name through the declaration site's
+        default namespace — overridden by a declared
+        ``xpathDefaultNamespace`` (self → constraint → schema); the
+        match against the Key and Unique definitions is by Clark
+        name. The XSD 1.1 ``ref`` form must resolve to a constraint
+        of the same category (§3.11.3.5); the site then acts as its
+        target at instance phase. Failures are schema-phase
+        ``identity-refer`` errors. The resolved names are recorded on
+        the constraints (``constraintClark``/``referClark``/
+        ``borrowedFrom``) for the instance phase's namespace-accurate
+        scope matching.
         """
         keys: dict[str, Any] = {}
+        named: dict[str, dict[str, Any]] = {"Key": {}, "Unique": {}, "Keyref": {}}
         keyrefs: list[Any] = []
+        refSites: list[Any] = []
         seen: set[int] = set()
         stack = [schemaER]
         while stack:
@@ -595,19 +608,33 @@ class PyXSD:
                 continue
             seen.add(id(er))
             kind = type(er).__name__
-            if kind in ("Key", "Unique"):
-                name = getattr(er, "constraintName", None)
-                if name:
-                    keys.setdefault(name, er)
-                    # Redefine machinery renames base copies with "|"
-                    # ("base|Key|n"); index those under their final
-                    # segment too so a refer to the original name still
-                    # resolves.
-                    if "|" in name:
-                        keys.setdefault(name.split("|")[-1], er)
-            elif kind == "Keyref" and not getattr(er, "isConstraintRef", False):
-                keyrefs.append(er)
+            if kind in ("Key", "Unique", "Keyref"):
+                if getattr(er, "isConstraintRef", False):
+                    refSites.append(er)
+                elif kind in ("Key", "Unique"):
+                    name = getattr(er, "constraintName", None)
+                    if name:
+                        clarkName = er._constraintClarkName()
+                        er.constraintClark = clarkName
+                        if clarkName:
+                            keys.setdefault(clarkName, er)
+                            named[kind].setdefault(clarkName, er)
+                            # Redefine machinery renames base copies with
+                            # "|" ("base|Key|n"); index those under their
+                            # final segment too so a refer to the original
+                            # name still resolves.
+                            if "|" in name:
+                                alias = clark(namespace_of(clarkName), name.split("|")[-1])
+                                keys.setdefault(alias, er)
+                                named[kind].setdefault(alias, er)
+                else:
+                    er.referClark = er._referClarkName()
+                    keyrefs.append(er)
+                    clarkName = er._constraintClarkName()
+                    if clarkName:
+                        named[kind].setdefault(clarkName, er)
             stack.extend(getattr(er, "processedChildren", None) or ())
+        self._resolveConstraintRefSites(refSites, named)
         for keyref in keyrefs:
             refer = getattr(keyref, "refer", "") or ""
             local = refer.split(":")[-1].strip()
@@ -615,12 +642,23 @@ class PyXSD:
                 # An empty refer is reported by the declaration
                 # legality walk.
                 continue
-            resolved = keys.get(local)
+            referClark = getattr(keyref, "referClark", None)
+            resolved = keys.get(referClark) if referClark else None
             if resolved is None:
+                prefix, separator, _ = refer.partition(":")
+                if separator and referClark is None:
+                    message = (
+                        f"keyref '{keyref.constraintName}': the prefix '{prefix}' of "
+                        f"refer '{refer}' is not declared in the keyref's scope"
+                    )
+                else:
+                    message = (
+                        f"keyref '{keyref.constraintName}' refers to '{refer}', but no "
+                        "key or unique with that name is declared in the schema"
+                    )
                 self.report.add_error(
-                    f"keyref '{keyref.constraintName}' refers to '{refer}', but no "
-                    "key or unique with that name is declared in the schema",
-                    code="declaration-refer",
+                    message,
+                    code="identity-refer",
                     element=getattr(keyref, "rawTag", None) or "keyref",
                     phase="schema",
                 )
@@ -630,10 +668,52 @@ class PyXSD:
                     f"keyref '{keyref.constraintName}' carries {len(keyref.fieldPaths)} "
                     f"field(s), but the referenced {type(resolved).__name__.lower()} "
                     f"'{resolved.constraintName}' carries {len(resolved.fieldPaths)}",
-                    code="declaration-refer",
+                    code="identity-refer",
                     element=getattr(keyref, "rawTag", None) or "keyref",
                     phase="schema",
                 )
+
+    def _resolveConstraintRefSites(
+        self, refSites: list[Any], named: dict[str, dict[str, Any]]
+    ) -> None:
+        """Resolves XSD 1.1 constraint reference sites to their targets.
+
+        A ``<key>``, ``<unique>`` or ``<keyref>`` carrying ``ref``
+        names a constraint of its own category (§3.11.3.5) and acts as
+        that constraint: ``borrowedFrom`` records the final target so
+        the instance phase borrows its name, selector, fields and
+        ``refer``. A reference that does not resolve — no such name,
+        or the name only exists for a different category — is a
+        schema-phase ``identity-refer`` error and the site is left
+        unborrowed (the instance phase skips it).
+        """
+        for site in refSites:
+            kind = type(site).__name__
+            where = getattr(site, "rawTag", None) or kind.lower()
+            ref = (site.tagAttributes.get("ref") or "").strip()
+            clarkName = site._refClarkName()
+            target = named[kind].get(clarkName) if clarkName else None
+            if target is None:
+                if clarkName is None:
+                    prefix, separator, _ = ref.partition(":")
+                    detail = (
+                        f"the prefix '{prefix}' is not declared in the constraint's scope"
+                        if separator
+                        else "the reference is empty"
+                    )
+                else:
+                    detail = (
+                        "no identity constraint of this category is declared "
+                        "under that name in the schema"
+                    )
+                self.report.add_error(
+                    f"<{where}> reference '{ref}' does not resolve: {detail}",
+                    code="identity-refer",
+                    element=where,
+                    phase="schema",
+                )
+                continue
+            site.borrowedFrom = target
 
     #: ``xs:anyType``'s effective content: a mixed sequence holding an
     #: unrestricted wildcard. It stands in for the built-in type's model

@@ -82,6 +82,25 @@ _ABSENT: Any = object()
 KeyScopes = tuple[dict[str, set[tuple[Any, ...]]], ...]
 
 
+class _Scope:
+    """One scope occurrence's contribution to the scope tree.
+
+    ``tables`` holds the occurrence's key/unique value tables keyed by
+    table name, ``keyrefs`` the keyref constraints to validate after
+    the walk, and ``parent`` links the enclosing scope occurrence.
+    Occurrences without tables or keyrefs are skipped: they contribute
+    nothing to either side of the deferred pass.
+    """
+
+    __slots__ = ("children", "keyrefs", "parent", "tables")
+
+    def __init__(self, parent: "_Scope | None"):
+        self.parent = parent
+        self.tables: dict[str, set[tuple[Any, ...]]] = {}
+        self.keyrefs: list[tuple[Any, Any]] = []
+        self.children: list[_Scope] = []
+
+
 def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> None:
     """Checks every identity constraint reachable from the root instance.
 
@@ -89,26 +108,33 @@ def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> N
     - ``report``: the :class:`~pyxsd.validation.ValidationReport` that
       collects the findings.
 
-    Constraints are evaluated in scoped passes: keys/uniques are
-    collected for each owning element occurrence and pushed onto the
-    scope chain, then keyrefs on the same occurrence (or a descendant)
-    resolve against the nearest scope that defines the referenced
-    constraint.
+    The walk records each occurrence's key/unique tables into a scope
+    tree and attaches keyref occurrences to their enclosing scope;
+    once the whole document has been walked, every keyref is validated
+    against the tables of the scope occurrences around it (XSD 1.1
+    §3.11.4, §3.11.5).
     """
     if rootInstance is None:
         return None
-    _walk(rootInstance, (), report)
+    root = _Scope(None)
+    _walk(rootInstance, root, report)
+    _validateKeyrefs(root, report)
     return None
 
 
-def _walk(instance: Any, scopes: KeyScopes, report: ValidationReport) -> None:
-    """Applies the constraints of ``instance`` and recurses downward.
+def _walk(instance: Any, scope: _Scope, report: ValidationReport) -> None:
+    """Records the constraints of ``instance`` and recurses downward.
 
     A subtree bound by a ``processContents="skip"`` wildcard is skipped
     (XSD 1.1 §3.3.4.2): the walk neither applies the (absent)
     declaration's constraints to it nor lets its descendants serve as
     key/unique/keyref selections. ``_childrenOf`` hides skipped
     subtrees, so this guard only fires when the walk starts inside one.
+
+    Key/unique tables are collected per occurrence; keyrefs are only
+    recorded here — ``_validateKeyrefs`` checks them after the walk,
+    so a keyref sees the complete tables of its enclosing scope
+    occurrences.
     """
     if getattr(instance, "_skipped_", False):
         return None
@@ -118,21 +144,90 @@ def _walk(instance: Any, scopes: KeyScopes, report: ValidationReport) -> None:
     localKeys: dict[str, set[tuple[Any, ...]]] = {}
     keyrefs: list[Any] = []
     for constraint in identities:
+        if getattr(constraint, "isConstraintRef", False):
+            # An XSD 1.1 constraint reference site acts as the named
+            # constraint it resolves to; an unresolvable site was
+            # already reported at schema phase and is skipped.
+            constraint = getattr(constraint, "borrowedFrom", None)
+            if constraint is None:
+                continue
         kind = constraint.__class__.__name__
         if kind in ("Key", "Unique"):
             values = _collectKeyValues(instance, constraint, kind, report)
             if values is not None:
-                localKeys[constraint.constraintName] = values
+                localKeys[_tableKey(constraint)] = values
         elif kind == "Keyref":
             keyrefs.append(constraint)
 
-    childScopes = (*scopes, localKeys) if localKeys else scopes
+    if localKeys or keyrefs:
+        childScope = _Scope(scope)
+        childScope.tables = localKeys
+        scope.children.append(childScope)
+        scope = childScope
     for constraint in keyrefs:
-        _checkKeyref(constraint, instance, childScopes, report)
+        scope.keyrefs.append((constraint, instance))
 
     for child in getattr(instance, "_children_", None) or []:
-        _walk(child, childScopes, report)
+        _walk(child, scope, report)
     return None
+
+
+def _validateKeyrefs(scope: _Scope, report: ValidationReport) -> None:
+    """Validates every recorded keyref against its qualifying tables.
+
+    A keyref resolves against the union of the referenced constraint's
+    tables over the scope occurrences enclosing it — its own scope
+    occurrence included. The tables stay occurrence-scoped: a key
+    recorded under a subtree outside the keyref's ancestry is never
+    consulted, and there is no document-wide flattening (XSD 1.1
+    §3.11.4, §3.11.5).
+    """
+    for constraint, node in scope.keyrefs:
+        tables = _qualifyingTables(scope, constraint)
+        _checkKeyref(constraint, node, (tables,), report)
+    for child in scope.children:
+        _validateKeyrefs(child, report)
+    return None
+
+
+def _qualifyingTables(scope: _Scope, constraint: Any) -> dict[str, set[tuple[Any, ...]]]:
+    """Unions the referenced constraint's tables over ``scope``'s chain.
+
+    A scope occurrence whose table is empty still counts as found: the
+    referenced constraint exists there, so its (empty) table simply
+    matches no keyref member.
+    """
+    referKey = _referTableKey(constraint)
+    merged: dict[str, set[tuple[Any, ...]]] = {}
+    node: _Scope | None = scope
+    while node is not None:
+        if referKey in node.tables:
+            merged.setdefault(referKey, set()).update(node.tables[referKey])
+        node = node.parent
+    return merged
+
+
+def _tableKey(constraint: Any) -> str:
+    """Returns the scope-table key for a key/unique constraint.
+
+    The schema phase records each constraint's Clark name
+    (``{targetNamespace}name``) on ``constraintClark``; constraint
+    stand-ins without one fall back to the bare constraint name.
+    """
+    return getattr(constraint, "constraintClark", None) or constraint.constraintName
+
+
+def _referTableKey(constraint: Any) -> str:
+    """Returns the scope-table key a keyref's resolved ``refer`` names.
+
+    ``referClark`` carries the schema-phase Clark resolution of the
+    ``refer`` QName; stand-ins without one fall back to the refer's
+    local name.
+    """
+    referClark = getattr(constraint, "referClark", None)
+    if referClark:
+        return referClark
+    return constraint.refer.split(":")[-1]
 
 
 def _collectKeyValues(
@@ -194,17 +289,22 @@ def _checkKeyref(
     scopes: KeyScopes,
     report: ValidationReport,
 ) -> None:
-    """Checks one keyref constraint's records against its key scope."""
-    referLocal = constraint.refer.split(":")[-1]
+    """Checks one keyref constraint's records against its key scope.
+
+    ``scopes`` is the chain of per-occurrence tables the keyref may
+    draw from; the deferred pass supplies a single table merged from
+    every qualifying scope occurrence.
+    """
+    referKey = _referTableKey(constraint)
     known = None
     for scope in reversed(scopes):
-        if referLocal in scope:
-            known = scope[referLocal]
+        if referKey in scope:
+            known = scope[referKey]
             break
     if known is None:
         report.add_error(
             f"keyref '{constraint.constraintName}' refers to '{constraint.refer}', "
-            "but no key or unique with that name was found in the schema",
+            "but no key or unique with that name was found in scope",
             code="identity-keyref",
             element=constraint.constraintName,
         )

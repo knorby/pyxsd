@@ -298,12 +298,16 @@ def test_xpath_default_namespace_is_a_reserved_legal_attribute(schema_report):
 
 def test_xsd11_constraint_reference_site_is_legal(schema_report):
     """``<xs:unique ref="..."/>`` borrows the referred constraint's
-    name, selector and fields and carries none of them itself."""
+    name, selector and fields and carries none of them itself; each
+    ref site must name a constraint of its own category (§3.11.3.5)."""
     errors = schema_report(
         '<xs:unique name="u1"><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:unique>'
+        '<xs:key name="k1"><xs:selector xpath="c"/><xs:field xpath="@id"/></xs:key>'
+        '<xs:keyref name="r1" refer="k1"><xs:selector xpath="c"/>'
+        '<xs:field xpath="@id"/></xs:keyref>'
         '<xs:unique ref="u1"><xs:annotation><xs:documentation/></xs:annotation></xs:unique>'
-        '<xs:key ref="u1"/>'
-        '<xs:keyref ref="u1"/>'
+        '<xs:key ref="k1"/>'
+        '<xs:keyref ref="r1"/>'
     )
     assert not errors
 
