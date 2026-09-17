@@ -17,10 +17,10 @@ def _xsd_derived(value_cls: type | None, declared_cls: type | None) -> bool:
     """
     if value_cls is None or declared_cls is None:
         return False
-    from pyxsd.derivation import is_validly_derived
+    from pyxsd.derivation import is_valid_xsi_type
 
     try:
-        return is_validly_derived(value_cls, declared_cls) is None
+        return is_valid_xsi_type(value_cls, declared_cls) is None
     except Exception:
         return False
 

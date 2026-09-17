@@ -740,7 +740,7 @@ _QNAME_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
   </xs:complexType>
   <xs:element name="root" type="t:Holder">
     <xs:unique name="refUnique">
-      <xs:selector xpath="item"/>
+      <xs:selector xpath="t:item"/>
       <xs:field xpath="@ref"/>
     </xs:unique>
   </xs:element>

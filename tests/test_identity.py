@@ -289,6 +289,294 @@ class TestXPathSubset:
         assert "identity-key" in codes
 
 
+class TestUnionFields:
+    """Union field alternatives concatenate into one value space."""
+
+    def test_field_union_alternatives(self, tmp_path):
+        """``@x | @y`` is violated when both attributes are present and
+        when the surviving alternatives repeat a value (idL union
+        shapes)."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="a" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="x" type="xs:string"/>\n'
+            '        <xs:attribute name="y" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:unique name="u"><xs:selector xpath="a"/>\n'
+            '      <xs:field xpath="@x | @y"/></xs:unique>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = '<root><a x="1" y="9"/><a y="1"/></root>'
+        parser = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert any(code.startswith("identity-") for code in codes)
+
+    def test_attribute_wildcard_union_collision(self, tmp_path):
+        """``@*`` selects every attribute: two attributes on one node
+        violate the field's at-most-one-node rule."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="a" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="x" type="xs:string"/>\n'
+            '        <xs:attribute name="y" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:unique name="u"><xs:selector xpath="a"/>\n'
+            '      <xs:field xpath="@*"/></xs:unique>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        parser = _parse(schema, '<root><a x="1" y="2"/></root>', tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert any(code.startswith("identity-") for code in codes)
+
+    def test_union_selector_finds_all_alternatives(self, tmp_path):
+        """A union selector covers every alternative's matches."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:choice '
+            'maxOccurs="unbounded">\n'
+            '    <xs:element name="a" type="xs:token"/>\n'
+            '    <xs:element name="b" type="xs:token"/>\n'
+            "  </xs:choice></xs:complexType>\n"
+            '    <xs:key name="k"><xs:selector xpath="a | b"/>\n'
+            '      <xs:field xpath="."/></xs:key>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = "<root><a>dup</a><b>dup</b></root>"
+        parser = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert "identity-key" in codes
+
+
+class TestQualifiedNames:
+    """Element and attribute steps match by expanded (Clark) name."""
+
+    def test_qualified_attribute_field_matches(self, tmp_path):
+        """``@ns:id`` matches the namespace-qualified attribute."""
+        ns = "http://example.com/q"
+        schema = (
+            f'<xs:schema {_xs} xmlns:q="{ns}" targetNamespace="{ns}" '
+            'elementFormDefault="qualified" attributeFormDefault="qualified">\n'
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="item" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="id" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:key name="k"><xs:selector xpath="q:item"/>\n'
+            '      <xs:field xpath="@q:id"/></xs:key>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = f'<q:root xmlns:q="{ns}"><q:item q:id="dup"/><q:item q:id="dup"/></q:root>'
+        parser = _parse11(schema, instance, tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert "identity-key" in codes
+
+    def test_qualified_selector_does_not_match_other_namespace(self, tmp_path):
+        """A selector naming another namespace selects nothing, so the
+        key is vacuously satisfied."""
+        ns = "http://example.com/q"
+        other = "http://example.com/other"
+        schema = (
+            f'<xs:schema {_xs} xmlns:q="{ns}" xmlns:o="{other}" '
+            f'targetNamespace="{ns}" elementFormDefault="qualified">\n'
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="item" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="id" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:key name="k"><xs:selector xpath="o:item"/>\n'
+            '      <xs:field xpath="@q:id"/></xs:key>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = f'<q:root xmlns:q="{ns}"><q:item q:id="dup"/><q:item q:id="dup"/></q:root>'
+        parser = _parse11(schema, instance, tmp_path)
+        assert not parser.report.has_errors
+
+
+class TestAttributeShadowing:
+    """R6: an attribute step reads the attribute, not a same-named
+    child accessor."""
+
+    def test_attribute_wins_over_child_accessor(self, tmp_path):
+        """An undeclared (wildcard-admitted) attribute ``x`` and a
+        declared child element ``x`` coexist; ``@x`` reads the
+        attribute."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="item" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            "        <xs:sequence>\n"
+            '          <xs:element name="x" type="xs:string"/>\n'
+            "        </xs:sequence>\n"
+            '        <xs:anyAttribute namespace="##any" processContents="lax"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:unique name="u"><xs:selector xpath="item"/>\n'
+            '      <xs:field xpath="@x"/></xs:unique>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = '<root><item x="1"><x>a</x></item><item x="1"><x>b</x></item></root>'
+        parser = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert "identity-unique" in codes
+
+
+class TestFieldCardinality:
+    """Field node-set cardinality is counted before nil-discard."""
+
+    def test_nilled_and_valued_union_alternatives_violate_cardinality(self, tmp_path):
+        """A nilled element and an attribute selected by one union field
+        are two nodes: more than one node violates the field rule even
+        though the nilled element carries no value."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="item" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            "        <xs:sequence>\n"
+            '          <xs:element name="v" type="xs:string" nillable="true"/>\n'
+            "        </xs:sequence>\n"
+            '        <xs:attribute name="x" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:unique name="u"><xs:selector xpath="item"/>\n'
+            '      <xs:field xpath="@x | v"/></xs:unique>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = f'<root {_XSI}><item x="1"><v xsi:nil="true"/></item></root>'
+        parser = _parse11(schema, instance, tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert any(code.startswith("identity-") for code in codes)
+
+    def test_field_on_complex_content_element_is_reported(self, tmp_path):
+        """A field selecting an element with element children violates
+        the constraint (idK012): the item is not skipped silently."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="item" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            "        <xs:sequence>\n"
+            '          <xs:element name="pid">\n'
+            "            <xs:complexType>\n"
+            "              <xs:sequence>\n"
+            '                <xs:element name="gid" type="xs:string"/>\n'
+            "              </xs:sequence>\n"
+            "            </xs:complexType>\n"
+            "          </xs:element>\n"
+            "        </xs:sequence>\n"
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:unique name="u"><xs:selector xpath="item"/>\n'
+            '      <xs:field xpath="pid"/></xs:unique>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        parser = _parse(schema, "<root><item><pid><gid>g</gid></pid></item></root>", tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert any(code.startswith("identity-") for code in codes)
+
+
+class TestKeyrefReferLegality:
+    """A keyref's refer must name a key or unique with the same number
+    of fields (idH011/13/14/035)."""
+
+    def _schema(self, constraint_fragment):
+        return (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="uid" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="val" type="xs:string"/>\n'
+            '        <xs:attribute name="val2" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            f"{constraint_fragment}"
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+
+    def test_refer_to_undeclared_key_is_a_schema_error(self, tmp_path):
+        schema = self._schema(
+            '    <xs:keyref name="kr" refer="noSuchKey">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:keyref>\n"
+        )
+        parser = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "declaration-refer" in codes
+
+    def test_refer_naming_a_keyref_is_an_error(self, tmp_path):
+        schema = self._schema(
+            '    <xs:keyref name="kr1" refer="kr2">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:keyref>\n"
+            '    <xs:keyref name="kr2" refer="kr1">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val2"/>\n'
+            "    </xs:keyref>\n"
+        )
+        parser = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "declaration-refer" in codes
+
+    def test_field_count_mismatch_is_a_schema_error(self, tmp_path):
+        schema = self._schema(
+            '    <xs:keyref name="kr" refer="k">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            '      <xs:field xpath="@val2"/>\n'
+            "    </xs:keyref>\n"
+            '    <xs:key name="k">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:key>\n"
+        )
+        parser = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "declaration-refer" in codes
+
+    def test_matching_refer_and_field_count_is_legal(self, tmp_path):
+        schema = self._schema(
+            '    <xs:keyref name="kr" refer="k">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:keyref>\n"
+            '    <xs:key name="k">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:key>\n"
+        )
+        parser = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "declaration-refer" not in codes
+
+
 class TestUnsupportedPaths:
     """Paths outside the subset are schema-phase ``xpath-invalid`` errors."""
 

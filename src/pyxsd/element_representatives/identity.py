@@ -306,14 +306,20 @@ class _PathTerm(ElementRepresentative):
 
         The effective ``xpathDefaultNamespace``: the selector/field's
         own attribute, else the containing constraint's, else the
-        schema's, else ``##defaultNamespace``. The keyword forms
-        resolve against the declaration site (``##defaultNamespace``
-        is the schema document's in-scope default namespace,
-        ``##targetNamespace`` the target namespace, ``##local`` the no
-        namespace) and any other value is a literal namespace URI.
+        schema's (XSD 1.1 §3.13.2 host-element precedence). With no
+        ``xpathDefaultNamespace`` declared anywhere the ``<schema>``
+        element's declared default ``##local`` applies, so unprefixed
+        names are in no namespace (idG029: a default-``xmlns`` binding
+        alone does not qualify selector names). The ``##defaultNamespace``
+        keyword form resolves to the declaration site's in-scope
+        default namespace (``##targetNamespace`` the target namespace,
+        ``##local`` the no namespace) and any other value is a literal
+        namespace URI.
         """
         value = self._rawXpathDefaultNamespace()
-        if value is None or value == "##defaultNamespace":
+        if value is None:
+            return None
+        if value == "##defaultNamespace":
             return self._declarationNamespaces().get("")
         if value == "##targetNamespace":
             return self._schemaTargetNamespace()

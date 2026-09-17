@@ -13,6 +13,7 @@ from pyxsd.derivation import (
     combinedBlock,
     derivationMessage,
     derived_from_union_member,
+    is_valid_xsi_type,
     is_validly_derived,
 )
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
@@ -739,6 +740,7 @@ class SchemaBase:
                 parser = getattr(cls, "pyXSD", None)
                 defined = _defined_declaration_names(parser, "attribute") if strict else None
                 rejected: set[str] = set()
+                skipped: set[str] = set()
                 for attr, value in elementTag.attrib.items():
                     if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
                         continue
@@ -762,12 +764,20 @@ class SchemaBase:
                             )
                             rejected.add(attr)
                             continue
-                        if not self._checkWildcardAttribute(attr, value, spec, parser):
+                        if spec.process_contents == "skip":
+                            # A skip-wildcard attribute is accepted but
+                            # never validated; it is recorded so
+                            # identity-constraint fields do not see it
+                            # (XSD 1.1 §3.3.4.2, idZ015).
+                            skipped.add(attr)
+                        elif not self._checkWildcardAttribute(attr, value, spec, parser):
                             continue
                     self._attribs_[attr] = value
                     usedAttributes.append(attr)
                 if rejected:
                     self._wildcardRejectedAttributes_ = rejected
+                if skipped:
+                    self._wildcardSkipAttributes_ = skipped
         return usedAttributes
 
     @classmethod
@@ -1080,7 +1090,7 @@ class SchemaBase:
                 descriptor.getBlock() if descriptor is not None else None,
                 subElCls,
             )
-            reason = is_validly_derived(resolved, subElCls, blocked)
+            reason = is_valid_xsi_type(resolved, subElCls, blocked)
             if reason is not None:
                 cls._report_error(
                     derivationMessage(resolved, subElCls, reason),
@@ -1450,7 +1460,7 @@ class SchemaBase:
                     )
                     if override is not None:
                         blocked = combinedBlock(memberER.getBlock(), subElCls)
-                        reason = is_validly_derived(override, subElCls, blocked)
+                        reason = is_valid_xsi_type(override, subElCls, blocked)
                         if reason is None:
                             subElCls = override
                         else:

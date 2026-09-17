@@ -204,6 +204,48 @@ def _blocked_step(override: type, declared: type, tokens: frozenset[str]) -> boo
     return False
 
 
+def _isSimpleTypeClass(cls: type) -> bool:
+    """Whether a Python type class stands for an XSD *simple* type.
+
+    The built-in datatypes and generated simple types (whose classes
+    inherit the base datatype) subclass :class:`XsdDataType`; complex
+    types subclass :class:`SchemaBase` without a datatype base.
+    """
+    from pyxsd import xsd_data_types
+
+    try:
+        return issubclass(cls, xsd_data_types.XsdDataType)
+    except TypeError:
+        return False
+
+
+def is_valid_xsi_type(
+    override: type | None,
+    declared: type | None,
+    blocked: Any = None,
+) -> str | None:
+    """Instance-type validity of an ``xsi:type`` override.
+
+    Like :func:`is_validly_derived`, plus the ur-type clauses:
+    every type is validly derived from ``xs:anyType``, and every
+    *simple* type from ``xs:anySimpleType`` — but ``xs:anyType`` itself
+    is a complex type and may not replace a simple-typed declaration
+    (stZ056). Used by the xsi:type dispatch sites (document root,
+    child elements, substitution members).
+    """
+    from pyxsd import xsd_data_types
+
+    if declared is xsd_data_types.AnyType:
+        return None
+    if declared is xsd_data_types.AnySimpleType:
+        if override is None or override is xsd_data_types.AnyType:
+            return "not-derived"
+        if not _isSimpleTypeClass(override):
+            return "not-derived"
+        return None
+    return is_validly_derived(override, declared, blocked)
+
+
 def is_validly_derived(
     override: type | None,
     declared: type | None,

@@ -36,19 +36,43 @@ lexically different spellings of one value match.
 """
 
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from pyxsd.namespaces import local_name
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
 from pyxsd.xpath_subset import ParsedXPath, XPathError, parse_xpath_subset
-from pyxsd.xsd_data_types import XsdDataType, xsd_comparable_key
+from pyxsd.xsd_data_types import (
+    AnyType,
+    Base64Binary,
+    Boolean,
+    Date,
+    DateTime,
+    Duration,
+    GDay,
+    GMonth,
+    GMonthDay,
+    GYear,
+    GYearMonth,
+    HexBinary,
+    QName,
+    Time,
+    XsdDataType,
+    xsd_comparable_key,
+)
+from pyxsd.xsd_data_types import (
+    Decimal as XsdDecimal,
+)
 
 logger = logging.getLogger(__name__)
 
 _MISSING: Any = object()
 _UNSUPPORTED: Any = object()
 _AMBIGUOUS: Any = object()
+#: Marks a field whose single selected element has complex content (or
+#: is governed by ``xs:anyType``): such an element has no value and the
+#: constraint is violated (XSD 1.1 §3.13.4 clause 3, idK012/idZ010).
+_COMPLEX: Any = object()
 
 #: Marks constraint objects without a schema-phase parsed path (plain
 #: path-string stand-ins, as used by tests): those take the legacy
@@ -130,6 +154,14 @@ def _collectKeyValues(
         resolved = _fieldValues(selectedNode, constraint, report)
         if resolved is _UNSUPPORTED:
             return None
+        if resolved is _COMPLEX:
+            report.add_error(
+                f"{kind.lower()} '{constraint.constraintName}': a field selects an "
+                f"element with complex content on the '{_nameOf(selectedNode)}' element",
+                code="identity-key",
+                element=_nameOf(node),
+            )
+            continue
         if resolved is _MISSING:
             if kind == "Key":
                 report.add_error(
@@ -185,8 +217,9 @@ def _checkKeyref(
         resolved = _fieldValues(selectedNode, constraint, report)
         if resolved is _UNSUPPORTED:
             return None
-        if resolved in (_MISSING, _AMBIGUOUS):
-            # A keyref with a missing/ambiguous field is simply absent.
+        if resolved in (_MISSING, _AMBIGUOUS, _COMPLEX):
+            # A keyref with a missing, ambiguous or complex-content
+            # field is simply absent.
             continue
         if resolved not in known:
             report.add_error(
@@ -221,11 +254,24 @@ def _selectNodes(node: Any, constraint: Any, report: ValidationReport) -> list[A
             return None
     elif parsed is None:
         return None
-    return [
-        match
-        for descendant, steps in parsed.alternatives
-        for match in _evalAlternative(node, descendant, steps)
-    ]
+    # Union alternatives concatenate into one selector node set.
+    matches: list[Any] = []
+    seen: set[int] = set()
+    for descendant, steps in parsed.alternatives:
+        candidates: list[Any]
+        if descendant:
+            candidates = [
+                match
+                for context in _descendantOrSelfNodes(node)
+                for match in _evalSteps(context, steps)
+            ]
+        else:
+            candidates = _evalSteps(node, steps)
+        for match in candidates:
+            if id(match) not in seen:
+                seen.add(id(match))
+                matches.append(match)
+    return matches
 
 
 def _fieldValues(
@@ -233,15 +279,21 @@ def _fieldValues(
     constraint: Any,
     report: ValidationReport,
 ) -> Any:
-    """Returns the XSD value key for one selected node's fields.
+    """Returns the value key tuple for one selected node's fields.
 
-    Returns ``_MISSING`` (no value), ``_AMBIGUOUS`` (a field selects
-    more than one value; reported as an error) or ``_UNSUPPORTED``
-    (path not supported; the reason is already on the report).
+    Returns ``_MISSING`` (a field selects no value), ``_AMBIGUOUS`` (a
+    field selects more than one node; reported as an error),
+    ``_COMPLEX`` (a field selects an element with complex content;
+    reported as an error) or ``_UNSUPPORTED`` (path not supported; the
+    reason is already on the report).
+
+    Cardinality is counted before any value is discarded: a nilled
+    element selected alongside a valued attribute is two field nodes,
+    not one (XSD 1.1 §3.13.4 clause 3).
     """
     fieldPaths = constraint.fieldPaths
     parsedFields = getattr(constraint, "parsedFieldPaths", _ABSENT)
-    values: list[Any] = []
+    keys: list[Any] = []
     for index, fieldPath in enumerate(fieldPaths):
         if parsedFields is _ABSENT:
             parsed = _legacyParsePath(fieldPath, constraint, report, "field")
@@ -249,10 +301,8 @@ def _fieldValues(
             parsed = parsedFields[index] if index < len(parsedFields) else None
         if parsed is None:
             return _UNSUPPORTED
-        result = _evalField(selectedNode, parsed)
-        if not result:
-            return _MISSING
-        if len(result) > 1:
+        nodes = _fieldNodes(selectedNode, parsed)
+        if len(nodes) > 1:
             report.add_error(
                 f"field '{fieldPath}' of identity constraint "
                 f"'{constraint.constraintName}' selects more than one value on "
@@ -261,8 +311,21 @@ def _fieldValues(
                 element=_nameOf(selectedNode),
             )
             return _AMBIGUOUS
-        values.append(xsd_comparable_key(result[0]))
-    return tuple(values)
+        if not nodes:
+            return _MISSING
+        node = nodes[0]
+        if isinstance(node, _AttributeField):
+            keys.append(_valueSpaceKey(node.value))
+            continue
+        if _isComplexContent(node):
+            return _COMPLEX
+        value = _nodeValue(node)
+        if value is None:
+            # A nilled (or value-less) selected element counts for
+            # cardinality but supplies no value.
+            return _MISSING
+        keys.append(_valueSpaceKey(value))
+    return tuple(keys)
 
 
 def _legacyParsePath(
@@ -298,100 +361,115 @@ def _legacyParsePath(
         return None
 
 
-def _evalAlternative(node: Any, descendant: bool, steps: tuple[tuple[str, ...], ...]) -> list[Any]:
-    """Evaluates one parsed path alternative against a bound node."""
-    view = _stepView(steps)
-    if descendant:
-        return [
-            match
-            for candidate in _descendantOrSelfNodes(node)
-            for match in _evalSteps(candidate, view)
-        ]
-    return _evalSteps(node, view)
+class _AttributeField(NamedTuple):
+    """One attribute node selected by a field step."""
+
+    value: Any
 
 
-def _stepView(steps: tuple[tuple[str, ...], ...]) -> list[str]:
-    """Translates parsed steps into the evaluator's path view.
+def _fieldNodes(selectedNode: Any, parsed: ParsedXPath) -> list[Any]:
+    """Evaluates one parsed field's node set on a selected node.
 
-    Element steps keep their Clark name — child matching tries the
-    exact name first and falls back to the local name — while a
-    namespace wildcard collapses to ``*`` and an attribute step becomes
-    ``@name`` (bound attribute values are keyed by local name).
+    Union alternatives concatenate into one node set (deduplicated);
+    a final attribute step contributes the attributes it selects.
+    Element nodes are returned whole — nil and complex content are
+    judged by the caller so cardinality is counted before any
+    value-discard (XSD 1.1 §3.13.4 clause 3).
     """
-    view: list[str] = []
-    for step in steps:
-        kind = step[0]
-        name = step[1] if len(step) > 1 else ""
-        if kind == "self":
-            continue
-        if kind == "attribute":
-            view.append(f"@{name if name == '*' else local_name(name)}")
-        elif name == "*" or name.endswith("}*"):
-            view.append("*")
-        else:
-            view.append(name)
-    return view
-
-
-def _evalField(selectedNode: Any, parsed: ParsedXPath) -> list[Any]:
-    """Returns the values one parsed field selects on one node.
-
-    A list of zero or more values is returned. Union alternatives
-    concatenate; fields that select more than one value are diagnosed
-    by the caller via the list length.
-    """
-    values: list[Any] = []
+    nodes: list[Any] = []
+    seenNodes: set[int | tuple[int, str]] = set()
     for descendant, steps in parsed.alternatives:
-        view = _stepView(steps)
-        if view and view[-1].startswith("@"):
-            attributeName = view[-1][1:]
-            if len(view) > 1:
-                nodes = (
-                    [
-                        match
-                        for candidate in _descendantOrSelfNodes(selectedNode)
-                        for match in _evalSteps(candidate, view[:-1])
-                    ]
-                    if descendant
-                    else _evalSteps(selectedNode, view[:-1])
-                )
-            else:
-                nodes = list(_descendantOrSelfNodes(selectedNode)) if descendant else [selectedNode]
-            values += [
-                value
-                for node in nodes
-                for value in _attributeValues(node, attributeName)
-                if value is not None
+        attributeStep: str | None = None
+        elementSteps = steps
+        if steps and steps[-1][0] == "attribute":
+            attributeStep = steps[-1][1]
+            elementSteps = steps[:-1]
+        if descendant:
+            matches = [
+                match
+                for candidate in _descendantOrSelfNodes(selectedNode)
+                for match in _evalSteps(candidate, elementSteps)
             ]
         else:
-            # A field ending in ``.`` reduced to the element steps
-            # before it (or nothing at all, meaning the selected node
-            # itself), so the remaining case is a field naming an
-            # element: the value is that element's simple content.
-            nodes = _evalAlternative(selectedNode, descendant, steps)
-            values += [value for node in nodes for value in [_nodeValue(node)] if value is not None]
-    return values
+            matches = _evalSteps(selectedNode, elementSteps)
+        for match in matches:
+            if attributeStep is None:
+                if id(match) not in seenNodes:
+                    seenNodes.add(id(match))
+                    nodes.append(match)
+                continue
+            for name, value in _attributeSelections(match, attributeStep):
+                # (node, attribute-name) pairs deduplicate independently
+                marker = (id(match), name)
+                if marker not in seenNodes:
+                    seenNodes.add(marker)
+                    nodes.append(_AttributeField(value))
+    return nodes
 
 
-def _evalSteps(node: Any, steps: list[str]) -> list[Any]:
-    """Walks child steps from ``node`` and returns the matching nodes.
+def _evalSteps(node: Any, steps: tuple[tuple[str, ...], ...]) -> list[Any]:
+    """Walks element steps from ``node`` and returns the matching nodes.
 
-    A Clark-named step matches the exact expanded name first and falls
-    back to the local name, preserving the historical namespace-
-    insensitive matching of bound children.
+    A step matches a child by expanded name: an exact Clark-name match,
+    the ``*`` wildcard for any element, or a ``{uri}*`` namespace
+    wildcard. Namespace-insensitive local-name matching is gone — an
+    unprefixed step only ever names the no-namespace element.
     """
     nodes = [node]
     for step in steps:
-        stepLocal = local_name(step)
+        if step[0] == "self":
+            continue
+        name = step[1] if len(step) > 1 else "*"
         nextNodes = []
         for current in nodes:
             for child in _childrenOf(current):
-                childName = _nameOf(child)
-                localName = childName.split("}", 1)[-1] if childName.startswith("{") else childName
-                if step == "*" or childName == step or localName == stepLocal:
+                if _elementStepMatches(name, _nameOf(child)):
                     nextNodes.append(child)
         nodes = nextNodes
     return nodes
+
+
+def _elementStepMatches(stepName: str, nodeName: str) -> bool:
+    """Whether one parsed element step matches one node name."""
+    if stepName == "*":
+        return True
+    if stepName.endswith("}*"):
+        return nodeName.startswith(stepName[:-1])
+    return stepName == nodeName
+
+
+def _attributeSelections(node: Any, stepName: str) -> list[tuple[str, Any]]:
+    """Returns the (name, value) pairs one attribute step selects.
+
+    ``@*`` selects every attribute the node carries; ``@prefix:*`` is
+    translated to Clark form and selects only that namespace's
+    attributes; a named step selects that one attribute.
+    """
+    if stepName == "*":
+        return list(_visibleAttributes(node).items())
+    if stepName.endswith("}*"):
+        prefix = stepName[:-1]
+        return [
+            (name, value)
+            for name, value in _visibleAttributes(node).items()
+            if name.startswith(prefix)
+        ]
+    value = _attributeValue(node, stepName)
+    return [(stepName, value)] if value is not None else []
+
+
+def _visibleAttributes(node: Any) -> dict[str, Any]:
+    """The node's raw attribute table, minus skip-wildcard attributes.
+
+    Attributes absorbed by a ``processContents="skip"`` wildcard are
+    not validated and are not part of any field's node set (XSD 1.1
+    §3.3.4.2; idZ015).
+    """
+    attribs = getattr(node, "_attribs_", None) or {}
+    skipped = getattr(node, "_wildcardSkipAttributes_", None)
+    if skipped:
+        return {name: value for name, value in attribs.items() if name not in skipped}
+    return attribs
 
 
 def _descendantOrSelfNodes(node: Any) -> list[Any]:
@@ -432,33 +510,106 @@ def _nameOf(node: Any) -> str:
 
 
 def _attributeValue(node: Any, attributeName: str) -> Any | None:
-    """Returns the bound value of one attribute, or ``None``.
+    """Returns the value of one named attribute, or ``None``.
 
-    The typed value stored on the instance is preferred over the raw
-    lexical form, so equality is evaluated in the XSD value space.
+    R6: presence is decided by the raw attribute table first, so an
+    attribute wins over any same-named child accessor; the lookup is
+    namespace-exact (Clark key for a qualified attribute, bare local
+    name for an unqualified one). The descriptor-bound typed value is
+    preferred once presence is established, so equality is evaluated in
+    the XSD value space; an attribute absent from the raw table is
+    still found when its declaration supplied a ``default``/``fixed``
+    value through the descriptor (such values never enter
+    ``_attribs_``).
     """
-    value = node.__dict__.get(attributeName)
-    if value is not None:
-        return value
-    attribs = getattr(node, "_attribs_", None)
-    if attribs:
-        value = attribs.get(attributeName)
-        if value is not None:
-            return value
-    return None
+    attribs = _visibleAttributes(node)
+    typed = _typedAttributeValue(node, attributeName)
+    if attributeName in attribs:
+        return typed if typed is not None else attribs[attributeName]
+    return typed
 
 
-def _attributeValues(node: Any, attributeName: str) -> tuple[Any, ...]:
-    """Returns the values an attribute step selects on one node.
+def _typedAttributeValue(node: Any, attributeName: str) -> Any | None:
+    """Returns the descriptor-bound typed value of one attribute, or ``None``.
 
-    A named step selects that one attribute; the ``*`` wildcard selects
-    every attribute the node carries.
+    Only a declaration whose instance name is exactly ``attributeName``
+    (bare or Clark, honoring form defaults in strict namespace mode)
+    can supply the value, so a bare step never reaches a qualified
+    attribute's slot.
     """
-    if attributeName != "*":
-        value = _attributeValue(node, attributeName)
-        return (value,) if value is not None else ()
-    attribs = getattr(node, "_attribs_", None) or {}
-    return tuple(attribs.values())
+    if not isinstance(node, SchemaBase):
+        return None
+    local = local_name(attributeName)
+    descriptor = node.descAttributes().get(local)
+    if descriptor is None:
+        return None
+    try:
+        instanceName = type(node)._instance_name_of(descriptor, is_attribute=True)
+    except Exception:
+        return None
+    if instanceName != attributeName:
+        return None
+    return node.__dict__.get(local)
+
+
+def _isComplexContent(node: Any) -> bool:
+    """Whether a field-selected element has complex content.
+
+    An element with element children, or one governed by a complex
+    type definition (including ``xs:anyType``), has no [schema actual
+    value] and cannot supply a field value (XSD 1.1 §3.13.4 clause 3).
+    An element governed by ``xs:anyType`` binds as ``SchemaBase`` exact
+    (the ur-type has no generated class): that stand-in is complex
+    content even when the instance carries only character data
+    (idZ010).
+    """
+    if type(node) is SchemaBase:
+        return True
+    if isinstance(node, AnyType):
+        return True
+    if isinstance(node, XsdDataType):
+        return False
+    if isinstance(node, SchemaBase):
+        return not isinstance(getattr(node, "_value_", None), list)
+    return False
+
+
+def _valueSpaceKey(value: Any) -> tuple[str, Any]:
+    """The comparison key for one field value.
+
+    Pairs a value-space tag with :func:`xsd_comparable_key`: two values
+    compare equal only within one value space. ``3.0`` and ``3`` are
+    conflicting when both are decimal but non-conflicting when one is a
+    string and one a decimal (XSD 1.1 §3.13.4; idF012-014,
+    fields00202m3). Within a space the comparable key decides, so
+    ``xs:int`` ``1``/``01`` still collide and the string-derived types
+    (``xs:ID`` vs ``xs:string``) still share one space.
+    """
+    key = xsd_comparable_key(value)
+    # Order matters: the str-family arm is last because several typed
+    # values (dates, binaries, lists) are str subclasses.
+    if isinstance(value, (bool, Boolean)):
+        return ("boolean", key)
+    if isinstance(value, Duration):
+        return ("duration", key)
+    if isinstance(value, XsdDecimal):
+        return ("decimal", key)
+    if isinstance(value, int):
+        # The integer family shares xs:decimal's value space.
+        return ("decimal", key)
+    if isinstance(value, float):
+        return ("float", key)
+    if isinstance(value, (DateTime, Date, Time, GYear, GYearMonth, GMonthDay, GMonth, GDay)):
+        return (type(value).name, key)
+    if isinstance(value, HexBinary):
+        return ("hexBinary", key)
+    if isinstance(value, Base64Binary):
+        return ("base64Binary", key)
+    if isinstance(value, QName):
+        return ("QName", key)
+    if isinstance(value, str):
+        return ("string", key)
+    return ("", key)
 
 
 def _nodeValue(node: Any) -> Any | None:

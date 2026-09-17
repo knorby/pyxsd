@@ -68,7 +68,13 @@ from pyxsd.content_model import (
     compile_content_model,
     compile_own_content,
 )
-from pyxsd.derivation import blockTokens, combinedBlock, derivationMessage, is_validly_derived
+from pyxsd.derivation import (
+    blockTokens,
+    combinedBlock,
+    derivationMessage,
+    is_valid_xsi_type,
+    is_validly_derived,
+)
 from pyxsd.element_representatives.element_representative import (
     ComponentTable,
     ElementRepresentative,
@@ -464,6 +470,7 @@ class PyXSD:
         # .getFromName, the registry proxy) see this parser's table.
         remember_components(self.components)
         self._reportDeclarationIssues(schemaER)
+        self._checkKeyrefReferences(schemaER)
 
         # The schema root is itself the instance class used to dispatch
         # the document root's element declarations.
@@ -566,6 +573,67 @@ class PyXSD:
                 code, message = misplacement
                 self.report.add_error(message, code=code)
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkKeyrefReferences(self, schemaER: Any) -> None:
+        """Checks every ``keyref``'s ``refer`` against the schema's keys.
+
+        XSD 1.0 §3.11.5 / 1.1 §3.13.5: the ``refer`` QName must resolve
+        to a *key* or *unique* identity-constraint definition (a
+        keyref is not a valid target, idH035) and the keyref must carry
+        the same number of fields as the constraint it references
+        (idH013/idH014). The referenced constraint may be declared on
+        any element in the schema: instance-level scoping decides which
+        occurrence's table it resolves against.
+        """
+        keys: dict[str, Any] = {}
+        keyrefs: list[Any] = []
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            kind = type(er).__name__
+            if kind in ("Key", "Unique"):
+                name = getattr(er, "constraintName", None)
+                if name:
+                    keys.setdefault(name, er)
+                    # Redefine machinery renames base copies with "|"
+                    # ("base|Key|n"); index those under their final
+                    # segment too so a refer to the original name still
+                    # resolves.
+                    if "|" in name:
+                        keys.setdefault(name.split("|")[-1], er)
+            elif kind == "Keyref" and not getattr(er, "isConstraintRef", False):
+                keyrefs.append(er)
+            stack.extend(getattr(er, "processedChildren", None) or ())
+        for keyref in keyrefs:
+            refer = getattr(keyref, "refer", "") or ""
+            local = refer.split(":")[-1].strip()
+            if not local:
+                # An empty refer is reported by the declaration
+                # legality walk.
+                continue
+            resolved = keys.get(local)
+            if resolved is None:
+                self.report.add_error(
+                    f"keyref '{keyref.constraintName}' refers to '{refer}', but no "
+                    "key or unique with that name is declared in the schema",
+                    code="declaration-refer",
+                    element=getattr(keyref, "rawTag", None) or "keyref",
+                    phase="schema",
+                )
+                continue
+            if len(keyref.fieldPaths) != len(resolved.fieldPaths):
+                self.report.add_error(
+                    f"keyref '{keyref.constraintName}' carries {len(keyref.fieldPaths)} "
+                    f"field(s), but the referenced {type(resolved).__name__.lower()} "
+                    f"'{resolved.constraintName}' carries {len(resolved.fieldPaths)}",
+                    code="declaration-refer",
+                    element=getattr(keyref, "rawTag", None) or "keyref",
+                    phase="schema",
+                )
 
     #: ``xs:anyType``'s effective content: a mixed sequence holding an
     #: unrestricted wildcard. It stands in for the built-in type's model
@@ -3441,7 +3509,7 @@ class PyXSD:
             )
             return subCls
         blocked = combinedBlock(rootElement.getBlock(), subCls)
-        reason = is_validly_derived(resolved, subCls, blocked)
+        reason = is_valid_xsi_type(resolved, subCls, blocked)
         if reason is not None:
             self.report.add_error(
                 derivationMessage(resolved, subCls, reason),
