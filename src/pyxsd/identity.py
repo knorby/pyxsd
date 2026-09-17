@@ -111,8 +111,12 @@ def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> N
     The walk records each occurrence's key/unique tables into a scope
     tree and attaches keyref occurrences to their enclosing scope;
     once the whole document has been walked, every keyref is validated
-    against the tables of the scope occurrences around it (XSD 1.1
-    §3.11.4, §3.11.5).
+    against the node tables the referenced constraint accumulated
+    within the keyref's own subtree. An element's identity-constraint
+    table assembles each eligible constraint's table from the
+    element's own occurrence and its descendants (XSD §3.11.5
+    upward propagation), so a keyref never draws on a table assembled
+    outside its subtree (XSD §3.11.4 keyref clause).
     """
     if rootInstance is None:
         return None
@@ -133,8 +137,8 @@ def _walk(instance: Any, scope: _Scope, report: ValidationReport) -> None:
 
     Key/unique tables are collected per occurrence; keyrefs are only
     recorded here — ``_validateKeyrefs`` checks them after the walk,
-    so a keyref sees the complete tables of its enclosing scope
-    occurrences.
+    so a keyref sees the complete tables assembled within its own
+    subtree, wherever the walk recorded them.
     """
     if getattr(instance, "_skipped_", False):
         return None
@@ -172,38 +176,27 @@ def _walk(instance: Any, scope: _Scope, report: ValidationReport) -> None:
     return None
 
 
-def _validateKeyrefs(scope: _Scope, report: ValidationReport) -> None:
-    """Validates every recorded keyref against its qualifying tables.
+def _validateKeyrefs(scope: _Scope, report: ValidationReport) -> dict[str, set[tuple[Any, ...]]]:
+    """Validates every recorded keyref against its subtree's tables.
 
-    A keyref resolves against the union of the referenced constraint's
-    tables over the scope occurrences enclosing it — its own scope
-    occurrence included. The tables stay occurrence-scoped: a key
-    recorded under a subtree outside the keyref's ancestry is never
-    consulted, and there is no document-wide flattening (XSD 1.1
-    §3.11.4, §3.11.5).
+    Post-order over the scope tree: each node merges its own tables
+    with its descendants' merged tables — node tables assemble
+    strictly upward from the children (XSD §3.11.5 upward
+    propagation) — and then checks its keyrefs against the merge. A
+    keyref therefore resolves only against the referenced
+    constraint's tables from its own occurrence and descendant
+    occurrences: never an ancestor's table, and never the whole
+    document (XSD §3.11.4 keyref clause and its subtree note). A
+    scope occurrence whose table is empty still counts as present:
+    the constraint exists there, so its (empty) table simply matches
+    no keyref member.
     """
-    for constraint, node in scope.keyrefs:
-        tables = _qualifyingTables(scope, constraint)
-        _checkKeyref(constraint, node, (tables,), report)
+    merged = dict(scope.tables)
     for child in scope.children:
-        _validateKeyrefs(child, report)
-    return None
-
-
-def _qualifyingTables(scope: _Scope, constraint: Any) -> dict[str, set[tuple[Any, ...]]]:
-    """Unions the referenced constraint's tables over ``scope``'s chain.
-
-    A scope occurrence whose table is empty still counts as found: the
-    referenced constraint exists there, so its (empty) table simply
-    matches no keyref member.
-    """
-    referKey = _referTableKey(constraint)
-    merged: dict[str, set[tuple[Any, ...]]] = {}
-    node: _Scope | None = scope
-    while node is not None:
-        if referKey in node.tables:
-            merged.setdefault(referKey, set()).update(node.tables[referKey])
-        node = node.parent
+        for key, values in _validateKeyrefs(child, report).items():
+            merged.setdefault(key, set()).update(values)
+    for constraint, node in scope.keyrefs:
+        _checkKeyref(constraint, node, (merged,), report)
     return merged
 
 

@@ -643,17 +643,68 @@ class TestKeyrefReferLegality:
         parser = _parse(schema, instance, tmp_path)
         assert not parser.report.has_errors
 
+    def test_invalid_xpath_default_namespace_on_keyref_is_xpath_invalid(self, tmp_path):
+        """A bogus ``##`` keyword on the keyref fails like the
+        selector/field path does: ``xpath-invalid``, not
+        ``identity-refer``."""
+        schema = self._schema(
+            '    <xs:keyref name="kr" refer="k" xpathDefaultNamespace="##bogus">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:keyref>\n"
+            '    <xs:key name="k">\n'
+            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:field xpath="@val"/>\n'
+            "    </xs:key>\n"
+        )
+        parser = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
+        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        assert "xpath-invalid" in codes
+        assert "identity-refer" not in codes
+
 
 class TestKeyrefScopeTree:
-    """Keyrefs validate against per-occurrence key tables recorded
-    during the walk (XSD 1.1 §3.11.4): the tables of the scope
-    occurrences enclosing the keyref union, and no other occurrence's
-    table is ever consulted."""
+    """Keyrefs validate against the node tables the referenced
+    constraint assembles within the keyref's own subtree — the
+    keyref's element occurrence plus its descendants (XSD §3.11.5
+    upward propagation). An ancestor's table and any other subtree's
+    table are never consulted (§3.11.4 keyref clause)."""
 
-    def test_keyref_descendant_scope(self, tmp_path):
-        """A keyref's scope occurrence sees the table of the key
-        declared on an enclosing element: the key's ``.//`` selector
-        assembles its table from descendant occurrences."""
+    def test_keyref_sees_descendant_occurrence_tables(self, tmp_path):
+        """A keyref's element occurrence also sees the tables its
+        descendants contribute: the key declared on a child element
+        declaration propagates upward into the keyref's table."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="section" maxOccurs="unbounded">\n'
+            "      <xs:complexType><xs:sequence>\n"
+            '        <xs:element name="item" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "        </xs:element>\n"
+            '        <xs:element name="ref" maxOccurs="unbounded">'
+            "<xs:complexType>"
+            '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
+            "        </xs:element>\n"
+            "      </xs:sequence></xs:complexType>\n"
+            '      <xs:key name="k"><xs:selector xpath="item"/>'
+            '<xs:field xpath="@id"/></xs:key>\n'
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '  <xs:keyref name="r" refer="k"><xs:selector xpath=".//ref"/>'
+            '<xs:field xpath="@id"/></xs:keyref>\n'
+            "  </xs:element>\n"
+            "</xs:schema>"
+        )
+        instance = '<root><section><item id="i1"/><ref id="i1"/></section></root>'
+        parser = _parse(schema, instance, tmp_path)
+        assert not parser.report.has_errors
+
+    def test_keyref_ancestor_table_is_outside_subtree(self, tmp_path):
+        """A keyref may not draw on a key declared only on an ancestor:
+        the ancestor's table is outside the keyref's subtree, so its
+        value is unmatched even though the key collected it."""
         schema = (
             f"<xs:schema {_xs}>\n"
             '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
@@ -679,7 +730,8 @@ class TestKeyrefScopeTree:
         )
         instance = '<root><shipper><ref id="i1"/></shipper><item id="i1"/></root>'
         parser = _parse(schema, instance, tmp_path)
-        assert not parser.report.has_errors
+        codes = [issue.code for issue in parser.report.errors]
+        assert "identity-keyref" in codes
 
     def test_keyref_does_not_see_tables_outside_its_scope(self, tmp_path):
         """A key declared on a sibling subtree is outside the keyref's
@@ -718,11 +770,11 @@ class TestKeyrefScopeTree:
         codes = [issue.code for issue in parser.report.errors]
         assert "identity-keyref" in codes
 
-    def test_keyref_matches_union_of_same_named_scopes(self, tmp_path):
-        """A value present only in an outer occurrence's table still
-        matches: the qualifying tables of all enclosing scope
-        occurrences of the referenced constraint union (the old
-        nearest-scope-only lookup wrongly rejected this)."""
+    def test_keyref_matches_union_of_descendant_scopes(self, tmp_path):
+        """A value present only in a descendant occurrence's table still
+        matches: the keyref's subtree union gathers every descendant
+        occurrence of the referenced constraint (an own-occurrence-only
+        lookup wrongly rejected this)."""
         schema = (
             f"<xs:schema {_xs}>\n"
             '  <xs:element name="node">\n'
@@ -737,7 +789,7 @@ class TestKeyrefScopeTree:
             "      </xs:element>\n"
             '      <xs:element ref="node" minOccurs="0" maxOccurs="unbounded"/>\n'
             "    </xs:sequence></xs:complexType>\n"
-            '    <xs:key name="k"><xs:selector xpath=".//item"/>'
+            '    <xs:key name="k"><xs:selector xpath="item"/>'
             '<xs:field xpath="@id"/></xs:key>\n'
             '    <xs:keyref name="r" refer="k"><xs:selector xpath="ref"/>'
             '<xs:field xpath="@ref"/></xs:keyref>\n'
@@ -747,18 +799,19 @@ class TestKeyrefScopeTree:
             "  </xs:sequence></xs:complexType></xs:element>\n"
             "</xs:schema>"
         )
-        # "x" is an item of the *outer* node occurrence only: the
-        # innermost occurrence's own table is {y}, so only the union
-        # over the scope chain finds it.
+        # "y" is keyed only by the *inner* node occurrence (the key
+        # selector covers direct items only), while the ref sits on the
+        # outer occurrence: only the subtree union finds it.
         instance = (
-            '<root><node><item id="x"/><node><item id="y"/><ref ref="x"/></node></node></root>'
+            '<root><node><item id="x"/><ref ref="y"/><node><item id="y"/></node></node></root>'
         )
         parser = _parse(schema, instance, tmp_path)
         assert not parser.report.has_errors
 
     def test_keyref_ref_site_borrows_its_target(self, tmp_path):
         """An XSD 1.1 ``<xs:keyref ref="..."/>`` site acts as the named
-        keyref: it borrows its selector, fields and refer."""
+        keyref: it borrows its selector, fields and refer, and its
+        borrowed check is enforced within its own subtree."""
         schema = (
             f"<xs:schema {_xs}>\n"
             '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
@@ -773,36 +826,40 @@ class TestKeyrefScopeTree:
             '<xs:attribute name="ref" type="xs:string"/></xs:complexType>\n'
             "        </xs:element>\n"
             "      </xs:sequence></xs:complexType>\n"
+            '      <xs:key name="k"><xs:selector xpath="item"/>'
+            '<xs:field xpath="@id"/></xs:key>\n'
             '      <xs:keyref name="kr" refer="k"><xs:selector xpath="link"/>'
             '<xs:field xpath="@ref"/></xs:keyref>\n'
             "    </xs:element>\n"
-            '    <xs:element name="mirror"><xs:complexType><xs:sequence>\n'
-            '      <xs:element name="box2" maxOccurs="unbounded">\n'
-            "        <xs:complexType><xs:sequence>\n"
-            '          <xs:element name="item" maxOccurs="unbounded">'
+            '    <xs:element name="box2" maxOccurs="unbounded">\n'
+            "      <xs:complexType><xs:sequence>\n"
+            '        <xs:element name="item" maxOccurs="unbounded">'
             "<xs:complexType>"
             '<xs:attribute name="id" type="xs:string"/></xs:complexType>\n'
-            "          </xs:element>\n"
-            '          <xs:element name="link" maxOccurs="unbounded">'
+            "        </xs:element>\n"
+            '        <xs:element name="link" maxOccurs="unbounded">'
             "<xs:complexType>"
             '<xs:attribute name="ref" type="xs:string"/></xs:complexType>\n'
-            "          </xs:element>\n"
-            "        </xs:sequence></xs:complexType>\n"
-            '        <xs:keyref ref="kr"/>\n'
-            "      </xs:element>\n"
-            "    </xs:sequence></xs:complexType></xs:element>\n"
-            "  </xs:sequence></xs:complexType>\n"
-            '  <xs:key name="k"><xs:selector xpath=".//item"/>'
-            '<xs:field xpath="@id"/></xs:key>\n'
-            "  </xs:element>\n"
+            "        </xs:element>\n"
+            "      </xs:sequence></xs:complexType>\n"
+            '      <xs:key ref="k"/>\n'
+            '      <xs:keyref ref="kr"/>\n'
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType></xs:element>\n"
             "</xs:schema>"
         )
-        instance = (
+        valid = (
             '<root><box><item id="a"/><link ref="a"/></box>'
-            '<mirror><box2><item id="b"/><link ref="b"/></box2></mirror></root>'
+            '<box2><item id="b"/><link ref="b"/></box2></root>'
         )
-        parser = _parse(schema, instance, tmp_path)
+        parser = _parse(schema, valid, tmp_path)
         assert not parser.report.has_errors
+        # Without the borrow the box2 keyref would be skipped silently;
+        # the mismatched link must be caught by the borrowed check.
+        invalid = '<root><box2><item id="b"/><link ref="zz"/></box2></root>'
+        parser = _parse(schema, invalid, tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert "identity-keyref" in codes
 
     def test_keyref_ref_to_wrong_category_is_a_schema_error(self, tmp_path):
         """``<xs:keyref ref>`` must name a keyref (§3.11.3.5): naming a

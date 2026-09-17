@@ -345,7 +345,9 @@ class IdentityConstraint(_DeclarationSite, ElementRepresentative):
         namespace, ``##targetNamespace`` the document's target
         namespace, ``##local`` no namespace, and any other value is a
         literal namespace URI. ``None`` means the name does not
-        resolve.
+        resolve (empty, or a prefix that is not declared); an invalid
+        ``##`` keyword raises ``XPathError`` — the same error class
+        the selector/field path reports as ``xpath-invalid``.
         """
         qname = qname.strip()
         prefix, separator, local = qname.partition(":")
@@ -362,7 +364,7 @@ class IdentityConstraint(_DeclarationSite, ElementRepresentative):
         if default == "##local":
             return qname
         if default.startswith("##"):
-            return None
+            raise XPathError(f"invalid xpathDefaultNamespace value '{default}'")
         return clark(default, qname)
 
     def _unqualifiedAttributes(self):

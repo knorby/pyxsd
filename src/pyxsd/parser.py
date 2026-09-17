@@ -111,6 +111,7 @@ from pyxsd.wildcards import (
     wildcard_specs_overlap,
 )
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
+from pyxsd.xpath_subset import XPathError
 from pyxsd.xsd_data_types import (
     AnySimpleType,
     AnyType,
@@ -628,7 +629,11 @@ class PyXSD:
                                 keys.setdefault(alias, er)
                                 named[kind].setdefault(alias, er)
                 else:
-                    er.referClark = er._referClarkName()
+                    try:
+                        er.referClark = er._referClarkName()
+                    except XPathError as exc:
+                        self._reportInvalidConstraintDefaultNamespace(er, exc)
+                        continue
                     keyrefs.append(er)
                     clarkName = er._constraintClarkName()
                     if clarkName:
@@ -691,7 +696,11 @@ class PyXSD:
             kind = type(site).__name__
             where = getattr(site, "rawTag", None) or kind.lower()
             ref = (site.tagAttributes.get("ref") or "").strip()
-            clarkName = site._refClarkName()
+            try:
+                clarkName = site._refClarkName()
+            except XPathError as exc:
+                self._reportInvalidConstraintDefaultNamespace(site, exc)
+                continue
             target = named[kind].get(clarkName) if clarkName else None
             if target is None:
                 if clarkName is None:
@@ -714,6 +723,23 @@ class PyXSD:
                 )
                 continue
             site.borrowedFrom = target
+
+    def _reportInvalidConstraintDefaultNamespace(self, er: Any, exc: XPathError) -> None:
+        """Reports an unusable ``xpathDefaultNamespace`` on a constraint.
+
+        The selector/field path reports the same condition as
+        ``xpath-invalid``; a ``refer``/``ref`` QName under the same
+        value must fail identically rather than surfacing as a
+        resolution failure.
+        """
+        kind = type(er).__name__
+        where = getattr(er, "rawTag", None) or kind.lower()
+        self.report.add_error(
+            f"<{where}> carries an invalid xpathDefaultNamespace: {exc}",
+            code="xpath-invalid",
+            element=where,
+            phase="schema",
+        )
 
     #: ``xs:anyType``'s effective content: a mixed sequence holding an
     #: unrestricted wildcard. It stands in for the built-in type's model
