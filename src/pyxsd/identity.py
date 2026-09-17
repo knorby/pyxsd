@@ -38,11 +38,19 @@ lexically different spellings of one value match.
 import logging
 from typing import Any, NamedTuple
 
-from pyxsd.namespaces import local_name
-from pyxsd.schema_base import SchemaBase
+from pyxsd.namespaces import local_name, namespace_of
+from pyxsd.schema_base import (
+    SchemaBase,
+    _defined_declaration_names,
+    _global_declaration,
+    _mode_for,
+)
 from pyxsd.validation import ValidationReport
 from pyxsd.xpath_subset import ParsedXPath, XPathError, parse_xpath_subset
 from pyxsd.xsd_data_types import (
+    ID,
+    IDREF,
+    IDREFS,
     AnyType,
     Base64Binary,
     Boolean,
@@ -58,6 +66,9 @@ from pyxsd.xsd_data_types import (
     QName,
     Time,
     XsdDataType,
+    XsdList,
+    _ListString,
+    _ws_collapse,
     xsd_comparable_key,
 )
 from pyxsd.xsd_data_types import (
@@ -123,7 +134,335 @@ def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> N
     root = _Scope(None)
     _walk(rootInstance, root, report)
     _validateKeyrefs(root, report)
+    _checkDocumentIdSpace(rootInstance, report)
     return None
+
+
+def _checkDocumentIdSpace(rootInstance: Any, report: ValidationReport) -> None:
+    """Enforces the document-wide ``xs:ID``/``IDREF``/``IDREFS`` semantics.
+
+    Implements the ID/IDREF table reconstruction of XML's ID machinery
+    (XSD 1.1 §3.17.5.2) and its validation rule (§3.3.4.5): every
+    ID-typed value — on attributes and elements, through restriction, a
+    list item type, a union member or a simpleContent base — binds an
+    element (the attribute's owner, respectively the *parent* of an
+    ID-typed child element; XSD 1.1 §3.3.4.5, ``Z`` example). After the
+    walk,
+
+    - a value bound by more than one distinct element is a duplicate
+      (``id-duplicate``),
+    - a referenced (or parentless) value with no binding is unresolved
+      (``idref-unresolved``).
+
+    The check is deferred to after the walk, so forward references
+    resolve; comparison is exact value equality after whitespace
+    collapse.
+    """
+    bound: dict[str, dict[int, str]] = {}
+    refs: list[tuple[str, str]] = []
+    unbound: set[str] = set()
+    for node in _descendantOrSelfNodes(rootInstance):
+        if getattr(node, "_skipped_", False):
+            continue
+        _collectNodeIdSpace(node, bound, refs, unbound, report)
+    # The validation root's own ID-typed element value binds nothing:
+    # its parent lies outside the scope of validation (§3.3.4.5).
+    _collectChildIdValue(rootInstance, None, bound, refs, unbound, report)
+    for value, where in refs:
+        if value not in bound and value not in unbound:
+            report.add_error(
+                f"IDREF '{value}' on the '{where or 'document'}' element does not "
+                "match any ID value in the document",
+                code="idref-unresolved",
+                element=where,
+            )
+    for value in unbound:
+        if value not in bound:
+            report.add_error(
+                f"ID value '{value}' identifies no element within the scope of validation",
+                code="idref-unresolved",
+            )
+    for value, bindings in bound.items():
+        if len(bindings) > 1:
+            report.add_error(
+                f"ID value '{value}' is bound by {len(bindings)} distinct elements",
+                code="id-duplicate",
+                element=next(iter(bindings.values())),
+            )
+
+
+def _collectNodeIdSpace(
+    node: Any,
+    bound: dict[str, dict[int, str]],
+    refs: list[tuple[str, str]],
+    unbound: set[str],
+    report: ValidationReport,
+) -> None:
+    """Records one node's ID/IDREF contributions into the document tables.
+
+    Two channels are examined: each declared attribute carrying a value
+    (including ``default``/``fixed`` value constraints, which participate
+    exactly like explicit values) binds its owner element; and each
+    ID-typed *child element* binds this node as its parent (§3.17.5.2).
+    Attributes absorbed by a skip wildcard are not validated and
+    contribute nothing (XSD 1.1 §3.3.4.2).
+    """
+    if isinstance(node, SchemaBase):
+        _collectNodeIdAttributes(node, bound, refs, unbound, report)
+    for child in _childrenOf(node):
+        _collectChildIdValue(child, node, bound, refs, unbound, report)
+
+
+def _collectChildIdValue(
+    child: Any,
+    parent: Any,
+    bound: dict[str, dict[int, str]],
+    refs: list[tuple[str, str]],
+    unbound: set[str],
+    report: ValidationReport,
+) -> None:
+    """Records the ID/IDREF contributions of one element's own value.
+
+    A simple-content element binds as the datatype itself (or a
+    generated subclass); list values are taken from the node's typed
+    items, other SchemaBase-bound nodes from the raw text pieces -- the
+    datatype ``__str__`` may need state only the datatype constructor
+    sets up (Boolean's ``val``), and the raw slot of a list-typed node
+    holds a stringified list, not the lexical form. A complex type
+    restricting an inline simple type keeps the value type in
+    ``_simpleContentType_``.
+    """
+    cls: Any = None
+    value: Any = None
+    if isinstance(child, list):
+        # An xs:list value node: its typed items are the contribution.
+        cls = type(child)
+        value = child
+    elif isinstance(child, XsdDataType):
+        cls = type(child)
+        if isinstance(child, SchemaBase):
+            raw = getattr(child, "_value_", None)
+            value = (raw[0] if raw else None) if isinstance(raw, list) else child
+        else:
+            value = child
+    elif isinstance(child, SchemaBase):
+        contentCls = getattr(type(child), "_simpleContentType_", None)
+        if contentCls is not None and contentCls is not type(child):
+            cls = contentCls
+            value = _nodeValue(child)
+    if value is not None and cls is not None:
+        _contributeIdSpace(cls, value, parent, bound, refs, unbound, report)
+
+
+def _collectNodeIdAttributes(
+    node: Any,
+    bound: dict[str, dict[int, str]],
+    refs: list[tuple[str, str]],
+    unbound: set[str],
+    report: ValidationReport,
+) -> None:
+    """Records the ID/IDREF contributions of one node's declared attributes.
+
+    A wildcard-absorbed attribute resolved by a global declaration
+    (``processContents="lax"``/``"strict"``) is typed by that
+    declaration, so a global ``xs:ID`` attribute absorbed by a lax
+    wildcard participates in the ID space (id002).
+    """
+    visible = _visibleAttributes(node)
+    skipped = getattr(node, "_wildcardSkipAttributes_", None) or ()
+    described: set[str] = set()
+    for descName, descriptor in node.descAttributes().items():
+        try:
+            instanceName = type(node)._instance_name_of(descriptor, is_attribute=True)
+        except Exception:
+            continue
+        if instanceName is None or instanceName in skipped:
+            continue
+        described.add(instanceName)
+        typed = node.__dict__.get(descName)
+        if instanceName in visible:
+            value = typed if typed is not None else visible[instanceName]
+        elif typed is not None:
+            # An absent attribute's default/fixed value participates in
+            # the ID space like an explicit one.
+            value = typed
+        else:
+            continue
+        _contributeIdSpace(
+            SchemaBase._declarationType(descriptor),
+            value,
+            node,
+            bound,
+            refs,
+            unbound,
+            report,
+        )
+    for attrName in visible:
+        if attrName in described or attrName in skipped:
+            continue
+        affinityCls = _wildcardResolvedType(node, attrName)
+        if affinityCls is not None:
+            _contributeIdSpace(affinityCls, visible[attrName], node, bound, refs, unbound, report)
+
+
+def _wildcardResolvedType(node: Any, attrName: str) -> Any:
+    """The type of the global declaration a wildcard resolves ``attrName`` to.
+
+    Mirrors the binder's wildcard ``processContents`` pass: only a lax
+    or strict wildcard admitting the name supplies a governing type
+    (the global attribute declaration); ``skip`` and unadmitted names
+    contribute nothing.
+    """
+    if not isinstance(node, SchemaBase):
+        return None
+    cls = type(node)
+    parser = getattr(cls, "pyXSD", None)
+    if parser is None or not getattr(node, "hasWildcardAttributes_", False):
+        return None
+    if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
+        return None
+    spec = getattr(cls, "effectiveAttributeWildcard_", None)
+    if spec is None:
+        specs = SchemaBase._wildcard_attribute_specs(node)
+        spec = SchemaBase._wildcard_match(
+            specs,
+            attrName,
+            getattr(cls, "_targetNamespace_", None),
+            defined=_defined_declaration_names(parser, "attribute"),
+        )
+    if spec is None or spec.process_contents == "skip":
+        return None
+    declaration = _global_declaration(
+        getattr(parser, "components", None),
+        local_name(attrName),
+        "attribute",
+        namespace_of(attrName),
+    )
+    if declaration is None:
+        return None
+    return SchemaBase._declarationType(declaration)
+
+
+def _contributeIdSpace(
+    cls: Any,
+    value: Any,
+    binder: Any,
+    bound: dict[str, dict[int, str]],
+    refs: list[tuple[str, str]],
+    unbound: set[str],
+    report: ValidationReport,
+) -> None:
+    """Classifies one slot value and records its ID/IDREF contributions.
+
+    ``cls`` is the declared type class that gives the slot its ID
+    affinity (the bound value may have lost the type, e.g. a
+    union-list attribute kept as plain text); ``value`` supplies the
+    lexical form; ``binder`` is the element the value identifies (its
+    owner for attributes, its parent for element values, ``None``
+    outside the validation scope). A value with no ID/IDREF affinity
+    anywhere in its derivation contributes nothing, so documents
+    without ID-typed content are untouched.
+    """
+    if value is None:
+        return
+    where = _nameOf(binder) if binder is not None else ""
+    for affinity, token in _idContributions(cls, value):
+        if affinity == "id":
+            if binder is None:
+                unbound.add(token)
+            else:
+                bound.setdefault(token, {}).setdefault(id(binder), where)
+        elif affinity == "idref":
+            refs.append((token, where))
+
+
+def _idContributions(cls: Any, value: Any) -> list[tuple[str, str]]:
+    """Returns the ``(affinity, token)`` pairs one slot value contributes.
+
+    ``affinity`` is ``'id'`` or ``'idref'``. List values contribute each
+    token individually; union values are classified by the member that
+    validates them, in member order, so a token of a
+    list-of-(IDREF|ID) union lands in the right table.
+    """
+    if isinstance(value, str) and not isinstance(value, _ListString):
+        # A raw-text slot whose declared kind is a list: rebuild the
+        # list value so the tokens are the real items.
+        listCls = cls if isinstance(cls, type) and _issubclass(cls, XsdList) else None
+        if listCls is not None:
+            try:
+                value = listCls(value)
+            except (TypeError, ValueError):
+                return []
+    if isinstance(value, list):
+        tokens = [str(item) for item in value]
+    elif isinstance(value, _ListString):
+        tokens = list(value.tokens)
+    else:
+        try:
+            text = str(value)
+        except Exception:
+            # An under-constructed binder stand-in (a union wrapper
+            # whose ``memberValue`` was never set) has no lexical form
+            # to contribute.
+            return []
+        tokens = [_ws_collapse(text)]
+    contributions: list[tuple[str, str]] = []
+    for token in tokens:
+        extended = _tokenContributions(cls, token)
+        if extended is not None:
+            contributions.append(extended)
+    return contributions
+
+
+def _issubclass(cls: Any, base: Any) -> bool:
+    """``issubclass`` that answers ``False`` instead of raising."""
+    try:
+        return issubclass(cls, base)
+    except TypeError:
+        return False
+
+
+def _tokenContributions(cls: Any, token: str) -> tuple[str, str] | None:
+    """The single ``(affinity, token)`` contribution of one token.
+
+    ``None`` when the type has no ID/IDREF affinity (or no union member
+    validates the token).
+    """
+    if not isinstance(cls, type):
+        return None
+    try:
+        if issubclass(cls, (ID, IDREF, IDREFS)):
+            return ("idref" if issubclass(cls, (IDREF, IDREFS)) else "id", token)
+    except TypeError:
+        return None
+    members = getattr(cls, "_unionMembers", None)
+    if members:
+        for member in members:
+            if _memberValidates(member, token):
+                return _tokenContributions(member, token)
+        return None
+    try:
+        if issubclass(cls, XsdList):
+            return _tokenContributions(getattr(cls, "itemType", None), token)
+    except TypeError:
+        return None
+    content = getattr(cls, "_simpleContentType_", None)
+    if content is not None and content is not cls:
+        return _tokenContributions(content, token)
+    return None
+
+
+def _memberValidates(member: Any, token: str) -> bool:
+    """Whether one union member accepts a token (member order semantics).
+
+    Mirrors the union class construction: members are validated through
+    ``__new__`` so the facet machinery runs, skipping ``__init__``.
+    """
+    try:
+        member.__new__(member, token)
+    except Exception:
+        return False
+    return True
 
 
 def _walk(instance: Any, scope: _Scope, report: ValidationReport) -> None:
@@ -677,7 +1016,23 @@ def _valueSpaceKey(value: Any) -> tuple[str, Any]:
     fields00202m3). Within a space the comparable key decides, so
     ``xs:int`` ``1``/``01`` still collide and the string-derived types
     (``xs:ID`` vs ``xs:string``) still share one space.
+
+    A list value is keyed by its items: an atomic value is equal to the
+    singleton list of it (XSD 1.1 §3.13.4, id022), so a one-item list
+    takes its item's key in the shared string space, while longer lists
+    compare only against other lists item-wise.
     """
+    if isinstance(value, list):
+        items: list[Any] | None = list(value)
+    elif isinstance(value, _ListString):
+        items = value.tokens
+    else:
+        items = None
+    if items is not None:
+        keys = tuple(xsd_comparable_key(item) for item in items)
+        if len(keys) == 1:
+            return ("string", keys[0])
+        return ("list", keys)
     key = xsd_comparable_key(value)
     # Order matters: the str-family arm is last because several typed
     # values (dates, binaries, lists) are str subclasses.

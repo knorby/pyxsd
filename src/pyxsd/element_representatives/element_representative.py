@@ -1155,6 +1155,13 @@ class ElementRepresentative:
         raw = self.__dict__.get("type")
         if raw is None:
             return None
+        if "|" in raw:
+            # An inline type's bookkeeping name (a pipe can never occur
+            # in a QName): parser.classes is keyed by the bare name, so
+            # QName resolution -- which would apply the default xmlns
+            # and corrupt the name in unprefixed-schema documents -- is
+            # bypassed.
+            return raw
         return self.resolveSchemaQName(raw)
 
     def getContainingTypeName(self):
