@@ -7440,3 +7440,196 @@ schema = '''
 </xs:schema>'''
 instance = '''
 <temp/>'''
+
+[[case]]
+id = "cta/instance-selects-matching-alternative"
+xsd11 = true
+description = "At instance phase the first alternative whose test is true governs the element"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:complexType name="TypeB"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="b" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'a'" type="TypeA"/>
+    <xs:alternative test="@kind = 'b'" type="TypeB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="a"><shared>x</shared><a>y</a></temp>'''
+
+[[case]]
+id = "cta/instance-no-match-declared-type"
+xsd11 = true
+description = "When no alternative test is true and there is no default, the declared type governs"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'a'" type="TypeA"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="z"><shared>x</shared></temp>'''
+
+[[case]]
+id = "cta/instance-first-true-test-wins"
+xsd11 = true
+description = "When two tests are true, the first in declaration order governs"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 §3.3.4.1"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:complexType name="TypeB"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="b" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind" type="TypeA"/>
+    <xs:alternative test="@kind = 'a'" type="TypeB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="a"><shared>x</shared><a>y</a></temp>'''
+
+[[case]]
+id = "cta/instance-xsi-type-overrides-alternative"
+xsd11 = true
+description = "xsi:type takes precedence over conditional type assignment"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 §3.3.4.1"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:complexType name="TypeB"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="b" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'a'" type="TypeA"/>
+    <xs:alternative test="@kind = 'b'" type="TypeB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      kind="a" xsi:type="TypeB"><shared>x</shared><b>y</b></temp>'''
+
+[[case]]
+id = "cta/instance-dynamic-error-treated-false"
+xsd11 = true
+description = "A test whose evaluation raises a dynamic error is treated as false (Saxon cta0016)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon CTA cta0016"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:complexType name="TypeB"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="b" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind cast as xs:int = 1" type="TypeA"/>
+    <xs:alternative type="TypeB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="abc"><shared>x</shared><b>y</b></temp>'''
+
+[[case]]
+id = "cta/instance-xs-error-default-invalid"
+xsd11 = true
+description = "An element whose conditionally assigned type is xs:error is invalid"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12ii05"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'a'" type="TypeA"/>
+    <xs:alternative type="xs:error"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="z"><shared>x</shared></temp>'''
+instance_valid = false
+expected_codes = ["alternative-error"]
+
+[[case]]
+id = "cta/instance-inheritable-attribute"
+xsd11 = true
+description = "An inheritable attribute on an ancestor is in scope for a descendant's CTA test"
+derived_from = "W3C XMLSchema1TestSuite, Saxon CTA cta0009/cta0013"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Doc"><xs:sequence>
+    <xs:element ref="chap" maxOccurs="unbounded"/>
+  </xs:sequence>
+  <xs:attribute name="kind" type="xs:string" inheritable="true"/></xs:complexType>
+  <xs:complexType name="ChapA"><xs:sequence>
+    <xs:element name="a"/></xs:sequence></xs:complexType>
+  <xs:complexType name="ChapB"><xs:sequence>
+    <xs:element name="b"/></xs:sequence></xs:complexType>
+  <xs:element name="doc" type="Doc"/>
+  <xs:element name="chap">
+    <xs:alternative test="@kind = 'a'" type="ChapA"/>
+    <xs:alternative test="@kind = 'b'" type="ChapB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<doc kind="a"><chap><b/></chap></doc>'''
+instance_valid = false
+expected_codes = ["unexpected-element"]

@@ -537,7 +537,11 @@ def test_alternative_xs_error_default_is_accepted() -> None:
         '<xs:alternative test="@kind" type="Derived"/>',
         '<xs:alternative type="xs:error"/>',
     )
-    assert errors(parse(body, "<temp/>")) == []
+    report = parse(body, "<temp/>")
+    # The schema is legal: xs:error is always an admissible alternative.
+    # At instance phase the selected xs:error makes <temp/> invalid.
+    assert [i.code for i in report.for_phase("schema") if i.severity.name == "ERROR"] == []
+    assert errors(report) == ["alternative-error"]
 
 
 def test_alternative_constructor_function_test_is_accepted() -> None:
@@ -569,3 +573,154 @@ def test_alternative_later_type_derived_from_earlier_is_allowed() -> None:
         '<xs:alternative test="@a" type="Derived"/>',
     )
     assert errors(parse(body, "<temp/>")) == []
+
+
+# --- xs:alternative instance phase (conditional type assignment) ------------
+
+#: ``Base`` requires ``shared``; ``TypeA`` adds ``a``; ``TypeB`` adds ``b``.
+#: Selection is observable because the extra element an instance may carry
+#: is exactly the one the selected type declares.
+_CTA_TYPES = (
+    '<xs:complexType name="Base"><xs:sequence>'
+    '<xs:element name="shared" type="xs:string"/>'
+    '</xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>'
+    '<xs:complexType name="TypeA"><xs:complexContent>'
+    '<xs:extension base="Base"><xs:sequence>'
+    '<xs:element name="a" type="xs:string"/>'
+    "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+    '<xs:complexType name="TypeB"><xs:complexContent>'
+    '<xs:extension base="Base"><xs:sequence>'
+    '<xs:element name="b" type="xs:string"/>'
+    "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+)
+_CTA_TEMP = '<xs:element name="temp" type="Base">{alternatives}</xs:element>'
+
+
+def _cta(*alternatives: str) -> str:
+    return _CTA_TYPES + _CTA_TEMP.format(alternatives="".join(alternatives))
+
+
+_CTA_TWO_WAY = _cta(
+    '<xs:alternative test="@kind = \'a\'" type="TypeA"/>',
+    '<xs:alternative test="@kind = \'b\'" type="TypeB"/>',
+)
+
+
+def test_alternative_instance_selects_first_matching_type() -> None:
+    assert errors(parse(_CTA_TWO_WAY, '<temp kind="a"><shared/><a>x</a></temp>')) == []
+    assert errors(parse(_CTA_TWO_WAY, '<temp kind="b"><shared/><b>x</b></temp>')) == []
+
+
+def test_alternative_instance_selects_only_the_matching_type() -> None:
+    # ``b`` is not admissible under TypeA, and ``a`` is not under TypeB:
+    # the wrong alternative governing would make these valid.
+    assert errors(parse(_CTA_TWO_WAY, '<temp kind="a"><shared/><b>x</b></temp>')) != []
+    assert errors(parse(_CTA_TWO_WAY, '<temp kind="b"><shared/><a>x</a></temp>')) != []
+
+
+def test_alternative_instance_no_match_uses_declared_type() -> None:
+    # No test is true and there is no test-free default: the element's
+    # declared type (Base, accepting just ``shared``) governs.
+    assert errors(parse(_CTA_TWO_WAY, '<temp kind="c"><shared/></temp>')) == []
+
+
+def test_alternative_instance_xsi_type_overrides_selection() -> None:
+    # CTA would select TypeA (kind="a"), which refuses ``b``; the explicit
+    # xsi:type TypeB governs instead (XSD 1.1: xsi:type takes precedence).
+    xml = (
+        '<temp xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'kind="a" xsi:type="TypeB"><shared/><b>x</b></temp>'
+    )
+    assert errors(parse(_CTA_TWO_WAY, xml)) == []
+
+
+def test_alternative_instance_first_true_test_wins() -> None:
+    # ``@kind`` (existence) and ``@kind = 'a'`` are both true; the first
+    # alternative's TypeA governs, so ``a`` is admissible and ``b`` is not.
+    body = _cta(
+        '<xs:alternative test="@kind" type="TypeA"/>',
+        '<xs:alternative test="@kind = \'a\'" type="TypeB"/>',
+    )
+    assert errors(parse(body, '<temp kind="a"><shared/><a>x</a></temp>')) == []
+    assert errors(parse(body, '<temp kind="a"><shared/><b>x</b></temp>')) != []
+
+
+def test_alternative_instance_test_free_default_governs() -> None:
+    body = _cta(
+        '<xs:alternative test="@kind = \'a\'" type="TypeA"/>',
+        '<xs:alternative type="TypeB"/>',
+    )
+    assert errors(parse(body, '<temp kind="z"><shared/><b>x</b></temp>')) == []
+    assert errors(parse(body, '<temp kind="z"><shared/><a>x</a></temp>')) != []
+
+
+def test_alternative_instance_dynamic_error_is_false() -> None:
+    # A test whose cast raises a dynamic error is treated as false, so the
+    # next alternative is tried (XSD 1.1 §3.12.6; Saxon CTA cta0016).
+    body = _cta(
+        '<xs:alternative test="@kind cast as xs:int = 1" type="TypeA"/>',
+        '<xs:alternative type="TypeB"/>',
+    )
+    assert errors(parse(body, '<temp kind="abc"><shared/><b>x</b></temp>')) == []
+
+
+def test_alternative_instance_xs_error_default_is_invalid() -> None:
+    body = _cta(
+        '<xs:alternative test="@kind = \'a\'" type="TypeA"/>',
+        '<xs:alternative type="xs:error"/>',
+    )
+    assert errors(parse(body, '<temp kind="z"><shared/></temp>')) == ["alternative-error"]
+
+
+def test_alternative_instance_invalid_simple_content_reports_value() -> None:
+    # A selected simple-content complex type (a restriction of a mixed
+    # complex type) whose lexical value is invalid must be reported, not
+    # crash on a missing ``_unvalidated`` shell (Saxon CTA cta0001).
+    body = (
+        '<xs:complexType name="AnyContent" mixed="true"><xs:sequence>'
+        '<xs:any processContents="skip" minOccurs="0" maxOccurs="unbounded"/>'
+        '</xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>'
+        '<xs:complexType name="DateContent"><xs:simpleContent>'
+        '<xs:restriction base="AnyContent"><xs:simpleType>'
+        '<xs:restriction base="xs:date"/>'
+        "</xs:simpleType></xs:restriction></xs:simpleContent></xs:complexType>"
+        '<xs:element name="temp" type="AnyContent">'
+        '<xs:alternative test="@kind = \'date\'" type="DateContent"/>'
+        "</xs:element>"
+    )
+    assert errors(parse(body, '<temp kind="date">not-a-date</temp>')) == ["value"]
+
+
+def _cta_inherited(inheritable: str) -> str:
+    return (
+        '<xs:complexType name="Doc"><xs:sequence>'
+        '<xs:element ref="chap" maxOccurs="unbounded"/>'
+        "</xs:sequence>"
+        f'<xs:attribute name="kind" type="xs:string" inheritable="{inheritable}"/>'
+        "</xs:complexType>"
+        '<xs:complexType name="ChapA"><xs:sequence>'
+        '<xs:element name="a"/></xs:sequence></xs:complexType>'
+        '<xs:complexType name="ChapB"><xs:sequence>'
+        '<xs:element name="b"/></xs:sequence></xs:complexType>'
+        '<xs:element name="doc" type="Doc"/>'
+        '<xs:element name="chap">'
+        '<xs:alternative test="@kind = \'a\'" type="ChapA"/>'
+        '<xs:alternative test="@kind = \'b\'" type="ChapB"/>'
+        "</xs:element>"
+    )
+
+
+def test_alternative_instance_inheritable_attribute_is_in_scope() -> None:
+    # XSD 1.1 §3.4.2.5 attribute inheritance: an inheritable attribute on
+    # an ancestor is visible to a descendant's CTA test (Saxon cta0009).
+    body = _cta_inherited("true")
+    assert errors(parse(body, '<doc kind="a"><chap><a/></chap></doc>')) == []
+    assert errors(parse(body, '<doc kind="a"><chap><b/></chap></doc>')) != []
+
+
+def test_alternative_instance_non_inheritable_attribute_not_in_scope() -> None:
+    # The same attribute with inheritable="false" is not inherited, so the
+    # descendant's tests are false and the declared ur-type governs
+    # (Saxon cta0012).
+    body = _cta_inherited("false")
+    assert errors(parse(body, '<doc kind="a"><chap><b/></chap></doc>')) == []

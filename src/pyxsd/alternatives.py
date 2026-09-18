@@ -39,15 +39,36 @@ from pyxsd.derivation import is_validly_derived
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.element_representatives.identity import _DeclarationSite
 from pyxsd.namespaces import XSD_NS, clark, local_name, namespace_of
-from pyxsd.xpath_assertions import CompiledXPath, parse_cta_xpath
+from pyxsd.xpath_assertions import CompiledXPath, evaluate, parse_cta_xpath
 from pyxsd.xpath_subset import XPathError
 
 __all__ = [
+    "ERROR_TYPE",
     "Alternative",
     "AlternativeER",
     "check_element_alternatives",
     "compile_alternatives",
+    "select_alternative_type",
 ]
+
+
+class _ErrorTypeSentinel:
+    """Sentinel for a selected alternative whose type is ``xs:error``.
+
+    ``xs:error`` has an empty value space, so an element it governs can
+    never be valid; the instance phase must be able to tell that apart
+    from "no alternative matched" (where the declared type governs).
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "xs:error"
+
+
+#: Returned by :func:`select_alternative_type` when the selected
+#: alternative's type is ``xs:error`` (never valid).
+ERROR_TYPE = _ErrorTypeSentinel()
 
 #: Sentinel marking an ``AlternativeER`` whose ``test`` has not been
 #: compiled yet (a test-free alternative legitimately compiles to ``None``).
@@ -302,6 +323,113 @@ def compile_alternatives(element: Any) -> list[Alternative]:
             compiled.append(result)
     element.compiledAlternatives = compiled
     return compiled
+
+
+def _alternatives_owner(descriptor: Any) -> Any:
+    """Returns the declaration that owns an element's alternatives.
+
+    A ``ref`` site delegates to the global declaration it resolves to
+    (the alternatives live on the global element's representative); any
+    other descriptor owns its own list.
+    """
+    if descriptor is None:
+        return None
+    if getattr(descriptor, "isElementRef", False):
+        return getattr(descriptor, "referredElement", None) or descriptor
+    return descriptor
+
+
+def _alternative_usable(alternative: Alternative, pyXSD: Any) -> bool:
+    """Whether a selected alternative's type can actually be built.
+
+    A named type or an inline type whose base cannot be resolved (for
+    example an alternative based on a not-yet-implemented built-in such
+    as ``xs:dateTimeStamp``) must not be selected: building it would
+    surface a spurious type error and false-reject an instance the
+    declared type accepts. The declaration check reports the underlying
+    schema problem; selection falls back to the declared type, matching
+    the lax-validator doctrine. This is checked without building the
+    class, so no report issue is produced here.
+    """
+    if alternative.is_error or alternative.type_class is not None:
+        return True
+    if alternative.type_name is not None and alternative.inline_type is None:
+        resolved = alternative.er.resolveSchemaQName(alternative.type_name, parser=pyXSD)
+        return ElementRepresentative.typeFromName(resolved, pyXSD) is not None
+    inline = alternative.inline_type
+    if inline is None:
+        return False
+    for raw in getattr(inline, "superClassNames", ()) or ():
+        resolved = inline.resolveSchemaQName(raw, parser=pyXSD)
+        if ElementRepresentative.typeFromName(resolved, pyXSD) is None:
+            return False
+    return True
+
+
+def _selected_class(alternative: Alternative, pyXSD: Any) -> Any:
+    """Returns the selected alternative's governing type.
+
+    ``ERROR_TYPE`` for ``xs:error``; otherwise the resolved Python class
+    or ``None`` when it cannot be resolved (the class is resolved lazily
+    for an element whose declared type is the ur-type, where the schema
+    phase deliberately skips resolution).
+    """
+    if alternative.is_error:
+        return ERROR_TYPE
+    try:
+        usable = _alternative_usable(alternative, pyXSD)
+    except Exception:
+        usable = True
+    if not usable:
+        return None
+    if alternative.type_class is None and pyXSD is not None:
+        try:
+            alternative.er.resolveTypeClass(pyXSD)
+        except Exception:
+            return None
+    return alternative.type_class
+
+
+def select_alternative_type(descriptor: Any, node: Any, pyXSD: Any) -> Any:
+    """Selects the conditional type assignment governing *node*.
+
+    Evaluates the declaration's alternatives in declaration order against
+    the element's attribute context and returns the governing type class
+    of the first alternative whose ``test`` is true (or of the test-free
+    default alternative). A test whose evaluation raises a dynamic error
+    is treated as false and the next alternative is tried (XSD 1.1
+    §3.12.6; Saxon CTA cta0016). Returns:
+
+    * ``None`` when the declaration carries no alternatives or no test
+      matches and there is no default — the caller keeps the declared
+      type;
+    * :data:`ERROR_TYPE` when the selected alternative names ``xs:error``;
+    * the selected type's Python class otherwise.
+
+    ``xsi:type`` precedence is the caller's responsibility: do not call
+    this when an ``xsi:type`` is present (XSD 1.1 §3.3.4.1).
+    """
+    owner = _alternatives_owner(descriptor)
+    alternatives = getattr(owner, "compiledAlternatives", None) if owner is not None else None
+    if not alternatives:
+        return None
+    for alternative in alternatives:
+        if alternative.test is None:
+            # Only the final alternative may omit its test; it is the
+            # default type (XSD 1.1 §3.3.2.1).
+            return _selected_class(alternative, pyXSD)
+        compiled = alternative.compiled
+        if compiled is None:
+            # The schema phase already reported the unusable test; it can
+            # never be true, so treat it as false and keep going.
+            continue
+        try:
+            result = evaluate(compiled, node)
+        except XPathError:
+            continue
+        if bool(result):
+            return _selected_class(alternative, pyXSD)
+    return None
 
 
 def _is_ur_type(declared: Any) -> bool:

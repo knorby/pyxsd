@@ -3869,6 +3869,19 @@ class PyXSD:
         # Binding diagnostics from here on belong to the instance phase.
         self.report.phase = "instance"
 
+        # XSD 1.1 attribute inheritance and conditional type assignment
+        # both need to relate a bound element to its ancestors: the parent
+        # links are indexed once, and the governing class of each bound
+        # element is recorded as binding proceeds (schema_base).
+        self._elementParents: dict[int, Any] = {}
+        self._elementTypes: dict[int, Any] = {}
+        stack = [self.xmlRoot]
+        while stack:
+            parent = stack.pop()
+            for child in parent:
+                self._elementParents[id(child)] = parent
+                stack.append(child)
+
         schemaClass = self.getClasses()["schema"]
 
         schemaClassInstance = schemaClass()
@@ -4229,6 +4242,22 @@ class PyXSD:
 
         xsiTypeName = xsi.xsi_type_name(self.xmlRoot)
         if xsiTypeName is None:
+            # xsi:type takes precedence over conditional type assignment
+            # (XSD 1.1 §3.3.4.1); without it, the declaration's
+            # alternatives select the governing type.
+            from pyxsd.alternatives import ERROR_TYPE, select_alternative_type
+
+            selected = select_alternative_type(rootElement, self.xmlRoot, self)
+            if selected is ERROR_TYPE:
+                self.report.add_error(
+                    f"root element '{rootElement.name}' selects the xs:error "
+                    "type, whose value space is empty, so it cannot be valid",
+                    code="alternative-error",
+                    element=rootElement.name,
+                )
+                return subCls
+            if selected is not None:
+                return selected
             return subCls
 
         resolvedName = self._resolveXsiTypeName(xsiTypeName, self.xmlRoot)

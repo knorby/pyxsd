@@ -1,4 +1,5 @@
 import logging
+import xml.etree.ElementTree as ElementTree
 from typing import Any, ClassVar
 
 from pyxsd import xsi
@@ -53,6 +54,32 @@ def _global_declaration(components, local: str, kind: str, uri: str | None):
             continue
         return entry
     return None
+
+
+def _inheritable_attribute_names(type_class: Any) -> frozenset[str]:
+    """Attribute names a governing type flags ``inheritable``.
+
+    Walks the generated MRO nearest-first so a derived re-declaration
+    wins over an inherited one, and reads each attribute descriptor's
+    effective ``inheritable`` use (XSD 1.1 §3.4.2.5). Returns the names
+    whose use is inheritable.
+    """
+    if type_class is None:
+        return frozenset()
+    seen: dict[str, bool] = {}
+    for klass in getattr(type_class, "__mro__", ()):
+        for value in klass.__dict__.values():
+            if not isinstance(value, Attribute):
+                continue
+            name = getattr(value, "name", None)
+            if name is None or name in seen:
+                continue
+            raw = (getattr(value, "tagAttributes", None) or {}).get("inheritable")
+            if raw is None:
+                xsd_element = getattr(value, "xsdElement", None)
+                raw = xsd_element.get("inheritable") if xsd_element is not None else None
+            seen[name] = raw is not None and str(raw).strip().lower() in ("true", "1")
+    return frozenset(name for name, inheritable in seen.items() if inheritable)
 
 
 def _defined_declaration_names(parser: Any, kind: str) -> frozenset[str]:
@@ -603,6 +630,13 @@ class SchemaBase:
         - ``forcedText`` - a default or fixed value to use when the
           element has no text of its own
         """
+        parser = getattr(cls, "pyXSD", None)
+        element_types = getattr(parser, "_elementTypes", None) if parser is not None else None
+        if element_types is not None:
+            # Record the governing class of this bound element. A
+            # descendant's conditional type assignment may need an
+            # ancestor's inheritable attributes (XSD 1.1 §3.4.2.5).
+            element_types[id(elementTag)] = cls
         content_cls = getattr(cls, "_simpleContentType_", None)
         if not isinstance(content_cls, type):
             content_cls = None
@@ -659,7 +693,12 @@ class SchemaBase:
                 if forcedText is not None and elementTag.text is None:
                     raw._value_ = [forcedText]
                 return raw
-            unvalidated = cls._unvalidated()  # type: ignore[attr-defined]
+            # A simple-content complex type is ordinarily a datatype
+            # subclass, but a restriction of a complex type (for example
+            # Saxon CTA cta0001's messageTypeDate) is not; fall back to a
+            # bare shell there.
+            unvalidated_factory = getattr(cls, "_unvalidated", None)
+            unvalidated = unvalidated_factory() if unvalidated_factory is not None else cls()
             unvalidated._attribs_ = dict(elementTag.attrib)
             unvalidated._value_ = None
             unvalidated._children_ = []
@@ -1079,6 +1118,72 @@ class SchemaBase:
             return None
 
     @classmethod
+    def _ctaContextNode(cls, elementTag):
+        """Returns the element node a CTA test is evaluated against.
+
+        An element's XSD 1.1 inherited attributes (``inheritable="true"``
+        uses on ancestors, §3.4.2.5) are part of the attribute context a
+        conditional type assignment test sees, but they are not on the
+        raw instance element. This builds a shallow copy carrying the
+        ancestor-contributed attributes, with the element's own
+        attributes taking precedence. With no inherited attributes the
+        node is returned unchanged.
+        """
+        parser = getattr(cls, "pyXSD", None)
+        parents = getattr(parser, "_elementParents", None) if parser is not None else None
+        if not parents:
+            return elementTag
+        element_types = getattr(parser, "_elementTypes", None) or {}
+        inherited: dict[str, str] = {}
+        chain = []
+        ancestor = parents.get(id(elementTag))
+        while ancestor is not None:
+            chain.append(ancestor)
+            ancestor = parents.get(id(ancestor))
+        # Farthest-first so a nearer ancestor's inheritable value wins.
+        for node in reversed(chain):
+            names = _inheritable_attribute_names(element_types.get(id(node)))
+            if not names:
+                continue
+            for name, value in node.attrib.items():
+                if name in names:
+                    inherited[name] = value
+        if not inherited:
+            return elementTag
+        merged = dict(inherited)
+        merged.update(elementTag.attrib)
+        return ElementTree.Element(elementTag.tag, merged)
+
+    @classmethod
+    def _conditionalType(cls, descriptor, declared, subElement):
+        """Applies XSD 1.1 conditional type assignment for one element.
+
+        Evaluates the declaration's type alternatives (``xs:alternative``)
+        against the element's attribute context and returns the first
+        matching alternative's type. The declared type governs when no
+        alternative matches or the declaration has none. An alternative
+        whose type is ``xs:error`` is reported (``alternative-error``) and
+        the declared type is kept so the tree still binds. Must not be
+        called when an ``xsi:type`` is present: ``xsi:type`` takes
+        precedence (XSD 1.1 §3.3.4.1).
+        """
+        from pyxsd.alternatives import ERROR_TYPE, select_alternative_type
+
+        context = cls._ctaContextNode(subElement)
+        selected = select_alternative_type(descriptor, context, getattr(cls, "pyXSD", None))
+        if selected is None:
+            return declared
+        if selected is ERROR_TYPE:
+            cls._report_error(
+                f"element '{cls._node_name(subElement)}' selects the xs:error type, "
+                "whose value space is empty, so it cannot be valid",
+                code="alternative-error",
+                element=cls.__name__,
+            )
+            return declared
+        return selected
+
+    @classmethod
     def _classForChild(cls, descriptor, subElement):
         """Resolves the class used to build one matched child element.
 
@@ -1091,7 +1196,7 @@ class SchemaBase:
         subElCls = descriptor.getType() if descriptor is not None else None
         xsiTypeName = xsi.xsi_type_name(subElement)
         if xsiTypeName is None:
-            return subElCls
+            return cls._conditionalType(descriptor, subElCls, subElement)
         pyXSD = getattr(cls, "pyXSD", None)
         resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
         if resolvedName is None:
@@ -1510,9 +1615,13 @@ class SchemaBase:
                 # override is resolved (and its derivation checked)
                 # exactly as for a directly declared element, so an
                 # invalid or unresolvable xsi:type is reported instead
-                # of silently keeping the declared type.
+                # of silently keeping the declared type. When no
+                # xsi:type is present, XSD 1.1 conditional type
+                # assignment selects the member's type.
                 xsiTypeName = xsi.xsi_type_name(subElement)
-                if xsiTypeName is not None:
+                if xsiTypeName is None:
+                    subElCls = cls._conditionalType(memberER, subElCls, subElement)
+                else:
                     pyXSD = getattr(cls, "pyXSD", None)
                     resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
                     if resolvedName is not None:
