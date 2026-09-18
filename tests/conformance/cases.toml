@@ -8984,3 +8984,116 @@ schema = '''
 </xs:schema>
 '''
 instance = '<root>---15-13:00</root>'
+
+[[case]]
+id = "xsd11/default-attributes-applied"
+xsd11 = true
+description = "A schema defaultAttributes group supplies attribute uses to the types it declares"
+derived_from = "W3C XMLSchema1TestSuite, IBM group S3_4_2_4 (valid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" defaultAttributes="da">
+  <xs:attributeGroup name="da">
+    <xs:attribute name="extra" type="xs:boolean" use="required"/>
+  </xs:attributeGroup>
+  <xs:element name="temp"><xs:complexType><xs:sequence/></xs:complexType></xs:element>
+</xs:schema>
+'''
+instance = '<temp extra="true"/>'
+
+[[case]]
+id = "xsd11/default-attributes-apply-false-rejects-attribute"
+xsd11 = true
+description = "defaultAttributesApply=false keeps the schema default attribute group off one type"
+derived_from = "W3C XMLSchema1TestSuite, IBM group S3_4_2_4 (instance invalid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" defaultAttributes="da">
+  <xs:attributeGroup name="da">
+    <xs:attribute name="extra" type="xs:boolean" use="required"/>
+  </xs:attributeGroup>
+  <xs:element name="temp">
+    <xs:complexType defaultAttributesApply="false"><xs:sequence/></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<temp extra="true"/>'
+instance_valid = false
+expected_codes = ["unexpected-attribute"]
+
+[[case]]
+id = "xsd11/default-attributes-unresolved-group"
+xsd11 = true
+description = "defaultAttributes must resolve to a global attribute group"
+derived_from = "W3C XMLSchema1TestSuite, IBM group S3_4_2_4 (schema invalid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" defaultAttributes="missing">
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["unknown-attributeGroup"]
+
+[[case]]
+id = "xsd11/substitution-member-of-two-heads"
+xsd11 = true
+description = "A member declared under two heads stands for either head's particle (Subsgroup subsgroup001)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Subsgroup subsgroup001 (valid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="elem0" type="xs:string"/>
+  <xs:element name="elem1" type="xs:string"/>
+  <xs:complexType name="rootType"><xs:sequence>
+    <xs:element ref="elem0"/><xs:element ref="elem1"/>
+  </xs:sequence></xs:complexType>
+  <xs:element name="root" type="rootType"/>
+  <xs:element name="elem2" type="xs:string" substitutionGroup="elem0 elem1"/>
+</xs:schema>
+'''
+instance = '<root><elem2>a</elem2><elem2>b</elem2></root>'
+
+[[case]]
+id = "xsd11/substitution-abstract-member-reached-through-head"
+xsd11 = true
+description = "An abstract substitution member may not appear even when reached through its head (Subsgroup subsgroup002)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Subsgroup subsgroup002 (instance invalid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="content" type="xs:string" abstract="true"/>
+  <xs:element name="chap" type="xs:string" abstract="true" substitutionGroup="content"/>
+  <xs:complexType name="rt"><xs:sequence>
+    <xs:element ref="content" minOccurs="0" maxOccurs="unbounded"/>
+  </xs:sequence></xs:complexType>
+  <xs:element name="root" type="rt"/>
+</xs:schema>
+'''
+instance = '<root><chap/></root>'
+instance_valid = false
+expected_codes = ["abstract-element"]
+
+[[case]]
+id = "xsd11/pattern-name-char-complement-excludes-astral"
+xsd11 = true
+description = "The \\C complement uses the XML 1.1 name-char table including astral characters (XmlVersions xv008)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon XmlVersions xv008 (instance invalid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.1"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="c"><xs:restriction base="xs:string">
+    <xs:pattern value="\C"/>
+  </xs:restriction></xs:simpleType>
+  <xs:element name="r" type="c"/>
+</xs:schema>
+'''
+instance = '<r>&#x12000;</r>'
+instance_valid = false
+expected_codes = ["value"]

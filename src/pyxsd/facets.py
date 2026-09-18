@@ -680,6 +680,17 @@ def _xml11_name_classes(text: str) -> str:
                 out.append(name_class if depth == 0 else name_class[1:-1])
                 i += 2
                 continue
+            if nxt in "IC" and depth == 0:
+                # Complement escapes (``\I`` start, ``\C`` name char). The
+                # XML 1.0 table elementpath uses stops before the astral
+                # name characters, so ``\I``/``\C`` wrongly admitted them
+                # (xv006.n02, xv008.n01). Spell out the negated XML 1.1
+                # class here. Inside a character class the escape is not
+                # legal XSD, so leave it for the translator to reject.
+                contents = _XML11_NAME_START_CONTENTS if nxt == "I" else _XML11_NAME_CHAR_CONTENTS
+                out.append(f"[^{contents}]")
+                i += 2
+                continue
             out.append(char)
             out.append(nxt)
             i += 2

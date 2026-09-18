@@ -335,6 +335,41 @@ class XsdType(ElementRepresentative):
                     continue
                 attr.pyXSD = pyXSD
                 self.attributes[attrName] = attr
+        self._applyDefaultAttributeGroup(pyXSD)
+
+    def _applyDefaultAttributeGroup(self, pyXSD) -> None:
+        """Merges the schema document's default attribute group into this type.
+
+        XSD 1.1 §3.1.2: when a schema document carries ``defaultAttributes``
+        and the type does not set ``defaultAttributesApply="false"`` (the
+        parser records the resolved group on ``defaultAttributeGroup``), the
+        group's attribute uses and attribute wildcard join the type's. An
+        attribute name already contributed by the type's own declaration or
+        by an explicitly referenced group is a duplicate attribute use
+        (si02), reported rather than silently shadowed.
+        """
+        group = getattr(self, "defaultAttributeGroup", None)
+        if group is None:
+            return
+        groupName = getattr(group, "name", None) or "?"
+        groupKey = getattr(group, "expandedName", None) or groupName
+        for spec in getattr(group, "wildcardElementSpecs", ()):
+            register_wildcard(self, spec)
+        for spec in getattr(group, "wildcardAttributeSpecs", ()):
+            register_wildcard(self, spec)
+        for attrName, attr in self._collectAttributeGroup(
+            group, frozenset({groupKey}), pyXSD
+        ).items():
+            if attrName in self.attributes:
+                self._report_ref_error(
+                    f"attribute '{attrName}' is contributed both by the "
+                    f"schema's default attribute group '{groupName}' and by "
+                    f"type '{self.name}'",
+                    code="duplicate-attribute",
+                )
+                continue
+            attr.pyXSD = pyXSD
+            self.attributes[attrName] = attr
 
     def resolveAttributeRefs(self, pyXSD):
         """Resolves attribute reference sites to global declarations.

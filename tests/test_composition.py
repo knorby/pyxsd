@@ -1077,3 +1077,42 @@ class TestOverrideComposition:
         )
         parser = self._parser(tmp_path, schema, "<r>abc</r>", {"base.xsd": base, "mid.xsd": mid})
         assert not parser.report.has_errors
+
+
+def test_redefine_base_reference_keeps_its_namespace_prefix(tmp_path):
+    """A redefine self-reference must stay in the redefining namespace.
+
+    Dropping the prefix made ``base="a:c"`` rewrite to an unprefixed
+    ``c|base``, which resolved through the default XML Schema namespace
+    instead of the target namespace, so the renamed original could not be
+    found (XSTS defaultAttributesApply s3_4_2_4ii03-ii07).
+    """
+    (tmp_path / "base.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'targetNamespace="urn:a" xmlns:a="urn:a">'
+        '<xs:complexType name="c"><xs:sequence/></xs:complexType>'
+        '<xs:element name="root" type="a:c"/></xs:schema>'
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'targetNamespace="urn:a" xmlns:a="urn:a" defaultAttributes="a:da">'
+        '<xs:redefine schemaLocation="base.xsd">'
+        '<xs:complexType name="c"><xs:complexContent>'
+        '<xs:extension base="a:c"><xs:sequence/></xs:extension>'
+        "</xs:complexContent></xs:complexType></xs:redefine>"
+        '<xs:attributeGroup name="da">'
+        '<xs:attribute name="extra" type="xs:boolean" use="required"/></xs:attributeGroup>'
+        "</xs:schema>"
+    )
+    parser = PyXSD(
+        StringIO('<a:root xmlns:a="urn:a"/>'),
+        str(tmp_path / "main.xsd"),
+        xmlFileOutput="_No_Output_",
+        transformOutputName="_No_Output_",
+        mode=ParseModes.NAMESPACED,
+    )
+    codes = [issue.code for issue in parser.report.errors]
+    assert "unknown-type" not in codes
+    # The redefined type is declared in the host document, so the host's
+    # default attribute group applies and the attribute is required.
+    assert "missing-attribute" in codes

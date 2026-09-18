@@ -111,6 +111,14 @@ class ComplexType(XsdType):
                 f"'{mixed}'; expected true, false, 1 or 0",
                 code="declaration-attribute",
             )
+        apply = self.tagAttributes.get("defaultAttributesApply")
+        if apply is not None and self._invalidBoolean(apply):
+            self._reportSchemaError(
+                f"complexType '{self.name}' has an invalid "
+                f"defaultAttributesApply value '{apply}'; expected true, "
+                "false, 1 or 0",
+                code="declaration-attribute",
+            )
         name = self.xsdElement.get("name")
         if name is None or "|" in name:
             # A pipe marks an internal bookkeeping name (an inline type,
@@ -205,6 +213,17 @@ class ComplexType(XsdType):
         if kind in ("All", "Sequence"):
             return True
         return particle._silentOccurs("minOccurs") == 0
+
+    def defaultAttributesApplies(self) -> bool:
+        """Whether the schema document's default attribute group applies.
+
+        XSD 1.1 §3.1.2 / §3.4.2: a schema-level ``defaultAttributes``
+        supplies extra attribute uses to every complex type definition in
+        the same schema document unless that type sets
+        ``defaultAttributesApply="false"`` (the default is ``true``).
+        """
+        value = self.tagAttributes.get("defaultAttributesApply")
+        return value is None or _isTrue(value)
 
     def acceptsDefaultOpenContent(self, *, appliesToEmpty: bool) -> bool:
         """Whether a schema-level default open content may attach to this type.

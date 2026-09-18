@@ -868,13 +868,32 @@ class SchemaBase:
             getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
         }
         memberHeadMap: dict[str, str] = {}
+        memberToHeads: dict[str, set[str]] = {}
         for headName, members in substitutionGroups.items():
             headDescriptor = declaredByName.get(headName) or declaredByExpanded.get(headName)
             headMatch = (
                 cls._instance_name_of(headDescriptor) if headDescriptor is not None else headName
             )
             for member in members:
-                memberHeadMap[cls._instance_name_of(member)] = headMatch
+                memberName = cls._instance_name_of(member)
+                if memberName is None:
+                    continue
+                memberHeadMap.setdefault(memberName, headMatch)
+                memberToHeads.setdefault(memberName, set()).add(headMatch)
+        # XSD 1.1 lets one member belong to several substitution groups, so
+        # a single member->head map cannot represent the admission relation.
+        # Precompute each member's transitive head set for the matcher.
+        memberHeadSets: dict[str, frozenset[str]] = {}
+        for memberName, heads in memberToHeads.items():
+            seen: set[str] = set()
+            stack = list(heads)
+            while stack:
+                head = stack.pop()
+                if head is None or head in seen or head == memberName:
+                    continue
+                seen.add(head)
+                stack.extend(memberToHeads.get(head, ()))
+            memberHeadSets[memberName] = frozenset(seen)
 
         # Wildcard (xs:any) constraints live in the compiled model as
         # "any" particles, so order and occurrence are checked for
@@ -931,6 +950,7 @@ class SchemaBase:
                 target_namespace=targetNamespace,
                 namespace_checked=strictNamespaces,
                 defined=definedElements,
+                member_heads=memberHeadSets,
             )
         else:
             complete, leftover, childMatches = False, None, []
@@ -1306,6 +1326,7 @@ class SchemaBase:
             if nilled:
                 subInstance = cls._nilPrimitive(subElCls, subElement, subElementName)
             else:
+                cls._checkPrimitiveElementAttributes(subElement, subElementName)
                 subInstance = cls._primitiveForElement(subElCls, subElement, descriptor)
             if subInstance is not None:
                 # invalid values are skipped; the error is
@@ -1400,6 +1421,30 @@ class SchemaBase:
         accessor = f"{base}_{prefix}" if prefix else f"{base}_{len(used)}"
         used[accessor] = uri
         return accessor, False
+
+    @classmethod
+    def _checkPrimitiveElementAttributes(cls, subElement, subElementName):
+        """Rejects undeclared attributes on a simple-typed element.
+
+        A simple type has no attribute uses and no attribute wildcard, so
+        any attribute other than the schema-instance bookkeeping
+        (``xsi:*``), a namespace declaration, or an explicitly admitted
+        ``xml:*`` is invalid (open035.n2). ``xml:*`` is *not* admitted
+        automatically — only a complex type with a matching wildcard or an
+        explicit use accepts it (open045) — and the ``xmlns`` spellings are
+        namespace declarations, never instance attributes.
+        """
+        for attr in subElement.attrib:
+            if "xmlns" in attr:
+                continue
+            if namespace_of(attr) == xsi.XSI_NAMESPACE:
+                continue
+            cls._report_error(
+                f"attribute '{xsi.xsi_attr_key(attr)}' is not declared in the "
+                "schema and was not parsed",
+                code="unexpected-attribute",
+                element=subElementName,
+            )
 
     @classmethod
     def _primitiveForElement(cls, subElCls, subElement, descriptor):
@@ -1581,6 +1626,16 @@ class SchemaBase:
             for memberER in closure:
                 if cls._instance_name_of(memberER) != subElementName:
                     continue
+                if memberER.isAbstract():
+                    # An abstract member may itself head further members,
+                    # but the abstract declaration cannot appear directly
+                    # (subsgroup002.n1).
+                    cls._report_error(
+                        f"element '{subElementName}' is declared abstract; "
+                        "only its substitution group members may appear in the xml",
+                        code="abstract-element",
+                        element=cls.__name__,
+                    )
                 block = headDescriptor.getBlock()
                 if block and ("substitution" in block.split() or block == "#all"):
                     cls._report_error(

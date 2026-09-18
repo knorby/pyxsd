@@ -148,6 +148,18 @@ def _qnameLocal(value: str) -> str:
     return local_name(value.rpartition(":")[2])
 
 
+def _redefined_qname(value: str) -> str:
+    """Rewrites a self-reference onto the redefined ``Name|base`` copy.
+
+    The prefix is preserved: dropping it made an unprefixed value resolve
+    through the in-scope default namespace (the XML Schema namespace on a
+    ``default xmlns`` document), so a namespaced redefine could not find
+    its renamed original (ii03/ii05/ii06/ii07).
+    """
+    prefix, _, local = value.rpartition(":")
+    return f"{prefix}:{local}|base" if prefix else f"{value}|base"
+
+
 def _stackPrefix(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
     """Whether *shorter* is a prefix of *longer* (document ancestry)."""
     return len(shorter) <= len(longer) and longer[: len(shorter)] == shorter
@@ -561,6 +573,12 @@ class PyXSD:
         # ``xs:defaultOpenContent``), attach the applicable schema default
         # to each complex type that declares none of its own.
         self._applyDefaultOpenContent(schemaER)
+        # XSD 1.1 §3.1.2: attach each schema document's default attribute
+        # group to the complex types it declares, unless the type sets
+        # ``defaultAttributesApply="false"``. Runs before class building so
+        # ``resolveAttributeGroupRefs`` folds the group in with the
+        # explicit references.
+        self._applyDefaultAttributes(schemaER)
         # With every type's effective open content settled (explicit or
         # inherited default), check the open-content derivation rules
         # (mode rank and wildcard subset for restriction/extension).
@@ -709,6 +727,91 @@ class PyXSD:
                 ):
                     er.openContent = default.component()
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _applyDefaultAttributes(self, schemaER: Any) -> None:
+        """Attaches each schema document's default attribute group to its types.
+
+        XSD 1.1 §3.1.2: the ``defaultAttributes`` attribute of an
+        ``xs:schema`` names a global attribute group whose {attribute uses}
+        and {attribute wildcard} are added to every complex type definition
+        declared in that same schema document, unless the type sets
+        ``defaultAttributesApply="false"``. The default is scoped to the
+        schema *document* a type is declared in (open044/open205), so a type
+        spliced in from an include/import/redefine looks up its own
+        document's group (which may be absent), never the host's. Types
+        written inside an ``xs:override`` are scoped to the overridden
+        document by ``_spliceOverride`` (ii08/ii10).
+        """
+        mainGroup = self._resolveDefaultAttributeGroup(schemaER.xsdElement)
+        composedGroups = self._composedDefaultAttributeGroups()
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "ComplexType":
+                sourceRoot = self._composedSchemaRoots.get(id(er.xsdElement))
+                group = mainGroup if sourceRoot is None else composedGroups.get(id(sourceRoot))
+                if group is not None and er.defaultAttributesApplies():
+                    er.defaultAttributeGroup = group
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _composedDefaultAttributeGroups(self) -> dict[int, Any]:
+        """Resolves every composed schema document's ``defaultAttributes``.
+
+        Returns ``id(source schema root) -> AttributeGroup | None``.
+        """
+        result: dict[int, Any] = {}
+        roots = list({id(root): root for root in self._composedSchemaRoots.values()}.values())
+        for root in roots:
+            key = id(root)
+            if key in result:
+                continue
+            result[key] = self._resolveDefaultAttributeGroup(root)
+        return result
+
+    def _resolveDefaultAttributeGroup(self, root: Any) -> Any:
+        """Resolves a schema document's ``defaultAttributes`` QName.
+
+        Returns the global ``AttributeGroup`` the value names, or ``None``
+        when the schema declares no default. A value that does not resolve
+        to a global attribute group in the named namespace is a schema error
+        (si01/open203/open204).
+        """
+        raw = root.get("defaultAttributes")
+        if raw is None:
+            return None
+        value = raw.strip()
+        try:
+            resolved = self.namespaceContext.resolve(root, value)
+        except NamespaceError:
+            self.report.add_error(
+                f"the defaultAttributes value '{value}' uses a prefix that is not bound in scope",
+                code="unknown-namespace-prefix",
+                phase="schema",
+            )
+            return None
+        local = local_name(resolved)
+        uri = namespace_of(resolved)
+        for entries in self.components.values():
+            for entry in entries:
+                if type(entry).__name__ != "AttributeGroup":
+                    continue
+                if not entry.checkTopLevelType():
+                    continue
+                if entry.name != local:
+                    continue
+                if uri is None or entry.getNamespace() == uri:
+                    return entry
+        self.report.add_error(
+            f"the defaultAttributes attribute group '{value}' could not be "
+            "resolved to a global xs:attributeGroup",
+            code="unknown-attributeGroup",
+            phase="schema",
+        )
+        return None
 
     def _reportOpenContentDerivations(self, schemaER: Any) -> None:
         """Reports open-content derivation violations on complex types.
@@ -3663,11 +3766,27 @@ class PyXSD:
                 phase="schema",
             )
         if str(includedPath) in visited:
-            self.report.add_warning(
-                f"the schema '{location}' is already being composed; "
-                "the circular redefine is skipped",
-                code="compose-cycle",
-            )
+            if mainNS is None:
+                # A no-namespace (chameleon) redefiner caught in a cycle
+                # is the disputed W3C schU1 case; it stays a skipped
+                # repetition rather than a rule violation.
+                self.report.add_warning(
+                    f"the schema '{location}' is already being composed; "
+                    "the circular redefine is skipped",
+                    code="compose-cycle",
+                )
+            else:
+                # XSD 1.1 §4.2.4: a schema document must not redefine,
+                # directly or indirectly, a component of a document that
+                # (transitively) redefines it. Unlike an include cycle,
+                # this is a composition rule violation, not a harmless
+                # repetition (IBM S4_2_4 cyclic redefine).
+                self.report.add_error(
+                    f"the schema '{location}' is already being composed; "
+                    "a cyclic redefine is not allowed",
+                    code="compose-invalid",
+                    phase="schema",
+                )
             return None
         redefined: list[tuple[str, str]] = []
         for child in list(redefineTag):
@@ -4199,14 +4318,14 @@ class PyXSD:
                 tagLocal = element.tag.split("}")[-1]
                 base = element.get("base")
                 if base and base.split(":")[-1] in redefinedNames:
-                    element.set("base", f"{base.split(':')[-1]}|base")
+                    element.set("base", _redefined_qname(base))
                 localRef = element.get("ref")
                 if (
                     tagLocal in ("group", "attributeGroup")
                     and localRef
                     and localRef.split(":")[-1] in redefinedNames
                 ):
-                    element.set("ref", f"{localRef.split(':')[-1]}|base")
+                    element.set("ref", _redefined_qname(localRef))
                 if includedNS is not None or mainNS is None:
                     continue
                 candidates = []

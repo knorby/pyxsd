@@ -684,6 +684,33 @@ class _MatchContext(NamedTuple):
     #: caller blocks that position and matches again so attribution
     #: follows the declared particle.
     open_blocked: frozenset[int] = frozenset()
+    #: Member instance name -> the set of every transitive head name the
+    #: member may stand for (XSD 1.1 allows an element declaration to name
+    #: several substitution-group heads). ``None`` falls back to the
+    #: single-hop ``member_head_map`` chain.
+    member_heads: dict[str, frozenset[str]] | None = None
+
+
+def _head_closure(member_head_map: dict[str, str]) -> dict[str, frozenset[str]]:
+    """Transitive head sets derived from a single-valued member->head map.
+
+    Kept for callers that only have the historical one-head-per-member
+    map; a member's single head is followed up its own chain.
+    """
+    closure: dict[str, frozenset[str]] = {}
+    for member in member_head_map:
+        heads: set[str] = set()
+        stack = [member_head_map[member]]
+        while stack:
+            head = stack.pop()
+            if not head or head in heads or head == member:
+                continue
+            heads.add(head)
+            nxt = member_head_map.get(head)
+            if nxt is not None:
+                stack.append(nxt)
+        closure[member] = frozenset(heads)
+    return closure
 
 
 def _accepts(node_name: str, particle: Particle, ctx: _MatchContext, index: int = -1) -> bool:
@@ -700,21 +727,13 @@ def _accepts(node_name: str, particle: Particle, ctx: _MatchContext, index: int 
         )
     # Substitution-group admission: a member child matches the particle
     # of its own declaration, of its direct head, or of any transitive
-    # head (membership is transitive across the head chain). Walking the
-    # chain per check also keeps a member name that is itself declared
-    # in this content model matchable (the old single-step rewrite to
-    # the head lost that match). The hop bound mirrors the head-walk
-    # cap used by the derivation checks; cycles are schema errors that
-    # are reported separately, so the walk just stops.
-    current = node_name
-    for _ in range(16):
-        if particle.name == current:
-            return True
-        following = ctx.member_head_map.get(current)
-        if following is None or following == current:
-            return False
-        current = following
-    return False
+    # head (membership is transitive across the head chain, and XSD 1.1
+    # lets a member name several heads). The caller precomputes each
+    # member's transitive head set, so the check is one lookup.
+    if particle.name == node_name:
+        return True
+    heads = ctx.member_heads or {}
+    return particle.name in heads.get(node_name, ())
 
 
 def _match_all(
@@ -984,6 +1003,7 @@ def match_content_associations(
     namespace_checked: bool = False,
     defined: frozenset[str] | None = None,
     open_blocked: frozenset[int] = frozenset(),
+    member_heads: dict[str, frozenset[str]] | None = None,
 ) -> tuple[bool, list[Any], list[ChildMatch]]:
     """Matches children and reports which particle admitted each node.
 
@@ -993,7 +1013,9 @@ def match_content_associations(
     checking for wildcard particles (strict namespace mode); in legacy
     mode a wildcard absorbs any name no declared particle claims.
     ``defined`` supplies the schema's top-level declaration names for
-    the ``##defined`` keyword.
+    the ``##defined`` keyword. ``member_heads`` gives each substitution
+    member's transitive head set (XSD 1.1 multi-head membership); when
+    omitted it is derived from the single-hop ``member_head_map``.
 
     Returns ``(complete, leftover, associations)``: ``complete`` is True
     when the whole model is satisfied and consumes every node;
@@ -1002,6 +1024,8 @@ def match_content_associations(
     wildcard particle that admitted it.
     """
     member_head_map = member_head_map or {}
+    if member_heads is None:
+        member_heads = _head_closure(member_head_map)
     ctx = _MatchContext(
         member_head_map,
         name_of,
@@ -1009,6 +1033,7 @@ def match_content_associations(
         namespace_checked,
         defined,
         open_blocked,
+        member_heads,
     )
     memo: dict[Any, frozenset[int]] = {}
     ends = _ends_repeated(model, nodes, 0, ctx, memo, 0)
@@ -1031,6 +1056,7 @@ def match_content(
     target_namespace: str | None = None,
     namespace_checked: bool = False,
     defined: frozenset[str] | None = None,
+    member_heads: dict[str, frozenset[str]] | None = None,
 ) -> tuple[bool, list[Any]]:
     """Matches child elements against a compiled content model.
 
@@ -1046,6 +1072,7 @@ def match_content(
         target_namespace,
         namespace_checked,
         defined,
+        member_heads=member_heads,
     )
     return complete, leftover
 
@@ -1060,6 +1087,7 @@ def _open_attribution_violations(
     namespace_checked: bool,
     defined: frozenset[str] | None,
     blocked: frozenset[int],
+    member_heads: dict[str, frozenset[str]] | None = None,
 ) -> frozenset[int]:
     """Open-content nodes the declared particle could still have consumed.
 
@@ -1097,6 +1125,7 @@ def _open_attribution_violations(
             target_namespace,
             namespace_checked,
             defined,
+            member_heads=member_heads,
         )
         if complete:
             found.add(position)
@@ -1112,6 +1141,7 @@ def match_content_with_open_content(
     target_namespace: str | None = None,
     namespace_checked: bool = False,
     defined: frozenset[str] | None = None,
+    member_heads: dict[str, frozenset[str]] | None = None,
 ) -> tuple[bool, list[Any], list[ChildMatch]]:
     """Matches children, forcing declared attribution over open content.
 
@@ -1132,6 +1162,7 @@ def match_content_with_open_content(
             target_namespace,
             namespace_checked,
             defined,
+            member_heads=member_heads,
         )
     blocked: frozenset[int] = frozenset()
     while True:
@@ -1144,6 +1175,7 @@ def match_content_with_open_content(
             namespace_checked,
             defined,
             blocked,
+            member_heads,
         )
         if not complete:
             return complete, leftover, matches
@@ -1158,6 +1190,7 @@ def match_content_with_open_content(
                 namespace_checked,
                 defined,
                 blocked,
+                member_heads,
             )
             - blocked
         )

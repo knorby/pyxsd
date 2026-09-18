@@ -1556,3 +1556,153 @@ def test_vc_root_version_condition_empties_the_schema() -> None:
     extra = VC_PREFIX + ' vc:maxVersion="0.9"'
     body = '<xs:element name="temp" type="xs:string"/>'
     assert errors(parse(body, "<temp>x</temp>", extra=extra)) == ["unknown-root"]
+
+
+# --- defaultAttributes / defaultAttributesApply (XSD 1.1 §3.1.2) -------------
+
+
+def test_default_attributes_applied_to_type_in_same_document() -> None:
+    body = (
+        '<xs:attributeGroup name="da">'
+        '<xs:attribute name="extra" type="xs:boolean" use="required"/></xs:attributeGroup>'
+        '<xs:element name="temp"><xs:complexType><xs:sequence/></xs:complexType></xs:element>'
+    )
+    extra = ' defaultAttributes="da"'
+    assert errors(parse(body, '<temp extra="true"/>', extra=extra)) == []
+    assert errors(parse(body, "<temp/>", extra=extra)) == ["missing-attribute"]
+
+
+def test_default_attributes_apply_false_skips_the_type() -> None:
+    body = (
+        '<xs:attributeGroup name="da">'
+        '<xs:attribute name="extra" type="xs:boolean" use="required"/></xs:attributeGroup>'
+        '<xs:element name="temp"><xs:complexType defaultAttributesApply="false">'
+        "<xs:sequence/></xs:complexType></xs:element>"
+    )
+    extra = ' defaultAttributes="da"'
+    assert errors(parse(body, "<temp/>", extra=extra)) == []
+    assert errors(parse(body, '<temp extra="true"/>', extra=extra)) == ["unexpected-attribute"]
+
+
+def test_default_attributes_invalid_boolean_is_declaration_attribute() -> None:
+    body = (
+        '<xs:attributeGroup name="da"><xs:attribute name="x" type="xs:boolean"/></xs:attributeGroup>'
+        '<xs:element name="temp"><xs:complexType defaultAttributesApply="maybe">'
+        "<xs:sequence/></xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, "<temp/>", extra=' defaultAttributes="da"')) == [
+        "declaration-attribute"
+    ]
+
+
+def test_default_attributes_unresolved_group_is_an_error() -> None:
+    body = '<xs:element name="temp" type="xs:string"/>'
+    assert "unknown-attributeGroup" in errors(
+        parse(body, "<temp/>", extra=' defaultAttributes="nope"')
+    )
+
+
+def test_default_attributes_duplicate_use_is_an_error() -> None:
+    body = (
+        '<xs:attributeGroup name="da"><xs:attribute name="dup" type="xs:boolean"/></xs:attributeGroup>'
+        '<xs:attributeGroup name="dg"><xs:attribute name="dup" type="xs:boolean"/></xs:attributeGroup>'
+        '<xs:element name="temp"><xs:complexType><xs:attributeGroup ref="dg"/>'
+        "</xs:complexType></xs:element>"
+    )
+    assert "duplicate-attribute" in errors(
+        parse(body, '<temp dup="true"/>', extra=' defaultAttributes="da"')
+    )
+
+
+def test_default_attributes_scoped_to_the_declaring_document(tmp_path) -> None:
+    # A type declared in an included document does not inherit the host's
+    # default attribute group (open205); the type's own document has none.
+    (tmp_path / "included.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:complexType name="inc"><xs:sequence/></xs:complexType></xs:schema>'
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" defaultAttributes="da">'
+        '<xs:include schemaLocation="included.xsd"/>'
+        '<xs:attributeGroup name="da">'
+        '<xs:attribute name="extra" type="xs:boolean" use="required"/></xs:attributeGroup>'
+        '<xs:element name="temp" type="inc"/></xs:schema>'
+    )
+    parser = PyXSD(
+        io.StringIO('<temp extra="true"/>'),
+        str(tmp_path / "main.xsd"),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.NAMESPACED,
+    )
+    assert errors(parser.report) == ["unexpected-attribute"]
+    parser = PyXSD(
+        io.StringIO("<temp/>"),
+        str(tmp_path / "main.xsd"),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.NAMESPACED,
+    )
+    assert errors(parser.report) == []
+
+
+# --- multi-head substitution (XSD 1.1 §3.3.6) -------------------------------
+
+
+def test_substitution_member_of_two_heads_matches_both_positions() -> None:
+    body = (
+        '<xs:element name="elem0" type="xs:string"/>'
+        '<xs:element name="elem1" type="xs:string"/>'
+        '<xs:complexType name="rootType"><xs:sequence>'
+        '<xs:element ref="elem0"/><xs:element ref="elem1"/>'
+        "</xs:sequence></xs:complexType>"
+        '<xs:element name="root" type="rootType"/>'
+        '<xs:element name="elem2" type="xs:string" substitutionGroup="elem0 elem1"/>'
+    )
+    assert errors(parse(body, "<root><elem2>a</elem2><elem2>b</elem2></root>")) == []
+
+
+def test_abstract_substitution_member_reached_through_head_is_invalid() -> None:
+    body = (
+        '<xs:element name="content" type="xs:string" abstract="true"/>'
+        '<xs:element name="chap" type="xs:string" abstract="true" substitutionGroup="content"/>'
+        '<xs:complexType name="rt"><xs:sequence>'
+        '<xs:element ref="content" minOccurs="0" maxOccurs="unbounded"/>'
+        "</xs:sequence></xs:complexType>"
+        '<xs:element name="root" type="rt"/>'
+    )
+    assert errors(parse(body, "<root><chap/></root>")) == ["abstract-element"]
+
+
+# --- XML 1.1 name classes in patterns (XSD 1.1 §5.4 / XmlVersions) ----------
+
+
+def test_pattern_name_start_complement_excludes_astral_characters() -> None:
+    body = (
+        '<xs:simpleType name="i"><xs:restriction base="xs:string">'
+        '<xs:pattern value="\\I"/></xs:restriction></xs:simpleType>'
+        '<xs:element name="r" type="i"/>'
+    )
+    # U+10000 is an XML 1.1 NameStartChar, so the ``\I`` complement rejects it.
+    assert errors(parse(body, "<r>&#x10000;</r>")) == ["value"]
+    assert errors(parse(body, "<r>_</r>")) == ["value"]
+    assert errors(parse(body, "<r> </r>")) == []
+
+
+def test_pattern_name_char_complement_excludes_astral_characters() -> None:
+    body = (
+        '<xs:simpleType name="c"><xs:restriction base="xs:string">'
+        '<xs:pattern value="\\C"/></xs:restriction></xs:simpleType>'
+        '<xs:element name="r" type="c"/>'
+    )
+    assert errors(parse(body, "<r>&#x12000;</r>")) == ["value"]
+    assert errors(parse(body, "<r> </r>")) == []
+
+
+def test_pattern_name_start_class_includes_astral_characters() -> None:
+    body = (
+        '<xs:simpleType name="i"><xs:restriction base="xs:string">'
+        '<xs:pattern value="\\i"/></xs:restriction></xs:simpleType>'
+        '<xs:element name="r" type="i"/>'
+    )
+    assert errors(parse(body, "<r>&#x10000;</r>")) == []
