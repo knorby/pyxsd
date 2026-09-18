@@ -54,7 +54,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
-from typing import IO, Any
+from typing import IO, Any, ClassVar
 from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
@@ -285,6 +285,11 @@ class PyXSD:
         # For each redefined ``(base path, kind, name)``, the
         # ``_composeStack`` snapshot at its first redefine.
         self._redefineOrigins: dict[tuple[str, str, str], tuple[str, ...]] = {}
+        # For each overridden ``(base path, symbol space, name)``, the
+        # ``_composeStack`` snapshot at its first override. A later
+        # override of the same base component from an unrelated ancestry
+        # is a conflict (the override duplicate rule).
+        self._overrideOrigins: dict[tuple[str, str, str], tuple[str, ...]] = {}
         # Namespaces for which a schema was supplied or successfully
         # loaded. A namespace-only import of one of these is satisfied by
         # that supply rather than an unresolved hint.
@@ -3159,7 +3164,7 @@ class PyXSD:
         """
         for child in list(schemaRoot):
             local = child.tag.split("}")[-1]
-            if local in ("include", "redefine", "import") and mainDocument:
+            if local in ("include", "redefine", "override", "import") and mainDocument:
                 self._noteDirectiveId(child)
             if local == "include":
                 schemaRoot.remove(child)
@@ -3167,6 +3172,9 @@ class PyXSD:
             elif local == "redefine":
                 schemaRoot.remove(child)
                 self._spliceRedefine(child, schemaRoot, baseDir, visited)
+            elif local == "override":
+                schemaRoot.remove(child)
+                self._spliceOverride(child, schemaRoot, baseDir, visited)
             elif local == "import":
                 schemaRoot.remove(child)
                 if child.get("namespace") == XSD_NS:
@@ -3690,6 +3698,217 @@ class PyXSD:
             schemaRoot.append(child)
         return None
 
+    def _spliceOverride(
+        self,
+        overrideTag: Any,
+        schemaRoot: Any,
+        baseDir: Path,
+        visited: set[str],
+    ) -> None:
+        """Splices an ``xs:override`` block (XSD 1.1 §4.2.5).
+
+        Unlike ``xs:redefine`` an override need not modify an existing
+        component: a declaration matching nothing in the target set is
+        silently ignored, not an error (so a brand-new declaration in the
+        overriding document is available, but one written *inside* the
+        override is not added). A match replaces the base component
+        wholesale — the base copy is dropped from the composed tree so a
+        reference from inside the overriding declaration resolves to the
+        override, not to the definition it replaced (over011/over014).
+        The target set is the composed base document (its own includes
+        and overrides included), which is why the base is spliced before
+        the match.
+        """
+        targets = self._collectOverrideTargets(overrideTag)
+        self._checkOverrideTargetDuplicates(targets)
+        location = overrideTag.get("schemaLocation")
+        if not location:
+            self.report.add_error(
+                "an override tag has no schemaLocation; the schema could not be composed",
+                code="schema-compose",
+            )
+            return None
+        includedRoot = self._parseIncludedSchema(location, baseDir, missing_severity="warning")
+        if includedRoot is None:
+            # An override with content needs its base document: without it
+            # the target set cannot be established. An override carrying
+            # only annotations is just the missing-resource warning.
+            hasContent = any(
+                isinstance(child.tag, str) and child.tag.split("}")[-1] != "annotation"
+                for child in list(overrideTag)
+            )
+            if hasContent:
+                self.report.add_error(
+                    f"the base schema '{location}' for the override could not be opened",
+                    code="schema-compose",
+                    phase="schema",
+                )
+            return None
+        mainNS = schemaRoot.get("targetNamespace")
+        includedNS = includedRoot.get("targetNamespace")
+        includedPath = (baseDir / location).resolve()
+        if includedNS is not None and (mainNS is None or includedNS != mainNS):
+            # XSD 1.1 §4.2.5 clause 2: a namespaced base may only be
+            # overridden by a document with the identical target
+            # namespace; a no-namespace base may be ported into a
+            # namespaced overrider (chameleon, below).
+            self.report.add_error(
+                f"the overridden schema '{location}' declares targetNamespace "
+                f"'{includedNS}', which does not match the overriding schema's "
+                f"namespace ({mainNS or 'none'})",
+                code="compose-invalid",
+                phase="schema",
+            )
+        if str(includedPath) in visited:
+            self.report.add_warning(
+                f"the schema '{location}' is already being composed; "
+                "the circular override is skipped",
+                code="compose-cycle",
+            )
+            return None
+        if includedNS is None and mainNS is not None:
+            # Chameleon pre-processing (Appendix F.2 on top of F.1): a
+            # no-namespace base is ported into the overrider's namespace
+            # before the override is applied.
+            includedRoot.set("targetNamespace", mainNS)
+            self._applyChameleonNamespace(includedRoot, mainNS)
+            includedNS = mainNS
+        if includedNS:
+            self._composedTargetNamespaces.add(includedNS)
+        self._checkOverrideDuplicates(includedPath, location, targets)
+        # Compose the base document first so its effective component set
+        # (its own includes/overrides included) is the override's target.
+        self._composeStack.append(str(includedPath))
+        try:
+            self._spliceComposedSchemas(
+                includedRoot, includedPath.parent, visited | {str(includedPath)}
+            )
+        finally:
+            self._composeStack.pop()
+        targetKeys = {(space, name) for space, name, _ in targets}
+        present: set[tuple[str, str]] = set()
+        for component in list(includedRoot):
+            if not isinstance(component.tag, str):
+                continue
+            local = component.tag.split("}")[-1]
+            space = self._OVERRIDE_SYMBOL_SPACES.get(local)
+            name = component.get("name")
+            if space is None or not name or name.endswith("|base"):
+                continue
+            present.add((space, name))
+            if (space, name) in targetKeys:
+                # The overriding definition replaces the base wholesale:
+                # dropping the base copy makes the override the unique
+                # plain-named component, so every reference (including a
+                # self-reference inside the override) resolves to it. The
+                # base cannot be kept under the redefine ``|base`` name
+                # because an attribute or notation name is NCName-checked.
+                includedRoot.remove(component)
+        # The base document's components come from another schema
+        # document; scope ``id`` uniqueness provenance to it.
+        for element in includedRoot.iter():
+            self._composedElementIds.add(id(element))
+            self._composedSchemaRoots.setdefault(id(element), includedRoot)
+        self._appendNamedComponents(
+            includedRoot, schemaRoot, includedNS if includedNS is not None else mainNS
+        )
+        for space, name, child in targets:
+            if (space, name) in present:
+                # XSD 1.1 §3.4.2.4 / §3.1.2: for a type defined *within*
+                # ``xs:override`` the relevant default open content (and
+                # default attribute group) is the overridden document's,
+                # not the overriding document's. Scoping the override
+                # children to the base root keeps the host's defaults off
+                # them (open043/open045).
+                for element in child.iter():
+                    self._composedSchemaRoots.setdefault(id(element), includedRoot)
+                schemaRoot.append(child)
+        # The base document has been composed; a later include/import of
+        # the same document must not splice it a second time (XSD
+        # composition treats one document once, §4.2.3). ``xs:override``
+        # itself does not consult this set, so two overrides of the same
+        # base are still reprocessed and reported as a conflict.
+        self._composedDocuments.add(str(includedPath))
+        return None
+
+    def _collectOverrideTargets(self, overrideTag: Any) -> list[tuple[str, str, Any]]:
+        """Returns the ``(symbol space, name, child)`` of an override block.
+
+        Reports ``override-invalid`` for a child outside the XSD 1.1
+        §4.2.5 grammar or one that does not name a component; the
+        offending child is dropped so it is not spliced in.
+        """
+        targets: list[tuple[str, str, Any]] = []
+        for child in list(overrideTag):
+            if not isinstance(child.tag, str):
+                continue
+            local = child.tag.split("}")[-1]
+            if local == "annotation":
+                continue
+            space = self._OVERRIDE_SYMBOL_SPACES.get(local)
+            if space is None:
+                self.report.add_error(
+                    f"<override> does not allow a '{local}' child",
+                    code="override-invalid",
+                    phase="schema",
+                )
+                continue
+            name = child.get("name")
+            if not name:
+                self.report.add_error(
+                    f"the <override> child '{local}' must name a schema component",
+                    code="override-invalid",
+                    phase="schema",
+                )
+                continue
+            targets.append((space, name, child))
+        return targets
+
+    def _checkOverrideTargetDuplicates(self, targets: list[tuple[str, str, Any]]) -> None:
+        """Reports one component named twice inside a single override block."""
+        seen: set[tuple[str, str]] = set()
+        for space, name, _ in targets:
+            key = (space, name)
+            if key in seen:
+                self.report.add_error(
+                    f"the component '{name}' is declared more than once in <override>",
+                    code="override-invalid",
+                    phase="schema",
+                )
+            seen.add(key)
+
+    def _checkOverrideDuplicates(
+        self, includedPath: Path, location: str, targets: list[tuple[str, str, Any]]
+    ) -> None:
+        """Reports a base component overridden twice from unrelated ancestries.
+
+        An override chain (the outer block targets the inner redefining
+        document) has a different base key and is not a conflict; the same
+        base component reached twice from the same or unrelated ancestry
+        is (over022).
+        """
+        current = tuple(self._composeStack)
+        seen: list[tuple[str, str, str]] = []
+        for space, name, _ in targets:
+            key = (str(includedPath), space, name)
+            origin = self._overrideOrigins.get(key)
+            if origin is None:
+                seen.append(key)
+                continue
+            nested = origin != current and (
+                _stackPrefix(origin, current) or _stackPrefix(current, origin)
+            )
+            if nested:
+                continue
+            self.report.add_error(
+                f"the component '{name}' of the overridden schema "
+                f"'{location}' is overridden more than once",
+                code="override-invalid",
+                phase="schema",
+            )
+        for key in seen:
+            self._overrideOrigins[key] = current
+
     def _checkRedefineTargets(
         self, includedRoot: Any, location: str, redefined: list[tuple[str, str]]
     ) -> None:
@@ -3717,6 +3936,20 @@ class PyXSD:
                 )
 
     _COMPOSABLE_REDEFINE_KINDS = ("complexType", "simpleType", "group", "attributeGroup")
+
+    #: The XSD symbol spaces an ``xs:override`` may replace, keyed by the
+    #: declaration's element name. ``simpleType`` and ``complexType``
+    #: share the ``type`` space, so an override may replace a complex
+    #: type with a simple type of the same name (over013).
+    _OVERRIDE_SYMBOL_SPACES: ClassVar[dict[str, str]] = {
+        "simpleType": "type",
+        "complexType": "type",
+        "element": "element",
+        "attribute": "attribute",
+        "group": "group",
+        "attributeGroup": "attributeGroup",
+        "notation": "notation",
+    }
 
     def _declaredComponentKinds(self, root: Any) -> set[tuple[str, str]]:
         """Returns ``(kind, name)`` for the global components *root* declares.

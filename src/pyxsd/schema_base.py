@@ -2102,13 +2102,22 @@ class SchemaBase:
             for attrET in attrInElementTag:
                 if attrET in usedAttrs or attrET in rejected:
                     continue
-                # Attributes in the schema-instance and XML namespaces are
-                # allowed to appear without a declaration (xsi:type,
-                # xsi:nil, xsi:schemaLocation, xml:lang, ...). Everything
-                # else that survives the declaration and wildcard passes
-                # is genuinely undeclared and makes the instance invalid
-                # (AttrDecl ad_name00101m1-4, ad_targetns00101m1-3).
-                if namespace_of(attrET) in (xsi.XSI_NAMESPACE, XML_NS):
+                # Attributes in the schema-instance namespace are allowed to
+                # appear without a declaration (xsi:type, xsi:nil,
+                # xsi:schemaLocation, ...). An XML-namespace attribute is
+                # admitted only when the element's type actually allows it:
+                # the implicit ``xml:*`` declarations are global components,
+                # not automatic attribute uses, so a type with no attribute
+                # wildcard (or explicit use) rejects ``xml:lang`` and friends
+                # (open045). Everything else that survives the declaration
+                # and wildcard passes is genuinely undeclared and makes the
+                # instance invalid (AttrDecl ad_name00101m1-4,
+                # ad_targetns00101m1-3).
+                if namespace_of(attrET) == xsi.XSI_NAMESPACE:
+                    continue
+                if namespace_of(attrET) == XML_NS and getattr(
+                    self, "hasWildcardAttributes_", False
+                ):
                     continue
                 if attrET.startswith("xml:") or attrET.startswith("xmlns"):
                     continue

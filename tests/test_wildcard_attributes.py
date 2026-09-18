@@ -783,3 +783,33 @@ def test_xsi_nil_value_must_be_boolean_even_when_the_wildcard_admits_it():
         '<computer xsi:nil="1234" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>',
     )
     assert errors(parser) == ["nil"]
+
+
+XML_NAMESPACE_ATTRIBUTE_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:complexType name="plain"><xs:sequence/></xs:complexType>'
+    '<xs:element name="plain" type="plain"/>'
+    "</xs:schema>"
+)
+
+XML_NAMESPACE_ATTRIBUTE_WILDCARD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:complexType name="open"><xs:sequence/>'
+    '<xs:anyAttribute namespace="##any" processContents="skip"/></xs:complexType>'
+    '<xs:element name="open" type="open"/>'
+    "</xs:schema>"
+)
+
+
+def test_xml_namespace_attribute_needs_a_wildcard():
+    # open045: the implicit xml:* declarations are global components, not
+    # automatic attribute uses; a type with no attribute wildcard rejects
+    # xml:lang rather than admitting every XML-namespace attribute.
+    parser = run(XML_NAMESPACE_ATTRIBUTE_SCHEMA, '<plain xml:lang="de"/>')
+    assert "unexpected-attribute" in errors(parser)
+
+
+def test_xml_namespace_attribute_is_admitted_by_a_wildcard():
+    # wild054.v1: an any-attribute wildcard admits xml:lang.
+    parser = run(XML_NAMESPACE_ATTRIBUTE_WILDCARD_SCHEMA, '<open xml:lang="de"/>')
+    assert codes(parser) == []

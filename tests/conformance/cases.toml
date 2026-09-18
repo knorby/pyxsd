@@ -8189,3 +8189,273 @@ schema = '''
 </xs:schema>'''
 schema_valid = false
 expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "override/replace-type-and-group-valid"
+xsd11 = true
+description = "xs:override replaces a complex type and a model group with different content"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over001/over006"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:complexType name="T">
+      <xs:sequence><xs:group ref="g"/></xs:sequence>
+    </xs:complexType>
+    <xs:group name="g">
+      <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+    </xs:group>
+  </xs:override>
+  <xs:element name="r" type="T"/>
+</xs:schema>
+'''
+instance = '''
+<r><b>x</b></r>
+'''
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T"><xs:sequence>
+    <xs:element name="old" type="xs:string"/></xs:sequence></xs:complexType>
+  <xs:group name="g"><xs:sequence>
+    <xs:element name="a" type="xs:string"/></xs:sequence></xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/replaces-type-with-different-kind-valid"
+xsd11 = true
+description = "An override may replace a complex type with a simple type of the same name"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over013"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:simpleType name="structuredDate">
+      <xs:restriction base="xs:date"/>
+    </xs:simpleType>
+  </xs:override>
+  <xs:element name="r" type="structuredDate"/>
+</xs:schema>
+'''
+instance = '''
+<r>2001-01-01</r>
+'''
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="structuredDate"><xs:sequence>
+    <xs:element name="year"/></xs:sequence></xs:complexType>
+  <xs:element name="doc" type="structuredDate"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/illegal-child-invalid"
+xsd11 = true
+description = "An element outside the xs:override child grammar is an override violation"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:sequence><xs:element name="e"/></xs:sequence>
+  </xs:override>
+  <xs:element name="r" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["override-invalid"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/duplicate-target-invalid"
+xsd11 = true
+description = "The same component may not be named twice in one xs:override"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over021"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:element name="doc" type="xs:date"/>
+    <xs:element name="doc" type="xs:time"/>
+  </xs:override>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["override-invalid"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/missing-component-ignored-valid"
+xsd11 = true
+description = "Overriding a component the target set lacks is legal and the declaration is ignored"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over007/over026"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:simpleType name="ghost"><xs:restriction base="xs:string"/></xs:simpleType>
+  </xs:override>
+  <xs:element name="r" type="xs:string"/>
+</xs:schema>
+'''
+instance = '''
+<r>x</r>
+'''
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/missing-component-not-added-invalid"
+xsd11 = true
+description = "A declaration inside xs:override matching nothing is not added, so a reference to it fails"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over026"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:simpleType name="ghost"><xs:restriction base="xs:string"/></xs:simpleType>
+  </xs:override>
+  <xs:element name="r" type="ghost"/>
+</xs:schema>
+'''
+instance = '''
+<r>x</r>
+'''
+instance_valid = false
+expected_codes = ["unknown-type"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/self-reference-resolves-to-override-valid"
+xsd11 = true
+description = "A self reference inside an overriding declaration names the override, not the base"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over006"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:element name="section">
+      <xs:complexType>
+        <xs:sequence>
+          <xs:element name="head" type="xs:string"/>
+          <xs:element ref="section" minOccurs="0" maxOccurs="unbounded"/>
+        </xs:sequence>
+        <xs:attribute name="nr" type="xs:decimal" use="required"/>
+      </xs:complexType>
+    </xs:element>
+  </xs:override>
+</xs:schema>
+'''
+instance = '''
+<section nr="1"><head>a</head><section nr="2"><head>b</head></section></section>
+'''
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="section">
+    <xs:complexType><xs:sequence>
+      <xs:element name="head" type="xs:string"/>
+      <xs:element ref="section" minOccurs="1" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/namespace-mismatch-invalid"
+xsd11 = true
+description = "A no-namespace overriding document may not override a namespaced base document"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over016"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:element name="doc" type="xs:string"/>
+  </xs:override>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:b">
+  <xs:element name="doc"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/nested-override-valid"
+xsd11 = true
+description = "Nested overrides compose outermost first; the innermost declaration wins"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over009/over023"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="mid.xsd">
+    <xs:simpleType name="T">
+      <xs:restriction base="xs:string"><xs:maxLength value="3"/></xs:restriction>
+    </xs:simpleType>
+  </xs:override>
+  <xs:element name="r" type="T"/>
+</xs:schema>
+'''
+instance = '''
+<r>abc</r>
+'''
+[case.files]
+"mid.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:simpleType name="T">
+      <xs:restriction base="xs:string"><xs:maxLength value="5"/></xs:restriction>
+    </xs:simpleType>
+  </xs:override>
+</xs:schema>
+'''
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="T"><xs:restriction base="xs:string"/></xs:simpleType>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/default-open-content-scoped-to-overridden-invalid"
+xsd11 = true
+description = "A type defined within xs:override uses the overridden document's default open content"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open043"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:complexType name="beta"><xs:sequence/></xs:complexType>
+  </xs:override>
+  <xs:defaultOpenContent mode="suffix" appliesToEmpty="true">
+    <xs:any namespace="urn:open" processContents="lax"/>
+  </xs:defaultOpenContent>
+  <xs:element name="r" type="xs:string"/>
+</xs:schema>
+'''
+instance = '''
+<doc><extra xmlns="urn:open"/></doc>
+'''
+instance_valid = false
+expected_codes = ["unexpected-element"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="beta"><xs:sequence/></xs:complexType>
+  <xs:element name="doc" type="beta"/>
+</xs:schema>
+'''
