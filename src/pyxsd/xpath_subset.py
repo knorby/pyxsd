@@ -97,9 +97,10 @@ def parse_xpath_subset(
       to — the caller resolves the ``xpathDefaultNamespace`` keyword
       forms first (unprefixed attribute names are always in no
       namespace).
-    - ``target_ns``: the schema's target namespace; part of the
-      declaration context for callers that resolve the keyword forms
-      themselves (``##targetNamespace``).
+    - ``target_ns``: the schema's target namespace. Accepted so the
+      declaration context travels with the call, but the body does not
+      consume it: callers resolve the ``xpathDefaultNamespace`` keyword
+      forms (including ``##targetNamespace``) before invoking.
 
     Raises :class:`XPathError` when the expression is outside the
     subset (or not XPath at all).

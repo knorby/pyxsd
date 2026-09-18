@@ -79,8 +79,8 @@ class TestMultiHeadSubstitution:
 
 
 class TestSubstitutionDerivationBlock:
-    def test_blocked_member_rejected(self, parse_schema):
-        report = parse_schema(
+    def test_blocked_member_rejected(self, parse_document):
+        report = parse_document(
             "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
             "elementFormDefault='qualified'>"
             "<xsd:complexType name='Base'><xsd:sequence>"
@@ -94,9 +94,11 @@ class TestSubstitutionDerivationBlock:
             "<xsd:element name='m' substitutionGroup='h' type='Derived'/>"
             "<xsd:element name='root'><xsd:complexType><xsd:sequence>"
             "<xsd:element ref='h'/></xsd:sequence></xsd:complexType></xsd:element>"
-            "</xsd:schema>"
+            "</xsd:schema>",
+            # the blocked member may not stand in for its head
+            "<root><m/></root>",
         )
-        assert "blocked" not in _schema_codes(report)
+        assert "blocked" in {issue.code for issue in report.issues}
 
 
 class TestElementDeclarationsConsistent:
