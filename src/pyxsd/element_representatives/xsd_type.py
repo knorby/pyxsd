@@ -936,6 +936,19 @@ class XsdType(ElementRepresentative):
         contentModel = compile_content_model(self, pyXSD)
         if contentModel is not None:
             namespace["_contentModel_"] = contentModel
+        # The instance matcher additionally admits the type's effective
+        # open content (XSD 1.1 §3.4.4.3): a suffix wildcard after the
+        # declared particles or an interleaved one around them. The
+        # declared particle tree above stays open-content-free for the
+        # schema-phase particle/UPA checks and for base composition.
+        if self.__class__.__name__ == "ComplexType":
+            effective = getattr(self, "effectiveOpenContent", lambda: None)()
+            if effective is not None:
+                from pyxsd.content_model import merge_open_content
+
+                instanceModel = merge_open_content(contentModel, effective, pyXSD)
+                if instanceModel is not None:
+                    namespace["_instanceContentModel_"] = instanceModel
 
         # Accessor allocation must consider every inherited and
         # same-class declaration, not just the names assembled so far:

@@ -215,10 +215,16 @@ class ComplexType(XsdType):
         attaches only when the type's explicit content type is not empty,
         or -- for an empty content type -- when ``appliesToEmpty`` is
         true. A type carrying its own ``xs:openContent`` is never touched.
+
+        The effective content type is used, not the type's own particle:
+        an extension whose own content is empty but whose base carries
+        element-only/mixed content reuses the base content type
+        (§3.4.2.3.3 clause 4.2.2), so it is *not* empty and the default
+        applies (Saxon bug 13459, ``open046``).
         """
         if self.openContent is not None:
             return False
-        return appliesToEmpty or not self._explicitContentIsEmpty()
+        return appliesToEmpty or self._effectiveContentVariety() != "empty"
 
     def _explicitContentIsEmpty(self) -> bool:
         """Whether the explicit content type has {variety} ``empty``.
@@ -230,6 +236,72 @@ class ComplexType(XsdType):
             if child is not None and type(child).__name__ == "SimpleContent":
                 return False
         return self._explicitContentEmpty()
+
+    def _effectiveContentVariety(self, _seen: set[int] | None = None) -> str:
+        """The {content type}.{variety} of this type (extension-aware).
+
+        ``empty``, ``simple``, ``element-only`` or ``mixed``. An extension
+        with empty explicit content over a base whose final content type
+        is element-only/mixed reuses the base content type (§3.4.2.3.3
+        clause 4.2.2), so it takes the base's variety rather than reading
+        empty. ``_seen`` guards a derivation cycle.
+        """
+        seen = _seen or set()
+        if id(self) in seen:
+            return "empty"
+        seen = seen | {id(self)}
+        if self._firstProcessedChild(self, "SimpleContent") is not None:
+            return "simple"
+        if self.getDerivation() == "extension" and self._explicitContentEmpty():
+            base = self._baseComplexType(seen)
+            if base is not None:
+                base_variety = base._effectiveContentVariety(seen)
+                if base_variety in ("element-only", "mixed"):
+                    return base_variety
+        if self.effectiveMixed(_seen):
+            return "mixed"
+        if self._explicitContentEmpty():
+            return "empty"
+        return "element-only"
+
+    def effectiveOpenContent(self, _seen: set[int] | None = None):
+        """The type's effective {open content}, or ``None`` (XSD 1.1 §3.4.2.3.3).
+
+        ``self.openContent`` is the parsed ``<openContent>`` wildcard
+        element (explicit, or the schema default the parser attached). An
+        extension's explicit content type already carries its base's open
+        content, so an explicit (or default) wildcard element combines
+        with it by namespace union (clause 6.2); with no wildcard element
+        the base's open content is inherited. A restriction's explicit
+        content type never carries the base's open content, so only the
+        wildcard element (if any) applies. Simple content has no open
+        content. ``_seen`` guards a derivation cycle.
+        """
+        from pyxsd.open_content import OpenContent, combine_open_content
+
+        seen = _seen or set()
+        if id(self) in seen:
+            return None
+        seen = seen | {id(self)}
+        if self._firstProcessedChild(self, "SimpleContent") is not None:
+            return None
+        explicit = None
+        if self.getDerivation() == "extension":
+            base = self._baseComplexType(seen)
+            if base is not None and base._effectiveContentVariety(seen) in (
+                "element-only",
+                "mixed",
+            ):
+                explicit = base.effectiveOpenContent(seen)
+        own = self.openContent
+        if own is None:
+            return explicit
+        if own.mode == "none":
+            return explicit
+        combined = combine_open_content(explicit, own, self.getNamespace())
+        if combined is None and own.wildcard is not None:
+            return OpenContent(own.mode, copy.copy(own.wildcard))
+        return combined
 
     def _baseComplexType(self, _seen: set[int] | None = None) -> "ComplexType | None":
         """The first base type that is a complex type, or ``None``."""

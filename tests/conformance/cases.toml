@@ -7805,3 +7805,387 @@ schema = '''
 </xs:schema>'''
 schema_valid = false
 expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "open-content/interleave-around-declared-valid"
+xsd11 = true
+description = "interleave open content admits a wildcard child between declared particles (Saxon open005)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open005"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="interleave">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><a/><c xmlns="urn:open"/><b/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/interleave-before-declared-valid"
+xsd11 = true
+description = "interleave open content admits a wildcard child before the declared particles (Saxon open005)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open005"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="interleave">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><c xmlns="urn:open"/><a/><b/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/interleave-enforces-order-invalid"
+xsd11 = true
+description = "declared particles keep their order under interleave open content"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.2.3"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="interleave">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><b/><a/></temp>'''
+instance_valid = false
+expected_codes = ["order"]
+
+[[case]]
+id = "open-content/suffix-trailing-valid"
+xsd11 = true
+description = "suffix open content admits a wildcard child after the declared content (Saxon open001)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open001"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><a/><b/><c xmlns="urn:open"/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/suffix-leading-invalid"
+xsd11 = true
+description = "suffix open content rejects a wildcard child before the declared content"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.4.3"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><c xmlns="urn:open"/><a/><b/></temp>'''
+instance_valid = false
+expected_codes = ["order"]
+
+[[case]]
+id = "open-content/process-contents-strict-value-invalid"
+xsd11 = true
+description = "a strict open-content wildcard resolves the global declaration and validates it"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.10.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:open" xmlns:o="urn:open">
+  <xs:element name="c" type="xs:int"/>
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="strict"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<o:temp xmlns:o="urn:open"><a/><b/><o:c>bad</o:c></o:temp>'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "open-content/process-contents-strict-undeclared-invalid"
+xsd11 = true
+description = "a strict open-content wildcard rejects an undeclared namespace child"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.10.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:open" xmlns:o="urn:open">
+  <xs:element name="c" type="xs:int"/>
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="strict"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<o:temp xmlns:o="urn:open"><a/><b/><o:d/></o:temp>'''
+instance_valid = false
+expected_codes = ["wildcard-no-declaration"]
+
+[[case]]
+id = "open-content/process-contents-skip-accepts"
+xsd11 = true
+description = "a skip open-content wildcard never validates its children"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.10.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:open" xmlns:o="urn:open">
+  <xs:element name="c" type="xs:int"/>
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="skip"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<o:temp xmlns:o="urn:open"><a/><b/><o:c>bad</o:c></o:temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/repeated-particle-keeps-children"
+xsd11 = true
+description = "the declared repeated particle absorbs its occurrences before open content (Saxon open025)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open025"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="interleave">
+        <xs:any namespace="##local" processContents="skip"/>
+      </xs:openContent>
+      <xs:sequence>
+        <xs:element name="i" type="xs:integer" maxOccurs="unbounded"/>
+        <xs:element name="d" type="xs:date" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><i>12</i><i>42.3</i><j>x</j></temp>'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "open-content/restriction-wider-wildcard-invalid"
+xsd11 = true
+description = "a restriction may not widen the base open-content wildcard (Saxon open017)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open017"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="suffix"><xs:any namespace="urn:open" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B">
+        <xs:openContent mode="suffix">
+          <xs:any namespace="urn:open urn:other" processContents="lax"/>
+        </xs:openContent>
+        <xs:sequence><xs:element name="a"/></xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "open-content/restriction-weaker-process-invalid"
+xsd11 = true
+description = "a restriction may not weaken open-content processContents (Saxon open018)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open018"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="suffix"><xs:any namespace="urn:open" processContents="strict"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B">
+        <xs:openContent mode="suffix">
+          <xs:any namespace="urn:open" processContents="lax"/>
+        </xs:openContent>
+        <xs:sequence><xs:element name="a"/></xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "open-content/restriction-interleave-over-suffix-invalid"
+xsd11 = true
+description = "a restriction may not raise suffix open content to interleave (Saxon open019)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open019"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="suffix"><xs:any namespace="urn:open" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B">
+        <xs:openContent mode="interleave">
+          <xs:any namespace="urn:open" processContents="lax"/>
+        </xs:openContent>
+        <xs:sequence><xs:element name="a"/></xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "open-content/restriction-drops-open-content-valid"
+xsd11 = true
+description = "a restriction may drop the base open content entirely (Saxon open014)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open014"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="suffix"><xs:any namespace="urn:open" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B"><xs:sequence><xs:element name="a"/></xs:sequence></xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+instance = '''
+<temp><a/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/extension-narrowing-mode-invalid"
+xsd11 = true
+description = "an extension may not narrow interleave open content to suffix (IBM s3_4_1si05)"
+derived_from = "W3C XMLSchema1TestSuite, IBM S3_4_1/s3_4_1si05"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="interleave"><xs:any namespace="urn:open" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:extension base="B">
+        <xs:openContent mode="suffix">
+          <xs:any namespace="urn:open" processContents="lax"/>
+        </xs:openContent>
+        <xs:sequence/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "open-content/extension-wildcard-union-valid"
+xsd11 = true
+description = "an extension unions its open-content wildcard with the base's (Saxon open047)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open047"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="interleave"><xs:any namespace="urn:open" processContents="skip"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:extension base="B">
+        <xs:openContent mode="interleave">
+          <xs:any notNamespace="urn:open urn:disallowed" processContents="skip"/>
+        </xs:openContent>
+        <xs:sequence/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+instance = '''
+<temp><a/><x xmlns="urn:open"/><y xmlns="urn:closed"/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/extension-narrowing-union-mode-invalid"
+xsd11 = true
+description = "an extension whose default open content narrows the base mode is invalid (Saxon open030)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open030"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="suffix">
+    <xs:any namespace="urn:default" processContents="lax"/>
+  </xs:defaultOpenContent>
+  <xs:complexType name="B">
+    <xs:openContent mode="interleave"><xs:any namespace="urn:closed" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:extension base="B"><xs:sequence><xs:element name="d" minOccurs="0"/></xs:sequence></xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]

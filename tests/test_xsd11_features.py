@@ -1162,3 +1162,226 @@ def test_included_default_open_content_applies_in_its_document(tmp_path) -> None
     assert beta is not None
     assert beta.wildcard is not None
     assert beta.wildcard.namespace == "urn:included"
+
+
+# --- xs:openContent content-model merge + instance enforcement ---------------
+
+_OPEN_SEQUENCE = '<xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>'
+
+
+def _opened(mode: str, process: str, *, namespace: str = "urn:open") -> str:
+    """A schema body: a sequence ``a, b`` plus open content in *mode*."""
+    return (
+        '<xs:element name="temp"><xs:complexType>'
+        f'<xs:openContent mode="{mode}"><xs:any namespace="{namespace}" '
+        f'processContents="{process}"/></xs:openContent>'
+        f"{_OPEN_SEQUENCE}"
+        "</xs:complexType></xs:element>"
+    )
+
+
+def test_open_content_interleave_admits_wildcard_among_declared() -> None:
+    body = _opened("interleave", "lax")
+    # Open content may sit after, before, and between the declared a/b.
+    assert errors(parse(body, '<temp><a/><c xmlns="urn:open"/><b/></temp>')) == []
+    assert errors(parse(body, '<temp><c xmlns="urn:open"/><a/><b/></temp>')) == []
+    assert errors(parse(body, "<temp><a/><b/></temp>")) == []
+
+
+def test_open_content_interleave_still_enforces_declared_order() -> None:
+    body = _opened("interleave", "lax")
+    # The declared particles keep their order; the wildcard only admits
+    # urn:open, so an unqualified b before a is a real order error.
+    assert "order" in errors(parse(body, "<temp><b/><a/></temp>"))
+
+
+def test_open_content_suffix_admits_trailing_only() -> None:
+    body = _opened("suffix", "lax")
+    assert errors(parse(body, '<temp><a/><b/><c xmlns="urn:open"/></temp>')) == []
+    assert "order" in errors(parse(body, '<temp><c xmlns="urn:open"/><a/><b/></temp>'))
+
+
+def test_open_content_repeated_declared_particle_keeps_its_own_children() -> None:
+    # A repeated declared particle absorbs its own occurrences before the
+    # wildcard may take any: the second ``i`` must be an integer (open025).
+    body = (
+        '<xs:element name="temp"><xs:complexType>'
+        '<xs:openContent mode="interleave">'
+        '<xs:any namespace="##local" processContents="skip"/></xs:openContent>'
+        '<xs:sequence><xs:element name="i" type="xs:integer" maxOccurs="unbounded"/>'
+        '<xs:element name="d" type="xs:date" minOccurs="0" maxOccurs="unbounded"/>'
+        "</xs:sequence></xs:complexType></xs:element>"
+    )
+    assert (
+        errors(
+            parse(body, "<temp><i>12</i><j>banana</j><d>2008-08-08</d><i>42</i><a>17</a></temp>")
+        )
+        == []
+    )
+    assert "value" in errors(parse(body, "<temp><i>12</i><i>42.3</i><j>x</j></temp>"))
+
+
+def _process_contents_schema(process: str) -> str:
+    # ``c`` is a global int declaration in urn:open, so a strict or lax
+    # wildcard can resolve and validate it; a skip wildcard never does.
+    return (
+        '<xs:element name="c" type="xs:int"/>'
+        '<xs:element name="temp"><xs:complexType>'
+        f'<xs:openContent mode="suffix"><xs:any namespace="urn:open" '
+        f'processContents="{process}"/></xs:openContent>'
+        f"{_OPEN_SEQUENCE}"
+        "</xs:complexType></xs:element>"
+    )
+
+
+_OPEN_NS = ' targetNamespace="urn:open"'
+
+
+def test_open_content_process_contents_strict() -> None:
+    body = _process_contents_schema("strict")
+    assert (
+        errors(parse(body, '<o:temp xmlns:o="urn:open"><a/><b/><o:c>7</o:c></o:temp>', _OPEN_NS))
+        == []
+    )
+    assert "value" in errors(
+        parse(body, '<o:temp xmlns:o="urn:open"><a/><b/><o:c>bad</o:c></o:temp>', _OPEN_NS)
+    )
+    assert "wildcard-no-declaration" in errors(
+        parse(body, '<o:temp xmlns:o="urn:open"><a/><b/><o:d/></o:temp>', _OPEN_NS)
+    )
+
+
+def test_open_content_process_contents_lax() -> None:
+    body = _process_contents_schema("lax")
+    # An undeclared urn:open child is admitted unvalidated.
+    assert errors(parse(body, '<o:temp xmlns:o="urn:open"><a/><b/><o:d/></o:temp>', _OPEN_NS)) == []
+    # A resolvable declaration is still validated.
+    assert "value" in errors(
+        parse(body, '<o:temp xmlns:o="urn:open"><a/><b/><o:c>bad</o:c></o:temp>', _OPEN_NS)
+    )
+
+
+def test_open_content_process_contents_skip() -> None:
+    body = _process_contents_schema("skip")
+    assert (
+        errors(parse(body, '<o:temp xmlns:o="urn:open"><a/><b/><o:c>bad</o:c></o:temp>', _OPEN_NS))
+        == []
+    )
+
+
+# --- xs:openContent derivation (restriction / extension) ---------------------
+
+
+def _derivation(base_open: str, derived_wrapper: str) -> str:
+    return (
+        '<xs:complexType name="B">'
+        f"{base_open}"
+        '<xs:sequence><xs:element name="a"/></xs:sequence>'
+        "</xs:complexType>"
+        '<xs:complexType name="R"><xs:complexContent>'
+        f"{derived_wrapper}"
+        "</xs:complexContent></xs:complexType>"
+        '<xs:element name="temp" type="R"/>'
+    )
+
+
+def _restriction(open_content: str) -> str:
+    return (
+        '<xs:restriction base="B">'
+        f"{open_content}"
+        '<xs:sequence><xs:element name="a"/></xs:sequence>'
+        "</xs:restriction>"
+    )
+
+
+def test_open_content_restriction_may_drop_open_content() -> None:
+    body = _derivation(
+        '<xs:openContent mode="suffix">'
+        '<xs:any namespace="urn:open" processContents="lax"/></xs:openContent>',
+        _restriction(""),
+    )
+    assert errors(parse(body, "<temp><a/></temp>")) == []
+
+
+def test_open_content_restriction_wider_wildcard_is_invalid() -> None:
+    body = _derivation(
+        '<xs:openContent mode="suffix">'
+        '<xs:any namespace="urn:open" processContents="lax"/></xs:openContent>',
+        _restriction(
+            '<xs:openContent mode="suffix">'
+            '<xs:any namespace="urn:open urn:other" processContents="lax"/></xs:openContent>'
+        ),
+    )
+    assert "particle-restriction" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_restriction_weaker_process_contents_is_invalid() -> None:
+    body = _derivation(
+        '<xs:openContent mode="suffix">'
+        '<xs:any namespace="urn:open" processContents="strict"/></xs:openContent>',
+        _restriction(
+            '<xs:openContent mode="suffix">'
+            '<xs:any namespace="urn:open" processContents="lax"/></xs:openContent>'
+        ),
+    )
+    assert "particle-restriction" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_restriction_interleave_over_suffix_is_invalid() -> None:
+    body = _derivation(
+        '<xs:openContent mode="suffix">'
+        '<xs:any namespace="urn:open" processContents="lax"/></xs:openContent>',
+        _restriction(
+            '<xs:openContent mode="interleave">'
+            '<xs:any namespace="urn:open" processContents="lax"/></xs:openContent>'
+        ),
+    )
+    assert "particle-restriction" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_restriction_adding_open_content_is_invalid() -> None:
+    body = _derivation(
+        "",
+        _restriction(
+            '<xs:openContent mode="suffix">'
+            '<xs:any namespace="urn:open" processContents="lax"/></xs:openContent>'
+        ),
+    )
+    assert "particle-restriction" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_extension_narrowing_mode_is_invalid() -> None:
+    # IBM s3_4_1si05: base interleave, extension suffix.
+    body = (
+        '<xs:complexType name="B"><xs:openContent mode="interleave">'
+        '<xs:any namespace="urn:open" processContents="lax"/></xs:openContent>'
+        '<xs:sequence><xs:element name="a"/></xs:sequence></xs:complexType>'
+        '<xs:complexType name="R"><xs:complexContent>'
+        '<xs:extension base="B"><xs:openContent mode="suffix">'
+        '<xs:any namespace="urn:open" processContents="lax"/></xs:openContent>'
+        "<xs:sequence/></xs:extension></xs:complexContent></xs:complexType>"
+        '<xs:element name="temp" type="R"/>'
+    )
+    assert "particle-restriction" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_extension_wildcard_union_is_valid() -> None:
+    # Saxon open047: the extension's namespace exclusions union with the
+    # base's wildcard, so both open.com and closed.com remain admitted.
+    body = (
+        '<xs:complexType name="B"><xs:openContent mode="interleave">'
+        '<xs:any namespace="urn:open" processContents="skip"/></xs:openContent>'
+        '<xs:sequence><xs:element name="a"/></xs:sequence></xs:complexType>'
+        '<xs:complexType name="R"><xs:complexContent>'
+        '<xs:extension base="B"><xs:openContent mode="interleave">'
+        '<xs:any notNamespace="urn:open urn:disallowed" processContents="skip"/>'
+        "</xs:openContent><xs:sequence/></xs:extension>"
+        "</xs:complexContent></xs:complexType>"
+        '<xs:element name="temp" type="R"/>'
+    )
+    assert (
+        errors(parse(body, '<temp><a/><x xmlns="urn:open"/><y xmlns="urn:closed"/></temp>')) == []
+    )
+    assert "unexpected-element" in errors(
+        parse(body, '<temp><a/><x xmlns="urn:disallowed"/></temp>')
+    )

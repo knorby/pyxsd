@@ -549,6 +549,10 @@ class PyXSD:
         # ``xs:defaultOpenContent``), attach the applicable schema default
         # to each complex type that declares none of its own.
         self._applyDefaultOpenContent(schemaER)
+        # With every type's effective open content settled (explicit or
+        # inherited default), check the open-content derivation rules
+        # (mode rank and wildcard subset for restriction/extension).
+        self._reportOpenContentDerivations(schemaER)
 
         # The schema root is itself the instance class used to dispatch
         # the document root's element declarations.
@@ -693,6 +697,62 @@ class PyXSD:
                 ):
                     er.openContent = default.component()
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _reportOpenContentDerivations(self, schemaER: Any) -> None:
+        """Reports open-content derivation violations on complex types.
+
+        XSD 1.1 §3.4.6.2 clause 1.4.3.2.2 and §3.4.6.4 pin the relation
+        between a derived type's effective open content and its base's:
+        a restriction may not widen the mode/wildcard (with the
+        unobservable empty-particle exception) and an extension may not
+        narrow them. Runs after the default-open-content pass so a type
+        that inherits its open content is compared with its final
+        component. Violations are reported as ``particle-restriction``
+        (the existing derivation code); unresolved bases and non-complex
+        derivations are skipped.
+        """
+        from pyxsd.open_content import open_content_derivation_problem
+
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "ComplexType":
+                self._checkOneOpenContentDerivation(er, open_content_derivation_problem)
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkOneOpenContentDerivation(self, er: Any, checker: Any) -> None:
+        """Checks one complex type's open-content derivation, if applicable."""
+        derivation = er.getDerivation()
+        if derivation not in ("restriction", "extension"):
+            return
+        if er._firstProcessedChild(er, "SimpleContent") is not None:
+            return
+        base = er._baseComplexType()
+        if base is None or base._firstProcessedChild(base, "SimpleContent") is not None:
+            return
+        derived = er.effectiveOpenContent()
+        base_open = base.effectiveOpenContent()
+        if derived is None and base_open is None:
+            return
+        reason = checker(
+            derived,
+            base_open,
+            derivation,
+            derived_model=compile_content_model(er, self),
+            base_model=compile_content_model(base, self),
+            target_namespace=er.getNamespace(),
+            derived_variety=er._effectiveContentVariety(),
+            base_variety=base._effectiveContentVariety(),
+        )
+        if reason is not None:
+            self.report.add_error(
+                f"type '{getattr(er, 'name', '?')}' has invalid open content: {reason}",
+                code="particle-restriction",
+            )
 
     def _composedDefaultOpenContent(self) -> dict[int, Any]:
         """Parses the ``defaultOpenContent`` of every composed schema document.

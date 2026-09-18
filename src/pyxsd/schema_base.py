@@ -7,7 +7,7 @@ from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import (
     first_required_name,
     locally_declared_element,
-    match_content_associations,
+    match_content_with_open_content,
     particle_names,
 )
 from pyxsd.derivation import (
@@ -892,6 +892,12 @@ class SchemaBase:
         )
 
         model = getattr(instance, "_contentModel_", None)
+        # The instance model additionally folds in the type's effective
+        # open content (XSD 1.1 §3.4.4.3) while the declared model above
+        # backs base composition and the schema-phase UPA checks.
+        instanceModel = getattr(instance, "_instanceContentModel_", None)
+        if instanceModel is not None:
+            model = instanceModel
         if model is not None and getattr(cls, "_elementOnly_", False):
             cls._reportStrayCharacters(elementTag)
         if model is None and hasWildcard:
@@ -916,8 +922,9 @@ class SchemaBase:
             declaredChildren = subElements
 
         if model is not None:
-            complete, leftover, childMatches = match_content_associations(
+            complete, leftover, childMatches = match_content_with_open_content(
                 model,
+                getattr(instance, "_contentModel_", None),
                 declaredChildren,
                 memberHeadMap,
                 name_of=cls._node_name,

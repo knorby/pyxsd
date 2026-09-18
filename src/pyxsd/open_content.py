@@ -26,14 +26,16 @@ this phase cannot change an instance verdict.
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.namespaces import XSD_NS, local_name, namespace_of
 from pyxsd.wildcards import (
+    PROCESS_SEVERITY,
     WildcardSpec,
     not_qname_consistency_problems,
+    union_wildcard_specs,
     wildcard_declaration_problems,
     wildcard_spec,
 )
@@ -83,6 +85,228 @@ class DefaultOpenContent:
         types that inherit it.
         """
         return OpenContent(self.mode, copy.copy(self.wildcard))
+
+
+#: Permissiveness of the open-content modes (XSD 1.1 §3.4.6.4): ``none``
+#: admits nothing, ``suffix`` admits trailing wildcard content, and
+#: ``interleave`` admits it anywhere. A restriction may only lower this
+#: rank; an extension may only raise it.
+OPEN_CONTENT_RANK = {"none": 0, "suffix": 1, "interleave": 2}
+
+
+def open_content_rank(open_content: OpenContent | None) -> int:
+    """The permissiveness rank of an open content (absent reads ``none``)."""
+    if open_content is None:
+        return 0
+    return OPEN_CONTENT_RANK.get(open_content.mode, 0)
+
+
+def open_content_wildcard(open_content: OpenContent | None) -> WildcardSpec | None:
+    """The wildcard of an open content, or ``None`` for ``none``/absent."""
+    if open_content is None or open_content.mode == "none":
+        return None
+    return open_content.wildcard
+
+
+def combine_open_content(
+    explicit: OpenContent | None,
+    own: OpenContent | None,
+    target_namespace: str | None = None,
+) -> OpenContent | None:
+    """The effective open content of an extension's ``<openContent>``.
+
+    XSD 1.1 §3.4.2.3.3 clause 6.2: when a wildcard element is present
+    with mode ``interleave``/``suffix`` and the explicit content type
+    already carries open content (an extension inherits its base's), the
+    result takes the wildcard element's mode and processContents and the
+    *namespace-constraint union* of the two wildcards. With no inherited
+    open content the wildcard element is used as written. A ``none``
+    wildcard element (or no element at all) leaves the explicit open
+    content unchanged.
+    """
+    if own is None or own.mode == "none":
+        return explicit
+    own_wildcard = own.wildcard
+    if own_wildcard is None:
+        return explicit
+    if explicit is None or explicit.wildcard is None:
+        return OpenContent(own.mode, copy.copy(own_wildcard))
+    union = union_wildcard_specs(explicit.wildcard, own_wildcard, target_namespace)
+    # Clause 6.2 keeps the processContents of the wildcard element, not
+    # the (stronger) combined severity.
+    union = replace(union, process_contents=own_wildcard.process_contents)
+    return OpenContent(own.mode, union)
+
+
+def _process_strength(open_content: OpenContent | None) -> int:
+    """The ``processContents`` severity of an open content's wildcard."""
+    spec = open_content_wildcard(open_content)
+    if spec is None:
+        return PROCESS_SEVERITY["strict"]
+    return PROCESS_SEVERITY.get(spec.process_contents, PROCESS_SEVERITY["strict"])
+
+
+def _covered_by_particle(
+    wildcard: WildcardSpec,
+    model: Any,
+    target_namespace: str | None,
+) -> bool:
+    """Whether an ``any`` particle of *model* admits the wildcard's names.
+
+    Used for the restriction case where the base declares no open content
+    but its particle carries a wildcard with the same namespace
+    constraint (Saxon ``open022``). Probes the declared wildcard
+    particles of the compiled model.
+    """
+    from pyxsd.particle_derivation import wildcard_subset
+
+    if model is None:
+        return False
+    stack = [model]
+    while stack:
+        particle = stack.pop()
+        if (
+            particle.kind == "any"
+            and particle.spec is not None
+            and wildcard_subset(wildcard, particle.spec, target_namespace)
+        ):
+            return True
+        stack.extend(particle.children)
+    return False
+
+
+def _particle_empty(model: Any) -> bool:
+    """Whether a compiled particle accepts only the empty sequence."""
+    if model is None:
+        return True
+    if model.kind in ("element", "any"):
+        return model.max_occurs == 0
+    if not model.children:
+        return True
+    return all(_particle_empty(child) for child in model.children)
+
+
+def _particle_emptiable(model: Any) -> bool:
+    """Whether a compiled particle's language contains the empty sequence."""
+    if model is None:
+        return True
+    if model.kind in ("element", "any"):
+        return model.min_occurs == 0
+    if model.kind == "sequence":
+        return all(_particle_emptiable(child) for child in model.children)
+    if model.kind == "choice":
+        return any(_particle_emptiable(child) for child in model.children)
+    if model.kind == "all":
+        return all(_particle_emptiable(child) for child in model.children)
+    return False
+
+
+def open_content_derivation_problem(
+    derived: OpenContent | None,
+    base: OpenContent | None,
+    derivation: str,
+    *,
+    derived_model: Any = None,
+    base_model: Any = None,
+    target_namespace: str | None = None,
+    derived_variety: str | None = None,
+    base_variety: str | None = None,
+) -> str | None:
+    """The open-content derivation violation for a derived type, if any.
+
+    Implements the open-content consequences of ``Content type restricts
+    (Complex Content)`` (§3.4.6.4) and ``Derivation Valid (Extension)``
+    clause 1.4.3.2.2.3/1.4.3.2.2.4 (§3.4.6.2), which the Saxon corpus
+    pins:
+
+    * restriction may not raise the mode's rank (``suffix`` -> ``interleave``
+      is invalid unless the derived particle is empty and the base particle
+      is emptiable, when the difference cannot be observed); a base with no
+      open content forbids a derived one unless the base particle's own
+      wildcards already admit the derived namespaces; and the derived
+      wildcard must be a subset of the base's with no weaker
+      ``processContents``;
+    * extension (only when both content types are element-only/mixed) may
+      not lower the mode's rank and must widen the wildcard's namespace
+      constraint.
+
+    Returns a human-readable reason, or ``None`` when the derivation is
+    acceptable (or the shape is outside the rule's scope).
+    """
+    from pyxsd.particle_derivation import wildcard_subset
+
+    derived_rank = open_content_rank(derived)
+    base_rank = open_content_rank(base)
+    derived_wildcard = open_content_wildcard(derived)
+    base_wildcard = open_content_wildcard(base)
+
+    if derivation == "restriction":
+        if base_wildcard is None:
+            if derived_wildcard is not None and not _covered_by_particle(
+                derived_wildcard, base_model, target_namespace
+            ):
+                return (
+                    "restriction adds open content where the base type has none "
+                    "(Derivation Valid (Restriction, Complex), Content type restricts)"
+                )
+            return None
+        if derived_rank > base_rank:
+            base_mode = base.mode if base is not None else "none"
+            derived_mode = derived.mode if derived is not None else "none"
+            unobservable = (
+                derived is not None
+                and base is not None
+                and derived.mode == "interleave"
+                and base.mode == "suffix"
+                and _particle_empty(derived_model)
+                and _particle_emptiable(base_model)
+            )
+            if not unobservable:
+                return (
+                    "restriction raises the open content mode from "
+                    f"'{base_mode}' to '{derived_mode}' "
+                    "(Derivation Valid (Restriction, Complex), Content type restricts)"
+                )
+        if derived_wildcard is not None:
+            if not wildcard_subset(derived_wildcard, base_wildcard, target_namespace):
+                return (
+                    "the restricting type's open content wildcard is not a subset "
+                    "of the base type's (Wildcard Subset)"
+                )
+            if _process_strength(derived) < _process_strength(base):
+                return (
+                    "the restricting type's open content weakens processContents "
+                    "below the base type's (Content type restricts)"
+                )
+        return None
+
+    if derivation == "extension":
+        # Clause 1.4.3.2.2 only applies when both content types are
+        # element-only/mixed; otherwise 1.4.3.2.1/1.4.1/1.4.2 govern.
+        if derived_variety not in ("element-only", "mixed") or base_variety not in (
+            "element-only",
+            "mixed",
+        ):
+            return None
+        if derived_rank < base_rank:
+            return (
+                "extension lowers the open content mode from "
+                f"'{base.mode if base else 'none'}' to "
+                f"'{derived.mode if derived else 'none'}' "
+                "(Derivation Valid (Extension) clause 1.4.3.2.2.3)"
+            )
+        if (
+            derived_wildcard is not None
+            and base_wildcard is not None
+            and not wildcard_subset(base_wildcard, derived_wildcard, target_namespace)
+        ):
+            return (
+                "the base type's open content wildcard is not a subset of the "
+                "extended type's (Derivation Valid (Extension) clause 1.4.3.2.2.4)"
+            )
+        return None
+
+    return None
 
 
 def namespace_resolver(schema: Any, element: Any):
@@ -466,12 +690,17 @@ __all__ = [
     "DEFAULT_OPEN_CONTENT_MODE",
     "DEFAULT_OPEN_CONTENT_MODES",
     "OPEN_CONTENT_MODES",
+    "OPEN_CONTENT_RANK",
     "DefaultOpenContent",
     "DefaultOpenContentER",
     "OpenContent",
     "OpenContentER",
+    "combine_open_content",
     "default_open_content_element",
     "namespace_resolver",
+    "open_content_derivation_problem",
+    "open_content_rank",
+    "open_content_wildcard",
     "open_content_wildcard_spec",
     "parse_default_open_content",
 ]

@@ -2131,3 +2131,126 @@ class TestAttributeUseDerivation:
             "</xs:extension></xs:complexContent></xs:complexType>"
         )
         assert "attribute-restriction" not in schema_codes(report)
+
+
+class TestOpenContentModelMerge:
+    """The open-content particle merge and its §3.4.4.3 attribution."""
+
+    @staticmethod
+    def _element(name, minimum=1, maximum=1):
+        from pyxsd.content_model import Particle
+
+        return Particle("element", minimum, maximum, [], name)
+
+    @staticmethod
+    def _nodes(*tags):
+        import xml.etree.ElementTree as ET
+
+        return [ET.Element(tag) for tag in tags]
+
+    def test_interleave_admits_wildcard_around_and_between(self):
+        from pyxsd.content_model import (
+            Particle,
+            expanded_name_of,
+            match_content,
+            merge_open_content,
+        )
+        from pyxsd.open_content import OpenContent
+
+        model = Particle("sequence", 1, 1, [self._element("a"), self._element("b")])
+        spec = WildcardSpec(namespace="urn:open", process_contents="lax")
+        merged = merge_open_content(model, OpenContent("interleave", spec))
+        for tags in (
+            ("a", "{urn:open}c", "b"),
+            ("{urn:open}c", "a", "b"),
+            ("a", "b", "{urn:open}c"),
+            ("a", "b"),
+        ):
+            complete, _leftover = match_content(
+                merged,
+                self._nodes(*tags),
+                name_of=expanded_name_of,
+                namespace_checked=True,
+            )
+            assert complete, tags
+
+    def test_interleave_still_enforces_declared_order(self):
+        from pyxsd.content_model import (
+            Particle,
+            expanded_name_of,
+            match_content,
+            merge_open_content,
+        )
+        from pyxsd.open_content import OpenContent
+
+        model = Particle("sequence", 1, 1, [self._element("a"), self._element("b")])
+        spec = WildcardSpec(namespace="urn:open", process_contents="lax")
+        merged = merge_open_content(model, OpenContent("interleave", spec))
+        complete, leftover = match_content(
+            merged,
+            self._nodes("b", "a"),
+            name_of=expanded_name_of,
+            namespace_checked=True,
+        )
+        assert not complete
+        assert [expanded_name_of(node) for node in leftover] == ["b", "a"]
+
+    def test_suffix_admits_trailing_only(self):
+        from pyxsd.content_model import (
+            Particle,
+            expanded_name_of,
+            match_content,
+            merge_open_content,
+        )
+        from pyxsd.open_content import OpenContent
+
+        model = Particle("sequence", 1, 1, [self._element("a"), self._element("b")])
+        spec = WildcardSpec(namespace="urn:open", process_contents="lax")
+        merged = merge_open_content(model, OpenContent("suffix", spec))
+        complete, _ = match_content(
+            merged,
+            self._nodes("a", "b", "{urn:open}c"),
+            name_of=expanded_name_of,
+            namespace_checked=True,
+        )
+        assert complete
+        complete, _ = match_content(
+            merged,
+            self._nodes("{urn:open}c", "a", "b"),
+            name_of=expanded_name_of,
+            namespace_checked=True,
+        )
+        assert not complete
+
+    def test_interleave_forces_declared_attribution(self):
+        # The open wildcard must not absorb a node the declared particle
+        # can still consume: both ``i`` children bind to the declared
+        # particle (Saxon open025 clause 3.3).
+        from pyxsd.content_model import (
+            Particle,
+            expanded_name_of,
+            match_content_with_open_content,
+            merge_open_content,
+        )
+        from pyxsd.open_content import OpenContent
+
+        declared = Particle(
+            "sequence",
+            1,
+            1,
+            [self._element("i", 1, None), self._element("d", 0, None)],
+        )
+        spec = WildcardSpec(namespace="##local", process_contents="skip")
+        merged = merge_open_content(declared, OpenContent("interleave", spec))
+        complete, _leftover, matches = match_content_with_open_content(
+            merged,
+            declared,
+            self._nodes("i", "i", "j"),
+            name_of=expanded_name_of,
+            namespace_checked=True,
+        )
+        assert complete
+        by_position = {match.position: match.particle for match in matches}
+        assert by_position[0].kind == "element"
+        assert by_position[1].kind == "element"
+        assert by_position[2].kind == "any" and by_position[2].open_content
