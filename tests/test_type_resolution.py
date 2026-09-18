@@ -289,3 +289,69 @@ def test_legacy_mode_hint_failure_is_still_advisory(tmp_path, monkeypatch, mode)
         # Legacy mode does not consume extra hint pairs at all; the
         # parse must not fail either way.
         assert not _errors(parser)
+
+
+class TestXsiTypeDispatch:
+    """``xsi:type`` admission and QName lexical handling.
+
+    An element with no declared type has the ur-type (``xs:anyType``) as
+    its type, so an ``xsi:type`` naming any concrete type is valid
+    (SUN typeDef01201m1, MS particlesIg001/002). The value is a QName,
+    whose whitespace facet is *collapse*, so surrounding whitespace and
+    newlines must not leak into the prefix (SUN typeDef00601m1).
+    """
+
+    UNTYPED_ROOT = (
+        f'<xs:schema xmlns:xs="{XSD}"><xs:element name="root" nillable="true"/></xs:schema>'
+    )
+
+    def test_untyped_element_admits_simple_xsi_type(self, tmp_path):
+        instance = (
+            f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" xsi:nil="true" xsi:type="xsd:string"/>'
+        )
+        parser = _parse(self.UNTYPED_ROOT, instance, tmp_path)
+        assert not _errors(parser), [i.format() for i in parser.report.issues]
+
+    def test_untyped_child_admits_simple_xsi_type(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD}">'
+            '<xs:complexType name="base"><xs:choice><xs:element name="e2"/></xs:choice>'
+            "</xs:complexType>"
+            '<xs:element name="doc" type="base"/>'
+            "</xs:schema>"
+        )
+        instance = f'<doc xmlns:xsi="{XSI}" xmlns:xsd="{XSD}"><e2 xsi:type="xsd:Name">a</e2></doc>'
+        parser = _parse(schema, instance, tmp_path)
+        assert not _errors(parser), [i.format() for i in parser.report.issues]
+
+    def test_xsi_type_ws_collapsed(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD}">'
+            '<xs:element name="root" type="xs:anySimpleType"/>'
+            "</xs:schema>"
+        )
+        instance = (
+            f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" '
+            'xsi:type="\n    xsd:boolean\n    ">true</root>'
+        )
+        parser = _parse(schema, instance, tmp_path)
+        assert not _errors(parser), [i.format() for i in parser.report.issues]
+
+    def test_declared_type_still_rejects_unrelated_xsi_type(self, tmp_path):
+        schema = f'<xs:schema xmlns:xs="{XSD}"><xs:element name="r" type="xs:string"/></xs:schema>'
+        instance = f'<r xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" xsi:type="xsd:int">1</r>'
+        parser = _parse(schema, instance, tmp_path)
+        assert "xsi-type" in _codes(parser)
+
+    def test_abstract_dynamic_type_is_reported(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD}">'
+            '<xs:complexType name="abstractType" abstract="true">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="abstractType"/>'
+            "</xs:schema>"
+        )
+        instance = f'<root xmlns:xsi="{XSI}"><a>x</a></root>'
+        parser = _parse(schema, instance, tmp_path)
+        assert "abstract-type" in _codes(parser)

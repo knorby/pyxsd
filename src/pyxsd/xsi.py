@@ -54,11 +54,19 @@ def xsi_attr_key(attr: str) -> str:
 
 
 def xsi_type_name(elementTag: Any) -> str | None:
-    """Returns the ``xsi:type`` value on an element, or ``None``."""
+    """Returns the ``xsi:type`` value on an element, or ``None``.
+
+    The value is a QName, whose whitespace facet is *collapse*: the
+    lexical form may be padded with whitespace and newlines (the SUN
+    ``typeDef00601m1_p`` document wraps the value over several lines),
+    which must not leak into the prefix the QName resolver sees.
+    """
     value = elementTag.attrib.get(XSI_TYPE)
     if value is None:
         value = elementTag.attrib.get("xsi:type")
-    return value
+    if value is None:
+        return None
+    return " ".join(value.split())
 
 
 def xsi_nil_is_true(elementTag: Any) -> bool:

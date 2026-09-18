@@ -234,7 +234,35 @@ def is_valid_xsi_type(
     child elements, substitution members).
     """
     from pyxsd import xsd_data_types
+    from pyxsd.schema_base import SchemaBase
 
+    if declared is SchemaBase:
+        # An element declaration with no ``type`` and no inline type has
+        # the ur-type as its type definition; :meth:`Element.getType`
+        # stands it in as ``SchemaBase``. Every type is validly derived
+        # from the ur-type, but the element's ``block`` still constrains
+        # the derivation *method* used to reach the override (MS
+        # particlesIg003: ``block="restriction"`` rejects an override
+        # whose chain to the ur-type contains a restriction step, while
+        # particlesIg002's ``block="extension"`` admits a simple type,
+        # whose chain is all restrictions).
+        if override is None:
+            return None
+        tokens = (
+            frozenset(blocked) if isinstance(blocked, (set, frozenset)) else blockTokens(blocked)
+        )
+        if "#all" in tokens:
+            return "blocked"
+        if tokens:
+            if _pythonDerived(override, SchemaBase):
+                if _blocked_step(override, SchemaBase, tokens):
+                    return "blocked"
+            elif "restriction" in tokens:
+                # A simple type is reached from the ur-type only through
+                # restrictions (anySimpleType, anyAtomicType, ...), so a
+                # restriction block forbids every simple override.
+                return "blocked"
+        return None
     if declared is xsd_data_types.AnyType:
         return None
     if declared is xsd_data_types.AnySimpleType:
