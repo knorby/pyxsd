@@ -76,6 +76,10 @@ class ComplexType(XsdType):
         # (the other facet attributes are set on first assignment).
         self.patterns = []
         self.assertions = []
+        # Parsed by the xs:openContent ER during the declaration walk
+        # (XSD 1.1 §3.4.2): ``None`` when the type declares no open
+        # content. Content-model use is a later task.
+        self.openContent = None
         super().__init__(xsdElement, parent)
         self.getSchema().complexTypes[self.name] = self
 

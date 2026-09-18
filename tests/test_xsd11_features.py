@@ -724,3 +724,193 @@ def test_alternative_instance_non_inheritable_attribute_not_in_scope() -> None:
     # (Saxon cta0012).
     body = _cta_inherited("false")
     assert errors(parse(body, '<doc kind="a"><chap><b/></chap></doc>')) == []
+
+
+# --- xs:openContent component + schema phase --------------------------------
+
+_OPEN_CONTENT_TEMP = (
+    '<xs:element name="temp"><xs:complexType>'
+    "{open}"
+    '<xs:sequence><xs:element name="a" minOccurs="0"/></xs:sequence>'
+    "</xs:complexType></xs:element>"
+)
+
+
+def _open(content: str) -> str:
+    """A schema body whose single type wraps *content* before a sequence."""
+    return _OPEN_CONTENT_TEMP.format(open=content)
+
+
+def test_open_content_interleave_with_any_is_valid() -> None:
+    body = _open(
+        '<xs:openContent mode="interleave"><xs:any processContents="lax"/></xs:openContent>'
+    )
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_open_content_suffix_with_any_is_valid() -> None:
+    body = _open(
+        '<xs:openContent mode="suffix">'
+        '<xs:any namespace="urn:open" processContents="lax"/>'
+        "</xs:openContent>"
+    )
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_open_content_default_mode_with_any_is_valid() -> None:
+    # An absent mode defaults to interleave (XSD 1.1 §3.4.2.2).
+    body = _open('<xs:openContent><xs:any processContents="lax"/></xs:openContent>')
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_open_content_none_without_any_is_valid() -> None:
+    body = _open('<xs:openContent mode="none"/>')
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_open_content_bad_mode_is_invalid() -> None:
+    body = _open('<xs:openContent mode="around"><xs:any/></xs:openContent>')
+    assert errors(parse(body, "<temp/>")) == ["open-content-invalid"]
+
+
+def test_open_content_none_with_any_is_invalid() -> None:
+    body = _open('<xs:openContent mode="none"><xs:any/></xs:openContent>')
+    assert errors(parse(body, "<temp/>")) == ["open-content-invalid"]
+
+
+@pytest.mark.parametrize("mode", ["interleave", "suffix"])
+def test_open_content_non_none_without_any_is_invalid(mode: str) -> None:
+    body = _open(f'<xs:openContent mode="{mode}"/>')
+    assert errors(parse(body, "<temp/>")) == ["open-content-invalid"]
+
+
+def test_open_content_default_mode_without_any_is_invalid() -> None:
+    body = _open("<xs:openContent/>")
+    assert errors(parse(body, "<temp/>")) == ["open-content-invalid"]
+
+
+def test_open_content_not_namespace_wildcard_is_valid() -> None:
+    # The XSD 1.1 ``notNamespace`` exclusion is accepted on the child
+    # wildcard through the shared Area D legality.
+    body = _open(
+        '<xs:openContent mode="interleave">'
+        '<xs:any notNamespace="urn:closed" processContents="lax"/>'
+        "</xs:openContent>"
+    )
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_open_content_not_qname_wildcard_is_valid() -> None:
+    body = _open(
+        '<xs:openContent mode="suffix">'
+        '<xs:any notQName="##defined" processContents="lax"/>'
+        "</xs:openContent>"
+    )
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_open_content_illegal_wildcard_namespace_is_reported() -> None:
+    body = _open('<xs:openContent mode="interleave"><xs:any namespace="##bogus"/></xs:openContent>')
+    assert errors(parse(body, "<temp/>")) == ["wildcard-invalid"]
+
+
+def test_open_content_illegal_wildcard_attribute_is_reported() -> None:
+    body = _open('<xs:openContent mode="interleave"><xs:any bogus="x"/></xs:openContent>')
+    assert errors(parse(body, "<temp/>")) == ["invalid-attribute"]
+
+
+def test_open_content_more_than_one_is_invalid() -> None:
+    body = _open('<xs:openContent mode="none"/><xs:openContent mode="none"/>')
+    assert "open-content-invalid" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_direct_and_in_derivation_is_more_than_one() -> None:
+    # The grammar tables allow one openContent on the type and one on its
+    # extension; the component constraint is per complex type, so the
+    # pair is still a single-type violation.
+    body = (
+        '<xs:complexType name="Base"><xs:sequence/></xs:complexType>'
+        '<xs:element name="temp"><xs:complexType>'
+        '<xs:openContent mode="none"/>'
+        '<xs:complexContent><xs:extension base="Base">'
+        '<xs:openContent mode="none"/><xs:sequence/>'
+        "</xs:extension></xs:complexContent>"
+        "</xs:complexType></xs:element>"
+    )
+    assert "open-content-invalid" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_after_particle_is_out_of_order() -> None:
+    body = (
+        '<xs:element name="temp"><xs:complexType>'
+        "<xs:sequence/>"
+        '<xs:openContent mode="none"/>'
+        "</xs:complexType></xs:element>"
+    )
+    assert "declaration-order" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_unexpected_child_is_reported() -> None:
+    # An ``xs:element`` is not part of the openContent grammar, and the
+    # default interleave mode also lacks its required wildcard.
+    body = _open('<xs:openContent mode="interleave"><xs:element name="a"/></xs:openContent>')
+    codes = errors(parse(body, "<temp/>"))
+    assert "declaration-child" in codes
+    assert "open-content-invalid" in codes
+
+
+def test_open_content_two_annotations_is_reported() -> None:
+    body = _open(
+        '<xs:openContent mode="suffix">'
+        "<xs:annotation/><xs:annotation/>"
+        '<xs:any processContents="lax"/>'
+        "</xs:openContent>"
+    )
+    assert "declaration-duplicate" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_unexpected_attribute_is_reported() -> None:
+    body = _open('<xs:openContent mode="none" bogus="x"/>')
+    assert "declaration-attribute" in errors(parse(body, "<temp/>"))
+
+
+def test_open_content_duplicate_id_is_reported() -> None:
+    body = (
+        '<xs:element name="first"><xs:complexType>'
+        '<xs:openContent id="oc" mode="none"/>'
+        "</xs:complexType></xs:element>"
+        '<xs:element name="second"><xs:complexType>'
+        '<xs:openContent id="oc" mode="none"/>'
+        "</xs:complexType></xs:element>"
+    )
+    assert "declaration-duplicate" in errors(parse(body, "<first/>"))
+
+
+def test_open_content_component_is_stored_on_complex_type() -> None:
+    schema = (
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:complexType name="T"><xs:openContent mode="suffix">'
+        '<xs:any namespace="urn:open" processContents="lax"/>'
+        "</xs:openContent><xs:sequence/></xs:complexType>"
+        '<xs:element name="temp" type="T"/>'
+        "</xs:schema>"
+    )
+    parser = PyXSD(
+        io.StringIO("<temp/>"),
+        io.StringIO(schema),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.NAMESPACED,
+    )
+    found = [
+        entry
+        for entries in parser.components.values()
+        for entry in entries
+        if type(entry).__name__ == "ComplexType" and entry.name == "T"
+    ]
+    assert len(found) == 1
+    stored = found[0].openContent
+    assert stored is not None
+    assert stored.mode == "suffix"
+    assert stored.wildcard is not None
+    assert stored.wildcard.namespace == "urn:open"

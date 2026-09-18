@@ -2258,9 +2258,13 @@ class PyXSD:
         every representative once, so uniqueness is tracked here rather
         than on each subclass.
         """
-        value = getattr(er, "id", None)
-        if value is None:
+        raw = getattr(er, "id", None)
+        if raw is None:
             return
+        # ``id`` is an ``xs:ID`` (an ``xs:NCName`` with whiteSpace=collapse),
+        # so compare the collapsed value: two ids differing only in
+        # surrounding whitespace are the same XML ID.
+        value = str(raw).strip()
         try:
             NCName(value)
         except TypeError:

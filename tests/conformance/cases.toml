@@ -7633,3 +7633,76 @@ instance = '''
 <doc kind="a"><chap><b/></chap></doc>'''
 instance_valid = false
 expected_codes = ["unexpected-element"]
+
+[[case]]
+id = "open-content/interleave-valid"
+xsd11 = true
+description = "An xs:openContent mode=interleave with one wildcard is a valid complex type"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open001"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="interleave">
+      <xs:any namespace="urn:open" processContents="lax"/>
+    </xs:openContent>
+    <xs:sequence>
+      <xs:element name="a" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+instance = '''
+<temp/>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/bad-mode-invalid"
+xsd11 = true
+description = "An xs:openContent mode outside none/interleave/suffix is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open036"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="around"><xs:any/></xs:openContent>
+    <xs:sequence/>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "open-content/none-with-wildcard-invalid"
+xsd11 = true
+description = "mode=none must not carry an xs:any child (XSD 1.1 section 3.4.3)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open036"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="none"><xs:any/></xs:openContent>
+    <xs:sequence/>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "open-content/non-none-without-wildcard-invalid"
+xsd11 = true
+description = "A non-none openContent mode requires exactly one xs:any child (IBM S3_4_1si01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM S3_4_1/s3_4_1si01"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="suffix"/>
+    <xs:sequence/>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
