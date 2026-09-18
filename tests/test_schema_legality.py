@@ -1856,3 +1856,141 @@ class TestFalseRejectLoosenings:
         assert _schema_errors(report) == []
         assert "unknown-type" not in _schema_codes(report)
         assert "unknown-namespace-prefix" not in _schema_codes(report)
+
+
+class TestDeclarationAttributeLegality:
+    """Lexical and context legality of declaration attributes (Task 9)."""
+
+    XSD = "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+
+    @pytest.mark.parametrize("value", ["-1", "TRUE", "FALSE", "False", "", "boolean", "true false"])
+    def test_invalid_mixed_boolean(self, parse_schema, value):
+        """``mixed`` is an xs:boolean: only true/false/1/0 are legal."""
+        report = parse_schema(f"{self.XSD}<xsd:complexType name='t' mixed='{value}'/></xsd:schema>")
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("value", ["false true", "False", "", "abstract", "true false"])
+    def test_invalid_abstract_boolean(self, parse_schema, value):
+        """``abstract`` is an xs:boolean: only true/false/1/0 are legal."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:element name='foo' abstract='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("value", ["", "TRUE", "nil"])
+    def test_invalid_nillable_boolean(self, parse_schema, value):
+        """``nillable`` is an xs:boolean: only true/false/1/0 are legal."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:element name='foo' nillable='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("value", ["true", "false", "1", "0"])
+    def test_legal_boolean_values_accepted(self, parse_schema, value):
+        report = parse_schema(
+            f"{self.XSD}<xsd:element name='foo' nillable='{value}'/>"
+            f"<xsd:complexType name='t' mixed='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    @pytest.mark.parametrize("name", ["foo:bar", ":bar", "foo:", " ", "-2.5foo", "1foo"])
+    def test_invalid_element_name_ncname(self, parse_schema, name):
+        report = parse_schema(f"{self.XSD}<xsd:element name='{name}'/></xsd:schema>")
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("name", ["a:b", "1foo", ":x"])
+    def test_invalid_complex_type_name_ncname(self, parse_schema, name):
+        report = parse_schema(f"{self.XSD}<xsd:complexType name='{name}'/></xsd:schema>")
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_local_complex_type_must_not_be_named(self, parse_schema):
+        """An inline type of an element declaration is anonymous."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:element name='myElement'><xsd:complexType name='fooType'>"
+            "<xsd:simpleContent><xsd:extension base='xsd:string'/></xsd:simpleContent>"
+            "</xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<xsd:group ref='g'/>",
+            "<xsd:all><xsd:element name='a' type='xsd:string'/></xsd:all>",
+            "<xsd:choice><xsd:element name='a' type='xsd:string'/></xsd:choice>",
+            "<xsd:sequence><xsd:element name='a' type='xsd:string'/></xsd:sequence>",
+        ],
+    )
+    def test_simple_content_model_group_bad(self, parse_schema, body):
+        """simpleContent has simple content: no model group is allowed."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t'><xsd:simpleContent>"
+            f"<xsd:extension base='xsd:string'>{body}</xsd:extension>"
+            "</xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_simple_content_attributes_still_legal(self, parse_schema):
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'><xsd:attribute name='a' type='xsd:string'/>"
+            "</xsd:extension></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)
+
+    def test_element_only_value_constraint_rejected(self, parse_schema):
+        """An element with element-only content cannot carry default/fixed."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='author'><xsd:sequence>"
+            "<xsd:element name='title' type='xsd:string'/>"
+            "</xsd:sequence></xsd:complexType>"
+            "<xsd:element name='book' type='author' default='foo'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_simple_content_element_default_still_legal(self, parse_schema):
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:element name='book' type='t' default='foo'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+
+class TestUnloadedNamespaceTypeReference:
+    """A type reference to a namespace no schema declares is unknown (Task 9)."""
+
+    def test_element_type_in_unloaded_namespace(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' xmlns:b='urn:b'>"
+            "<xsd:element name='root' type='b:b'/></xsd:schema>"
+        )
+        assert "unknown-type" in _schema_codes(report)
+
+    def test_attribute_type_in_unloaded_namespace(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' xmlns:b='urn:b'>"
+            "<xsd:attribute name='a' type='b:b'/></xsd:schema>"
+        )
+        assert "unknown-type" in _schema_codes(report)
+
+    def test_loaded_ns_reference_clean(self, parse_schema, tmp_path):
+        """A type in a namespace declared by an imported schema resolves."""
+        (tmp_path / "b.xsd").write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:b'>"
+            "<xsd:simpleType name='b'>"
+            "<xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "</xsd:schema>",
+            encoding="utf-8",
+        )
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:main' xmlns:m='urn:main' xmlns:b='urn:b'>"
+            "<xsd:import namespace='urn:b' schemaLocation='b.xsd'/>"
+            "<xsd:element name='root' type='b:b'/></xsd:schema>"
+        )
+        assert "import-unresolved" not in _schema_codes(report)
+        assert "unknown-type" not in _schema_codes(report)

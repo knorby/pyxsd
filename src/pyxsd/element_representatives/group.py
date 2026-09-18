@@ -198,7 +198,12 @@ class Group(ElementRepresentative):
         """A top-level group definition takes no occurrence attributes.
 
         The particle occurrence attributes belong on *references* to
-        the group, not on the definition itself (groupD).
+        the group, not on the definition itself (groupD). The
+        definition's own compositor child carries no occurrence either:
+        it is a {particle} whose {min occurs}/{max occurs} must be 1, so
+        ``<group name="g"><sequence minOccurs="0">`` and its
+        ``maxOccurs="unbounded"`` twin are schema errors
+        (saxon complex019/complex020).
         """
         parentName = self.parent.__class__.__name__ if self.parent is not None else None
         if parentName not in ("Schema", "Redefine"):
@@ -207,6 +212,16 @@ class Group(ElementRepresentative):
             if attr in self.tagAttributes:
                 self._reportSchemaError(
                     f"top-level group '{self.name}' must not carry '{attr}'",
+                    code="declaration-attribute",
+                )
+        compositor = self._directCompositor()
+        if compositor is None:
+            return
+        for attr in ("minOccurs", "maxOccurs"):
+            if attr in (getattr(compositor, "tagAttributes", {}) or {}):
+                self._reportSchemaError(
+                    f"the content model of top-level group '{self.name}' must not "
+                    f"carry '{attr}'; put it on a reference to the group instead",
                     code="declaration-attribute",
                 )
 

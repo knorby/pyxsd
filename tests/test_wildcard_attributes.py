@@ -520,7 +520,7 @@ def test_foreign_qualified_attribute_on_a_wildcard_stays_valid():
     assert schema_errors == []
 
 
-def test_no_attribute_wildcard_keeps_the_warning_only():
+def test_no_attribute_wildcard_rejects_stray_attribute():
     schema = (
         '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
         '<xs:complexType name="t"><xs:sequence>'
@@ -528,7 +528,7 @@ def test_no_attribute_wildcard_keeps_the_warning_only():
         '<xs:element name="root" type="t"/></xs:schema>'
     )
     parser = run(schema, '<root stray="1"><v>x</v></root>')
-    assert not parser.report.has_errors
+    assert parser.report.has_errors
     assert "unexpected-attribute" in codes(parser)
 
 

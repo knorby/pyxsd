@@ -617,6 +617,32 @@ class ElementRepresentative:
         return None
 
     @staticmethod
+    def _invalidBoolean(value):
+        """Whether an ``xs:boolean`` lexical value is illegal.
+
+        The lexical space is exactly ``true``/``false``/``1``/``0``
+        (with surrounding whitespace collapsed). Case does not vary:
+        ``TRUE`` and ``False`` are schema errors, not truthy spellings.
+        ``None`` (an absent attribute) is not invalid; callers only
+        invoke this for attributes that are present.
+        """
+        return value is None or str(value).strip() not in ("true", "false", "1", "0")
+
+    @staticmethod
+    def _invalidNCName(value):
+        """Whether *value* is not an XML ``NCName``.
+
+        A ``name`` attribute is an ``xs:NCName``: no colon, no leading
+        digit or hyphen, no whitespace. Shared by the ``name``/``id``
+        lexical checks.
+        """
+        try:
+            xsd_data_types.NCName(value)
+        except TypeError:
+            return True
+        return False
+
+    @staticmethod
     def _invalidTokenList(value, allowed):
         """Whether an XSD token-list attribute is lexically illegal.
 
@@ -882,6 +908,11 @@ class ElementRepresentative:
         explicit = element.get("form") if element is not None else None
         if explicit is not None:
             return explicit == "qualified"
+        # XSD 1.1: a local declaration carrying an explicit targetNamespace
+        # is qualified into that namespace regardless of the form default
+        # (TargetNS target001, IBM targetNamespace_005).
+        if element is not None and element.get("targetNamespace") is not None:
+            return True
         if schema is None:
             return False
         sourceDefaults = getattr(schema, "formDefaultOverrides", None)
@@ -1155,6 +1186,13 @@ class ElementRepresentative:
         raw = self.__dict__.get("type")
         if raw is None:
             return None
+        if "|" in raw:
+            # An inline type's bookkeeping name (a pipe can never occur
+            # in a QName): parser.classes is keyed by the bare name, so
+            # QName resolution -- which would apply the default xmlns
+            # and corrupt the name in unprefixed-schema documents -- is
+            # bypassed.
+            return raw
         return self.resolveSchemaQName(raw)
 
     def getContainingTypeName(self):
@@ -1318,6 +1356,19 @@ def set_active_namespace_overrides(overrides: dict[int, str | None]) -> None:
     afterwards cannot rewrite declarations that already captured it.
     """
     context_or_ambient().namespace_overrides = dict(overrides)
+
+
+def get_active_injected_builtin_ids() -> set[int]:
+    """Returns a snapshot of the parser-injected built-in component ids.
+
+    The parser injects the implicit ``xml`` and ``xsi`` namespace
+    attribute declarations itself. Those live in well-known namespaces
+    that a user schema may also target, so declaration-legality checks
+    need to tell them apart from spliced user declarations: only the
+    injected ones are exempt. Read once, at ``Schema`` construction
+    time, mirroring :func:`get_active_namespace_overrides`.
+    """
+    return set(context_or_ambient().injected_builtin_ids)
 
 
 def get_active_form_defaults() -> dict[int, tuple[str | None, str | None]]:

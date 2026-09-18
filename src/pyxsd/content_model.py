@@ -148,10 +148,10 @@ def _substitution_member_names(descriptor: Any, py_xsd: Any) -> list[str]:
         if type(element).__name__ != "Element":
             continue
         try:
-            head = element.getSubstitutionGroupHead(py_xsd)
+            heads = element.getSubstitutionGroupHeads(py_xsd)
         except Exception:
             continue
-        if head is None or head not in head_names:
+        if not any(head in head_names for head in heads):
             continue
         try:
             name = element.instanceName(parser=py_xsd)
@@ -623,8 +623,23 @@ def _accepts(node_name: str, particle: Particle, ctx: _MatchContext) -> bool:
             defined=ctx.defined,
             siblings=particle.siblings,
         )
-    head = ctx.member_head_map.get(node_name, node_name)
-    return particle.name == head
+    # Substitution-group admission: a member child matches the particle
+    # of its own declaration, of its direct head, or of any transitive
+    # head (membership is transitive across the head chain). Walking the
+    # chain per check also keeps a member name that is itself declared
+    # in this content model matchable (the old single-step rewrite to
+    # the head lost that match). The hop bound mirrors the head-walk
+    # cap used by the derivation checks; cycles are schema errors that
+    # are reported separately, so the walk just stops.
+    current = node_name
+    for _ in range(16):
+        if particle.name == current:
+            return True
+        following = ctx.member_head_map.get(current)
+        if following is None or following == current:
+            return False
+        current = following
+    return False
 
 
 def _match_all(

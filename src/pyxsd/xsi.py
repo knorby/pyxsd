@@ -15,6 +15,19 @@ XSI_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance"
 XSI_TYPE = f"{{{XSI_NAMESPACE}}}type"
 XSI_NIL = f"{{{XSI_NAMESPACE}}}nil"
 
+#: Clark names of every built-in xsi-namespace attribute declaration
+#: (XSD 1.1 §3.2.7.2) mapped to their conventional display spellings.
+_XSI_BUILTIN_KEYS = {
+    XSI_TYPE: "xsi:type",
+    "xsi:type": "xsi:type",
+    XSI_NIL: "xsi:nil",
+    "xsi:nil": "xsi:nil",
+    f"{{{XSI_NAMESPACE}}}schemaLocation": "xsi:schemaLocation",
+    "xsi:schemaLocation": "xsi:schemaLocation",
+    f"{{{XSI_NAMESPACE}}}noNamespaceSchemaLocation": "xsi:noNamespaceSchemaLocation",
+    "xsi:noNamespaceSchemaLocation": "xsi:noNamespaceSchemaLocation",
+}
+
 _TRUE = re.compile(r"^(true|1)$", re.IGNORECASE)
 
 #: The lexical space of ``xs:boolean``; the built-in ``xsi:nil``
@@ -32,21 +45,28 @@ def xsi_attr_key(attr: str) -> str:
     (``{namespace}nil``) when the document declares the namespace;
     documents that kept a raw ``xsi:`` prefix are passed through.
     The display spelling is what the writers emit and what
-    instance bookkeeping keys on.
+    instance bookkeeping keys on. All four built-in declarations
+    (``type``, ``nil``, ``schemaLocation``,
+    ``noNamespaceSchemaLocation``) share the mapping, so a schema
+    declaration in the xsi namespace matches the instance bookkeeping.
     """
-    if attr in (XSI_TYPE, "xsi:type"):
-        return "xsi:type"
-    if attr in (XSI_NIL, "xsi:nil"):
-        return "xsi:nil"
-    return attr
+    return _XSI_BUILTIN_KEYS.get(attr, attr)
 
 
 def xsi_type_name(elementTag: Any) -> str | None:
-    """Returns the ``xsi:type`` value on an element, or ``None``."""
+    """Returns the ``xsi:type`` value on an element, or ``None``.
+
+    The value is a QName, whose whitespace facet is *collapse*: the
+    lexical form may be padded with whitespace and newlines (the SUN
+    ``typeDef00601m1_p`` document wraps the value over several lines),
+    which must not leak into the prefix the QName resolver sees.
+    """
     value = elementTag.attrib.get(XSI_TYPE)
     if value is None:
         value = elementTag.attrib.get("xsi:type")
-    return value
+    if value is None:
+        return None
+    return " ".join(value.split())
 
 
 def xsi_nil_is_true(elementTag: Any) -> bool:
@@ -61,6 +81,30 @@ def xsi_nil_is_true(elementTag: Any) -> bool:
     if value is None:
         return False
     return value.strip().lower() in ("true", "1")
+
+
+def xsi_nil_declared(elementTag: Any) -> bool:
+    """Returns True when an element carries a lexically valid ``xsi:nil``.
+
+    XSD 1.0 §3.3.4 keys the nillable requirement on the *presence* of
+    the attribute, not its value: an element whose declaration is not
+    nillable may carry neither ``xsi:nil="true"`` nor
+    ``xsi:nil="false"`` (SUN nillable00201m2_n). XSD 1.1 relaxed the
+    requirement to the true value, but the suite exercises the stricter
+    reading and every ``xsi:nil="false"`` instance in the corpus sits on
+    a nillable declaration, so the presence test is used throughout.
+
+    A value outside the boolean lexical space does not validly assert
+    nil; that case is reported once as an invalid ``xsi:nil`` value
+    (wild042.n1) and is deliberately excluded here so the nillable rule
+    does not double-report it.
+    """
+    value = elementTag.attrib.get(XSI_NIL)
+    if value is None:
+        value = elementTag.attrib.get("xsi:nil")
+    if value is None:
+        return False
+    return invalid_xsi_nil_value(value) is None
 
 
 def invalid_xsi_nil_value(value: Any) -> str | None:

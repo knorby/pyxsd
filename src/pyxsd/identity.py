@@ -7,20 +7,25 @@ instance records the element representative it was built from in
 ``_descriptor_``, which is what connects the schema-side constraints
 to the instance-side nodes.
 
-The supported XPath subset covers the common shapes used in identity
-constraints:
+The supported XPath subset covers the XSD 1.1 selector/field grammar
+(see :mod:`pyxsd.xpath_subset` for the exact admission rules):
 
 - child steps separated by ``/`` (``item``, ``order/line``),
 - ``.`` for the context node (``./item`` is the same as ``item``),
-- ``*`` as a wildcard child step,
-- ``.//`` for descendant-or-self (``.//item``),
-- fields ending in ``@attribute``, an element name (the element's
-  simple content) or ``.`` (the selected node itself).
+- ``*`` and ``prefix:*`` wildcard child steps, with namespace prefixes
+  resolved through the declaration site's bindings and the XPath
+  default namespace,
+- ``.//`` for descendant-or-self (``.//item``), leading
+  only,
+- full ``child::``/``attribute::`` axis steps and abbreviated
+  ``@attribute`` steps (an attribute step ends the path),
+- top-level unions (``a | @b``).
 
-Namespace prefixes in steps are ignored (matching is by local name),
-consistent with the rest of the parser. Predicates (``[...]``) and
-absolute paths (``/``) are not supported and cause the constraint to
-be skipped with a report warning.
+Paths outside the subset are rejected at schema phase with an
+``xpath-invalid`` error by the element representatives; the evaluation
+here only ever sees validated :class:`~pyxsd.xpath_subset.ParsedXPath`
+paths (or raw strings from test stand-ins, which go through the same
+parser and degrade to an ``identity-unsupported`` warning).
 
 Identity constraints are scoped to the element occurrence that owns
 them: a repeating element with a key declaration gets an independent
@@ -31,19 +36,80 @@ lexically different spellings of one value match.
 """
 
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
-from pyxsd.schema_base import SchemaBase
+from pyxsd.namespaces import local_name, namespace_of
+from pyxsd.schema_base import (
+    SchemaBase,
+    _defined_declaration_names,
+    _global_declaration,
+    _mode_for,
+)
 from pyxsd.validation import ValidationReport
-from pyxsd.xsd_data_types import XsdDataType, xsd_comparable_key
+from pyxsd.xpath_subset import ParsedXPath, XPathError, parse_xpath_subset
+from pyxsd.xsd_data_types import (
+    ID,
+    IDREF,
+    IDREFS,
+    AnyType,
+    Base64Binary,
+    Boolean,
+    Date,
+    DateTime,
+    Duration,
+    GDay,
+    GMonth,
+    GMonthDay,
+    GYear,
+    GYearMonth,
+    HexBinary,
+    QName,
+    Time,
+    XsdDataType,
+    XsdList,
+    _ListString,
+    _ws_collapse,
+    xsd_comparable_key,
+)
+from pyxsd.xsd_data_types import (
+    Decimal as XsdDecimal,
+)
 
 logger = logging.getLogger(__name__)
 
 _MISSING: Any = object()
 _UNSUPPORTED: Any = object()
 _AMBIGUOUS: Any = object()
+#: Marks a field whose single selected element has complex content (or
+#: is governed by ``xs:anyType``): such an element has no value and the
+#: constraint is violated (XSD 1.1 §3.13.4 clause 3, idK012/idZ010).
+_COMPLEX: Any = object()
+
+#: Marks constraint objects without a schema-phase parsed path (plain
+#: path-string stand-ins, as used by tests): those take the legacy
+#: string-parsing route at evaluation time.
+_ABSENT: Any = object()
 
 KeyScopes = tuple[dict[str, set[tuple[Any, ...]]], ...]
+
+
+class _Scope:
+    """One scope occurrence's contribution to the scope tree.
+
+    ``tables`` holds the occurrence's key/unique value tables keyed by
+    table name, ``keyrefs`` the keyref constraints to validate after
+    the walk, and ``parent`` links the enclosing scope occurrence.
+    Occurrences without tables or keyrefs are skipped: they contribute
+    nothing to either side of the deferred pass.
+    """
+
+    __slots__ = ("children", "keyrefs", "parent", "tables")
+
+    def __init__(self, parent: "_Scope | None"):
+        self.parent = parent
+        self.tables: dict[str, set[tuple[Any, ...]]] = {}
+        self.keyrefs: list[tuple[Any, Any]] = []
+        self.children: list[_Scope] = []
 
 
 def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> None:
@@ -53,26 +119,365 @@ def check_identity_constraints(rootInstance: Any, report: ValidationReport) -> N
     - ``report``: the :class:`~pyxsd.validation.ValidationReport` that
       collects the findings.
 
-    Constraints are evaluated in scoped passes: keys/uniques are
-    collected for each owning element occurrence and pushed onto the
-    scope chain, then keyrefs on the same occurrence (or a descendant)
-    resolve against the nearest scope that defines the referenced
-    constraint.
+    The walk records each occurrence's key/unique tables into a scope
+    tree and attaches keyref occurrences to their enclosing scope;
+    once the whole document has been walked, every keyref is validated
+    against the node tables the referenced constraint accumulated
+    within the keyref's own subtree. An element's identity-constraint
+    table assembles each eligible constraint's table from the
+    element's own occurrence and its descendants (XSD §3.11.5
+    upward propagation), so a keyref never draws on a table assembled
+    outside its subtree (XSD §3.11.4 keyref clause).
     """
     if rootInstance is None:
         return None
-    _walk(rootInstance, (), report)
+    root = _Scope(None)
+    _walk(rootInstance, root, report)
+    _validateKeyrefs(root, report)
+    _checkDocumentIdSpace(rootInstance, report)
     return None
 
 
-def _walk(instance: Any, scopes: KeyScopes, report: ValidationReport) -> None:
-    """Applies the constraints of ``instance`` and recurses downward.
+def _checkDocumentIdSpace(rootInstance: Any, report: ValidationReport) -> None:
+    """Enforces the document-wide ``xs:ID``/``IDREF``/``IDREFS`` semantics.
+
+    Implements the ID/IDREF table reconstruction of XML's ID machinery
+    (XSD 1.1 §3.17.5.2) and its validation rule (§3.3.4.5): every
+    ID-typed value — on attributes and elements, through restriction, a
+    list item type, a union member or a simpleContent base — binds an
+    element (the attribute's owner, respectively the *parent* of an
+    ID-typed child element; XSD 1.1 §3.3.4.5, ``Z`` example). After the
+    walk,
+
+    - a value bound by more than one distinct element is a duplicate
+      (``id-duplicate``),
+    - a referenced (or parentless) value with no binding is unresolved
+      (``idref-unresolved``).
+
+    The check is deferred to after the walk, so forward references
+    resolve; comparison is exact value equality after whitespace
+    collapse.
+    """
+    bound: dict[str, dict[int, str]] = {}
+    refs: list[tuple[str, str]] = []
+    unbound: set[str] = set()
+    for node in _descendantOrSelfNodes(rootInstance):
+        if getattr(node, "_skipped_", False):
+            continue
+        _collectNodeIdSpace(node, bound, refs, unbound, report)
+    # The validation root's own ID-typed element value binds nothing:
+    # its parent lies outside the scope of validation (§3.3.4.5).
+    _collectChildIdValue(rootInstance, None, bound, refs, unbound, report)
+    for value, where in refs:
+        if value not in bound and value not in unbound:
+            report.add_error(
+                f"IDREF '{value}' on the '{where or 'document'}' element does not "
+                "match any ID value in the document",
+                code="idref-unresolved",
+                element=where,
+            )
+    for value in unbound:
+        if value not in bound:
+            report.add_error(
+                f"ID value '{value}' identifies no element within the scope of validation",
+                code="idref-unresolved",
+            )
+    for value, bindings in bound.items():
+        if len(bindings) > 1:
+            report.add_error(
+                f"ID value '{value}' is bound by {len(bindings)} distinct elements",
+                code="id-duplicate",
+                element=next(iter(bindings.values())),
+            )
+
+
+def _collectNodeIdSpace(
+    node: Any,
+    bound: dict[str, dict[int, str]],
+    refs: list[tuple[str, str]],
+    unbound: set[str],
+    report: ValidationReport,
+) -> None:
+    """Records one node's ID/IDREF contributions into the document tables.
+
+    Two channels are examined: each declared attribute carrying a value
+    (including ``default``/``fixed`` value constraints, which participate
+    exactly like explicit values) binds its owner element; and each
+    ID-typed *child element* binds this node as its parent (§3.17.5.2).
+    Attributes absorbed by a skip wildcard are not validated and
+    contribute nothing (XSD 1.1 §3.3.4.2).
+    """
+    if isinstance(node, SchemaBase):
+        _collectNodeIdAttributes(node, bound, refs, unbound, report)
+    for child in _childrenOf(node):
+        _collectChildIdValue(child, node, bound, refs, unbound, report)
+
+
+def _collectChildIdValue(
+    child: Any,
+    parent: Any,
+    bound: dict[str, dict[int, str]],
+    refs: list[tuple[str, str]],
+    unbound: set[str],
+    report: ValidationReport,
+) -> None:
+    """Records the ID/IDREF contributions of one element's own value.
+
+    A simple-content element binds as the datatype itself (or a
+    generated subclass); list values are taken from the node's typed
+    items, other SchemaBase-bound nodes from the raw text pieces -- the
+    datatype ``__str__`` may need state only the datatype constructor
+    sets up (Boolean's ``val``), and the raw slot of a list-typed node
+    holds a stringified list, not the lexical form. A complex type
+    restricting an inline simple type keeps the value type in
+    ``_simpleContentType_``.
+    """
+    cls: Any = None
+    value: Any = None
+    if isinstance(child, list):
+        # An xs:list value node: its typed items are the contribution.
+        cls = type(child)
+        value = child
+    elif isinstance(child, XsdDataType):
+        cls = type(child)
+        if isinstance(child, SchemaBase):
+            raw = getattr(child, "_value_", None)
+            value = (raw[0] if raw else None) if isinstance(raw, list) else child
+        else:
+            value = child
+    elif isinstance(child, SchemaBase):
+        contentCls = getattr(type(child), "_simpleContentType_", None)
+        if contentCls is not None and contentCls is not type(child):
+            cls = contentCls
+            value = _nodeValue(child)
+    if value is not None and cls is not None:
+        _contributeIdSpace(cls, value, parent, bound, refs, unbound, report)
+
+
+def _collectNodeIdAttributes(
+    node: Any,
+    bound: dict[str, dict[int, str]],
+    refs: list[tuple[str, str]],
+    unbound: set[str],
+    report: ValidationReport,
+) -> None:
+    """Records the ID/IDREF contributions of one node's declared attributes.
+
+    A wildcard-absorbed attribute resolved by a global declaration
+    (``processContents="lax"``/``"strict"``) is typed by that
+    declaration, so a global ``xs:ID`` attribute absorbed by a lax
+    wildcard participates in the ID space (id002).
+    """
+    visible = _visibleAttributes(node)
+    skipped = getattr(node, "_wildcardSkipAttributes_", None) or ()
+    described: set[str] = set()
+    for descName, descriptor in node.descAttributes().items():
+        try:
+            instanceName = type(node)._instance_name_of(descriptor, is_attribute=True)
+        except Exception:
+            continue
+        if instanceName is None or instanceName in skipped:
+            continue
+        described.add(instanceName)
+        typed = node.__dict__.get(descName)
+        if instanceName in visible:
+            value = typed if typed is not None else visible[instanceName]
+        elif typed is not None:
+            # An absent attribute's default/fixed value participates in
+            # the ID space like an explicit one.
+            value = typed
+        else:
+            continue
+        _contributeIdSpace(
+            SchemaBase._declarationType(descriptor),
+            value,
+            node,
+            bound,
+            refs,
+            unbound,
+            report,
+        )
+    for attrName in visible:
+        if attrName in described or attrName in skipped:
+            continue
+        affinityCls = _wildcardResolvedType(node, attrName)
+        if affinityCls is not None:
+            _contributeIdSpace(affinityCls, visible[attrName], node, bound, refs, unbound, report)
+
+
+def _wildcardResolvedType(node: Any, attrName: str) -> Any:
+    """The type of the global declaration a wildcard resolves ``attrName`` to.
+
+    Mirrors the binder's wildcard ``processContents`` pass: only a lax
+    or strict wildcard admitting the name supplies a governing type
+    (the global attribute declaration); ``skip`` and unadmitted names
+    contribute nothing.
+    """
+    if not isinstance(node, SchemaBase):
+        return None
+    cls = type(node)
+    parser = getattr(cls, "pyXSD", None)
+    if parser is None or not getattr(node, "hasWildcardAttributes_", False):
+        return None
+    if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
+        return None
+    spec = getattr(cls, "effectiveAttributeWildcard_", None)
+    if spec is None:
+        specs = SchemaBase._wildcard_attribute_specs(node)
+        spec = SchemaBase._wildcard_match(
+            specs,
+            attrName,
+            getattr(cls, "_targetNamespace_", None),
+            defined=_defined_declaration_names(parser, "attribute"),
+        )
+    if spec is None or spec.process_contents == "skip":
+        return None
+    declaration = _global_declaration(
+        getattr(parser, "components", None),
+        local_name(attrName),
+        "attribute",
+        namespace_of(attrName),
+    )
+    if declaration is None:
+        return None
+    return SchemaBase._declarationType(declaration)
+
+
+def _contributeIdSpace(
+    cls: Any,
+    value: Any,
+    binder: Any,
+    bound: dict[str, dict[int, str]],
+    refs: list[tuple[str, str]],
+    unbound: set[str],
+    report: ValidationReport,
+) -> None:
+    """Classifies one slot value and records its ID/IDREF contributions.
+
+    ``cls`` is the declared type class that gives the slot its ID
+    affinity (the bound value may have lost the type, e.g. a
+    union-list attribute kept as plain text); ``value`` supplies the
+    lexical form; ``binder`` is the element the value identifies (its
+    owner for attributes, its parent for element values, ``None``
+    outside the validation scope). A value with no ID/IDREF affinity
+    anywhere in its derivation contributes nothing, so documents
+    without ID-typed content are untouched.
+    """
+    if value is None:
+        return
+    where = _nameOf(binder) if binder is not None else ""
+    for affinity, token in _idContributions(cls, value):
+        if affinity == "id":
+            if binder is None:
+                unbound.add(token)
+            else:
+                bound.setdefault(token, {}).setdefault(id(binder), where)
+        elif affinity == "idref":
+            refs.append((token, where))
+
+
+def _idContributions(cls: Any, value: Any) -> list[tuple[str, str]]:
+    """Returns the ``(affinity, token)`` pairs one slot value contributes.
+
+    ``affinity`` is ``'id'`` or ``'idref'``. List values contribute each
+    token individually; union values are classified by the member that
+    validates them, in member order, so a token of a
+    list-of-(IDREF|ID) union lands in the right table.
+    """
+    if isinstance(value, str) and not isinstance(value, _ListString):
+        # A raw-text slot whose declared kind is a list: rebuild the
+        # list value so the tokens are the real items.
+        listCls = cls if isinstance(cls, type) and _issubclass(cls, XsdList) else None
+        if listCls is not None:
+            try:
+                value = listCls(value)
+            except (TypeError, ValueError):
+                return []
+    if isinstance(value, list):
+        tokens = [str(item) for item in value]
+    elif isinstance(value, _ListString):
+        tokens = list(value.tokens)
+    else:
+        try:
+            text = str(value)
+        except Exception:
+            # An under-constructed binder stand-in (a union wrapper
+            # whose ``memberValue`` was never set) has no lexical form
+            # to contribute.
+            return []
+        tokens = [_ws_collapse(text)]
+    contributions: list[tuple[str, str]] = []
+    for token in tokens:
+        extended = _tokenContributions(cls, token)
+        if extended is not None:
+            contributions.append(extended)
+    return contributions
+
+
+def _issubclass(cls: Any, base: Any) -> bool:
+    """``issubclass`` that answers ``False`` instead of raising."""
+    try:
+        return issubclass(cls, base)
+    except TypeError:
+        return False
+
+
+def _tokenContributions(cls: Any, token: str) -> tuple[str, str] | None:
+    """The single ``(affinity, token)`` contribution of one token.
+
+    ``None`` when the type has no ID/IDREF affinity (or no union member
+    validates the token).
+    """
+    if not isinstance(cls, type):
+        return None
+    try:
+        if issubclass(cls, (ID, IDREF, IDREFS)):
+            return ("idref" if issubclass(cls, (IDREF, IDREFS)) else "id", token)
+    except TypeError:
+        return None
+    members = getattr(cls, "_unionMembers", None)
+    if members:
+        for member in members:
+            if _memberValidates(member, token):
+                return _tokenContributions(member, token)
+        return None
+    try:
+        if issubclass(cls, XsdList):
+            return _tokenContributions(getattr(cls, "itemType", None), token)
+    except TypeError:
+        return None
+    content = getattr(cls, "_simpleContentType_", None)
+    if content is not None and content is not cls:
+        return _tokenContributions(content, token)
+    return None
+
+
+def _memberValidates(member: Any, token: str) -> bool:
+    """Whether one union member accepts a token (member order semantics).
+
+    Mirrors the union class construction: members are validated through
+    ``__new__`` so the facet machinery runs, skipping ``__init__``.
+    """
+    try:
+        member.__new__(member, token)
+    except Exception:
+        return False
+    return True
+
+
+def _walk(instance: Any, scope: _Scope, report: ValidationReport) -> None:
+    """Records the constraints of ``instance`` and recurses downward.
 
     A subtree bound by a ``processContents="skip"`` wildcard is skipped
     (XSD 1.1 §3.3.4.2): the walk neither applies the (absent)
     declaration's constraints to it nor lets its descendants serve as
     key/unique/keyref selections. ``_childrenOf`` hides skipped
     subtrees, so this guard only fires when the walk starts inside one.
+
+    Key/unique tables are collected per occurrence; keyrefs are only
+    recorded here — ``_validateKeyrefs`` checks them after the walk,
+    so a keyref sees the complete tables assembled within its own
+    subtree, wherever the walk recorded them.
     """
     if getattr(instance, "_skipped_", False):
         return None
@@ -82,21 +487,79 @@ def _walk(instance: Any, scopes: KeyScopes, report: ValidationReport) -> None:
     localKeys: dict[str, set[tuple[Any, ...]]] = {}
     keyrefs: list[Any] = []
     for constraint in identities:
+        if getattr(constraint, "isConstraintRef", False):
+            # An XSD 1.1 constraint reference site acts as the named
+            # constraint it resolves to; an unresolvable site was
+            # already reported at schema phase and is skipped.
+            constraint = getattr(constraint, "borrowedFrom", None)
+            if constraint is None:
+                continue
         kind = constraint.__class__.__name__
         if kind in ("Key", "Unique"):
             values = _collectKeyValues(instance, constraint, kind, report)
             if values is not None:
-                localKeys[constraint.constraintName] = values
+                localKeys[_tableKey(constraint)] = values
         elif kind == "Keyref":
             keyrefs.append(constraint)
 
-    childScopes = (*scopes, localKeys) if localKeys else scopes
+    if localKeys or keyrefs:
+        childScope = _Scope(scope)
+        childScope.tables = localKeys
+        scope.children.append(childScope)
+        scope = childScope
     for constraint in keyrefs:
-        _checkKeyref(constraint, instance, childScopes, report)
+        scope.keyrefs.append((constraint, instance))
 
     for child in getattr(instance, "_children_", None) or []:
-        _walk(child, childScopes, report)
+        _walk(child, scope, report)
     return None
+
+
+def _validateKeyrefs(scope: _Scope, report: ValidationReport) -> dict[str, set[tuple[Any, ...]]]:
+    """Validates every recorded keyref against its subtree's tables.
+
+    Post-order over the scope tree: each node merges its own tables
+    with its descendants' merged tables — node tables assemble
+    strictly upward from the children (XSD §3.11.5 upward
+    propagation) — and then checks its keyrefs against the merge. A
+    keyref therefore resolves only against the referenced
+    constraint's tables from its own occurrence and descendant
+    occurrences: never an ancestor's table, and never the whole
+    document (XSD §3.11.4 keyref clause and its subtree note). A
+    scope occurrence whose table is empty still counts as present:
+    the constraint exists there, so its (empty) table simply matches
+    no keyref member.
+    """
+    merged = dict(scope.tables)
+    for child in scope.children:
+        for key, values in _validateKeyrefs(child, report).items():
+            merged.setdefault(key, set()).update(values)
+    for constraint, node in scope.keyrefs:
+        _checkKeyref(constraint, node, (merged,), report)
+    return merged
+
+
+def _tableKey(constraint: Any) -> str:
+    """Returns the scope-table key for a key/unique constraint.
+
+    The schema phase records each constraint's Clark name
+    (``{targetNamespace}name``) on ``constraintClark``; constraint
+    stand-ins without one fall back to the bare constraint name.
+    """
+    return getattr(constraint, "constraintClark", None) or constraint.constraintName
+
+
+def _referTableKey(constraint: Any) -> str:
+    """Returns the scope-table key a keyref's resolved ``refer`` names.
+
+    ``referClark`` carries the schema-phase Clark resolution of the
+    ``refer`` QName; stand-ins without one fall back to the refer's
+    local name.
+    """
+    referClark = getattr(constraint, "referClark", None)
+    if referClark:
+        return referClark
+    return constraint.refer.split(":")[-1]
 
 
 def _collectKeyValues(
@@ -118,6 +581,14 @@ def _collectKeyValues(
         resolved = _fieldValues(selectedNode, constraint, report)
         if resolved is _UNSUPPORTED:
             return None
+        if resolved is _COMPLEX:
+            report.add_error(
+                f"{kind.lower()} '{constraint.constraintName}': a field selects an "
+                f"element with complex content on the '{_nameOf(selectedNode)}' element",
+                code="identity-key",
+                element=_nameOf(node),
+            )
+            continue
         if resolved is _MISSING:
             if kind == "Key":
                 report.add_error(
@@ -150,17 +621,22 @@ def _checkKeyref(
     scopes: KeyScopes,
     report: ValidationReport,
 ) -> None:
-    """Checks one keyref constraint's records against its key scope."""
-    referLocal = constraint.refer.split(":")[-1]
+    """Checks one keyref constraint's records against its key scope.
+
+    ``scopes`` is the chain of per-occurrence tables the keyref may
+    draw from; the deferred pass supplies a single table merged from
+    every qualifying scope occurrence.
+    """
+    referKey = _referTableKey(constraint)
     known = None
     for scope in reversed(scopes):
-        if referLocal in scope:
-            known = scope[referLocal]
+        if referKey in scope:
+            known = scope[referKey]
             break
     if known is None:
         report.add_error(
             f"keyref '{constraint.constraintName}' refers to '{constraint.refer}', "
-            "but no key or unique with that name was found in the schema",
+            "but no key or unique with that name was found in scope",
             code="identity-keyref",
             element=constraint.constraintName,
         )
@@ -173,8 +649,9 @@ def _checkKeyref(
         resolved = _fieldValues(selectedNode, constraint, report)
         if resolved is _UNSUPPORTED:
             return None
-        if resolved in (_MISSING, _AMBIGUOUS):
-            # A keyref with a missing/ambiguous field is simply absent.
+        if resolved in (_MISSING, _AMBIGUOUS, _COMPLEX):
+            # A keyref with a missing, ambiguous or complex-content
+            # field is simply absent.
             continue
         if resolved not in known:
             report.add_error(
@@ -186,42 +663,13 @@ def _checkKeyref(
     return None
 
 
-def _fieldValues(
-    selectedNode: Any,
-    constraint: Any,
-    report: ValidationReport,
-) -> Any:
-    """Returns the XSD value key for one selected node's fields.
-
-    Returns ``_MISSING`` (no value), ``_AMBIGUOUS`` (a field selects
-    more than one value; reported as an error) or ``_UNSUPPORTED``
-    (path not supported; warning already recorded).
-    """
-    values: list[tuple[Any, ...]] = []
-    for fieldPath in constraint.fieldPaths:
-        result = _evalField(selectedNode, fieldPath, constraint, report)
-        if result is _UNSUPPORTED:
-            return _UNSUPPORTED
-        if not result:
-            return _MISSING
-        if len(result) > 1:
-            report.add_error(
-                f"field '{fieldPath}' of identity constraint "
-                f"'{constraint.constraintName}' selects more than one value on "
-                f"the '{_nameOf(selectedNode)}' element",
-                code="identity-key",
-                element=_nameOf(selectedNode),
-            )
-            return _AMBIGUOUS
-        values.append(xsd_comparable_key(result[0]))
-    return tuple(values)
-
-
 def _selectNodes(node: Any, constraint: Any, report: ValidationReport) -> list[Any] | None:
     """Returns the nodes a constraint's selector covers, or ``None``.
 
-    ``None`` means the selector could not be evaluated (unsupported
-    construct); a warning has already been recorded in that case.
+    ``None`` means the selector could not be evaluated; the reason is
+    already on the report (a schema-phase ``xpath-invalid`` error, or an
+    ``identity-unsupported`` warning for string-only constraint
+    stand-ins).
     """
     selector = constraint.selector
     if not selector:
@@ -231,127 +679,229 @@ def _selectNodes(node: Any, constraint: Any, report: ValidationReport) -> list[A
             code="identity-unsupported",
         )
         return None
-    if "[" in selector:
-        report.add_warning(
-            f"the selector '{selector}' of identity constraint "
-            f"'{constraint.constraintName}' uses a predicate, which pyxsd does "
-            "not support; the constraint will not be checked",
-            code="identity-unsupported",
-        )
+    parsed = getattr(constraint, "parsedSelectorPath", _ABSENT)
+    if parsed is _ABSENT:
+        parsed = _legacyParsePath(selector, constraint, report, "selector")
+        if parsed is None:
+            return None
+    elif parsed is None:
         return None
-    descendant, steps = _parsePath(selector)
-    if steps is None:
-        report.add_warning(
-            f"the selector '{selector}' of identity constraint "
-            f"'{constraint.constraintName}' is not a supported path; the "
-            "constraint will not be checked",
-            code="identity-unsupported",
-        )
-        return None
-    if descendant:
-        return [
-            match
-            for candidate in _descendantOrSelfNodes(node)
-            for match in _evalSteps(candidate, steps)
-        ]
-    return _evalSteps(node, steps)
+    # Union alternatives concatenate into one selector node set.
+    matches: list[Any] = []
+    seen: set[int] = set()
+    for descendant, steps in parsed.alternatives:
+        candidates: list[Any]
+        if descendant:
+            candidates = [
+                match
+                for context in _descendantOrSelfNodes(node)
+                for match in _evalSteps(context, steps)
+            ]
+        else:
+            candidates = _evalSteps(node, steps)
+        for match in candidates:
+            if id(match) not in seen:
+                seen.add(id(match))
+                matches.append(match)
+    return matches
 
 
-def _evalField(selectedNode: Any, fieldPath: str, constraint: Any, report: ValidationReport) -> Any:
-    """Returns the values one field selects on one node.
+def _fieldValues(
+    selectedNode: Any,
+    constraint: Any,
+    report: ValidationReport,
+) -> Any:
+    """Returns the value key tuple for one selected node's fields.
 
-    A list of zero or more values is returned; ``_UNSUPPORTED`` when the
-    path cannot be evaluated. Fields that select more than one value are
-    diagnosed by the caller via the list length.
+    Returns ``_MISSING`` (a field selects no value), ``_AMBIGUOUS`` (a
+    field selects more than one node; reported as an error),
+    ``_COMPLEX`` (a field selects an element with complex content;
+    reported as an error) or ``_UNSUPPORTED`` (path not supported; the
+    reason is already on the report).
+
+    Cardinality is counted before any value is discarded: a nilled
+    element selected alongside a valued attribute is two field nodes,
+    not one (XSD 1.1 §3.13.4 clause 3).
     """
-    if "[" in fieldPath:
-        report.add_warning(
-            f"the field '{fieldPath}' of identity constraint "
-            f"'{constraint.constraintName}' uses a predicate, which pyxsd does "
-            "not support; the constraint will not be checked",
-            code="identity-unsupported",
-        )
-        return _UNSUPPORTED
-    descendant, steps = _parsePath(fieldPath)
-    if steps is None:
-        report.add_warning(
-            f"the field '{fieldPath}' of identity constraint "
-            f"'{constraint.constraintName}' is not a supported path; the "
-            "constraint will not be checked",
-            code="identity-unsupported",
-        )
-        return _UNSUPPORTED
-    if steps and steps[-1].startswith("@"):
-        attributeName = steps[-1][1:]
-        if len(steps) > 1:
-            nodes = (
-                [
-                    match
-                    for candidate in _descendantOrSelfNodes(selectedNode)
-                    for match in _evalSteps(candidate, steps[:-1])
-                ]
-                if descendant
-                else _evalSteps(selectedNode, steps[:-1])
+    fieldPaths = constraint.fieldPaths
+    parsedFields = getattr(constraint, "parsedFieldPaths", _ABSENT)
+    keys: list[Any] = []
+    for index, fieldPath in enumerate(fieldPaths):
+        if parsedFields is _ABSENT:
+            parsed = _legacyParsePath(fieldPath, constraint, report, "field")
+        else:
+            parsed = parsedFields[index] if index < len(parsedFields) else None
+        if parsed is None:
+            return _UNSUPPORTED
+        nodes = _fieldNodes(selectedNode, parsed)
+        if len(nodes) > 1:
+            report.add_error(
+                f"field '{fieldPath}' of identity constraint "
+                f"'{constraint.constraintName}' selects more than one value on "
+                f"the '{_nameOf(selectedNode)}' element",
+                code="identity-key",
+                element=_nameOf(selectedNode),
             )
-        else:
-            nodes = [selectedNode] if not descendant else list(_descendantOrSelfNodes(selectedNode))
-        return [
-            value
-            for node in nodes
-            for value in [_attributeValue(node, attributeName)]
-            if value is not None
-        ]
-    # A field ending in ``.`` was already reduced to the element steps
-    # before it (or nothing at all, meaning the selected node itself)
-    # by ``_parsePath``, so the remaining case is a field naming an
-    # element: the value is that element's simple content.
-    nodes = (
-        [
-            match
-            for candidate in _descendantOrSelfNodes(selectedNode)
-            for match in _evalSteps(candidate, steps)
-        ]
-        if descendant
-        else _evalSteps(selectedNode, steps)
-    )
-    return [value for node in nodes for value in [_nodeValue(node)] if value is not None]
-
-
-def _parsePath(path: str) -> tuple[bool, list[str] | None]:
-    """Splits an XPath-subset path into (descendant, steps).
-
-    Returns ``(descendant, steps)`` where ``steps`` is the list of
-    child steps (prefixes stripped, ``.`` steps removed), or
-    ``(False, None)`` when the path is not supported.
-    """
-    if path.startswith("/"):
-        return False, None
-    parts = path.split("/")
-    descendant = any(part == "" for part in parts)
-    steps = []
-    for part in parts:
-        if part in ("", "."):
+            return _AMBIGUOUS
+        if not nodes:
+            return _MISSING
+        node = nodes[0]
+        if isinstance(node, _AttributeField):
+            keys.append(_valueSpaceKey(node.value))
             continue
-        if part == "*":
-            steps.append("*")
+        if _isComplexContent(node):
+            return _COMPLEX
+        value = _nodeValue(node)
+        if value is None:
+            # A nilled (or value-less) selected element counts for
+            # cardinality but supplies no value.
+            return _MISSING
+        keys.append(_valueSpaceKey(value))
+    return tuple(keys)
+
+
+def _legacyParsePath(
+    path: str,
+    constraint: Any,
+    report: ValidationReport,
+    kind: str,
+) -> ParsedXPath | None:
+    """Parses a raw path string for a constraint without a schema-phase
+    parse, warning ``identity-unsupported`` when it is outside the
+    subset.
+
+    Constraint stand-ins (tests) carry plain strings; the historical
+    behavior — a warning and a skipped constraint — is preserved.
+    """
+    if "[" in path:
+        report.add_warning(
+            f"the {kind} '{path}' of identity constraint "
+            f"'{constraint.constraintName}' uses a predicate, which pyxsd does "
+            "not support; the constraint will not be checked",
+            code="identity-unsupported",
+        )
+        return None
+    try:
+        return parse_xpath_subset(path, {}, None, None)
+    except XPathError:
+        report.add_warning(
+            f"the {kind} '{path}' of identity constraint "
+            f"'{constraint.constraintName}' is not a supported path; the "
+            "constraint will not be checked",
+            code="identity-unsupported",
+        )
+        return None
+
+
+class _AttributeField(NamedTuple):
+    """One attribute node selected by a field step."""
+
+    value: Any
+
+
+def _fieldNodes(selectedNode: Any, parsed: ParsedXPath) -> list[Any]:
+    """Evaluates one parsed field's node set on a selected node.
+
+    Union alternatives concatenate into one node set (deduplicated);
+    a final attribute step contributes the attributes it selects.
+    Element nodes are returned whole — nil and complex content are
+    judged by the caller so cardinality is counted before any
+    value-discard (XSD 1.1 §3.13.4 clause 3).
+    """
+    nodes: list[Any] = []
+    seenNodes: set[int | tuple[int, str]] = set()
+    for descendant, steps in parsed.alternatives:
+        attributeStep: str | None = None
+        elementSteps = steps
+        if steps and steps[-1][0] == "attribute":
+            attributeStep = steps[-1][1]
+            elementSteps = steps[:-1]
+        if descendant:
+            matches = [
+                match
+                for candidate in _descendantOrSelfNodes(selectedNode)
+                for match in _evalSteps(candidate, elementSteps)
+            ]
         else:
-            steps.append(part.split(":")[-1])
-    return descendant, steps
+            matches = _evalSteps(selectedNode, elementSteps)
+        for match in matches:
+            if attributeStep is None:
+                if id(match) not in seenNodes:
+                    seenNodes.add(id(match))
+                    nodes.append(match)
+                continue
+            for name, value in _attributeSelections(match, attributeStep):
+                # (node, attribute-name) pairs deduplicate independently
+                marker = (id(match), name)
+                if marker not in seenNodes:
+                    seenNodes.add(marker)
+                    nodes.append(_AttributeField(value))
+    return nodes
 
 
-def _evalSteps(node: Any, steps: list[str]) -> list[Any]:
-    """Walks child steps from ``node`` and returns the matching nodes."""
+def _evalSteps(node: Any, steps: tuple[tuple[str, ...], ...]) -> list[Any]:
+    """Walks element steps from ``node`` and returns the matching nodes.
+
+    A step matches a child by expanded name: an exact Clark-name match,
+    the ``*`` wildcard for any element, or a ``{uri}*`` namespace
+    wildcard. Namespace-insensitive local-name matching is gone — an
+    unprefixed step only ever names the no-namespace element.
+    """
     nodes = [node]
     for step in steps:
+        if step[0] == "self":
+            continue
+        name = step[1] if len(step) > 1 else "*"
         nextNodes = []
         for current in nodes:
             for child in _childrenOf(current):
-                childName = _nameOf(child)
-                localName = childName.split("}", 1)[-1] if childName.startswith("{") else childName
-                if step == "*" or childName == step or localName == step:
+                if _elementStepMatches(name, _nameOf(child)):
                     nextNodes.append(child)
         nodes = nextNodes
     return nodes
+
+
+def _elementStepMatches(stepName: str, nodeName: str) -> bool:
+    """Whether one parsed element step matches one node name."""
+    if stepName == "*":
+        return True
+    if stepName.endswith("}*"):
+        return nodeName.startswith(stepName[:-1])
+    return stepName == nodeName
+
+
+def _attributeSelections(node: Any, stepName: str) -> list[tuple[str, Any]]:
+    """Returns the (name, value) pairs one attribute step selects.
+
+    ``@*`` selects every attribute the node carries; ``@prefix:*`` is
+    translated to Clark form and selects only that namespace's
+    attributes; a named step selects that one attribute.
+    """
+    if stepName == "*":
+        return list(_visibleAttributes(node).items())
+    if stepName.endswith("}*"):
+        prefix = stepName[:-1]
+        return [
+            (name, value)
+            for name, value in _visibleAttributes(node).items()
+            if name.startswith(prefix)
+        ]
+    value = _attributeValue(node, stepName)
+    return [(stepName, value)] if value is not None else []
+
+
+def _visibleAttributes(node: Any) -> dict[str, Any]:
+    """The node's raw attribute table, minus skip-wildcard attributes.
+
+    Attributes absorbed by a ``processContents="skip"`` wildcard are
+    not validated and are not part of any field's node set (XSD 1.1
+    §3.3.4.2; idZ015).
+    """
+    attribs = getattr(node, "_attribs_", None) or {}
+    skipped = getattr(node, "_wildcardSkipAttributes_", None)
+    if skipped:
+        return {name: value for name, value in attribs.items() if name not in skipped}
+    return attribs
 
 
 def _descendantOrSelfNodes(node: Any) -> list[Any]:
@@ -392,20 +942,122 @@ def _nameOf(node: Any) -> str:
 
 
 def _attributeValue(node: Any, attributeName: str) -> Any | None:
-    """Returns the bound value of one attribute, or ``None``.
+    """Returns the value of one named attribute, or ``None``.
 
-    The typed value stored on the instance is preferred over the raw
-    lexical form, so equality is evaluated in the XSD value space.
+    R6: presence is decided by the raw attribute table first, so an
+    attribute wins over any same-named child accessor; the lookup is
+    namespace-exact (Clark key for a qualified attribute, bare local
+    name for an unqualified one). The descriptor-bound typed value is
+    preferred once presence is established, so equality is evaluated in
+    the XSD value space; an attribute absent from the raw table is
+    still found when its declaration supplied a ``default``/``fixed``
+    value through the descriptor (such values never enter
+    ``_attribs_``).
     """
-    value = node.__dict__.get(attributeName)
-    if value is not None:
-        return value
-    attribs = getattr(node, "_attribs_", None)
-    if attribs:
-        value = attribs.get(attributeName)
-        if value is not None:
-            return value
-    return None
+    attribs = _visibleAttributes(node)
+    typed = _typedAttributeValue(node, attributeName)
+    if attributeName in attribs:
+        return typed if typed is not None else attribs[attributeName]
+    return typed
+
+
+def _typedAttributeValue(node: Any, attributeName: str) -> Any | None:
+    """Returns the descriptor-bound typed value of one attribute, or ``None``.
+
+    Only a declaration whose instance name is exactly ``attributeName``
+    (bare or Clark, honoring form defaults in strict namespace mode)
+    can supply the value, so a bare step never reaches a qualified
+    attribute's slot.
+    """
+    if not isinstance(node, SchemaBase):
+        return None
+    local = local_name(attributeName)
+    descriptor = node.descAttributes().get(local)
+    if descriptor is None:
+        return None
+    try:
+        instanceName = type(node)._instance_name_of(descriptor, is_attribute=True)
+    except Exception:
+        return None
+    if instanceName != attributeName:
+        return None
+    return node.__dict__.get(local)
+
+
+def _isComplexContent(node: Any) -> bool:
+    """Whether a field-selected element has complex content.
+
+    An element with element children, or one governed by a complex
+    type definition (including ``xs:anyType``), has no [schema actual
+    value] and cannot supply a field value (XSD 1.1 §3.13.4 clause 3).
+    An element governed by ``xs:anyType`` binds as ``SchemaBase`` exact
+    (the ur-type has no generated class): that stand-in is complex
+    content even when the instance carries only character data
+    (idZ010).
+    """
+    if type(node) is SchemaBase:
+        return True
+    if isinstance(node, AnyType):
+        return True
+    if isinstance(node, XsdDataType):
+        return False
+    if isinstance(node, SchemaBase):
+        return not isinstance(getattr(node, "_value_", None), list)
+    return False
+
+
+def _valueSpaceKey(value: Any) -> tuple[str, Any]:
+    """The comparison key for one field value.
+
+    Pairs a value-space tag with :func:`xsd_comparable_key`: two values
+    compare equal only within one value space. ``3.0`` and ``3`` are
+    conflicting when both are decimal but non-conflicting when one is a
+    string and one a decimal (XSD 1.1 §3.13.4; idF012-014,
+    fields00202m3). Within a space the comparable key decides, so
+    ``xs:int`` ``1``/``01`` still collide and the string-derived types
+    (``xs:ID`` vs ``xs:string``) still share one space.
+
+    A list value is keyed by its items: an atomic value is equal to the
+    singleton list of it (XSD 1.1 §3.13.4, id022), so a one-item list
+    takes its item's key in the shared string space, while longer lists
+    compare only against other lists item-wise.
+    """
+    if isinstance(value, list):
+        items: list[Any] | None = list(value)
+    elif isinstance(value, _ListString):
+        items = value.tokens
+    else:
+        items = None
+    if items is not None:
+        keys = tuple(xsd_comparable_key(item) for item in items)
+        if len(keys) == 1:
+            return ("string", keys[0])
+        return ("list", keys)
+    key = xsd_comparable_key(value)
+    # Order matters: the str-family arm is last because several typed
+    # values (dates, binaries, lists) are str subclasses.
+    if isinstance(value, (bool, Boolean)):
+        return ("boolean", key)
+    if isinstance(value, Duration):
+        return ("duration", key)
+    if isinstance(value, XsdDecimal):
+        return ("decimal", key)
+    if isinstance(value, int):
+        # The integer family shares xs:decimal's value space.
+        return ("decimal", key)
+    if isinstance(value, float):
+        return ("float", key)
+    if isinstance(value, (DateTime, Date, Time, GYear, GYearMonth, GMonthDay, GMonth, GDay)):
+        return (type(value).name, key)
+    if isinstance(value, HexBinary):
+        return ("hexBinary", key)
+    if isinstance(value, Base64Binary):
+        return ("base64Binary", key)
+    if isinstance(value, QName):
+        return ("QName", key)
+    if isinstance(value, str):
+        return ("string", key)
+    return ("", key)
 
 
 def _nodeValue(node: Any) -> Any | None:

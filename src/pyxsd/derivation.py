@@ -140,13 +140,17 @@ def derived_from_union_member(derived: type | None, base: type | None) -> bool:
     """
     if derived is None or base is None:
         return False
-    base_members = getattr(base, "_unionMembers", None)
+    # ``_unionMembers`` is read from the class's own namespace, never
+    # inherited: a restriction of a union inherits the attribute through
+    # its MRO but is not itself a union, and a member type is not
+    # validly derived from the *restricted* union (MS stZ073b).
+    base_members = vars(base).get("_unionMembers")
     if not base_members:
         return False
     for ancestor in derived.__mro__:
         if any(isinstance(b, type) and issubclass(ancestor, b) for b in base_members):
             return True
-        ancestor_members = getattr(ancestor, "_unionMembers", None)
+        ancestor_members = vars(ancestor).get("_unionMembers")
         if ancestor_members and all(
             any(isinstance(b, type) and issubclass(member, b) for b in base_members)
             for member in ancestor_members
@@ -204,6 +208,76 @@ def _blocked_step(override: type, declared: type, tokens: frozenset[str]) -> boo
     return False
 
 
+def _isSimpleTypeClass(cls: type) -> bool:
+    """Whether a Python type class stands for an XSD *simple* type.
+
+    The built-in datatypes and generated simple types (whose classes
+    inherit the base datatype) subclass :class:`XsdDataType`; complex
+    types subclass :class:`SchemaBase` without a datatype base.
+    """
+    from pyxsd import xsd_data_types
+
+    try:
+        return issubclass(cls, xsd_data_types.XsdDataType)
+    except TypeError:
+        return False
+
+
+def is_valid_xsi_type(
+    override: type | None,
+    declared: type | None,
+    blocked: Any = None,
+) -> str | None:
+    """Instance-type validity of an ``xsi:type`` override.
+
+    Like :func:`is_validly_derived`, plus the ur-type clauses:
+    every type is validly derived from ``xs:anyType``, and every
+    *simple* type from ``xs:anySimpleType`` — but ``xs:anyType`` itself
+    is a complex type and may not replace a simple-typed declaration
+    (stZ056). Used by the xsi:type dispatch sites (document root,
+    child elements, substitution members).
+    """
+    from pyxsd import xsd_data_types
+    from pyxsd.schema_base import SchemaBase
+
+    if declared is SchemaBase:
+        # An element declaration with no ``type`` and no inline type has
+        # the ur-type as its type definition; :meth:`Element.getType`
+        # stands it in as ``SchemaBase``. Every type is validly derived
+        # from the ur-type, but the element's ``block`` still constrains
+        # the derivation *method* used to reach the override (MS
+        # particlesIg003: ``block="restriction"`` rejects an override
+        # whose chain to the ur-type contains a restriction step, while
+        # particlesIg002's ``block="extension"`` admits a simple type,
+        # whose chain is all restrictions).
+        if override is None:
+            return None
+        tokens = (
+            frozenset(blocked) if isinstance(blocked, (set, frozenset)) else blockTokens(blocked)
+        )
+        if "#all" in tokens:
+            return "blocked"
+        if tokens:
+            if _pythonDerived(override, SchemaBase):
+                if _blocked_step(override, SchemaBase, tokens):
+                    return "blocked"
+            elif "restriction" in tokens:
+                # A simple type is reached from the ur-type only through
+                # restrictions (anySimpleType, anyAtomicType, ...), so a
+                # restriction block forbids every simple override.
+                return "blocked"
+        return None
+    if declared is xsd_data_types.AnyType:
+        return None
+    if declared is xsd_data_types.AnySimpleType:
+        if override is None or override is xsd_data_types.AnyType:
+            return "not-derived"
+        if not _isSimpleTypeClass(override):
+            return "not-derived"
+        return None
+    return is_validly_derived(override, declared, blocked)
+
+
 def is_validly_derived(
     override: type | None,
     declared: type | None,
@@ -225,6 +299,13 @@ def is_validly_derived(
     ):
         derived = False
     if not derived and _integerDerivesFromDecimal(override, declared):
+        derived = True
+    if not derived and derived_from_union_member(override, declared):
+        # Type Derivation OK (Simple), union clause: a type is derived
+        # from a union when it is (or derives from) one of the union's
+        # member types. An ``xsi:type`` naming a union member (or a
+        # restriction of a member) is therefore a valid override of a
+        # union-typed declaration (MS elemT071/072/073).
         derived = True
     if not derived:
         return "not-derived"

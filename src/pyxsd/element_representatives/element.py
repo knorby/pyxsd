@@ -17,10 +17,10 @@ def _xsd_derived(value_cls: type | None, declared_cls: type | None) -> bool:
     """
     if value_cls is None or declared_cls is None:
         return False
-    from pyxsd.derivation import is_validly_derived
+    from pyxsd.derivation import is_valid_xsi_type
 
     try:
-        return is_validly_derived(value_cls, declared_cls) is None
+        return is_valid_xsi_type(value_cls, declared_cls) is None
     except Exception:
         return False
 
@@ -425,10 +425,57 @@ class Element(ElementRepresentative):
             return local_name(resolved)
         return resolved
 
+    def getSubstitutionGroupHeads(self, parser=None):
+        """Returns every head named by the ``substitutionGroup`` attribute.
+
+        XSD 1.1 allows an element declaration to belong to more than one
+        substitution group: the attribute holds a whitespace-separated
+        list of QNames (saxon subsgroup001/002). XSD 1.0 admitted a
+        single head, which is the one-element case. Each name is
+        resolved through the schema document's namespace context exactly
+        as :meth:`getSubstitutionGroupHead` resolves a single head; an
+        unresolvable name is returned as written so the caller can
+        report it as an unknown head.
+        """
+        raw = self.tagAttributes.get("substitutionGroup")
+        if raw is None:
+            return []
+        heads = []
+        for token in raw.split():
+            resolved = self.resolveSchemaQName(token, parser=parser)
+            if namespace_of(resolved) is None:
+                heads.append(local_name(resolved))
+            else:
+                heads.append(resolved)
+        return heads
+
     #: Element ``final`` accepts only these tokens, plus ``#all`` alone.
     #: Notably ``substitution`` is *not* a legal final token.
-    _FINAL_TOKENS = ("extension", "restriction")
-    #: Element ``block`` additionally accepts ``substitution``.
+    #: Attributes the schema for schemas allows on an ``xs:element``
+    #: declaration (XSD 1.1 §3.3.2, adding ``targetNamespace``).
+    _ELEMENT_ATTRIBUTES = frozenset(
+        {
+            "id",
+            "name",
+            "ref",
+            "type",
+            "substitutionGroup",
+            "minOccurs",
+            "maxOccurs",
+            "default",
+            "fixed",
+            "nillable",
+            "abstract",
+            "block",
+            "final",
+            "form",
+            "targetNamespace",
+        }
+    )
+    _FINAL_TOKENS = (
+        "extension",
+        "restriction",
+    )  #: Element ``block`` additionally accepts ``substitution``.
     _BLOCK_TOKENS = ("extension", "restriction", "substitution")
     #: Attributes only a non-reference local element may not carry.
     _LOCAL_ONLY_FORBIDDEN = ("abstract", "final", "substitutionGroup")
@@ -456,14 +503,67 @@ class Element(ElementRepresentative):
         """
         self._checkElementOccurs()
         self._checkElementRef()
+        self._checkElementUnknownAttributes()
         if getattr(self, "isElementRef", False):
             return
         self._checkElementValueConstraint()
         self._checkElementTypeConflict()
+        self._checkElementName()
+        self._checkElementBooleanAttributes()
         if self.isGlobalDeclaration():
             self._checkElementFinalAndBlock()
         else:
             self._checkLocalElementAttributes()
+
+    def _checkElementName(self) -> None:
+        """Reports a ``name`` that is not an ``xs:NCName``.
+
+        The XML representation types ``name`` as ``xs:NCName``; a colon
+        (a qualified name belongs in ``ref``) or a leading digit/dash is
+        as illegal as an empty name.
+        """
+        name = self.xsdElement.get("name")
+        if name is not None and "|" not in name and self._invalidNCName(name):
+            self._reportSchemaError(
+                f"element name '{name}' is not a valid NCName",
+                code="declaration-attribute",
+            )
+
+    def _checkElementBooleanAttributes(self) -> None:
+        """Reports ``abstract``/``nillable`` values outside xs:boolean.
+
+        The lexical space is exactly true/false/1/0; ``isAbstract`` and
+        the nillable helper otherwise read an unrecognised spelling as
+        false, silently accepting an illegal schema.
+        """
+        for attr in ("abstract", "nillable"):
+            value = self.xsdElement.get(attr)
+            if value is not None and self._invalidBoolean(value):
+                self._reportSchemaError(
+                    f"element '{self.name}' has an invalid {attr} value "
+                    f"'{value}'; expected true, false, 1 or 0",
+                    code="declaration-attribute",
+                )
+
+    def _checkElementUnknownAttributes(self) -> None:
+        """Reports attributes outside the element-declaration grammar.
+
+        The schema for schemas fixes the attribute list of an
+        ``xs:element`` declaration: id, name, ref, type,
+        substitutionGroup, minOccurs, maxOccurs, default, fixed,
+        nillable, abstract, block, final, form and (XSD 1.1)
+        targetNamespace. A spelling such as the early-draft ``nullable``
+        or an arbitrary attribute is a schema error (MS elemK007,
+        elemN006). Foreign-namespace attributes are left to the
+        implementation-defined extension point and skipped.
+        """
+        for attr in getattr(self.xsdElement, "attrib", {}) or {}:
+            if attr in self._ELEMENT_ATTRIBUTES or "}" in attr:
+                continue
+            self._reportSchemaError(
+                f"element declaration '{self.name}' has an unrecognised attribute '{attr}'",
+                code="declaration-attribute",
+            )
 
     def _checkElementValueConstraint(self) -> None:
         """Reports an element that carries both ``default`` and ``fixed``.

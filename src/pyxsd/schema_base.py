@@ -13,6 +13,7 @@ from pyxsd.derivation import (
     combinedBlock,
     derivationMessage,
     derived_from_union_member,
+    is_valid_xsi_type,
     is_validly_derived,
 )
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
@@ -723,7 +724,14 @@ class SchemaBase:
                     # the value (and a plain setattr would find it first
                     # in the MRO).
                     descriptor.__set__(self, elementTag.attrib[matchName])
-                    usedAttributes.append(matchName)
+                    # An xsi-namespace declaration was already consumed by
+                    # the pass above under its display spelling; bookkeep
+                    # it under that key so the attribute is not counted
+                    # twice in ``checkAttributes``.
+                    if namespace_of(matchName) == xsi.XSI_NAMESPACE:
+                        usedAttributes.append(xsi.xsi_attr_key(matchName))
+                    else:
+                        usedAttributes.append(matchName)
                     self._attribs_[matchName] = elementTag.attrib[matchName]
             # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
             # namespace mode every undeclared attribute is accepted raw; in
@@ -739,6 +747,7 @@ class SchemaBase:
                 parser = getattr(cls, "pyXSD", None)
                 defined = _defined_declaration_names(parser, "attribute") if strict else None
                 rejected: set[str] = set()
+                skipped: set[str] = set()
                 for attr, value in elementTag.attrib.items():
                     if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
                         continue
@@ -762,12 +771,20 @@ class SchemaBase:
                             )
                             rejected.add(attr)
                             continue
-                        if not self._checkWildcardAttribute(attr, value, spec, parser):
+                        if spec.process_contents == "skip":
+                            # A skip-wildcard attribute is accepted but
+                            # never validated; it is recorded so
+                            # identity-constraint fields do not see it
+                            # (XSD 1.1 §3.3.4.2, idZ015).
+                            skipped.add(attr)
+                        elif not self._checkWildcardAttribute(attr, value, spec, parser):
                             continue
                     self._attribs_[attr] = value
                     usedAttributes.append(attr)
                 if rejected:
                     self._wildcardRejectedAttributes_ = rejected
+                if skipped:
+                    self._wildcardSkipAttributes_ = skipped
         return usedAttributes
 
     @classmethod
@@ -1080,7 +1097,7 @@ class SchemaBase:
                 descriptor.getBlock() if descriptor is not None else None,
                 subElCls,
             )
-            reason = is_validly_derived(resolved, subElCls, blocked)
+            reason = is_valid_xsi_type(resolved, subElCls, blocked)
             if reason is not None:
                 cls._report_error(
                     derivationMessage(resolved, subElCls, reason),
@@ -1129,7 +1146,7 @@ class SchemaBase:
         """
         subElementName = cls._node_name(subElement)
         nilled = xsi.xsi_nil_is_true(subElement)
-        if nilled and not descriptor.isNillable():
+        if xsi.xsi_nil_declared(subElement) and not descriptor.isNillable():
             cls._report_error(
                 f"element '{subElementName}' carries xsi:nil but its declaration is not nillable",
                 code="nil",
@@ -1410,27 +1427,48 @@ class SchemaBase:
         """Parses a child as a substitution-group member, if it is one.
 
         Matches the xml child name against the members registered
-        under each declared element (the head). Returns True when the
-        child was handled. Members blocked by the head's ``block``
-        attribute are reported and rejected.
+        under each declared element (the head). Membership is
+        transitive, so the members of *every* transitive head of a
+        declared element are admissible where that element is declared
+        (a member of a member may stand in for the root head). Returns
+        True when the child was handled. Members blocked by the head's
+        ``block`` attribute are reported and rejected.
         """
         subElementName = cls._node_name(subElement)
         declared = {descriptor.name: descriptor for descriptor in elemDescriptors}
         declaredExpanded = {
             getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
         }
-        for headName, members in cls._schemaSubstitutionGroups(elemDescriptors).items():
+        substitutionGroups = cls._schemaSubstitutionGroups(elemDescriptors)
+        if not substitutionGroups:
+            return False
+        for headName in substitutionGroups:
             headDescriptor = declared.get(headName) or declaredExpanded.get(headName)
             if headDescriptor is None:
                 continue
-            for memberER in members:
+            # Transitive member closure of the declared head: the head
+            # itself, its direct members, their members, and so on.
+            closure: list = []
+            frontier = [headName]
+            seenHeads = {headName}
+            while frontier:
+                current = frontier.pop()
+                for memberER in substitutionGroups.get(current, ()):
+                    closure.append(memberER)
+                    nextHead = getattr(memberER, "expandedName", None) or getattr(
+                        memberER, "name", None
+                    )
+                    if nextHead is not None and nextHead not in seenHeads:
+                        seenHeads.add(nextHead)
+                        frontier.append(nextHead)
+            for memberER in closure:
                 if cls._instance_name_of(memberER) != subElementName:
                     continue
                 block = headDescriptor.getBlock()
                 if block and ("substitution" in block.split() or block == "#all"):
                     cls._report_error(
                         f"substitution-group member '{subElementName}' is "
-                        f"blocked by head element '{headName}' (block={block!r})",
+                        f"blocked by head element '{headDescriptor.name}' (block={block!r})",
                         code="blocked",
                         element=cls.__name__,
                     )
@@ -1441,21 +1479,55 @@ class SchemaBase:
                     subElCls = headDescriptor.getType()
                 if subElCls is None:
                     return False
+                # XSD 1.1 §3.3.4.3: a member whose type is derived from the
+                # head's type by a method named in the head element's
+                # ``block`` is excluded from the actual substitution group
+                # (MS elemT063/065, SUN disallowedSubst*). The check is on
+                # the member's *declared* type, not on any xsi:type
+                # override applied below.
+                headCls = headDescriptor.getType()
+                if (
+                    headCls is not None
+                    and subElCls is not headCls
+                    and block
+                    and is_validly_derived(subElCls, headCls, block) == "blocked"
+                ):
+                    cls._report_error(
+                        f"substitution-group member '{subElementName}' has a "
+                        f"type whose derivation from head element "
+                        f"'{headDescriptor.name}' is blocked by block={block!r}",
+                        code="blocked",
+                        element=cls.__name__,
+                    )
+                    return False
                 # An xsi:type on the member overrides the member's
-                # declared type, provided it is validly derived.
+                # declared type, provided it is validly derived. The
+                # override is resolved (and its derivation checked)
+                # exactly as for a directly declared element, so an
+                # invalid or unresolvable xsi:type is reported instead
+                # of silently keeping the declared type.
                 xsiTypeName = xsi.xsi_type_name(subElement)
                 if xsiTypeName is not None:
-                    override = ElementRepresentative.typeFromName(
-                        xsiTypeName, getattr(cls, "pyXSD", None)
-                    )
-                    if override is not None:
-                        blocked = combinedBlock(memberER.getBlock(), subElCls)
-                        reason = is_validly_derived(override, subElCls, blocked)
-                        if reason is None:
-                            subElCls = override
+                    pyXSD = getattr(cls, "pyXSD", None)
+                    resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
+                    if resolvedName is not None:
+                        override = ElementRepresentative.typeFromName(resolvedName, pyXSD)
+                        if override is not None:
+                            blocked = combinedBlock(memberER.getBlock(), subElCls)
+                            reason = is_valid_xsi_type(override, subElCls, blocked)
+                            if reason is None:
+                                subElCls = override
+                            else:
+                                cls._report_error(
+                                    derivationMessage(override, subElCls, reason),
+                                    code="xsi-type",
+                                    element=cls.__name__,
+                                )
                         else:
                             cls._report_error(
-                                derivationMessage(override, subElCls, reason),
+                                f"xsi:type '{xsiTypeName}' on element "
+                                f"'{subElementName}' does not correspond to a "
+                                "type in the schema",
                                 code="xsi-type",
                                 element=cls.__name__,
                             )
@@ -1907,16 +1979,36 @@ class SchemaBase:
         elif len(usedAttrs) < len(attrInElementTag):
             rejected = getattr(self, "_wildcardRejectedAttributes_", ())
             for attrET in attrInElementTag:
-                if attrET not in usedAttrs and attrET not in rejected:
-                    self._report_warning(
-                        f"attribute '{attrET}' is not declared in the schema and was not parsed",
-                        code="unexpected-attribute",
-                        element=elementName,
-                    )
+                if attrET in usedAttrs or attrET in rejected:
+                    continue
+                # Attributes in the schema-instance and XML namespaces are
+                # allowed to appear without a declaration (xsi:type,
+                # xsi:nil, xsi:schemaLocation, xml:lang, ...). Everything
+                # else that survives the declaration and wildcard passes
+                # is genuinely undeclared and makes the instance invalid
+                # (AttrDecl ad_name00101m1-4, ad_targetns00101m1-3).
+                if namespace_of(attrET) in (xsi.XSI_NAMESPACE, XML_NS):
+                    continue
+                if attrET.startswith("xml:") or attrET.startswith("xmlns"):
+                    continue
+                self._report_error(
+                    f"attribute '{attrET}' is not declared in the schema and was not parsed",
+                    code="unexpected-attribute",
+                    element=elementName,
+                )
         for descriptorAttrName in descriptorAttributeNames:
             descriptor = descriptorAttributes[descriptorAttrName]
             matchName = self._instance_name_of(descriptor, is_attribute=True)
-            found = matchName in usedAttrs
+            # A declaration in the xsi namespace matches the instance
+            # bookkeeping under its display spelling: the attribute pass
+            # stored ``xsi:type``/``xsi:nil`` (Clark or raw spelling) under
+            # those keys, so the required-use check must look the
+            # declaration up the same way.
+            if namespace_of(matchName) == xsi.XSI_NAMESPACE:
+                lookupName = xsi.xsi_attr_key(matchName)
+            else:
+                lookupName = matchName
+            found = lookupName in usedAttrs
             attrUse = descriptor.getUse()
             if attrUse == "required" and not found:
                 self._report_error(
@@ -1933,15 +2025,30 @@ class SchemaBase:
                 )
             attributeDescriptor = descriptor
             if found:
-                self._checkFixedAttribute(attributeDescriptor, self, elementName)
+                self._checkFixedAttribute(attributeDescriptor, self, elementName, elementTag)
+            elif namespace_of(matchName) == xsi.XSI_NAMESPACE:
+                # The value constraint of a built-in xsi-namespace
+                # declaration is never applied (XSD 1.1 §3.2.7): a
+                # defaulted ``xsi:type`` must not dispatch, and a
+                # defaulted ``xsi:nil`` must not nil the element.
+                pass
             else:
                 self._applyAttributeDefault(attributeDescriptor, self, elementName)
 
-    def _checkFixedAttribute(self, attributeDescriptor, instance, elementName):
+    def _checkFixedAttribute(
+        self,
+        attributeDescriptor: Any,
+        instance: Any,
+        elementName: str,
+        elementTag: Any,
+    ) -> None:
         """Validates a present attribute's value against ``fixed``.
 
         Both values are compared as typed values (through the
         attribute's type), so boolean spellings like 'true'/'1' agree.
+        The fixed value is constructed under the instance element's
+        QName bindings so a prefixed fixed value (``xsi:type``
+        ``fixed="xs:integer"``) resolves like the stored value did.
         """
         fixed = attributeDescriptor.getFixed()
         if fixed is None:
@@ -1951,7 +2058,8 @@ class SchemaBase:
             return None  # complex-typed attributes have no lexical fixed value
         stored = instance.__dict__.get(attributeDescriptor.name)
         try:
-            fixedInstance = attributeType(fixed)
+            with qname_context(self._qname_bindings(elementTag)):
+                fixedInstance = attributeType(fixed)
         except Exception:
             self._report_error(
                 f"fixed value {fixed!r} of attribute '{attributeDescriptor.name}' "
