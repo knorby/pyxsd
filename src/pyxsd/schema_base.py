@@ -724,7 +724,14 @@ class SchemaBase:
                     # the value (and a plain setattr would find it first
                     # in the MRO).
                     descriptor.__set__(self, elementTag.attrib[matchName])
-                    usedAttributes.append(matchName)
+                    # An xsi-namespace declaration was already consumed by
+                    # the pass above under its display spelling; bookkeep
+                    # it under that key so the attribute is not counted
+                    # twice in ``checkAttributes``.
+                    if namespace_of(matchName) == xsi.XSI_NAMESPACE:
+                        usedAttributes.append(xsi.xsi_attr_key(matchName))
+                    else:
+                        usedAttributes.append(matchName)
                     self._attribs_[matchName] = elementTag.attrib[matchName]
             # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
             # namespace mode every undeclared attribute is accepted raw; in
@@ -1960,7 +1967,16 @@ class SchemaBase:
         for descriptorAttrName in descriptorAttributeNames:
             descriptor = descriptorAttributes[descriptorAttrName]
             matchName = self._instance_name_of(descriptor, is_attribute=True)
-            found = matchName in usedAttrs
+            # A declaration in the xsi namespace matches the instance
+            # bookkeeping under its display spelling: the attribute pass
+            # stored ``xsi:type``/``xsi:nil`` (Clark or raw spelling) under
+            # those keys, so the required-use check must look the
+            # declaration up the same way.
+            if namespace_of(matchName) == xsi.XSI_NAMESPACE:
+                lookupName = xsi.xsi_attr_key(matchName)
+            else:
+                lookupName = matchName
+            found = lookupName in usedAttrs
             attrUse = descriptor.getUse()
             if attrUse == "required" and not found:
                 self._report_error(
@@ -1977,15 +1993,30 @@ class SchemaBase:
                 )
             attributeDescriptor = descriptor
             if found:
-                self._checkFixedAttribute(attributeDescriptor, self, elementName)
+                self._checkFixedAttribute(attributeDescriptor, self, elementName, elementTag)
+            elif namespace_of(matchName) == xsi.XSI_NAMESPACE:
+                # The value constraint of a built-in xsi-namespace
+                # declaration is never applied (XSD 1.1 §3.2.7): a
+                # defaulted ``xsi:type`` must not dispatch, and a
+                # defaulted ``xsi:nil`` must not nil the element.
+                pass
             else:
                 self._applyAttributeDefault(attributeDescriptor, self, elementName)
 
-    def _checkFixedAttribute(self, attributeDescriptor, instance, elementName):
+    def _checkFixedAttribute(
+        self,
+        attributeDescriptor: Any,
+        instance: Any,
+        elementName: str,
+        elementTag: Any,
+    ) -> None:
         """Validates a present attribute's value against ``fixed``.
 
         Both values are compared as typed values (through the
         attribute's type), so boolean spellings like 'true'/'1' agree.
+        The fixed value is constructed under the instance element's
+        QName bindings so a prefixed fixed value (``xsi:type``
+        ``fixed="xs:integer"``) resolves like the stored value did.
         """
         fixed = attributeDescriptor.getFixed()
         if fixed is None:
@@ -1995,7 +2026,8 @@ class SchemaBase:
             return None  # complex-typed attributes have no lexical fixed value
         stored = instance.__dict__.get(attributeDescriptor.name)
         try:
-            fixedInstance = attributeType(fixed)
+            with qname_context(self._qname_bindings(elementTag)):
+                fixedInstance = attributeType(fixed)
         except Exception:
             self._report_error(
                 f"fixed value {fixed!r} of attribute '{attributeDescriptor.name}' "

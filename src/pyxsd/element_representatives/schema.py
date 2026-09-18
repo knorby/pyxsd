@@ -4,6 +4,7 @@ from pyxsd.element_representatives.complex_type import ComplexType
 from pyxsd.element_representatives.element_representative import (
     ComponentTable,
     get_active_form_defaults,
+    get_active_injected_builtin_ids,
     get_active_namespace_overrides,
 )
 
@@ -76,6 +77,11 @@ class Schema(ComplexType):
         # map is captured once, by value, so later parsers cannot
         # rewrite this schema's component namespaces.
         self.namespaceOverrides = get_active_namespace_overrides()
+        # Ids of the parser-injected built-in declarations (xml/xsi
+        # namespace attributes), captured with the same snapshot
+        # discipline. A user schema targeting a well-known namespace is
+        # not in this set, so it stays subject to the legality checks.
+        self.injectedBuiltinIds = get_active_injected_builtin_ids()
         # The source document's form defaults per spliced component,
         # captured with the same snapshot discipline.
         self.formDefaultOverrides = get_active_form_defaults()

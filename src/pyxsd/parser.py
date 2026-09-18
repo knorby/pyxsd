@@ -152,6 +152,11 @@ def _stackPrefix(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
     return len(shorter) <= len(longer) and longer[: len(shorter)] == shorter
 
 
+def _mixedIsTrue(value: str) -> bool:
+    """The xs:boolean reading of a lexical ``mixed`` value."""
+    return value.strip().lower() in ("true", "1")
+
+
 class PyXSD:
     """Main class of the program that is in charge of data flow.
 
@@ -242,6 +247,12 @@ class PyXSD:
         # spliced in from imported schemas; installed before the ER run so
         # an imported declaration reports its own target namespace.
         self._namespaceOverrides: dict[int, str | None] = {}
+        # Element ids of the built-in components this parser injects
+        # (the implicit ``xml``/``xsi`` attribute declarations). Kept
+        # apart from the override map so declaration-legality checks can
+        # exempt exactly the injected components without exempting a
+        # user schema that targets a well-known namespace.
+        self._injectedBuiltinIds: set[int] = set()
         # Source-document form defaults per spliced component:
         # id(xsdElement) -> (elementFormDefault, attributeFormDefault).
         self._formDefaults: dict[int, tuple[str | None, str | None]] = {}
@@ -393,6 +404,39 @@ class PyXSD:
                 {"name": local, "type": clark(XSD_NS, "string")},
             )
             self._namespaceOverrides[id(attributeElement)] = XML_NS
+            self._injectedBuiltinIds.add(id(attributeElement))
+            schemaRoot.append(attributeElement)
+
+    #: The built-in attribute declarations of the XML Schema instance
+    #: namespace (XSD 1.1 §3.2.7.2). ``schemaLocation`` and
+    #: ``noNamespaceSchemaLocation`` are typed ``anyURI``, a safe
+    #: under-approximation of their URI-pair/list value spaces.
+    _XSI_BUILTIN_ATTRIBUTES = (
+        ("type", "QName"),
+        ("nil", "boolean"),
+        ("schemaLocation", "anyURI"),
+        ("noNamespaceSchemaLocation", "anyURI"),
+    )
+
+    def _injectXsiNamespaceAttributes(self, schemaRoot: Any) -> None:
+        """Registers the built-in XML-Schema-instance attribute declarations.
+
+        The xsi namespace's schema is available in every schema without a
+        document (XSD 1.1 §4.2.3): a namespace-only ``xs:import`` of it
+        resolves, and ``<xs:attribute ref="xsi:type"/>`` and friends
+        resolve to these declarations. As for the built-in ``xsi:nil``
+        typing already enforced instance-side, ``type`` is ``xs:QName``
+        and ``nil`` is ``xs:boolean``. User declarations in the xsi
+        namespace stay illegal (the declaration-legality check exempts
+        exactly these injected components).
+        """
+        for local, typeName in self._XSI_BUILTIN_ATTRIBUTES:
+            attributeElement = ET.Element(
+                clark(XSD_NS, "attribute"),
+                {"name": local, "type": clark(XSD_NS, typeName)},
+            )
+            self._namespaceOverrides[id(attributeElement)] = XSI_NS
+            self._injectedBuiltinIds.add(id(attributeElement))
             schemaRoot.append(attributeElement)
 
     @with_schema_context
@@ -441,11 +485,13 @@ class PyXSD:
         self._spliceAdditionalSchemas(root, baseDir, visited)
         if getattr(self.mode, "namespaces", "legacy") == "strict":
             self._injectXmlNamespaceAttributes(root)
+            self._injectXsiNamespaceAttributes(root)
 
         # Stage this parser's snapshot on its own context before the ER
         # run so imported declarations report their own target namespace
         # and form defaults.
         self.schemaContext.namespace_overrides = dict(self._namespaceOverrides)
+        self.schemaContext.injected_builtin_ids = set(self._injectedBuiltinIds)
         self.schemaContext.form_defaults = dict(self._formDefaults)
         schemaER = ElementRepresentative.factory(root, None)
         if schemaER is None or schemaER.__class__.__name__ != "Schema":
@@ -797,6 +843,7 @@ class PyXSD:
         if type(er).__name__ == "ComplexType":
             self._reportParticleRestriction(er)
             self._reportMixedRestriction(er)
+            self._reportMixedConflict(er)
             self._reportComplexContentFromSimpleBase(er)
             self._reportAttributeUseDerivation(er)
             self._reportAttributeWildcardRestriction(er)
@@ -950,6 +997,33 @@ class PyXSD:
             f"base type '{getattr(base_er, 'name', '?')}'",
             code="particle-restriction",
         )
+
+    def _reportMixedConflict(self, er: Any) -> None:
+        """Reports a ``mixed`` conflict between complexType and complexContent.
+
+        XSD 1.1 complex type XML representation: when both the
+        ``xs:complexType`` and its ``xs:complexContent`` child carry a
+        ``mixed`` attribute, the two values must be identical
+        (complex002). An attribute on only one of the two keeps the
+        historical reading — the ``complexContent`` value alone decides
+        (§3.4.2.3.3 clause 1) — so a one-sided ``mixed`` is not a
+        conflict.
+        """
+        own = (getattr(er, "tagAttributes", {}) or {}).get("mixed")
+        if own is None:
+            return
+        for child in getattr(er, "processedChildren", None) or ():
+            if child is not None and type(child).__name__ == "ComplexContent":
+                value = (getattr(child, "tagAttributes", {}) or {}).get("mixed")
+                if value is not None and _mixedIsTrue(value) != _mixedIsTrue(own):
+                    self.report.add_error(
+                        "the mixed attribute of complexType and complexContent "
+                        f"must be the same for type '{getattr(er, 'name', '?')}': "
+                        f'complexType mixed="{own}" conflicts with '
+                        f'complexContent mixed="{value}"',
+                        code="declaration-attribute",
+                    )
+                break
 
     def _reportComplexContentFromSimpleBase(self, er: Any) -> None:
         """Reports complex content derived from a simple-content base.

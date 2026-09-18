@@ -458,11 +458,33 @@ class Attribute(ElementRepresentative):
             uri = self._declaredNamespace()
         except (AttributeError, RuntimeError):
             return
-        if uri == XSI_NS:
-            self._reportSchemaError(
-                f"attribute '{self.name}' must not be in the XML Schema instance namespace",
-                code="declaration-attribute",
-            )
+        if uri != XSI_NS:
+            return
+        if self._isInjectedBuiltin():
+            # The parser-inbuilt declarations of the xsi namespace
+            # (XSD 1.1 §3.2.7.2) are exactly the legal way a global
+            # attribute lands there; only user declarations are
+            # prohibited.
+            return
+        self._reportSchemaError(
+            f"attribute '{self.name}' must not be in the XML Schema instance namespace",
+            code="declaration-attribute",
+        )
+
+    def _isInjectedBuiltin(self) -> bool:
+        """Whether this representative is a parser-injected component.
+
+        The parser registers injected components (built-in ``xml``/``xsi``
+        namespace attributes, spliced imports) in the namespace-override
+        map keyed by ``id(xsdElement)``; a user declaration never shares
+        an id with it.
+        """
+        schema = self.getSchema()
+        injected = getattr(schema, "injectedBuiltinIds", None)
+        element = getattr(self, "xsdElement", None)
+        if not injected or element is None:
+            return False
+        return id(element) in injected
 
     def _declaredNamespace(self) -> str | None:
         """Returns this declaration's XSD target namespace, if any.

@@ -15,6 +15,19 @@ XSI_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance"
 XSI_TYPE = f"{{{XSI_NAMESPACE}}}type"
 XSI_NIL = f"{{{XSI_NAMESPACE}}}nil"
 
+#: Clark names of every built-in xsi-namespace attribute declaration
+#: (XSD 1.1 §3.2.7.2) mapped to their conventional display spellings.
+_XSI_BUILTIN_KEYS = {
+    XSI_TYPE: "xsi:type",
+    "xsi:type": "xsi:type",
+    XSI_NIL: "xsi:nil",
+    "xsi:nil": "xsi:nil",
+    f"{{{XSI_NAMESPACE}}}schemaLocation": "xsi:schemaLocation",
+    "xsi:schemaLocation": "xsi:schemaLocation",
+    f"{{{XSI_NAMESPACE}}}noNamespaceSchemaLocation": "xsi:noNamespaceSchemaLocation",
+    "xsi:noNamespaceSchemaLocation": "xsi:noNamespaceSchemaLocation",
+}
+
 _TRUE = re.compile(r"^(true|1)$", re.IGNORECASE)
 
 #: The lexical space of ``xs:boolean``; the built-in ``xsi:nil``
@@ -32,13 +45,12 @@ def xsi_attr_key(attr: str) -> str:
     (``{namespace}nil``) when the document declares the namespace;
     documents that kept a raw ``xsi:`` prefix are passed through.
     The display spelling is what the writers emit and what
-    instance bookkeeping keys on.
+    instance bookkeeping keys on. All four built-in declarations
+    (``type``, ``nil``, ``schemaLocation``,
+    ``noNamespaceSchemaLocation``) share the mapping, so a schema
+    declaration in the xsi namespace matches the instance bookkeeping.
     """
-    if attr in (XSI_TYPE, "xsi:type"):
-        return "xsi:type"
-    if attr in (XSI_NIL, "xsi:nil"):
-        return "xsi:nil"
-    return attr
+    return _XSI_BUILTIN_KEYS.get(attr, attr)
 
 
 def xsi_type_name(elementTag: Any) -> str | None:

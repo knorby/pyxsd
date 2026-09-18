@@ -21,6 +21,7 @@ from pyxsd.namespaces import (
     parse_with_namespaces,
 )
 from pyxsd.parser import PyXSD
+from pyxsd.validation import IssueSeverity
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 from pyxsd.xsd_data_types import QName, qname_context, xsd_comparable_key, xsd_value_key
 
@@ -891,3 +892,225 @@ class TestWriterNamespaces:
         # The xml prefix is implicit in every document; redeclaring it
         # is redundant.
         assert "xmlns:xml" not in output
+
+
+def _xsi_ref_schema(attribute_site: str) -> str:
+    """A schema whose only extension hook is one ``xs:attribute`` site."""
+    return f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}">
+  <xs:import namespace="{XSI_NS}"/>
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:simpleContent>
+        <xs:extension base="xs:decimal">
+          {attribute_site}
+        </xs:extension>
+      </xs:simpleContent>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
+
+class TestWellKnownNamespaceImports:
+    """Namespace-only imports of well-known namespaces resolve to built-ins.
+
+    XSD 1.1 §4.2.3: the schema for the XML Schema instance namespace is
+    available without a schema document, so a namespace-only ``xs:import``
+    of it (or a bare ``ref`` into it) resolves to the built-in attribute
+    declarations (``type``, ``nil``, ``schemaLocation``,
+    ``noNamespaceSchemaLocation``). Unresolvable user namespaces keep the
+    ``import-unresolved`` / ``unknown-attributeRef`` errors.
+    """
+
+    def test_import_xsi_namespace_without_location(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}"
+                   xmlns:xsi="{XSI_NS}">
+          <xs:import namespace="{XSI_NS}"/>
+          <xs:element name="root"><xs:complexType><xs:sequence><xs:element name="a"/></xs:sequence>
+            <xs:attribute ref="xsi:type" default="xs:integer"/>
+          </xs:complexType></xs:element>
+        </xs:schema>"""
+        instance = (
+            f'<root xmlns:xsi="{XSI_NS}" xmlns:xs="{XSD_NS}" xsi:type="xs:integer">1<a/></root>'
+        )
+        parser = _strict_parse(schema, instance, tmp_path)
+        codes = [i.code for i in parser.report.issues]
+        assert "import-unresolved" not in codes
+        assert "unknown-attributeRef" not in codes
+
+    def test_xsi_ref_ok_without_import(self, tmp_path):
+        """The built-in declarations are present even with no ``xs:import``."""
+        schema = _xsi_ref_schema('<xs:attribute ref="xsi:nil"/>')
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}">12.5</root>',
+            tmp_path,
+        )
+        assert "unknown-attributeRef" not in [i.code for i in parser.report.issues]
+        assert not parser.report.has_errors
+
+    def test_xsi_type_default_is_ignored_when_attribute_absent(self, tmp_path):
+        """A defaulted ``xsi:type`` is never applied (complex004.n2 shape).
+
+        The instance does not even bind the ``xs`` prefix, so an applied
+        default QName would be unresolvable; the value stays a decimal.
+        """
+        schema = _xsi_ref_schema('<xs:attribute ref="xsi:type" default="xs:integer"/>')
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}">123.456</root>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_xsi_attribute_fixed_enforced_when_present(self, tmp_path):
+        """A present ``xsi:type`` must match ``fixed`` (complex005.n1 shape)."""
+        schema = _xsi_ref_schema('<xs:attribute ref="xsi:type" fixed="xs:integer"/>')
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}" xmlns:xs="{XSD_NS}" xsi:type="xs:short">1234</root>',
+            tmp_path,
+        )
+        assert "fixed-attribute" in [i.code for i in parser.report.issues]
+
+    def test_xsi_type_fixed_present_match_reports_no_fixed_error(self, tmp_path):
+        """A matching fixed value is not a fixed violation (complex005.v1).
+
+        The corpus pins the remaining ``xsi:type`` rejection to the
+        derivation rule (a simple type is not validly derived from the
+        complex declared type), which is dispatch territory — not a
+        ``fixed-attribute`` mismatch.
+        """
+        schema = _xsi_ref_schema('<xs:attribute ref="xsi:type" fixed="xs:integer"/>')
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}" xmlns:xs="{XSD_NS}" xsi:type="xs:integer">1234</root>',
+            tmp_path,
+        )
+        codes = [i.code for i in parser.report.issues]
+        assert "xsi-type" in codes
+        assert "fixed-attribute" not in codes
+
+    def test_xsi_nil_fixed_ignored_when_attribute_absent(self, tmp_path):
+        """A fixed ``xsi:nil`` is not applied to an absent attribute.
+
+        complex007 shape: applying it would nil the element and demand
+        empty content; the value stays decimal.
+        """
+        schema = _xsi_ref_schema('<xs:attribute ref="xsi:nil" fixed="true"/>')
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}">12.5</root>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_xsi_nil_fixed_present_enforced(self, tmp_path):
+        """A present ``xsi:nil`` must match ``fixed``."""
+        schema = _xsi_ref_schema('<xs:attribute ref="xsi:nil" fixed="true"/>')
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}" xsi:nil="false">12.5</root>',
+            tmp_path,
+        )
+        assert "fixed-attribute" in [i.code for i in parser.report.issues]
+
+    def test_xsi_attribute_required_enforced(self, tmp_path):
+        """``use="required"`` reads the instance's xsi attribute (complex009)."""
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}">
+          <xs:import namespace="{XSI_NS}"/>
+          <xs:complexType name="B">
+            <xs:sequence><xs:element name="e" minOccurs="0" maxOccurs="5"/></xs:sequence>
+            <xs:attribute ref="xsi:type" use="required"/>
+          </xs:complexType>
+          <xs:element name="root" type="B"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}"><e/></root>',
+            tmp_path,
+        )
+        assert "missing-attribute" in [i.code for i in parser.report.issues]
+
+    def test_xsi_attribute_required_satisfied_when_present(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}">
+          <xs:import namespace="{XSI_NS}"/>
+          <xs:complexType name="B">
+            <xs:sequence><xs:element name="e" minOccurs="0" maxOccurs="5"/></xs:sequence>
+            <xs:attribute ref="xsi:type" use="required"/>
+          </xs:complexType>
+          <xs:element name="root" type="B"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}" xmlns:xs="{XSD_NS}" xsi:type="B"><e/></root>',
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_user_namespace_attribute_ref_still_unresolved(self, tmp_path):
+        """No loosening: a user namespace keeps both failures."""
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:o="urn:o">
+          <xs:import namespace="urn:o"/>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:attribute ref="o:thing"/>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>"""
+        parser = _strict_parse(schema, "<root/>", tmp_path)
+        codes = [i.code for i in parser.report.issues]
+        assert "unknown-attributeRef" in codes
+        assert any(
+            i.code == "import-unresolved" and i.severity is IssueSeverity.ERROR
+            for i in parser.report.issues
+        )
+
+
+class TestMixedAttributeConflict:
+    """``complexType/@mixed`` and ``complexContent/@mixed`` must agree.
+
+    XSD 1.1 complex type XML representation: when both attributes are
+    present their values must be identical (complex002). An attribute
+    on only one of the two keeps the historical override reading.
+    """
+
+    @staticmethod
+    def _schema(type_open: str, content_open: str) -> str:
+        return f"""<xs:schema xmlns:xs="{XSD_NS}">
+  <xs:complexType name="t1" mixed="true">
+    <xs:sequence><xs:element name="a" type="xs:string" minOccurs="0"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="t2"{type_open}>
+    <xs:complexContent{content_open}>
+      <xs:restriction base="t1">
+        <xs:sequence><xs:element name="a" type="xs:string" minOccurs="0"/></xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="root" type="t2"/>
+</xs:schema>"""
+
+    def test_conflicting_mixed_attributes_rejected(self, tmp_path):
+        parser = _strict_parse(
+            self._schema(' mixed="true"', ' mixed="0"'),
+            "<root><a>x</a></root>",
+            tmp_path,
+        )
+        issues = parser.report.issues
+        assert any(i.code == "declaration-attribute" for i in issues)
+
+    def test_agreeing_mixed_attributes_accepted(self, tmp_path):
+        parser = _strict_parse(
+            self._schema(' mixed="true"', ' mixed="true"'),
+            "<root><a>x</a></root>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors
+
+    def test_single_sided_mixed_attribute_accepted(self, tmp_path):
+        parser = _strict_parse(
+            self._schema("", ' mixed="true"'),
+            "<root><a>x</a></root>",
+            tmp_path,
+        )
+        assert not parser.report.has_errors

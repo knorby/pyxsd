@@ -1327,6 +1327,19 @@ def set_active_namespace_overrides(overrides: dict[int, str | None]) -> None:
     context_or_ambient().namespace_overrides = dict(overrides)
 
 
+def get_active_injected_builtin_ids() -> set[int]:
+    """Returns a snapshot of the parser-injected built-in component ids.
+
+    The parser injects the implicit ``xml`` and ``xsi`` namespace
+    attribute declarations itself. Those live in well-known namespaces
+    that a user schema may also target, so declaration-legality checks
+    need to tell them apart from spliced user declarations: only the
+    injected ones are exempt. Read once, at ``Schema`` construction
+    time, mirroring :func:`get_active_namespace_overrides`.
+    """
+    return set(context_or_ambient().injected_builtin_ids)
+
+
 def get_active_form_defaults() -> dict[int, tuple[str | None, str | None]]:
     """Returns a snapshot of the active source form-default map.
 
