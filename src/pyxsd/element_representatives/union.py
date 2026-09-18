@@ -30,9 +30,7 @@ class Union(ElementRepresentative):
         containing = self.getContainingType()
         containing.unionSpec = list(self.memberTypes)
         containing.unionInline = [
-            child.name
-            for child in self.processedChildren
-            if child.__class__.__name__ == "SimpleType"
+            child for child in self.processedChildren if child.__class__.__name__ == "SimpleType"
         ]
 
     def getName(self):
@@ -54,6 +52,11 @@ class Union(ElementRepresentative):
         """
         containingName = self.getContainingTypeName()
         owner = f"union '{containingName}'"
+        inline = [
+            child
+            for child in self.processedChildren or ()
+            if child is not None and child.__class__.__name__ == "SimpleType"
+        ]
         for memberName in self.memberTypes:
             if self._memberVarietyIsLegal(*self.varietyOfReference(memberName)):
                 continue
@@ -61,9 +64,7 @@ class Union(ElementRepresentative):
                 f"member type '{memberName}' of {owner} is not a simple type",
                 code="atomic-required",
             )
-        for child in self.processedChildren or ():
-            if child is None or child.__class__.__name__ != "SimpleType":
-                continue
+        for child in inline:
             if self._memberVarietyIsLegal(child.simpleVariety(), child):
                 continue
             self._reportSchemaError(

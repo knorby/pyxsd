@@ -429,3 +429,173 @@ def test_simple_content_nil_skips_value_validation():
     )
     xml = '<r xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/>'
     assert errors(parse(body, xml)) == []
+
+
+# --- explicitTimezone (XSD 1.1 §4.3.16) ------------------------------------
+
+TZ_REQUIRED = element("xs:dateTime", '<xs:explicitTimezone value="required"/>')
+
+
+def codes(body, xml):
+    return [code for code, _ in errors(parse(body, xml))]
+
+
+def test_explicit_timezone_required_rejects_unzoned():
+    assert codes(TZ_REQUIRED, "<r>2001-01-01T00:00:00</r>")
+    assert errors(parse(TZ_REQUIRED, "<r>2001-01-01T00:00:00Z</r>")) == []
+    assert errors(parse(TZ_REQUIRED, "<r>2001-01-01T00:00:00+05:00</r>")) == []
+
+
+def test_explicit_timezone_prohibited_rejects_zoned():
+    body = element("xs:dateTime", '<xs:explicitTimezone value="prohibited"/>')
+    assert codes(body, "<r>2001-01-01T00:00:00Z</r>")
+    assert codes(body, "<r>2001-01-01T00:00:00-05:00</r>")
+    assert errors(parse(body, "<r>2001-01-01T00:00:00</r>")) == []
+
+
+def test_explicit_timezone_optional_accepts_both():
+    body = element("xs:dateTime", '<xs:explicitTimezone value="optional"/>')
+    assert errors(parse(body, "<r>2001-01-01T00:00:00Z</r>")) == []
+    assert errors(parse(body, "<r>2001-01-01T00:00:00</r>")) == []
+
+
+def test_explicit_timezone_inapplicable_to_string():
+    body = element("xs:string", '<xs:explicitTimezone value="required"/>')
+    assert codes(body, "<r>abc</r>") == ["facet"]
+
+
+def test_explicit_timezone_illegal_value():
+    body = element("xs:dateTime", '<xs:explicitTimezone value="something"/>')
+    assert codes(body, "<r>2001-01-01T00:00:00Z</r>") == ["facet"]
+
+
+def test_explicit_timezone_duplicate_facet():
+    body = element(
+        "xs:dateTime",
+        '<xs:explicitTimezone value="optional"/><xs:explicitTimezone value="prohibited"/>',
+    )
+    assert "facet" in codes(body, "<r>2001-01-01T00:00:00</r>")
+
+
+def test_explicit_timezone_fixed_may_not_change():
+    body = (
+        '<xs:simpleType name="Base"><xs:restriction base="xs:dateTime">'
+        '<xs:explicitTimezone value="optional" fixed="true"/></xs:restriction></xs:simpleType>'
+        '<xs:simpleType name="Derived"><xs:restriction base="Base">'
+        '<xs:explicitTimezone value="prohibited"/></xs:restriction></xs:simpleType>'
+        '<xs:element name="r" type="Derived"/>'
+    )
+    assert "facet" in codes(body, "<r>2001-01-01T00:00:00Z</r>")
+
+
+def test_explicit_timezone_fixed_restatement_allowed():
+    body = (
+        '<xs:simpleType name="Base"><xs:restriction base="xs:dateTime">'
+        '<xs:explicitTimezone value="optional" fixed="true"/></xs:restriction></xs:simpleType>'
+        '<xs:simpleType name="Derived"><xs:restriction base="Base">'
+        '<xs:explicitTimezone value="optional"/></xs:restriction></xs:simpleType>'
+        '<xs:element name="r" type="Derived"/>'
+    )
+    assert errors(parse(body, "<r>2001-01-01T00:00:00Z</r>")) == []
+
+
+def test_explicit_timezone_inherited_from_base():
+    body = (
+        '<xs:simpleType name="Base"><xs:restriction base="xs:dateTime">'
+        '<xs:explicitTimezone value="prohibited"/></xs:restriction></xs:simpleType>'
+        '<xs:simpleType name="Derived"><xs:restriction base="Base"/></xs:simpleType>'
+        '<xs:element name="r" type="Derived"/>'
+    )
+    assert codes(body, "<r>2001-01-01T00:00:00Z</r>")
+    assert errors(parse(body, "<r>2001-01-01T00:00:00</r>")) == []
+
+
+# --- bound restatement vs widening (d3_4_28v09 / d3_4_28si10) --------------
+
+
+def test_bound_restating_base_exclusive_is_allowed():
+    body = (
+        '<xs:simpleType name="Base"><xs:restriction base="xs:int">'
+        '<xs:maxExclusive value="5"/></xs:restriction></xs:simpleType>'
+        '<xs:simpleType name="Derived"><xs:restriction base="Base">'
+        '<xs:maxExclusive value="5"/></xs:restriction></xs:simpleType>'
+        '<xs:element name="r" type="Derived"/>'
+    )
+    assert errors(parse(body, "<r>4</r>")) == []
+    assert codes(body, "<r>5</r>")
+
+
+def test_inclusive_bound_at_base_exclusive_is_rejected():
+    upper = (
+        '<xs:simpleType name="Base"><xs:restriction base="xs:int">'
+        '<xs:maxExclusive value="5"/></xs:restriction></xs:simpleType>'
+        '<xs:simpleType name="Derived"><xs:restriction base="Base">'
+        '<xs:maxInclusive value="5"/></xs:restriction></xs:simpleType>'
+        '<xs:element name="r" type="Derived"/>'
+    )
+    assert "facet" in codes(upper, "<r>4</r>")
+    lower = (
+        '<xs:simpleType name="Base"><xs:restriction base="xs:int">'
+        '<xs:minExclusive value="5"/></xs:restriction></xs:simpleType>'
+        '<xs:simpleType name="Derived"><xs:restriction base="Base">'
+        '<xs:minInclusive value="5"/></xs:restriction></xs:simpleType>'
+        '<xs:element name="r" type="Derived"/>'
+    )
+    assert "facet" in codes(lower, "<r>6</r>")
+
+
+def test_derived_bound_outside_base_value_space_is_rejected():
+    body = (
+        '<xs:simpleType name="Base"><xs:restriction base="xs:int">'
+        '<xs:maxInclusive value="10"/></xs:restriction></xs:simpleType>'
+        '<xs:simpleType name="Derived"><xs:restriction base="Base">'
+        '<xs:maxInclusive value="11"/></xs:restriction></xs:simpleType>'
+        '<xs:element name="r" type="Derived"/>'
+    )
+    assert "facet" in codes(body, "<r>5</r>")
+
+
+# --- datatype tails: unions and recurring date ordering --------------------
+
+
+def test_union_inline_members_resolve_and_enforce():
+    body = (
+        '<xs:element name="r"><xs:simpleType><xs:union>'
+        '<xs:simpleType><xs:restriction base="xs:dateTime">'
+        '<xs:explicitTimezone value="prohibited"/></xs:restriction></xs:simpleType>'
+        '<xs:simpleType><xs:restriction base="xs:integer"/></xs:simpleType>'
+        "</xs:union></xs:simpleType></xs:element>"
+    )
+    assert errors(parse(body, "<r>2001-01-01T00:00:00</r>")) == []
+    assert errors(parse(body, "<r>5</r>")) == []
+    assert codes(body, "<r>2001-01-01T00:00:00Z</r>")
+
+
+def test_union_with_no_members_is_an_empty_value_space():
+    # XSD 1.1 explicitly allows a union with no member types (bug 4912);
+    # its value space is empty, so every instance value is rejected.
+    body = (
+        '<xs:simpleType name="U"><xs:union memberTypes=""/></xs:simpleType>'
+        '<xs:element name="r" type="U"/>'
+    )
+    assert errors(parse(body, "<r>x</r>"))
+    assert not [code for code in codes(body, "<r>x</r>") if code == "atomic-required"]
+
+
+def test_gDay_bounds_across_extreme_timezones():
+    body = element("xs:gDay", '<xs:minInclusive value="---16+13:00"/>')
+    assert errors(parse(body, "<r>---15-13:00</r>")) == []
+    assert codes(body, "<r>---15+13:00</r>")
+
+
+def test_gMonthDay_bounds_across_extreme_timezones():
+    body = element("xs:gMonthDay", '<xs:minInclusive value="--12-12+13:00"/>')
+    assert errors(parse(body, "<r>--12-12+11:00</r>")) == []
+    assert codes(body, "<r>--12-12+14:00</r>")
+
+
+def test_gMonthDay_rejects_impossible_day():
+    body = element("xs:gMonthDay", "")
+    assert codes(body, "<r>--02-30</r>")
+    assert codes(body, "<r>--11-31</r>")
+    assert errors(parse(body, "<r>--02-29</r>")) == []

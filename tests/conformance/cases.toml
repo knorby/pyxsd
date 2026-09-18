@@ -8737,3 +8737,250 @@ schema = '''
 '''
 schema_valid = false
 expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/explicitTimezone-required-rejects-unzoned"
+xsd11 = true
+description = "explicitTimezone required rejects an unzoned dateTime (D4_3_16ii02/ii03)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:dateTime">
+        <xs:explicitTimezone value="required"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root>2001-01-01T00:00:00</root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/explicitTimezone-prohibited-rejects-zoned"
+xsd11 = true
+description = "explicitTimezone prohibited rejects a zoned dateTime (D4_3_16ii02)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:dateTime">
+        <xs:explicitTimezone value="prohibited"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root>2001-01-01T00:00:00Z</root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/explicitTimezone-optional-accepts-both"
+xsd11 = true
+description = "explicitTimezone optional accepts zoned and unzoned values (D4_3_16v04)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (valid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" minOccurs="0" maxOccurs="unbounded">
+        <xs:simpleType>
+          <xs:restriction base="xs:dateTime">
+            <xs:explicitTimezone value="optional"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:element>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root><d>2001-01-01T00:00:00Z</d><d>2001-01-01T00:00:00</d></root>'
+
+[[case]]
+id = "datatypes/explicitTimezone-inapplicable-to-string"
+xsd11 = true
+description = "explicitTimezone does not apply to xs:string (facet applicability)"
+derived_from = "XSD 1.1 §4.3.16"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:explicitTimezone value="required"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/explicitTimezone-duplicate-facet"
+xsd11 = true
+description = "A restriction may not specify explicitTimezone twice (D4_3_16si02)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:dateTime">
+        <xs:explicitTimezone value="optional"/>
+        <xs:explicitTimezone value="prohibited"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/explicitTimezone-fixed-cannot-change"
+xsd11 = true
+description = "A fixed explicitTimezone may be restated but not changed (D4_3_16si04)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="baseStamp">
+    <xs:restriction base="xs:dateTime">
+      <xs:explicitTimezone value="optional" fixed="true"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="derivedStamp">
+    <xs:restriction base="baseStamp">
+      <xs:explicitTimezone value="prohibited"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/bound-restating-base-exclusive-allowed"
+xsd11 = true
+description = "Restating a base maxExclusive exactly is legal (D3_4_28v09)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28 (valid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="baseStamp">
+    <xs:restriction base="xs:dateTime">
+      <xs:maxExclusive value="2002-02-01T00:00:00+09:00"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="derivedStamp">
+    <xs:restriction base="baseStamp">
+      <xs:maxExclusive value="2002-02-01T00:00:00+09:00"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="root" type="derivedStamp"/>
+</xs:schema>
+'''
+instance = '<root>2001-01-01T00:00:00+09:00</root>'
+
+[[case]]
+id = "datatypes/inclusive-bound-at-base-exclusive-invalid"
+xsd11 = true
+description = "maxInclusive equal to the base maxExclusive widens the value space (D3_4_28si10)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="baseStamp">
+    <xs:restriction base="xs:dateTime">
+      <xs:maxExclusive value="2002-02-01T00:00:00+09:00"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="derivedStamp">
+    <xs:restriction base="baseStamp">
+      <xs:maxInclusive value="2002-02-01T00:00:00+09:00"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/empty-union-has-empty-value-space"
+xsd11 = true
+description = "XSD 1.1 allows a union with no member types; its value space is empty (D2_4_1_3)"
+derived_from = "XSD 1.1 (bug 4912: Allow empty unions)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="emptyUnion">
+    <xs:union memberTypes=""/>
+  </xs:simpleType>
+  <xs:element name="root" type="emptyUnion"/>
+</xs:schema>
+'''
+instance = '<root>x</root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/union-inline-member-enforced"
+xsd11 = true
+description = "An inline union member type is built and enforced (D4_3_16ii04)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:union>
+        <xs:simpleType>
+          <xs:restriction base="xs:dateTime">
+            <xs:explicitTimezone value="prohibited"/>
+          </xs:restriction>
+        </xs:simpleType>
+        <xs:simpleType>
+          <xs:restriction base="xs:integer"/>
+        </xs:simpleType>
+      </xs:union>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root>2001-01-01T00:00:00Z</root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/gMonthDay-rejects-impossible-day"
+xsd11 = true
+description = "gMonthDay rejects --02-30 and --11-31 (MS gMonthDay006)"
+derived_from = "W3C XMLSchema1TestSuite, MS DataTypes (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" type="xs:gMonthDay" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root><d>--02-30</d><d>--11-31</d></root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/gDay-bounds-across-extreme-timezones"
+xsd11 = true
+description = "gDay minInclusive orders by instant with offsets beyond +12:00 (D3_3_14)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_3_14 (valid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:gDay">
+        <xs:minInclusive value="---16+13:00"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root>---15-13:00</root>'

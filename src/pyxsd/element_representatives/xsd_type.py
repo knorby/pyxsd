@@ -531,36 +531,41 @@ class XsdType(ElementRepresentative):
         namedMembers = [
             self.resolveSchemaQName(memberName, parser=pyXSD) for memberName in self.unionSpec
         ]
-        memberNames = [(name, True) for name in namedMembers]
-        memberNames += [(name, False) for name in getattr(self, "unionInline", ())]
         members = []
-        for memberName, isNamed in memberNames:
+        for memberName in namedMembers:
             if memberName in pyXSD.classes:
                 resolved = pyXSD.classes[memberName]
             else:
                 resolved = ElementRepresentative.typeFromName(memberName, pyXSD)
             if resolved is None:
-                if isNamed:
-                    # A ``memberTypes`` name that resolves to no type is a
-                    # schema error; report it rather than silently
-                    # accepting a union over an undefined type.
-                    self._report_ref_error(
-                        f"member type '{memberName}' of union '{self.name}' could not be resolved",
-                        code="unknown-type",
-                    )
-                else:
-                    # An inline member is built from its own ER, so a
-                    # miss here is a name-resolution gap in ``typeFromName``
-                    # rather than a missing declaration; keep the historical
-                    # warning-and-skip behaviour.
-                    logger.warning(
-                        "union member type %r of %r could not be resolved and was skipped",
-                        memberName,
-                        self.name,
-                    )
+                # A ``memberTypes`` name that resolves to no type is a
+                # schema error; report it rather than silently
+                # accepting a union over an undefined type.
+                self._report_ref_error(
+                    f"member type '{memberName}' of union '{self.name}' could not be resolved",
+                    code="unknown-type",
+                )
                 continue
             if hasattr(resolved, "_unionMembers"):
                 # A union member that is itself a union: flatten.
+                members.extend(resolved._unionMembers)
+            else:
+                members.append(resolved)
+
+        # Inline ``simpleType`` members are built from their own ER
+        # directly.  Name lookup would miss them because an anonymous
+        # member is not in the component table under the pipe name the
+        # union records (D3_4_28v04, D3_4_26v03, D3_4_27v03).
+        for inlineER in getattr(self, "unionInline", ()):
+            resolved = inlineER.clsFor(pyXSD)
+            if resolved is None:
+                logger.warning(
+                    "inline union member %r of %r could not be built and was skipped",
+                    getattr(inlineER, "name", inlineER),
+                    self.name,
+                )
+                continue
+            if hasattr(resolved, "_unionMembers"):
                 members.extend(resolved._unionMembers)
             else:
                 members.append(resolved)

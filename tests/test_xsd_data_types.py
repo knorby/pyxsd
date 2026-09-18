@@ -444,7 +444,11 @@ LATTICE = [
     (Float, ["1.5", "INF", "NaN"], ["foo"]),
     (GDay, ["---31", "---01Z", "---15+05:00"], ["---32", "--31", "31"]),
     (GMonth, ["--08", "--01Z", "--12"], ["--13", "--8", "---08"]),
-    (GMonthDay, ["--08-30", "--12-31Z"], ["--13-01", "--08-32"]),
+    (
+        GMonthDay,
+        ["--08-30", "--12-31Z", "--02-29", "--04-30"],
+        ["--13-01", "--08-32", "--02-30", "--02-31", "--04-31", "--06-31", "--09-31", "--11-31"],
+    ),
     (GYear, ["2006", "-0044", "12006Z"], ["06", "x", "2006-08"]),
     (GYearMonth, ["2006-08", "-0044-01Z"], ["2006-13", "2006-8"]),
     (HexBinary, ["00FF10", "", "0F"], ["0FG", "0FF"]),
@@ -719,6 +723,35 @@ class TestXsd11DataTypes:
         assert issubclass(YearMonthDuration, Duration)
         assert issubclass(DayTimeDuration, Duration)
         assert issubclass(DateTimeStamp, DateTime)
+
+
+class TestRecurringTemporalOrdering:
+    """The recurring date types order by the instant, timezone included.
+
+    A ``(day, offset)`` or ``(month, day, offset)`` key compares the
+    offset first and so gets the extreme timezones (outside ``+12:00`` to
+    ``-11:59``) wrong; the value-space key folds both into one timeline.
+    """
+
+    def test_gDay_orders_across_extreme_timezones(self):
+        from pyxsd.facets import order_key
+
+        assert order_key(GDay("---15-13:00")) > order_key(GDay("---16+13:00"))
+        assert order_key(GDay("---16+13:00")) < order_key(GDay("---16Z"))
+
+    def test_gMonthDay_orders_across_extreme_timezones(self):
+        from pyxsd.facets import order_key
+
+        assert order_key(GMonthDay("--12-12+11:00")) > order_key(GMonthDay("--12-12+13:00"))
+
+    def test_gMonth_orders_across_extreme_timezones(self):
+        from pyxsd.facets import order_key
+
+        assert order_key(GMonth("--12+11:00")) > order_key(GMonth("--12+13:00"))
+
+    def test_zoned_and_unzoned_are_distinct_values(self):
+        assert xsd_value_key(GDay("---15")) != xsd_value_key(GDay("---15Z"))
+        assert xsd_value_key(GMonthDay("--12-12")) != xsd_value_key(GMonthDay("--12-12Z"))
 
 
 class TestListTypes:

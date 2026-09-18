@@ -496,6 +496,22 @@ _TIMEZONE_REQUIRED = r"(?:Z|[+-](?:0[0-9]|1[0-3]):[0-5][0-9]|[+-]14:00)"
 _YEAR = r"-?(?:[0-9]{4}|[1-9][0-9]{4,})"
 _MONTH = r"(?:0[1-9]|1[0-2])"
 _DAY = r"(?:0[1-9]|[12][0-9]|3[01])"
+#: The largest day number each month may take in ``gMonthDay``.  February
+#: accepts 29 because no year (and so no leap-day rule) is present.
+_MONTH_DAY_MAX = {
+    1: 31,
+    2: 29,
+    3: 31,
+    4: 30,
+    5: 31,
+    6: 30,
+    7: 31,
+    8: 31,
+    9: 30,
+    10: 31,
+    11: 30,
+    12: 31,
+}
 _HOUR = r"(?:[01][0-9]|2[0-3])"
 _MINUTE = r"(?:[0-5][0-9])"
 _SECOND = r"(?:[0-5][0-9](?:\.[0-9]+)?)"
@@ -565,6 +581,18 @@ class GMonthDay(_PatternString):
 
     name = "gMonthDay"
     _pattern = re.compile(rf"--{_MONTH}-{_DAY}{_TIMEZONE}")
+
+    def __new__(cls, val: str) -> Self:
+        instance = super().__new__(cls, val)
+        # The lexical grammar admits day 31 in every month, but the value
+        # space holds only real month/day combinations: ``--02-30`` and
+        # ``--02-31`` (and April/June/September/November 31) are invalid.
+        text = str(instance)
+        month = int(text[2:4])
+        day = int(text[5:7])
+        if day > _MONTH_DAY_MAX[month]:
+            raise TypeError(f"Not a valid {cls.name}: {instance!r}")
+        return instance
 
 
 class GDay(_PatternString):
@@ -1064,32 +1092,51 @@ def _gyearmonth_key(text: str) -> int | tuple[str, str]:
     return _days_from_civil(year, month, 1) * 86400 * 1_000_000 - offset * 1_000_000
 
 
-def _gmonth_key(text: str) -> tuple:
-    """A value-space key for ``xs:gMonth``: ``(month, offset)``."""
+def _gmonth_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:gMonth``: microseconds on a timeline.
+
+    The missing year is fixed to 1972 (a leap year, the reference XSD
+    uses for the recurring types) and the timezone offset shifts the
+    instant, so a month with a later offset can wrap into the neighbouring
+    month.  Comparing the bare ``(month, offset)`` pair would order by
+    offset instead of by instant.
+    """
     match = _TEMPORAL_GMONTH.match(text)
     if match is None:
         return ("lex", text)
-    return (int(match.group(1)), _offset_seconds(match.group(2)))
+    month = int(match.group(1))
+    offset = _offset_seconds(match.group(2))
+    return _days_from_civil(1972, month, 1) * 86400 * 1_000_000 - offset * 1_000_000
 
 
-def _gmonthday_key(text: str) -> tuple:
-    """A value-space key for ``xs:gMonthDay``: ``(month, day, offset)``."""
+def _gmonthday_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:gMonthDay``: microseconds on a timeline.
+
+    As with :func:`_gmonth_key`, the missing year is fixed to 1972 so the
+    month/day pair and the timezone offset fold into one instant.
+    """
     match = _TEMPORAL_GMONTHDAY.match(text)
     if match is None:
         return ("lex", text)
-    return (
-        int(match.group(1)),
-        int(match.group(2)),
-        _offset_seconds(match.group(3)),
-    )
+    month, day = int(match.group(1)), int(match.group(2))
+    offset = _offset_seconds(match.group(3))
+    return _days_from_civil(1972, month, day) * 86400 * 1_000_000 - offset * 1_000_000
 
 
-def _gday_key(text: str) -> tuple:
-    """A value-space key for ``xs:gDay``: ``(day, offset)``."""
+def _gday_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:gDay``: microseconds on a timeline.
+
+    The day-of-month and the timezone offset combine into one instant; a
+    ``(day, offset)`` pair would compare the offset first within the same
+    day, which is not the XSD order (``---15-13:00`` is later than
+    ``---16+13:00``).
+    """
     match = _TEMPORAL_GDAY.match(text)
     if match is None:
         return ("lex", text)
-    return (int(match.group(1)), _offset_seconds(match.group(2)))
+    day = int(match.group(1))
+    offset = _offset_seconds(match.group(2))
+    return (day - 1) * 86400 * 1_000_000 - offset * 1_000_000
 
 
 def _duration_key(text: str) -> tuple:
