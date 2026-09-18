@@ -553,6 +553,14 @@ class PyXSD:
             for typeER in entries:
                 if componentKind(typeER) != "type" or id(typeER) in built:
                     continue
+                if getattr(typeER, "_alternativeInline", False):
+                    # An ``xs:alternative``'s inline type is built on
+                    # demand (when a test selects it, or when the
+                    # derivation check needs it), never eagerly: building
+                    # every one here would surface an unimplemented base
+                    # as a schema error even for alternatives the instance
+                    # phase never selects.
+                    continue
                 built.add(id(typeER))
                 cls = typeER.clsFor(self)
                 self.classes[typeER.name] = cls
@@ -564,6 +572,7 @@ class PyXSD:
         self._checkSubstitutionGroupExclusions(schemaER)
         self._checkValueConstraints(schemaER)
         self._checkTypeReferences(schemaER)
+        self._checkAlternatives(schemaER)
 
         return None
 
@@ -2683,6 +2692,28 @@ class PyXSD:
         loaded.update(self._resolvedImports)
         loaded.update({XSD_NS, XSI_NS, XML_NS, None})
         return loaded
+
+    def _checkAlternatives(self, schemaER: Any) -> None:
+        """Resolves and checks every element's XSD 1.1 type alternatives.
+
+        Runs after the generated classes are built, so each alternative's
+        type reference resolves to the same class the instance phase will
+        see.  The heavy lifting (resolving each type and checking it is
+        validly derived from the declared type) lives in
+        :func:`pyxsd.alternatives.check_element_alternatives`.
+        """
+        from pyxsd.alternatives import check_element_alternatives
+
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "Element":
+                check_element_alternatives(er)
+            stack.extend(getattr(er, "processedChildren", None) or ())
 
     def _checkFormDefaults(self, schemaRoot: Any) -> None:
         """Validates ``elementFormDefault``/``attributeFormDefault`` values.

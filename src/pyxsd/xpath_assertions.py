@@ -7,8 +7,9 @@ validated: child and descendant navigation, predicates, the full
 operator/function library and ``$value`` are all in. The function
 library is restricted — no ``fn:doc``/``fn:collection``/``fn:resolve-uri``
 and friends, and no namespace axis. Conditional type assignment
-(§3.3.2.1) is far narrower: a boolean combination of attribute tests on
-the element itself, expressed with ``@name`` references and literals.
+(§3.3.2.1/§3.12.6) is far narrower: the required subset is a boolean
+combination of attribute tests on the element itself, literals, casts
+to built-in types and built-in constructor functions.
 
 The pipeline mirrors :mod:`pyxsd.xpath_subset`:
 
@@ -181,6 +182,17 @@ _CTA_LITERALS = frozenset({"_StringLiteral", "_IntegerLiteral", "_DecimalLiteral
 #: Name-node types that may follow ``@`` in the CTA subset.
 _CTA_ATTRIBUTE_NAMES = frozenset({"NameToken", "PrefixedNameToken"})
 
+
+def _is_constructor_function(node: Any) -> bool:
+    """Whether *node* is a built-in datatype constructor function.
+
+    elementpath names its constructor tokens ``_<Type>ConstructorFunction``
+    (``_IntConstructorFunction``, ``_DateConstructorFunction``, and so
+    on); the shared suffix is the stable, fail-loud discriminator.
+    """
+    return isinstance(node, XPathFunction) and type(node).__name__.endswith("ConstructorFunction")
+
+
 #: AST node types that read the XPath focus directly — the context item, a
 #: path step, or a predicate. A simple-type assertion has no context item
 #: (XSD 1.1 Part 2, ``xs:assertion``: the value being validated is exposed
@@ -267,24 +279,38 @@ class _AssertionChecker:
 
 
 class _CTAChecker:
-    """Fail-loud visitor for the conditional-type-assignment subset."""
+    """Fail-loud visitor for the conditional-type-assignment subset.
+
+    The admitted grammar is the required subset of XPath 2.0 that XSD
+    1.1 §3.12.6 clause 2.2 prescribes: boolean tests built from ``or``,
+    ``and``, ``not()``, parenthesized subexpressions, attribute tests on
+    the element itself, literals, ``cast as`` expressions and the
+    built-in datatype constructor functions. Child/descendant/ancestor
+    navigation, the context item and every other function are rejected
+    (an extension may accept a wider subset, but pyxsd implements
+    exactly the required subset plus nothing that needs a context item —
+    which a type alternative deliberately does not expose).
+    """
 
     def check(self, node: Any) -> None:
         self._visit(node)
 
     def _visit(self, node: Any) -> None:
         kind = type(node).__name__
-        if isinstance(node, XPathFunction):
-            if kind != "_NotFunction":
-                raise XPathError(
-                    f"{getattr(node, 'symbol', kind)} is outside the "
-                    "conditional-type-assignment XPath subset"
-                )
+        if kind == "_NotFunction":
             children = list(node)
             if len(children) != 1:
                 raise XPathError("malformed not() in a type alternative test")
             self._visit(children[0])
             return
+        if isinstance(node, XPathFunction):
+            if _is_constructor_function(node):
+                self._check_constructor(node)
+                return
+            raise XPathError(
+                f"{getattr(node, 'symbol', kind)} is outside the "
+                "conditional-type-assignment XPath subset"
+            )
         if kind == "_CommercialAtAttributeReference":
             children = list(node)
             if len(children) != 1 or type(children[0]).__name__ not in _CTA_ATTRIBUTE_NAMES:
@@ -305,7 +331,71 @@ class _CTAChecker:
             return
         if kind in _CTA_LITERALS:
             return
+        if kind == "_CastExpression":
+            self._check_cast(node)
+            return
+        if kind == "PrefixedNameToken":
+            self._check_prefixed_call(node)
+            return
         raise XPathError(f"{kind} is outside the conditional-type-assignment XPath subset")
+
+    def _check_simple_value(self, node: Any) -> None:
+        """Admits an ``AttrName`` or a literal (the grammar's SimpleValue)."""
+        kind = type(node).__name__
+        if kind == "_CommercialAtAttributeReference":
+            self._visit(node)
+            return
+        if kind in _CTA_LITERALS:
+            return
+        raise XPathError(f"{kind} is not an attribute test or literal in a type alternative")
+
+    def _check_cast(self, node: Any) -> None:
+        """Admits ``SimpleValue ('cast' 'as' QName '?')``."""
+        children = list(node)
+        if len(children) != 2:
+            raise XPathError("malformed cast expression in a type alternative")
+        self._check_simple_value(children[0])
+        self._check_type_name(children[1])
+
+    def _check_prefixed_call(self, node: Any) -> None:
+        """Admits a prefixed QName, but only as a constructor call.
+
+        elementpath represents ``xs:int(@x)`` as a ``PrefixedNameToken``
+        wrapping the constructor-function token. A bare prefixed name
+        (a child-axis step or a variable) is not part of the subset.
+        """
+        children = list(node)
+        if (
+            len(children) == 2
+            and type(children[0]).__name__ == "NameToken"
+            and _is_constructor_function(children[1])
+        ):
+            self._check_constructor(children[1])
+            return
+        raise XPathError("a prefixed name is outside the conditional-type-assignment XPath subset")
+
+    def _check_constructor(self, node: Any) -> None:
+        """Admits ``QName '(' SimpleValue ')'``."""
+        children = list(node)
+        if len(children) != 1:
+            raise XPathError(
+                f"{getattr(node, 'symbol', type(node).__name__)}() in a type "
+                "alternative must take exactly one attribute or literal argument"
+            )
+        self._check_simple_value(children[0])
+
+    def _check_type_name(self, node: Any) -> None:
+        """Admits a QName used as the target of ``cast as``.
+
+        The token must be a plain name (its children, if any, are name
+        tokens); a constructor call spelled in the same position is not
+        a type reference.
+        """
+        kind = type(node).__name__
+        if kind not in _CTA_ATTRIBUTE_NAMES:
+            raise XPathError("a cast target must be a QName in a type alternative")
+        if any(_is_constructor_function(child) for child in node):
+            raise XPathError("a cast target must name a type, not a constructor call")
 
 
 def parse_assertion_xpath(
@@ -337,9 +427,10 @@ def parse_cta_xpath(
     """Parses an ``xs:alternative`` ``test`` expression.
 
     The CTA subset is attribute tests on the element itself: ``@name``
-    references, literals, value/like comparisons, ``and``/``or`` and
-    ``not``. Child/descendant/parent navigation, predicates, context-item
-    access and every other function are rejected with
+    references, literals, value comparisons, ``and``/``or``/``not``,
+    ``cast as`` to a built-in type and calls to built-in datatype
+    constructors. Child/descendant/parent navigation, predicates,
+    context-item access and every other function are rejected with
     :class:`pyxsd.xpath_subset.XPathError`.
     """
     return _parse(text, namespaces, _CTAChecker(), default_namespace)

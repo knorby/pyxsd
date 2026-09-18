@@ -7349,3 +7349,94 @@ schema = '''
 </xs:schema>'''
 schema_valid = false
 expected_codes = ["assert-invalid"]
+
+[[case]]
+id = "cta/alternative-derived-valid"
+xsd11 = true
+description = "An xs:alternative whose type is validly derived from the declared type is legal"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence/></xs:complexType>
+  <xs:complexType name="Derived">
+    <xs:complexContent>
+      <xs:extension base="Base"><xs:sequence/></xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'd'" type="Derived"/>
+    <xs:alternative type="Base"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp/>'''
+
+[[case]]
+id = "cta/alternative-non-derived-invalid"
+xsd11 = true
+description = "An xs:alternative type not derived from the declared type is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, Saxon CTA cta9008err"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence/></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind" type="xs:string"/>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["alternative-invalid"]
+
+[[case]]
+id = "cta/alternative-out-of-subset-invalid"
+xsd11 = true
+description = "An xs:alternative test outside the CTA XPath subset is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12si04"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Derived"><xs:sequence/></xs:complexType>
+  <xs:element name="temp" type="xs:anyType">
+    <xs:alternative test="child::x" type="Derived"/>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["alternative-invalid"]
+
+[[case]]
+id = "cta/alternative-missing-type-invalid"
+xsd11 = true
+description = "An xs:alternative with neither a type nor an inline type is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 §3.12.3"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp" type="xs:anyType">
+    <xs:alternative test="@kind"/>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["alternative-invalid"]
+
+[[case]]
+id = "cta/alternative-later-derived-allowed"
+xsd11 = true
+description = "A later alternative's type may be derived from an earlier one's (IBM s3_12v08)"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12v08"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence/></xs:complexType>
+  <xs:complexType name="Derived">
+    <xs:complexContent>
+      <xs:extension base="Base"><xs:sequence/></xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@a and @b" type="Base"/>
+    <xs:alternative test="@a" type="Derived"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp/>'''

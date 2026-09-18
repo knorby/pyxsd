@@ -466,3 +466,106 @@ def test_assertion_failing_union_member_falls_through_to_next() -> None:
     )
     # The date fails OldDate's assertion, so the plain xs:date member wins.
     assert errors(parse(body, "<Example>2010-10-10</Example>")) == []
+
+
+# --- xs:alternative schema phase --------------------------------------------
+
+_ALT_BASE = '<xs:complexType name="Base"><xs:sequence/></xs:complexType>'
+_ALT_DERIVED = (
+    '<xs:complexType name="Derived"><xs:complexContent>'
+    '<xs:extension base="Base"><xs:sequence/></xs:extension>'
+    "</xs:complexContent></xs:complexType>"
+)
+_ALT_TEMP = '<xs:element name="temp" type="Base">{alternatives}</xs:element>'
+
+
+def _alt(*alternatives: str) -> str:
+    return _ALT_BASE + _ALT_DERIVED + _ALT_TEMP.format(alternatives="".join(alternatives))
+
+
+def test_alternative_derived_type_is_accepted() -> None:
+    body = _alt('<xs:alternative test="@kind =\'d\'" type="Derived"/>')
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_alternative_non_derived_type_reports_alternative_invalid() -> None:
+    body = _alt('<xs:alternative test="@kind" type="xs:string"/>')
+    assert errors(parse(body, "<temp/>")) == ["alternative-invalid"]
+
+
+def test_alternative_unresolved_type_reports_alternative_invalid() -> None:
+    body = _alt('<xs:alternative test="@kind" type="Missing"/>')
+    assert errors(parse(body, "<temp/>")) == ["alternative-invalid"]
+
+
+def test_alternative_out_of_subset_test_reports_alternative_invalid() -> None:
+    body = _alt('<xs:alternative test="child::x" type="Derived"/>')
+    assert errors(parse(body, "<temp/>")) == ["alternative-invalid"]
+
+
+def test_alternative_missing_type_reports_alternative_invalid() -> None:
+    body = _alt('<xs:alternative test="@kind"/>')
+    assert errors(parse(body, "<temp/>")) == ["alternative-invalid"]
+
+
+def test_alternative_type_and_inline_type_reports_alternative_invalid() -> None:
+    body = _alt(
+        '<xs:alternative test="@kind" type="Derived">'
+        "<xs:complexType><xs:sequence/></xs:complexType></xs:alternative>"
+    )
+    assert errors(parse(body, "<temp/>")) == ["alternative-invalid"]
+
+
+def test_alternative_final_default_without_test_is_accepted() -> None:
+    body = _alt(
+        '<xs:alternative test="@kind =\'d\'" type="Derived"/>',
+        '<xs:alternative type="Base"/>',
+    )
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_alternative_non_final_without_test_reports_alternative_invalid() -> None:
+    body = _alt(
+        '<xs:alternative type="Derived"/>',
+        '<xs:alternative test="@kind" type="Base"/>',
+    )
+    assert errors(parse(body, "<temp/>")) == ["alternative-invalid"]
+
+
+def test_alternative_xs_error_default_is_accepted() -> None:
+    body = _alt(
+        '<xs:alternative test="@kind" type="Derived"/>',
+        '<xs:alternative type="xs:error"/>',
+    )
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_alternative_constructor_function_test_is_accepted() -> None:
+    body = _alt('<xs:alternative test="xs:int(@n) &gt; 0" type="Derived"/>')
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_alternative_cast_test_is_accepted() -> None:
+    body = _alt('<xs:alternative test="@kind cast as xs:int = 1" type="Derived"/>')
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_alternative_inline_derived_type_is_accepted() -> None:
+    body = _alt(
+        '<xs:alternative test="@kind">'
+        "<xs:complexType><xs:complexContent>"
+        '<xs:extension base="Base"><xs:sequence/></xs:extension>'
+        "</xs:complexContent></xs:complexType></xs:alternative>"
+    )
+    assert errors(parse(body, "<temp/>")) == []
+
+
+def test_alternative_later_type_derived_from_earlier_is_allowed() -> None:
+    # IBM S3_12/s3_12v08: a broad first alternative followed by narrower
+    # ones is valid.  XSD 1.1 §3.3.2.1/§3.12 has no "required derivation
+    # ordering" rule, so pyxsd deliberately does not reject this.
+    body = _alt(
+        '<xs:alternative test="@a and @b" type="Base"/>',
+        '<xs:alternative test="@a" type="Derived"/>',
+    )
+    assert errors(parse(body, "<temp/>")) == []
