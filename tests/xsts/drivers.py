@@ -81,6 +81,85 @@ def _target_namespace(path: Path) -> str | None:
     raise HarnessError(f"{path}: empty document")
 
 
+def _composition_targets(path: Path) -> list[Path]:
+    """Resolve the include/import/redefine/override targets of *path*.
+
+    Unreadable or non-schema documents yield no targets; the engine, not the
+    harness, reports a malformed document.  A target is returned whether or
+    not it is itself a bundle member.
+    """
+    try:
+        schema = ET.parse(str(path)).getroot()
+    except (OSError, ET.ParseError):
+        return []
+    if schema.tag.rsplit("}", 1)[-1] != "schema":
+        return []
+    targets: list[Path] = []
+    for child in schema:
+        if child.tag.rsplit("}", 1)[-1] not in _COMPOSITION_ELEMENTS:
+            continue
+        location = child.get("schemaLocation")
+        if not location:
+            continue
+        target = Path(location)
+        if not target.is_absolute():
+            target = path.parent / target
+        targets.append(target.resolve())
+    return targets
+
+
+def _composition_reachable(start: Path, listed: set[Path]) -> set[Path]:
+    """The *listed* documents reachable from *start* through composition."""
+    start = start.resolve()
+    reachable: set[Path] = set()
+    seen: set[Path] = set()
+    stack = [start]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for target in _composition_targets(current):
+            if target in listed:
+                reachable.add(target)
+            stack.append(target)
+    reachable.discard(start)
+    return reachable
+
+
+def _principal_documents(paths: list[Path]) -> list[Path]:
+    """The subset of *paths* the wrapper must load to compose the whole set.
+
+    A document that another bundle member already composes — as its
+    ``include``, ``import``, ``redefine`` or ``override`` target, which is
+    what the catalogue's ``schemaDocument/@role`` records — is redundant:
+    loading it again declares its global components twice and makes the
+    wrapper schema invalid (e.g. ``multiple-roots``).  Documents that compose
+    one another cyclically form a single load unit; the first-listed member
+    of each unit that nothing outside it reaches is kept.  Independent
+    documents are all kept.
+    """
+    resolved = [path.resolve() for path in paths]
+    listed = set(resolved)
+    reach = {path: _composition_reachable(path, listed) for path in resolved}
+    loaded: list[Path] = []
+    loaded_units: list[frozenset[Path]] = []
+    for path in paths:
+        document = path.resolve()
+        unit = frozenset(
+            other
+            for other in resolved
+            if other == document or (other in reach[document] and document in reach[other])
+        )
+        if any(document in reach[other] for other in resolved if other not in unit):
+            continue
+        if unit in loaded_units:
+            continue
+        loaded_units.append(unit)
+        loaded.append(path)
+    return loaded
+
+
 def build_bundle(
     corpus_root: PurePosixPath,
     documents: tuple[DocumentRef, ...],
@@ -90,9 +169,11 @@ def build_bundle(
 
     A single document is returned directly.  Several are combined by an
     otherwise-empty driver schema that imports namespaced documents and
-    includes chameleons, preserving the listed order.  Absolute
-    ``schemaLocation`` values are used so each document's own relative
-    includes still resolve against its real location.
+    includes chameleons, preserving the listed order.  Documents another
+    member already composes are not loaded separately (see
+    :func:`_principal_documents`).  Absolute ``schemaLocation`` values are
+    used so each document's own relative includes still resolve against its
+    real location.
     """
     if not documents:
         raise HarnessError("schemaTest lists no schema documents")
@@ -104,11 +185,12 @@ def build_bundle(
     if len(paths) == 1:
         return paths[0]
 
+    selected = _principal_documents(paths)
     lines = [
         '<?xml version="1.0"?>',
         '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">',
     ]
-    for path in paths:
+    for path in selected:
         location = str(path.resolve())
         namespace = _target_namespace(path)
         if namespace is None:
