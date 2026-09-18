@@ -113,9 +113,10 @@ def main(argv: list[str] | None = None) -> int:
                 jobs=args.jobs,
                 temp_root=Path(workdir),
                 on_progress=progress,
+                synthesize_missing_schema=True,
             )
         else:
-            driver = PyXSDDriver(timeout=args.timeout)
+            driver = PyXSDDriver(timeout=args.timeout, synthesize_missing_schema=True)
             oracle = XmlSchemaDriver(profile.name, timeout=args.timeout) if oracle_enabled else None
             runner = Runner(profile=profile, driver=driver, oracle=oracle, workdir=Path(workdir))
             results = []
