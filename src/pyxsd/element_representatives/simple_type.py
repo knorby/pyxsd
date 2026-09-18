@@ -33,6 +33,7 @@ class SimpleType(XsdType):
         self.totalDigits = None
         self.fractionDigits = None
         self.whiteSpace = None
+        self.explicitTimezone = None
         self.listItemType = None
         self.minInclusive = None
         self.maxInclusive = None

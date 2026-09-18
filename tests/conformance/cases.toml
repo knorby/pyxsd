@@ -8583,3 +8583,157 @@ schema = '''
 '''
 schema_valid = false
 expected_codes = ["versioning-invalid"]
+
+[[case]]
+id = "datatypes/dateTimeStamp-valid"
+xsd11 = true
+description = "xs:dateTimeStamp accepts zoned dateTimes (XSD 1.1 §3.4.28)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="stamp" type="xs:dateTimeStamp" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <stamp>2001-10-26T21:32:52+02:00</stamp>
+  <stamp>2001-10-26T21:32:52Z</stamp>
+  <stamp>2004-02-01T00:00:00.999-09:00</stamp>
+</root>
+'''
+
+[[case]]
+id = "datatypes/dateTimeStamp-missing-timezone"
+xsd11 = true
+description = "xs:dateTimeStamp rejects a dateTime without a timezone (D3_4_28ii01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="stamp" type="xs:dateTimeStamp"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <stamp>2004-02-01T00:00:00.999</stamp>
+</root>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/dateTimeStamp-explicit-timezone-fixed"
+xsd11 = true
+description = "dateTimeStamp fixes explicitTimezone to required; optional is a schema error (D3_4_28si11)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="loose">
+    <xs:restriction base="xs:dateTimeStamp">
+      <xs:explicitTimezone value="optional"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/yearMonthDuration-value-space"
+xsd11 = true
+description = "xs:yearMonthDuration rejects day/time components (D3_4_26ii01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_26 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" type="xs:yearMonthDuration"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <d>P3Y348M1D</d>
+</root>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/dayTimeDuration-value-space"
+xsd11 = true
+description = "xs:dayTimeDuration rejects year/month components (D3_4_27ii01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_27 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" type="xs:dayTimeDuration"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <d>P3DT348M1H</d>
+</root>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/yearMonthDuration-facet-bounds"
+xsd11 = true
+description = "yearMonthDuration min/max facets compare signed whole months (D3_4_26v01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_26"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="window">
+    <xs:restriction base="xs:yearMonthDuration">
+      <xs:minInclusive value="-P2Y"/>
+      <xs:maxInclusive value="P2Y"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" type="window" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <d>-P1Y</d>
+  <d>P1Y11M</d>
+</root>
+'''
+
+[[case]]
+id = "datatypes/fixed-facet-cannot-change"
+xsd11 = true
+description = "A restriction may not change a bound a base type fixed (D3_4_26si11)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_26 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="baseWindow">
+    <xs:restriction base="xs:yearMonthDuration">
+      <xs:minInclusive value="P1Y1M" fixed="true"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="derivedWindow">
+    <xs:restriction base="baseWindow">
+      <xs:minInclusive value="P1Y2M"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]

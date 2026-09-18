@@ -310,6 +310,8 @@ from pyxsd.xsd_data_types import (  # noqa: E402
     Byte,
     Date,
     DateTime,
+    DateTimeStamp,
+    DayTimeDuration,
     Decimal,
     Duration,
     Float,
@@ -333,6 +335,7 @@ from pyxsd.xsd_data_types import (  # noqa: E402
     UnsignedInt,
     UnsignedLong,
     UnsignedShort,
+    YearMonthDuration,
     xsd_value_key,
 )
 
@@ -372,6 +375,22 @@ LATTICE = [
         ],
         ["2006-08-30 14:30:00", "2006-08-30T14:30", "2006-08-30T14:30:60"],
     ),
+    (
+        DateTimeStamp,
+        [
+            "2001-10-26T21:32:52+02:00",
+            "2001-10-26T21:32:52Z",
+            "2004-02-01T00:00:00.999-09:00",
+            "2006-08-30T24:00:00Z",
+        ],
+        [
+            # A timezone is required (XSD 1.1 §3.4.28).
+            "2004-02-01T00:00:00.999",
+            "2001-10-26T21:32:52",
+            "2006-08-30 14:30:00Z",
+            "2006-08-30T14:30:60Z",
+        ],
+    ),
     (Decimal, ["19.95", "-0.5", "+3", ".5", "3.", "0"], ["1e5", "abc", "1.5.5", "-"]),
     (
         Double,
@@ -382,6 +401,35 @@ LATTICE = [
         Duration,
         ["P1Y2M3DT10H30M", "P1D", "-P2D", "PT0.5S", "P0Y", "P1M1D"],
         ["P", "1Y", "PT", "P1S", "X1D"],
+    ),
+    (
+        YearMonthDuration,
+        ["P1Y", "P1Y3M", "-P34Y233M", "P45M", "P0M", "P30Y23M"],
+        [
+            # A day or time fragment leaves the year/month value space.
+            "P3Y348M1D",
+            "P-124Y",
+            "P1Y-2M",
+            "-+P34Y233M",
+            "PT0S",
+            "P0D",
+            "P",
+        ],
+    ),
+    (
+        DayTimeDuration,
+        ["P2D", "PT54H3M2.3S", "-P5DT3S", "-PT43M4.2S", "P30DT400H", "PT0S", "P0D"],
+        [
+            # A year or month fragment leaves the day/time value space.
+            "P12M",
+            "P1Y",
+            "P3DT348M1H",
+            "P1DT-2M",
+            "-+PT34233M",
+            "P35YT5H",
+            "P",
+            "PT",
+        ],
     ),
     (ENTITY, ["e1", "_x"], ["1x", "a:b"]),
     # The built-in list types require at least one item; empty is invalid.
@@ -624,6 +672,54 @@ class TestXsdLexicalCorrectness:
         )
         assert xsd_value_key(Date("2006-08-30")) != xsd_value_key(Date("2006-08-31"))
 
+    def test_value_key_normalises_xsd11_datatypes(self):
+        # The duration subtypes share duration's value space, so spellings
+        # that differ only in unit choice compare equal.
+        assert xsd_value_key(YearMonthDuration("P1Y")) == xsd_value_key(YearMonthDuration("P12M"))
+        assert xsd_value_key(DayTimeDuration("P1D")) == xsd_value_key(DayTimeDuration("PT24H"))
+        # dateTimeStamp is dateTime restricted to zoned values.
+        assert xsd_value_key(DateTimeStamp("1999-12-31T19:00:00-05:00")) == xsd_value_key(
+            DateTimeStamp("2000-01-01T00:00:00Z")
+        )
+
+
+class TestXsd11DataTypes:
+    """XSD 1.1 ``dateTimeStamp`` and the duration subtypes."""
+
+    def test_dateTimeStamp_accepts_zoned_and_rejects_unzoned(self):
+        assert DateTimeStamp("2001-10-26T21:32:52+02:00") == "2001-10-26T21:32:52+02:00"
+        assert DateTimeStamp("2001-10-26T21:32:52Z") == "2001-10-26T21:32:52Z"
+        with pytest.raises(TypeError):
+            DateTimeStamp("2004-02-01T00:00:00.999")
+
+    def test_duration_subtypes_reject_foreign_value_space(self):
+        with pytest.raises(TypeError):
+            YearMonthDuration("P3Y348M1D")
+        with pytest.raises(TypeError):
+            YearMonthDuration("PT1H")
+        with pytest.raises(TypeError):
+            DayTimeDuration("P3DT348M1H")
+        with pytest.raises(TypeError):
+            DayTimeDuration("P1Y")
+
+    def test_duration_subtypes_are_totally_ordered(self):
+        from pyxsd.facets import order_key
+
+        # Signed totals: -P1Y is *greater* than -P2Y, unlike duration's
+        # partial (sign, months, seconds) key.
+        assert order_key(YearMonthDuration("-P1Y")) > order_key(YearMonthDuration("-P2Y"))
+        assert order_key(YearMonthDuration("P1Y")) > order_key(YearMonthDuration("-P1Y"))
+        assert order_key(DayTimeDuration("-PT1H")) > order_key(DayTimeDuration("-PT2H"))
+        assert order_key(DayTimeDuration("P1D")) == order_key(DayTimeDuration("PT24H"))
+        assert order_key(DateTimeStamp("2001-01-01T00:00:00Z")) < order_key(
+            DateTimeStamp("2001-01-01T01:00:00Z")
+        )
+
+    def test_duration_subtypes_share_duration_lattice(self):
+        assert issubclass(YearMonthDuration, Duration)
+        assert issubclass(DayTimeDuration, Duration)
+        assert issubclass(DateTimeStamp, DateTime)
+
 
 class TestListTypes:
     def test_tokens_property(self):
@@ -646,10 +742,10 @@ class TestBuiltinNameTable:
             assert klass.name in _PRIMITIVE_TYPES, klass.__name__
             assert _PRIMITIVE_TYPES[klass.name] is klass
 
-    def test_table_has_46_builtins(self):
+    def test_table_has_49_builtins(self):
         from pyxsd.element_representatives.element_representative import _PRIMITIVE_TYPES
 
-        assert len(_PRIMITIVE_TYPES) == 46
+        assert len(_PRIMITIVE_TYPES) == 49
         # Spot-check XSD spellings.
         for xsd_name in (
             "string",
@@ -663,6 +759,9 @@ class TestBuiltinNameTable:
             "date",
             "time",
             "duration",
+            "dateTimeStamp",
+            "yearMonthDuration",
+            "dayTimeDuration",
             "gYearMonth",
             "gMonthDay",
             "base64Binary",

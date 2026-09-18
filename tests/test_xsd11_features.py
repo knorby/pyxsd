@@ -1488,16 +1488,15 @@ def test_vc_facet_unavailable_mixed_keeps_declaration() -> None:
 
 
 def test_vc_type_availability_follows_the_shared_table() -> None:
-    # xs:dateTimeStamp is available only once the datatype work lands; the
-    # filter must consult the shared supported-type table, never fake it.
+    # xs:dateTimeStamp is implemented by the datatype lattice, so the
+    # filter must report it available by consulting the shared table,
+    # never by faking the answer.
     from pyxsd.versioning import SUPPORTED_TYPE_NAMES
 
+    assert "dateTimeStamp" in SUPPORTED_TYPE_NAMES
     body = '<xs:element name="temp" type="xs:string" vc:typeAvailable="xs:dateTimeStamp"/>'
     report = parse(body, "<temp>x</temp>", extra=VC_PREFIX)
-    if "dateTimeStamp" in SUPPORTED_TYPE_NAMES:
-        assert errors(report) == []
-    else:
-        assert errors(report) == ["unknown-root"]
+    assert errors(report) == []
 
 
 def test_vc_bad_min_version_reports_versioning_invalid() -> None:

@@ -1419,6 +1419,7 @@ from pyxsd.element_representatives.complex_type import ComplexType  # noqa: E402
 from pyxsd.element_representatives.documentation import Documentation  # noqa: E402
 from pyxsd.element_representatives.element import Element  # noqa: E402
 from pyxsd.element_representatives.enumeration import Enumeration  # noqa: E402
+from pyxsd.element_representatives.explicit_timezone import ExplicitTimezone  # noqa: E402
 from pyxsd.element_representatives.extension import Extension  # noqa: E402
 from pyxsd.element_representatives.fraction_digits import FractionDigits  # noqa: E402
 from pyxsd.element_representatives.group import Group  # noqa: E402
@@ -1483,6 +1484,7 @@ TAG_CLASSES = {
     "SimpleContent": SimpleContent,
     "ComplexContent": ComplexContent,
     "Enumeration": Enumeration,
+    "ExplicitTimezone": ExplicitTimezone,
     "Pattern": Pattern,
     "Length": Length,
     "MinLength": MinLength,
