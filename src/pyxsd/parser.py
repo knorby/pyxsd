@@ -487,6 +487,13 @@ class PyXSD:
             self._injectXmlNamespaceAttributes(root)
             self._injectXsiNamespaceAttributes(root)
 
+        # XSD 1.1 allows a local element or attribute declaration to state
+        # its own target namespace, but only inside an xs:restriction
+        # (§3.3.2.1, §3.2.2). Register the value as a namespace override
+        # before the ER run snapshots ``namespaceOverrides`` so the
+        # declaration's expanded name reflects it.
+        self._applyLocalTargetNamespaces(root)
+
         # Stage this parser's snapshot on its own context before the ER
         # run so imported declarations report their own target namespace
         # and form defaults.
@@ -2621,6 +2628,90 @@ class PyXSD:
         loaded.update({XSD_NS, XSI_NS, XML_NS, None})
         return loaded
 
+    def _applyLocalTargetNamespaces(self, schemaRoot: Any) -> None:
+        """Applies and validates XSD 1.1 ``targetNamespace`` on locals.
+
+        XSD 1.1 §3.2.3/§3.3.3 let a local element or attribute
+        declaration state its own target namespace. The value names the
+        declaration's expanded name, so it is recorded in
+        ``_namespaceOverrides`` (recovering TargetNS target001/003 and
+        IBM targetNamespace_005). The accompanying constraints are
+        enforced as schema errors:
+
+        * ``form`` and ``targetNamespace`` may not both appear
+          (§3.2.3.6.2 / §3.3.3.4.2, s3_2_3si03/si06);
+        * when the value differs from the schema's target namespace the
+          declaration must have a ``complexType`` ancestor
+          (§3.2.3.6.3.1 / §3.3.3.4.3.1, s3_2_3si04/si07);
+        * inside a ``restriction`` whose base is ``xs:anyType`` the value
+          may not differ from the schema's target namespace
+          (§3.3.3.4.3.2, s3_2_3si05/si08).
+        """
+        schemaNS = schemaRoot.get("targetNamespace")
+
+        def walk(
+            element: Any,
+            derivation: str | None,
+            has_complex_type: bool,
+            in_anytype_restriction: bool,
+        ) -> None:
+            for child in element:
+                tag = child.tag.split("}")[-1]
+                childDerivation = derivation
+                childHasComplexType = has_complex_type
+                childAnyTypeRestriction = in_anytype_restriction
+                if tag == "complexType":
+                    childHasComplexType = True
+                elif tag == "restriction":
+                    childDerivation = "restriction"
+                    base = child.get("base")
+                    if base is not None and base.split(":")[-1] == "anyType":
+                        childAnyTypeRestriction = True
+                elif tag == "extension":
+                    childDerivation = "extension"
+                if tag in ("element", "attribute"):
+                    value = child.get("targetNamespace")
+                    if value is not None:
+                        error: str | None = None
+                        if child.get("form") is not None:
+                            error = (
+                                f"the local {tag} declaration may not carry both "
+                                "'form' and 'targetNamespace'"
+                            )
+                        elif element is schemaRoot:
+                            error = (
+                                f"the global {tag} declaration '{child.get('name')}' "
+                                "may not carry 'targetNamespace'"
+                            )
+                        elif child.get("ref") is not None:
+                            error = f"a {tag} reference may not carry 'targetNamespace'"
+                        elif value != schemaNS and derivation != "restriction":
+                            error = (
+                                f"a local {tag} declaration whose 'targetNamespace' "
+                                "differs from the schema's is only allowed within "
+                                "an xs:restriction"
+                            )
+                        elif in_anytype_restriction and value != schemaNS:
+                            error = (
+                                f"the local {tag} declaration's 'targetNamespace' "
+                                "may not differ from the schema's inside a "
+                                "restriction of xs:anyType"
+                            )
+                        if error is None:
+                            self._namespaceOverrides[id(child)] = value
+                        else:
+                            self.report.add_error(
+                                error, code="declaration-attribute", phase="schema"
+                            )
+                walk(
+                    child,
+                    childDerivation,
+                    childHasComplexType,
+                    childAnyTypeRestriction,
+                )
+
+        walk(schemaRoot, None, False, False)
+
     def _checkValueConstraints(self, schemaER: Any) -> None:
         """Validates element/attribute ``default``/``fixed`` values.
 
@@ -2967,6 +3058,23 @@ class PyXSD:
             includedNS = mainNS
         if includedNS:
             self._composedTargetNamespaces.add(includedNS)
+        if (
+            isImport
+            and checkImportNamespace
+            and tag.get("namespace") is None
+            and includedNS is not None
+        ):
+            # XSD 1.1 §4.2.3: an xs:import with no namespace attribute
+            # imports the *absent* (no-namespace) target namespace, so the
+            # referenced document must itself have no targetNamespace
+            # (TargetNS target007). A namespaced document belongs to a
+            # namespace-carrying import.
+            self.report.add_error(
+                f"the import '{location}' has no namespace attribute, but the "
+                f"imported schema declares targetNamespace '{includedNS}'",
+                code="compose-invalid",
+                phase="schema",
+            )
         if (
             isImport
             and checkImportNamespace

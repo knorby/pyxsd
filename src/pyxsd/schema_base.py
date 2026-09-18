@@ -1979,12 +1979,23 @@ class SchemaBase:
         elif len(usedAttrs) < len(attrInElementTag):
             rejected = getattr(self, "_wildcardRejectedAttributes_", ())
             for attrET in attrInElementTag:
-                if attrET not in usedAttrs and attrET not in rejected:
-                    self._report_warning(
-                        f"attribute '{attrET}' is not declared in the schema and was not parsed",
-                        code="unexpected-attribute",
-                        element=elementName,
-                    )
+                if attrET in usedAttrs or attrET in rejected:
+                    continue
+                # Attributes in the schema-instance and XML namespaces are
+                # allowed to appear without a declaration (xsi:type,
+                # xsi:nil, xsi:schemaLocation, xml:lang, ...). Everything
+                # else that survives the declaration and wildcard passes
+                # is genuinely undeclared and makes the instance invalid
+                # (AttrDecl ad_name00101m1-4, ad_targetns00101m1-3).
+                if namespace_of(attrET) in (xsi.XSI_NAMESPACE, XML_NS):
+                    continue
+                if attrET.startswith("xml:") or attrET.startswith("xmlns"):
+                    continue
+                self._report_error(
+                    f"attribute '{attrET}' is not declared in the schema and was not parsed",
+                    code="unexpected-attribute",
+                    element=elementName,
+                )
         for descriptorAttrName in descriptorAttributeNames:
             descriptor = descriptorAttributes[descriptorAttrName]
             matchName = self._instance_name_of(descriptor, is_attribute=True)

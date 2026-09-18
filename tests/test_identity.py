@@ -404,7 +404,7 @@ class TestQualifiedNames:
             "  </xs:element>\n"
             "</xs:schema>"
         )
-        instance = f'<q:root xmlns:q="{ns}"><q:item q:id="dup"/><q:item q:id="dup"/></q:root>'
+        instance = f'<q:root xmlns:q="{ns}"><q:item id="dup"/><q:item id="dup"/></q:root>'
         parser = _parse11(schema, instance, tmp_path)
         assert not parser.report.has_errors
 

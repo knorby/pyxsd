@@ -908,6 +908,11 @@ class ElementRepresentative:
         explicit = element.get("form") if element is not None else None
         if explicit is not None:
             return explicit == "qualified"
+        # XSD 1.1: a local declaration carrying an explicit targetNamespace
+        # is qualified into that namespace regardless of the form default
+        # (TargetNS target001, IBM targetNamespace_005).
+        if element is not None and element.get("targetNamespace") is not None:
+            return True
         if schema is None:
             return False
         sourceDefaults = getattr(schema, "formDefaultOverrides", None)
