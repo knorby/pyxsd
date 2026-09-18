@@ -914,3 +914,251 @@ def test_open_content_component_is_stored_on_complex_type() -> None:
     assert stored.mode == "suffix"
     assert stored.wildcard is not None
     assert stored.wildcard.namespace == "urn:open"
+
+
+# --- xs:defaultOpenContent on the schema ------------------------------------
+
+_DEFAULT_OPEN_CONTENT_BODY = (
+    '<xs:defaultOpenContent{mode}><xs:any namespace="urn:default" '
+    'processContents="lax"/></xs:defaultOpenContent>'
+    '<xs:complexType name="NonEmpty"><xs:sequence>'
+    '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
+    '<xs:complexType name="Empty"><xs:sequence/></xs:complexType>'
+    '<xs:complexType name="Own"><xs:openContent mode="interleave">'
+    '<xs:any namespace="urn:own" processContents="lax"/></xs:openContent>'
+    "<xs:sequence/></xs:complexType>"
+    '<xs:element name="temp" type="NonEmpty"/>'
+)
+
+
+def _parse_parser(body: str, xml: str = "<temp/>", extra: str = "") -> PyXSD:
+    return PyXSD(
+        io.StringIO(xml),
+        io.StringIO(SCHEMA.format(body=body, extra=extra)),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.NAMESPACED,
+    )
+
+
+def _named_type(parser: PyXSD, name: str):
+    for entries in parser.components.values():
+        for entry in entries:
+            if type(entry).__name__ == "ComplexType" and entry.name == name:
+                return entry
+    raise AssertionError(f"no complex type named {name!r}")
+
+
+def test_default_open_content_applies_to_type_without_open_content() -> None:
+    parser = _parse_parser(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix"'))
+    assert errors(parser.report) == []
+    stored = _named_type(parser, "NonEmpty").openContent
+    assert stored is not None
+    assert stored.mode == "suffix"
+    assert stored.wildcard is not None
+    assert stored.wildcard.namespace == "urn:default"
+
+
+def test_default_open_content_does_not_touch_explicit_open_content() -> None:
+    parser = _parse_parser(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix"'))
+    stored = _named_type(parser, "Own").openContent
+    assert stored is not None
+    assert stored.mode == "interleave"
+    assert stored.wildcard is not None
+    assert stored.wildcard.namespace == "urn:own"
+
+
+def test_default_open_content_skips_empty_type_by_default() -> None:
+    # appliesToEmpty defaults to false: an empty content type keeps no
+    # open content even though the schema declares a default.
+    parser = _parse_parser(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix"'))
+    assert _named_type(parser, "Empty").openContent is None
+
+
+def test_default_open_content_applies_to_empty_type_when_requested() -> None:
+    parser = _parse_parser(
+        _DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix" appliesToEmpty="true"')
+    )
+    stored = _named_type(parser, "Empty").openContent
+    assert stored is not None
+    assert stored.mode == "suffix"
+
+
+def test_default_open_content_attachments_are_independent() -> None:
+    body = (
+        '<xs:defaultOpenContent mode="suffix">'
+        '<xs:any namespace="urn:default" processContents="lax"/></xs:defaultOpenContent>'
+        '<xs:complexType name="One"><xs:sequence>'
+        '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
+        '<xs:complexType name="Two"><xs:sequence>'
+        '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
+        '<xs:element name="temp" type="One"/>'
+    )
+    parser = _parse_parser(body)
+    one = _named_type(parser, "One").openContent
+    two = _named_type(parser, "Two").openContent
+    assert one is not None and two is not None
+    assert one is not two
+    assert one.wildcard is not two.wildcard
+
+
+def test_default_open_content_applies_to_simple_content_type() -> None:
+    # A simpleContent type has {variety} simple (not empty), so it takes
+    # the default even when appliesToEmpty is false.
+    body = (
+        '<xs:defaultOpenContent mode="interleave">'
+        '<xs:any namespace="urn:default" processContents="lax"/></xs:defaultOpenContent>'
+        '<xs:complexType name="S"><xs:simpleContent>'
+        '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
+        '<xs:element name="temp" type="S"/>'
+    )
+    parser = _parse_parser(body, "<temp>text</temp>")
+    assert _named_type(parser, "S").openContent is not None
+
+
+def test_default_open_content_bad_mode_reports_open_content_invalid() -> None:
+    # ``none`` is not part of the defaultOpenContent vocabulary.
+    body = '<xs:defaultOpenContent mode="none"/><xs:element name="temp" type="xs:string"/>'
+    assert errors(parse(body, "<temp>x</temp>")) == ["open-content-invalid"]
+
+
+def test_default_open_content_bad_mode_value_reports_invalid() -> None:
+    body = (
+        '<xs:defaultOpenContent mode="around"><xs:any/></xs:defaultOpenContent>'
+        '<xs:element name="temp" type="xs:string"/>'
+    )
+    assert errors(parse(body, "<temp>x</temp>")) == ["open-content-invalid"]
+
+
+def test_default_open_content_without_wildcard_reports_invalid() -> None:
+    body = '<xs:defaultOpenContent mode="suffix"/><xs:element name="temp" type="xs:string"/>'
+    assert errors(parse(body, "<temp>x</temp>")) == ["open-content-invalid"]
+
+
+def test_default_open_content_bad_applies_to_empty_is_declaration_attribute() -> None:
+    body = (
+        '<xs:defaultOpenContent mode="suffix" appliesToEmpty="yes">'
+        "<xs:any/></xs:defaultOpenContent>"
+        '<xs:element name="temp" type="xs:string"/>'
+    )
+    assert errors(parse(body, "<temp>x</temp>")) == ["declaration-attribute"]
+
+
+def test_default_open_content_illegal_wildcard_is_reported() -> None:
+    body = (
+        '<xs:defaultOpenContent mode="suffix">'
+        '<xs:any namespace="##bogus"/></xs:defaultOpenContent>'
+        '<xs:element name="temp" type="xs:string"/>'
+    )
+    assert errors(parse(body, "<temp>x</temp>")) == ["wildcard-invalid"]
+
+
+def test_open_content_wildcard_occurrence_attribute_is_invalid() -> None:
+    # The child wildcard of open content is a wildcard component, not a
+    # particle: minOccurs/maxOccurs are not allowed (Saxon open048/bug 15618).
+    body = (
+        '<xs:complexType name="T"><xs:openContent mode="interleave">'
+        '<xs:any processContents="lax" maxOccurs="unbounded"/>'
+        "</xs:openContent><xs:sequence/></xs:complexType>"
+        '<xs:element name="temp" type="T"/>'
+    )
+    assert errors(parse(body, "<temp/>")) == ["wildcard-invalid"]
+
+
+def test_default_open_content_wildcard_occurrence_attribute_is_invalid() -> None:
+    body = (
+        '<xs:defaultOpenContent mode="suffix">'
+        '<xs:any processContents="lax" minOccurs="0"/></xs:defaultOpenContent>'
+        '<xs:element name="temp" type="xs:string"/>'
+    )
+    assert errors(parse(body, "<temp>x</temp>")) == ["wildcard-invalid"]
+
+
+def test_default_open_content_redefine_type_takes_host_default(tmp_path) -> None:
+    # A type redefined inside the host document is declared in the host
+    # schema document, so the host's default open content applies to it
+    # (Saxon open042).
+    (tmp_path / "included.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:complexType name="alpha"><xs:sequence/></xs:complexType>'
+        '<xs:complexType name="beta"><xs:openContent mode="interleave">'
+        '<xs:any namespace="##other" processContents="lax"/></xs:openContent>'
+        "<xs:sequence/></xs:complexType></xs:schema>"
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:redefine schemaLocation="included.xsd">'
+        '<xs:complexType name="beta"><xs:complexContent>'
+        '<xs:restriction base="beta"><xs:sequence/></xs:restriction>'
+        "</xs:complexContent></xs:complexType></xs:redefine>"
+        '<xs:defaultOpenContent mode="suffix" appliesToEmpty="true">'
+        '<xs:any namespace="urn:default" processContents="lax"/></xs:defaultOpenContent>'
+        '<xs:element name="temp" type="beta"/></xs:schema>'
+    )
+    parser = PyXSD(
+        io.StringIO("<temp/>"),
+        str(tmp_path / "main.xsd"),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.NAMESPACED,
+    )
+    assert errors(parser.report) == []
+    redefined = _named_type(parser, "beta").openContent
+    assert redefined is not None
+    assert redefined.mode == "suffix"
+    assert _named_type(parser, "alpha").openContent is None
+
+
+def test_default_open_content_not_applied_across_include(tmp_path) -> None:
+    # The host document's default does not leak into a type declared in
+    # an included document (Saxon open040).
+    (tmp_path / "included.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:complexType name="beta"><xs:sequence/></xs:complexType></xs:schema>'
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:include schemaLocation="included.xsd"/>'
+        '<xs:defaultOpenContent mode="suffix" appliesToEmpty="true">'
+        '<xs:any namespace="urn:default" processContents="lax"/></xs:defaultOpenContent>'
+        '<xs:complexType name="alpha"><xs:sequence/></xs:complexType>'
+        '<xs:element name="temp" type="alpha"/></xs:schema>'
+    )
+    parser = PyXSD(
+        io.StringIO("<temp/>"),
+        str(tmp_path / "main.xsd"),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.NAMESPACED,
+    )
+    assert _named_type(parser, "alpha").openContent is not None
+    assert _named_type(parser, "beta").openContent is None
+
+
+def test_included_default_open_content_applies_in_its_document(tmp_path) -> None:
+    # An included document's own default applies to its own types, not to
+    # the host document's types (Saxon open041).
+    (tmp_path / "included.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:defaultOpenContent mode="suffix" appliesToEmpty="true">'
+        '<xs:any namespace="urn:included" processContents="lax"/></xs:defaultOpenContent>'
+        '<xs:complexType name="beta"><xs:sequence/></xs:complexType></xs:schema>'
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:include schemaLocation="included.xsd"/>'
+        '<xs:complexType name="alpha"><xs:sequence/></xs:complexType>'
+        '<xs:element name="temp" type="alpha"/></xs:schema>'
+    )
+    parser = PyXSD(
+        io.StringIO("<temp/>"),
+        str(tmp_path / "main.xsd"),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.NAMESPACED,
+    )
+    assert _named_type(parser, "alpha").openContent is None
+    beta = _named_type(parser, "beta").openContent
+    assert beta is not None
+    assert beta.wildcard is not None
+    assert beta.wildcard.namespace == "urn:included"

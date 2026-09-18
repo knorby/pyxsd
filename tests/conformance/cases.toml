@@ -7706,3 +7706,102 @@ schema = '''
 </xs:schema>'''
 schema_valid = false
 expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "default-open-content/interleave-valid"
+xsd11 = true
+description = "A schema defaultOpenContent applies to a non-empty complex type (IBM S3_4_1v02)"
+derived_from = "W3C XMLSchema1TestSuite, IBM S3_4_1/s3_4_1v02"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="interleave">
+    <xs:any processContents="lax"/>
+  </xs:defaultOpenContent>
+  <xs:complexType name="T">
+    <xs:sequence><xs:element name="x" type="xs:integer"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+instance = '''
+<temp><x>1</x></temp>'''
+instance_valid = true
+
+[[case]]
+id = "default-open-content/applies-to-empty-valid"
+xsd11 = true
+description = "appliesToEmpty=true attaches the default to an empty content type (IBM S3_4_1v01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM S3_4_1/s3_4_1v01"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="interleave" appliesToEmpty="true">
+    <xs:any processContents="lax"/>
+  </xs:defaultOpenContent>
+  <xs:complexType name="c"/>
+  <xs:element name="temp" type="c"/>
+</xs:schema>'''
+instance = '''
+<temp/>'''
+instance_valid = true
+
+[[case]]
+id = "default-open-content/none-mode-invalid"
+xsd11 = true
+description = "defaultOpenContent mode=none is outside its interleave/suffix vocabulary"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.2.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="none"><xs:any/></xs:defaultOpenContent>
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "default-open-content/missing-wildcard-invalid"
+xsd11 = true
+description = "defaultOpenContent requires exactly one xs:any child"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.2.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="suffix"/>
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "default-open-content/wildcard-max-occurs-invalid"
+xsd11 = true
+description = "The open-content child wildcard is not a particle: maxOccurs is illegal (Saxon open048/bug 15618)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open048"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="interleave">
+      <xs:any namespace="##other" processContents="lax" maxOccurs="unbounded"/>
+    </xs:openContent>
+    <xs:sequence/>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "default-open-content/bad-applies-to-empty-invalid"
+xsd11 = true
+description = "appliesToEmpty is an xs:boolean; 'yes' is a lexical error"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.2.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="suffix" appliesToEmpty="yes"><xs:any/></xs:defaultOpenContent>
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]

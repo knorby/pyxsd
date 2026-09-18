@@ -206,6 +206,31 @@ class ComplexType(XsdType):
             return True
         return particle._silentOccurs("minOccurs") == 0
 
+    def acceptsDefaultOpenContent(self, *, appliesToEmpty: bool) -> bool:
+        """Whether a schema-level default open content may attach to this type.
+
+        XSD 1.1 §3.4.2.4: a schema's ``defaultOpenContent`` supplies the
+        open content of every complex type declared in the same schema
+        document that has no explicit ``xs:openContent``; the default
+        attaches only when the type's explicit content type is not empty,
+        or -- for an empty content type -- when ``appliesToEmpty`` is
+        true. A type carrying its own ``xs:openContent`` is never touched.
+        """
+        if self.openContent is not None:
+            return False
+        return appliesToEmpty or not self._explicitContentIsEmpty()
+
+    def _explicitContentIsEmpty(self) -> bool:
+        """Whether the explicit content type has {variety} ``empty``.
+
+        Unlike :meth:`_explicitContentEmpty`, a ``simpleContent`` type has
+        {variety} ``simple`` (not ``empty``), so it is *not* empty here.
+        """
+        for child in self.processedChildren or ():
+            if child is not None and type(child).__name__ == "SimpleContent":
+                return False
+        return self._explicitContentEmpty()
+
     def _baseComplexType(self, _seen: set[int] | None = None) -> "ComplexType | None":
         """The first base type that is a complex type, or ``None``."""
         for name in getattr(self, "superClassNames", None) or ():

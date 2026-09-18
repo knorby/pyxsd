@@ -25,6 +25,7 @@ this phase cannot change an instance verdict.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +40,10 @@ from pyxsd.wildcards import (
 
 #: The XSD 1.1 ``mode`` vocabulary of ``xs:openContent``.
 OPEN_CONTENT_MODES = frozenset({"none", "interleave", "suffix"})
+
+#: The XSD 1.1 ``mode`` vocabulary of ``xs:defaultOpenContent`` (no ``none``:
+#: a default that admits nothing is spelled by simply omitting the element).
+DEFAULT_OPEN_CONTENT_MODES = frozenset({"interleave", "suffix"})
 
 #: The ``mode`` value assumed when the attribute is absent (XSD 1.1 §3.4.2.2).
 DEFAULT_OPEN_CONTENT_MODE = "interleave"
@@ -55,6 +60,170 @@ class OpenContent:
 
     mode: str
     wildcard: WildcardSpec | None
+
+
+@dataclass(frozen=True)
+class DefaultOpenContent:
+    """The parsed ``xs:defaultOpenContent`` component of one schema document.
+
+    ``applies_to_empty`` is the effective ``appliesToEmpty`` value: the
+    default open content attaches to a complex type with empty content
+    only when it is true.
+    """
+
+    mode: str
+    wildcard: WildcardSpec
+    applies_to_empty: bool = False
+
+    def component(self) -> OpenContent:
+        """Returns a fresh :class:`OpenContent` for attachment to one type.
+
+        A new component is built per attachment (and the wildcard copied),
+        so the schema default is never shared as mutable state between the
+        types that inherit it.
+        """
+        return OpenContent(self.mode, copy.copy(self.wildcard))
+
+
+def namespace_resolver(schema: Any, element: Any):
+    """A ``notQName`` QName expander for *element*, or ``None``.
+
+    Prefix bindings are recorded per element by the parsing layer, so a
+    resolver is available only once a namespace context is attached.
+    """
+    context = getattr(schema, "namespaceContext", None)
+    if context is None or element is None:
+        return None
+
+    def resolve(token):
+        return context.resolve(element, token)
+
+    return resolve
+
+
+def open_content_wildcard_spec(
+    element: Any,
+    *,
+    report_error,
+    target_namespace: Any = None,
+    resolve_qname: Any = None,
+) -> WildcardSpec:
+    """Validates and builds the wildcard of an open-content ``xs:any``.
+
+    The shared Area D wildcard legality is used unchanged (namespace
+    constraints including the 1.1 ``notNamespace``/``notQName``,
+    ``processContents`` and the allowed attribute set), plus the
+    open-content-specific rule that the child wildcard is not a particle:
+    ``minOccurs``/``maxOccurs`` are not part of its XML representation
+    (Saxon ``open048``/bug 15618). A malformed attribute is reported,
+    never raised.
+    """
+    for code, message in wildcard_declaration_problems(
+        element.attrib, is_attribute=False, resolve_qname=resolve_qname
+    ):
+        report_error(message, code)
+    for name in ("minOccurs", "maxOccurs"):
+        if name in element.attrib:
+            report_error(
+                f"<any> inside open content must not carry an occurrence attribute '{name}'",
+                "wildcard-invalid",
+            )
+    spec = wildcard_spec(
+        element.attrib,
+        is_attribute=False,
+        target_namespace=target_namespace,
+        resolve_qname=resolve_qname,
+    )
+    for code, message in not_qname_consistency_problems(spec, target_namespace=target_namespace):
+        report_error(message, code)
+    return spec
+
+
+def default_open_content_element(schema_element: Any) -> Any:
+    """Returns the ``xs:defaultOpenContent`` child of *schema_element*, if any."""
+    if schema_element is None:
+        return None
+    for child in schema_element:
+        if namespace_of(child.tag) == XSD_NS and local_name(child.tag) == "defaultOpenContent":
+            return child
+    return None
+
+
+def parse_default_open_content(
+    element: Any,
+    *,
+    report_error,
+    target_namespace: Any = None,
+    resolve_qname: Any = None,
+) -> DefaultOpenContent | None:
+    """Validates and parses one ``xs:defaultOpenContent`` element.
+
+    Used both by the declaration walk (the main document's element, via
+    :class:`DefaultOpenContentER`) and by the parser for a composed
+    document's default, whose element is never spliced into the main
+    tree. Returns ``None`` when the declaration is structurally unusable
+    (an illegal mode or a missing/duplicated wildcard); reported problems
+    use ``open-content-invalid`` for the mode/wildcard rules and the
+    shared declaration codes for attribute/child grammar.
+    """
+    allowed = frozenset({"id", "mode", "appliesToEmpty"})
+    for raw in element.attrib:
+        if raw.startswith("{"):
+            continue
+        if raw not in allowed:
+            report_error(
+                f"<defaultOpenContent> does not allow the '{raw}' attribute",
+                "declaration-attribute",
+            )
+    raw_mode = element.get("mode")
+    mode = DEFAULT_OPEN_CONTENT_MODE if raw_mode is None else str(raw_mode).strip()
+    if mode not in DEFAULT_OPEN_CONTENT_MODES:
+        report_error(
+            f"<defaultOpenContent> mode '{raw_mode}' is not one of 'interleave', 'suffix'",
+            "open-content-invalid",
+        )
+        return None
+    applies = False
+    raw_applies = element.get("appliesToEmpty")
+    if raw_applies is not None:
+        text = str(raw_applies).strip()
+        if text in ("true", "1"):
+            applies = True
+        elif text not in ("false", "0"):
+            report_error(
+                f"<defaultOpenContent> has an invalid appliesToEmpty value "
+                f"'{raw_applies}'; expected true, false, 1 or 0",
+                "declaration-attribute",
+            )
+
+    schema_children = [child for child in element if namespace_of(child.tag) == XSD_NS]
+    tags = [local_name(child.tag) for child in schema_children]
+    for child in schema_children:
+        tag = local_name(child.tag)
+        if tag not in ("annotation", "any"):
+            report_error(
+                f"<{tag}> is not allowed inside <defaultOpenContent>",
+                "declaration-child",
+            )
+    if "annotation" in tags and tags[0] != "annotation":
+        report_error(
+            "<annotation> must be the first child of <defaultOpenContent>",
+            "declaration-order",
+        )
+    any_children = [child for child in schema_children if local_name(child.tag) == "any"]
+    if len(any_children) != 1:
+        report_error(
+            "<defaultOpenContent> requires exactly one <any> child",
+            "open-content-invalid",
+        )
+        return None
+    spec = open_content_wildcard_spec(
+        any_children[0],
+        report_error=report_error,
+        target_namespace=target_namespace,
+        resolve_qname=resolve_qname,
+    )
+    return DefaultOpenContent(mode, spec, applies)
 
 
 class OpenContentER(ElementRepresentative):
@@ -191,27 +360,19 @@ class OpenContentER(ElementRepresentative):
 
         The shared Area D legality is used unchanged: namespace-constraint
         tokens (including the 1.1 ``notNamespace``), ``processContents``,
-        ``notQName`` and the allowed attribute set. Returns the registered
-        shape of the spec; a malformed attribute is reported, never raised.
+        ``notQName`` and the allowed attribute set, plus the open-content
+        rule that the child is a wildcard component, not a particle (no
+        occurrence attributes). Returns the registered shape of the spec;
+        a malformed attribute is reported, never raised.
         """
         if element is None:
             return None
-        resolver = self._qnameResolver(element)
-        for code, message in wildcard_declaration_problems(
-            element.attrib, is_attribute=False, resolve_qname=resolver
-        ):
-            self._reportSchemaError(message, code=code)
-        spec = wildcard_spec(
-            element.attrib,
-            is_attribute=False,
+        return open_content_wildcard_spec(
+            element,
+            report_error=lambda message, code: self._reportSchemaError(message, code=code),
             target_namespace=self.getNamespace(),
-            resolve_qname=resolver,
+            resolve_qname=self._qnameResolver(element),
         )
-        for code, message in not_qname_consistency_problems(
-            spec, target_namespace=self.getNamespace()
-        ):
-            self._reportSchemaError(message, code=code)
-        return spec
 
     def _qnameResolver(self, element: Any):
         """A ``notQName`` QName expander for *element*, or ``None``."""
@@ -219,19 +380,98 @@ class OpenContentER(ElementRepresentative):
             schema = self.getSchema()
         except AttributeError:
             return None
-        context = getattr(schema, "namespaceContext", None)
-        if context is None:
+        return namespace_resolver(schema, element)
+
+
+class DefaultOpenContentER(ElementRepresentative):
+    """The element representative for the ``xs:defaultOpenContent`` tag.
+
+    A schema-level default applies (XSD 1.1 §3.4.2.4) to every complex
+    type declared in the same schema document that has no explicit
+    ``xs:openContent``, non-empty explicit content, or empty content with
+    ``appliesToEmpty="true"``. The parsed component is stored on the
+    schema as :class:`DefaultOpenContent`; the parser attaches copies to
+    the individual types after the declaration walk (so an explicit
+    ``xs:openContent``, parsed on the same walk, wins).
+    """
+
+    #: Only an annotation and the single wildcard may appear inside.
+    _ALLOWED_CHILDREN = ("annotation", "any")
+    _MAX_ONE_CHILDREN = ("annotation", "any")
+    _CHILD_ORDER = (("annotation",), ("any",))
+
+    #: Unqualified XML attributes the XML representation allows.
+    _ALLOWED_ATTRIBUTES = ("id", "mode", "appliesToEmpty")
+
+    def __init__(self, xsdElement, parent):
+        self.anyElement: Any = None
+        super().__init__(xsdElement, parent)
+
+    def processChildren(self):
+        """Factors an ``annotation`` normally and keeps ``any`` raw.
+
+        As for ``xs:openContent``, the wildcard is deliberately not turned
+        into an ``Any`` representative: that constructor would register it
+        as a content-model wildcard on the (schema) element.
+        """
+        children = list(self.xsdElement)
+        if not children:
             return None
+        for child in children:
+            if not self._acceptChild(child):
+                self.processedChildren.append(None)
+                continue
+            if namespace_of(child.tag) == XSD_NS and local_name(child.tag) == "any":
+                self.anyElement = child
+                self.processedChildren.append(None)
+                continue
+            self.processedChildren.append(ElementRepresentative.factory(child, self))
+        return None
 
-        def resolve(token):
-            return context.resolve(element, token)
+    def getName(self):
+        """Returns a bookkeeping name for the default open-content declaration."""
+        return "defaultOpenContent"
 
-        return resolve
+    def checkDeclarationLegality(self) -> None:
+        """Parses and stores the schema's default open content.
+
+        The schema-level declaration shares the ``openContent`` mode and
+        wildcard rules (except that ``mode="none"`` is not part of the
+        ``defaultOpenContent`` vocabulary), reported as
+        ``open-content-invalid``; an illegal ``appliesToEmpty`` lexical
+        value is a ``declaration-attribute``. A structurally valid
+        declaration is stored on the schema ER for the parser's
+        inheritance pass.
+        """
+        schema = self.getSchema()
+        parsed = parse_default_open_content(
+            self.xsdElement,
+            report_error=lambda message, code: self._reportSchemaError(message, code=code),
+            target_namespace=self.getNamespace(),
+            resolve_qname=self._qnameResolver(),
+        )
+        if schema is not None:
+            schema.defaultOpenContent = parsed
+
+    def _qnameResolver(self):
+        """A ``notQName`` QName expander for the declaration, or ``None``."""
+        try:
+            schema = self.getSchema()
+        except AttributeError:
+            return None
+        return namespace_resolver(schema, self.xsdElement)
 
 
 __all__ = [
     "DEFAULT_OPEN_CONTENT_MODE",
+    "DEFAULT_OPEN_CONTENT_MODES",
     "OPEN_CONTENT_MODES",
+    "DefaultOpenContent",
+    "DefaultOpenContentER",
     "OpenContent",
     "OpenContentER",
+    "default_open_content_element",
+    "namespace_resolver",
+    "open_content_wildcard_spec",
+    "parse_default_open_content",
 ]

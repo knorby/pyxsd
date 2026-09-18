@@ -265,6 +265,12 @@ class PyXSD:
         # components spliced from another document must not be compared
         # against the main document's ids.
         self._composedElementIds: set[int] = set()
+        # Source schema-document root per element spliced in from an
+        # included/imported document. A ``xs:defaultOpenContent`` is
+        # scoped to the schema document a complex type is declared in
+        # (XSD 1.1 §3.4.2.4), so an inherited default must be looked up
+        # on the type's own source document rather than the host schema.
+        self._composedSchemaRoots: dict[int, Any] = {}
         # ``id`` attributes on the main document's composition directives
         # (include/import/redefine). The directives are removed before the
         # ER walk, but their ids still take part in the document's xs:ID
@@ -538,6 +544,11 @@ class PyXSD:
         remember_components(self.components)
         self._reportDeclarationIssues(schemaER)
         self._checkKeyrefReferences(schemaER)
+        # After the declaration walk (which parses every explicit
+        # ``xs:openContent`` and the host document's
+        # ``xs:defaultOpenContent``), attach the applicable schema default
+        # to each complex type that declares none of its own.
+        self._applyDefaultOpenContent(schemaER)
 
         # The schema root is itself the instance class used to dispatch
         # the document root's element declarations.
@@ -650,6 +661,77 @@ class PyXSD:
                 code, message = misplacement
                 self.report.add_error(message, code=code)
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _applyDefaultOpenContent(self, schemaER: Any) -> None:
+        """Attaches each schema document's default open content to its types.
+
+        XSD 1.1 §3.4.2.4: the ``xs:defaultOpenContent`` child of the
+        ``xs:schema`` ancestor element supplies the {open content} of a
+        complex type with no explicit ``xs:openContent``, when the type's
+        explicit content type is non-empty or ``appliesToEmpty`` is true.
+        The default is scoped to the schema *document* a type is declared
+        in, so a type spliced in from an include/import looks up its own
+        document's default (which may be absent), never the host's.
+        """
+        mainDefault = getattr(schemaER, "defaultOpenContent", None)
+        composedDefaults = self._composedDefaultOpenContent()
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "ComplexType":
+                sourceRoot = self._composedSchemaRoots.get(id(er.xsdElement))
+                if sourceRoot is None:
+                    default = mainDefault
+                else:
+                    default = composedDefaults.get(id(sourceRoot))
+                if default is not None and er.acceptsDefaultOpenContent(
+                    appliesToEmpty=default.applies_to_empty
+                ):
+                    er.openContent = default.component()
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _composedDefaultOpenContent(self) -> dict[int, Any]:
+        """Parses the ``defaultOpenContent`` of every composed schema document.
+
+        The element is not part of the spliced main tree, so its legality
+        is checked here through the same helper the declaration walk uses
+        for the host document. Returns ``id(source schema root) ->
+        DefaultOpenContent | None``.
+        """
+        from pyxsd.open_content import default_open_content_element, parse_default_open_content
+
+        result: dict[int, Any] = {}
+        roots = list({id(root): root for root in self._composedSchemaRoots.values()}.values())
+        for root in roots:
+            key = id(root)
+            if key in result:
+                continue
+            element = default_open_content_element(root)
+            if element is None:
+                result[key] = None
+                continue
+            result[key] = parse_default_open_content(
+                element,
+                report_error=lambda message, code: self.report.add_error(
+                    message, code=code, phase="schema"
+                ),
+                target_namespace=root.get("targetNamespace"),
+                resolve_qname=self._openContentResolver(element),
+            )
+        return result
+
+    def _openContentResolver(self, element: Any) -> Any:
+        """A ``notQName`` QName expander for a composed document's element."""
+        context = self.namespaceContext
+
+        def resolve(token: str) -> str:
+            return context.resolve(element, token)
+
+        return resolve
 
     def _checkKeyrefReferences(self, schemaER: Any) -> None:
         """Checks every keyref's ``refer`` and every constraint
@@ -3239,6 +3321,7 @@ class PyXSD:
         # main root: ``id`` uniqueness is scoped to a schema document.
         for element in includedRoot.iter():
             self._composedElementIds.add(id(element))
+            self._composedSchemaRoots.setdefault(id(element), includedRoot)
         self._appendNamedComponents(includedRoot, schemaRoot, componentNamespace)
         self._composedDocuments.add(key)
         return None
@@ -3540,6 +3623,7 @@ class PyXSD:
         # document; scope ``id`` uniqueness provenance to it.
         for element in includedRoot.iter():
             self._composedElementIds.add(id(element))
+            self._composedSchemaRoots.setdefault(id(element), includedRoot)
         self._appendNamedComponents(includedRoot, schemaRoot, mainNS)
         self._rebindRedefineReferences(redefineTag, redefinedNames, includedNS, mainNS)
         for child in list(redefineTag):

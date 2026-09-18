@@ -1448,7 +1448,7 @@ from pyxsd.element_representatives.total_digits import TotalDigits  # noqa: E402
 from pyxsd.element_representatives.union import Union  # noqa: E402
 from pyxsd.element_representatives.white_space import WhiteSpace  # noqa: E402
 from pyxsd.element_representatives.xsd_type import XsdType  # noqa: E402
-from pyxsd.open_content import OpenContentER  # noqa: E402
+from pyxsd.open_content import DefaultOpenContentER, OpenContentER  # noqa: E402
 
 TAG_CLASSES = {
     "Element": Element,
@@ -1470,6 +1470,7 @@ TAG_CLASSES = {
     "Any": Any,
     "AnyAttribute": AnyAttribute,
     "OpenContent": OpenContentER,
+    "DefaultOpenContent": DefaultOpenContentER,
     "Assert": Assert,
     "Assertion": AssertionFacet,
     "Alternative": AlternativeER,
