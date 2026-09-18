@@ -69,6 +69,13 @@ CASES = load_cases()
 # Namespace, wildcard, and QName cases were previously listed here; they now
 # run in the manifest's ``namespaced`` mode and agree with the oracle.
 _DOCUMENTED_DIVERGENCES = {
+    "assertions/assert-out-of-subset-invalid": (
+        "pyxsd's assertion subset omits the document/collection accessors and "
+        "rejects fn:doc at schema phase; XSD 1.1 eliminated the assertion "
+        "XPath subset and evaluates fn:doc against an empty available-documents "
+        "set (3.13.4.2), so xmlschema accepts the schema and can only fail at "
+        "validation"
+    ),
     "composition/include-missing": (
         "xmlschema downgrades a missing include to a warning; pyxsd reports "
         "the schema-compose error"
@@ -78,14 +85,47 @@ _DOCUMENTED_DIVERGENCES = {
         "imported schema's target namespace; pyxsd enforces src-import and "
         "reports the schema-compose error"
     ),
+    "cta/alternative-out-of-subset-invalid": (
+        "child::x is valid XPath 2.0 but outside the conditional-type-"
+        "assignment required subset of XSD 1.1 3.12.6, which processors may "
+        "but need not accept; pyxsd implements only the required subset and "
+        "reports alternative-invalid, while xmlschema accepts it"
+    ),
+    "cta/instance-inheritable-attribute": (
+        "XSD 1.1 3.3.5.6 inherited attributes (copied into the type-alternative "
+        "context by 3.12.4) put the ancestor's kind='a' in scope: pyxsd selects "
+        "ChapA and rejects <b>, while xmlschema does not inherit the attribute "
+        "and matches no alternative"
+    ),
+    "cta/instance-xsi-type-overrides-alternative": (
+        "XSD 1.1 3.3.4.1 lets an instance-specified xsi:type override "
+        "conditional type assignment; pyxsd validates against the xsi:type, "
+        "while xmlschema applies the alternative and rejects the content"
+    ),
+    "datatypes/empty-union-has-empty-value-space": (
+        "XSD 1.1 permits a union with no member types (its value space is "
+        "empty; bug 4912) and pyxsd enforces that empty value space; xmlschema "
+        "rejects the schema with 'missing xs:union type declarations'"
+    ),
     "legality/annotation-invalid-xml-lang": (
         "xmlschema does not validate the xml:lang lexical space of "
         "xs:documentation; the W3C annotF001 case expects invalid"
+    ),
+    "override/missing-component-not-added-invalid": (
+        "both engines agree XSD 1.1 4.2.5 ignores an xs:override declaration "
+        "that matches nothing (so 'ghost' is not added); pyxsd reports the "
+        "dangling type reference as an instance-phase unknown-type, while "
+        "xmlschema rejects the schema at parse"
     ),
     "structure/emptiable-choice-required-ref-valid": (
         "xmlschema's meta-schema rejects occurrence attributes on a model "
         "group inside a named xs:group; the schema-for-schemas allows them "
         "and the MS particlesHa valid control relies on it"
+    ),
+    "xsd11/pattern-name-char-complement-excludes-astral": (
+        "the \\C complement is built from the XML 1.1 NameChar set, which "
+        "includes astral characters [#x10000-#xEFFFF]; pyxsd follows it and "
+        "rejects U+12000, while xmlschema accepts the astral value"
     ),
 }
 
