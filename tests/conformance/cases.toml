@@ -6892,6 +6892,7 @@ expected_codes = ["declaration-attribute"]
 
 [[case]]
 id = "xpath-subset/mid-path-descendant"
+xsd11 = true
 description = "a//b is illegal in the XSD 1.1 xpath subset (idI028 shape)"
 derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI028)"
 schema = '''
@@ -6907,6 +6908,7 @@ expected_codes = ["xpath-invalid"]
 
 [[case]]
 id = "xpath-subset/absolute-selector"
+xsd11 = true
 description = "An absolute path is outside the xpath subset (idI003/idD014)"
 derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idD014)"
 schema = '''
@@ -6922,6 +6924,7 @@ expected_codes = ["xpath-invalid"]
 
 [[case]]
 id = "xpath-subset/predicate-field"
+xsd11 = true
 description = "Predicates are outside the xpath subset (idI152)"
 derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI152)"
 schema = '''
@@ -6937,6 +6940,7 @@ expected_codes = ["xpath-invalid"]
 
 [[case]]
 id = "xpath-subset/self-axis-selector"
+xsd11 = true
 description = "The self axis is outside the xpath subset (idI145)"
 derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI145)"
 schema = '''
@@ -6952,6 +6956,7 @@ expected_codes = ["xpath-invalid"]
 
 [[case]]
 id = "xpath-subset/descendant-axis-field"
+xsd11 = true
 description = "The descendant axis is outside the xpath subset (idI147)"
 derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI147)"
 schema = '''
@@ -6967,6 +6972,7 @@ expected_codes = ["xpath-invalid"]
 
 [[case]]
 id = "xpath-subset/unbound-prefix"
+xsd11 = true
 description = "A path prefix not bound in scope is a schema error (idI010)"
 derived_from = "W3C XMLSchema1TestSuite, group 'IdentityConstraint' (idI010)"
 schema = '''
@@ -6982,6 +6988,7 @@ expected_codes = ["xpath-invalid"]
 
 [[case]]
 id = "xpath-subset/attribute-step-not-final"
+xsd11 = true
 description = "An attribute step is only legal as the final step of a field"
 derived_from = "XSD 1.1 §3.11.6.3 field production"
 schema = '''
@@ -6997,6 +7004,7 @@ expected_codes = ["xpath-invalid"]
 
 [[case]]
 id = "xpath-subset/bogus-xpath-default-namespace"
+xsd11 = true
 description = "A ##-keyword xpathDefaultNamespace outside the allowed set is a schema error"
 derived_from = "XSD 1.1 §3.11.4 xpathDefaultNamespace"
 schema = '''
@@ -7014,6 +7022,7 @@ expected_codes = ["xpath-invalid"]
 
 [[case]]
 id = "xpath-subset/grammar-accepts-the-subset"
+xsd11 = true
 description = "The admitted shapes (names, wildcards, prefixes, .//, axes, @, unions) parse cleanly"
 derived_from = "W3C XMLSchema1TestSuite, groups 'IdentityConstraint' (idI002/idI009/idI029/idI073, idJ022, idL017)"
 schema = '''
@@ -7034,6 +7043,7 @@ schema_valid = true
 
 [[case]]
 id = "xpath-subset/xpath-default-namespace-target-namespace"
+xsd11 = true
 description = "xpathDefaultNamespace=##targetNamespace resolves unprefixed path names"
 derived_from = "W3C XMLSchema1TestSuite, group 'XPathDefaultNSonKeyKeyRefUnique' (s3_11_2)"
 schema = '''
