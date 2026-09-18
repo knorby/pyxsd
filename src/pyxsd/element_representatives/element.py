@@ -460,10 +460,42 @@ class Element(ElementRepresentative):
             return
         self._checkElementValueConstraint()
         self._checkElementTypeConflict()
+        self._checkElementName()
+        self._checkElementBooleanAttributes()
         if self.isGlobalDeclaration():
             self._checkElementFinalAndBlock()
         else:
             self._checkLocalElementAttributes()
+
+    def _checkElementName(self) -> None:
+        """Reports a ``name`` that is not an ``xs:NCName``.
+
+        The XML representation types ``name`` as ``xs:NCName``; a colon
+        (a qualified name belongs in ``ref``) or a leading digit/dash is
+        as illegal as an empty name.
+        """
+        name = self.xsdElement.get("name")
+        if name is not None and "|" not in name and self._invalidNCName(name):
+            self._reportSchemaError(
+                f"element name '{name}' is not a valid NCName",
+                code="declaration-attribute",
+            )
+
+    def _checkElementBooleanAttributes(self) -> None:
+        """Reports ``abstract``/``nillable`` values outside xs:boolean.
+
+        The lexical space is exactly true/false/1/0; ``isAbstract`` and
+        the nillable helper otherwise read an unrecognised spelling as
+        false, silently accepting an illegal schema.
+        """
+        for attr in ("abstract", "nillable"):
+            value = self.xsdElement.get(attr)
+            if value is not None and self._invalidBoolean(value):
+                self._reportSchemaError(
+                    f"element '{self.name}' has an invalid {attr} value "
+                    f"'{value}'; expected true, false, 1 or 0",
+                    code="declaration-attribute",
+                )
 
     def _checkElementValueConstraint(self) -> None:
         """Reports an element that carries both ``default`` and ``fixed``.

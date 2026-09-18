@@ -78,6 +78,40 @@ class ComplexType(XsdType):
         super().__init__(xsdElement, parent)
         self.getSchema().complexTypes[self.name] = self
 
+    def checkDeclarationLegality(self) -> None:
+        """Reports complexType attribute legality.
+
+        Covers the ``mixed`` xs:boolean lexical space, the ``name``
+        NCName, and the rule that only a direct schema child may be
+        named: an inline complexType (inside an element declaration or
+        another type) is anonymous, and a stray ``name`` there is a
+        schema error even though ``getName`` would happily register it
+        as a global type.
+        """
+        mixed = self.tagAttributes.get("mixed")
+        if mixed is not None and self._invalidBoolean(mixed):
+            self._reportSchemaError(
+                f"complexType '{self.name}' has an invalid mixed value "
+                f"'{mixed}'; expected true, false, 1 or 0",
+                code="declaration-attribute",
+            )
+        name = self.xsdElement.get("name")
+        if name is None or "|" in name:
+            # A pipe marks an internal bookkeeping name (an inline type,
+            # or the ``Name|base`` clone an xs:redefine keeps); it is not
+            # a schema-author NCName and never subject to name legality.
+            return
+        if self._invalidNCName(name):
+            self._reportSchemaError(
+                f"complexType name '{name}' is not a valid NCName",
+                code="declaration-attribute",
+            )
+        if not self.isGlobalDeclaration():
+            self._reportSchemaError(
+                f"inline complexType must not carry a name ('{name}')",
+                code="declaration-attribute",
+            )
+
     def effectiveMixed(self, _seen: set[int] | None = None) -> bool:
         """The type's effective ``mixed`` value (XSD 1.1 §3.4.2.3.3).
 

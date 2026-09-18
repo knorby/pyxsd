@@ -617,6 +617,32 @@ class ElementRepresentative:
         return None
 
     @staticmethod
+    def _invalidBoolean(value):
+        """Whether an ``xs:boolean`` lexical value is illegal.
+
+        The lexical space is exactly ``true``/``false``/``1``/``0``
+        (with surrounding whitespace collapsed). Case does not vary:
+        ``TRUE`` and ``False`` are schema errors, not truthy spellings.
+        ``None`` (an absent attribute) is not invalid; callers only
+        invoke this for attributes that are present.
+        """
+        return value is None or str(value).strip() not in ("true", "false", "1", "0")
+
+    @staticmethod
+    def _invalidNCName(value):
+        """Whether *value* is not an XML ``NCName``.
+
+        A ``name`` attribute is an ``xs:NCName``: no colon, no leading
+        digit or hyphen, no whitespace. Shared by the ``name``/``id``
+        lexical checks.
+        """
+        try:
+            xsd_data_types.NCName(value)
+        except TypeError:
+            return True
+        return False
+
+    @staticmethod
     def _invalidTokenList(value, allowed):
         """Whether an XSD token-list attribute is lexically illegal.
 

@@ -550,6 +550,7 @@ class PyXSD:
         self._buildSubstitutionGroups(schemaER)
         self._checkSubstitutionGroupExclusions(schemaER)
         self._checkValueConstraints(schemaER)
+        self._checkTypeReferences(schemaER)
 
         return None
 
@@ -2362,6 +2363,69 @@ class PyXSD:
             return None
         return cls if isinstance(cls, type) else None
 
+    def _checkTypeReferences(self, schemaER: Any) -> None:
+        """Reports a declaration type QName naming an unloaded namespace.
+
+        The declaration walk tolerates an unresolved type so a large
+        schema can still load; this pass turns a reference whose
+        resolved QName names a namespace no composed schema declares
+        into a schema-phase ``unknown-type``. The loaded-namespace guard
+        keeps pyxsd's own resolution gaps (inside a namespace that is
+        loaded) out of the report: only a reference the schema itself
+        cannot satisfy is a schema error. Runs in strict namespace mode
+        only, where a resolved reference has a namespace to test.
+
+        A reference to the unnamed (no-namespace) space is not examined;
+        there the plain name is the whole identity and the legacy
+        tolerance is the historical behavior.
+        """
+        if getattr(self.mode, "namespaces", "legacy") != "strict":
+            return
+        loaded = self._loadedNamespaces()
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ in ("Element", "Attribute") and not (
+                getattr(er, "isElementRef", False)
+                or getattr(er, "isAttributeRef", False)
+                or self._inConditionalInclusion(er)
+            ):
+                raw = er.__dict__.get("type")
+                if raw is not None and "|" not in raw:
+                    resolved = er.resolvedTypeName()
+                    namespace = namespace_of(resolved) if isinstance(resolved, str) else None
+                    if namespace is not None and namespace not in loaded:
+                        try:
+                            cls = er.getType()
+                        except Exception:  # pragma: no cover - defensive
+                            cls = None
+                        if cls is None:
+                            self.report.add_error(
+                                f"the type '{resolved}' of "
+                                f"{type(er).__name__.lower()} '{er.name}' is not "
+                                "declared by any loaded schema",
+                                code="unknown-type",
+                                element=er.name,
+                                phase="schema",
+                            )
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _loadedNamespaces(self) -> set:
+        """The namespaces a schema reference may resolve into.
+
+        Every composed target namespace and satisfied import, plus the
+        namespaces XSD defines itself (XML Schema, XSI and ``xml``) and
+        the unnamed space.
+        """
+        loaded: set = set(self._composedTargetNamespaces)
+        loaded.update(self._resolvedImports)
+        loaded.update({XSD_NS, XSI_NS, XML_NS, None})
+        return loaded
+
     def _checkValueConstraints(self, schemaER: Any) -> None:
         """Validates element/attribute ``default``/``fixed`` values.
 
@@ -2385,6 +2449,29 @@ class PyXSD:
             stack.extend(getattr(er, "processedChildren", None) or ())
 
     def _checkDeclarationValueConstraint(self, er: Any) -> None:
+        if type(er).__name__ == "Element" and any(
+            attr in er.tagAttributes for attr in ("default", "fixed")
+        ):
+            try:
+                declared = er.getType()
+            except (AttributeError, TypeError):
+                declared = None
+            if (
+                isinstance(declared, type)
+                and getattr(declared, "_contentKind_", None) == "complex"
+                and getattr(declared, "_elementOnly_", False)
+            ):
+                # e-props-correct: an element whose type has element-only
+                # content cannot carry a value constraint (there is no
+                # character-content value space to default against).
+                self.report.add_error(
+                    f"element '{er.name}' has a default or fixed value but its "
+                    "type has element-only content",
+                    code="declaration-attribute",
+                    element=er.name,
+                    phase="schema",
+                )
+                return
         factory = self._valueConstraintFactory(er)
         if factory is None:
             return
