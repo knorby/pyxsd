@@ -391,7 +391,7 @@ class SchemaBase:
         except Exception as e:
             cls._report_error(
                 f"attribute '{local}' has an invalid value: {e}",
-                code="value",
+                code=getattr(e, "code", "value"),
                 element=cls.__name__,
             )
             return False
@@ -651,7 +651,7 @@ class SchemaBase:
             cls._report_error(
                 f"the value of the '{elementTag.tag.split('}')[-1]}' element "
                 f"is not valid for its type: {e}",
-                code="value",
+                code=getattr(e, "code", "value"),
                 element=cls.__name__,
             )
             if _mode_for(cls).invalid_value == "raw":
@@ -1324,7 +1324,7 @@ class SchemaBase:
                 f"the forced value {forcedValue!r} of the "
                 f"'{subElement.tag.split('}')[-1]}' element is not valid "
                 f"for its type: {e}",
-                code=code,
+                code=getattr(e, "code", code),
                 element=cls.__name__,
             )
             return None
@@ -1834,7 +1834,7 @@ class SchemaBase:
             cls._report_error(
                 f"the value of the '{subElement.tag.split('}')[-1]}' element "
                 f"is not valid for its type: {e}",
-                code="value",
+                code=getattr(e, "code", "value"),
                 element=cls.__name__,
             )
             if _mode_for(cls).invalid_value == "raw":

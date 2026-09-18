@@ -237,7 +237,7 @@ class Attribute(ElementRepresentative):
                 if parser is not None:
                     parser.report.add_error(
                         message,
-                        code="invalid-attribute",
+                        code=getattr(e, "code", "invalid-attribute"),
                         element=getattr(obj, "_name_", None),
                     )
                 else:

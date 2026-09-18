@@ -285,3 +285,184 @@ def test_assert_in_scope_prefixes_sees_instance_bindings() -> None:
         "</xs:complexType></xs:element>"
     )
     assert errors(parse(body, '<x xmlns:a="urn:a"/>')) == []
+
+
+# --- xs:assertion on simple types -------------------------------------------
+
+
+def simple_element(base: str, facets: str, *, extra_element: str = "") -> str:
+    """An element whose anonymous simple type restricts *base* with *facets*."""
+    return (
+        f'<xs:element name="temp">{extra_element}<xs:simpleType>'
+        f'<xs:restriction base="{base}">{facets}</xs:restriction>'
+        "</xs:simpleType></xs:element>"
+    )
+
+
+def test_assertion_simple_type_satisfied() -> None:
+    body = simple_element("xs:integer", '<xs:assertion test="$value gt 0"/>')
+    assert errors(parse(body, "<temp>5</temp>")) == []
+
+
+def test_assertion_simple_type_violated_is_assert_failed() -> None:
+    body = simple_element("xs:integer", '<xs:assertion test="$value gt 0"/>')
+    assert errors(parse(body, "<temp>-1</temp>")) == ["assert-failed"]
+
+
+def test_assertion_out_of_subset_is_assert_invalid() -> None:
+    body = simple_element("xs:string", "<xs:assertion test=\"doc('other.xml')\"/>")
+    assert errors(parse(body, "<temp>x</temp>")) == ["assert-invalid"]
+
+
+def test_assertion_unbound_prefix_is_assert_invalid() -> None:
+    body = simple_element("xs:string", '<xs:assertion test="p:foo = 1"/>')
+    assert errors(parse(body, "<temp>x</temp>")) == ["assert-invalid"]
+
+
+def test_assertion_empty_test_is_assert_invalid() -> None:
+    body = simple_element("xs:string", '<xs:assertion test=""/>')
+    assert errors(parse(body, "<temp>x</temp>")) == ["assert-invalid"]
+
+
+def test_assertion_typed_numeric_value() -> None:
+    body = simple_element("xs:int", '<xs:assertion test="$value mod 2 = 0"/>')
+    assert errors(parse(body, "<temp>4</temp>")) == []
+    assert errors(parse(body, "<temp>5</temp>")) == ["assert-failed"]
+
+
+def test_assertion_typed_date_value() -> None:
+    body = simple_element(
+        "xs:date",
+        "<xs:assertion test=\"$value lt xs:date('2010-01-01')\"/>",
+    )
+    assert errors(parse(body, "<temp>2009-06-01</temp>")) == []
+    assert errors(parse(body, "<temp>2011-06-01</temp>")) == ["assert-failed"]
+
+
+def test_assertion_typed_value_is_a_date_instance() -> None:
+    body = simple_element("xs:date", '<xs:assertion test="$value instance of xs:date"/>')
+    assert errors(parse(body, "<temp>2009-06-01</temp>")) == []
+
+
+def test_assertion_list_value_is_a_sequence() -> None:
+    body = (
+        '<xs:simpleType name="ints"><xs:list itemType="xs:integer"/></xs:simpleType>'
+        + simple_element(
+            "ints",
+            '<xs:assertion test="count($value) eq count(distinct-values($value))"/>',
+        )
+    )
+    assert errors(parse(body, "<temp>1 3 5</temp>")) == []
+    assert errors(parse(body, "<temp>1 3 3</temp>")) == ["assert-failed"]
+
+
+def test_assertion_union_value_uses_member_type() -> None:
+    body = (
+        '<xs:simpleType name="u"><xs:union memberTypes="xs:date xs:dateTime"/></xs:simpleType>'
+        + simple_element(
+            "u",
+            "<xs:assertion test=\"starts-with(string($value), '2008')\"/>",
+        )
+    )
+    assert errors(parse(body, "<temp>2008-06-01</temp>")) == []
+    assert errors(parse(body, "<temp>2009-06-01</temp>")) == ["assert-failed"]
+
+
+def test_assertion_context_item_undefined_is_assert_failed() -> None:
+    body = simple_element("xs:date", '<xs:assertion test=". castable as xs:date"/>')
+    assert errors(parse(body, "<temp>2009-06-01</temp>")) == ["assert-failed"]
+
+
+def test_assertion_position_undefined_is_assert_failed() -> None:
+    body = simple_element("xs:date", '<xs:assertion test="position() le 50"/>')
+    assert errors(parse(body, "<temp>2009-06-01</temp>")) == ["assert-failed"]
+
+
+def test_assertion_last_undefined_is_assert_failed() -> None:
+    body = simple_element("xs:date", '<xs:assertion test="last() le 50"/>')
+    assert errors(parse(body, "<temp>2009-06-01</temp>")) == ["assert-failed"]
+
+
+def test_assertion_root_path_undefined_is_assert_failed() -> None:
+    body = simple_element("xs:string", "<xs:assertion test=\"/root = 'present'\"/>")
+    assert errors(parse(body, "<temp>present</temp>")) == ["assert-failed"]
+
+
+def test_assertion_dynamic_error_is_assert_failed() -> None:
+    body = simple_element(
+        "xs:date",
+        "<xs:assertion test=\"xs:date(concat(string($value), '!!!')) gt xs:date('1900-01-01')\"/>",
+    )
+    assert errors(parse(body, "<temp>2009-06-01</temp>")) == ["assert-failed"]
+
+
+def test_assertion_accumulates_across_restriction_steps() -> None:
+    body = (
+        '<xs:simpleType name="base">'
+        '<xs:restriction base="xs:string">'
+        "<xs:assertion test=\"ends-with($value, 'xyz')\"/>"
+        "</xs:restriction></xs:simpleType>"
+        '<xs:simpleType name="derived"><xs:restriction base="base">'
+        '<xs:assertion test="string-length($value) gt 3"/>'
+        "</xs:restriction></xs:simpleType>"
+        '<xs:element name="message" type="derived"/>'
+    )
+    assert errors(parse(body, "<message>abcdxyz</message>")) == []
+    assert errors(parse(body, "<message>abcd</message>")) == ["assert-failed"]
+    assert errors(parse(body, "<message>xyz</message>")) == ["assert-failed"]
+
+
+def test_assertion_runs_alongside_other_facets() -> None:
+    body = simple_element(
+        "xs:string",
+        '<xs:maxLength value="3"/><xs:assertion test="$value = \'abcd\'"/>',
+    )
+    assert errors(parse(body, "<temp>abcd</temp>")) == ["value"]
+    assert errors(parse(body, "<temp>ab</temp>")) == ["assert-failed"]
+
+
+def test_assertion_xpath_default_namespace_resolves_type_names() -> None:
+    body = simple_element(
+        "xs:string",
+        '<xs:assertion test="$value castable as double" '
+        'xpathDefaultNamespace="http://www.w3.org/2001/XMLSchema"/>',
+    )
+    assert errors(parse(body, "<temp>23.5</temp>")) == []
+
+
+def test_assertion_on_simple_content_restriction() -> None:
+    body = (
+        '<xs:element name="root"><xs:complexType><xs:simpleContent>'
+        '<xs:restriction base="xs:string">'
+        "<xs:assertion test=\"$value = 'ok'\"/>"
+        "</xs:restriction></xs:simpleContent></xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, "<root>ok</root>")) == []
+    assert errors(parse(body, "<root>bad</root>")) == ["assert-failed"]
+
+
+def test_assertion_on_attribute_value_reports_assert_failed() -> None:
+    body = (
+        '<xs:element name="root"><xs:complexType><xs:attribute name="n">'
+        '<xs:simpleType><xs:restriction base="xs:int">'
+        '<xs:assertion test="$value mod 2 = 0"/>'
+        "</xs:restriction></xs:simpleType></xs:attribute>"
+        "</xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, '<root n="4"/>')) == []
+    assert errors(parse(body, '<root n="3"/>')) == ["assert-failed"]
+
+
+def test_assertion_failing_union_member_falls_through_to_next() -> None:
+    body = (
+        '<xs:simpleType name="EvenInt"><xs:restriction base="xs:int">'
+        '<xs:assertion test="$value mod 2 = 0"/></xs:restriction></xs:simpleType>'
+        '<xs:simpleType name="OldDate"><xs:restriction base="xs:date">'
+        "<xs:assertion test=\"$value lt xs:date('2010-01-01')\"/>"
+        "</xs:restriction></xs:simpleType>"
+        '<xs:element name="Example"><xs:simpleType>'
+        '<xs:union memberTypes="EvenInt OldDate xs:date"/>'
+        "</xs:simpleType></xs:element>"
+    )
+    # The date fails OldDate's assertion, so the plain xs:date member wins.
+    assert errors(parse(body, "<Example>2010-10-10</Example>")) == []

@@ -26,6 +26,7 @@ class SimpleType(XsdType):
         See ElementRepresentative for documentation.
         """
         self.patterns = []
+        self.assertions = []
         self.length = None
         self.minLength = None
         self.maxLength = None

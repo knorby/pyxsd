@@ -665,16 +665,22 @@ class XsdType(ElementRepresentative):
         return names
 
     def _constraintNamespace(self, pyXSD, source, base, parent):
-        """Builds the ``_facetConstraints_`` and ``__new__`` entries for a
-        definition that restricts *base*.
+        """Builds the ``_facetConstraints_``/``_assertionFacets_`` and
+        ``__new__`` entries for a definition that restricts *base*.
 
         The constraint set is merged with the base class's own constraints
         (a restriction can only tighten), and the ``__new__`` wrapper
         applies the whiteSpace facet to the lexical form, constructs the
-        value through the base class's validating ``__new__``, and then
-        checks every other facet.  A violation raises ``TypeError``, which
-        the binding paths already record as a ``value`` issue.
+        value through the base class's validating ``__new__``, then checks
+        every other facet and finally the XSD 1.1 ``xs:assertion`` facets
+        (assertions accumulate across restriction steps).  A facet
+        violation raises ``TypeError``, which the binding paths already
+        record as a ``value`` issue; a failed assertion raises a coded
+        ``SimpleAssertionError`` the binding paths record as
+        ``assert-failed``.
         """
+        from pyxsd.assertions import check_simple_assertions, compile_simple_assertions
+
         if getattr(getattr(pyXSD, "mode", None), "facets", "strict") == "off":
             return {}
         if not isinstance(base, type) or not issubclass(base, XsdDataType):
@@ -696,7 +702,12 @@ class XsdType(ElementRepresentative):
         for message in result.conflicts:
             self._report_ref_error(message, code="facet-conflict")
         constraints = result.constraints
-        if constraints.is_empty:
+        # This type's own assertions; the base class's effective assertions
+        # are injected by its own ``__new__`` (which this wrapper chains
+        # through ``baseNew``), so the restriction step's set accumulates
+        # without evaluating an inherited assertion twice (XSD 1.1 §4.3.15).
+        assertion_facets = tuple(compile_simple_assertions(source))
+        if constraints.is_empty and not assertion_facets:
             return {}
         baseNew: Any = base.__new__
         # Element classes whose type is (or extends) this simple type are
@@ -712,10 +723,18 @@ class XsdType(ElementRepresentative):
             if constraints.white_space is not None and isinstance(lexical, str):
                 lexical = facets.whitespace_transform(constraints.white_space, lexical)
             instance = baseNew(cls, lexical, *args, **kwargs)
-            constraints.check(instance, lexical if isinstance(lexical, str) else None)
+            checked_lexical = lexical if isinstance(lexical, str) else None
+            if not constraints.is_empty:
+                constraints.check(instance, checked_lexical)
+            check_simple_assertions(instance, checked_lexical, assertion_facets)
             return instance
 
-        return {"_facetConstraints_": constraints, "__new__": __new__}
+        namespace: dict[str, Any] = {"__new__": __new__}
+        if not constraints.is_empty:
+            namespace["_facetConstraints_"] = constraints
+        if assertion_facets:
+            namespace["_assertionFacets_"] = list(assertion_facets)
+        return namespace
 
     def _simpleContentNamespace(self, pyXSD, bases):
         """Builds the ``_simpleContentType_`` entry for a complex type.

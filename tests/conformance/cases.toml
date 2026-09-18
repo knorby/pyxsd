@@ -7218,3 +7218,134 @@ expected_codes = ["assert-failed"]
     </xs:complexType>
   </xs:element>
 </xs:schema>'''
+
+[[case]]
+id = "assertions/assertion-simple-valid"
+xsd11 = true
+description = "A satisfied xs:assertion facet on a simple type restriction passes"
+derived_from = "W3C XMLSchema1TestSuite, IBM D4_3_15 simple type assertion"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="xs:integer">
+        <xs:assertion test="$value gt 0"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp>5</temp>'''
+
+[[case]]
+id = "assertions/assertion-simple-failed"
+xsd11 = true
+description = "An unsatisfied xs:assertion makes the value invalid with assert-failed"
+derived_from = "W3C XMLSchema1TestSuite, IBM D4_3_15 simple type assertion"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="xs:integer">
+        <xs:assertion test="$value gt 0"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp>-1</temp>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assertion-list-value"
+xsd11 = true
+description = "A list-typed xs:assertion sees $value as the sequence of items"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert-simple005"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="ints">
+    <xs:list itemType="xs:integer"/>
+  </xs:simpleType>
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="ints">
+        <xs:assertion test="count($value) eq count(distinct-values($value))"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp>1 3 3</temp>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assertion-union-member-fallthrough"
+xsd11 = true
+description = "A union member whose assertion fails does not reject a later matching member"
+derived_from = "W3C XMLSchema1TestSuite, IBM mixed/assertions listunion4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="EvenInt">
+    <xs:restriction base="xs:int">
+      <xs:assertion test="$value mod 2 = 0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="OldDate">
+    <xs:restriction base="xs:date">
+      <xs:assertion test="$value lt xs:date('2010-01-01')"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="Example">
+    <xs:simpleType>
+      <xs:union memberTypes="EvenInt OldDate xs:date"/>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<Example>2010-10-10</Example>'''
+
+[[case]]
+id = "assertions/assertion-context-undefined"
+xsd11 = true
+description = "A simple type assertion has no context item, so position() is a dynamic error"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert-simple009"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="xs:date">
+        <xs:assertion test="position() le 50"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp>2009-06-01</temp>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assertion-out-of-subset-invalid"
+xsd11 = true
+description = "An xs:assertion test using an unbound prefix is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 assertion XPath subset"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:assertion test="p:foo = 1"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["assert-invalid"]

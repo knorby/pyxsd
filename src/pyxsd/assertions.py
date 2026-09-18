@@ -36,6 +36,7 @@ from pyxsd.element_representatives.identity import _DeclarationSite
 from pyxsd.namespaces import XSD_NS, clark, local_name
 from pyxsd.xpath_assertions import (
     CompiledXPath,
+    assertion_requires_context,
     evaluate,
     parse_assertion_xpath,
 )
@@ -46,9 +47,25 @@ from pyxsd.xpath_subset import XPathError
 #: model.
 _NON_ATOMIC_BUILTINS = frozenset({"anyType", "anySimpleType"})
 
+#: Sentinel marking an ``AssertionFacet`` whose ``test`` has not been
+#: compiled yet (its compiled form may legitimately be ``None``).
+_UNSET = object()
+
+
+class SimpleAssertionError(TypeError):
+    """Raised when an ``xs:assertion`` facet is not satisfied.
+
+    The ``code`` attribute lets the binding paths report the failure as
+    ``assert-failed`` rather than a generic invalid-value error. It is a
+    ``TypeError`` so a union member whose assertion fails is treated as
+    not matching and the next member is tried (XSD 1.1 Part 2).
+    """
+
+    code = "assert-failed"
+
 
 class Assertion(NamedTuple):
-    """A compiled ``xs:assert`` on a complex type."""
+    """A compiled ``xs:assert`` or ``xs:assertion`` on a type."""
 
     #: The raw ``test`` attribute value (stripped).
     test: str
@@ -58,6 +75,22 @@ class Assertion(NamedTuple):
     namespaces: dict[str, str]
     #: The effective ``xpathDefaultNamespace`` (``None`` for ``##local``).
     xpath_default_namespace: str | None
+
+
+class SimpleAssertion(NamedTuple):
+    """A compiled ``xs:assertion`` facet on a simple type."""
+
+    #: The raw ``test`` attribute value (stripped).
+    test: str
+    #: The parsed, subset-validated expression.
+    compiled: CompiledXPath
+    #: The declaration site's in-scope prefix bindings.
+    namespaces: dict[str, str]
+    #: The effective ``xpathDefaultNamespace`` (``None`` for ``##local``).
+    xpath_default_namespace: str | None
+    #: Whether the test reads the XPath focus, which a simple-type
+    #: assertion does not define; such a test is a dynamic error.
+    requires_context: bool
 
 
 class Assert(_DeclarationSite, ElementRepresentative):
@@ -103,6 +136,113 @@ class Assert(_DeclarationSite, ElementRepresentative):
                     f"<assert> does not allow the '{raw}' attribute",
                     code="declaration-attribute",
                 )
+
+
+class AssertionFacet(_DeclarationSite, ElementRepresentative):
+    """The element representative for the ``xs:assertion`` facet tag.
+
+    ``xs:assertion`` is an XSD 1.1 constraining facet on a simple type
+    restriction (Part 2); it also appears on a ``simpleContent``
+    restriction's inline/direct facets. It records itself on the
+    containing type's ``assertions`` list, which the class builder folds
+    into the effective facet set (a restriction inherits its base's
+    assertions: XSD 1.1 §4.3.15). The ``_DeclarationSite`` mixin resolves
+    the declaration-site prefix bindings and ``xpathDefaultNamespace``.
+    """
+
+    #: Only an annotation may appear inside an assertion facet.
+    _ALLOWED_CHILDREN = ("annotation",)
+    _MAX_ONE_CHILDREN = ("annotation",)
+
+    #: Unqualified attributes the XML representation allows.
+    _ALLOWED_ATTRIBUTES = ("test", "id", "xpathDefaultNamespace")
+
+    def __init__(self, xsdElement, parent):
+        super().__init__(xsdElement, parent)
+        self.test = self.xsdElement.get("test")
+        # Sentinel: a compiled assertion may legitimately be ``None`` (an
+        # unusable test), so presence cannot key off the value.
+        self._compiled: Any = _UNSET
+        self.getContainingType().assertions.append(self)
+
+    def getName(self):
+        """Returns a bookkeeping name for the assertion facet."""
+        return f"{self.getContainingTypeName()}|assertion"
+
+    def checkDeclarationLegality(self) -> None:
+        """Reports illegal attributes and compiles the ``test``.
+
+        A missing or empty ``test`` is not reported here: the compile
+        turns it into an ``assert-invalid`` issue (a single report, even
+        though the declaration sweep and the class builder may each
+        consult the compiled form).
+        """
+        allowed = frozenset(self._ALLOWED_ATTRIBUTES)
+        for raw in self.xsdElement.attrib:
+            if raw.startswith("{"):
+                continue
+            if raw not in allowed:
+                self._reportSchemaError(
+                    f"<assertion> does not allow the '{raw}' attribute",
+                    code="declaration-attribute",
+                )
+        self.compile()
+
+    def compile(self) -> SimpleAssertion | None:
+        """Parses the ``test`` once, reporting ``assert-invalid`` on failure.
+
+        Idempotent: the parser's declaration sweep and the class builder
+        may both need the result, and whichever runs first does the single
+        compile. An empty test, an unbound prefix, an out-of-subset
+        construct or an unusable ``xpathDefaultNamespace`` yields ``None``.
+        """
+        if self._compiled is not _UNSET:
+            return self._compiled
+        text = (self.test or "").strip()
+        try:
+            namespaces = dict(self._declarationNamespaces() or {})
+            default_namespace = self._xpathDefaultNamespace()
+            expression = parse_assertion_xpath(
+                text,
+                namespaces,
+                default_namespace=default_namespace,
+            )
+        except XPathError as exc:
+            self._reportSchemaError(
+                f"<assertion> test {text!r} is outside the assertion XPath subset: {exc}",
+                code="assert-invalid",
+            )
+            self._compiled = None
+            return None
+        self._compiled = SimpleAssertion(
+            text,
+            expression,
+            namespaces,
+            default_namespace,
+            requires_context=assertion_requires_context(expression),
+        )
+        return self._compiled
+
+
+def compile_simple_assertions(source: Any) -> list[SimpleAssertion]:
+    """Compiles every ``xs:assertion`` facet of *source*.
+
+    *source* is a ``SimpleType`` or a ``ComplexType`` with simple
+    content. Returns the usable compiled assertions; an unusable one is
+    reported ``assert-invalid`` by :meth:`AssertionFacet.compile` and
+    dropped. Cached on the type, so the parser's sweep and the class
+    builder share one compile.
+    """
+    cached = getattr(source, "_compiledAssertionFacets", None)
+    if cached is not None:
+        return cached
+    compiled: list[SimpleAssertion] = []
+    for representative in getattr(source, "assertions", None) or ():
+        result = representative.compile()
+        if result is not None:
+            compiled.append(result)
+    source._compiledAssertionFacets = compiled
+    return compiled
 
 
 def _assert_representatives(complex_type: Any) -> list[Any]:
@@ -379,4 +519,70 @@ def check_element_assertions(cls: Any, element_tag: Any) -> None:
                 f"assertion test {assertion.test!r} is not satisfied by element '{context}'",
                 code="assert-failed",
                 element=context,
+            )
+
+
+def _simple_assertion_value(instance: Any, lexical: str | None) -> Any:
+    """The XDM value bound to ``$value`` for a simple type's assertions.
+
+    The typed value is decoded through elementpath's own decoders so a
+    comparison sees the XSD value space: an atomic type yields a
+    one-item sequence of the narrowest built-in type, a list type yields
+    one atomic per item, and a union yields its selected member's value
+    (XSD 1.1 Part 2, ``xs:assertion``).
+    """
+    member = getattr(instance, "memberValue", None)
+    if member is not None:
+        return _simple_assertion_value(member, str(member))
+    text = lexical if isinstance(lexical, str) else str(instance)
+    item_cls = getattr(type(instance), "itemType", None)
+    if isinstance(item_cls, type):
+        item_type = _elementpath_type(item_cls)
+        if item_type is None:
+            return []
+        values: list[Any] = []
+        for token in text.split():
+            values.extend(get_atomic_sequence(cast(Any, item_type), token))
+        return values
+    atomic_type = _elementpath_type(type(instance))
+    if atomic_type is None:
+        return []
+    return list(get_atomic_sequence(cast(Any, atomic_type), text))
+
+
+def check_simple_assertions(
+    instance: Any,
+    lexical: str | None,
+    assertions: Any,
+) -> None:
+    """Evaluates a simple type's assertion facets against a bound value.
+
+    ``instance`` is the validated value and ``lexical`` the
+    whitespace-processed lexical form it was built from. Each assertion is
+    evaluated with ``$value`` bound to the typed value and no context
+    item. A false result, a context-dependent test (no context item is
+    defined for a simple-type assertion) and a dynamic evaluation error
+    all raise :class:`SimpleAssertionError` (a ``TypeError`` carrying the
+    ``assert-failed`` code): the binding paths report it, and a union
+    treats the member as not matching and tries the next one.
+    """
+    if not assertions:
+        return
+    value = _simple_assertion_value(instance, lexical)
+    for assertion in assertions:
+        if assertion.requires_context:
+            raise SimpleAssertionError(
+                f"assertion test {assertion.test!r} reads the XPath context, "
+                "which a simple type assertion does not define"
+            )
+        try:
+            result = evaluate(assertion.compiled, None, value=value)
+            satisfied = assertion.compiled.tree.boolean_value(result)
+        except (XPathError, ElementPathError, TypeError, ValueError, LookupError) as exc:
+            raise SimpleAssertionError(
+                f"assertion test {assertion.test!r} could not be evaluated for the value: {exc}"
+            ) from exc
+        if not satisfied:
+            raise SimpleAssertionError(
+                f"assertion test {assertion.test!r} is not satisfied by the value"
             )

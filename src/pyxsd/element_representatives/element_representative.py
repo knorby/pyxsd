@@ -1405,7 +1405,7 @@ def get_active_xpath_default_namespaces() -> dict[int, str | None]:
 # Import all of the tag-specific classes after the ER class definition
 # (the tag modules import this module's ElementRepresentative).  This
 # replaces the old exec-based import loop.
-from pyxsd.assertions import Assert  # noqa: E402
+from pyxsd.assertions import Assert, AssertionFacet  # noqa: E402
 from pyxsd.element_representatives.all import All  # noqa: E402
 from pyxsd.element_representatives.annotation import Annotation  # noqa: E402
 from pyxsd.element_representatives.any import Any  # noqa: E402
@@ -1468,6 +1468,7 @@ TAG_CLASSES = {
     "Any": Any,
     "AnyAttribute": AnyAttribute,
     "Assert": Assert,
+    "Assertion": AssertionFacet,
     "Key": Key,
     "Keyref": Keyref,
     "Unique": Unique,

@@ -45,6 +45,7 @@ from pyxsd.xpath_subset import XPathError
 
 __all__ = [
     "CompiledXPath",
+    "assertion_requires_context",
     "evaluate",
     "parse_assertion_xpath",
     "parse_cta_xpath",
@@ -179,6 +180,71 @@ _CTA_LITERALS = frozenset({"_StringLiteral", "_IntegerLiteral", "_DecimalLiteral
 
 #: Name-node types that may follow ``@`` in the CTA subset.
 _CTA_ATTRIBUTE_NAMES = frozenset({"NameToken", "PrefixedNameToken"})
+
+#: AST node types that read the XPath focus directly — the context item, a
+#: path step, or a predicate. A simple-type assertion has no context item
+#: (XSD 1.1 Part 2, ``xs:assertion``: the value being validated is exposed
+#: only through ``$value``), so any expression containing one of these
+#: necessarily raises a dynamic error. The saxonData ``assert-simple008``
+#: through ``assert-simple010`` cases pin this for the context item,
+#: ``position()`` and ``last()``.
+_CONTEXT_TOKEN_TYPES = frozenset(
+    {
+        "ContextItemToken",
+        "ParentShortcutToken",
+        "AsteriskToken",
+        "RootToken",
+        "_RootToken",
+        "_SolidusOperator",
+        "_SolidusSolidusOperator",
+        "_CommercialAtAttributeReference",
+        "_LeftSquareBracketOperator",
+    }
+)
+
+#: Functions that read the focus position/size.
+_CONTEXT_FUNCTIONS = frozenset({"position", "last"})
+
+#: Parent node types under which a ``NameToken`` is a variable or type
+#: name rather than an implicit child-axis step.
+_CONTEXT_NAME_PARENTS = frozenset(
+    {
+        "VariableToken",
+        "PrefixedNameToken",
+        "BracedNameToken",
+        "_InstanceExpression",
+        "_TreatExpression",
+        "_CastExpression",
+        "_CastableExpression",
+    }
+)
+
+
+def assertion_requires_context(compiled: Any) -> bool:
+    """Whether an assertion test reads the XPath focus.
+
+    A context-dependent test cannot be evaluated for a simple-type
+    assertion, where no context item is defined; the caller treats it as
+    a dynamic error (a false result). Returns ``False`` for an expression
+    built only from ``$value``, literals and focus-free functions.
+    """
+    tree = compiled.tree if isinstance(compiled, CompiledXPath) else compiled
+    return _requires_context(tree)
+
+
+def _requires_context(node: Any, parent: Any = None) -> bool:
+    if isinstance(node, XPathAxis):
+        return True
+    if isinstance(node, XPathFunction) and getattr(node, "symbol", None) in _CONTEXT_FUNCTIONS:
+        return True
+    kind = type(node).__name__
+    if kind in _CONTEXT_TOKEN_TYPES:
+        return True
+    if kind == "NameToken" and (
+        parent is None or type(parent).__name__ not in _CONTEXT_NAME_PARENTS
+    ):
+        return True
+    return any(_requires_context(child, node) for child in node)
 
 
 class _AssertionChecker:
@@ -349,6 +415,14 @@ def evaluate(
         saved_namespaces = dict(parser.namespaces)
         parser.namespaces.update({p: u for p, u in namespaces.items() if p and u})
     try:
+        if node is None:
+            # A simple-type assertion has no context item: only ``$value``
+            # is in scope. elementpath requires a context item or a root,
+            # so an empty atomic stands in as the focus; a ``$value``-only
+            # expression never observes it, and a context-dependent one is
+            # filtered out by ``assertion_requires_context`` beforehand.
+            context = XPathContext(root=None, item="", variables=variables or None)
+            return tree.evaluate(context)
         root = node
         if attribute_types or element_types or namespaces:
             root = _typed_node_tree(node, attribute_types, element_types, namespaces)

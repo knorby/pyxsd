@@ -4095,7 +4095,7 @@ class PyXSD:
                     except (TypeError, ValueError) as exc:
                         self.report.add_error(
                             f"the root element '{rootName}' has an invalid default value: {exc}",
-                            code="default",
+                            code=getattr(exc, "code", "default"),
                             element=rootName,
                         )
                 else:
@@ -4106,7 +4106,7 @@ class PyXSD:
                             f"the root element '{rootName}' has an invalid "
                             f"{getattr(dataTypeClass, 'name', dataTypeClass.__name__)} "
                             f"value: {exc}",
-                            code="value",
+                            code=getattr(exc, "code", "value"),
                             element=rootName,
                         )
                         if self.mode.invalid_value == "raw":

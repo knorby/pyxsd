@@ -75,6 +75,7 @@ class ComplexType(XsdType):
         # complex type, whose element representatives record them here
         # (the other facet attributes are set on first assignment).
         self.patterns = []
+        self.assertions = []
         super().__init__(xsdElement, parent)
         self.getSchema().complexTypes[self.name] = self
 
