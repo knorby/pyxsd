@@ -102,6 +102,7 @@ from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.upa import upa_violations
 from pyxsd.validation import ValidationReport
+from pyxsd.versioning import VC_NS, apply_conditional_inclusion
 from pyxsd.wildcards import (
     NAMESPACE_ANY,
     PROCESS_SEVERITY,
@@ -138,8 +139,8 @@ _COMPOSABLE_TAGS = {
 
 #: Namespace of the XSD 1.1 conditional-inclusion attributes
 #: (``vc:minVersion`` etc.). Version selectors may legitimately leave
-#: several same-named declarations for different versions.
-_VC_NS = "http://www.w3.org/2007/XMLSchema-versioning"
+#: several same-named declarations for different versions; the selector
+#: namespace and its pre-processing live in ``pyxsd.versioning``.
 
 
 def _qnameLocal(value: str) -> str:
@@ -483,6 +484,12 @@ class PyXSD:
             except ET.ParseError as e:
                 raise PyXSDError(f"the schema file is not well-formed XML: {e}") from e
         logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")
+
+        # XSD 1.1 §4.2.2 conditional inclusion runs on every schema document
+        # before anything else, so the element-representative walk never sees
+        # a declaration a ``vc:*`` selector excludes. Included and imported
+        # documents are filtered as they are parsed (``_parseIncludedSchema``).
+        apply_conditional_inclusion(root, self.namespaceContext, self.report)
 
         baseDir, visited = self._schemaCompositionContext()
         # Documents already fully composed; their components must not be
@@ -2517,7 +2524,7 @@ class PyXSD:
         while node is not None:
             element = getattr(node, "xsdElement", None)
             if element is not None and any(
-                key.startswith(f"{{{_VC_NS}}}") for key in element.attrib
+                key.startswith(f"{{{VC_NS}}}") for key in element.attrib
             ):
                 return True
             node = getattr(node, "parent", None)
@@ -3432,6 +3439,7 @@ class PyXSD:
                 phase="schema",
             )
             return None
+        apply_conditional_inclusion(root, self.namespaceContext, self.report)
         return root
 
     def _checkDirectiveAnnotation(self, tag: Any, isImport: bool) -> None:
@@ -4271,11 +4279,10 @@ class PyXSD:
 
         topLevelDescriptors = schemaClassInstance._getElements()
 
-        if not topLevelDescriptors:
-            raise PyXSDError(
-                "invalid XML Schema - the parser could not find any root elements in the schema"
-            )
-
+        # A schema with no global element declarations is legal (and is what
+        # conditional inclusion leaves behind when it empties a document):
+        # there is then no descriptor for the root to match, and the
+        # ``unknown-root`` branch below reports it instead of aborting.
         if getattr(self.mode, "namespaces", "legacy") == "strict":
             matching = [
                 descriptor

@@ -1385,3 +1385,175 @@ def test_open_content_extension_wildcard_union_is_valid() -> None:
     assert "unexpected-element" in errors(
         parse(body, '<temp><a/><x xmlns="urn:disallowed"/></temp>')
     )
+
+
+# --- vc:* conditional inclusion ---------------------------------------------
+
+VC_URI = "http://www.w3.org/2007/XMLSchema-versioning"
+VC_PREFIX = f' xmlns:vc="{VC_URI}"'
+
+
+def test_vc_min_version_present_keeps_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:minVersion="1.1"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == []
+
+
+def test_vc_min_version_future_removes_declaration() -> None:
+    # XSD 1.1 V=1.1 < 5.0, so the declaration is absent (Saxon vc003).
+    body = '<xs:element name="temp" type="xs:string" vc:minVersion="5.0"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_max_version_older_removes_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:maxVersion="1.0"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_max_version_is_exclusive() -> None:
+    # Retained iff minVersion <= V < maxVersion, so 1.1 >= maxVersion.
+    body = '<xs:element name="temp" type="xs:string" vc:maxVersion="1.1"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_min_and_max_version_window() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:minVersion="1.0" vc:maxVersion="1.2"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == []
+
+
+def test_vc_type_available_known_type_keeps_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:typeAvailable="xs:string"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == []
+
+
+def test_vc_type_available_unknown_type_removes_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:typeAvailable="xs:bananaSkin"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_type_available_mixed_removes_declaration() -> None:
+    # Any unavailable item ignores the element (Saxon vc012).
+    body = '<xs:element name="temp" type="xs:string" vc:typeAvailable="xs:string xs:bananaSkin"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_type_unavailable_known_type_removes_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:typeUnavailable="xs:string"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_type_unavailable_unknown_type_keeps_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:typeUnavailable="xs:bananaSkin"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == []
+
+
+def test_vc_type_unavailable_mixed_keeps_declaration() -> None:
+    # Only an all-available list ignores the element (Saxon vc013).
+    body = '<xs:element name="temp" type="xs:string" vc:typeUnavailable="xs:bananaSkin xs:string"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == []
+
+
+def test_vc_type_unavailable_empty_removes_declaration() -> None:
+    # The empty list is vacuously all-available, so the element is ignored.
+    body = '<xs:element name="temp" type="xs:string" vc:typeUnavailable=""/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_type_available_empty_keeps_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:typeAvailable=""/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == []
+
+
+def test_vc_facet_available_known_facet_keeps_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:facetAvailable="xs:pattern"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == []
+
+
+def test_vc_facet_available_unknown_facet_removes_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:facetAvailable="xs:bananaSkin"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_facet_unavailable_known_facet_removes_declaration() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:facetUnavailable="xs:minLength"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_facet_unavailable_mixed_keeps_declaration() -> None:
+    # Not every item is available, so the element survives (Saxon vc023).
+    body = (
+        '<xs:element name="temp" type="xs:string" '
+        'vc:facetUnavailable="xs:minInclusive xs:bananaSkin"/>'
+    )
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == []
+
+
+def test_vc_type_availability_follows_the_shared_table() -> None:
+    # xs:dateTimeStamp is available only once the datatype work lands; the
+    # filter must consult the shared supported-type table, never fake it.
+    from pyxsd.versioning import SUPPORTED_TYPE_NAMES
+
+    body = '<xs:element name="temp" type="xs:string" vc:typeAvailable="xs:dateTimeStamp"/>'
+    report = parse(body, "<temp>x</temp>", extra=VC_PREFIX)
+    if "dateTimeStamp" in SUPPORTED_TYPE_NAMES:
+        assert errors(report) == []
+    else:
+        assert errors(report) == ["unknown-root"]
+
+
+def test_vc_bad_min_version_reports_versioning_invalid() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:minVersion="1.1.3"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["versioning-invalid"]
+
+
+def test_vc_bad_max_version_reports_versioning_invalid() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:maxVersion="10g"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["versioning-invalid"]
+
+
+def test_vc_bad_qname_lexical_reports_versioning_invalid() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:typeAvailable="xs:string 23"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["versioning-invalid"]
+
+
+def test_vc_unbound_prefix_reports_versioning_invalid() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:typeUnavailable="vx:thing xs:string"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == ["versioning-invalid"]
+
+
+def test_vc_removed_subtree_not_traversed() -> None:
+    # The declaration is absent from the pre-processed document, so the
+    # illegal value on its descendant is never reported.
+    body = (
+        '<xs:element name="temp" vc:maxVersion="1.0">'
+        "<xs:complexType><xs:sequence/>"
+        '<xs:attribute name="x" vc:minVersion="1.1.3"/></xs:complexType></xs:element>'
+    )
+    assert errors(parse(body, "<temp/>", extra=VC_PREFIX)) == ["unknown-root"]
+
+
+def test_vc_removed_child_declaration_takes_its_subtree() -> None:
+    body = (
+        '<xs:element name="temp"><xs:complexType><xs:sequence>'
+        '<xs:element name="child" vc:maxVersion="1.0">'
+        "<xs:complexType><xs:sequence/></xs:complexType></xs:element>"
+        "</xs:sequence></xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, "<temp><child/></temp>", extra=VC_PREFIX)) == ["unexpected-element"]
+
+
+def test_vc_namespace_is_identified_by_uri_not_prefix() -> None:
+    body = '<xs:element name="temp" type="xs:string" ver:maxVersion="1.0"/>'
+    extra = f' xmlns:ver="{VC_URI}"'
+    assert errors(parse(body, "<temp>x</temp>", extra=extra)) == ["unknown-root"]
+
+
+def test_vc_unknown_attribute_in_versioning_namespace_is_ignored() -> None:
+    body = '<xs:element name="temp" type="xs:string" vc:whatOnEarthIsThis="x"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=VC_PREFIX)) == []
+
+
+def test_vc_root_version_condition_empties_the_schema() -> None:
+    # Saxon vc006: a whole schema document made empty by vc:maxVersion.
+    extra = VC_PREFIX + ' vc:maxVersion="0.9"'
+    body = '<xs:element name="temp" type="xs:string"/>'
+    assert errors(parse(body, "<temp>x</temp>", extra=extra)) == ["unknown-root"]

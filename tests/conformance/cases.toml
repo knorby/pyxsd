@@ -8459,3 +8459,127 @@ expected_codes = ["unexpected-element"]
   <xs:element name="doc" type="beta"/>
 </xs:schema>
 '''
+
+[[case]]
+id = "vc/type-unavailable-excludes-declaration"
+xsd11 = true
+description = "vc:typeUnavailable naming an available built-in removes the declaration for this processor"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc011"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required" vc:typeUnavailable="xs:integer"/>
+      <xs:attribute name="y" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<temp x="1"/>
+'''
+instance_valid = false
+expected_codes = ["unexpected-attribute"]
+
+[[case]]
+id = "vc/type-available-mixed-excludes-declaration"
+xsd11 = true
+description = "vc:typeAvailable with any unavailable item removes the declaration (vc012)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc012"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required" vc:typeAvailable="xs:string xs:bananaSkin"/>
+      <xs:attribute name="y" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<temp x="1"/>
+'''
+instance_valid = false
+expected_codes = ["unexpected-attribute"]
+
+[[case]]
+id = "vc/facet-available-unknown-excludes-declaration"
+xsd11 = true
+description = "vc:facetAvailable naming an unknown facet removes the declaration"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc022"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required" vc:facetAvailable="xs:pattern xs:bananaSkin"/>
+      <xs:attribute name="y" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<temp x="1"/>
+'''
+instance_valid = false
+expected_codes = ["unexpected-attribute"]
+
+[[case]]
+id = "vc/max-version-removes-declaration"
+xsd11 = true
+description = "A declaration whose vc:maxVersion is at or below the processor version is absent"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc002"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp" type="xs:string" vc:maxVersion="1.0"/>
+</xs:schema>
+'''
+instance = '''
+<temp>x</temp>
+'''
+instance_valid = false
+expected_codes = ["unknown-root"]
+
+[[case]]
+id = "vc/root-version-selector-empties-schema"
+xsd11 = true
+description = "A vc:maxVersion on xs:schema empties the whole document (vc006)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc006"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning"
+           vc:maxVersion="0.9">
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>
+'''
+instance = '''
+<temp>x</temp>
+'''
+instance_valid = false
+expected_codes = ["unknown-root"]
+
+[[case]]
+id = "vc/bad-version-selector-invalid"
+description = "A vc:minVersion that is not an xs:decimal is a schema error"
+xsd11 = true
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc901"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp" type="xs:string" vc:minVersion="1.1.3"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["versioning-invalid"]
