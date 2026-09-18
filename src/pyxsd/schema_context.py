@@ -38,8 +38,8 @@ class SchemaContext:
       ``(elementFormDefault, attributeFormDefault)`` per spliced
       component.
     - ``injected_builtin_ids``: ``id(xsdElement)`` of the built-in
-      components the parser itself injected (the implicit ``xml`` and
-      ``xsi`` namespace attribute declarations). Kept apart from
+      components the parser itself injected (the implicit ``xml``,
+      ``xsi`` and ``xlink`` namespace attribute declarations). Kept apart from
       ``namespace_overrides`` because a user document may legally target
       a well-known namespace, and the declaration-legality checks must
       tell the injected declarations from such spliced user ones.

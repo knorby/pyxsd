@@ -82,6 +82,7 @@ from pyxsd.element_representatives.element_representative import (
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.namespaces import (
+    XLINK_NS,
     XML_NS,
     XSD_NS,
     XSI_NS,
@@ -446,6 +447,47 @@ class PyXSD:
         ("noNamespaceSchemaLocation", "anyURI"),
     )
 
+    #: The built-in attribute declarations of the XLink 1.0 namespace
+    #: (http://www.w3.org/1999/xlink). XSD 1.1 §4.2.3 resolves a
+    #: namespace name to the schema for that namespace; the XLink
+    #: vocabulary is available without retrieving ``xlink.xsd``. The
+    #: declarations are typed as strings, a safe under-approximation of
+    #: the canonical schema's token/anyURI/NCName restrictions (the xml
+    #: built-in attributes are typed the same way).
+    _XLINK_BUILTIN_ATTRIBUTES = (
+        "type",
+        "href",
+        "role",
+        "arcrole",
+        "title",
+        "show",
+        "actuate",
+        "label",
+        "from",
+        "to",
+    )
+
+    def _injectXlinkNamespaceAttributes(self, schemaRoot: Any) -> None:
+        """Registers the built-in XLink attribute declarations.
+
+        A conforming processor resolves the XLink namespace to a schema,
+        so ``<xs:attribute ref="xlink:type"/>`` resolves even when the
+        (remote) ``xlink.xsd`` is unreachable and a namespace-only
+        ``xs:import`` of the XLink namespace is satisfied. As with the
+        ``xml``/``xsi`` built-ins, a user document targeting the XLink
+        namespace is not exempted (its declarations stay subject to the
+        ordinary legality checks); only these injected components are
+        recorded as built-ins.
+        """
+        for local in self._XLINK_BUILTIN_ATTRIBUTES:
+            attributeElement = ET.Element(
+                clark(XSD_NS, "attribute"),
+                {"name": local, "type": clark(XSD_NS, "string")},
+            )
+            self._namespaceOverrides[id(attributeElement)] = XLINK_NS
+            self._injectedBuiltinIds.add(id(attributeElement))
+            schemaRoot.append(attributeElement)
+
     def _injectXsiNamespaceAttributes(self, schemaRoot: Any) -> None:
         """Registers the built-in XML-Schema-instance attribute declarations.
 
@@ -520,6 +562,7 @@ class PyXSD:
         if getattr(self.mode, "namespaces", "legacy") == "strict":
             self._injectXmlNamespaceAttributes(root)
             self._injectXsiNamespaceAttributes(root)
+            self._injectXlinkNamespaceAttributes(root)
 
         # XSD 1.1 allows a local element or attribute declaration to state
         # its own target namespace, but only inside an xs:restriction
@@ -2591,11 +2634,12 @@ class PyXSD:
             if kind is None or not er.isGlobalDeclaration():
                 return
             namespace = er.getNamespace()
-            if namespace == XML_NS:
-                # The XML-namespace attributes (xml:lang, xml:space, ...)
-                # are registered as built-ins before the ER run and may
-                # also be imported from the XML namespace schema; a
-                # repeat there is not an authoring error.
+            if namespace in (XML_NS, XLINK_NS):
+                # The XML-namespace (xml:lang, xml:space, ...) and XLink
+                # attribute declarations are registered as built-ins
+                # before the ER run and may also be reached from the
+                # namespace's own schema; a repeat there is not an
+                # authoring error.
                 return
             key = (kind, namespace, name)
             label = {
@@ -2946,12 +2990,12 @@ class PyXSD:
         """The namespaces a schema reference may resolve into.
 
         Every composed target namespace and satisfied import, plus the
-        namespaces XSD defines itself (XML Schema, XSI and ``xml``) and
-        the unnamed space.
+        namespaces XSD defines itself (XML Schema, XSI, ``xml`` and
+        XLink) and the unnamed space.
         """
         loaded: set = set(self._composedTargetNamespaces)
         loaded.update(self._resolvedImports)
-        loaded.update({XSD_NS, XSI_NS, XML_NS, None})
+        loaded.update({XSD_NS, XSI_NS, XML_NS, XLINK_NS, None})
         return loaded
 
     def _checkAlternatives(self, schemaER: Any) -> None:
@@ -3365,7 +3409,7 @@ class PyXSD:
                 # importing document actually references is fatal; an
                 # unused hint is only a warning.
                 namespace = tag.get("namespace")
-                if strict and namespace and namespace not in (XML_NS, XSD_NS, XSI_NS):
+                if strict and namespace and namespace not in (XML_NS, XLINK_NS, XSD_NS, XSI_NS):
                     otherTargets = self._composedTargetNamespaces - {
                         schemaRoot.get("targetNamespace")
                     }

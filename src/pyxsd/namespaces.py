@@ -29,6 +29,12 @@ XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 #: to supply it.
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 
+#: The XLink namespace. Its schema document is not bundled, but the
+#: XLink 1.0 attribute declarations are part of the vocabulary a
+#: conforming processor resolves for the namespace, so they are
+#: registered as built-ins.
+XLINK_NS = "http://www.w3.org/1999/xlink"
+
 
 class NamespaceError(Exception):
     """A QName used a prefix that is not bound in its scope."""

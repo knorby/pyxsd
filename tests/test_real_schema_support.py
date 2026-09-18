@@ -11,10 +11,19 @@ the schema parse:
 """
 
 from io import StringIO
+from pathlib import Path
 
+import pytest
+
+from pyxsd.binding import ParseModes
 from pyxsd.parser import PyXSD
+from pyxsd.validation import IssueSeverity
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+
+#: The test suite's own large XSD 1.1 schema, the ``introspection``
+#: robustness canary.
+CORPUS_XSTS = Path(__file__).parent / "xsts" / "corpus" / "common" / "xsts.xsd"
 
 
 def _parse_text(schema, instance="<r/>"):
@@ -79,6 +88,36 @@ class TestAttributeRefs:
             "<r/>",
         )
         assert "unknown-attributeRef" in _codes(parser)
+
+
+@pytest.mark.skipif(not CORPUS_XSTS.is_file(), reason="xsdtests corpus not checked out")
+class TestSuiteIntrospectionSchema:
+    def test_xsts_schema_compiles_without_schema_errors(self):
+        """The suite's own 1.1 schema resolves its XLink references.
+
+        ``xsts.xsd`` imports the XLink namespace with a remote
+        ``schemaLocation``; the XLink attribute declarations are built
+        in, so ``xlink:type``/``xlink:href`` resolve and the schema has
+        no schema-phase errors.
+        """
+        original = PyXSD.parseXML
+        PyXSD.parseXML = lambda self: None  # type: ignore[method-assign]
+        try:
+            parser = PyXSD(
+                StringIO("<probe/>"),
+                xsdFile=str(CORPUS_XSTS),
+                xmlFileOutput="_No_Output_",
+                transformOutputName="_No_Output_",
+                mode=ParseModes.NAMESPACED,
+            )
+        finally:
+            PyXSD.parseXML = original  # type: ignore[method-assign]
+        errors = [
+            issue
+            for issue in parser.report.for_phase("schema")
+            if issue.severity is IssueSeverity.ERROR
+        ]
+        assert errors == []
 
 
 class TestUnknownBaseTypes:

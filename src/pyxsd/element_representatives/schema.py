@@ -78,7 +78,7 @@ class Schema(ComplexType):
         # map is captured once, by value, so later parsers cannot
         # rewrite this schema's component namespaces.
         self.namespaceOverrides = get_active_namespace_overrides()
-        # Ids of the parser-injected built-in declarations (xml/xsi
+        # Ids of the parser-injected built-in declarations (xml/xsi/xlink
         # namespace attributes), captured with the same snapshot
         # discipline. A user schema targeting a well-known namespace is
         # not in this set, so it stays subject to the legality checks.
