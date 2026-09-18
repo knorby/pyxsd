@@ -87,7 +87,18 @@ class ComplexType(XsdType):
         another type) is anonymous, and a stray ``name`` there is a
         schema error even though ``getName`` would happily register it
         as a global type.
+
+        The XSD 1.1 ``assert`` children are compiled here (the parser
+        sweep reaches every type before any class is built) and stored on
+        ``compiledAssertions`` for the class builder; an unusable
+        ``test`` is reported as ``assert-invalid``.
         """
+        # Assertions are compiled first: an inline (bookkeeping-named)
+        # declaration returns early below and would otherwise never
+        # compile.
+        from pyxsd.assertions import compile_assertions
+
+        self.compiledAssertions = compile_assertions(self)
         mixed = self.tagAttributes.get("mixed")
         if mixed is not None and self._invalidBoolean(mixed):
             self._reportSchemaError(

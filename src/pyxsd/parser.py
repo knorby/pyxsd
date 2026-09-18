@@ -256,6 +256,10 @@ class PyXSD:
         # Source-document form defaults per spliced component:
         # id(xsdElement) -> (elementFormDefault, attributeFormDefault).
         self._formDefaults: dict[int, tuple[str | None, str | None]] = {}
+        # Source-document ``xpathDefaultNamespace`` per spliced component
+        # (only documents that declare one are recorded), so an included
+        # document's XPath default survives the splice.
+        self._xpathDefaultNamespaces: dict[int, str | None] = {}
         # Element identities that came from an included/imported schema
         # document. ``id`` uniqueness is an XML (per-document) rule, so
         # components spliced from another document must not be compared
@@ -501,6 +505,7 @@ class PyXSD:
         self.schemaContext.namespace_overrides = dict(self._namespaceOverrides)
         self.schemaContext.injected_builtin_ids = set(self._injectedBuiltinIds)
         self.schemaContext.form_defaults = dict(self._formDefaults)
+        self.schemaContext.xpath_default_namespaces = dict(self._xpathDefaultNamespaces)
         schemaER = ElementRepresentative.factory(root, None)
         if schemaER is None or schemaER.__class__.__name__ != "Schema":
             # A document that is not an XML Schema at all (for example
@@ -3391,6 +3396,7 @@ class PyXSD:
             includedRoot.get("elementFormDefault"),
             includedRoot.get("attributeFormDefault"),
         )
+        sourceXPathDefault = includedRoot.get("xpathDefaultNamespace")
         self._checkFormDefaults(includedRoot)
         for component in list(includedRoot):
             if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
@@ -3398,6 +3404,8 @@ class PyXSD:
                     for element in component.iter():
                         self._namespaceOverrides.setdefault(id(element), namespace)
                         self._formDefaults.setdefault(id(element), sourceDefaults)
+                        if sourceXPathDefault is not None:
+                            self._xpathDefaultNamespaces.setdefault(id(element), sourceXPathDefault)
                 schemaRoot.append(component)
         return None
 

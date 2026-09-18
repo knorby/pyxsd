@@ -1391,9 +1391,21 @@ def set_active_form_defaults(
     context_or_ambient().form_defaults = dict(defaults)
 
 
+def get_active_xpath_default_namespaces() -> dict[int, str | None]:
+    """Returns a snapshot of the active source XPath-default map.
+
+    Only included/imported documents that declare an
+    ``xpathDefaultNamespace`` are recorded, so the main document's value
+    still applies to components that carry none of their own. Read once,
+    at ``Schema`` construction time.
+    """
+    return dict(context_or_ambient().xpath_default_namespaces)
+
+
 # Import all of the tag-specific classes after the ER class definition
 # (the tag modules import this module's ElementRepresentative).  This
 # replaces the old exec-based import loop.
+from pyxsd.assertions import Assert  # noqa: E402
 from pyxsd.element_representatives.all import All  # noqa: E402
 from pyxsd.element_representatives.annotation import Annotation  # noqa: E402
 from pyxsd.element_representatives.any import Any  # noqa: E402
@@ -1455,6 +1467,7 @@ TAG_CLASSES = {
     "Group": Group,
     "Any": Any,
     "AnyAttribute": AnyAttribute,
+    "Assert": Assert,
     "Key": Key,
     "Keyref": Keyref,
     "Unique": Unique,

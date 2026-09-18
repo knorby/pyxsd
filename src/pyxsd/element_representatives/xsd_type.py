@@ -847,6 +847,17 @@ class XsdType(ElementRepresentative):
             # invalid or unresolved content.
             "_parseMode_": getattr(pyXSD, "mode", ParseModes.STRICT),
         }
+        # XSD 1.1 assertion set owned by this declaration; the bind-time hook
+        # unions it with the base classes' sets by walking the MRO. The
+        # class builder may run before the declaration sweep reaches this
+        # declaration (a derived one resolves its base), so compile on demand.
+        if self.__class__.__name__ == "ComplexType":
+            from pyxsd.assertions import compile_assertions
+
+            own_assertions: Any = compile_assertions(self)
+        else:
+            own_assertions = getattr(self, "compiledAssertions", None) or ()
+        namespace["_assertions_"] = list(own_assertions)
         itemCls = self._listItemClass(pyXSD)
         if itemCls is not None:
             namespace["itemType"] = itemCls

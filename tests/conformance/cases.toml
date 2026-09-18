@@ -7057,3 +7057,164 @@ schema = '''
   </xs:element>
 </xs:schema>'''
 schema_valid = true
+
+[[case]]
+id = "assertions/assert-simple-valid"
+xsd11 = true
+description = "A satisfied xs:assert on a complex type passes instance validation"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert001"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required"/>
+      <xs:assert test="@x > 300"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp x="304"/>'''
+
+[[case]]
+id = "assertions/assert-simple-failed"
+xsd11 = true
+description = "An unsatisfied xs:assert makes the instance invalid with assert-failed"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert001"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required"/>
+      <xs:assert test="@x > 300"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp x="204"/>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assert-typed-value-comparison"
+xsd11 = true
+description = "A value comparison sees the schema-declared attribute type, not its lexical string"
+derived_from = "W3C XMLSchema1TestSuite, IBM mixed/assertions test2"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="XList" type="ArrayType"/>
+  <xs:complexType name="ArrayType">
+    <xs:sequence>
+      <xs:element name="entry" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="length" type="xs:nonNegativeInteger"/>
+    <xs:assert test="@length eq count(./entry)"/>
+  </xs:complexType>
+</xs:schema>'''
+instance = '''
+<XList length="4">
+  <entry>a</entry>
+  <entry>b</entry>
+  <entry>c</entry>
+  <entry>d</entry>
+</XList>'''
+
+[[case]]
+id = "assertions/assert-inherited-base-failure"
+xsd11 = true
+description = "A base type's assertion is inherited by a derived (restriction) type"
+derived_from = "W3C XMLSchema1TestSuite, IBM mixed/assertions test10"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="message" type="derivedType"/>
+  <xs:complexType name="baseType">
+    <xs:sequence>
+      <xs:element name="body" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="mustUnderstand" type="xs:string"/>
+    <xs:assert test="@mustUnderstand"/>
+  </xs:complexType>
+  <xs:complexType name="derivedType">
+    <xs:complexContent>
+      <xs:restriction base="baseType">
+        <xs:sequence>
+          <xs:element name="body" minOccurs="0" maxOccurs="unbounded"/>
+        </xs:sequence>
+        <xs:attribute name="mustUnderstand" type="xs:string"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>'''
+instance = '''
+<message>
+  <body>hi</body>
+</message>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assert-out-of-subset-invalid"
+xsd11 = true
+description = "An xs:assert test calling fn:doc is outside the XSD 1.1 assertion subset"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert011 (doc() disallowed)"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:assert test="doc('assert011-event-list.xml')//event"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["assert-invalid"]
+
+[[case]]
+id = "assertions/assert-chameleon-xpath-default-namespace"
+xsd11 = true
+description = "A chameleon-included schema's schema-level xpathDefaultNamespace resolves to the host target namespace"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert020"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:c" xmlns:c="urn:c" elementFormDefault="qualified">
+  <xs:include schemaLocation="included.xsd"/>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="c:temp" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<doc xmlns="urn:c">
+  <temp>
+    <temp>
+      <temp>
+        <temp/>
+      </temp>
+    </temp>
+  </temp>
+</doc>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+[case.files]
+"included.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xpathDefaultNamespace="##targetNamespace">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="temp" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:assert test="empty(temp/temp/temp)"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''

@@ -48,6 +48,7 @@ class SchemaContext:
     components: Any = None
     namespace_overrides: dict[int, str | None] = field(default_factory=dict)
     form_defaults: dict[int, tuple[str | None, str | None]] = field(default_factory=dict)
+    xpath_default_namespaces: dict[int, str | None] = field(default_factory=dict)
     injected_builtin_ids: set[int] = field(default_factory=set)
 
 

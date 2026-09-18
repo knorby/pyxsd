@@ -622,6 +622,11 @@ class SchemaBase:
         if content_cls is None:
             cls.addValueTo(instance, elementTag)
 
+        if any(klass.__dict__.get("_assertions_") for klass in cls.__mro__):
+            from pyxsd.assertions import check_element_assertions
+
+            check_element_assertions(cls, elementTag)
+
         return instance
 
     @classmethod

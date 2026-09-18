@@ -8,10 +8,13 @@ condensed from the Saxon ``Assert``/``CTA`` corpus and the IBM
 (conditional type assignment).
 """
 
+import io
 import xml.etree.ElementTree as ET
 
 import pytest
 
+from pyxsd.binding import ParseModes
+from pyxsd.parser import PyXSD
 from pyxsd.xpath_assertions import (
     CompiledXPath,
     _AssertionChecker,
@@ -149,3 +152,136 @@ def test_xpath2_evaluate_maps_missing_variable_to_xpath_error() -> None:
     compiled = parse_assertion_xpath("$value gt 3", NS)
     with pytest.raises(XPathError):
         evaluate(compiled, ET.fromstring("<temp/>"))
+
+
+# --- xs:assert on complex types ---------------------------------------------
+
+SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"{extra}>
+{body}
+</xs:schema>"""
+
+
+def parse(body, xml, extra=""):
+    parser = PyXSD(
+        io.StringIO(xml),
+        io.StringIO(SCHEMA.format(body=body, extra=extra)),
+        xmlFileOutput=False,
+        transformOutputName=None,
+        mode=ParseModes.NAMESPACED,
+    )
+    return parser.report
+
+
+def errors(report):
+    return [issue.code for issue in report.errors]
+
+
+ASSERT_TEMP = (
+    '<xs:element name="temp"><xs:complexType><xs:sequence/>'
+    '<xs:attribute name="x" use="required"/>'
+    '<xs:assert test="@x &gt; 300"/></xs:complexType></xs:element>'
+)
+
+
+def test_assert_satisfied_passes() -> None:
+    assert errors(parse(ASSERT_TEMP, '<temp x="304"/>')) == []
+
+
+def test_assert_violated_reports_assert_failed() -> None:
+    assert errors(parse(ASSERT_TEMP, '<temp x="204"/>')) == ["assert-failed"]
+
+
+def test_assert_out_of_subset_reports_assert_invalid() -> None:
+    body = (
+        '<xs:element name="temp"><xs:complexType><xs:sequence/>'
+        "<xs:assert test=\"doc('other.xml')\"/></xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, "<temp/>")) == ["assert-invalid"]
+
+
+def test_assert_dynamic_error_reports_assert_failed() -> None:
+    body = (
+        '<xs:element name="temp"><xs:complexType><xs:sequence/>'
+        '<xs:attribute name="x" use="required"/>'
+        '<xs:assert test="100 div xs:integer(@x) &gt; 50"/>'
+        "</xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, '<temp x="0"/>')) == ["assert-failed"]
+
+
+def test_assert_value_comparison_uses_declared_attribute_type() -> None:
+    body = (
+        '<xs:element name="XList" type="ArrayType"/>'
+        '<xs:complexType name="ArrayType"><xs:sequence>'
+        '<xs:element name="entry" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>'
+        "</xs:sequence>"
+        '<xs:attribute name="length" type="xs:nonNegativeInteger"/>'
+        '<xs:assert test="@length eq count(./entry)"/>'
+        "</xs:complexType>"
+    )
+    ok = '<XList length="2"><entry>a</entry><entry>b</entry></XList>'
+    bad = '<XList length="4"><entry>a</entry><entry>b</entry></XList>'
+    assert errors(parse(body, ok)) == []
+    assert errors(parse(body, bad)) == ["assert-failed"]
+
+
+def test_assert_on_base_type_applies_to_derived_type() -> None:
+    body = (
+        '<xs:element name="message" type="derivedType"/>'
+        '<xs:complexType name="baseType"><xs:sequence/>'
+        '<xs:attribute name="mustUnderstand" type="xs:string"/>'
+        '<xs:assert test="@mustUnderstand"/>'
+        "</xs:complexType>"
+        '<xs:complexType name="derivedType"><xs:complexContent>'
+        '<xs:restriction base="baseType"><xs:sequence/>'
+        '<xs:attribute name="mustUnderstand" type="xs:string"/>'
+        "</xs:restriction></xs:complexContent></xs:complexType>"
+    )
+    assert errors(parse(body, '<message mustUnderstand="YES"/>')) == []
+    assert errors(parse(body, "<message/>")) == ["assert-failed"]
+
+
+def test_assert_xpath_default_namespace_target_namespace() -> None:
+    body = (
+        '<xs:element name="temp"><xs:complexType><xs:sequence>'
+        '<xs:element name="child" minOccurs="0"/>'
+        "</xs:sequence>"
+        '<xs:assert test="empty(child)" '
+        'xpathDefaultNamespace="##targetNamespace"/>'
+        "</xs:complexType></xs:element>"
+    )
+    extra = ' targetNamespace="urn:t" xmlns:t="urn:t" elementFormDefault="qualified"'
+    assert errors(parse(body, '<temp xmlns="urn:t"/>', extra)) == []
+    assert errors(parse(body, '<temp xmlns="urn:t"><child/></temp>', extra)) == ["assert-failed"]
+
+
+def test_assert_value_variable_is_typed_simple_content() -> None:
+    body = (
+        '<xs:element name="temp"><xs:complexType><xs:simpleContent>'
+        '<xs:extension base="xs:date">'
+        '<xs:attribute name="startDate" type="xs:date" use="required"/>'
+        '<xs:assert test="$value instance of xs:date"/>'
+        "</xs:extension></xs:simpleContent></xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, '<temp startDate="2008-06-01">2008-07-01</temp>')) == []
+
+
+def test_assert_descendant_element_uses_declared_type() -> None:
+    body = (
+        '<xs:element name="temp"><xs:complexType><xs:sequence>'
+        '<xs:element name="d" type="xs:date"/>'
+        "</xs:sequence>"
+        '<xs:assert test="data(child::d[1]) instance of xs:date"/>'
+        "</xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, "<temp><d>2008-07-01</d></temp>")) == []
+
+
+def test_assert_in_scope_prefixes_sees_instance_bindings() -> None:
+    body = (
+        '<xs:element name="x"><xs:complexType><xs:sequence/>'
+        "<xs:assert test=\"in-scope-prefixes(.) = 'a'\"/>"
+        "</xs:complexType></xs:element>"
+    )
+    assert errors(parse(body, '<x xmlns:a="urn:a"/>')) == []

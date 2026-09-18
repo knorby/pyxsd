@@ -36,9 +36,11 @@ from typing import Any, NamedTuple
 
 from elementpath import XPath2Parser, XPathContext
 from elementpath.exceptions import ElementPathError
+from elementpath.tree_builders import build_node_tree
+from elementpath.xpath_nodes import ElementNode
 from elementpath.xpath_tokens import XPathAxis, XPathFunction
 
-from pyxsd.namespaces import XML_NS
+from pyxsd.namespaces import XML_NS, local_name
 from pyxsd.xpath_subset import XPathError
 
 __all__ = [
@@ -240,18 +242,32 @@ class _CTAChecker:
         raise XPathError(f"{kind} is outside the conditional-type-assignment XPath subset")
 
 
-def parse_assertion_xpath(text: str, namespaces: dict[str, str]) -> CompiledXPath:
+def parse_assertion_xpath(
+    text: str,
+    namespaces: dict[str, str],
+    *,
+    default_namespace: str | None = None,
+) -> CompiledXPath:
     """Parses an ``xs:assert``/``xs:assertion`` ``test`` expression.
+
+    ``default_namespace`` is the effective ``xpathDefaultNamespace`` the
+    declaration site resolves (``None`` for ``##local``); it becomes the
+    namespace unprefixed names in the expression resolve to.
 
     Raises :class:`pyxsd.xpath_subset.XPathError` when the expression is
     empty, uses an unbound prefix, is not valid XPath 2.0, or contains a
     construct outside the assertion subset (a forbidden resource
     function, the namespace axis, or an unrecognized AST node).
     """
-    return _parse(text, namespaces, _AssertionChecker())
+    return _parse(text, namespaces, _AssertionChecker(), default_namespace)
 
 
-def parse_cta_xpath(text: str, namespaces: dict[str, str]) -> CompiledXPath:
+def parse_cta_xpath(
+    text: str,
+    namespaces: dict[str, str],
+    *,
+    default_namespace: str | None = None,
+) -> CompiledXPath:
     """Parses an ``xs:alternative`` ``test`` expression.
 
     The CTA subset is attribute tests on the element itself: ``@name``
@@ -260,13 +276,14 @@ def parse_cta_xpath(text: str, namespaces: dict[str, str]) -> CompiledXPath:
     access and every other function are rejected with
     :class:`pyxsd.xpath_subset.XPathError`.
     """
-    return _parse(text, namespaces, _CTAChecker())
+    return _parse(text, namespaces, _CTAChecker(), default_namespace)
 
 
 def _parse(
     text: str,
     namespaces: dict[str, str],
     checker: _AssertionChecker | _CTAChecker,
+    default_namespace: str | None = None,
 ) -> CompiledXPath:
     source = (text or "").strip()
     if not source:
@@ -274,7 +291,10 @@ def _parse(
     bindings = {prefix: uri for prefix, uri in (namespaces or {}).items() if prefix}
     bindings.setdefault("xml", XML_NS)
     try:
-        tree = XPath2Parser(namespaces=bindings).parse(source)
+        tree = XPath2Parser(
+            namespaces=bindings,
+            default_namespace=default_namespace,
+        ).parse(source)
     except (ElementPathError, TypeError, ValueError) as exc:
         raise XPathError(f"not a valid XPath expression: {exc}") from exc
     checker.check(tree)
@@ -288,6 +308,9 @@ def evaluate(
     value: Any | None = None,
     variable_values: dict[str, Any] | None = None,
     variable_types: dict[str, Any] | None = None,
+    attribute_types: dict[str, Any] | None = None,
+    element_types: dict[str, Any] | None = None,
+    namespaces: dict[str, str] | None = None,
 ) -> Any:
     """Evaluates a compiled assertion/CTA expression against ``node``.
 
@@ -298,6 +321,17 @@ def evaluate(
     is accepted for interface symmetry with the schema phase, where
     elementpath consumes variable types at parse time.
 
+    ``attribute_types``/``element_types`` map an attribute (respectively
+    element) name, local or Clark, to an elementpath-compatible XSD type
+    descriptor. They let the evaluator see the typed values the schema
+    declares, so a value comparison (``eq``/``le``/...) between an
+    attribute and a number behaves per XPath 2.0 rather than comparing
+    the untyped lexical string (``@length eq count(entry)``); without a
+    schema proxy an ElementTree attribute is otherwise untyped.
+    ``namespaces`` supplies the in-scope prefix bindings of the context
+    element, needed to decode ``xs:QName``-typed values and to answer
+    ``in-scope-prefixes()``.
+
     Any evaluator failure (``ElementPathError``, ``TypeError``,
     ``ValueError``) is mapped to :class:`XPathError`.
     """
@@ -305,8 +339,68 @@ def evaluate(
     variables = dict(variable_values or {})
     if value is not None:
         variables["value"] = value
+    parser = getattr(tree, "parser", None)
+    saved_namespaces: dict[str, str] | None = None
+    if namespaces and parser is not None:
+        # ``in-scope-prefixes()`` on an ElementTree reads the parser's
+        # static namespaces, so the context element's dynamic bindings
+        # must be visible there for the duration of the evaluation. The
+        # compiled expression is shared, so restore the parser's set.
+        saved_namespaces = dict(parser.namespaces)
+        parser.namespaces.update({p: u for p, u in namespaces.items() if p and u})
     try:
-        context = XPathContext(root=node, variables=variables or None)
+        root = node
+        if attribute_types or element_types or namespaces:
+            root = _typed_node_tree(node, attribute_types, element_types, namespaces)
+        context = XPathContext(root=root, variables=variables or None)
         return tree.evaluate(context)
-    except (ElementPathError, TypeError, ValueError) as exc:
+    except (ElementPathError, TypeError, ValueError, KeyError, ArithmeticError) as exc:
         raise XPathError(f"XPath evaluation failed: {exc}") from exc
+    finally:
+        if saved_namespaces is not None and parser is not None:
+            parser.namespaces.clear()
+            parser.namespaces.update(saved_namespaces)
+
+
+def _typed_node_tree(
+    node: Any,
+    attribute_types: dict[str, Any] | None,
+    element_types: dict[str, Any] | None,
+    namespaces: dict[str, str] | None,
+) -> Any:
+    """Wraps ``node`` in an elementpath node tree with declared types.
+
+    The tree is the same one the evaluator would build internally; the
+    declared attribute/element types are stamped onto its nodes so
+    elementpath atomizes them to the XSD value rather than to
+    ``xs:untypedAtomic``, and the in-scope prefix bindings are attached
+    so ``xs:QName`` values decode.
+    """
+    root = build_node_tree(node, namespaces=namespaces)
+    _apply_declared_types(root, attribute_types, element_types)
+    return root
+
+
+def _apply_declared_types(
+    node: Any,
+    attribute_types: dict[str, Any] | None,
+    element_types: dict[str, Any] | None,
+) -> None:
+    if isinstance(node, ElementNode):
+        node_name = node.name
+        if element_types and node_name is not None:
+            declared = element_types.get(node_name) or element_types.get(local_name(node_name))
+            if declared is not None:
+                node.xsd_type = declared
+        if attribute_types:
+            for attribute in node.attributes:
+                attribute_name = attribute.name
+                if attribute_name is None:
+                    continue
+                declared = attribute_types.get(attribute_name) or attribute_types.get(
+                    local_name(attribute_name)
+                )
+                if declared is not None:
+                    attribute.xsd_type = declared
+    for child in getattr(node, "children", None) or ():
+        _apply_declared_types(child, attribute_types, element_types)

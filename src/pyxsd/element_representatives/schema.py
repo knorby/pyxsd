@@ -6,6 +6,7 @@ from pyxsd.element_representatives.element_representative import (
     get_active_form_defaults,
     get_active_injected_builtin_ids,
     get_active_namespace_overrides,
+    get_active_xpath_default_namespaces,
 )
 
 
@@ -85,6 +86,9 @@ class Schema(ComplexType):
         # The source document's form defaults per spliced component,
         # captured with the same snapshot discipline.
         self.formDefaultOverrides = get_active_form_defaults()
+        # The source document's ``xpathDefaultNamespace`` per spliced
+        # component (only documents that declare one), same discipline.
+        self.xpathDefaultNamespaceOverrides = get_active_xpath_default_namespaces()
         self.attributeGroups = {}
         self.complexTypes = {}
         self.simpleTypes = {}

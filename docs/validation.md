@@ -90,6 +90,8 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `identity-keyref` | ERROR | Keyref value has no matching key/unique value. |
 | `identity-refer` | ERROR | A keyref's `refer` does not resolve to a key or unique constraint in scope, or is missing or malformed. |
 | `xpath-invalid` | ERROR | An identity-constraint `xpath` violates the XSD 1.1 §3.11.6 XPath subset, uses an unbound namespace prefix, or is otherwise unusable; also reported for an `xpathDefaultNamespace` value outside the four legal forms (`##defaultNamespace`, `##targetNamespace`, `##local`, or an absolute URI). |
+| `assert-invalid` | ERROR | An `xs:assert` `test` is outside the XSD 1.1 §3.13.1 assertion XPath 2.0 subset (for example `fn:doc`/`fn:collection`, the namespace axis), uses an unbound namespace prefix, is empty, or carries an unusable `xpathDefaultNamespace`. The assertion is not evaluated. |
+| `assert-failed` | ERROR | An `xs:assert` on a complex type evaluated to false for the bound element, or its evaluation raised a dynamic error (XSD 1.1 §3.13.4.2). |
 | `id-duplicate` | ERROR | Two attribute or element values of type `xs:ID` in one document are equal (XML ID uniqueness). |
 | `idref-unresolved` | ERROR | A value of type `xs:IDREF`/`xs:IDREFS` names no `xs:ID` value in the document (DTD-style reference resolution). |
 | `identity-unsupported` | WARNING | Identity-constraint XPath uses an unsupported construct. |
