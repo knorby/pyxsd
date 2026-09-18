@@ -2,7 +2,7 @@
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
 
   <!-- substitution-group head: a global element declaration -->
-  <xs:element name="marker" type="xs:string"/>
+  <xs:element name="marker" type="xs:anySimpleType"/>
 
   <!-- substitution-group members of 'marker' -->
   <xs:element name="dot" type="xs:integer" substitutionGroup="marker"/>

@@ -425,6 +425,30 @@ class Element(ElementRepresentative):
             return local_name(resolved)
         return resolved
 
+    def getSubstitutionGroupHeads(self, parser=None):
+        """Returns every head named by the ``substitutionGroup`` attribute.
+
+        XSD 1.1 allows an element declaration to belong to more than one
+        substitution group: the attribute holds a whitespace-separated
+        list of QNames (saxon subsgroup001/002). XSD 1.0 admitted a
+        single head, which is the one-element case. Each name is
+        resolved through the schema document's namespace context exactly
+        as :meth:`getSubstitutionGroupHead` resolves a single head; an
+        unresolvable name is returned as written so the caller can
+        report it as an unknown head.
+        """
+        raw = self.tagAttributes.get("substitutionGroup")
+        if raw is None:
+            return []
+        heads = []
+        for token in raw.split():
+            resolved = self.resolveSchemaQName(token, parser=parser)
+            if namespace_of(resolved) is None:
+                heads.append(local_name(resolved))
+            else:
+                heads.append(resolved)
+        return heads
+
     #: Element ``final`` accepts only these tokens, plus ``#all`` alone.
     #: Notably ``substitution`` is *not* a legal final token.
     _FINAL_TOKENS = ("extension", "restriction")

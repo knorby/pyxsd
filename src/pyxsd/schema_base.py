@@ -1146,7 +1146,7 @@ class SchemaBase:
         """
         subElementName = cls._node_name(subElement)
         nilled = xsi.xsi_nil_is_true(subElement)
-        if nilled and not descriptor.isNillable():
+        if xsi.xsi_nil_declared(subElement) and not descriptor.isNillable():
             cls._report_error(
                 f"element '{subElementName}' carries xsi:nil but its declaration is not nillable",
                 code="nil",
@@ -1478,6 +1478,27 @@ class SchemaBase:
                 else:
                     subElCls = headDescriptor.getType()
                 if subElCls is None:
+                    return False
+                # XSD 1.1 §3.3.4.3: a member whose type is derived from the
+                # head's type by a method named in the head element's
+                # ``block`` is excluded from the actual substitution group
+                # (MS elemT063/065, SUN disallowedSubst*). The check is on
+                # the member's *declared* type, not on any xsi:type
+                # override applied below.
+                headCls = headDescriptor.getType()
+                if (
+                    headCls is not None
+                    and subElCls is not headCls
+                    and block
+                    and is_validly_derived(subElCls, headCls, block) == "blocked"
+                ):
+                    cls._report_error(
+                        f"substitution-group member '{subElementName}' has a "
+                        f"type whose derivation from head element "
+                        f"'{headDescriptor.name}' is blocked by block={block!r}",
+                        code="blocked",
+                        element=cls.__name__,
+                    )
                     return False
                 # An xsi:type on the member overrides the member's
                 # declared type, provided it is validly derived. The

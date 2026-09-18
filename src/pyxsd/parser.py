@@ -883,6 +883,119 @@ class PyXSD:
         if isAll:
             self._checkSubstitutionOverlap(resolved)
             self._checkAllWildcardOverlap(er)
+        self._checkSubstitutionEDC(resolved)
+
+    def _checkSubstitutionEDC(self, resolved: list[Any]) -> None:
+        """Reports a substitution member redeclared with a conflicting type.
+
+        XSD 1.1 §3.8.6.4 (Element Declarations Consistent) compares more
+        than same-named declarations: wherever a head element appears in
+        a content model its substitution members stand in the same place,
+        so a member that also appears explicitly must carry the type of
+        the global member it duplicates. A mismatched local declaration
+        (``edc.xsd``'s local ``e1: integer`` against the abstract global
+        member ``e1`` of ``e: string``) therefore rejects the schema.
+        Names are compared as expanded ``(namespace, local)`` pairs, so
+        an unqualified local never collides with a same-spelled global
+        (elemZ020).
+        """
+        if not resolved:
+            return
+        try:
+            schema = resolved[0][2].getSchema()
+        except AttributeError:
+            return
+
+        def nameOf(holder: Any) -> tuple[str, str]:
+            return (
+                element_namespace(holder) or "",
+                getattr(holder, "name", None) or "",
+            )
+
+        # Effective (form-aware) names for the particles in the model: a
+        # reference adopts the referred global's name, a local
+        # declaration is qualified-or-not per its ``form``/the document
+        # default, so an unqualified local never collides with a
+        # same-spelled global (elemZ020).
+        entries: list[tuple[tuple[str, str], str, Any]] = []
+        for name, typeKey, particle in resolved:
+            entryName = name if getattr(particle, "isElementRef", False) else nameOf(particle)
+            entries.append((entryName, typeKey, particle))
+        modelKeys = {name for name, _typeKey, _particle in entries}
+
+        def headsOf(holder: Any) -> set[tuple[str, str]]:
+            names: set[tuple[str, str]] = set()
+            for head in holder.getSubstitutionGroupHeads(self):
+                if head.startswith("{"):
+                    namespace, _, local = head[1:].partition("}")
+                    names.add((namespace, local))
+                else:
+                    names.add((holder.getNamespace() or "", head.split(":")[-1]))
+            return names
+
+        memberDecls: dict[tuple[str, str], Any] = {}
+        memberHeads: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        for element in getattr(schema, "elements", None) or ():
+            if type(element).__name__ != "Element" or not element.name:
+                continue
+            if not element.tagAttributes.get("substitutionGroup"):
+                continue
+            key = nameOf(element)
+            memberDecls[key] = element
+            memberHeads[key] = headsOf(element)
+        if not memberHeads:
+            return
+
+        memo: dict[tuple[str, str], set[tuple[str, str]]] = {}
+
+        def transitiveHeads(
+            key: tuple[str, str], seen: frozenset[tuple[str, str]]
+        ) -> set[tuple[str, str]]:
+            if key in memo:
+                return memo[key]
+            if key in seen:
+                return set()
+            heads: set[tuple[str, str]] = set()
+            for head in memberHeads.get(key, ()):
+                heads.add(head)
+                heads |= transitiveHeads(head, seen | {key})
+            memo[key] = heads
+            return heads
+
+        declared = {key: self._declaredTypeClass(decl) for key, decl in memberDecls.items()}
+        reported: set[tuple[str, str]] = set()
+        for name, typeKey, particle in entries:
+            if name not in memberHeads:
+                continue
+            if not (transitiveHeads(name, frozenset()) & modelKeys):
+                continue
+            if typeKey == f"decl:{memberDecls[name].expandedName}":
+                continue  # a reference site naming the global member itself
+            entryCls = self._classOfParticleEntry(typeKey, particle)
+            memberCls = declared.get(name)
+            if entryCls is None or memberCls is None or entryCls is memberCls:
+                continue
+            if name in reported:
+                continue
+            reported.add(name)
+            local = name[1] or "?"
+            self.report.add_error(
+                f"element declarations consistent: substitution member "
+                f"'{local}' is declared with a type conflicting with its "
+                "global declaration",
+                code="element-consistent",
+            )
+
+    def _classOfParticleEntry(self, typeKey: str, particle: Any) -> Any:
+        """Returns the compiled class a resolved particle entry stands for."""
+        if typeKey.startswith("decl:"):
+            expanded = typeKey[5:]
+            schema = particle.getSchema()
+            for element in getattr(schema, "elements", None) or ():
+                if getattr(element, "expandedName", None) == expanded:
+                    return self._declaredTypeClass(element)
+            return None
+        return self._declaredTypeClass(particle)
 
     def _reportParticleRestriction(self, er: Any) -> None:
         """Reports particle-invalid restriction derivations.
@@ -1823,51 +1936,77 @@ class PyXSD:
         return groups.get(ref) or groups.get(ref.split(":")[-1])
 
     def _checkSubstitutionOverlap(self, resolved: list[tuple[tuple[str, str], str, Any]]) -> None:
-        """Reports a substitution-group member meeting its head in an all.
+        """Reports a substitution-related pair meeting inside one ``all``.
 
-        A member can stand wherever its head appears, so head and member
-        under one ``all`` is ambiguous (all241). The head is read from
-        the particle's own ``substitutionGroup`` attribute, or — for a
-        reference site — from the referred global declaration. A head
-        whose {block} excludes substitution cannot be substituted here,
-        so the pair is deterministic and not reported (elemZ028a). Only
-        the immediate head step is consulted; chains are left to the
-        substitution-group machinery.
+        A member can stand wherever its head appears, so two particles
+        under one ``all`` are ambiguous when their expanded name sets —
+        the particle's own name plus every declaration that may
+        substitute for it — intersect. That covers the head/member pair
+        (all241), a member shared by two heads (all242: ``q`` substitutes
+        for both ``o`` and ``p``), and a member belonging to two groups
+        whose heads are both present (subsgroup903). A head whose
+        {block} excludes substitution cannot be substituted here, so it
+        does not expand and the model stays deterministic (elemZ028a).
+        Only the immediate substitution step is consulted; transitive
+        chains are left to the substitution-group machinery.
         """
-        headsByLocal: dict[str, str] = {}
-        blockedHeads: set[str] = set()
-        schema = None
+        if not resolved:
+            return
         try:
-            schema = resolved[0][2].getSchema() if resolved else None
+            schema = resolved[0][2].getSchema()
         except AttributeError:
-            schema = None
-        if schema is not None:
-            for element in getattr(schema, "elements", None) or ():
-                if type(element).__name__ != "Element" or not element.name:
-                    continue
-                block = element.tagAttributes.get("block") or ""
-                if "substitution" in block.split() or "#all" in block.split():
-                    blockedHeads.add(element.name)
-                head = element.tagAttributes.get("substitutionGroup")
-                if head:
-                    headsByLocal.setdefault(element.name, head.split(":")[-1])
-        locals = {local for _, local in (name for name, _, _ in resolved)}
-        for (_, local), _, particle in resolved:
-            head = particle.tagAttributes.get("substitutionGroup")
-            if not head:
-                head = headsByLocal.get(local)
-            if not head:
+            return
+        memberHeads: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        blockedHeads: set[tuple[str, str]] = set()
+
+        def headsOf(holder: Any) -> set[tuple[str, str]]:
+            names: set[tuple[str, str]] = set()
+            for head in holder.getSubstitutionGroupHeads(self):
+                if head.startswith("{"):
+                    namespace, _, local = head[1:].partition("}")
+                    names.add((namespace, local))
+                else:
+                    names.add((holder.getNamespace() or "", head.split(":")[-1]))
+            return names
+
+        def nameOf(holder: Any) -> tuple[str, str]:
+            return (holder.getNamespace() or "", getattr(holder, "name", None) or "")
+
+        for element in getattr(schema, "elements", None) or ():
+            if type(element).__name__ != "Element" or not element.name:
                 continue
-            headLocal = head.split(":")[-1]
-            if headLocal in blockedHeads:
-                continue
-            if headLocal in locals:
-                self.report.add_error(
-                    f"content model is ambiguous: element '{headLocal}' has a "
-                    "substitution group member in the same all",
-                    code="all-rule",
-                )
-                return
+            block = (element.tagAttributes.get("block") or "").split()
+            if "substitution" in block or "#all" in block:
+                blockedHeads.add(nameOf(element))
+            if element.tagAttributes.get("substitutionGroup"):
+                memberHeads.setdefault(nameOf(element), set()).update(headsOf(element))
+        for name, _typeKey, particle in resolved:
+            block = (particle.tagAttributes.get("block") or "").split()
+            if "substitution" in block or "#all" in block:
+                blockedHeads.add(name)
+            if particle.tagAttributes.get("substitutionGroup"):
+                memberHeads.setdefault(name, set()).update(headsOf(particle))
+
+        expanded: list[tuple[tuple[str, str], set[tuple[str, str]]]] = []
+        for name in {name for name, _, _ in resolved}:
+            names = {name}
+            if name not in blockedHeads:
+                for member, heads in memberHeads.items():
+                    if name in heads:
+                        names.add(member)
+            expanded.append((name, names))
+        for index, (first, firstNames) in enumerate(expanded):
+            for second, secondNames in expanded[index + 1 :]:
+                if firstNames & secondNames:
+                    firstLabel = first[1] if first[1] else "?"
+                    secondLabel = second[1] if second[1] else "?"
+                    self.report.add_error(
+                        f"content model is ambiguous: elements '{firstLabel}' and "
+                        f"'{secondLabel}' can match the same substitution member "
+                        "in the same all",
+                        code="all-rule",
+                    )
+                    return
 
     def _checkAllWildcardOverlap(self, er: Any) -> None:
         """Reports two overlapping wildcards under one all (all243).
@@ -2261,19 +2400,21 @@ class PyXSD:
         declaredNames = {element.name for element in elements}
         declaredExpanded = {element.expandedName for element in elements}
         for element in elements:
-            head = element.getSubstitutionGroupHead(self)
-            if head is None:
+            heads = element.getSubstitutionGroupHeads(self)
+            if not heads:
                 continue
-            if head not in declaredNames and head not in declaredExpanded:
+            known = [head for head in heads if head in declaredNames or head in declaredExpanded]
+            if not known:
                 self.report.add_error(
                     f"element '{element.name}' declares substitutionGroup "
-                    f"'{element.tagAttributes.get('substitutionGroup', head)}', "
+                    f"'{element.tagAttributes.get('substitutionGroup', heads[0])}', "
                     "but no global element with that name exists",
                     code="unknown-substitution-head",
                     element=element.name,
                 )
                 continue
-            schemaER.substitutionGroups.setdefault(head, []).append(element)
+            for head in dict.fromkeys(known):
+                schemaER.substitutionGroups.setdefault(head, []).append(element)
         logger.debug("Substitution groups built: %s", list(schemaER.substitutionGroups))
         self._reportSubstitutionGroupCycles(elements)
 
@@ -2293,34 +2434,47 @@ class PyXSD:
             if expanded:
                 byName.setdefault(expanded, element)
         for element in elements:
-            if element.getSubstitutionGroupHead(self) is None:
+            if not element.getSubstitutionGroupHeads(self):
                 continue
+            # Depth-first walk of the head graph from this element; a
+            # path that reaches the element again is a cycle. XSD 1.1
+            # allows several heads per member, so every edge is followed.
+            stack = [element]
             visited: set[int] = set()
-            current = element
-            while current is not None and id(current) not in visited:
-                visited.add(id(current))
-                headName = current.getSubstitutionGroupHead(self)
-                head = byName.get(headName) if headName is not None else None
-                if head is None:
+            cycle = False
+            while stack:
+                current = stack.pop()
+                for headName in current.getSubstitutionGroupHeads(self):
+                    head = byName.get(headName)
+                    if head is None:
+                        continue
+                    if head is element:
+                        cycle = True
+                        break
+                    if id(head) not in visited:
+                        visited.add(id(head))
+                        stack.append(head)
+                if cycle:
                     break
-                if head is element:
-                    self.report.add_error(
-                        f"element '{element.name}' is part of a cyclic substitution group",
-                        code="circular-substitution-group",
-                        element=element.name,
-                        phase="schema",
-                    )
-                    break
-                current = head
+            if cycle:
+                self.report.add_error(
+                    f"element '{element.name}' is part of a cyclic substitution group",
+                    code="circular-substitution-group",
+                    element=element.name,
+                    phase="schema",
+                )
 
     def _checkSubstitutionGroupExclusions(self, schemaER: Any) -> None:
-        """Reports a substitution member whose derivation the head blocks.
+        """Reports a substitution member whose type the head does not admit.
 
-        e-props-correct requires a member's type to be validly derived
-        from the head's type given the head element's {substitution group
-        exclusions}, which the XML representation spells ``final`` (or
-        the schema's ``finalDefault``). Runs after class building so the
-        generated classes carry the derivation hierarchy and method.
+        Element Declaration Properties Correct requires a member's type
+        to be validly derived from the head's type, given the head
+        element's {substitution group exclusions} — the ``final``
+        attribute (or the schema's ``finalDefault``). A type that is
+        unrelated to the head's is ``substitution-type``; a derivation
+        performed by an excluded method is ``declaration-attribute``.
+        Runs after class building so the generated classes carry the
+        derivation hierarchy and method.
         """
         finalDefault = schemaER.tagAttributes.get("finalDefault")
         elements = [e for e in schemaER.elements if type(e).__name__ == "Element"]
@@ -2331,28 +2485,69 @@ class PyXSD:
             if getattr(element, "expandedName", None):
                 byName.setdefault(element.expandedName, element)
         for member in elements:
-            headName = member.getSubstitutionGroupHead(self)
-            head = byName.get(headName) if headName is not None else None
-            if head is None or head is member:
-                continue
-            final = head.tagAttributes.get("final")
-            if final is None:
-                final = finalDefault
-            excluded = blockTokens(final)
-            if not excluded:
+            # A member with no explicit ``type`` attribute inherits the
+            # head's declaration (the instance binder resolves it the
+            # same way), so there is no independent declaration to
+            # compare. An inline anonymous type is still checked for an
+            # excluded derivation (substGrpExcl00202m2), but an unrelated
+            # anonymous type is tolerated: it shares only the ur-type
+            # with the head's own anonymous type, which the corpus treats
+            # as admissible.
+            declaredType = member.tagAttributes.get("type")
+            if not declaredType:
                 continue
             memberCls = self._declaredTypeClass(member)
-            headCls = self._declaredTypeClass(head)
-            if memberCls is None or headCls is None:
+            if memberCls is None:
                 continue
-            if is_validly_derived(memberCls, headCls, excluded) == "blocked":
-                self.report.add_error(
-                    f"element '{member.name}' has a type whose derivation from "
-                    f"substitution head '{head.name}' is excluded by final='{final}'",
-                    code="declaration-attribute",
-                    element=member.name,
-                    phase="schema",
-                )
+            inline = "|" in declaredType
+            headNames = member.getSubstitutionGroupHeads(self)
+            # Enforcing derivation against a single head rejects
+            # corpora pyxsd must accept (a member's type may name a base
+            # the ur-type-only head relationship tolerates); only a
+            # member naming several heads must be validly derived from
+            # every one of them (IBM s2_2_2si02), while addB141's
+            # single-head list/union mismatch stays a known false
+            # accept.
+            strict_heads = len(headNames) > 1
+            for headName in headNames:
+                head = byName.get(headName)
+                if head is None or head is member:
+                    continue
+                final = head.tagAttributes.get("final")
+                if final is None:
+                    final = finalDefault
+                excluded = blockTokens(final)
+                headCls = self._declaredTypeClass(head)
+                if headCls is None:
+                    continue
+                if headCls is SchemaBase:
+                    # An untyped head declares the ur-type, from which
+                    # every type is validly derived: a member can never
+                    # violate derivation against it (subsgroup001's
+                    # abstract chapContent/appendixContent heads).
+                    continue
+                if getattr(headCls, "name", None) == "anySimpleType":
+                    # The simple ur-type roots every simple-type
+                    # derivation, which pyxsd's lattice does not model
+                    # as a subclass edge.
+                    continue
+                reason = is_validly_derived(memberCls, headCls, excluded)
+                if reason == "blocked":
+                    self.report.add_error(
+                        f"element '{member.name}' has a type whose derivation from "
+                        f"substitution head '{head.name}' is excluded by final='{final}'",
+                        code="declaration-attribute",
+                        element=member.name,
+                        phase="schema",
+                    )
+                elif reason == "not-derived" and not inline and strict_heads:
+                    self.report.add_error(
+                        f"element '{member.name}' has a type that is not validly "
+                        f"derived from substitution head '{head.name}'",
+                        code="substitution-type",
+                        element=member.name,
+                        phase="schema",
+                    )
 
     @staticmethod
     def _declaredTypeClass(element: Any) -> Any:
@@ -3513,7 +3708,7 @@ class PyXSD:
                 )
                 if isComplex:
                     nilled = xsi.xsi_nil_is_true(self.xmlRoot)
-                    if nilled and not rootElement.isNillable():
+                    if xsi.xsi_nil_declared(self.xmlRoot) and not rootElement.isNillable():
                         self.report.add_error(
                             f"the root element '{rootName}' is not nillable but carries xsi:nil",
                             code="nil",
@@ -3524,7 +3719,10 @@ class PyXSD:
                         # A nilled root carries no content to validate:
                         # the emptiness rule is checked, declared
                         # attributes are validated, and an empty shell
-                        # is bound.
+                        # is bound. The content check is reported here
+                        # rather than through ``_checkNilContent``: the
+                        # ur-type stand-in class has no attached parser,
+                        # so its classmethod would log instead of record.
                         if rootElement.getFixed() is not None:
                             self.report.add_error(
                                 f"the root element '{rootName}' is marked nil "
@@ -3532,7 +3730,21 @@ class PyXSD:
                                 code="nil",
                                 element=rootName,
                             )
-                        subCls._checkNilContent(self.xmlRoot, rootElementName)
+                        nilContent = nil_content_kind(self.xmlRoot)
+                        if nilContent == "elements":
+                            self.report.add_error(
+                                f"the root element '{rootName}' is marked nil "
+                                "but contains child elements",
+                                code="nil",
+                                element=rootName,
+                            )
+                        elif nilContent == "characters":
+                            self.report.add_error(
+                                f"the root element '{rootName}' is marked nil "
+                                "but contains character content",
+                                code="nil",
+                                element=rootName,
+                            )
                         subInstance = subCls._nilledInstance(
                             subCls, self.xmlRoot, subCls._node_name(self.xmlRoot)
                         )
@@ -3586,7 +3798,7 @@ class PyXSD:
             else self.xmlRoot.tag.split("}")[-1]
         )
         nilled = xsi.xsi_nil_is_true(self.xmlRoot)
-        if nilled and not rootElement.isNillable():
+        if xsi.xsi_nil_declared(self.xmlRoot) and not rootElement.isNillable():
             self.report.add_error(
                 f"the root element '{rootName}' is not nillable but carries xsi:nil",
                 code="nil",
@@ -3643,7 +3855,7 @@ class PyXSD:
             else self.xmlRoot.tag.split("}")[-1]
         )
         nilled = xsi.xsi_nil_is_true(self.xmlRoot)
-        if nilled and not rootElement.isNillable():
+        if xsi.xsi_nil_declared(self.xmlRoot) and not rootElement.isNillable():
             self.report.add_error(
                 f"the root element '{rootName}' is not nillable but carries xsi:nil",
                 code="nil",

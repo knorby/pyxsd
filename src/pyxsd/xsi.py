@@ -83,6 +83,30 @@ def xsi_nil_is_true(elementTag: Any) -> bool:
     return value.strip().lower() in ("true", "1")
 
 
+def xsi_nil_declared(elementTag: Any) -> bool:
+    """Returns True when an element carries a lexically valid ``xsi:nil``.
+
+    XSD 1.0 §3.3.4 keys the nillable requirement on the *presence* of
+    the attribute, not its value: an element whose declaration is not
+    nillable may carry neither ``xsi:nil="true"`` nor
+    ``xsi:nil="false"`` (SUN nillable00201m2_n). XSD 1.1 relaxed the
+    requirement to the true value, but the suite exercises the stricter
+    reading and every ``xsi:nil="false"`` instance in the corpus sits on
+    a nillable declaration, so the presence test is used throughout.
+
+    A value outside the boolean lexical space does not validly assert
+    nil; that case is reported once as an invalid ``xsi:nil`` value
+    (wild042.n1) and is deliberately excluded here so the nillable rule
+    does not double-report it.
+    """
+    value = elementTag.attrib.get(XSI_NIL)
+    if value is None:
+        value = elementTag.attrib.get("xsi:nil")
+    if value is None:
+        return False
+    return invalid_xsi_nil_value(value) is None
+
+
 def invalid_xsi_nil_value(value: Any) -> str | None:
     """The value when ``xsi:nil`` is outside the boolean lexical space.
 

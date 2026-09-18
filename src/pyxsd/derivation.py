@@ -140,13 +140,17 @@ def derived_from_union_member(derived: type | None, base: type | None) -> bool:
     """
     if derived is None or base is None:
         return False
-    base_members = getattr(base, "_unionMembers", None)
+    # ``_unionMembers`` is read from the class's own namespace, never
+    # inherited: a restriction of a union inherits the attribute through
+    # its MRO but is not itself a union, and a member type is not
+    # validly derived from the *restricted* union (MS stZ073b).
+    base_members = vars(base).get("_unionMembers")
     if not base_members:
         return False
     for ancestor in derived.__mro__:
         if any(isinstance(b, type) and issubclass(ancestor, b) for b in base_members):
             return True
-        ancestor_members = getattr(ancestor, "_unionMembers", None)
+        ancestor_members = vars(ancestor).get("_unionMembers")
         if ancestor_members and all(
             any(isinstance(b, type) and issubclass(member, b) for b in base_members)
             for member in ancestor_members
@@ -295,6 +299,13 @@ def is_validly_derived(
     ):
         derived = False
     if not derived and _integerDerivesFromDecimal(override, declared):
+        derived = True
+    if not derived and derived_from_union_member(override, declared):
+        # Type Derivation OK (Simple), union clause: a type is derived
+        # from a union when it is (or derives from) one of the union's
+        # member types. An ``xsi:type`` naming a union member (or a
+        # restriction of a member) is therefore a valid override of a
+        # union-typed declaration (MS elemT071/072/073).
         derived = True
     if not derived:
         return "not-derived"

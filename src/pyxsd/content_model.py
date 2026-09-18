@@ -148,10 +148,10 @@ def _substitution_member_names(descriptor: Any, py_xsd: Any) -> list[str]:
         if type(element).__name__ != "Element":
             continue
         try:
-            head = element.getSubstitutionGroupHead(py_xsd)
+            heads = element.getSubstitutionGroupHeads(py_xsd)
         except Exception:
             continue
-        if head is None or head not in head_names:
+        if not any(head in head_names for head in heads):
             continue
         try:
             name = element.instanceName(parser=py_xsd)
