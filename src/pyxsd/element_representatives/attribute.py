@@ -36,6 +36,23 @@ class Attribute(ElementRepresentative):
     #: ``type``/inline-type conflict is an attribute check, not a child
     #: -grammar one.)
     _ALLOWED_CHILDREN = ("annotation", "simpleType")
+    #: Attributes the schema for schemas allows on an ``xs:attribute``
+    #: declaration (XSD 1.1 §3.2.2, adding ``targetNamespace`` and
+    #: ``inheritable``).
+    _ATTRIBUTE_ATTRIBUTES = frozenset(
+        {
+            "id",
+            "name",
+            "ref",
+            "type",
+            "use",
+            "default",
+            "fixed",
+            "form",
+            "targetNamespace",
+            "inheritable",
+        }
+    )
     _MAX_ONE_CHILDREN = ("annotation", "simpleType")
 
     # The owning parser is attached during clsFor.  Annotation only:
@@ -307,12 +324,30 @@ class Attribute(ElementRepresentative):
         and the XSI-namespace prohibition.
         """
         self._checkAttributeDefaultFixed()
+        self._checkAttributeUnknownAttributes()
         self._checkAttributeUse()
         self._checkAttributeForm()
         self._checkAttributeRef()
         self._checkAttributeType()
         self._checkAttributeName()
         self._checkAttributeNamespace()
+
+    def _checkAttributeUnknownAttributes(self) -> None:
+        """Reports attributes outside the attribute-declaration grammar.
+
+        The schema for schemas allows id, name, ref, type, use, default,
+        fixed, form and (XSD 1.1) targetNamespace on an ``xs:attribute``
+        declaration; anything else is a schema error. Foreign-namespace
+        attributes are left to the implementation-defined extension
+        point and skipped.
+        """
+        for attr in getattr(self.xsdElement, "attrib", {}) or {}:
+            if attr in self._ATTRIBUTE_ATTRIBUTES or "}" in attr:
+                continue
+            self._reportSchemaError(
+                f"attribute declaration '{self.name}' has an unrecognised attribute '{attr}'",
+                code="declaration-attribute",
+            )
 
     def _checkAttributeDefaultFixed(self) -> None:
         if "default" in self.tagAttributes and "fixed" in self.tagAttributes:

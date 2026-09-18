@@ -451,8 +451,31 @@ class Element(ElementRepresentative):
 
     #: Element ``final`` accepts only these tokens, plus ``#all`` alone.
     #: Notably ``substitution`` is *not* a legal final token.
-    _FINAL_TOKENS = ("extension", "restriction")
-    #: Element ``block`` additionally accepts ``substitution``.
+    #: Attributes the schema for schemas allows on an ``xs:element``
+    #: declaration (XSD 1.1 §3.3.2, adding ``targetNamespace``).
+    _ELEMENT_ATTRIBUTES = frozenset(
+        {
+            "id",
+            "name",
+            "ref",
+            "type",
+            "substitutionGroup",
+            "minOccurs",
+            "maxOccurs",
+            "default",
+            "fixed",
+            "nillable",
+            "abstract",
+            "block",
+            "final",
+            "form",
+            "targetNamespace",
+        }
+    )
+    _FINAL_TOKENS = (
+        "extension",
+        "restriction",
+    )  #: Element ``block`` additionally accepts ``substitution``.
     _BLOCK_TOKENS = ("extension", "restriction", "substitution")
     #: Attributes only a non-reference local element may not carry.
     _LOCAL_ONLY_FORBIDDEN = ("abstract", "final", "substitutionGroup")
@@ -480,6 +503,7 @@ class Element(ElementRepresentative):
         """
         self._checkElementOccurs()
         self._checkElementRef()
+        self._checkElementUnknownAttributes()
         if getattr(self, "isElementRef", False):
             return
         self._checkElementValueConstraint()
@@ -520,6 +544,26 @@ class Element(ElementRepresentative):
                     f"'{value}'; expected true, false, 1 or 0",
                     code="declaration-attribute",
                 )
+
+    def _checkElementUnknownAttributes(self) -> None:
+        """Reports attributes outside the element-declaration grammar.
+
+        The schema for schemas fixes the attribute list of an
+        ``xs:element`` declaration: id, name, ref, type,
+        substitutionGroup, minOccurs, maxOccurs, default, fixed,
+        nillable, abstract, block, final, form and (XSD 1.1)
+        targetNamespace. A spelling such as the early-draft ``nullable``
+        or an arbitrary attribute is a schema error (MS elemK007,
+        elemN006). Foreign-namespace attributes are left to the
+        implementation-defined extension point and skipped.
+        """
+        for attr in getattr(self.xsdElement, "attrib", {}) or {}:
+            if attr in self._ELEMENT_ATTRIBUTES or "}" in attr:
+                continue
+            self._reportSchemaError(
+                f"element declaration '{self.name}' has an unrecognised attribute '{attr}'",
+                code="declaration-attribute",
+            )
 
     def _checkElementValueConstraint(self) -> None:
         """Reports an element that carries both ``default`` and ``fixed``.

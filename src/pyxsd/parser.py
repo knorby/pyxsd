@@ -493,6 +493,7 @@ class PyXSD:
         # before the ER run snapshots ``namespaceOverrides`` so the
         # declaration's expanded name reflects it.
         self._applyLocalTargetNamespaces(root)
+        self._checkFormDefaults(root)
 
         # Stage this parser's snapshot on its own context before the ER
         # run so imported declarations report their own target namespace
@@ -852,6 +853,7 @@ class PyXSD:
             self._reportParticleRestriction(er)
             self._reportMixedRestriction(er)
             self._reportMixedConflict(er)
+            self._reportMixedExtension(er)
             self._reportComplexContentFromSimpleBase(er)
             self._reportAttributeUseDerivation(er)
             self._reportAttributeWildcardRestriction(er)
@@ -1145,6 +1147,50 @@ class PyXSD:
                         code="declaration-attribute",
                     )
                 break
+
+    def _reportMixedExtension(self, er: Any) -> None:
+        """Reports an extension whose mixed content diverges from its base.
+
+        Derivation Valid (Extension) clause 1.4.3.2.2 requires the
+        {content type} of the derived type to match the base's: a mixed
+        type may only extend a mixed base and an element-only type may
+        only extend an element-only base. An explicit mixed content over
+        an element-only base (complex025) and an element-only content
+        that adds particles to a mixed base (complex026) are both errors.
+        A bare or attribute-only extension of a mixed base legitimately
+        inherits the base content type (§3.4.2.3.3 clause 4.2.2), so it
+        is exempt. Hides a simple-content base and an ``xs:anyType``
+        base; never errors when the base cannot be resolved or is not a
+        complex type definition.
+        """
+        if er.getDerivation() != "extension":
+            return
+        if er._firstProcessedChild(er, "SimpleContent") is not None:
+            return
+        if self._baseIsAnyType(er):
+            return
+        base_er = self._baseTypeER(er)
+        if base_er is None or not hasattr(base_er, "effectiveMixed"):
+            logger.debug(
+                "mixed extension: base type %r of %s unresolved or not complex; skipped",
+                list(getattr(er, "superClassNames", []) or []),
+                getattr(er, "name", "?"),
+            )
+            return
+        own = er._ownMixed()
+        base = base_er.effectiveMixed()
+        if own == base:
+            return
+        if not own and base and er._explicitContentEmpty():
+            return
+        self.report.add_error(
+            "particle restriction (Derivation Valid (Extension) clause "
+            f"1.4.3.2.2): the {'mixed' if own else 'element-only'} content "
+            f"type of '{getattr(er, 'name', '?')}' cannot be derived by "
+            f"extension from the {'mixed' if base else 'element-only'} "
+            f"base type '{getattr(base_er, 'name', '?')}'",
+            code="particle-restriction",
+        )
 
     def _reportComplexContentFromSimpleBase(self, er: Any) -> None:
         """Reports complex content derived from a simple-content base.
@@ -2579,7 +2625,12 @@ class PyXSD:
 
         A reference to the unnamed (no-namespace) space is not examined;
         there the plain name is the whole identity and the legacy
-        tolerance is the historical behavior.
+        tolerance is the historical behavior. (Extending this pass to
+        no-namespace references was tried and reverted: pyxsd does not
+        yet resolve every unprefixed reference in the XSD 1.1 feature
+        families, so the extension produced 39 vacuous-pass regressions
+        across CTA/override/openContent schemas for one real case,
+        ``MS-Element/elemM002``, which stays a known false-accept.)
         """
         if getattr(self.mode, "namespaces", "legacy") != "strict":
             return
@@ -2627,6 +2678,27 @@ class PyXSD:
         loaded.update(self._resolvedImports)
         loaded.update({XSD_NS, XSI_NS, XML_NS, None})
         return loaded
+
+    def _checkFormDefaults(self, schemaRoot: Any) -> None:
+        """Validates ``elementFormDefault``/``attributeFormDefault`` values.
+
+        ``form`` is an enumeration of ``qualified`` and ``unqualified``
+        (XSD 1.1 §3.2.1/§3.3.1). The value is whitespace-collapsed and
+        case-sensitive, so the empty string, ``Qualified``,
+        ``Unqualified`` and ``qualified unqualified`` are all schema
+        errors (MS elemH003-elemH006).
+        """
+        for attr in ("elementFormDefault", "attributeFormDefault"):
+            value = schemaRoot.get(attr)
+            if value is None:
+                continue
+            if value.strip() not in ("qualified", "unqualified"):
+                self.report.add_error(
+                    f"the schema declaration's '{attr}' value {value!r} is not "
+                    "'qualified' or 'unqualified'",
+                    code="declaration-attribute",
+                    phase="schema",
+                )
 
     def _applyLocalTargetNamespaces(self, schemaRoot: Any) -> None:
         """Applies and validates XSD 1.1 ``targetNamespace`` on locals.
@@ -3319,6 +3391,7 @@ class PyXSD:
             includedRoot.get("elementFormDefault"),
             includedRoot.get("attributeFormDefault"),
         )
+        self._checkFormDefaults(includedRoot)
         for component in list(includedRoot):
             if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
                 if strict:
