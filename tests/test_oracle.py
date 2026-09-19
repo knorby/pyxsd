@@ -127,6 +127,20 @@ _DOCUMENTED_DIVERGENCES = {
         "includes astral characters [#x10000-#xEFFFF]; pyxsd follows it and "
         "rejects U+12000, while xmlschema accepts the astral value"
     ),
+    "regex/word-class-includes-marks-valid": (
+        "XSD 1.1 G.4.2 defines \\w as every character except the P/Z/C "
+        "categories, so a combining mark is a word character; xmlschema uses "
+        "Python's \\w, which excludes marks and rejects the value"
+    ),
+    "regex/word-class-excludes-underscore-invalid": (
+        "XSD 1.1 G.4.2 defines \\w as every character except the P/Z/C "
+        "categories, so underscore (Pc) is not a word character; xmlschema "
+        "uses Python's \\w, which includes underscore and accepts the value"
+    ),
+    "regex/space-class-is-xsd-four-invalid": (
+        "XSD 1.1 G.4.2 defines \\s as exactly [#x20\\t\\n\\r]; xmlschema uses "
+        "Python's \\s, which also matches no-break space and accepts the value"
+    ),
 }
 
 

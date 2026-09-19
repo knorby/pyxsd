@@ -37,6 +37,7 @@ from elementpath import translate_pattern
 from elementpath.exceptions import ElementPathError
 from elementpath.regex import RegexError
 
+from pyxsd.regex_charset import reject_malformed_escapes, rewrite_xsd_shorthands
 from pyxsd.xsd_data_types import (
     NOTATION,
     Base64Binary,
@@ -762,9 +763,13 @@ def _compile_pattern(text: str) -> re.Pattern[str]:
     Raises :class:`ValueError` when the pattern is not legal XSD, so the
     caller can report it as a schema problem.
     """
+    prepared = _xml11_name_classes(text)
+    # ``\p{Is}`` is not a legal category/block escape; reject it before
+    # elementpath silently treats it as "all characters".
+    reject_malformed_escapes(prepared)
     try:
         translated = translate_pattern(
-            _xml11_name_classes(text),
+            prepared,
             xsd_version=PATTERN_XSD_VERSION,
             anchors=False,
             back_references=False,
@@ -772,6 +777,9 @@ def _compile_pattern(text: str) -> re.Pattern[str]:
         )
     except (ElementPathError, RegexError, re.error, OverflowError) as exc:
         raise ValueError(f"illegal XSD pattern {text!r}: {exc}") from exc
+    # elementpath leaves ``\w``/``\W``/``\s``/``\S`` for Python; expand them
+    # to the XSD definitions over the full Unicode range.
+    translated = rewrite_xsd_shorthands(translated)
     try:
         return re.compile(translated)
     except (re.error, OverflowError) as exc:
