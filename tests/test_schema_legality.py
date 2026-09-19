@@ -3203,6 +3203,43 @@ class TestChoiceSubstitutionOverlap:
         assert "all-rule" not in _schema_codes(report)
 
 
+class TestSubstitutionBlockInRestriction:
+    """A blocked head breaks a substitution chain for particle restriction
+    (elemZ027_c)."""
+
+    def test_member_below_a_blocked_head_cannot_restrict_the_head(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='a' substitutionGroup='b'/>"
+            "<xsd:element name='b' substitutionGroup='d' block='substitution'/>"
+            "<xsd:element name='d'/>"
+            "<xsd:complexType name='base'><xsd:sequence>"
+            "<xsd:element ref='d'/></xsd:sequence></xsd:complexType>"
+            "<xsd:complexType name='derived'><xsd:complexContent>"
+            "<xsd:restriction base='base'><xsd:sequence><xsd:choice>"
+            "<xsd:element ref='a'/>"
+            "</xsd:choice></xsd:sequence></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "particle-restriction" in _schema_codes(report)
+
+    def test_member_below_an_unblocked_head_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='a' substitutionGroup='b'/>"
+            "<xsd:element name='b' substitutionGroup='d'/>"
+            "<xsd:element name='d'/>"
+            "<xsd:complexType name='base'><xsd:sequence>"
+            "<xsd:element ref='d'/></xsd:sequence></xsd:complexType>"
+            "<xsd:complexType name='derived'><xsd:complexContent>"
+            "<xsd:restriction base='base'><xsd:sequence><xsd:choice>"
+            "<xsd:element ref='a'/>"
+            "</xsd:choice></xsd:sequence></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "particle-restriction" not in _schema_codes(report)
+
+
 class TestAttributeWildcardRestriction:
     """Attribute wildcard/use derivation on a restriction (ctO004/ctO005)."""
 

@@ -1132,12 +1132,18 @@ def _same_or_substitution_member(
     for _ in range(16):
         # Cycles are reported by the substitution-group build; the depth
         # cap only keeps this walk finite in spite of them.
-        current = head_lookup(current)
-        if current is None or id(current) in seen:
+        head = head_lookup(current)
+        if head is None or id(head) in seen:
             return False
-        seen.add(id(current))
-        if _expanded_name(current) == base_name:
+        if "substitution" in _disallowed_substitutions(head):
+            # The head blocks substitution, so ``current`` (its member)
+            # cannot stand in for the head or for anything above it
+            # (elemZ027_c).
+            return False
+        seen.add(id(head))
+        if _expanded_name(head) == base_name:
             return True
+        current = head
     return False
 
 

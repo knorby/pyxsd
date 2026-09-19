@@ -2421,6 +2421,18 @@ class PyXSD:
         ]
 
         def members(declaration: Any) -> list[Any]:
+            try:
+                block_raw = declaration.getBlock()
+            except AttributeError:
+                # An unresolved reference site has no referred declaration
+                # to read the ``block`` from.
+                block_raw = declaration.tagAttributes.get("block")
+            block_tokens = str(block_raw or "").split()
+            if "substitution" in block_tokens or "#all" in block_tokens:
+                # A head that blocks substitution has no admissible members,
+                # so the clause 2.1 head expansion contributes none
+                # (elemZ027_b).
+                return []
             found = []
             for element in candidates:
                 if element is declaration:
