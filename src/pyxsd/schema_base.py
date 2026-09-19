@@ -36,6 +36,20 @@ def _mode_for(cls) -> BindingPolicy:
     return getattr(cls, "_parseMode_", ParseModes.STRICT)
 
 
+def _model_is_empty(model: Any) -> bool:
+    """Whether a compiled content model admits no element children.
+
+    The empty model is a childless ``sequence``/``all`` particle, which
+    gives the type the ``empty`` content variety: no character content
+    is allowed at all (Saxon open012.n3).
+    """
+    if model is None:
+        return False
+    return getattr(model, "kind", None) in ("sequence", "all") and not getattr(
+        model, "children", ()
+    )
+
+
 def _is_substitution_head(descriptor: Any) -> bool:
     """Whether *descriptor* may head a substitution group.
 
@@ -310,22 +324,25 @@ class SchemaBase:
         cls._report_issue(IssueSeverity.WARNING, message, code=code, element=element)
 
     @classmethod
-    def _reportStrayCharacters(cls, elementTag):
+    def _reportStrayCharacters(cls, elementTag, *, empty=False):
         """Reports character data under an element-only content model.
 
         XSD 1.1 §3.4.3.2 (Element Locally Valid (Complex Type)): an
         element whose governing type's content type is element-only has
-        no character content other than whitespace. Mixed types and
-        simple content are not checked here (their text is legal or is
-        the value), and elements whose content model could not be
-        compiled keep the legacy tolerance. Only direct text of
-        *elementTag* is inspected; deeper nodes are checked when the
-        binder recurses into them.
+        no character content other than whitespace. A content type of
+        *empty* admits no character content at all, not even whitespace
+        (Saxon open012.n3). Mixed types and simple content are not
+        checked here (their text is legal or is the value), and elements
+        whose content model could not be compiled keep the legacy
+        tolerance. Only direct text of *elementTag* is inspected; deeper
+        nodes are checked when the binder recurses into them.
         """
         texts = [elementTag.text]
         texts.extend(child.tail for child in elementTag)
         for text in texts:
-            if text is not None and text.strip():
+            if not text:
+                continue
+            if empty or text.strip():
                 cls._report_error(
                     f"element '{elementTag.tag.split('}')[-1]}' has character "
                     "content but its content model is element-only",
@@ -694,8 +711,17 @@ class SchemaBase:
         constraints; the element instance itself is typed by the same
         base, so the bound ``_value_`` is the validated one.  An invalid
         value is reported with code ``value`` and yields an unvalidated
-        instance (or the raw text under the ``raw`` policy).
+        instance (or the raw text under the ``raw`` policy). A
+        simple-content element admits no child elements (Saxon
+        open016.n1).
         """
+        if list(elementTag):
+            cls._report_error(
+                f"the '{elementTag.tag.split('}')[-1]}' element has a simple "
+                "type but contains child elements",
+                code="unexpected-element",
+                element=cls.__name__,
+            )
         text = elementTag.text
         if text is None and forcedText is not None:
             text = forcedText
@@ -949,7 +975,7 @@ class SchemaBase:
         if instanceModel is not None:
             model = instanceModel
         if model is not None and getattr(cls, "_elementOnly_", False):
-            cls._reportStrayCharacters(elementTag)
+            cls._reportStrayCharacters(elementTag, empty=_model_is_empty(model))
         if model is None and hasWildcard:
             declaredNames = {cls._instance_name_of(descriptor) for descriptor in elemDescriptors}
             declaredNames.update(memberHeadMap)
