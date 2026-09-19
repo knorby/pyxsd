@@ -57,6 +57,11 @@ class List(ElementRepresentative):
 
     def _checkItemType(self, itemType, owner):
         variety, er = self.varietyOfReference(itemType)
+        if er is not None and self._finalBlocks(er, "list"):
+            self._reportSchemaError(
+                f"item type '{itemType}' of {owner} is final for list derivation",
+                code="final",
+            )
         if self._itemVarietyIsAtomic(variety, er):
             return
         self._reportSchemaError(
@@ -65,6 +70,12 @@ class List(ElementRepresentative):
         )
 
     def _checkInlineItemType(self, child, containingName):
+        if self._finalBlocks(child, "list"):
+            self._reportSchemaError(
+                f"inline item type '{child.name}' of list '{containingName}' is "
+                "final for list derivation",
+                code="final",
+            )
         variety = child.simpleVariety()
         if self._itemVarietyIsAtomic(variety, child):
             return
@@ -73,6 +84,18 @@ class List(ElementRepresentative):
             "an atomic simple type",
             code="atomic-required",
         )
+
+    @staticmethod
+    def _finalBlocks(er, method):
+        """Whether a type's effective ``final`` excludes *method*."""
+        getter = getattr(er, "effectiveFinal", None)
+        if getter is None:
+            return False
+        final = getter()
+        if not final:
+            return False
+        tokens = str(final).split()
+        return "#all" in tokens or method in tokens
 
     def _itemVarietyIsAtomic(self, variety, er):
         """Whether a resolved item type satisfies the atomicity rule.

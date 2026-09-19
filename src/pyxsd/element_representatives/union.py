@@ -58,19 +58,42 @@ class Union(ElementRepresentative):
             if child is not None and child.__class__.__name__ == "SimpleType"
         ]
         for memberName in self.memberTypes:
-            if self._memberVarietyIsLegal(*self.varietyOfReference(memberName)):
+            variety, memberER = self.varietyOfReference(memberName)
+            if memberER is not None and self._finalBlocks(memberER, "union"):
+                self._reportSchemaError(
+                    f"member type '{memberName}' of {owner} is final for union derivation",
+                    code="final",
+                )
+            if self._memberVarietyIsLegal(variety, memberER):
                 continue
             self._reportSchemaError(
                 f"member type '{memberName}' of {owner} is not a simple type",
                 code="atomic-required",
             )
         for child in inline:
+            if self._finalBlocks(child, "union"):
+                self._reportSchemaError(
+                    f"inline member type '{child.name}' of {owner} is final for union derivation",
+                    code="final",
+                )
             if self._memberVarietyIsLegal(child.simpleVariety(), child):
                 continue
             self._reportSchemaError(
                 f"inline member type '{child.name}' of {owner} is not a simple type",
                 code="atomic-required",
             )
+
+    @staticmethod
+    def _finalBlocks(er, method):
+        """Whether a type's effective ``final`` excludes *method*."""
+        getter = getattr(er, "effectiveFinal", None)
+        if getter is None:
+            return False
+        final = getter()
+        if not final:
+            return False
+        tokens = str(final).split()
+        return "#all" in tokens or method in tokens
 
     @staticmethod
     def _memberVarietyIsLegal(variety, _er):

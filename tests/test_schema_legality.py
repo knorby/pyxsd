@@ -2566,3 +2566,63 @@ class TestAnyAtomicTypeUse:
             "<xsd:element name='e' type='xsd:anyAtomicType'/></xsd:schema>"
         )
         assert "unknown-type" not in _schema_codes(report)
+
+
+class TestFinalItemAndMemberRestriction:
+    """``final`` keeps a type out of a list item / union member.
+
+    XSD 1.1 forbids a list item type whose ``{final}`` contains ``list``
+    and a union member type whose ``{final}`` contains ``union`` (SUN
+    ST_final st_final00102m1/00103m1; msData stF035/stF037, where the
+    value comes from ``finalDefault``).
+    """
+
+    def test_list_item_type_final_for_list_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='Test' final='list'><xsd:restriction base='xsd:string'>"
+            "<xsd:pattern value='1|2'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='Test1'><xsd:list itemType='Test'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "final" in _schema_codes(report)
+
+    def test_union_member_type_final_for_union_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='Test' final='union'><xsd:restriction base='xsd:string'>"
+            "<xsd:pattern value='1|2'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='Test1'><xsd:union memberTypes='Test'/></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "final" in _schema_codes(report)
+
+    def test_final_default_list_blocks_a_list_item(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' finalDefault='list'>"
+            "<xsd:simpleType name='parent'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='myParentList'><xsd:list itemType='parent'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "final" in _schema_codes(report)
+
+    def test_final_default_union_blocks_a_union_member(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' finalDefault='union'>"
+            "<xsd:simpleType name='parent'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='myParentUnion'><xsd:union memberTypes='parent'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "final" in _schema_codes(report)
+
+    def test_final_for_list_does_not_block_a_union_member(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='Test' final='list'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='Test1'><xsd:union memberTypes='Test'/></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "final" not in _schema_codes(report)

@@ -887,6 +887,27 @@ class ElementRepresentative:
         """Returns True when this declaration is a direct schema child."""
         return isinstance(self.parent, Schema)
 
+    def effectiveFinal(self):
+        """Returns this type's effective ``final`` token list.
+
+        A type that states no ``final`` takes its declaring schema
+        document's ``finalDefault`` (XSD 1.1 §3.16.1); the explicit
+        empty string clears it. Returns ``None`` when neither applies.
+        """
+        final = getattr(self, "final", None)
+        if final is not None:
+            return final
+        schema = None
+        getter = getattr(self, "getSchema", None)
+        if getter is not None:
+            try:
+                schema = getter()
+            except Exception:  # pragma: no cover - defensive
+                schema = None
+        if schema is None:
+            return None
+        return getattr(schema, "tagAttributes", {}).get("finalDefault")
+
     @property
     def expandedName(self):
         """Returns this declaration's Clark name, or its plain name."""
