@@ -356,6 +356,30 @@ class TestXsiTypeDispatch:
         parser = _parse(schema, instance, tmp_path)
         assert "abstract-type" in _codes(parser)
 
+    def test_simple_xsi_type_root_rejects_undeclared_attribute(self, tmp_path):
+        # SUN typeDef01201m1/01202m1: an xsi:type override to a simple type
+        # leaves the element with no attribute uses, so a non-xsi
+        # attribute is undeclared.
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD}"><xs:element name="root" nillable="true"/></xs:schema>'
+        )
+        instance = (
+            f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" '
+            'xsi:nil="true" xsi:type="xsd:string" attr="x"/>'
+        )
+        parser = _parse(schema, instance, tmp_path)
+        assert "unexpected-attribute" in _codes(parser)
+
+    def test_simple_xsi_type_root_without_extra_attribute_is_valid(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD}"><xs:element name="root" nillable="true"/></xs:schema>'
+        )
+        instance = (
+            f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" xsi:nil="true" xsi:type="xsd:string"/>'
+        )
+        parser = _parse(schema, instance, tmp_path)
+        assert "unexpected-attribute" not in _codes(parser)
+
 
 class TestSchemaBlockDefault:
     """``blockDefault`` folds into element and type ``block``.

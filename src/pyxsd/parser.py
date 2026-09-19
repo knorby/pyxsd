@@ -4637,6 +4637,27 @@ class PyXSD:
 
         return subInstance
 
+    def _report_undeclared_simple_attributes(self, elementTag: Any, elementName: str) -> None:
+        """Rejects attributes on a simple-typed root element.
+
+        A simple type has no attribute uses and no attribute wildcard, so
+        any attribute other than the built-in schema-instance bookkeeping
+        (``xsi:*``) or a namespace declaration is undeclared. The ur-type
+        and primitive root paths do not run the attribute-declaration
+        pass, so the check is made here (SUN typeDef01201m1/01202m1).
+        """
+        for attr in elementTag.attrib:
+            if "xmlns" in attr:
+                continue
+            if xsi.is_builtin_xsi_attribute(attr):
+                continue
+            self.report.add_error(
+                f"attribute '{xsi.xsi_attr_key(attr)}' is not declared in the "
+                "schema and was not parsed",
+                code="unexpected-attribute",
+                element=elementName,
+            )
+
     def _report_unknown_xsi_attributes(self, elementTag: Any, elementName: str) -> None:
         """Rejects schema-instance attributes that are not built-ins.
 
@@ -4730,6 +4751,10 @@ class PyXSD:
             else self.xmlRoot.tag.split("}")[-1]
         )
         self._report_unknown_xsi_attributes(self.xmlRoot, rootName)
+        if dataTypeClass is not AnyType:
+            # The ur-type admits any attribute; every other primitive
+            # (simple) type has no attribute uses.
+            self._report_undeclared_simple_attributes(self.xmlRoot, rootName)
         nilled = xsi.xsi_nil_is_true(self.xmlRoot)
         if xsi.xsi_nil_declared(self.xmlRoot) and not rootElement.isNillable():
             self.report.add_error(
