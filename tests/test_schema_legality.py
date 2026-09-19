@@ -1256,6 +1256,63 @@ class TestNotationDeclarationLegality:
         )
         assert not {"declaration-attribute", "declaration-duplicate"} & _schema_codes(report)
 
+    def test_element_typed_by_notation_reports(self, parse_schema):
+        """simple090: a direct NOTATION element type needs an enumeration."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:element name='elem' type='xsd:NOTATION'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" in _schema_codes(report)
+
+    def test_attribute_typed_by_notation_is_rejected(self, parse_schema):
+        """simple091: a direct NOTATION attribute type needs an enumeration."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:attribute name='a' type='xsd:NOTATION'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" in _schema_codes(report)
+
+    def test_list_item_type_notation_reports(self, parse_schema):
+        """simple092: a bare NOTATION list item type needs an enumeration."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:simpleType name='notationList'>"
+            "<xsd:list itemType='xsd:NOTATION'/></xsd:simpleType>"
+            "<xsd:attribute name='a' type='notationList'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" in _schema_codes(report)
+
+    def test_union_member_notation_is_tolerated(self, parse_schema):
+        """simple093 vs MS particlesZ007 are contradictory in the corpus
+        (both in the xsd11 profile): the MS XSD 1.0-era test expects a
+        union member NOTATION valid while Saxon expects it invalid. The
+        open question (w3c/xsdtests#12) keeps the historical acceptance,
+        so a union member NOTATION alone is not reported."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:simpleType name='notationUnion'>"
+            "<xsd:union memberTypes='xsd:QName xsd:NOTATION'/></xsd:simpleType>"
+            "<xsd:attribute name='a' type='notationUnion'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" not in _schema_codes(report)
+
+    def test_enumerated_notation_restriction_is_clean(self, parse_schema):
+        """A NOTATION restriction with an enumeration naming a declared
+        notation is a legal type for an element."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:simpleType name='restrictedNotation'>"
+            "<xsd:restriction base='xsd:NOTATION'>"
+            "<xsd:enumeration value='jpeg'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:attribute name='a' type='restrictedNotation'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" not in _schema_codes(report)
+
 
 class TestAnnotationDeclarationLegality:
     """Semantic annotation-declaration legality (annotF)."""

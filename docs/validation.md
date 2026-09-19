@@ -75,6 +75,8 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `unknown-type` | ERROR | Referenced type could not be resolved. |
 | `atomic-required` | ERROR | A `list`'s `itemType` (or inline item type) is not an atomic simple type or a union with no list type anywhere in its transitive membership, or a `union`'s member type is a complex type rather than a simple type. Atomic, list and union members are all legal union members. |
 | `invalid-base` | ERROR | A simple-type `restriction` derives from a type that is not a simple type: a complex type, or one of the ur-types (`anyType`, `anySimpleType`, `anyAtomicType`). The base of a restriction inside an `xs:simpleType` must be a simple type that is not an ur-type (msData stC003, stI004, stZ005/006; Saxon simple051). |
+| `notation-enumeration-required` | ERROR | `xs:NOTATION` is used directly, which the Schema Component Constraint forbids: a bare `xs:NOTATION` element/attribute type or list `itemType` (msData simple090-simple092), or a restriction whose primitive is NOTATION that states no `enumeration` facet (Saxon simple094). A `union` member NOTATION is deliberately tolerated because the corpus is self-contradictory there (an open question, w3c/xsdtests#12: MS particlesZ007 expects it valid, Saxon simple093 invalid). |
+| `unknown-notation` | ERROR | An `enumeration` value of a NOTATION restriction does not name a notation declared in the schema (Saxon simple095). |
 | `unknown-namespace-prefix` | ERROR | A prefixed name uses a namespace prefix that is not bound in scope (namespaced mode). |
 | `value` | ERROR | Text content failed lexical validation for its type. |
 | `default` | ERROR | Element default value is not valid for the element's type. |

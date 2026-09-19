@@ -660,6 +660,7 @@ class PyXSD:
         self._checkSubstitutionGroupExclusions(schemaER)
         self._checkValueConstraints(schemaER)
         self._checkTypeReferences(schemaER)
+        self._checkNotationUses(schemaER)
         self._checkAlternatives(schemaER)
 
         return None
@@ -3027,6 +3028,58 @@ class PyXSD:
                                 element=er.name,
                                 phase="schema",
                             )
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _isNotationReference(self, er: Any, raw: Any) -> bool:
+        """Whether a type reference names the built-in ``xs:NOTATION``."""
+        if not raw or (isinstance(raw, str) and "|" in raw):
+            return False
+        resolved = er.resolveSchemaQName(raw, parser=self)
+        if namespace_of(resolved) == XSD_NS and local_name(resolved) == "NOTATION":
+            return True
+        return raw in ("xs:NOTATION", "xsd:NOTATION")
+
+    def _checkNotationUses(self, schemaER: Any) -> None:
+        """Reports a direct use of ``xs:NOTATION`` without an enumeration.
+
+        XSD Schema Component Constraint: "It is an error for NOTATION to
+        be used directly in a schema. Only datatypes that are derived
+        from NOTATION by specifying a value for enumeration can be used
+        in a schema." A bare ``xs:NOTATION`` element/attribute type or
+        list ``itemType`` is therefore invalid (Saxon simple090-simple092);
+        a restriction that supplies the enumeration is checked separately
+        by ``XsdType._checkNotationRestriction``.
+
+        A ``union`` member is deliberately *not* reported here: the
+        corpus is self-contradictory there (MS particlesZ007 expects
+        ``union memberTypes="xsd:NOTATION"`` valid while Saxon simple093
+        expects it invalid), an open question (w3c/xsdtests#12), so the
+        historical acceptance is kept.
+        """
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            kind = type(er).__name__
+            uses: list[tuple[Any, str]] = []
+            if kind in ("Element", "Attribute") and not (
+                getattr(er, "isElementRef", False) or getattr(er, "isAttributeRef", False)
+            ):
+                uses.append((er.__dict__.get("type"), f"{kind.lower()} '{er.name}'"))
+            elif kind == "List":
+                uses.append((getattr(er, "itemType", None), f"list '{er.getContainingTypeName()}'"))
+            for raw, owner in uses:
+                if self._isNotationReference(er, raw):
+                    self.report.add_error(
+                        f"{owner} uses xs:NOTATION directly; a NOTATION type must "
+                        "include an enumeration facet",
+                        code="notation-enumeration-required",
+                        element=er.name,
+                        phase="schema",
+                    )
             stack.extend(getattr(er, "processedChildren", None) or ())
 
     def _loadedNamespaces(self) -> set:
