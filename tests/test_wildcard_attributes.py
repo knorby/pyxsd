@@ -813,3 +813,53 @@ def test_xml_namespace_attribute_is_admitted_by_a_wildcard():
     # wild054.v1: an any-attribute wildcard admits xml:lang.
     parser = run(XML_NAMESPACE_ATTRIBUTE_WILDCARD_SCHEMA, '<open xml:lang="de"/>')
     assert codes(parser) == []
+
+
+PROHIBITED_WILDCARD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+    'attributeFormDefault="unqualified">'
+    '<xs:element name="root"><xs:complexType>'
+    '<xs:attribute name="attr" use="prohibited"/>'
+    '<xs:anyAttribute namespace="##local" processContents="lax"/>'
+    "</xs:complexType></xs:element></xs:schema>"
+)
+
+
+def test_prohibited_attribute_admitted_by_wildcard_is_valid():
+    # attZ002: the wildcard governs once the prohibited use is not a use
+    parser = run(PROHIBITED_WILDCARD_SCHEMA, '<root attr="123"/>')
+    assert codes(parser) == []
+
+
+PROHIBITED_PLAIN_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:element name="record"><xs:complexType>'
+    '<xs:attribute name="legacy" type="xs:string" use="prohibited"/>'
+    "</xs:complexType></xs:element></xs:schema>"
+)
+
+
+def test_prohibited_attribute_without_wildcard_is_rejected():
+    # conformance/attribute/prohibited-present: a direct prohibited use
+    # with no wildcard rejects the attribute.
+    parser = run(PROHIBITED_PLAIN_SCHEMA, '<record legacy="old"/>')
+    assert "prohibited-attribute" in errors(parser)
+
+
+GROUP_PROHIBITED_RESTRICTION_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:complexType name="base"><xs:attribute name="a"/></xs:complexType>'
+    '<xs:complexType name="derived"><xs:complexContent>'
+    '<xs:restriction base="base"><xs:attributeGroup ref="attG"/></xs:restriction>'
+    "</xs:complexContent></xs:complexType>"
+    '<xs:attributeGroup name="attG"><xs:attribute name="a" use="prohibited"/></xs:attributeGroup>'
+    '<xs:element name="doc" type="derived"/>'
+    "</xs:schema>"
+)
+
+
+def test_group_prohibited_use_is_not_an_attribute_use():
+    # attZ015.v: a prohibited use inside an attributeGroup is not a use,
+    # so the base's optional attribute stays and the instance is valid.
+    parser = run(GROUP_PROHIBITED_RESTRICTION_SCHEMA, '<doc a="a"/>')
+    assert codes(parser) == []

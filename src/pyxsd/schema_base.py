@@ -2128,6 +2128,28 @@ class SchemaBase:
         """
         return list(self.descAttributes().keys())
 
+    def _attributeWildcardAdmits(self, matchName) -> bool:
+        """Whether the type's effective attribute wildcard admits *matchName*.
+
+        A prohibited attribute use is not part of the type's
+        {attribute uses}, so a wildcard that admits the attribute makes
+        its presence valid and the prohibition is not enforced
+        (attZ002).
+        """
+        cls = type(self)
+        if not getattr(cls, "hasWildcardAttributes_", False):
+            return False
+        if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
+            return False
+        spec = getattr(cls, "effectiveAttributeWildcard_", None)
+        if spec is None:
+            return False
+        parser = getattr(cls, "pyXSD", None)
+        defined = _defined_declaration_names(parser, "attribute")
+        return bool(
+            spec.allows_name(matchName, getattr(cls, "_targetNamespace_", None), defined=defined)
+        )
+
     def checkAttributes(self, usedAttrs, elementTag):
         """Checks to see that required attributes are used in the xml,
         and does other such checks on the attributes.
@@ -2207,7 +2229,7 @@ class SchemaBase:
                     code="missing-attribute",
                     element=elementName,
                 )
-            if found and attrUse == "prohibited":
+            if found and attrUse == "prohibited" and not self._attributeWildcardAdmits(matchName):
                 self._report_error(
                     f"attribute '{descriptorAttrName}' is prohibited and "
                     "must not appear in the xml",

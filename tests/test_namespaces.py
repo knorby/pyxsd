@@ -1157,6 +1157,41 @@ class TestUnknownXsiAttributes:
         assert not parser.report.has_errors
 
 
+class TestNamespacedAttributeUses:
+    """Two attribute uses with one local name in different namespaces.
+
+    A complex type may carry ``{t}a1`` and ``{i}a1`` together; instance
+    matching must address each by its expanded name (attQ019).
+    """
+
+    def test_same_local_name_in_two_namespaces(self, tmp_path):
+        (tmp_path / "i.xsd").write_text(
+            f'<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="urn:i" '
+            f'xmlns:i="urn:i" attributeFormDefault="qualified">'
+            f'<xs:attribute name="a1"/></xs:schema>'
+        )
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="urn:t" '
+            f'xmlns:t="urn:t" xmlns:i="urn:i" attributeFormDefault="qualified">'
+            f'<xs:import namespace="urn:i" schemaLocation="i.xsd"/>'
+            f'<xs:attributeGroup name="g">'
+            f'<xs:attribute name="a1"/><xs:attribute ref="i:a1"/></xs:attributeGroup>'
+            f'<xs:complexType name="T"><xs:attributeGroup ref="t:g"/></xs:complexType>'
+            f'<xs:element name="doc" type="t:T"/></xs:schema>'
+        )
+        (tmp_path / "s.xsd").write_text(schema)
+        instance = '<t:doc xmlns:t="urn:t" xmlns:i="urn:i" t:a1="1" i:a1="2"/>'
+        (tmp_path / "instance.xml").write_text(instance)
+        parser = PyXSD(
+            tmp_path / "instance.xml",
+            xsdFile=tmp_path / "s.xsd",
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=ParseModes.NAMESPACED,
+        )
+        assert [i.code for i in parser.report.issues] == []
+
+
 def _xlink_ref_schema(attribute_site: str, *, import_line: str = "") -> str:
     """A schema whose only extension hook is one XLink ``xs:attribute`` site."""
     return f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xlink="{XLINK_NS}">

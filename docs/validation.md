@@ -70,7 +70,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `missing-attribute` | ERROR | A required attribute is absent. |
 | `unexpected-attribute` | ERROR | Attribute not declared in the schema and not admitted by any effective attribute wildcard. The check skips the XML Schema instance and XML namespaces and `xmlns*` declarations. |
 | `invalid-attribute` | ERROR | Attribute value fails its declared type; or, in the schema phase, an `xs:any`/`xs:anyAttribute` declaration carries an unqualified XML attribute outside its representation's allowed set (a qualified attribute in a non-schema namespace is foreign and legal). |
-| `prohibited-attribute` | WARNING | Attribute declared `use="prohibited"` present. |
+| `prohibited-attribute` | ERROR | A direct attribute declaration with `use="prohibited"` is present in the instance. The prohibition is not enforced when the type's effective attribute wildcard admits the attribute (attZ002), and a prohibited use contributed by a referenced `attributeGroup` is not an attribute use of the type at all (attZ015). |
 | `fixed-attribute` | ERROR | Attribute present with a value differing from `fixed`. |
 | `unknown-type` | ERROR | Referenced type could not be resolved. |
 | `atomic-required` | ERROR | A `list`'s `itemType` (or inline item type) is not an atomic simple type or a union with no list type anywhere in its transitive membership, or a `union`'s member type is a complex type rather than a simple type. Atomic, list and union members are all legal union members. |

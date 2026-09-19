@@ -324,6 +324,11 @@ class XsdType(ElementRepresentative):
             for attrName, attr in self._collectAttributeGroup(
                 group, frozenset({groupKey}), pyXSD
             ).items():
+                if attr.getUse() == "prohibited":
+                    # A prohibited use contributed by an attributeGroup
+                    # is not an attribute use of the referring type
+                    # (attZ015); the base type's own use, if any, stays.
+                    continue
                 if self._attributeCollides(self.attributes.values(), attr, pyXSD):
                     # A complex type's {attribute uses} must not contain
                     # two uses with the same expanded name; a group
@@ -422,7 +427,16 @@ class XsdType(ElementRepresentative):
                 continue
             if key is not None:
                 match_names[key] = effective
-            resolved[effective.name] = effective
+            localKey = effective.name
+            if localKey in resolved:
+                # Two uses share a local name but have distinct expanded
+                # names (different namespaces): keep both, the later one
+                # under its expanded name, so instance matching can
+                # address each (attQ019).
+                localKey = key if key is not None else localKey
+                while localKey in resolved:
+                    localKey = f"{localKey}|2"
+            resolved[localKey] = effective
         self.attributes = resolved
 
     def _globalAttributeCandidates(self, pyXSD):
@@ -1109,7 +1123,19 @@ class XsdType(ElementRepresentative):
 
         for attr in attributes:
             attr.pyXSD = pyXSD
-            namespace[attr.name] = attr
+            key = attr.name
+            if key in namespace:
+                # Two attribute uses share a local name but differ in
+                # namespace (attQ019): bind the later one under a unique
+                # key so both descriptors reach ``_attributeNames_`` and
+                # instance matching sees both expanded names.
+                counter = 2
+                key = f"{attr.name}|{counter}"
+                while key in namespace:
+                    counter += 1
+                    key = f"{attr.name}|{counter}"
+                attr._aliased_ = True
+            namespace[key] = attr
 
         try:
             cls = types.new_class(self.name, bases, {}, lambda ns: ns.update(namespace))
