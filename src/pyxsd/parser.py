@@ -2714,6 +2714,29 @@ class PyXSD:
                 self._checkWildcardElementEDC(er, resolved)
             stack.extend(getattr(er, "processedChildren", None) or ())
 
+    @staticmethod
+    def _alternativeTypeKey(alternative: Any) -> tuple:
+        """A canonical identity for one alternative's type.
+
+        A named type compares by its (string) name. An inline type has no
+        name and its element representative is a distinct object per
+        declaration, so it is canonicalized by its serialized XML
+        structure: structurally identical inline types compare equal even
+        though their ERs differ.
+        """
+        if alternative.type_name is not None:
+            return ("name", alternative.type_name)
+        inline = alternative.inline_type
+        if inline is None:
+            return ("none", None)
+        element = getattr(inline, "xsdElement", None)
+        if element is not None:
+            try:
+                return ("inline", ET.tostring(element))
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                pass
+        return ("inline", id(inline))
+
     def _alternativeTableSignature(self, particle: Any) -> tuple:
         """An element particle's ``xs:alternative`` type table signature.
 
@@ -2728,7 +2751,7 @@ class PyXSD:
             seen.add(id(current))
             alternatives = getattr(current, "compiledAlternatives", None)
             if alternatives:
-                return tuple((alt.test, alt.type_name or alt.inline_type) for alt in alternatives)
+                return tuple((alt.test, self._alternativeTypeKey(alt)) for alt in alternatives)
             current = getattr(current, "referredElement", None)
         return ()
 

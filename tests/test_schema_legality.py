@@ -3155,6 +3155,47 @@ class TestEDCTypeTables:
         )
         assert "all-rule" not in _schema_codes(report)
 
+    def test_same_name_identical_inline_alternative_tables_accepted(self, parse_schema):
+        """Two like-named particles with structurally identical *inline*
+        alternative types are EDC-consistent (the inline ERs are distinct
+        objects, so the signature must compare them by structure)."""
+        inline = (
+            "<xsd:alternative test=\"@t='1'\"><xsd:simpleType>"
+            "<xsd:restriction base='xsd:string'><xsd:length value='3'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:alternative>"
+        )
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            f"<xsd:element name='a'>{inline}</xsd:element>"
+            f"<xsd:element name='a'>{inline}</xsd:element>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "all-rule" not in _schema_codes(report)
+        assert "element-consistent" not in _schema_codes(report)
+
+    def test_wildcard_match_identical_inline_tables_accepted(self, parse_schema):
+        """A local particle and a wildcard-matched global with structurally
+        identical inline alternative types are EDC-consistent."""
+        inline = (
+            "<xsd:alternative test=\"@t='1'\"><xsd:simpleType>"
+            "<xsd:restriction base='xsd:string'><xsd:length value='3'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:alternative>"
+        )
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            f"<xsd:element name='a'>{inline}</xsd:element>"
+            "<xsd:any namespace='##local' processContents='strict'/>"
+            "</xsd:sequence></xsd:complexType>"
+            f"<xsd:element name='a'>{inline}</xsd:element>"
+            "</xsd:schema>"
+        )
+        assert "element-consistent" not in _schema_codes(report)
+        assert "all-rule" not in _schema_codes(report)
+
 
 class TestChoiceSubstitutionOverlap:
     """A head and its member (or two members) in one choice violate UPA
