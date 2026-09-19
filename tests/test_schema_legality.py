@@ -2949,6 +2949,56 @@ class TestContentKindDerivationBase:
         assert "invalid-base" not in _schema_codes(report)
 
 
+class TestAttributeInheritable:
+    """The XSD 1.1 ``inheritable`` attribute (cta9004-9007)."""
+
+    @pytest.mark.parametrize("value", ["", "2", "TRUE", "False"])
+    def test_invalid_inheritable_boolean_rejected(self, parse_schema, value):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            f"<xsd:attribute name='a' inheritable='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("value", ["true", "false", "1", "0"])
+    def test_legal_inheritable_boolean_accepted(self, parse_schema, value):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            f"<xsd:attribute name='a' inheritable='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    @pytest.mark.parametrize("base_inheritable,derived", [("true", "false"), (None, "true")])
+    def test_restriction_changing_inheritable_rejected(
+        self, parse_schema, base_inheritable, derived
+    ):
+        base_attr = "<xsd:attribute name='lang'"
+        if base_inheritable is not None:
+            base_attr += f" inheritable='{base_inheritable}'"
+        base_attr += "/>"
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            f"<xsd:complexType name='b'><xsd:sequence/>{base_attr}</xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            f"<xsd:attribute name='lang' inheritable='{derived}'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" in _schema_codes(report)
+
+    def test_restriction_preserving_inheritable_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:attribute name='lang' inheritable='true'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='lang' inheritable='true'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" not in _schema_codes(report)
+
+
 class TestAttributeWildcardRestriction:
     """Attribute wildcard/use derivation on a restriction (ctO004/ctO005)."""
 

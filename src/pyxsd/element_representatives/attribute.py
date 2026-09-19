@@ -369,6 +369,22 @@ class Attribute(ElementRepresentative):
         self._checkAttributeType()
         self._checkAttributeName()
         self._checkAttributeNamespace()
+        self._checkAttributeBooleanAttributes()
+
+    def _checkAttributeBooleanAttributes(self) -> None:
+        """Reports ``inheritable`` values outside ``xs:boolean``.
+
+        XSD 1.1 types the attribute as ``xs:boolean``; the lexical space is
+        exactly true/false/1/0 (cta9006err/cta9007err). Other consumers
+        read an unrecognised spelling as false.
+        """
+        value = self.xsdElement.get("inheritable")
+        if value is not None and self._invalidBoolean(value):
+            self._reportSchemaError(
+                f"attribute '{self.name}' has an invalid inheritable value "
+                f"'{value}'; expected true, false, 1 or 0",
+                code="declaration-attribute",
+            )
 
     def _checkAttributeUnknownAttributes(self) -> None:
         """Reports attributes outside the attribute-declaration grammar.

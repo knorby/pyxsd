@@ -1750,9 +1750,28 @@ class PyXSD:
             )
             return
         base_uses, inheritable = self._effectiveAttributeUses(base_er)
-        if not base_uses or inheritable:
+        if not base_uses:
             return
         own_uses = getattr(er, "attributes", None) or {}
+        if derivation == "restriction":
+            for name, derived_attr in own_uses.items():
+                base_attr = base_uses.get(name)
+                if base_attr is None:
+                    continue
+                # Clause 2.1.5: a redeclared use keeps the base use's
+                # {inheritable} (cta9004err/cta9005err).
+                if self._attributeUseIsInheritable(base_attr) != self._attributeUseIsInheritable(
+                    derived_attr
+                ):
+                    self.report.add_error(
+                        f"attribute-use restriction: attribute '{name}' of type "
+                        f"'{getattr(er, 'name', '?')}' changes the inheritable "
+                        f"({self._attributeUseIsInheritable(base_attr)}) of its "
+                        f"base type '{getattr(base_er, 'name', '?')}'",
+                        code="attribute-restriction",
+                    )
+        if inheritable:
+            return
         if derivation == "restriction":
             for name, derived_attr in own_uses.items():
                 base_attr = base_uses.get(name)
