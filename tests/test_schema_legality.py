@@ -2221,3 +2221,175 @@ class TestSelfImportRejected:
             mode=ParseModes.NAMESPACED,
         ).report
         assert "compose-invalid" in _schema_codes(report)
+
+
+class TestSimpleTypeRepresentationLegality:
+    """The XML representation of a ``simpleType`` declaration.
+
+    Mirrors the msData ``simpleType`` syntax family (stA008-stA017,
+    stB001, stC003/stC029, stD018, stE012): a local ``simpleType`` is
+    anonymous, a ``name`` is an ``NCName``, a ``simpleType`` carries
+    exactly one derivation, a ``list``/``union`` has at least one item
+    or member, and a simple-type ``restriction`` cannot derive from a
+    complex type or an ur-type.
+    """
+
+    def test_inline_named_simple_type_under_restriction_is_rejected(self, parse_schema):
+        """stA008/stA013: a restriction's inline simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='parent'><xsd:restriction>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:string'>"
+            "<xsd:length value='4'/></xsd:restriction></xsd:simpleType>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_inline_named_simple_type_under_list_is_rejected(self, parse_schema):
+        """stA009: a list's inline item simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='parent'><xsd:list>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:string'>"
+            "<xsd:length value='4'/></xsd:restriction></xsd:simpleType>"
+            "</xsd:list></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_inline_named_simple_type_under_union_is_rejected(self, parse_schema):
+        """stA010: a union's inline member simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='parent'><xsd:union>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:string'>"
+            "<xsd:length value='4'/></xsd:restriction></xsd:simpleType>"
+            "</xsd:union></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_inline_named_simple_type_under_attribute_is_rejected(self, parse_schema):
+        """stA011: an attribute's inline simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='parent'><xsd:simpleType name='fooType'>"
+            "<xsd:restriction base='xsd:string'><xsd:length value='4'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:attribute></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_inline_named_simple_type_under_element_is_rejected(self, parse_schema):
+        """stA012: an element's inline simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='parent'><xsd:simpleType name='fooType'>"
+            "<xsd:restriction base='xsd:string'><xsd:length value='4'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_global_simple_type_name_with_colon_is_rejected(self, parse_schema):
+        """stA014: a ``name`` is an NCName and cannot carry a colon."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='a:b'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_global_simple_type_name_with_leading_digit_is_rejected(self, parse_schema):
+        """stA017: a ``name`` cannot start with a digit."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='1foo'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_simple_type_without_derivation_is_rejected(self, parse_schema):
+        """stB001: a simpleType is annotation plus one derivation."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:annotation/></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_list_with_item_type_and_inline_simple_type_is_rejected(self, parse_schema):
+        """stD018: ``itemType`` and an inline ``simpleType`` are exclusive."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:list itemType='xsd:integer'>"
+            "<xsd:simpleType><xsd:restriction base='xsd:integer'/>"
+            "</xsd:simpleType></xsd:list></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_union_without_members_is_clean(self, parse_schema):
+        """XSD 1.1 bug 4912: a union with no member types is legal (its
+        value space is empty); only XSD 1.0 required a member."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:union><xsd:annotation/>"
+            "</xsd:union></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)
+
+    def test_restriction_base_complex_type_is_rejected(self, parse_schema):
+        """stI004: a simple-type restriction cannot derive from a complexType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='myComplexType'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:positiveInteger'/></xsd:simpleContent>"
+            "</xsd:complexType>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='myComplexType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_base_any_type_is_rejected(self, parse_schema):
+        """stC003: a simple-type restriction cannot derive from ``anyType``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:anyType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_base_any_simple_type_is_rejected(self, parse_schema):
+        """stZ005: a simple-type restriction cannot derive from ``anySimpleType``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t1'><xsd:restriction base='xsd:anySimpleType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_simple_type_restriction_with_any_attribute_is_rejected(self, parse_schema):
+        """stC029: ``anyAttribute`` is not part of a simple-type restriction."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:integer'>"
+            "<xsd:anyAttribute processContents='lax'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_simple_type_restriction_of_simple_type_is_clean(self, parse_schema):
+        """A restriction of an ordinary simple type stays valid."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:string'>"
+            "<xsd:length value='4'/></xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+        assert "declaration-child" not in _schema_codes(report)
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_inline_anonymous_simple_type_is_clean(self, parse_schema):
+        """An anonymous inline simpleType is not a name error."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='e'><xsd:simpleType><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)

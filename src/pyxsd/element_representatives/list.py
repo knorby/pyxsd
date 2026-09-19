@@ -37,11 +37,23 @@ class List(ElementRepresentative):
         ``atomic-required``.
         """
         containingName = self.getContainingTypeName()
+        inline = [
+            child
+            for child in self.processedChildren or ()
+            if child is not None and child.__class__.__name__ == "SimpleType"
+        ]
+        if self.itemType is not None and inline:
+            # XSD 1.1 §3.16.2.1: a list takes its item type from either
+            # the ``itemType`` attribute or an inline ``simpleType``
+            # child, never both (stD018).
+            self._reportSchemaError(
+                f"list '{containingName}' has both an itemType attribute and an inline simpleType",
+                code="declaration-duplicate",
+            )
         if self.itemType is not None:
             self._checkItemType(self.itemType, f"list '{containingName}'")
-        for child in self.processedChildren or ():
-            if child is not None and child.__class__.__name__ == "SimpleType":
-                self._checkInlineItemType(child, containingName)
+        for child in inline:
+            self._checkInlineItemType(child, containingName)
 
     def _checkItemType(self, itemType, owner):
         variety, er = self.varietyOfReference(itemType)
