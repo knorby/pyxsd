@@ -544,6 +544,7 @@ class PyXSD:
         # a declaration a ``vc:*`` selector excludes. Included and imported
         # documents are filtered as they are parsed (``_parseIncludedSchema``).
         apply_conditional_inclusion(root, self.namespaceContext, self.report)
+        self._checkNamespaceAttributeValues(root)
 
         baseDir, visited = self._schemaCompositionContext()
         # Documents already fully composed; their components must not be
@@ -3672,6 +3673,18 @@ class PyXSD:
             return None
         mainNS = schemaRoot.get("targetNamespace")
         includedNS = includedRoot.get("targetNamespace")
+        if isImport and checkImportNamespace and tag.get("namespace") is None and mainNS is None:
+            # schF3/addB008/addB035: an import with no namespace attribute
+            # imports the absent target namespace. A schema with no
+            # targetNamespace cannot import the absent namespace from
+            # itself; the imported document's components are already in
+            # the importing namespace (an include, not an import).
+            self.report.add_error(
+                f"the import '{location}' has no namespace attribute, but the "
+                "importing schema also has no targetNamespace",
+                code="compose-invalid",
+                phase="schema",
+            )
         if isImport and checkImportNamespace and mainNS and tag.get("namespace") == mainNS:
             # XSD 1.0 §4.2.3: an import's namespace must differ from the
             # importing schema's targetNamespace (attgB015).
@@ -3812,7 +3825,34 @@ class PyXSD:
             )
             return None
         apply_conditional_inclusion(root, self.namespaceContext, self.report)
+        self._checkNamespaceAttributeValues(root)
         return root
+
+    def _checkNamespaceAttributeValues(self, root: Any) -> None:
+        """Reports an empty ``targetNamespace`` or import ``namespace``.
+
+        The empty string is not a valid namespace name: a schema declaring
+        ``targetNamespace=""`` (schZ014_b) and an ``xs:import`` carrying
+        ``namespace=""`` (schZ014_a) are both invalid. Absence is written
+        by omitting the attribute, never by an empty value.
+        """
+        if root.get("targetNamespace") == "":
+            self.report.add_error(
+                "the schema's targetNamespace must not be the empty string; "
+                "omit the attribute for no namespace",
+                code="declaration-attribute",
+                phase="schema",
+            )
+        for child in list(root):
+            if not isinstance(child.tag, str) or child.tag.split("}")[-1] != "import":
+                continue
+            if child.get("namespace") == "":
+                self.report.add_error(
+                    "an import's namespace must not be the empty string; "
+                    "omit the attribute to import the absent namespace",
+                    code="declaration-attribute",
+                    phase="schema",
+                )
 
     def _checkDirectiveAnnotation(self, tag: Any, isImport: bool) -> None:
         """Reports a repeated ``annotation`` child on include/import.

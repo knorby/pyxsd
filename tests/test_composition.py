@@ -714,6 +714,33 @@ class TestComposeInvalid:
         )
         assert "declaration-child" not in self._error_codes(parser)
 
+    def test_import_without_namespace_into_no_namespace_schema_is_error(self, tmp_path):
+        # schF3/addB008/addB035: an import with no namespace attribute
+        # imports the absent target namespace, which cannot differ from a
+        # no-namespace importing schema's own.
+        parser = self._parser(
+            tmp_path,
+            f"<xs:schema {XS}>"
+            '<xs:import schemaLocation="base.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"base.xsd": f'<xs:schema {XS}><xs:element name="e"/></xs:schema>'},
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_empty_import_namespace_is_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:import namespace=""/><xs:element name="root"/></xs:schema>',
+        )
+        assert "declaration-attribute" in self._error_codes(parser)
+
+    def test_empty_target_namespace_is_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} targetNamespace=""><xs:element name="root"/></xs:schema>',
+        )
+        assert "declaration-attribute" in self._error_codes(parser)
+
     def test_redefine_base_namespace_mismatch_is_error(self, tmp_path):
         parser = self._parser(
             tmp_path,
