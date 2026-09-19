@@ -288,6 +288,15 @@ class XsdType(ElementRepresentative):
             lookupName = superClassName.split(":")[-1]
         baseER = ElementRepresentative.getFromName(lookupName, kind="type")
         final = getattr(baseER, "final", None) if baseER is not None else None
+        if final is None and baseER is not None:
+            # A type that states no ``final`` takes the declaring schema
+            # document's ``finalDefault`` (Saxon simple005).
+            baseSchema = None
+            getter = getattr(baseER, "getSchema", None)
+            if getter is not None:
+                baseSchema = getter()
+            if baseSchema is not None:
+                final = getattr(baseSchema, "tagAttributes", {}).get("finalDefault")
         if final is None:
             return
         derivation = self.getDerivation()

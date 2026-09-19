@@ -717,6 +717,25 @@ def test_final_blocks_derivation(tmp_path):
     assert "final" in codes
 
 
+def test_final_default_blocks_derivation(tmp_path):
+    """Saxon simple005: a schema's ``finalDefault`` supplies a type's
+    effective ``final`` when the declaration states none."""
+    schema = (
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" finalDefault="extension">'
+        '<xs:simpleType name="pubDate"><xs:restriction base="xs:date">'
+        '<xs:pattern value="2012.*"/></xs:restriction></xs:simpleType>'
+        '<xs:complexType name="pubType"><xs:simpleContent>'
+        '<xs:extension base="pubDate">'
+        '<xs:attribute name="country" type="xs:string"/>'
+        "</xs:extension></xs:simpleContent></xs:complexType>"
+        '<xs:element name="root" type="pubType"/>'
+        "</xs:schema>"
+    )
+    parser = _parse(schema, "<root country='x'>2012-01-01</root>", tmp_path)
+    codes = [issue.code for issue in parser.report.issues]
+    assert "final" in codes
+
+
 def test_blocked_substitution_member_rejected(tmp_path):
     schema = (
         '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
