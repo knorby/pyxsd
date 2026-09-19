@@ -52,16 +52,29 @@ def clark(uri: str | None, local: str) -> str:
 
 
 def local_name(name: str) -> str:
-    """Return the local part of a Clark name (or a plain name)."""
+    """Return the local part of a Clark name (or a plain name).
+
+    A ``{``-prefixed name without a closing ``}`` is malformed (e.g. an
+    unresolvable ``type="{oops"`` QName already reported at schema
+    phase); it is returned unchanged so downstream lookups simply miss
+    instead of raising.
+    """
     if name.startswith("{"):
-        return name.split("}", 1)[1]
+        _, sep, local = name.partition("}")
+        if sep:
+            return local
     return name
 
 
 def namespace_of(name: str) -> str | None:
-    """Return the namespace URI of a Clark name, or ``None``."""
+    """Return the namespace URI of a Clark name, or ``None``.
+
+    A malformed Clark name without a closing ``}`` has no namespace.
+    """
     if name.startswith("{"):
-        return name[1:].split("}", 1)[0]
+        uri, sep, _ = name[1:].partition("}")
+        if sep:
+            return uri
     return None
 
 

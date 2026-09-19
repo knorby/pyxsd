@@ -693,3 +693,43 @@ class TestUnreadableInputs:
                 xmlFileOutput=False,
                 transformOutputName=None,
             )
+
+
+class TestMalformedClarkAttributeType:
+    """An attribute ``type`` that looks like a Clark name without a
+    closing brace (``type="{oops"``) is reported as a schema error, but
+    class building then crashed with ``IndexError`` inside
+    ``namespaces.local_name`` when the value constraint factory resolved
+    the declaration's type."""
+
+    def test_schema_error_reported_not_raised(self, tmp_path):
+        parser = _parse(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:complexType name="t">'
+            '<xs:attribute name="a" type="{oops"/>'
+            "</xs:complexType>"
+            '<xs:element name="t" type="t"/></xs:schema>',
+            '<t a="v"/>',
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "declaration-attribute" in codes
+
+
+class TestOversizedPatternRepetition:
+    """A legal-looking XSD pattern whose repetition count exceeds what
+    ``re`` can build (``a{4294967296}``) escaped
+    ``facets._compile_pattern`` as a raw ``OverflowError`` instead of
+    becoming a ``facet`` schema error."""
+
+    def test_reports_facet_error(self, tmp_path, monkeypatch):
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:simpleType name="r"><xs:restriction base="xs:string">'
+            '<xs:pattern value="a{4294967296}"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>",
+            monkeypatch,
+        )
+        codes = [issue.code for issue in parser.report.issues]
+        assert "facet" in codes
