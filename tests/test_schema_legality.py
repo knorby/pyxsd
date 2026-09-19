@@ -2626,3 +2626,58 @@ class TestFinalItemAndMemberRestriction:
             "</xsd:schema>"
         )
         assert "final" not in _schema_codes(report)
+
+
+class TestSimpleContentRestrictionBase:
+    """A simpleContent restriction derives from a *complex* type whose
+    simple content is not ``xs:anySimpleType`` (XSD 1.1 bug 14559)."""
+
+    def test_extension_of_any_simple_type_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:anySimpleType'/></xsd:simpleContent>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_restriction_of_any_simple_type_is_rejected(self, parse_schema):
+        """stZ009: the base of a simpleContent restriction is a complex type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:restriction base='xsd:anySimpleType'/></xsd:simpleContent>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_of_a_simple_type_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:restriction base='xsd:string'/></xsd:simpleContent>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_of_an_any_simple_type_content_is_rejected(self, parse_schema):
+        """stZ007: t1's simple content primitive is anySimpleType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:anySimpleType'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t2'><xsd:simpleContent>"
+            "<xsd:restriction base='t1'/></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_of_a_string_content_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t2'><xsd:simpleContent>"
+            "<xsd:restriction base='t1'><xsd:maxLength value='3'/></xsd:restriction>"
+            "</xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)

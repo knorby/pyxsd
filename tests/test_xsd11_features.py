@@ -432,8 +432,10 @@ def test_assertion_xpath_default_namespace_resolves_type_names() -> None:
 
 def test_assertion_on_simple_content_restriction() -> None:
     body = (
+        '<xs:complexType name="base"><xs:simpleContent>'
+        '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
         '<xs:element name="root"><xs:complexType><xs:simpleContent>'
-        '<xs:restriction base="xs:string">'
+        '<xs:restriction base="base">'
         "<xs:assertion test=\"$value = 'ok'\"/>"
         "</xs:restriction></xs:simpleContent></xs:complexType></xs:element>"
     )

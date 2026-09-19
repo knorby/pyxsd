@@ -369,8 +369,10 @@ def test_simple_content_extension_user_simple_type_facets():
 
 def test_simple_content_restriction_direct_facets():
     body = (
+        '<xs:complexType name="base"><xs:simpleContent>'
+        '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
         '<xs:element name="r"><xs:complexType><xs:simpleContent>'
-        '<xs:restriction base="xs:string"><xs:maxLength value="3"/></xs:restriction>'
+        '<xs:restriction base="base"><xs:maxLength value="3"/></xs:restriction>'
         "</xs:simpleContent></xs:complexType></xs:element>"
     )
     assert errors(parse(body, "<r>abc</r>")) == []
@@ -379,8 +381,10 @@ def test_simple_content_restriction_direct_facets():
 
 def test_simple_content_restriction_inline_type_facets():
     body = (
+        '<xs:complexType name="base"><xs:simpleContent>'
+        '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
         '<xs:element name="r"><xs:complexType><xs:simpleContent>'
-        '<xs:restriction base="xs:string"><xs:simpleType><xs:restriction base="xs:string">'
+        '<xs:restriction base="base"><xs:simpleType><xs:restriction base="xs:string">'
         '<xs:enumeration value="red"/><xs:enumeration value="green"/>'
         "</xs:restriction></xs:simpleType></xs:restriction>"
         "</xs:simpleContent></xs:complexType></xs:element>"

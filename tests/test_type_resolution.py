@@ -125,8 +125,10 @@ class TestUnprefixedBuiltinsUnderDefaultXsdNs:
         schema = (
             f'<xs:schema xmlns:xs="{XSD}" xmlns="{XSD}" xmlns:u="urn:u" '
             'targetNamespace="urn:u">'
+            '<complexType name="base"><simpleContent>'
+            '<extension base="xs:string"/></simpleContent></complexType>'
             '<complexType name="string">'
-            '<simpleContent><restriction base="xs:string">'
+            '<simpleContent><restriction base="u:base">'
             '<enumeration value="only"/>'
             "</restriction></simpleContent>"
             "</complexType>"

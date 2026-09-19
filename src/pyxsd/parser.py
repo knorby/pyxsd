@@ -661,6 +661,7 @@ class PyXSD:
         self._checkValueConstraints(schemaER)
         self._checkTypeReferences(schemaER)
         self._checkNotationUses(schemaER)
+        self._checkSimpleContentRestrictionBase(schemaER)
         self._checkAlternatives(schemaER)
 
         return None
@@ -3029,6 +3030,65 @@ class PyXSD:
                                 phase="schema",
                             )
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkSimpleContentRestrictionBase(self, schemaER: Any) -> None:
+        """Reports a simpleContent restriction with an illegal base.
+
+        XSD 1.1 (bug 14559, Part 2 §2.4.2.1): the base of a simpleContent
+        ``restriction`` must be a complex type whose simple content is not
+        ``xs:anySimpleType``. A direct simple-type base (stZ009) and a
+        complex base whose content primitive is anySimpleType (stZ007,
+        stZ010, stZ047, stZ055) are both invalid; a simpleContent
+        ``extension`` of anySimpleType stays valid, and a restriction
+        that supplies its own inline ``simpleType`` gives the content a
+        non-anySimpleType primitive, so it is legal (IBM s3_12v04).
+        """
+        from pyxsd.xsd_data_types import AnySimpleType
+
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "ComplexType":
+                restriction = self._simpleContentRestriction(er)
+                if restriction is not None and not getattr(restriction, "hasNoBase", False):
+                    base_cls = self._baseTypeClass(er)
+                    if base_cls is not None:
+                        has_inline = any(
+                            grandchild is not None and type(grandchild).__name__ == "SimpleType"
+                            for grandchild in getattr(restriction, "processedChildren", ()) or ()
+                        )
+                        if getattr(base_cls, "_contentKind_", None) != "complex":
+                            self.report.add_error(
+                                f"the base of the simpleContent restriction of type "
+                                f"'{er.name}' is not a complex type",
+                                code="invalid-base",
+                                element=er.name,
+                                phase="schema",
+                            )
+                        elif issubclass(base_cls, AnySimpleType) and not has_inline:
+                            self.report.add_error(
+                                f"the simpleContent restriction of type '{er.name}' "
+                                "derives from a complex type whose simple content is "
+                                "xs:anySimpleType",
+                                code="invalid-base",
+                                element=er.name,
+                                phase="schema",
+                            )
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    @staticmethod
+    def _simpleContentRestriction(er: Any) -> Any | None:
+        """Returns a complex type's ``simpleContent``/``restriction`` child."""
+        for child in er.processedChildren or ():
+            if child is not None and type(child).__name__ == "SimpleContent":
+                for grandchild in child.processedChildren or ():
+                    if grandchild is not None and type(grandchild).__name__ == "Restriction":
+                        return grandchild
+        return None
 
     def _isNotationReference(self, er: Any, raw: Any) -> bool:
         """Whether a type reference names the built-in ``xs:NOTATION``."""

@@ -124,9 +124,11 @@ def test_misplaced_assert_inside_complex_content_is_reported() -> None:
 
 def test_assertion_facet_nested_in_annotated_simple_content() -> None:
     body = (
+        '<xs:complexType name="base"><xs:simpleContent>'
+        '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
         '<xs:element name="t"><xs:complexType><xs:simpleContent>'
         "<xs:annotation><xs:documentation>d</xs:documentation></xs:annotation>"
-        '<xs:restriction base="xs:string">'
+        '<xs:restriction base="base">'
         "<xs:assertion test=\"$value = 'ok'\"/>"
         "</xs:restriction>"
         "</xs:simpleContent></xs:complexType></xs:element>"
