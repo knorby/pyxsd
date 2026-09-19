@@ -4613,6 +4613,10 @@ class PyXSD:
                             subCls._checkFixedElement(
                                 rootElement, subCls, subInstance, rootElementName
                             )
+                        else:
+                            subCls._checkElementValueConstraint(
+                                rootElement, subCls, subInstance, rootElementName
+                            )
                 else:
                     # The root element's declared type is a primitive
                     # (simple) data type: build a typed instance directly.

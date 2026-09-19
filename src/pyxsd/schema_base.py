@@ -1382,6 +1382,10 @@ class SchemaBase:
             # Simple-content complex types carry a scalar value whose
             # fixed declaration constrains it like a primitive's.
             cls._checkFixedElement(descriptor, subElCls, subInstance, subElementName)
+        elif not nilled and getattr(subElCls, "_simpleContentType_", None) is None:
+            # Mixed-content and ur-type elements carry their character
+            # content as the value the fixed declaration constrains.
+            cls._checkElementValueConstraint(descriptor, subElCls, subInstance, subElementName)
         return None
 
     @classmethod
@@ -1562,6 +1566,41 @@ class SchemaBase:
         subInstance._value_ = None
         subInstance._children_ = []
         return subInstance
+
+    @classmethod
+    def _checkElementValueConstraint(cls, descriptor, subElCls, subInstance, subElementName):
+        """Enforces an element declaration's ``fixed`` against content.
+
+        For a complex type whose content is mixed — or the ur-type
+        stand-in of an untyped declaration — the value constraint
+        applies to the element's character content. A value constraint
+        on an element-only content model does not apply (its legality is
+        a schema-phase question). When the element carries element
+        children the character content is not a single value, so the
+        constraint cannot be satisfied (SUN valueConstraint00701m1).
+        """
+        fixed = descriptor.getFixed()
+        if fixed is None:
+            return None
+        if getattr(subElCls, "_elementOnly_", False):
+            return None
+        if getattr(subInstance, "_children_", None):
+            cls._report_error(
+                f"element '{subElementName}' has element children and cannot "
+                f"satisfy its fixed value {fixed!r}",
+                code="fixed-element",
+                element=cls.__name__,
+            )
+            return None
+        content = " ".join(subInstance._value_ or []) if subInstance._value_ else ""
+        if " ".join(content.split()) != " ".join(str(fixed).split()):
+            cls._report_error(
+                f"element '{subElementName}' has a value that conflicts "
+                f"with its fixed value {fixed!r}",
+                code="fixed-element",
+                element=cls.__name__,
+            )
+        return None
 
     @classmethod
     def _checkFixedElement(cls, descriptor, subElCls, subInstance, subElementName):

@@ -188,6 +188,99 @@ class TestFixedValueSpaceEquality:
         assert "fixed-element" in self._codes(parser)
 
 
+class TestMixedContentFixed:
+    """An element ``fixed`` on mixed or ur-type content constrains the
+    character content (MS-Additional isDefault070/077, SUN
+    valueConstraint00701m1/00801m1)."""
+
+    def _codes(self, parser):
+        return [issue.code for issue in parser.report.issues]
+
+    def test_root_mixed_content_mismatch_is_reported(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root" fixed="abc"><xs:complexType mixed="true">'
+            '<xs:sequence minOccurs="0"><xs:element name="e1"/>'
+            '<xs:element name="e2"/></xs:sequence></xs:complexType>'
+            "</xs:element></xs:schema>",
+            "<root>not_fixed</root>",
+            tmp_path,
+        )
+        assert "fixed-element" in self._codes(parser)
+
+    def test_root_mixed_content_match_is_accepted(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root" fixed="abc"><xs:complexType mixed="true">'
+            '<xs:sequence minOccurs="0"><xs:element name="e1"/>'
+            '<xs:element name="e2"/></xs:sequence></xs:complexType>'
+            "</xs:element></xs:schema>",
+            "<root>abc</root>",
+            tmp_path,
+        )
+        assert "fixed-element" not in self._codes(parser)
+
+    def test_untyped_child_fixed_mismatch_is_reported(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root" type="ct"/>'
+            '<xs:complexType name="ct"><xs:sequence>'
+            '<xs:element name="a" fixed="fixed_value"/>'
+            "</xs:sequence></xs:complexType></xs:schema>",
+            "<root><a>not fixed</a></root>",
+            tmp_path,
+        )
+        assert "fixed-element" in self._codes(parser)
+
+    def test_mixed_content_with_element_children_conflicts(self, tmp_path):
+        # SUN valueConstraint00701m1: even a matching character sequence
+        # conflicts when the element carries element children.
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root" fixed="part1 part2">'
+            '<xs:complexType mixed="true"><xs:sequence minOccurs="0" maxOccurs="unbounded">'
+            '<xs:element name="separator" minOccurs="0" maxOccurs="unbounded"/>'
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            "<root>part1 <separator/>part2</root>",
+            tmp_path,
+        )
+        assert "fixed-element" in self._codes(parser)
+
+    def test_mixed_content_plain_text_match_is_accepted(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root" fixed="part1 part2">'
+            '<xs:complexType mixed="true"><xs:sequence minOccurs="0" maxOccurs="unbounded">'
+            '<xs:element name="separator" minOccurs="0" maxOccurs="unbounded"/>'
+            "</xs:sequence></xs:complexType></xs:element></xs:schema>",
+            "<root>part1 part2</root>",
+            tmp_path,
+        )
+        assert "fixed-element" not in self._codes(parser)
+
+    def test_xsi_type_mixed_override_mismatch_is_reported(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root" fixed="alpha beta"/>'
+            '<xs:complexType name="Text" mixed="true"/>'
+            "</xs:schema>",
+            f'<root {XSI_NS_DECL} xsi:type="Text">beta alpha</root>',
+            tmp_path,
+        )
+        assert "fixed-element" in self._codes(parser)
+
+    def test_xsi_type_mixed_override_match_is_accepted(self, tmp_path):
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root" fixed="alpha beta"/>'
+            '<xs:complexType name="Text" mixed="true"/>'
+            "</xs:schema>",
+            f'<root {XSI_NS_DECL} xsi:type="Text">alpha beta</root>',
+            tmp_path,
+        )
+        assert "fixed-element" not in self._codes(parser)
+
+
 # ---------------------------------------------------------------------------
 # nillable / xsi:nil
 # ---------------------------------------------------------------------------
