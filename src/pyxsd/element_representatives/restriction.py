@@ -145,7 +145,23 @@ class Restriction(ElementRepresentative):
                     f"facet {name!r} is specified more than once in a restriction",
                     code="facet",
                 )
-        if type(self.getContainingType()).__name__ != "SimpleType":
+        containing = type(self.getContainingType()).__name__
+        if containing == "ComplexType":
+            # A complex-content restriction carries a particle and
+            # attributes, never constraining facets (addB112: a facet
+            # inside ``complexContent``/``restriction``). A
+            # simpleContent restriction may apply facets because it
+            # constrains a simple value.
+            parent = self.parent
+            if parent is None or type(parent).__name__ != "SimpleContent":
+                for tag in self.childTags:
+                    if tag in _FACET_CHILDREN:
+                        self._reportSchemaError(
+                            f"<{tag}> is not allowed inside a complex content restriction",
+                            code="declaration-child",
+                        )
+            return
+        if containing != "SimpleType":
             return
         allowed = {"annotation", "simpleType", *_FACET_CHILDREN}
         for tag in self.childTags:

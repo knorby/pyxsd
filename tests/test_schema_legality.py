@@ -2744,6 +2744,38 @@ class TestFinalItemAndMemberRestriction:
         assert "final" not in _schema_codes(report)
 
 
+class TestComplexContentRestrictionFacets:
+    """A complex-content restriction carries a particle, not facets."""
+
+    def test_facet_in_complex_content_restriction_is_rejected(self, parse_schema):
+        """addB112: ``length`` is not legal inside a complexContent
+        restriction."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='xsd:anyType'><xsd:length value='9'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_facet_in_simple_content_restriction_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:restriction base='xsd:string'><xsd:maxLength value='3'/>"
+            "</xsd:restriction></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)
+
+    def test_facet_in_simple_type_restriction_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:string'>"
+            "<xsd:maxLength value='3'/></xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)
+
+
 class TestSimpleContentRestrictionBase:
     """A simpleContent restriction derives from a *complex* type whose
     simple content is not ``xs:anySimpleType`` (XSD 1.1 bug 14559)."""
