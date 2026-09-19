@@ -3825,6 +3825,16 @@ class PyXSD:
             )
             return None
         apply_conditional_inclusion(root, self.namespaceContext, self.report)
+        if root.tag != clark(XSD_NS, "schema"):
+            # schB5/schE6/schE10: the reference resolves to well-formed
+            # XML that is not an XML Schema document.
+            self.report.add_error(
+                f"the schema '{location}' is not an XML Schema document "
+                f"(root element {root.tag!r})",
+                code="schema-compose",
+                phase="schema",
+            )
+            return None
         self._checkNamespaceAttributeValues(root)
         return root
 

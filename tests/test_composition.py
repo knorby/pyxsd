@@ -865,6 +865,28 @@ class TestComposeInvalid:
             files={"base.xsd": f"<xs:schema {XS}>{base_body}</xs:schema>"},
         )
 
+    def test_include_of_well_formed_non_schema_is_error(self, tmp_path):
+        # schB5: a schemaLocation that resolves to well-formed XML that is
+        # not an xs:schema is a composition error, not a silent skip.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:include schemaLocation="notaschema.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"notaschema.xsd": "<not-a-schema/>"},
+        )
+        assert "schema-compose" in self._error_codes(parser)
+
+    def test_import_of_well_formed_non_schema_is_error(self, tmp_path):
+        # schE6/schE10.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:import namespace="urn:x" '
+            'schemaLocation="notaschema.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"notaschema.xsd": "<notAnXsd/>"},
+        )
+        assert "schema-compose" in self._error_codes(parser)
+
     def test_redefine_namespace_attribute_is_error(self, tmp_path):
         # schH4: ``xs:redefine`` carries a schemaLocation, never a
         # namespace attribute.
