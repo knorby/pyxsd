@@ -1018,6 +1018,8 @@ class XsdType(ElementRepresentative):
         # overrides at instance time.
         namespace["_derivation_"] = self.getDerivation()
         blockValue = self.tagAttributes.get("block")
+        if blockValue is None:
+            blockValue = self.getSchemaBlockDefault()
         if blockValue:
             namespace["_block_"] = blockValue
         # Compile the particle tree before getElements() flattens and

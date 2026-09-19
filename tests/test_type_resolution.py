@@ -355,3 +355,56 @@ class TestXsiTypeDispatch:
         instance = f'<root xmlns:xsi="{XSI}"><a>x</a></root>'
         parser = _parse(schema, instance, tmp_path)
         assert "abstract-type" in _codes(parser)
+
+
+class TestSchemaBlockDefault:
+    """``blockDefault`` folds into element and type ``block``.
+
+    A schema's ``blockDefault`` supplies the effective ``block`` of every
+    element declaration and complex-type definition that does not state
+    one (SUN combined test003/003a/003b). An ``xsi:type`` override whose
+    derivation chain contains a blocked step is invalid; an explicit
+    ``block=""`` on the element clears the element's own contribution but
+    the declared type's blocked method still applies.
+    """
+
+    SCHEMA = (
+        f'<xs:schema xmlns:xs="{XSD}" xmlns:t="urn:b" targetNamespace="urn:b" '
+        'blockDefault="extension" elementFormDefault="qualified">'
+        '<xs:complexType name="B"><xs:sequence>'
+        '<xs:element name="foo" type="xs:string"/></xs:sequence></xs:complexType>'
+        '<xs:complexType name="De"><xs:complexContent>'
+        '<xs:extension base="t:B"/></xs:complexContent></xs:complexType>'
+        '<xs:complexType name="Dr"><xs:complexContent>'
+        '<xs:restriction base="t:B"><xs:sequence>'
+        '<xs:element name="foo" type="xs:string"/></xs:sequence></xs:restriction>'
+        "</xs:complexContent></xs:complexType>"
+        '<xs:element name="root"><xs:complexType><xs:sequence>'
+        '<xs:element name="item" type="t:B"/>'
+        "</xs:sequence></xs:complexType></xs:element>"
+        "</xs:schema>"
+    )
+
+    def _instance(self, override):
+        return (
+            f'<root xmlns="urn:b" xmlns:t="urn:b" xmlns:xsi="{XSI}">'
+            f'<item xsi:type="t:{override}"><foo>x</foo></item></root>'
+        )
+
+    def test_block_default_extension_rejects_extension_override(self, tmp_path):
+        parser = _parse(self.SCHEMA, self._instance("De"), tmp_path)
+        assert "xsi-type" in _codes(parser)
+
+    def test_block_default_extension_admits_restriction_override(self, tmp_path):
+        parser = _parse(self.SCHEMA, self._instance("Dr"), tmp_path)
+        assert "xsi-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+
+    def test_explicit_empty_element_block_keeps_the_type_block(self, tmp_path):
+        # SUN test003a: ``block=""`` clears the element's own contribution,
+        # but the complex type B still inherits blockDefault=extension.
+        schema = self.SCHEMA.replace(
+            '<xs:element name="item" type="t:B"/>',
+            '<xs:element name="item" type="t:B" block=""/>',
+        )
+        parser = _parse(schema, self._instance("De"), tmp_path)
+        assert "xsi-type" in _codes(parser)

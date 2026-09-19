@@ -820,6 +820,26 @@ class ElementRepresentative:
         """
         return self.parent.getSchema()
 
+    def getSchemaBlockDefault(self):
+        """Returns the containing schema's ``blockDefault`` value.
+
+        The schema-level ``blockDefault`` supplies the effective
+        ``block`` of every element declaration and complex-type
+        definition that does not state one of its own; an explicit
+        ``block=""`` overrides it with "none". Returns ``None`` when the
+        schema or the attribute is unavailable.
+        """
+        try:
+            schema = self.getSchema()
+        except (AttributeError, TypeError):
+            return None
+        if schema is None:
+            return None
+        xsdElement = getattr(schema, "xsdElement", None)
+        if xsdElement is None:
+            return None
+        return xsdElement.get("blockDefault")
+
     def getNamespace(self):
         """Returns the namespace URI this declaration belongs to.
 

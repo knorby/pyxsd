@@ -403,13 +403,19 @@ class Element(ElementRepresentative):
         return self.tagAttributes.get("abstract") == "true"
 
     def getBlock(self):
-        """Returns the element's ``block`` attribute value, or ``None``.
+        """Returns the element's effective ``block`` attribute value.
 
-        Reference sites use the referenced declaration's value.
+        An explicit ``block`` on the declaration wins (an empty value
+        means "nothing is blocked"); otherwise the schema's
+        ``blockDefault`` supplies it. Reference sites use the referenced
+        declaration's value.
         """
         if getattr(self, "isElementRef", False):
             return self.referredElement.getBlock()
-        return self.tagAttributes.get("block")
+        explicit = self.tagAttributes.get("block")
+        if explicit is not None:
+            return explicit
+        return self.getSchemaBlockDefault()
 
     def getSubstitutionGroupHead(self, parser=None):
         """Returns the head named by the ``substitutionGroup`` attribute.
