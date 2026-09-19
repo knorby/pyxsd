@@ -100,6 +100,27 @@ class TestSubstitutionDerivationBlock:
         )
         assert "blocked" in {issue.code for issue in report.issues}
 
+    def test_head_type_block_rejects_restriction_member(self, parse_document):
+        # SUN disallowedSubst00503m3: blockDefault/block on the head's
+        # *type* excludes a member whose derivation uses that method.
+        report = parse_document(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:t='urn:t' targetNamespace='urn:t' elementFormDefault='qualified'>"
+            "<xsd:element name='root'><xsd:complexType><xsd:sequence>"
+            "<xsd:element ref='t:Head'/>"
+            "</xsd:sequence></xsd:complexType></xsd:element>"
+            "<xsd:element name='Head' type='t:Type'/>"
+            "<xsd:complexType name='Type' block='restriction'/>"
+            "<xsd:complexType name='derivedFromType'><xsd:complexContent>"
+            "<xsd:restriction base='t:Type'/>"
+            "</xsd:complexContent></xsd:complexType>"
+            "<xsd:element name='Member1' type='t:derivedFromType' "
+            "substitutionGroup='t:Head'/>"
+            "</xsd:schema>",
+            "<t:root xmlns:t='urn:t'><t:Member1/></t:root>",
+        )
+        assert "blocked" in {issue.code for issue in report.issues}
+
 
 class TestElementDeclarationsConsistent:
     _TEMPLATE = (

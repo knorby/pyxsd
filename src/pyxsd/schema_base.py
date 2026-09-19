@@ -1695,16 +1695,19 @@ class SchemaBase:
                     return False
                 # XSD 1.1 §3.3.4.3: a member whose type is derived from the
                 # head's type by a method named in the head element's
-                # ``block`` is excluded from the actual substitution group
-                # (MS elemT063/065, SUN disallowedSubst*). The check is on
-                # the member's *declared* type, not on any xsi:type
-                # override applied below.
+                # ``block`` or in the head type's own ``block`` (or the
+                # schema's ``blockDefault``) is excluded from the actual
+                # substitution group (MS elemT063/065, SUN
+                # disallowedSubst*). The check is on the member's
+                # *declared* type, not on any xsi:type override applied
+                # below.
                 headCls = headDescriptor.getType()
+                effectiveBlock = combinedBlock(block, headCls)
                 if (
                     headCls is not None
                     and subElCls is not headCls
-                    and block
-                    and is_validly_derived(subElCls, headCls, block) == "blocked"
+                    and effectiveBlock
+                    and is_validly_derived(subElCls, headCls, effectiveBlock) == "blocked"
                 ):
                     cls._report_error(
                         f"substitution-group member '{subElementName}' has a "
