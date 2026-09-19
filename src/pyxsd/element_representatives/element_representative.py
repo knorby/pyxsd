@@ -471,6 +471,24 @@ class ElementRepresentative:
         local name and the namespace of the reference; there is no
         cross-namespace local-name fallback.
         """
+        if "|" in name:
+            # An unprefixed inline-type bookkeeping name is unique in the
+            # component table regardless of namespace: look it up without
+            # a namespace filter (the name already embeds the declaring
+            # chain). A prefixed redefine clone (``{ns}c|base``) keeps its
+            # namespace and is resolved through the normal branch below.
+            uri = namespace_of(name)
+            local = local_name(name)
+            if uri is None:
+                found = table.getFromName(local, kind="type")
+                if found:
+                    return found.clsFor(pyXSD)
+                return None
+            if uri == XSD_NS:
+                logger.warning("XsdTypeName Error: %s does not correspond to a class", local)
+                return None
+            found = table.getFromName(local, kind="type", namespace=uri)
+            return found.clsFor(pyXSD) if found else None
         uri = namespace_of(name)
         local = local_name(name)
         if uri == XSD_NS:

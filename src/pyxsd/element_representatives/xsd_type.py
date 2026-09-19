@@ -31,6 +31,19 @@ _CLASS_IN_PROGRESS = object()
 _SELF_CONTENT = object()
 
 
+def _isInlineTypeName(value: Any) -> bool:
+    """Whether *value* is an unprefixed inline-type bookkeeping name.
+
+    Such a name (``parent|tag``) is an identity in the component table,
+    not a QName reference, so it must not be resolved through the
+    schema's default namespace: SUN combined xsd011 binds the XML Schema
+    namespace as its default ``xmlns``, which would otherwise corrupt the
+    name. A prefixed pipe name (a redefine clone such as ``a:c|base``)
+    still resolves through its prefix.
+    """
+    return isinstance(value, str) and "|" in value and ":" not in value.split("|", 1)[0]
+
+
 class XsdType(ElementRepresentative):
     """Base class for SimpleType and ComplexType.
 
@@ -133,7 +146,10 @@ class XsdType(ElementRepresentative):
             )
             rawNames = []
         for rawName in rawNames:
-            superClassName = self.resolveSchemaQName(rawName, parser=pyXSD)
+            if _isInlineTypeName(rawName):
+                superClassName = rawName
+            else:
+                superClassName = self.resolveSchemaQName(rawName, parser=pyXSD)
             if superClassName in (self.name, self.expandedName):
                 # A type deriving from itself would re-enter clsFor
                 # forever; report the cycle and skip the base.
@@ -176,7 +192,10 @@ class XsdType(ElementRepresentative):
         rawName = getattr(self, "listItemType", None)
         if rawName is None:
             return None
-        itemName = self.resolveSchemaQName(rawName, parser=pyXSD)
+        if _isInlineTypeName(rawName):
+            itemName = rawName
+        else:
+            itemName = self.resolveSchemaQName(rawName, parser=pyXSD)
         itemCls = ElementRepresentative.typeFromName(itemName, pyXSD)
         if itemCls is None:
             self._report_ref_error(
@@ -619,7 +638,10 @@ class XsdType(ElementRepresentative):
         inherit ``SchemaBase.__init__``, which takes no value.
         """
         namedMembers = [
-            self.resolveSchemaQName(memberName, parser=pyXSD) for memberName in self.unionSpec
+            memberName
+            if _isInlineTypeName(memberName)
+            else self.resolveSchemaQName(memberName, parser=pyXSD)
+            for memberName in self.unionSpec
         ]
         members = []
         for memberName in namedMembers:
@@ -636,8 +658,13 @@ class XsdType(ElementRepresentative):
                     code="unknown-type",
                 )
                 continue
-            if hasattr(resolved, "_unionMembers"):
-                # A union member that is itself a union: flatten.
+            if vars(resolved).get("_unionMembers"):
+                # A member that is *itself* a union (declares its own
+                # members) flattens. A restriction of a union inherits
+                # ``_unionMembers`` through its MRO but is a distinct
+                # declaration; flattening it would expose the base
+                # union's members as if they were members here, which the
+                # corpus rejects (simple015).
                 members.extend(resolved._unionMembers)
             else:
                 members.append(resolved)
@@ -655,7 +682,7 @@ class XsdType(ElementRepresentative):
                     self.name,
                 )
                 continue
-            if hasattr(resolved, "_unionMembers"):
+            if vars(resolved).get("_unionMembers"):
                 members.extend(resolved._unionMembers)
             else:
                 members.append(resolved)

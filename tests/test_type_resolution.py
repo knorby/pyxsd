@@ -432,3 +432,50 @@ class TestSchemaBlockDefault:
         )
         parser = _parse(schema, self._instance("De"), tmp_path)
         assert "xsi-type" in _codes(parser)
+
+
+class TestAnonymousInlineTypePseudoNames:
+    """An inline type's generated ``parent|tag`` name resolves anywhere a
+    type reference can point.
+
+    The name embeds the declaring chain and must survive QName resolution
+    unchanged even when the schema has a default namespace in scope (SUN
+    combined xsd011 uses the XML Schema namespace as its default xmlns),
+    and it is looked up without a namespace filter (Saxon simple016
+    restricts a union declared as a nested inline type).
+    """
+
+    def test_nested_inline_restriction_resolves_under_default_xsd_namespace(self, tmp_path):
+        schema = (
+            f'<schema xmlns="{XSD}" xmlns:foo="foo" targetNamespace="foo" '
+            'elementFormDefault="qualified">'
+            '<element name="root"><complexType><sequence>'
+            '<element ref="foo:nillable2"/>'
+            "</sequence></complexType></element>"
+            '<element name="nillable2" nillable="true">'
+            "<simpleType><restriction>"
+            '<simpleType><list itemType="int"/></simpleType>'
+            '<minLength value="2"/>'
+            "</restriction></simpleType></element>"
+            "</schema>"
+        )
+        parser = _parse(
+            schema, '<root xmlns="foo"><nillable2>51 32 59</nillable2></root>', tmp_path
+        )
+        assert "unknown-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+        assert not _errors(parser), [i.format() for i in parser.report.issues]
+
+    def test_inline_union_under_restriction_resolves(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD}" xmlns:s="urn:u" targetNamespace="urn:u" '
+            'elementFormDefault="qualified">'
+            '<xs:simpleType name="dt"><xs:restriction>'
+            '<xs:simpleType><xs:union memberTypes="xs:date xs:dateTime"/></xs:simpleType>'
+            '<xs:pattern value=".*Z"/>'
+            "</xs:restriction></xs:simpleType>"
+            '<xs:element name="root" type="s:dt"/>'
+            "</xs:schema>"
+        )
+        parser = _parse(schema, '<root xmlns="urn:u">2020-01-01T00:00:00Z</root>', tmp_path)
+        assert "unknown-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+        assert not _errors(parser), [i.format() for i in parser.report.issues]
