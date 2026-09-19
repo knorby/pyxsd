@@ -2999,6 +2999,86 @@ class TestAttributeInheritable:
         assert "attribute-restriction" not in _schema_codes(report)
 
 
+class TestAttributeTypeDerivation:
+    """An attribute use's type must derive from its base's (particlesZ013/Z021)."""
+
+    def test_restriction_to_unrelated_union_type_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='u'><xsd:union memberTypes='xsd:float xsd:integer'/></xsd:simpleType>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:integer'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='u'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" in _schema_codes(report)
+
+    def test_restriction_to_a_narrower_type_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:string'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:token'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" not in _schema_codes(report)
+
+
+class TestSubstitutionMemberUnionDerivation:
+    """A substitution member's type must derive from the head's
+    (particlesZ014/Z021; a union is not derived from its members)."""
+
+    def test_union_member_over_atomic_head_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='u'><xsd:union memberTypes='xsd:float xsd:integer'/></xsd:simpleType>"
+            "<xsd:element name='e1' type='xsd:integer'/>"
+            "<xsd:element name='e2' substitutionGroup='e1' type='u'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" in _schema_codes(report)
+
+    def test_derived_member_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='d'><xsd:restriction base='xsd:integer'/></xsd:simpleType>"
+            "<xsd:element name='e1' type='xsd:integer'/>"
+            "<xsd:element name='e2' substitutionGroup='e1' type='d'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
+    def test_restriction_with_unrelated_inline_type_rejected(self, parse_schema):
+        """particlesZ018: an inline list-of-int is not derived from the
+        base's ``xs:decimal`` simple content."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:decimal'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:restriction base='b'><xsd:simpleType>"
+            "<xsd:list itemType='xsd:int'/></xsd:simpleType>"
+            "</xsd:restriction></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_with_derived_inline_type_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:decimal'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:restriction base='b'><xsd:simpleType>"
+            "<xsd:restriction base='xsd:decimal'/></xsd:simpleType>"
+            "</xsd:restriction></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+
 class TestAttributeWildcardRestriction:
     """Attribute wildcard/use derivation on a restriction (ctO004/ctO005)."""
 

@@ -197,6 +197,26 @@ class _GroupRedefineDeclaration:
         return Integer if isInteger and not isBoolean else cls
 
 
+def _sameIntegerFamily(first: Any, second: Any) -> bool:
+    """Whether two classes are distinct types of the ``xs:integer`` family.
+
+    XSD derives the whole family (``integer``/``long``/``int``/...) by
+    restriction along one chain, but the Python storage lattice maps them
+    to sibling ``int`` subclasses, so ``issubclass`` sees an unrelated
+    pair. ``xs:boolean`` is stored under ``Integer`` too but is not in the
+    chain.
+    """
+    try:
+        return (
+            issubclass(first, Integer)
+            and issubclass(second, Integer)
+            and not issubclass(first, Boolean)
+            and not issubclass(second, Boolean)
+        )
+    except TypeError:
+        return False
+
+
 def _mixedIsTrue(value: str) -> bool:
     """The xs:boolean reading of a lexical ``mixed`` value."""
     return value.strip().lower() in ("true", "1")
@@ -1796,6 +1816,24 @@ class PyXSD:
                         f"'{getattr(base_er, 'name', '?')}'",
                         code="attribute-restriction",
                     )
+                base_type_cls = self._declaredTypeClass(base_attr)
+                derived_type_cls = self._declaredTypeClass(derived_attr)
+                if (
+                    base_type_cls is not None
+                    and derived_type_cls is not None
+                    and derived_type_cls is not base_type_cls
+                    and not _sameIntegerFamily(derived_type_cls, base_type_cls)
+                    and is_valid_xsi_type(derived_type_cls, base_type_cls) == "not-derived"
+                ):
+                    # Clause 2.1.2: a redeclared use's type must be validly
+                    # derived from the base use's (particlesZ013/Z021).
+                    self.report.add_error(
+                        f"attribute-use restriction: attribute '{name}' of type "
+                        f"'{getattr(er, 'name', '?')}' has a type that is not "
+                        f"validly derived from the declared type of its base "
+                        f"type '{getattr(base_er, 'name', '?')}'",
+                        code="attribute-restriction",
+                    )
             return
         for name, derived_attr in own_uses.items():
             base_attr = base_uses.get(name)
@@ -3174,12 +3212,19 @@ class PyXSD:
                     head_is_simple_ur = headCls is AnySimpleType
                     member_is_simple_ur = memberCls is AnySimpleType
                     member_is_complex = getattr(memberCls, "_contentKind_", None) == "complex"
+                    member_is_union = bool(vars(memberCls).get("_unionMembers"))
                     head_admits_all = headCls is AnyType
                     head_exempt = head_admits_all or head_is_simple_ur
                     mismatch = (strict_heads and not head_exempt) or (
                         not head_admits_all
                         and (member_is_simple_ur or (head_is_simple_ur and member_is_complex))
                     )
+                    # A union is not validly derived from any of its
+                    # members, so a union-typed member under an ordinary
+                    # single head violates the derivation clause
+                    # (particlesZ014/Z021).
+                    if not head_admits_all and not head_is_simple_ur and member_is_union:
+                        mismatch = True
                     if mismatch:
                         self.report.add_error(
                             f"element '{member.name}' has a type that is not validly "
@@ -3381,7 +3426,37 @@ class PyXSD:
                                 element=er.name,
                                 phase="schema",
                             )
+                        elif has_inline:
+                            inline_cls = self._simpleContentInlineClass(restriction)
+                            base_content = getattr(base_cls, "_simpleContentType_", None)
+                            if (
+                                inline_cls is not None
+                                and isinstance(base_content, type)
+                                and is_valid_xsi_type(inline_cls, base_content) == "not-derived"
+                            ):
+                                # The inline type constrains the base's
+                                # simple content, so it must be validly
+                                # derived from it (particlesZ018: a list of
+                                # int is not derived from xs:decimal).
+                                self.report.add_error(
+                                    f"the simpleContent restriction of type "
+                                    f"'{er.name}' has an inline type that is not "
+                                    "validly derived from the base's simple content",
+                                    code="invalid-base",
+                                    element=er.name,
+                                    phase="schema",
+                                )
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _simpleContentInlineClass(self, restriction: Any) -> Any:
+        """The generated class of a restriction's inline ``simpleType``."""
+        for child in getattr(restriction, "processedChildren", ()) or ():
+            if child is not None and type(child).__name__ == "SimpleType":
+                try:
+                    return child.clsFor(self)
+                except (AttributeError, TypeError):
+                    return None
+        return None
 
     def _checkContentKindDerivation(self, schemaER: Any) -> None:
         """Reports a content kind derived from an inadmissible base kind.
