@@ -79,6 +79,16 @@ class Attribute(ElementRepresentative):
         container = self.getContainingType()
         attributes = getattr(container, "attributes", None)
         if attributes is not None:
+            if not getattr(self, "isAttributeRef", False) and self.name in attributes:
+                # Two direct declarations with one expanded name in the
+                # same complex type or attributeGroup are duplicate
+                # attribute uses; the container reports them once its
+                # declaration legality is checked (attgD009).
+                duplicateNames = getattr(container, "_duplicateAttributeNames_", None)
+                if duplicateNames is None:
+                    duplicateNames = []
+                    container._duplicateAttributeNames_ = duplicateNames
+                duplicateNames.append(self.name)
             attributes[self.name] = self
         else:
             self.misplacement = (

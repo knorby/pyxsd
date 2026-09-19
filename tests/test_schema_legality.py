@@ -2064,3 +2064,71 @@ class TestDuplicateAttributeUses:
             "</xsd:schema>"
         )
         assert "duplicate-attribute" not in _schema_codes(report)
+
+
+class TestAttributeGroupDeclarationLegality:
+    """AttributeGroup grammar and reference legality (attgB006, attgC001-011, attgD).
+
+    A global ``attributeGroup`` is a definition carrying ``name``; a
+    ``ref`` names a global attributeGroup and must not carry members.
+    """
+
+    XSD = "xmlns:xsd='http://www.w3.org/2001/XMLSchema'"
+
+    def test_top_level_reference_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attributeGroup name='abc'><xsd:attribute name='att1' type='xsd:int'/>"
+            "</xsd:attributeGroup>"
+            "<xsd:attributeGroup ref='abc'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_empty_ref_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attributeGroup name='abc'><xsd:attributeGroup ref=''/>"
+            "<xsd:attribute name='att' type='xsd:int'/></xsd:attributeGroup>"
+            "<xsd:attributeGroup name='g'><xsd:attribute name='foo' type='xsd:int'/>"
+            "<xsd:attribute name='bar'/></xsd:attributeGroup></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_reference_with_member_child_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attributeGroup name='attG'><xsd:attribute name='att1' type='xsd:int'/>"
+            "</xsd:attributeGroup>"
+            "<xsd:complexType name='t'><xsd:attributeGroup ref='attG'>"
+            "<xsd:attribute name='gg'/></xsd:attributeGroup></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_reference_to_global_attribute_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attribute name='foo' type='xsd:string'/>"
+            "<xsd:attributeGroup name='ext'><xsd:attributeGroup ref='foo'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "unknown-attributeGroup" in _schema_codes(report)
+
+    def test_group_name_must_be_ncname(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attribute name='att1' type='xsd:string'/>"
+            "<xsd:attributeGroup name='0' id='abc'><xsd:attribute name='att' type='xsd:int'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_duplicate_attribute_in_group_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attributeGroup name='attG' id='abc'>"
+            "<xsd:attribute name='att1' type='xsd:int'/>"
+            "<xsd:attribute name='att1' type='xsd:string'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)

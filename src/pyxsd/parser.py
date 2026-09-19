@@ -4246,6 +4246,7 @@ class PyXSD:
                 continue
             declared: list[tuple[str, Any]] = []
             hasSelfReference = False
+            selfRefCount = 0
             skip = False
             for child in list(declaration):
                 if not isinstance(child.tag, str):
@@ -4264,11 +4265,20 @@ class PyXSD:
                     ref = child.get("ref")
                     if ref is not None and _qnameLocal(ref) == name:
                         hasSelfReference = True
+                        selfRefCount += 1
                     else:
                         # A reference to another group hides its
                         # attributes; the content cannot be compared.
                         skip = True
                         break
+            if selfRefCount > 1:
+                self.report.add_error(
+                    f"attributeGroup '{name}' references itself {selfRefCount} "
+                    "times; the original attributes would be contributed more "
+                    "than once",
+                    code="compose-invalid",
+                    phase="schema",
+                )
             if skip:
                 continue
             if hasSelfReference:

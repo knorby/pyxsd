@@ -511,10 +511,11 @@ class XsdType(ElementRepresentative):
 
         Direct declarations win over those pulled in from a nested
         ``attributeGroup`` reference. Circular references are skipped
-        rather than recursed into. Every visited group's wildcards are
-        registered on the referring type, so an ``xs:anyAttribute``
-        inside a group definition reaches the type's effective
-        attribute wildcard.
+        rather than recursed into: XSD 1.1 allows a circular attribute
+        group definition (bug 15795), so the cycle is not an error.
+        Every visited group's wildcards are registered on the referring
+        type, so an ``xs:anyAttribute`` inside a group definition reaches
+        the type's effective attribute wildcard.
         """
         for spec in getattr(group, "wildcardElementSpecs", ()):
             register_wildcard(self, spec)
@@ -535,11 +536,8 @@ class XsdType(ElementRepresentative):
                 continue
             nestedKey = getattr(nested, "expandedName", None) or nestedName
             if nestedKey in visited:
-                message = (
-                    f"circular attributeGroup reference chain involving "
-                    f"'{nestedName}' (reached from '{self.name}')"
-                )
-                self._report_ref_error(message, code="circular-attributeGroup")
+                # A reference back into the current chain closes a cycle;
+                # XSD 1.1 accepts it (bug 15795, attgC010/C020/C031/D015).
                 continue
             for spec in getattr(nested, "wildcardElementSpecs", ()):
                 register_wildcard(self, spec)

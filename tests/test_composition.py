@@ -299,6 +299,22 @@ class TestCompositionCorrectness:
         assert not parser.report.has_errors
         assert parser.schemaRootInstance._attribs_["a"] == "5"
 
+    def test_circular_attribute_group_is_accepted(self):
+        # attgC010: XSD 1.1 allows circular attribute group definitions.
+        parser = _parse_text(
+            f"<xs:schema {XS}>"
+            '<xs:complexType name="test"><xs:attributeGroup ref="test"/></xs:complexType>'
+            '<xs:attributeGroup name="test">'
+            '<xs:attributeGroup ref="test"/>'
+            '<xs:attribute name="foo" type="xs:int"/>'
+            "</xs:attributeGroup>"
+            '<xs:element name="T" type="test"/>'
+            "</xs:schema>",
+            '<T foo="3"/>',
+        )
+        assert not parser.report.has_errors
+        assert parser.schemaRootInstance._attribs_["foo"] == "3"
+
     def test_import_without_schema_location_is_allowed(self):
         parser = _parse_text(
             f"<xs:schema {XS}>"
