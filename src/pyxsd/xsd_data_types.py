@@ -365,6 +365,11 @@ class QName(_PatternString):
             prefix, local = text.split(":", 1)
         else:
             prefix, local = "", text
+        if prefix == "xmlns":
+            # ``xmlns`` is a namespace-declaration marker, never a bound
+            # prefix, so ``xmlns:xsi`` is not a QName (MS-DataTypes
+            # QName009).
+            raise TypeError(f"Not a valid {cls.name}: {text!r}")
         bindings = _QNAME_CONTEXT.get()
         instance._resolved_ = bindings is not None
         instance._uri_ = bindings.get(prefix) if bindings is not None else None
@@ -512,6 +517,31 @@ _MONTH_DAY_MAX = {
     11: 30,
     12: 31,
 }
+
+
+def _is_leap_year(year: int) -> bool:
+    """Proleptic-Gregorian leap year, valid for XSD's extended years."""
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+
+def _days_in_month(year: int, month: int) -> int:
+    """The number of days in *month* of (possibly extended) *year*."""
+    if month == 2:
+        return 29 if _is_leap_year(year) else 28
+    return _MONTH_DAY_MAX.get(month, 31)
+
+
+def _require_calendar_day(cls_name: str, text: str, year: int, month: int, day: int) -> None:
+    """Rejects a day number that does not exist in the month/year.
+
+    The lexical grammars admit day 31 in every month; the value space
+    holds only real calendar dates (``1999-02-29`` and ``1900-02-29`` are
+    not dates, but ``2000-02-29`` is).
+    """
+    if day > _days_in_month(year, month):
+        raise TypeError(f"Not a valid {cls_name}: {text!r}")
+
+
 _HOUR = r"(?:[01][0-9]|2[0-3])"
 _MINUTE = r"(?:[0-5][0-9])"
 _SECOND = r"(?:[0-5][0-9](?:\.[0-9]+)?)"
@@ -524,6 +554,20 @@ class DateTime(_PatternString):
 
     name = "dateTime"
     _pattern = re.compile(rf"{_YEAR}-{_MONTH}-{_DAY}T{_TIME_BODY}{_TIMEZONE}")
+
+    def __new__(cls, val: str) -> Self:
+        instance = super().__new__(cls, val)
+        text = str(instance)
+        match = _TEMPORAL_DATETIME.match(text)
+        if match is not None:
+            _require_calendar_day(
+                cls.name,
+                text,
+                int(match.group(1)),
+                int(match.group(2)),
+                int(match.group(3)),
+            )
+        return instance
 
 
 class DateTimeStamp(DateTime):
@@ -546,6 +590,20 @@ class Date(_PatternString):
 
     name = "date"
     _pattern = re.compile(rf"{_YEAR}-{_MONTH}-{_DAY}{_TIMEZONE}")
+
+    def __new__(cls, val: str) -> Self:
+        instance = super().__new__(cls, val)
+        text = str(instance)
+        match = _TEMPORAL_DATE.match(text)
+        if match is not None:
+            _require_calendar_day(
+                cls.name,
+                text,
+                int(match.group(1)),
+                int(match.group(2)),
+                int(match.group(3)),
+            )
+        return instance
 
 
 class Time(_PatternString):
@@ -570,10 +628,15 @@ class GYearMonth(_PatternString):
 
 
 class GMonth(_PatternString):
-    """``xs:gMonth``: e.g. ``--08``."""
+    """``xs:gMonth``: e.g. ``--08`` or the legacy ``--08--``.
+
+    XSD 1.1 keeps the XSD 1.0 spelling ``--MM--`` (a redundant trailing
+    ``--``) in the lexical space alongside ``--MM`` (MS-DataTypes
+    gMonth002/004).
+    """
 
     name = "gMonth"
-    _pattern = re.compile(rf"--{_MONTH}{_TIMEZONE}")
+    _pattern = re.compile(rf"--{_MONTH}(?:--)?{_TIMEZONE}")
 
 
 class GMonthDay(_PatternString):
@@ -1067,7 +1130,7 @@ def _date_key(text: str) -> int | tuple[str, str]:
 
 _TEMPORAL_GYEAR = re.compile(r"^(-?[0-9]{4,})(Z|[+-][0-9]{2}:[0-9]{2})?$")
 _TEMPORAL_GYEARMONTH = re.compile(r"^(-?[0-9]{4,})-([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
-_TEMPORAL_GMONTH = re.compile(r"^--([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
+_TEMPORAL_GMONTH = re.compile(r"^--([0-9]{2})(?:--)?(Z|[+-][0-9]{2}:[0-9]{2})?$")
 _TEMPORAL_GMONTHDAY = re.compile(r"^--([0-9]{2})-([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
 _TEMPORAL_GDAY = re.compile(r"^---([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
 
