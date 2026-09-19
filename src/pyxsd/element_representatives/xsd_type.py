@@ -200,7 +200,7 @@ class XsdType(ElementRepresentative):
                 derivation = "extension"
             elif childName == "Restriction":
                 derivation = derivation or "restriction"
-            elif childName == "ComplexContent":
+            elif childName in ("ComplexContent", "SimpleContent"):
                 for grandchild in getattr(child, "processedChildren", []):
                     grandName = grandchild.__class__.__name__ if grandchild is not None else ""
                     if grandName == "Extension":

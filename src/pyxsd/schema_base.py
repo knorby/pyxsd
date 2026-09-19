@@ -30,6 +30,23 @@ def _mode_for(cls) -> BindingPolicy:
     return getattr(cls, "_parseMode_", ParseModes.STRICT)
 
 
+def _is_substitution_head(descriptor: Any) -> bool:
+    """Whether *descriptor* may head a substitution group.
+
+    Only a *global* element declaration heads a substitution group; a
+    particle that references one does so through ``ref`` (which the ER
+    run resolves either to the global declaration or to a reference
+    site). A local declaration that happens to share the head's name
+    does not head anything.
+    """
+    if descriptor is None:
+        return False
+    if getattr(descriptor, "isElementRef", False):
+        return True
+    is_global = getattr(descriptor, "isGlobalDeclaration", None)
+    return bool(is_global()) if callable(is_global) else False
+
+
 def _global_declaration(components, local: str, kind: str, uri: str | None):
     """Returns the *global* declaration named ``local`` in ``uri``.
 
@@ -874,6 +891,11 @@ class SchemaBase:
         memberToHeads: dict[str, set[str]] = {}
         for headName, members in substitutionGroups.items():
             headDescriptor = declaredByName.get(headName) or declaredByExpanded.get(headName)
+            if headDescriptor is not None and not _is_substitution_head(headDescriptor):
+                # A *local* declaration that shares a global head's name is
+                # not that head, so its members are not admissible where the
+                # local declaration is used (MS elemZ021b/f/g, elemZ023).
+                continue
             headMatch = (
                 cls._instance_name_of(headDescriptor) if headDescriptor is not None else headName
             )
@@ -1639,10 +1661,18 @@ class SchemaBase:
         ``block`` attribute are reported and rejected.
         """
         subElementName = cls._node_name(subElement)
-        declared = {descriptor.name: descriptor for descriptor in elemDescriptors}
-        declaredExpanded = {
-            getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
-        }
+        declared: dict[Any, Any] = {}
+        declaredExpanded: dict[Any, Any] = {}
+        for descriptor in elemDescriptors:
+            if not _is_substitution_head(descriptor):
+                # A *local* declaration that merely shares a global head's
+                # name is not that head, so its substitution-group members
+                # are not admissible where the local declaration is used
+                # (MS elemZ021b/f/g, elemZ023). Only a global declaration
+                # or a reference to one can head a substitution.
+                continue
+            declared[descriptor.name] = descriptor
+            declaredExpanded[getattr(descriptor, "expandedName", None)] = descriptor
         substitutionGroups = cls._schemaSubstitutionGroups(elemDescriptors)
         if not substitutionGroups:
             return False
