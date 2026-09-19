@@ -2183,6 +2183,52 @@ class TestUnloadedNamespaceTypeReference:
         assert "import-unresolved" not in _schema_codes(report)
         assert "unknown-type" not in _schema_codes(report)
 
+    def test_unqualified_type_naming_a_type_in_target_namespace_is_reported(self, parse_schema):
+        """addB009/xsd015.e: an unprefixed type with no default namespace
+        names no namespace; a same-named type in the target namespace is
+        the likely intent, so the reference is reported."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:books' xmlns:x='urn:books'>"
+            "<xsd:complexType name='CatalogData'><xsd:sequence/></xsd:complexType>"
+            "<xsd:element name='root' type='CatalogData'/></xsd:schema>"
+        )
+        assert "unknown-type" in _schema_codes(report)
+
+    def test_type_in_xsd_namespace_that_is_not_a_builtin_is_reported(self, parse_schema):
+        """xsd015.e/xsd016.e: a name in the XML Schema namespace must be a
+        built-in datatype; an unknown one is a bad type reference."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='xsd:NoSuchBuiltin'/></xsd:schema>"
+        )
+        assert "unknown-type" in _schema_codes(report)
+
+    def test_type_in_xsd_namespace_that_is_a_builtin_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='xsd:string'/></xsd:schema>"
+        )
+        assert "unknown-type" not in _schema_codes(report)
+
+    def test_unqualified_type_resolving_in_no_namespace_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='T'><xsd:sequence/></xsd:complexType>"
+            "<xsd:element name='root' type='T'/></xsd:schema>"
+        )
+        assert "unknown-type" not in _schema_codes(report)
+
+    def test_unqualified_unknown_type_without_candidate_is_tolerated(self, parse_schema):
+        """The historical tolerance stays for a no-namespace reference
+        with no same-named candidate anywhere (elemM002 false-accept)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:x' xmlns:x='urn:x'>"
+            "<xsd:element name='root' type='NoSuchType'/></xsd:schema>"
+        )
+        assert "unknown-type" not in _schema_codes(report)
+
 
 class TestDuplicateAttributeUses:
     """Duplicate attribute uses in one complex type (attQ009-013, attQ017).

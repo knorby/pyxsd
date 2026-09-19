@@ -3188,7 +3188,33 @@ class PyXSD:
                 if raw is not None and "|" not in raw:
                     resolved = er.resolvedTypeName()
                     namespace = namespace_of(resolved) if isinstance(resolved, str) else None
-                    if namespace is not None and namespace not in loaded:
+                    if namespace is None:
+                        # A reference that resolves into no namespace is
+                        # normally tolerated (pyxsd does not yet resolve
+                        # every unprefixed reference in the XSD 1.1
+                        # feature families). Report it only when a global
+                        # declaration of the same local name exists in
+                        # another loaded namespace: the author meant that
+                        # declaration but wrote it unqualified (addB009,
+                        # xsd015.e, xsd016.e). Without an actual candidate
+                        # the reference stays a known false-accept
+                        # (elemM002).
+                        # A component spliced in from an included or
+                        # redefined (chameleon) document is exempt: its
+                        # unprefixed references belong to the adopted
+                        # namespace and are resolved by the chameleon pass,
+                        # not re-qualified here.
+                        if (
+                            isinstance(resolved, str)
+                            and id(er.xsdElement) not in self._composedElementIds
+                        ):
+                            self._reportUnqualifiedTypeCandidate(er, resolved)
+                    elif namespace not in loaded or namespace == XSD_NS:
+                        # The XML Schema namespace is always 'loaded' for
+                        # the built-in types, so a reference into it that
+                        # names no built-in is reported too (xsd015.e,
+                        # xsd016.e, where a default ``xmlns`` of XSD made
+                        # an unprefixed name resolve into XSD).
                         try:
                             cls = er.getType()
                         except Exception:  # pragma: no cover - defensive
@@ -3203,6 +3229,44 @@ class PyXSD:
                                 phase="schema",
                             )
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _reportUnqualifiedTypeCandidate(self, er: Any, resolved: str) -> None:
+        """Reports an unqualified type reference that likely names a candidate.
+
+        A reference that resolves into no namespace is reported only when a
+        global type of the same local name is declared in a loaded, non-
+        reserved namespace and no no-namespace type of that name exists.
+        This keeps the historical tolerance for a genuinely unknown
+        unprefixed reference (see ``_checkTypeReferences``) while catching
+        the real error of writing a type declared in the target namespace
+        without its prefix.
+        """
+        local = _qnameLocal(resolved)
+        if not local:
+            return
+        loaded = self._loadedNamespaces()
+        reserved = {XSD_NS, XSI_NS, XML_NS, XLINK_NS}
+        candidate: str | None = None
+        has_no_namespace = False
+        for entries in self.components.values():
+            for entry in entries:
+                if componentKind(entry) != "type" or getattr(entry, "name", None) != local:
+                    continue
+                namespace = entry.getNamespace()
+                if namespace is None:
+                    has_no_namespace = True
+                elif namespace not in reserved and namespace in loaded:
+                    candidate = namespace
+        if has_no_namespace or candidate is None:
+            return
+        self.report.add_error(
+            f"the type '{resolved}' of {type(er).__name__.lower()} '{er.name}' is "
+            f"not declared in no namespace; a type named '{local}' is declared in "
+            f"namespace '{candidate}' and must be referenced with its prefix",
+            code="unknown-type",
+            element=er.name,
+            phase="schema",
+        )
 
     def _checkSimpleContentRestrictionBase(self, schemaER: Any) -> None:
         """Reports a simpleContent restriction with an illegal base.
