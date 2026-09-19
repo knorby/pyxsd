@@ -4733,6 +4733,30 @@ class PyXSD:
             binder._bindAnyTypeChild(instance, child, wildcard)
         return instance
 
+    def _anyTypeChildInstance(self, dataTypeClass: Any, elementTag: Any) -> Any:
+        """Builds an instance for an ``xs:anyType``-typed child element.
+
+        ``xs:anyType`` is mixed character data plus a lax ``##any``
+        wildcard over element children, so an anyType-typed child is not a
+        simple type containing child elements: its children bind through
+        the wildcard (MS isDefault072, errC007).
+        """
+        rootName = (
+            elementTag.tag
+            if getattr(self.mode, "namespaces", "legacy") == "strict"
+            else elementTag.tag.split("}")[-1]
+        )
+        instance = dataTypeClass._unvalidated()
+        instance._name_ = rootName
+        instance._attribs_ = {xsi.xsi_attr_key(key): val for key, val in elementTag.attrib.items()}
+        text = elementTag.text
+        instance._value_ = [text] if text else None
+        instance._children_ = []
+        wildcard = WildcardSpec(namespace=NAMESPACE_ANY, process_contents="lax")
+        for child in elementTag:
+            SchemaBase._bindAnyTypeChild(instance, child, wildcard)
+        return instance
+
     def _primitiveRootInstance(self, dataTypeClass: Any, rootElement: Any) -> Any:
         """Builds a typed instance for a root element whose declared
         type is a primitive data type rather than a complex type.

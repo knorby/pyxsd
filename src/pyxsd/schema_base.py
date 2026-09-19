@@ -20,7 +20,13 @@ from pyxsd.derivation import (
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import WildcardSpec
-from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, qname_context, xsd_value_key
+from pyxsd.xsd_data_types import (
+    AnySimpleType,
+    AnyType,
+    XsdDataType,
+    qname_context,
+    xsd_value_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1332,7 +1338,8 @@ class SchemaBase:
 
         # for elements with primitive types
         contentKind = getattr(subElCls, "_contentKind_", None)
-        isComplex = (
+        isAnyType = subElCls is AnyType
+        isComplex = isAnyType or (
             contentKind == "complex"
             if contentKind is not None
             else issubclass(subElCls, SchemaBase)
@@ -1387,11 +1394,27 @@ class SchemaBase:
             return None
 
         forcedText = None
-        if subElement.text is None and not list(subElement):
-            forcedText = descriptor.getDefault()
-            if forcedText is None:
-                forcedText = descriptor.getFixed()
-        subInstance = subElCls.makeInstanceFromTag(subElement, forcedText)
+        if isAnyType:
+            # The ur-type is mixed content plus a lax ``##any`` wildcard;
+            # an anyType-typed child may carry child elements (MS
+            # isDefault072, errC007). Build it through the lax wildcard
+            # instead of the primitive path, which would reject children.
+            parser = getattr(cls, "pyXSD", None)
+            builder = getattr(parser, "_anyTypeChildInstance", None)
+            if builder is not None:
+                subInstance = builder(subElCls, subElement)
+            else:
+                subInstance = subElCls._unvalidated()
+                subInstance._children_ = []
+                subInstance._attribs_ = {
+                    xsi.xsi_attr_key(key): value for key, value in subElement.attrib.items()
+                }
+        else:
+            if subElement.text is None and not list(subElement):
+                forcedText = descriptor.getDefault()
+                if forcedText is None:
+                    forcedText = descriptor.getFixed()
+            subInstance = subElCls.makeInstanceFromTag(subElement, forcedText)
         subInstance._name_ = subElementName
         subInstance._descriptor_ = descriptor
         subInstance._nil_ = nilled

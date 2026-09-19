@@ -521,6 +521,24 @@ def test_anytype_root_validates_a_childs_xsi_type():
     assert "unexpected-element" in errors(parser)
 
 
+ANY_TYPE_CHILD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:element name="root"><xs:complexType><xs:sequence>'
+    '<xs:element name="c" type="xs:anyType"/>'
+    "</xs:sequence></xs:complexType></xs:element>"
+    "</xs:schema>"
+)
+
+
+def test_anytype_typed_child_binds_children_and_attributes():
+    # MS isDefault072, errC007: an anyType-typed child is mixed content
+    # with a lax wildcard, not a simple type containing children.
+    parser = run(ANY_TYPE_CHILD_SCHEMA, '<root><c att="x"><d>1</d></c></root>')
+    assert codes(parser) == []
+    child = parser.schemaRootInstance._children_[0]
+    assert [node._name_ for node in child._children_] == ["d"]
+
+
 # --- controls ---------------------------------------------------------------
 
 WILD_I001_SCHEMA = (
