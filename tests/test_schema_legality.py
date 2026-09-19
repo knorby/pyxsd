@@ -2192,3 +2192,32 @@ class TestIdentityConstraintSymbolSpace:
             mode=ParseModes.NAMESPACED,
         ).report
         assert "declaration-duplicate" in _schema_codes(report)
+
+
+class TestSelfImportRejected:
+    """An import must not name the importing schema's own targetNamespace."""
+
+    def test_self_import_is_rejected(self, tmp_path, monkeypatch):
+        import io
+
+        (tmp_path / "other.xsd").write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t'>"
+            "<xsd:attributeGroup name='car'><xsd:attribute name='age'/></xsd:attributeGroup>"
+            "</xsd:schema>"
+        )
+        schema = (
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t'>"
+            "<xsd:import namespace='urn:t' schemaLocation='other.xsd'/>"
+            "</xsd:schema>"
+        )
+        monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
+        (tmp_path / "s.xsd").write_text(schema)
+        report = PyXSD(
+            io.StringIO("<probe/>"),
+            str(tmp_path / "s.xsd"),
+            xmlFileOutput=False,
+            mode=ParseModes.NAMESPACED,
+        ).report
+        assert "compose-invalid" in _schema_codes(report)

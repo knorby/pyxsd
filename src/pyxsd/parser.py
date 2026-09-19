@@ -3498,6 +3498,14 @@ class PyXSD:
             return None
         mainNS = schemaRoot.get("targetNamespace")
         includedNS = includedRoot.get("targetNamespace")
+        if isImport and checkImportNamespace and mainNS and tag.get("namespace") == mainNS:
+            # XSD 1.0 §4.2.3: an import's namespace must differ from the
+            # importing schema's targetNamespace (attgB015).
+            self.report.add_error(
+                f"the import '{location}' imports the schema's own target namespace '{mainNS}'",
+                code="compose-invalid",
+                phase="schema",
+            )
         if isImport:
             # A schema for the namespace was loaded, so a namespace-only
             # import of the same URI is satisfied rather than unresolved.
