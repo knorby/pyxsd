@@ -977,6 +977,40 @@ class TestComposeInvalid:
         )
         assert "compose-invalid" not in self._error_codes(parser)
 
+    def test_group_redefine_self_reference_min_occurs_zero_is_error(self, tmp_path):
+        # schR3: a redefine's self reference must be exactly 1/1.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:choice><xs:element name="c23" type="xs:int"/>'
+            '<xs:group ref="g" minOccurs="0"/><xs:element name="c24" type="xs:int"/>'
+            "</xs:choice></xs:group>",
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int"/>'
+            '<xs:element name="c22" type="xs:int"/></xs:choice></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_self_reference_max_occurs_two_is_error(self, tmp_path):
+        # schR4.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:choice><xs:element name="c23" type="xs:int"/>'
+            '<xs:group ref="g" maxOccurs="2"/><xs:element name="c24" type="xs:int"/>'
+            "</xs:choice></xs:group>",
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int"/>'
+            '<xs:element name="c22" type="xs:int"/></xs:choice></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_self_reference_one_one_is_valid(self, tmp_path):
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:sequence><xs:group ref="g"/>'
+            '<xs:element name="b" type="xs:string"/></xs:sequence></xs:group>',
+            '<xs:group name="g"><xs:sequence><xs:element name="a" type="xs:string"/>'
+            "</xs:sequence></xs:group>",
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
     def test_group_redefine_superset_without_self_reference_is_error(self, tmp_path):
         # schL8: without a self reference the new model must restrict the
         # original, so adding an element is a violation.

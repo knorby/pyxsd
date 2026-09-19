@@ -4677,13 +4677,35 @@ class PyXSD:
                     phase="schema",
                 )
                 continue
-            if (
-                local in ("simpleType", "complexType")
-                and name
-                and not self._redefineTypeDerivesFromSelf(child, name)
-            ):
+            if local in ("simpleType", "complexType") and name:
+                if not self._redefineTypeDerivesFromSelf(child, name):
+                    self.report.add_error(
+                        f"the redefined {local} '{name}' must derive from the original '{name}'",
+                        code="compose-invalid",
+                        phase="schema",
+                    )
+            elif local == "group" and name:
+                self._checkGroupRedefineSelfReference(child, name)
+
+    def _checkGroupRedefineSelfReference(self, declaration: Any, name: str) -> None:
+        """Reports a redefined group's self reference with a changed occurrence.
+
+        The self reference stands for the original group, whose occurrence
+        the redefining document may not alter: it must be exactly 1/1
+        (schR3 minOccurs=0, schR4 maxOccurs=2).
+        """
+        for element in declaration.iter():
+            if not isinstance(element.tag, str) or element.tag.split("}")[-1] != "group":
+                continue
+            ref = element.get("ref")
+            if not ref or _qnameLocal(ref) != name:
+                continue
+            minimum = element.get("minOccurs")
+            maximum = element.get("maxOccurs")
+            if (minimum is not None and minimum != "1") or (maximum is not None and maximum != "1"):
                 self.report.add_error(
-                    f"the redefined {local} '{name}' must derive from the original '{name}'",
+                    f"the self reference of the redefined group '{name}' must "
+                    "have minOccurs and maxOccurs of exactly 1",
                     code="compose-invalid",
                     phase="schema",
                 )
