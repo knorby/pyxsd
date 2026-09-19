@@ -324,13 +324,17 @@ class XsdType(ElementRepresentative):
             for attrName, attr in self._collectAttributeGroup(
                 group, frozenset({groupKey}), pyXSD
             ).items():
-                if attrName in self.attributes:
-                    logger.debug(
-                        "attribute %r from attributeGroup %r is already "
-                        "declared on %r; keeping the local declaration",
-                        attrName,
-                        groupName,
-                        self.name,
+                if self._attributeCollides(self.attributes.values(), attr, pyXSD):
+                    # A complex type's {attribute uses} must not contain
+                    # two uses with the same expanded name; a group
+                    # contributing a name the type already has (from its
+                    # own declaration or an earlier group) is a schema
+                    # error, not a silent override (attQ009, attQ013).
+                    self._report_ref_error(
+                        f"attribute '{attrName}' is contributed more than "
+                        f"once to type '{self.name}' (from attributeGroup "
+                        f"'{groupName}')",
+                        code="duplicate-attribute",
                     )
                     continue
                 attr.pyXSD = pyXSD
@@ -371,6 +375,26 @@ class XsdType(ElementRepresentative):
             attr.pyXSD = pyXSD
             self.attributes[attrName] = attr
 
+    def _attributeMatchName(self, attr, pyXSD) -> str | None:
+        """The expanded instance name an attribute use matches under.
+
+        Two attribute uses collide only when their qualified names match;
+        two local declarations with one local name in different
+        namespaces (or with different forms) are distinct (attQ019).
+        A reference site that is not resolved yet contributes its
+        bookkeeping name, so an unresolved ref never collides with a
+        local declaration here.
+        """
+        name = attr.instanceName(is_attribute=True, parser=pyXSD)
+        return name if name is not None else getattr(attr, "name", None)
+
+    def _attributeCollides(self, existing, candidate, pyXSD) -> bool:
+        """Whether *candidate* reuses an expanded name already present."""
+        key = self._attributeMatchName(candidate, pyXSD)
+        if key is None:
+            return False
+        return any(self._attributeMatchName(attr, pyXSD) == key for attr in existing)
+
     def resolveAttributeRefs(self, pyXSD):
         """Resolves attribute reference sites to global declarations.
 
@@ -379,12 +403,25 @@ class XsdType(ElementRepresentative):
         adopt the declaration's name so instance matching and Python
         access use the real attribute name. Unresolvable references are
         reported and dropped rather than crashing class construction.
+        A resolved use whose expanded name is already present is a
+        duplicate attribute use (attQ011, attQ012).
         """
         resolved = {}
+        match_names: dict[str, object] = {}
         for attr in self.attributes.values():
             effective = self._resolveAttributeRef(attr, pyXSD)
             if effective is None:
                 continue
+            key = self._attributeMatchName(effective, pyXSD)
+            if key is not None and key in match_names:
+                self._report_ref_error(
+                    f"attribute '{effective.name}' is contributed more than "
+                    f"once to type '{self.name}'",
+                    code="duplicate-attribute",
+                )
+                continue
+            if key is not None:
+                match_names[key] = effective
             resolved[effective.name] = effective
         self.attributes = resolved
 

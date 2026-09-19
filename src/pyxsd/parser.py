@@ -1573,6 +1573,30 @@ class PyXSD:
         for reason in upa_violations(model, self._substitution_head_lookup(er)):
             self.report.add_error(reason, code="upa")
 
+    def _fixedValuesEqual(self, base_attr: Any, derived_attr: Any) -> bool:
+        """Whether two attribute uses carry equal ``fixed`` values.
+
+        Returns ``True`` when the base use has no ``fixed``. Lexically
+        different spellings that denote one XSD value compare equal, so
+        a list attribute's ``fixed`` may be re-spaced and a ``token``
+        collapsed (addB183); comparison falls back to the lexical form
+        when the attribute's type cannot be resolved.
+        """
+        base_fixed = base_attr.getFixed()
+        if base_fixed is None:
+            return True
+        derived_fixed = derived_attr.getFixed()
+        if derived_fixed is None:
+            return False
+        if base_fixed == derived_fixed:
+            return True
+        try:
+            base_value = base_attr.getType()(base_fixed)
+            derived_value = derived_attr.getType()(derived_fixed)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        return xsd_value_key(base_value) == xsd_value_key(derived_value)
+
     def _reportAttributeUseDerivation(self, er: Any) -> None:
         """Reports attribute-use derivation violations on a complex type.
 
@@ -1615,14 +1639,25 @@ class PyXSD:
         if derivation == "restriction":
             for name, derived_attr in own_uses.items():
                 base_attr = base_uses.get(name)
-                if base_attr is None or not self._attributeUseIsRequired(base_attr):
+                if base_attr is None:
                     continue
-                if not self._attributeUseIsRequired(derived_attr):
+                if self._attributeUseIsRequired(base_attr) and not self._attributeUseIsRequired(
+                    derived_attr
+                ):
                     self.report.add_error(
                         f"attribute-use restriction: type "
                         f"'{getattr(er, 'name', '?')}' redeclares the required "
                         f"attribute '{name}' of its base type "
                         f"'{getattr(base_er, 'name', '?')}' as optional",
+                        code="attribute-restriction",
+                    )
+                base_fixed = base_attr.getFixed()
+                if not self._fixedValuesEqual(base_attr, derived_attr):
+                    self.report.add_error(
+                        f"attribute-use restriction: attribute '{name}' of type "
+                        f"'{getattr(er, 'name', '?')}' does not preserve the fixed "
+                        f"value '{base_fixed}' of its base type "
+                        f"'{getattr(base_er, 'name', '?')}'",
                         code="attribute-restriction",
                     )
             return
@@ -1631,7 +1666,7 @@ class PyXSD:
             if base_attr is None:
                 continue
             base_fixed = base_attr.getFixed()
-            if base_fixed is not None and derived_attr.getFixed() != base_fixed:
+            if not self._fixedValuesEqual(base_attr, derived_attr):
                 self.report.add_error(
                     f"attribute-use extension: attribute '{name}' of type "
                     f"'{getattr(er, 'name', '?')}' changes the fixed value "

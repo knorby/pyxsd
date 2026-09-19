@@ -1994,3 +1994,73 @@ class TestUnloadedNamespaceTypeReference:
         )
         assert "import-unresolved" not in _schema_codes(report)
         assert "unknown-type" not in _schema_codes(report)
+
+
+class TestDuplicateAttributeUses:
+    """Duplicate attribute uses in one complex type (attQ009-013, attQ017).
+
+    An attribute use contributed twice to a complex type — by a local
+    declaration and a referenced attribute group, or by two groups — is
+    a schema error, whether the collision is on a direct name or only
+    appears once a ``ref`` resolves to its global declaration.
+    """
+
+    def test_local_and_group_use_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t' attributeFormDefault='qualified'>"
+            "<xsd:attributeGroup name='attG'>"
+            "<xsd:attribute name='aga1' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:complexType name='attRef'>"
+            "<xsd:attributeGroup ref='t:attG'/>"
+            "<xsd:attribute name='aga1'/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)
+
+    def test_two_group_uses_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t' attributeFormDefault='qualified'>"
+            "<xsd:attributeGroup name='g1'>"
+            "<xsd:attribute name='aga1' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:attributeGroup name='g2'>"
+            "<xsd:attribute name='aga1' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:complexType name='attRef'>"
+            "<xsd:attributeGroup ref='t:g1'/>"
+            "<xsd:attributeGroup ref='t:g2'/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)
+
+    def test_global_ref_and_group_local_duplicate(self, parse_schema):
+        # attQ011/012: a ``ref`` to a global attribute collides with a
+        # same-named local declaration pulled in through a nested group.
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t' attributeFormDefault='qualified'>"
+            "<xsd:attribute name='foo'/>"
+            "<xsd:attributeGroup name='red'><xsd:attribute name='foo'/></xsd:attributeGroup>"
+            "<xsd:attributeGroup name='attG'>"
+            "<xsd:attribute ref='t:foo'/>"
+            "<xsd:attributeGroup ref='t:red'/></xsd:attributeGroup>"
+            "<xsd:complexType name='attRef'>"
+            "<xsd:attributeGroup ref='t:attG'/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)
+
+    def test_distinct_groups_are_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t' attributeFormDefault='qualified'>"
+            "<xsd:attributeGroup name='g1'>"
+            "<xsd:attribute name='a1' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:attributeGroup name='g2'>"
+            "<xsd:attribute name='a2' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:complexType name='attRef'>"
+            "<xsd:attributeGroup ref='t:g1'/>"
+            "<xsd:attributeGroup ref='t:g2'/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "duplicate-attribute" not in _schema_codes(report)

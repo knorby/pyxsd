@@ -269,8 +269,10 @@ class TestXsdTypeEdges:
         assert str(member) == str(7)
         assert hash(member) == hash(7)
 
-    def test_attribute_group_conflict_keeps_local(self, tmp_path, caplog):
-        caplog.set_level(logging.DEBUG)
+    def test_attribute_group_conflict_is_reported(self, tmp_path):
+        # A local attribute and a group-contributed attribute of the
+        # same expanded name are duplicate attribute uses (attQ009); the
+        # local declaration does not silently win.
         schema = f"""\
 <xs:schema {XS}>
   <xs:attributeGroup name="shared">
@@ -286,8 +288,7 @@ class TestXsdTypeEdges:
 </xs:schema>
 """
         parser = _parse(schema, '<doc color="5"/>', tmp_path)
-        assert not parser.report.has_errors
-        assert any("already declared" in record.getMessage() for record in caplog.records)
+        assert any(issue.code == "duplicate-attribute" for issue in parser.report.issues)
 
     def test_repeated_element_names_get_disambiguated(self, tmp_path):
         schema = f"""\
