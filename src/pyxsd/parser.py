@@ -4044,6 +4044,7 @@ class PyXSD:
         attributes inside the block that name the redefined component
         are rewritten to the renamed original.
         """
+        self._checkRedefineStructure(redefineTag)
         location = redefineTag.get("schemaLocation")
         if not location:
             self.report.add_error(
@@ -4456,6 +4457,68 @@ class PyXSD:
             )
         for key in seen:
             self._redefineOrigins[key] = current
+
+    def _checkRedefineStructure(self, redefineTag: Any) -> None:
+        """Reports redefine-block shape violations the ER walk cannot see.
+
+        XSD 1.0 §4.2.4: a redefine may modify only the four composable
+        component kinds (``complexType``, ``simpleType``, ``group``,
+        ``attributeGroup``); an ``element``, ``attribute`` or
+        ``notation`` child is illegal (SUN xsd003-1.e/xsd003-2.e). A
+        redefined type must derive from the original, so its derivation's
+        ``base`` must name the redefined type itself (schJ2/schK2/schK3).
+        ``xs:redefine`` also carries no ``namespace`` attribute (schH4).
+        """
+        if redefineTag.get("namespace") is not None:
+            self.report.add_error(
+                "a redefine must not carry a namespace attribute; it "
+                "redefines a component of the referenced document",
+                code="compose-invalid",
+                phase="schema",
+            )
+        for child in list(redefineTag):
+            if not isinstance(child.tag, str):
+                continue
+            local = child.tag.split("}")[-1]
+            if local == "annotation":
+                continue
+            name = child.get("name")
+            if local in ("element", "attribute", "notation"):
+                self.report.add_error(
+                    f"a {local} declaration cannot be redefined; only a "
+                    "complexType, simpleType, group or attributeGroup may be "
+                    "redefined",
+                    code="compose-invalid",
+                    phase="schema",
+                )
+                continue
+            if (
+                local in ("simpleType", "complexType")
+                and name
+                and not self._redefineTypeDerivesFromSelf(child, name)
+            ):
+                self.report.add_error(
+                    f"the redefined {local} '{name}' must derive from the original '{name}'",
+                    code="compose-invalid",
+                    phase="schema",
+                )
+
+    @staticmethod
+    def _redefineTypeDerivesFromSelf(declaration: Any, name: str) -> bool:
+        """Whether a redefined type's derivation names itself as base.
+
+        The base of a simple-type restriction or a complex-content
+        derivation must be the redefined type; the local part matching
+        ``name`` is enough because the surrounding redefine namespace
+        rules already pin the namespace.
+        """
+        for element in declaration.iter():
+            if not isinstance(element.tag, str):
+                continue
+            base = element.get("base")
+            if base and _qnameLocal(base) == name:
+                return True
+        return False
 
     def _checkRedefineRestrictions(
         self, includedRoot: Any, location: str, redefineTag: Any

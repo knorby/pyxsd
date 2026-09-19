@@ -856,6 +856,105 @@ class TestComposeInvalid:
         )
         assert "compose-invalid" not in self._error_codes(parser)
 
+    def _redefine(self, tmp_path, derived_body, base_body):
+        return self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine schemaLocation="base.xsd">'
+            f"{derived_body}"
+            '</xs:redefine><xs:element name="root"/></xs:schema>',
+            files={"base.xsd": f"<xs:schema {XS}>{base_body}</xs:schema>"},
+        )
+
+    def test_redefine_namespace_attribute_is_error(self, tmp_path):
+        # schH4: ``xs:redefine`` carries a schemaLocation, never a
+        # namespace attribute.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine namespace="foo" schemaLocation="base.xsd">'
+            '<xs:group name="g"><xs:sequence><xs:element name="a"/></xs:sequence></xs:group>'
+            '</xs:redefine><xs:element name="root"/></xs:schema>',
+            files={
+                "base.xsd": f'<xs:schema {XS}><xs:group name="g"><xs:sequence>'
+                '<xs:element name="a"/></xs:sequence></xs:group></xs:schema>'
+            },
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_of_element_component_is_error(self, tmp_path):
+        # SUN xsd003-1.e: an element declaration cannot be redefined;
+        # redefine covers only types, groups and attribute groups.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:element name="root"/>',
+            '<xs:element name="root"/>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_of_attribute_component_is_error(self, tmp_path):
+        # SUN xsd003-2.e.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:attribute name="gAtt" type="xs:string"/>',
+            '<xs:attribute name="gAtt" type="xs:string"/>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_simple_type_without_self_base_is_error(self, tmp_path):
+        # schJ2: a redefined simple type must restrict the original.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:simpleType name="t"><xs:restriction base="xs:string">'
+            '<xs:minLength value="2"/></xs:restriction></xs:simpleType>',
+            '<xs:simpleType name="t"><xs:restriction base="xs:string"/></xs:simpleType>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_simple_type_with_self_base_is_valid(self, tmp_path):
+        parser = self._redefine(
+            tmp_path,
+            '<xs:simpleType name="t"><xs:restriction base="t">'
+            '<xs:minLength value="2"/></xs:restriction></xs:simpleType>',
+            '<xs:simpleType name="t"><xs:restriction base="xs:string"/></xs:simpleType>',
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
+    def test_redefine_complex_type_without_self_base_is_error(self, tmp_path):
+        # schK2: the restriction must name the original type.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:restriction base="u"><xs:sequence><xs:element name="a"/></xs:sequence>'
+            "</xs:restriction></xs:complexContent></xs:complexType>",
+            '<xs:complexType name="t"><xs:sequence><xs:element name="a"/>'
+            "</xs:sequence></xs:complexType>"
+            '<xs:complexType name="u"><xs:sequence><xs:element name="a"/>'
+            "</xs:sequence></xs:complexType>",
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_complex_type_without_derivation_is_error(self, tmp_path):
+        # schK3: a redefined complex type with no complexContent at all
+        # cannot derive from the original.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:complexType name="t"><xs:sequence><xs:element name="a"/></xs:sequence>'
+            "</xs:complexType>",
+            '<xs:complexType name="t"><xs:sequence><xs:element name="a"/>'
+            "</xs:sequence></xs:complexType>",
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_complex_type_with_self_base_is_valid(self, tmp_path):
+        parser = self._redefine(
+            tmp_path,
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:restriction base="t"><xs:sequence><xs:element name="a"/></xs:sequence>'
+            "</xs:restriction></xs:complexContent></xs:complexType>",
+            '<xs:complexType name="t"><xs:sequence><xs:element name="a"/>'
+            '<xs:element name="b"/></xs:sequence></xs:complexType>',
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
 
 # ---------------------------------------------------------------------------
 # xs:override component replacement (Task 10)
