@@ -574,7 +574,10 @@ class SchemaBase:
                     subInstance._descriptor_ = None
                     subInstance._nil_ = False
                     instance._children_.append(subInstance)
-                    return
+                # The xsi:type handled the child (an invalid lexical
+                # value was already reported); do not also demand a
+                # declaration.
+                return
         cls._report_error(
             f"no declaration found for element '{local}' required by a strict wildcard",
             code="wildcard-no-declaration",
