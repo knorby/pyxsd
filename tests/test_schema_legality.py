@@ -2819,6 +2819,20 @@ class TestSimpleContentRestrictionBase:
         )
         assert "invalid-base" in _schema_codes(report)
 
+    def test_restriction_of_element_only_complex_type_is_rejected(self, parse_schema):
+        """xsd020.e: a simpleContent restriction needs a base whose
+        content is simple; an element-only complex type has none."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:x' xmlns:f='urn:x'>"
+            "<xsd:complexType name='abc'><xsd:sequence><xsd:any/></xsd:sequence>"
+            "</xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:restriction base='f:abc'><xsd:pattern value='2'/>"
+            "</xsd:restriction></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
     def test_restriction_of_a_string_content_is_clean(self, parse_schema):
         report = parse_schema(
             "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"

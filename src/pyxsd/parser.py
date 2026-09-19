@@ -3315,6 +3315,22 @@ class PyXSD:
                                 element=er.name,
                                 phase="schema",
                             )
+                        elif (
+                            getattr(base_cls, "_simpleContentType_", None) is None
+                            and not has_inline
+                        ):
+                            # The base is a complex type, but its content is
+                            # element-only (or mixed), not simple: a
+                            # simpleContent restriction cannot derive from it
+                            # (xsd020.e).
+                            self.report.add_error(
+                                f"the base of the simpleContent restriction of type "
+                                f"'{er.name}' has element-only content, not simple "
+                                "content",
+                                code="invalid-base",
+                                element=er.name,
+                                phase="schema",
+                            )
             stack.extend(getattr(er, "processedChildren", None) or ())
 
     @staticmethod
