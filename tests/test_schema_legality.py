@@ -1714,6 +1714,67 @@ class TestFacetLegality:
         )
         assert "facet-conflict" in _schema_codes(report)
 
+    def test_widened_max_length_reports_facet(self, parse_schema):
+        """msData stI005: a derived maxLength may not exceed the base's."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:restriction base='xsd:string'>"
+            "<xsd:maxLength value='5'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='myType'>"
+            "<xsd:maxLength value='8'/></xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_widened_min_length_reports_facet(self, parse_schema):
+        """A derived minLength may not fall below the base's."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:restriction base='xsd:string'>"
+            "<xsd:minLength value='3'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='myType'>"
+            "<xsd:minLength value='1'/></xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_widened_total_digits_reports_facet(self, parse_schema):
+        """msData stZ014: totalDigits may not grow on a derived type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='DecimalType'><xsd:restriction base='xsd:decimal'>"
+            "<xsd:totalDigits value='4'/><xsd:fractionDigits value='2'/>"
+            "</xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='DecimalType2'><xsd:restriction base='DecimalType'>"
+            "<xsd:totalDigits value='5'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_widened_fraction_digits_reports_facet(self, parse_schema):
+        """msData stZ014: fractionDigits may not grow either."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='DecimalType'><xsd:restriction base='xsd:decimal'>"
+            "<xsd:totalDigits value='4'/><xsd:fractionDigits value='2'/>"
+            "</xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='DecimalType2'><xsd:restriction base='DecimalType'>"
+            "<xsd:fractionDigits value='4'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_tightened_length_facets_are_clean(self, parse_schema):
+        """An equal or tighter facet is a legal restriction."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:restriction base='xsd:string'>"
+            "<xsd:maxLength value='5'/><xsd:minLength value='2'/>"
+            "</xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='myType'>"
+            "<xsd:maxLength value='4'/><xsd:minLength value='3'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" not in _schema_codes(report)
+
 
 class TestSimpleTypeAtomicity:
     """A list's item type and a union's member types must be simple types.
