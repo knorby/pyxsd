@@ -38,6 +38,7 @@ from elementpath.exceptions import ElementPathError
 from elementpath.regex import RegexError
 
 from pyxsd.xsd_data_types import (
+    NOTATION,
     Base64Binary,
     Boolean,
     Date,
@@ -559,15 +560,18 @@ def _effective_upper(inclusive: Any | None, exclusive: Any | None) -> tuple[Any,
 
 
 def _is_qname_like(base: type) -> bool:
-    """Whether *base* is QName or derives from it.
+    """Whether *base* is QName/NOTATION or derives from one.
 
     XSD 1.1 deprecates the length family on QName, and the test suite
     encodes the XSD 1.0 ruling that every QName value satisfies those
-    facets.  Schema legality is still checked, but enforcement is
-    vacuous.
+    facets; the TSTF extended that ruling to NOTATION, whose value space
+    is likewise a set of notation names (MS-DataTypes NOTATION_length*).
+    Schema legality is still checked, but enforcement is vacuous.
     """
     name = getattr(base, "name", "")
-    return name == "QName" or issubclass(base, QName)
+    if name in ("QName", "NOTATION"):
+        return True
+    return issubclass(base, (QName, NOTATION))
 
 
 #: whiteSpace values ordered from least to most restrictive; a restriction

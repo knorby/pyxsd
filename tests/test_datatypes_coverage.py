@@ -627,6 +627,19 @@ class TestSchemaFacetLegality:
         body = element("xs:QName", '<xs:length value="3"/>')
         assert errors(parse(body, "<r>xs:string</r>")) == []
 
+    def test_notation_values_satisfy_the_length_family_vacuously(self):
+        # MS-DataTypes NOTATION_length001/003, minLength003, maxLength001:
+        # the TSTF ruling extends to NOTATION, whose value space is a set
+        # of notation names (QNames).
+        body = (
+            '<xs:simpleType name="buildNotation"><xs:restriction base="xs:NOTATION">'
+            '<xs:enumeration value="mpeg"/></xs:restriction></xs:simpleType>'
+            '<xs:notation name="mpeg" public="image/mpeg" system="viewer.exe"/>'
+            '<xs:element name="r"><xs:simpleType><xs:restriction base="buildNotation">'
+            '<xs:length value="1"/></xs:restriction></xs:simpleType></xs:element>'
+        )
+        assert errors(parse(body, "<r>mpeg</r>")) == []
+
     def test_whitespace_cannot_be_loosened(self):
         body = element("xs:token", '<xs:whiteSpace value="preserve"/>')
         assert "facet" in codes(body, "<r> a  b </r>")
