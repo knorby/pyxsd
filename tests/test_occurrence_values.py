@@ -280,6 +280,31 @@ class TestMixedContentFixed:
         )
         assert "fixed-element" not in self._codes(parser)
 
+    def test_empty_mixed_content_takes_the_fixed_value(self, tmp_path):
+        # MS isDefault076: an empty element takes the fixed value rather
+        # than being compared against it.
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root" fixed="abc">'
+            '<xs:complexType mixed="true"/></xs:element></xs:schema>',
+            "<root/>",
+            tmp_path,
+        )
+        assert "fixed-element" not in self._codes(parser)
+
+    def test_empty_untyped_child_takes_the_fixed_value(self, tmp_path):
+        # MS isDefault073: an empty untyped child with fixed="fixed".
+        parser = _parse(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="root" type="ct"/>'
+            '<xs:complexType name="ct"><xs:sequence>'
+            '<xs:element name="b" fixed="fixed"/>'
+            "</xs:sequence></xs:complexType></xs:schema>",
+            "<root><b/></root>",
+            tmp_path,
+        )
+        assert "fixed-element" not in self._codes(parser)
+
 
 # ---------------------------------------------------------------------------
 # nillable / xsi:nil

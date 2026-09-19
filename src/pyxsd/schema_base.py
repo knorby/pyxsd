@@ -558,6 +558,23 @@ class SchemaBase:
             cls._checkDynamicEDC(instance, subElement, governing, descriptor, memberHeadMap)
             instance._children_.append(cls.makeGenericInstance(subElement))
             return
+        if xsi.xsi_type_name(subElement) is not None:
+            # A strict wildcard admits an undeclared child whose
+            # ``xsi:type`` supplies the governing type, so no top-level
+            # declaration is required (MS addB116).
+            governing = cls._classForChild(None, subElement)
+            if governing is not None:
+                cls._checkDynamicEDC(instance, subElement, governing, None, memberHeadMap)
+                if isinstance(governing, type) and issubclass(governing, SchemaBase):
+                    subInstance = governing.makeInstanceFromTag(subElement)
+                else:
+                    subInstance = cls.primitiveValueFor(governing, subElement)
+                if subInstance is not None:
+                    subInstance._name_ = cls._node_name(subElement)
+                    subInstance._descriptor_ = None
+                    subInstance._nil_ = False
+                    instance._children_.append(subInstance)
+                    return
         cls._report_error(
             f"no declaration found for element '{local}' required by a strict wildcard",
             code="wildcard-no-declaration",
@@ -1684,7 +1701,11 @@ class SchemaBase:
                 element=cls.__name__,
             )
             return None
-        content = " ".join(subInstance._value_ or []) if subInstance._value_ else ""
+        if not subInstance._value_:
+            # Empty (or whitespace-only) content takes the fixed value; it
+            # is supplied, not compared (MS isDefault073/076).
+            return None
+        content = " ".join(subInstance._value_)
         if " ".join(content.split()) != " ".join(str(fixed).split()):
             cls._report_error(
                 f"element '{subElementName}' has a value that conflicts "
