@@ -70,6 +70,16 @@ class TestClosedContentModel:
         parser = _parse(_root(""), "<r><z/></r>", tmp_path)
         assert "unexpected-element" in _codes(parser)
 
+    def test_empty_required_choice_rejects_empty_element(self, tmp_path):
+        # Saxon complex022.n1: an empty choice with minOccurs=1 is
+        # unsatisfiable, so even an empty element is invalid.
+        parser = _parse(_root("<xs:choice/>"), "<r/>", tmp_path)
+        assert "occurrence-min" in _codes(parser)
+
+    def test_optional_empty_choice_accepts_empty_element(self, tmp_path):
+        parser = _parse(_root('<xs:choice minOccurs="0"/>'), "<r/>", tmp_path)
+        assert not parser.report.has_errors
+
     def test_valid_sequence_stays_clean(self, tmp_path):
         parser = _parse(
             _root("<xs:sequence>" + _element("a") + _element("b") + "</xs:sequence>"),

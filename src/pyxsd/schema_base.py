@@ -31,6 +31,21 @@ from pyxsd.xsd_data_types import (
 logger = logging.getLogger(__name__)
 
 
+def _requires_unsatisfiable_content(model: Any) -> bool:
+    """Whether *model* demands content no instance can supply.
+
+    An empty ``choice`` with ``minOccurs`` at least one has no branch to
+    satisfy, so the element can never be valid, not even when empty
+    (Saxon complex022.n1). An empty ``sequence``/``all`` matches zero
+    children and is satisfiable.
+    """
+    if model is None:
+        return False
+    if getattr(model, "kind", None) == "choice" and model.min_occurs > 0 and not model.children:
+        return True
+    return any(_requires_unsatisfiable_content(child) for child in getattr(model, "children", ()))
+
+
 def _mode_for(cls) -> BindingPolicy:
     """The binding policy stamped on a generated class (or STRICT)."""
     return getattr(cls, "_parseMode_", ParseModes.STRICT)
@@ -1086,6 +1101,12 @@ class SchemaBase:
                     cls._report_error(
                         f"the content model requires element '{missing}', "
                         "which is missing from the xml",
+                        code="occurrence-min",
+                        element=cls.__name__,
+                    )
+                elif stalled and _requires_unsatisfiable_content(model):
+                    cls._report_error(
+                        "the content model requires element content that is missing from the xml",
                         code="occurrence-min",
                         element=cls.__name__,
                     )
