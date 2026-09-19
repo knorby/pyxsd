@@ -1,0 +1,571 @@
+"""The XSD 1.1 assertion and conditional-type-assignment XPath 2.0 subsets.
+
+Both constructs carry their ``test`` as an XPath 2.0 expression, but the
+two subsets differ sharply. ``xs:assert``/``xs:assertion``
+(§3.13.1) is a general XPath 2.0 expression over the element being
+validated: child and descendant navigation, predicates, the full
+operator/function library and ``$value`` are all in. The function
+library is restricted — no ``fn:doc``/``fn:collection``/``fn:resolve-uri``
+and friends, and no namespace axis. Conditional type assignment
+(§3.3.2.1/§3.12.6) is far narrower: the required subset is a boolean
+combination of attribute tests on the element itself, literals, casts
+to built-in types and built-in constructor functions.
+
+The pipeline mirrors :mod:`pyxsd.xpath_subset`:
+
+1. **parse** with :class:`elementpath.XPath2Parser`, passing the
+   declaration-site prefix bindings, so a syntax error or an unbound
+   prefix fails at schema phase;
+2. **whitelist** the AST with a fail-loud visitor — an unrecognized node
+   type is rejected, never silently accepted, so an elementpath release
+   that reshapes its AST fails loudly instead of mis-parsing; the
+   assertion visitor additionally denies the resource functions and the
+   namespace axis, while the CTA visitor admits only attribute/literal
+   boolean trees;
+3. **evaluate** through elementpath's XPath 2.0 evaluator against a
+   *plain* :mod:`xml.etree.ElementTree` node (never a pyxsd bound
+   object), mapping evaluator errors to :class:`XPathError`.
+
+Do not register a custom tree builder: elementpath 5 removed public
+custom-tree registration and bound objects expose their underlying
+ElementTree node, which is what callers pass here.
+"""
+
+from __future__ import annotations
+
+from typing import Any, NamedTuple
+
+from elementpath import XPath2Parser, XPathContext
+from elementpath.exceptions import ElementPathError
+from elementpath.tree_builders import build_node_tree
+from elementpath.xpath_nodes import ElementNode
+from elementpath.xpath_tokens import XPathAxis, XPathFunction
+
+from pyxsd.namespaces import XML_NS, local_name
+from pyxsd.xpath_subset import XPathError
+
+__all__ = [
+    "CompiledXPath",
+    "assertion_requires_context",
+    "evaluate",
+    "parse_assertion_xpath",
+    "parse_cta_xpath",
+]
+
+
+class CompiledXPath(NamedTuple):
+    """A parsed, subset-validated assertion or CTA expression."""
+
+    #: The raw ``test`` attribute value (stripped).
+    text: str
+    #: The in-scope prefix bindings handed to the parser (with ``xml``).
+    namespaces: dict[str, str]
+    #: The elementpath parse tree, evaluated by :func:`evaluate`.
+    tree: Any
+
+
+#: Functions the assertion subset forbids because they reach outside the
+#: instance being validated (§3.13.1). An unregistered function already
+#: fails at parse time, so this set only needs the reachable names.
+_ASSERTION_FORBIDDEN_FUNCTIONS = frozenset(
+    {
+        "doc",
+        "doc-available",
+        "collection",
+        "uri-collection",
+        "resolve-uri",
+        "unparsed-text",
+        "unparsed-text-lines",
+        "unparsed-text-available",
+    }
+)
+
+#: The namespace axis is not part of the assertion data model.
+_ASSERTION_FORBIDDEN_AXES = frozenset({"namespace"})
+
+#: elementpath AST class names admitted by the assertion subset: literals,
+#: name/context tokens and the XPath 2.0 operators/expressions. Functions
+#: and axes are classified separately by base class above. Delimiters and
+#: parser boundary symbols are deliberately absent — they must never be
+#: the root of a parsed expression, and admitting them would weaken the
+#: fail-loud guarantee.
+_ASSERTION_STRUCTURAL = frozenset(
+    {
+        "ValueToken",
+        "NameToken",
+        "PrefixedNameToken",
+        "BracedNameToken",
+        "VariableToken",
+        "AsteriskToken",
+        "ContextItemToken",
+        "ParentShortcutToken",
+        "_StringLiteral",
+        "_FloatLiteral",
+        "_DecimalLiteral",
+        "_IntegerLiteral",
+        "_OrOperator",
+        "_AndOperator",
+        "_EqualsSignOperator",
+        "_ExclamationMarkEqualsSignOperator",
+        "_LessThanSignOperator",
+        "_GreaterThanSignOperator",
+        "_LessThanSignEqualsSignOperator",
+        "_GreaterThanSignEqualsSignOperator",
+        "_PlusSignOperator",
+        "_HyphenMinusOperator",
+        "_DivOperator",
+        "_ModOperator",
+        "_IdivOperator",
+        "_VerticalLineOperator",
+        "_SolidusSolidusOperator",
+        "_SolidusOperator",
+        "_LeftSquareBracketOperator",
+        "_CommercialAtAttributeReference",
+        "_CommaOperator",
+        "_LeftParenthesisExpression",
+        "_EqOperator",
+        "_NeOperator",
+        "_LtOperator",
+        "_GtOperator",
+        "_LeOperator",
+        "_GeOperator",
+        "_IsOperator",
+        "_LessThanSignLessThanSignOperator",
+        "_GreaterThanSignGreaterThanSignOperator",
+        "_ToOperator",
+        "_InstanceExpression",
+        "_TreatExpression",
+        "_CastableExpression",
+        "_CastExpression",
+        "_IfExpression",
+        "_ForExpression",
+        "_SomeExpression",
+        "_EveryExpression",
+        "_ReturnOperator",
+        "_InOperator",
+        "_ThenOperator",
+        "_ElseOperator",
+        "_AsOperator",
+        "_OfOperator",
+        "_SatisfiesOperator",
+        "_UnionSymbol",
+        "_IntersectOperator",
+        "_ExceptOperator",
+        "_QuestionMarkSymbol",
+        "_AttributeKind_Test__Axis",
+    }
+)
+
+#: Binary boolean/relational operators admitted by the CTA subset.
+_CTA_OPERATORS = frozenset(
+    {
+        "_EqualsSignOperator",
+        "_ExclamationMarkEqualsSignOperator",
+        "_LessThanSignOperator",
+        "_GreaterThanSignOperator",
+        "_LessThanSignEqualsSignOperator",
+        "_GreaterThanSignEqualsSignOperator",
+        "_EqOperator",
+        "_NeOperator",
+        "_LtOperator",
+        "_GtOperator",
+        "_LeOperator",
+        "_GeOperator",
+        "_AndOperator",
+        "_OrOperator",
+    }
+)
+
+#: Literal operands admitted by the CTA subset.
+_CTA_LITERALS = frozenset({"_StringLiteral", "_IntegerLiteral", "_DecimalLiteral", "_FloatLiteral"})
+
+#: Name-node types that may follow ``@`` in the CTA subset.
+_CTA_ATTRIBUTE_NAMES = frozenset({"NameToken", "PrefixedNameToken"})
+
+
+def _is_constructor_function(node: Any) -> bool:
+    """Whether *node* is a built-in datatype constructor function.
+
+    elementpath names its constructor tokens ``_<Type>ConstructorFunction``
+    (``_IntConstructorFunction``, ``_DateConstructorFunction``, and so
+    on); the shared suffix is the stable, fail-loud discriminator.
+    """
+    return isinstance(node, XPathFunction) and type(node).__name__.endswith("ConstructorFunction")
+
+
+#: AST node types that read the XPath focus directly — the context item, a
+#: path step, or a predicate. A simple-type assertion has no context item
+#: (XSD 1.1 Part 2, ``xs:assertion``: the value being validated is exposed
+#: only through ``$value``), so any expression containing one of these
+#: necessarily raises a dynamic error. The saxonData ``assert-simple008``
+#: through ``assert-simple010`` cases pin this for the context item,
+#: ``position()`` and ``last()``.
+_CONTEXT_TOKEN_TYPES = frozenset(
+    {
+        "ContextItemToken",
+        "ParentShortcutToken",
+        "AsteriskToken",
+        "RootToken",
+        "_RootToken",
+        "_SolidusOperator",
+        "_SolidusSolidusOperator",
+        "_CommercialAtAttributeReference",
+        "_LeftSquareBracketOperator",
+    }
+)
+
+#: Functions that read the focus position/size.
+_CONTEXT_FUNCTIONS = frozenset({"position", "last"})
+
+#: Parent node types under which a ``NameToken`` is a variable or type
+#: name rather than an implicit child-axis step.
+_CONTEXT_NAME_PARENTS = frozenset(
+    {
+        "VariableToken",
+        "PrefixedNameToken",
+        "BracedNameToken",
+        "_InstanceExpression",
+        "_TreatExpression",
+        "_CastExpression",
+        "_CastableExpression",
+    }
+)
+
+
+def assertion_requires_context(compiled: Any) -> bool:
+    """Whether an assertion test reads the XPath focus.
+
+    A context-dependent test cannot be evaluated for a simple-type
+    assertion, where no context item is defined; the caller treats it as
+    a dynamic error (a false result). Returns ``False`` for an expression
+    built only from ``$value``, literals and focus-free functions.
+    """
+    tree = compiled.tree if isinstance(compiled, CompiledXPath) else compiled
+    return _requires_context(tree)
+
+
+def _requires_context(node: Any, parent: Any = None) -> bool:
+    if isinstance(node, XPathAxis):
+        return True
+    if isinstance(node, XPathFunction) and getattr(node, "symbol", None) in _CONTEXT_FUNCTIONS:
+        return True
+    kind = type(node).__name__
+    if kind in _CONTEXT_TOKEN_TYPES:
+        return True
+    if kind == "NameToken" and (
+        parent is None or type(parent).__name__ not in _CONTEXT_NAME_PARENTS
+    ):
+        return True
+    return any(_requires_context(child, node) for child in node)
+
+
+class _AssertionChecker:
+    """Fail-loud visitor for the XSD 1.1 assertion XPath 2.0 subset."""
+
+    def check(self, node: Any) -> None:
+        self._visit(node)
+
+    def _visit(self, node: Any) -> None:
+        if isinstance(node, XPathFunction):
+            if getattr(node, "symbol", None) in _ASSERTION_FORBIDDEN_FUNCTIONS:
+                raise XPathError(f"fn:{node.symbol} is not allowed in an assertion test")
+        elif isinstance(node, XPathAxis):
+            if getattr(node, "symbol", None) in _ASSERTION_FORBIDDEN_AXES:
+                raise XPathError("the namespace axis is not allowed in an assertion test")
+        elif type(node).__name__ not in _ASSERTION_STRUCTURAL:
+            raise XPathError(f"{type(node).__name__} is outside the assertion XPath subset")
+        for child in node:
+            self._visit(child)
+
+
+class _CTAChecker:
+    """Fail-loud visitor for the conditional-type-assignment subset.
+
+    The admitted grammar is the required subset of XPath 2.0 that XSD
+    1.1 §3.12.6 clause 2.2 prescribes: boolean tests built from ``or``,
+    ``and``, ``not()``, parenthesized subexpressions, attribute tests on
+    the element itself, literals, ``cast as`` expressions and the
+    built-in datatype constructor functions. Child/descendant/ancestor
+    navigation, the context item and every other function are rejected
+    (an extension may accept a wider subset, but pyxsd implements
+    exactly the required subset plus nothing that needs a context item —
+    which a type alternative deliberately does not expose).
+    """
+
+    def check(self, node: Any) -> None:
+        self._visit(node)
+
+    def _visit(self, node: Any) -> None:
+        kind = type(node).__name__
+        if kind == "_NotFunction":
+            children = list(node)
+            if len(children) != 1:
+                raise XPathError("malformed not() in a type alternative test")
+            self._visit(children[0])
+            return
+        if isinstance(node, XPathFunction):
+            if _is_constructor_function(node):
+                self._check_constructor(node)
+                return
+            raise XPathError(
+                f"{getattr(node, 'symbol', kind)} is outside the "
+                "conditional-type-assignment XPath subset"
+            )
+        if kind == "_CommercialAtAttributeReference":
+            children = list(node)
+            if len(children) != 1 or type(children[0]).__name__ not in _CTA_ATTRIBUTE_NAMES:
+                raise XPathError("malformed attribute test in a type alternative")
+            return
+        if kind in _CTA_OPERATORS:
+            children = list(node)
+            if len(children) != 2:
+                raise XPathError(f"malformed {kind} in a type alternative test")
+            self._visit(children[0])
+            self._visit(children[1])
+            return
+        if kind == "_LeftParenthesisExpression":
+            children = list(node)
+            if len(children) != 1:
+                raise XPathError("malformed parenthesized type alternative test")
+            self._visit(children[0])
+            return
+        if kind in _CTA_LITERALS:
+            return
+        if kind == "_CastExpression":
+            self._check_cast(node)
+            return
+        if kind == "PrefixedNameToken":
+            self._check_prefixed_call(node)
+            return
+        raise XPathError(f"{kind} is outside the conditional-type-assignment XPath subset")
+
+    def _check_simple_value(self, node: Any) -> None:
+        """Admits an ``AttrName`` or a literal (the grammar's SimpleValue)."""
+        kind = type(node).__name__
+        if kind == "_CommercialAtAttributeReference":
+            self._visit(node)
+            return
+        if kind in _CTA_LITERALS:
+            return
+        raise XPathError(f"{kind} is not an attribute test or literal in a type alternative")
+
+    def _check_cast(self, node: Any) -> None:
+        """Admits ``SimpleValue ('cast' 'as' QName '?')``."""
+        children = list(node)
+        if len(children) != 2:
+            raise XPathError("malformed cast expression in a type alternative")
+        self._check_simple_value(children[0])
+        self._check_type_name(children[1])
+
+    def _check_prefixed_call(self, node: Any) -> None:
+        """Admits a prefixed QName, but only as a constructor call.
+
+        elementpath represents ``xs:int(@x)`` as a ``PrefixedNameToken``
+        wrapping the constructor-function token. A bare prefixed name
+        (a child-axis step or a variable) is not part of the subset.
+        """
+        children = list(node)
+        if (
+            len(children) == 2
+            and type(children[0]).__name__ == "NameToken"
+            and _is_constructor_function(children[1])
+        ):
+            self._check_constructor(children[1])
+            return
+        raise XPathError("a prefixed name is outside the conditional-type-assignment XPath subset")
+
+    def _check_constructor(self, node: Any) -> None:
+        """Admits ``QName '(' SimpleValue ')'``."""
+        children = list(node)
+        if len(children) != 1:
+            raise XPathError(
+                f"{getattr(node, 'symbol', type(node).__name__)}() in a type "
+                "alternative must take exactly one attribute or literal argument"
+            )
+        self._check_simple_value(children[0])
+
+    def _check_type_name(self, node: Any) -> None:
+        """Admits a QName used as the target of ``cast as``.
+
+        The token must be a plain name (its children, if any, are name
+        tokens); a constructor call spelled in the same position is not
+        a type reference.
+        """
+        kind = type(node).__name__
+        if kind not in _CTA_ATTRIBUTE_NAMES:
+            raise XPathError("a cast target must be a QName in a type alternative")
+        if any(_is_constructor_function(child) for child in node):
+            raise XPathError("a cast target must name a type, not a constructor call")
+
+
+def parse_assertion_xpath(
+    text: str,
+    namespaces: dict[str, str],
+    *,
+    default_namespace: str | None = None,
+) -> CompiledXPath:
+    """Parses an ``xs:assert``/``xs:assertion`` ``test`` expression.
+
+    ``default_namespace`` is the effective ``xpathDefaultNamespace`` the
+    declaration site resolves (``None`` for ``##local``); it becomes the
+    namespace unprefixed names in the expression resolve to.
+
+    Raises :class:`pyxsd.xpath_subset.XPathError` when the expression is
+    empty, uses an unbound prefix, is not valid XPath 2.0, or contains a
+    construct outside the assertion subset (a forbidden resource
+    function, the namespace axis, or an unrecognized AST node).
+    """
+    return _parse(text, namespaces, _AssertionChecker(), default_namespace)
+
+
+def parse_cta_xpath(
+    text: str,
+    namespaces: dict[str, str],
+    *,
+    default_namespace: str | None = None,
+) -> CompiledXPath:
+    """Parses an ``xs:alternative`` ``test`` expression.
+
+    The CTA subset is attribute tests on the element itself: ``@name``
+    references, literals, value comparisons, ``and``/``or``/``not``,
+    ``cast as`` to a built-in type and calls to built-in datatype
+    constructors. Child/descendant/parent navigation, predicates,
+    context-item access and every other function are rejected with
+    :class:`pyxsd.xpath_subset.XPathError`.
+    """
+    return _parse(text, namespaces, _CTAChecker(), default_namespace)
+
+
+def _parse(
+    text: str,
+    namespaces: dict[str, str],
+    checker: _AssertionChecker | _CTAChecker,
+    default_namespace: str | None = None,
+) -> CompiledXPath:
+    source = (text or "").strip()
+    if not source:
+        raise XPathError("the xpath expression is empty")
+    bindings = {prefix: uri for prefix, uri in (namespaces or {}).items() if prefix}
+    bindings.setdefault("xml", XML_NS)
+    try:
+        tree = XPath2Parser(
+            namespaces=bindings,
+            default_namespace=default_namespace,
+        ).parse(source)
+    except (ElementPathError, TypeError, ValueError) as exc:
+        raise XPathError(f"not a valid XPath expression: {exc}") from exc
+    checker.check(tree)
+    return CompiledXPath(source, bindings, tree)
+
+
+def evaluate(
+    compiled: Any,
+    node: Any,
+    *,
+    value: Any | None = None,
+    variable_values: dict[str, Any] | None = None,
+    variable_types: dict[str, Any] | None = None,
+    attribute_types: dict[str, Any] | None = None,
+    element_types: dict[str, Any] | None = None,
+    namespaces: dict[str, str] | None = None,
+) -> Any:
+    """Evaluates a compiled assertion/CTA expression against ``node``.
+
+    ``node`` is a plain :class:`xml.etree.ElementTree.Element` (the context
+    item). ``value`` binds ``$value`` for simple-type assertions; it takes
+    precedence over a ``value`` key in ``variable_values``. The raw XPath
+    result is returned — the caller coerces truthiness. ``variable_types``
+    is accepted for interface symmetry with the schema phase, where
+    elementpath consumes variable types at parse time.
+
+    ``attribute_types``/``element_types`` map an attribute (respectively
+    element) name, local or Clark, to an elementpath-compatible XSD type
+    descriptor. They let the evaluator see the typed values the schema
+    declares, so a value comparison (``eq``/``le``/...) between an
+    attribute and a number behaves per XPath 2.0 rather than comparing
+    the untyped lexical string (``@length eq count(entry)``); without a
+    schema proxy an ElementTree attribute is otherwise untyped.
+    ``namespaces`` supplies the in-scope prefix bindings of the context
+    element, needed to decode ``xs:QName``-typed values and to answer
+    ``in-scope-prefixes()``.
+
+    Any evaluator failure (``ElementPathError``, ``TypeError``,
+    ``ValueError``) is mapped to :class:`XPathError`.
+    """
+    tree = compiled.tree if isinstance(compiled, CompiledXPath) else compiled
+    variables = dict(variable_values or {})
+    if value is not None:
+        variables["value"] = value
+    parser = getattr(tree, "parser", None)
+    saved_namespaces: dict[str, str] | None = None
+    if namespaces and parser is not None:
+        # ``in-scope-prefixes()`` on an ElementTree reads the parser's
+        # static namespaces, so the context element's dynamic bindings
+        # must be visible there for the duration of the evaluation. The
+        # compiled expression is shared, so restore the parser's set.
+        saved_namespaces = dict(parser.namespaces)
+        parser.namespaces.update({p: u for p, u in namespaces.items() if p and u})
+    try:
+        if node is None:
+            # A simple-type assertion has no context item: only ``$value``
+            # is in scope. elementpath requires a context item or a root,
+            # so an empty atomic stands in as the focus; a ``$value``-only
+            # expression never observes it, and a context-dependent one is
+            # filtered out by ``assertion_requires_context`` beforehand.
+            context = XPathContext(root=None, item="", variables=variables or None)
+            return tree.evaluate(context)
+        root = node
+        if attribute_types or element_types or namespaces:
+            root = _typed_node_tree(node, attribute_types, element_types, namespaces)
+        context = XPathContext(root=root, variables=variables or None)
+        return tree.evaluate(context)
+    except (ElementPathError, TypeError, ValueError, KeyError, ArithmeticError) as exc:
+        raise XPathError(f"XPath evaluation failed: {exc}") from exc
+    finally:
+        if saved_namespaces is not None and parser is not None:
+            parser.namespaces.clear()
+            parser.namespaces.update(saved_namespaces)
+
+
+def _typed_node_tree(
+    node: Any,
+    attribute_types: dict[str, Any] | None,
+    element_types: dict[str, Any] | None,
+    namespaces: dict[str, str] | None,
+) -> Any:
+    """Wraps ``node`` in an elementpath node tree with declared types.
+
+    The tree is the same one the evaluator would build internally; the
+    declared attribute/element types are stamped onto its nodes so
+    elementpath atomizes them to the XSD value rather than to
+    ``xs:untypedAtomic``, and the in-scope prefix bindings are attached
+    so ``xs:QName`` values decode.
+    """
+    root = build_node_tree(node, namespaces=namespaces)
+    _apply_declared_types(root, attribute_types, element_types)
+    return root
+
+
+def _apply_declared_types(
+    node: Any,
+    attribute_types: dict[str, Any] | None,
+    element_types: dict[str, Any] | None,
+) -> None:
+    if isinstance(node, ElementNode):
+        node_name = node.name
+        if element_types and node_name is not None:
+            declared = element_types.get(node_name) or element_types.get(local_name(node_name))
+            if declared is not None:
+                node.xsd_type = declared
+        if attribute_types:
+            for attribute in node.attributes:
+                attribute_name = attribute.name
+                if attribute_name is None:
+                    continue
+                declared = attribute_types.get(attribute_name) or attribute_types.get(
+                    local_name(attribute_name)
+                )
+                if declared is not None:
+                    attribute.xsd_type = declared
+    for child in getattr(node, "children", None) or ():
+        _apply_declared_types(child, attribute_types, element_types)

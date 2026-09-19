@@ -103,6 +103,13 @@ class _DeclarationSite:
             schema = self.getSchema()
         except AttributeError:
             return None
+        # A component spliced from an included/imported document carries
+        # that document's schema-level value (recorded only when the
+        # source declared one), which overrides the host schema's.
+        overrides = getattr(schema, "xpathDefaultNamespaceOverrides", None)
+        element = getattr(self, "xsdElement", None)
+        if overrides and element is not None and id(element) in overrides:
+            return overrides[id(element)]
         return schema.xsdElement.get("xpathDefaultNamespace")
 
 

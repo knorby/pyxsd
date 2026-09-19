@@ -178,8 +178,6 @@ class TestXsdTypeEdges:
 
         pyxsd stays lax: it reports ``unknown-type`` and still builds the
         union from the members that did resolve, so the instance parses.
-        (An inline member that hits a name-resolution gap is still only
-        warned about; see ``makeUnionClass``.)
         """
         schema = f"""\
 <xs:schema {XS}>
@@ -205,13 +203,13 @@ class TestXsdTypeEdges:
         assert member.memberValue == "2024-01-02"
         assert len(member._unionMembers) == 1
 
-    def test_union_inline_member_resolution_gap_warns_and_skips_it(self, tmp_path, caplog):
-        """An inline member that hits the generated-name resolution gap is
-        only warned about, never reported; the named members still build.
+    def test_union_inline_member_resolves_in_namespaced_mode(self, tmp_path, caplog):
+        """An inline union member is built from its own ER and enforced.
 
-        The gap is namespace-specific: in namespaced mode ``typeFromName``
-        looks up the brace-less generated name with no namespace, while the
-        inline type is registered under the target namespace.
+        A namespaced inline type is registered under its bare pipe name,
+        so a name lookup in ``typeFromName`` used to miss it and skip the
+        member; building the member ER directly makes the value space
+        include both the named and the inline member.
         """
         schema = f"""\
 <xs:schema {XS} targetNamespace="urn:t" xmlns:t="urn:t" elementFormDefault="qualified">
@@ -240,11 +238,11 @@ class TestXsdTypeEdges:
             mode=ParseModes.NAMESPACED,
         )
         assert not parser.report.has_errors
-        assert any(
-            "lang|simpleType|union|simpleType" in record.getMessage() for record in caplog.records
+        assert not any(
+            "could not be built and was skipped" in record.getMessage() for record in caplog.records
         )
         union_cls = parser.classes["lang|simpleType"]
-        assert len(union_cls._unionMembers) == 1
+        assert len(union_cls._unionMembers) == 2
 
     def test_union_equality_hash_and_repr(self, tmp_path):
         schema = f"""\

@@ -18,6 +18,7 @@ import signal
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
+from xml.sax.saxutils import quoteattr
 
 from pyxsd.binding import ParseModes
 from pyxsd.exceptions import PyXSDError
@@ -29,6 +30,10 @@ from .outcomes import EngineResult
 
 #: Default per-case wall-clock budget, in seconds.
 DEFAULT_TIMEOUT = 30.0
+
+_XSD_NS = "http://www.w3.org/2001/XMLSchema"
+_XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
+_COMPOSITION_ELEMENTS = frozenset({"include", "import", "redefine", "override"})
 
 
 class HarnessError(Exception):
@@ -76,6 +81,85 @@ def _target_namespace(path: Path) -> str | None:
     raise HarnessError(f"{path}: empty document")
 
 
+def _composition_targets(path: Path) -> list[Path]:
+    """Resolve the include/import/redefine/override targets of *path*.
+
+    Unreadable or non-schema documents yield no targets; the engine, not the
+    harness, reports a malformed document.  A target is returned whether or
+    not it is itself a bundle member.
+    """
+    try:
+        schema = ET.parse(str(path)).getroot()
+    except (OSError, ET.ParseError):
+        return []
+    if schema.tag.rsplit("}", 1)[-1] != "schema":
+        return []
+    targets: list[Path] = []
+    for child in schema:
+        if child.tag.rsplit("}", 1)[-1] not in _COMPOSITION_ELEMENTS:
+            continue
+        location = child.get("schemaLocation")
+        if not location:
+            continue
+        target = Path(location)
+        if not target.is_absolute():
+            target = path.parent / target
+        targets.append(target.resolve())
+    return targets
+
+
+def _composition_reachable(start: Path, listed: set[Path]) -> set[Path]:
+    """The *listed* documents reachable from *start* through composition."""
+    start = start.resolve()
+    reachable: set[Path] = set()
+    seen: set[Path] = set()
+    stack = [start]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for target in _composition_targets(current):
+            if target in listed:
+                reachable.add(target)
+            stack.append(target)
+    reachable.discard(start)
+    return reachable
+
+
+def _principal_documents(paths: list[Path]) -> list[Path]:
+    """The subset of *paths* the wrapper must load to compose the whole set.
+
+    A document that another bundle member already composes — as its
+    ``include``, ``import``, ``redefine`` or ``override`` target, which is
+    what the catalogue's ``schemaDocument/@role`` records — is redundant:
+    loading it again declares its global components twice and makes the
+    wrapper schema invalid (e.g. ``multiple-roots``).  Documents that compose
+    one another cyclically form a single load unit; the first-listed member
+    of each unit that nothing outside it reaches is kept.  Independent
+    documents are all kept.
+    """
+    resolved = [path.resolve() for path in paths]
+    listed = set(resolved)
+    reach = {path: _composition_reachable(path, listed) for path in resolved}
+    loaded: list[Path] = []
+    loaded_units: list[frozenset[Path]] = []
+    for path in paths:
+        document = path.resolve()
+        unit = frozenset(
+            other
+            for other in resolved
+            if other == document or (other in reach[document] and document in reach[other])
+        )
+        if any(document in reach[other] for other in resolved if other not in unit):
+            continue
+        if unit in loaded_units:
+            continue
+        loaded_units.append(unit)
+        loaded.append(path)
+    return loaded
+
+
 def build_bundle(
     corpus_root: PurePosixPath,
     documents: tuple[DocumentRef, ...],
@@ -85,9 +169,11 @@ def build_bundle(
 
     A single document is returned directly.  Several are combined by an
     otherwise-empty driver schema that imports namespaced documents and
-    includes chameleons, preserving the listed order.  Absolute
-    ``schemaLocation`` values are used so each document's own relative
-    includes still resolve against its real location.
+    includes chameleons, preserving the listed order.  Documents another
+    member already composes are not loaded separately (see
+    :func:`_principal_documents`).  Absolute ``schemaLocation`` values are
+    used so each document's own relative includes still resolve against its
+    real location.
     """
     if not documents:
         raise HarnessError("schemaTest lists no schema documents")
@@ -99,11 +185,12 @@ def build_bundle(
     if len(paths) == 1:
         return paths[0]
 
+    selected = _principal_documents(paths)
     lines = [
         '<?xml version="1.0"?>',
         '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">',
     ]
-    for path in paths:
+    for path in selected:
         location = str(path.resolve())
         namespace = _target_namespace(path)
         if namespace is None:
@@ -113,6 +200,129 @@ def build_bundle(
     lines.append("</xs:schema>")
     driver = workdir / "driver.xsd"
     driver.write_text("\n".join(lines), encoding="utf-8")
+    return driver
+
+
+def _split_expanded_name(tag: str) -> tuple[str | None, str]:
+    """Split an ElementTree tag into ``(namespace, local-name)``."""
+    if tag.startswith("{"):
+        namespace, local = tag[1:].split("}", 1)
+        return namespace, local
+    return None, tag
+
+
+def _instance_schema_hints(instance_path: Path) -> list[tuple[str | None, Path]]:
+    """Resolve an instance's ``xsi`` schema-location hints to existing files.
+
+    Only hints that resolve to an on-disk document are returned; an
+    unresolved hint is left for the engine to report as it sees fit.
+    """
+    try:
+        root = ET.parse(str(instance_path)).getroot()
+    except (OSError, ET.ParseError):
+        return []
+    raw: list[tuple[str | None, str]] = []
+    no_namespace = root.get(f"{{{_XSI_NS}}}noNamespaceSchemaLocation")
+    if no_namespace:
+        raw.append((None, no_namespace))
+    location = root.get(f"{{{_XSI_NS}}}schemaLocation")
+    if location:
+        parts = location.split()
+        for index in range(0, len(parts) - 1, 2):
+            raw.append((parts[index] or None, parts[index + 1]))
+    resolved: list[tuple[str | None, Path]] = []
+    for namespace, href in raw:
+        path = Path(href)
+        if not path.is_absolute():
+            path = instance_path.parent / path
+        if path.is_file():
+            resolved.append((namespace, path.resolve()))
+    return resolved
+
+
+def _schema_provides_root(
+    path: Path,
+    context_namespace: str | None,
+    root_namespace: str | None,
+    local: str,
+    seen: set[Path],
+) -> bool:
+    """Whether a schema document (or its composition graph) declares *local*.
+
+    Follows ``include``/``import``/``redefine``/``override`` so a wrapper can
+    tell when an instance's own schema hint already supplies the root element
+    declaration, and therefore must not be duplicated.
+    """
+    path = path.resolve()
+    if path in seen:
+        return False
+    seen.add(path)
+    try:
+        schema = ET.parse(str(path)).getroot()
+    except (OSError, ET.ParseError):
+        return False
+    if schema.tag.rsplit("}", 1)[-1] != "schema":
+        return False
+    target = schema.get("targetNamespace")
+    effective = target if target is not None else context_namespace
+    if (effective or None) == (root_namespace or None):
+        for child in schema:
+            if child.tag.rsplit("}", 1)[-1] != "element":
+                continue
+            if child.get("name") == local:
+                return True
+    for child in schema:
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag not in _COMPOSITION_ELEMENTS:
+            continue
+        location = child.get("schemaLocation")
+        if not location:
+            continue
+        sub = Path(location)
+        if not sub.is_absolute():
+            sub = path.parent / sub
+        child_context = (child.get("namespace") or None) if tag == "import" else effective
+        if _schema_provides_root(sub, child_context, root_namespace, local, seen):
+            return True
+    return False
+
+
+def build_permissive_schema(instance_path: Path, workdir: Path) -> Path:
+    """Synthesize a wrapper schema for a group whose ``schemaTest`` is absent.
+
+    The suite documents such a group's schema as "built-in components only":
+    validation starts at the outermost element with no stipulated declaration.
+    PyXSD needs *a* schema, so the harness writes one that declares the
+    instance's root element with ``xs:anyType`` (so ``xsi:type`` and built-in
+    datatypes are still checked) in the root's namespace.
+
+    When the instance carries a resolvable ``xsi`` schema-location hint whose
+    composition already declares that root, the declaration is omitted: the
+    engine composes the hinted schema itself, and duplicating the global
+    element would be a schema error. A hinted schema that fails to compile
+    therefore still surfaces as a schema-phase problem rather than being
+    masked by the wrapper.
+    """
+    try:
+        root = ET.parse(str(instance_path)).getroot()
+    except (OSError, ET.ParseError) as exc:
+        raise HarnessError(f"cannot read instance for schema synthesis: {exc}") from exc
+    root_namespace, local = _split_expanded_name(root.tag)
+    provided = any(
+        _schema_provides_root(path, namespace, root_namespace, local, set())
+        for namespace, path in _instance_schema_hints(instance_path)
+    )
+    target = f" targetNamespace={quoteattr(root_namespace)}" if root_namespace is not None else ""
+    declaration = (
+        f'  <xs:element name={quoteattr(local)} type="xs:anyType"/>\n' if not provided else ""
+    )
+    text = (
+        '<?xml version="1.0"?>\n'
+        f'<xs:schema xmlns:xs="{_XSD_NS}"{target}>\n'
+        f"{declaration}</xs:schema>\n"
+    )
+    driver = workdir / "synthesized.xsd"
+    driver.write_text(text, encoding="utf-8")
     return driver
 
 
@@ -150,8 +360,16 @@ class PyXSDDriver:
 
     name = "pyxsd"
 
-    def __init__(self, timeout: float | None = DEFAULT_TIMEOUT) -> None:
+    def __init__(
+        self,
+        timeout: float | None = DEFAULT_TIMEOUT,
+        *,
+        synthesize_missing_schema: bool = False,
+    ) -> None:
         self.timeout = timeout
+        #: Opt-in: let the runner synthesize a permissive wrapper schema for
+        #: groups with no ``schemaTest`` instead of reporting adapter-gap.
+        self.synthesize_missing_schema = synthesize_missing_schema
 
     def compile_schema(self, schema_path: Path) -> EngineResult:
         """Observe only the schema phase."""

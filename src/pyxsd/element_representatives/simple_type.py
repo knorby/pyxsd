@@ -26,12 +26,14 @@ class SimpleType(XsdType):
         See ElementRepresentative for documentation.
         """
         self.patterns = []
+        self.assertions = []
         self.length = None
         self.minLength = None
         self.maxLength = None
         self.totalDigits = None
         self.fractionDigits = None
         self.whiteSpace = None
+        self.explicitTimezone = None
         self.listItemType = None
         self.minInclusive = None
         self.maxInclusive = None

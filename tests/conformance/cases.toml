@@ -7057,3 +7057,2043 @@ schema = '''
   </xs:element>
 </xs:schema>'''
 schema_valid = true
+
+[[case]]
+id = "assertions/assert-simple-valid"
+xsd11 = true
+description = "A satisfied xs:assert on a complex type passes instance validation"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert001"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required"/>
+      <xs:assert test="@x > 300"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp x="304"/>'''
+
+[[case]]
+id = "assertions/assert-simple-failed"
+xsd11 = true
+description = "An unsatisfied xs:assert makes the instance invalid with assert-failed"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert001"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required"/>
+      <xs:assert test="@x > 300"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp x="204"/>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assert-typed-value-comparison"
+xsd11 = true
+description = "A value comparison sees the schema-declared attribute type, not its lexical string"
+derived_from = "W3C XMLSchema1TestSuite, IBM mixed/assertions test2"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="XList" type="ArrayType"/>
+  <xs:complexType name="ArrayType">
+    <xs:sequence>
+      <xs:element name="entry" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="length" type="xs:nonNegativeInteger"/>
+    <xs:assert test="@length eq count(./entry)"/>
+  </xs:complexType>
+</xs:schema>'''
+instance = '''
+<XList length="4">
+  <entry>a</entry>
+  <entry>b</entry>
+  <entry>c</entry>
+  <entry>d</entry>
+</XList>'''
+
+[[case]]
+id = "assertions/assert-inherited-base-failure"
+xsd11 = true
+description = "A base type's assertion is inherited by a derived (restriction) type"
+derived_from = "W3C XMLSchema1TestSuite, IBM mixed/assertions test10"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="message" type="derivedType"/>
+  <xs:complexType name="baseType">
+    <xs:sequence>
+      <xs:element name="body" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="mustUnderstand" type="xs:string"/>
+    <xs:assert test="@mustUnderstand"/>
+  </xs:complexType>
+  <xs:complexType name="derivedType">
+    <xs:complexContent>
+      <xs:restriction base="baseType">
+        <xs:sequence>
+          <xs:element name="body" minOccurs="0" maxOccurs="unbounded"/>
+        </xs:sequence>
+        <xs:attribute name="mustUnderstand" type="xs:string"/>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>'''
+instance = '''
+<message>
+  <body>hi</body>
+</message>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assert-out-of-subset-invalid"
+xsd11 = true
+description = "An xs:assert test calling fn:doc is outside the XSD 1.1 assertion subset"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert011 (doc() disallowed)"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:assert test="doc('assert011-event-list.xml')//event"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["assert-invalid"]
+
+[[case]]
+id = "assertions/assert-chameleon-xpath-default-namespace"
+xsd11 = true
+description = "A chameleon-included schema's schema-level xpathDefaultNamespace resolves to the host target namespace"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert020"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:c" xmlns:c="urn:c" elementFormDefault="qualified">
+  <xs:include schemaLocation="included.xsd"/>
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="c:temp" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<doc xmlns="urn:c">
+  <temp>
+    <temp>
+      <temp>
+        <temp/>
+      </temp>
+    </temp>
+  </temp>
+</doc>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+[case.files]
+"included.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xpathDefaultNamespace="##targetNamespace">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="temp" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:assert test="empty(temp/temp/temp)"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+
+[[case]]
+id = "assertions/assertion-simple-valid"
+xsd11 = true
+description = "A satisfied xs:assertion facet on a simple type restriction passes"
+derived_from = "W3C XMLSchema1TestSuite, IBM D4_3_15 simple type assertion"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="xs:integer">
+        <xs:assertion test="$value gt 0"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp>5</temp>'''
+
+[[case]]
+id = "assertions/assertion-simple-failed"
+xsd11 = true
+description = "An unsatisfied xs:assertion makes the value invalid with assert-failed"
+derived_from = "W3C XMLSchema1TestSuite, IBM D4_3_15 simple type assertion"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="xs:integer">
+        <xs:assertion test="$value gt 0"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp>-1</temp>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assertion-list-value"
+xsd11 = true
+description = "A list-typed xs:assertion sees $value as the sequence of items"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert-simple005"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="ints">
+    <xs:list itemType="xs:integer"/>
+  </xs:simpleType>
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="ints">
+        <xs:assertion test="count($value) eq count(distinct-values($value))"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp>1 3 3</temp>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assertion-union-member-fallthrough"
+xsd11 = true
+description = "A union member whose assertion fails does not reject a later matching member"
+derived_from = "W3C XMLSchema1TestSuite, IBM mixed/assertions listunion4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="EvenInt">
+    <xs:restriction base="xs:int">
+      <xs:assertion test="$value mod 2 = 0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="OldDate">
+    <xs:restriction base="xs:date">
+      <xs:assertion test="$value lt xs:date('2010-01-01')"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="Example">
+    <xs:simpleType>
+      <xs:union memberTypes="EvenInt OldDate xs:date"/>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<Example>2010-10-10</Example>'''
+
+[[case]]
+id = "assertions/assertion-context-undefined"
+xsd11 = true
+description = "A simple type assertion has no context item, so position() is a dynamic error"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Assert assert-simple009"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="xs:date">
+        <xs:assertion test="position() le 50"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp>2009-06-01</temp>'''
+instance_valid = false
+expected_codes = ["assert-failed"]
+
+[[case]]
+id = "assertions/assertion-out-of-subset-invalid"
+xsd11 = true
+description = "An xs:assertion test using an unbound prefix is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 assertion XPath subset"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:assertion test="p:foo = 1"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["assert-invalid"]
+
+[[case]]
+id = "cta/alternative-derived-valid"
+xsd11 = true
+description = "An xs:alternative whose type is validly derived from the declared type is legal"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence/></xs:complexType>
+  <xs:complexType name="Derived">
+    <xs:complexContent>
+      <xs:extension base="Base"><xs:sequence/></xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'd'" type="Derived"/>
+    <xs:alternative type="Base"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp/>'''
+
+[[case]]
+id = "cta/alternative-non-derived-invalid"
+xsd11 = true
+description = "An xs:alternative type not derived from the declared type is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, Saxon CTA cta9008err"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence/></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind" type="xs:string"/>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["alternative-invalid"]
+
+[[case]]
+id = "cta/alternative-out-of-subset-invalid"
+xsd11 = true
+description = "An xs:alternative test outside the CTA XPath subset is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12si04"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Derived"><xs:sequence/></xs:complexType>
+  <xs:element name="temp" type="xs:anyType">
+    <xs:alternative test="child::x" type="Derived"/>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["alternative-invalid"]
+
+[[case]]
+id = "cta/alternative-missing-type-invalid"
+xsd11 = true
+description = "An xs:alternative with neither a type nor an inline type is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 §3.12.3"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp" type="xs:anyType">
+    <xs:alternative test="@kind"/>
+  </xs:element>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["alternative-invalid"]
+
+[[case]]
+id = "cta/alternative-later-derived-allowed"
+xsd11 = true
+description = "A later alternative's type may be derived from an earlier one's (IBM s3_12v08)"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12v08"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence/></xs:complexType>
+  <xs:complexType name="Derived">
+    <xs:complexContent>
+      <xs:extension base="Base"><xs:sequence/></xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@a and @b" type="Base"/>
+    <xs:alternative test="@a" type="Derived"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp/>'''
+
+[[case]]
+id = "cta/instance-selects-matching-alternative"
+xsd11 = true
+description = "At instance phase the first alternative whose test is true governs the element"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:complexType name="TypeB"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="b" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'a'" type="TypeA"/>
+    <xs:alternative test="@kind = 'b'" type="TypeB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="a"><shared>x</shared><a>y</a></temp>'''
+
+[[case]]
+id = "cta/instance-no-match-declared-type"
+xsd11 = true
+description = "When no alternative test is true and there is no default, the declared type governs"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'a'" type="TypeA"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="z"><shared>x</shared></temp>'''
+
+[[case]]
+id = "cta/instance-first-true-test-wins"
+xsd11 = true
+description = "When two tests are true, the first in declaration order governs"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 §3.3.4.1"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:complexType name="TypeB"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="b" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind" type="TypeA"/>
+    <xs:alternative test="@kind = 'a'" type="TypeB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="a"><shared>x</shared><a>y</a></temp>'''
+
+[[case]]
+id = "cta/instance-xsi-type-overrides-alternative"
+xsd11 = true
+description = "xsi:type takes precedence over conditional type assignment"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 §3.3.4.1"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:complexType name="TypeB"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="b" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'a'" type="TypeA"/>
+    <xs:alternative test="@kind = 'b'" type="TypeB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      kind="a" xsi:type="TypeB"><shared>x</shared><b>y</b></temp>'''
+
+[[case]]
+id = "cta/instance-dynamic-error-treated-false"
+xsd11 = true
+description = "A test whose evaluation raises a dynamic error is treated as false (Saxon cta0016)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon CTA cta0016"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:complexType name="TypeB"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="b" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind cast as xs:int = 1" type="TypeA"/>
+    <xs:alternative type="TypeB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="abc"><shared>x</shared><b>y</b></temp>'''
+
+[[case]]
+id = "cta/instance-xs-error-default-invalid"
+xsd11 = true
+description = "An element whose conditionally assigned type is xs:error is invalid"
+derived_from = "W3C XMLSchema1TestSuite, IBM typeAlternatives S3_12ii05"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Base"><xs:sequence>
+    <xs:element name="shared" type="xs:string"/>
+  </xs:sequence><xs:attribute name="kind" type="xs:string"/></xs:complexType>
+  <xs:complexType name="TypeA"><xs:complexContent>
+    <xs:extension base="Base"><xs:sequence>
+      <xs:element name="a" type="xs:string"/>
+    </xs:sequence></xs:extension>
+  </xs:complexContent></xs:complexType>
+  <xs:element name="temp" type="Base">
+    <xs:alternative test="@kind = 'a'" type="TypeA"/>
+    <xs:alternative type="xs:error"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp kind="z"><shared>x</shared></temp>'''
+instance_valid = false
+expected_codes = ["alternative-error"]
+
+[[case]]
+id = "cta/instance-inheritable-attribute"
+xsd11 = true
+description = "An inheritable attribute on an ancestor is in scope for a descendant's CTA test"
+derived_from = "W3C XMLSchema1TestSuite, Saxon CTA cta0009/cta0013"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Doc"><xs:sequence>
+    <xs:element ref="chap" maxOccurs="unbounded"/>
+  </xs:sequence>
+  <xs:attribute name="kind" type="xs:string" inheritable="true"/></xs:complexType>
+  <xs:complexType name="ChapA"><xs:sequence>
+    <xs:element name="a"/></xs:sequence></xs:complexType>
+  <xs:complexType name="ChapB"><xs:sequence>
+    <xs:element name="b"/></xs:sequence></xs:complexType>
+  <xs:element name="doc" type="Doc"/>
+  <xs:element name="chap">
+    <xs:alternative test="@kind = 'a'" type="ChapA"/>
+    <xs:alternative test="@kind = 'b'" type="ChapB"/>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<doc kind="a"><chap><b/></chap></doc>'''
+instance_valid = false
+expected_codes = ["unexpected-element"]
+
+[[case]]
+id = "open-content/interleave-valid"
+xsd11 = true
+description = "An xs:openContent mode=interleave with one wildcard is a valid complex type"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open001"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="interleave">
+      <xs:any namespace="urn:open" processContents="lax"/>
+    </xs:openContent>
+    <xs:sequence>
+      <xs:element name="a" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+instance = '''
+<temp/>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/bad-mode-invalid"
+xsd11 = true
+description = "An xs:openContent mode outside none/interleave/suffix is a schema error"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open036"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="around"><xs:any/></xs:openContent>
+    <xs:sequence/>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "open-content/none-with-wildcard-invalid"
+xsd11 = true
+description = "mode=none must not carry an xs:any child (XSD 1.1 section 3.4.3)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open036"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="none"><xs:any/></xs:openContent>
+    <xs:sequence/>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "open-content/non-none-without-wildcard-invalid"
+xsd11 = true
+description = "A non-none openContent mode requires exactly one xs:any child (IBM S3_4_1si01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM S3_4_1/s3_4_1si01"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="suffix"/>
+    <xs:sequence/>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "default-open-content/interleave-valid"
+xsd11 = true
+description = "A schema defaultOpenContent applies to a non-empty complex type (IBM S3_4_1v02)"
+derived_from = "W3C XMLSchema1TestSuite, IBM S3_4_1/s3_4_1v02"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="interleave">
+    <xs:any processContents="lax"/>
+  </xs:defaultOpenContent>
+  <xs:complexType name="T">
+    <xs:sequence><xs:element name="x" type="xs:integer"/></xs:sequence>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+instance = '''
+<temp><x>1</x></temp>'''
+instance_valid = true
+
+[[case]]
+id = "default-open-content/applies-to-empty-valid"
+xsd11 = true
+description = "appliesToEmpty=true attaches the default to an empty content type (IBM S3_4_1v01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM S3_4_1/s3_4_1v01"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="interleave" appliesToEmpty="true">
+    <xs:any processContents="lax"/>
+  </xs:defaultOpenContent>
+  <xs:complexType name="c"/>
+  <xs:element name="temp" type="c"/>
+</xs:schema>'''
+instance = '''
+<temp/>'''
+instance_valid = true
+
+[[case]]
+id = "default-open-content/none-mode-invalid"
+xsd11 = true
+description = "defaultOpenContent mode=none is outside its interleave/suffix vocabulary"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.2.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="none"><xs:any/></xs:defaultOpenContent>
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "default-open-content/missing-wildcard-invalid"
+xsd11 = true
+description = "defaultOpenContent requires exactly one xs:any child"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.2.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="suffix"/>
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["open-content-invalid"]
+
+[[case]]
+id = "default-open-content/wildcard-max-occurs-invalid"
+xsd11 = true
+description = "The open-content child wildcard is not a particle: maxOccurs is illegal (Saxon open048/bug 15618)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open048"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T">
+    <xs:openContent mode="interleave">
+      <xs:any namespace="##other" processContents="lax" maxOccurs="unbounded"/>
+    </xs:openContent>
+    <xs:sequence/>
+  </xs:complexType>
+  <xs:element name="temp" type="T"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["wildcard-invalid"]
+
+[[case]]
+id = "default-open-content/bad-applies-to-empty-invalid"
+xsd11 = true
+description = "appliesToEmpty is an xs:boolean; 'yes' is a lexical error"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.2.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="suffix" appliesToEmpty="yes"><xs:any/></xs:defaultOpenContent>
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["declaration-attribute"]
+
+[[case]]
+id = "open-content/interleave-around-declared-valid"
+xsd11 = true
+description = "interleave open content admits a wildcard child between declared particles (Saxon open005)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open005"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="interleave">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><a/><c xmlns="urn:open"/><b/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/interleave-before-declared-valid"
+xsd11 = true
+description = "interleave open content admits a wildcard child before the declared particles (Saxon open005)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open005"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="interleave">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><c xmlns="urn:open"/><a/><b/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/interleave-enforces-order-invalid"
+xsd11 = true
+description = "declared particles keep their order under interleave open content"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.2.3"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="interleave">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><b/><a/></temp>'''
+instance_valid = false
+expected_codes = ["order"]
+
+[[case]]
+id = "open-content/suffix-trailing-valid"
+xsd11 = true
+description = "suffix open content admits a wildcard child after the declared content (Saxon open001)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open001"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><a/><b/><c xmlns="urn:open"/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/suffix-leading-invalid"
+xsd11 = true
+description = "suffix open content rejects a wildcard child before the declared content"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.4.4.3"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="lax"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><c xmlns="urn:open"/><a/><b/></temp>'''
+instance_valid = false
+expected_codes = ["order"]
+
+[[case]]
+id = "open-content/process-contents-strict-value-invalid"
+xsd11 = true
+description = "a strict open-content wildcard resolves the global declaration and validates it"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.10.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:open" xmlns:o="urn:open">
+  <xs:element name="c" type="xs:int"/>
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="strict"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<o:temp xmlns:o="urn:open"><a/><b/><o:c>bad</o:c></o:temp>'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "open-content/process-contents-strict-undeclared-invalid"
+xsd11 = true
+description = "a strict open-content wildcard rejects an undeclared namespace child"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.10.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:open" xmlns:o="urn:open">
+  <xs:element name="c" type="xs:int"/>
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="strict"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<o:temp xmlns:o="urn:open"><a/><b/><o:d/></o:temp>'''
+instance_valid = false
+expected_codes = ["wildcard-no-declaration"]
+
+[[case]]
+id = "open-content/process-contents-skip-accepts"
+xsd11 = true
+description = "a skip open-content wildcard never validates its children"
+derived_from = "W3C XMLSchema1TestSuite, XSD 1.1 section 3.10.4"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:open" xmlns:o="urn:open">
+  <xs:element name="c" type="xs:int"/>
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="suffix">
+        <xs:any namespace="urn:open" processContents="skip"/>
+      </xs:openContent>
+      <xs:sequence><xs:element name="a"/><xs:element name="b"/></xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<o:temp xmlns:o="urn:open"><a/><b/><o:c>bad</o:c></o:temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/repeated-particle-keeps-children"
+xsd11 = true
+description = "the declared repeated particle absorbs its occurrences before open content (Saxon open025)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open025"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:openContent mode="interleave">
+        <xs:any namespace="##local" processContents="skip"/>
+      </xs:openContent>
+      <xs:sequence>
+        <xs:element name="i" type="xs:integer" maxOccurs="unbounded"/>
+        <xs:element name="d" type="xs:date" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>'''
+instance = '''
+<temp><i>12</i><i>42.3</i><j>x</j></temp>'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "open-content/restriction-wider-wildcard-invalid"
+xsd11 = true
+description = "a restriction may not widen the base open-content wildcard (Saxon open017)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open017"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="suffix"><xs:any namespace="urn:open" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B">
+        <xs:openContent mode="suffix">
+          <xs:any namespace="urn:open urn:other" processContents="lax"/>
+        </xs:openContent>
+        <xs:sequence><xs:element name="a"/></xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "open-content/restriction-weaker-process-invalid"
+xsd11 = true
+description = "a restriction may not weaken open-content processContents (Saxon open018)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open018"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="suffix"><xs:any namespace="urn:open" processContents="strict"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B">
+        <xs:openContent mode="suffix">
+          <xs:any namespace="urn:open" processContents="lax"/>
+        </xs:openContent>
+        <xs:sequence><xs:element name="a"/></xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "open-content/restriction-interleave-over-suffix-invalid"
+xsd11 = true
+description = "a restriction may not raise suffix open content to interleave (Saxon open019)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open019"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="suffix"><xs:any namespace="urn:open" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B">
+        <xs:openContent mode="interleave">
+          <xs:any namespace="urn:open" processContents="lax"/>
+        </xs:openContent>
+        <xs:sequence><xs:element name="a"/></xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "open-content/restriction-drops-open-content-valid"
+xsd11 = true
+description = "a restriction may drop the base open content entirely (Saxon open014)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open014"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="suffix"><xs:any namespace="urn:open" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:restriction base="B"><xs:sequence><xs:element name="a"/></xs:sequence></xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+instance = '''
+<temp><a/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/extension-narrowing-mode-invalid"
+xsd11 = true
+description = "an extension may not narrow interleave open content to suffix (IBM s3_4_1si05)"
+derived_from = "W3C XMLSchema1TestSuite, IBM S3_4_1/s3_4_1si05"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="interleave"><xs:any namespace="urn:open" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:extension base="B">
+        <xs:openContent mode="suffix">
+          <xs:any namespace="urn:open" processContents="lax"/>
+        </xs:openContent>
+        <xs:sequence/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "open-content/extension-wildcard-union-valid"
+xsd11 = true
+description = "an extension unions its open-content wildcard with the base's (Saxon open047)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open047"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="B">
+    <xs:openContent mode="interleave"><xs:any namespace="urn:open" processContents="skip"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:extension base="B">
+        <xs:openContent mode="interleave">
+          <xs:any notNamespace="urn:open urn:disallowed" processContents="skip"/>
+        </xs:openContent>
+        <xs:sequence/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+instance = '''
+<temp><a/><x xmlns="urn:open"/><y xmlns="urn:closed"/></temp>'''
+instance_valid = true
+
+[[case]]
+id = "open-content/extension-narrowing-union-mode-invalid"
+xsd11 = true
+description = "an extension whose default open content narrows the base mode is invalid (Saxon open030)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open030"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:defaultOpenContent mode="suffix">
+    <xs:any namespace="urn:default" processContents="lax"/>
+  </xs:defaultOpenContent>
+  <xs:complexType name="B">
+    <xs:openContent mode="interleave"><xs:any namespace="urn:closed" processContents="lax"/></xs:openContent>
+    <xs:sequence><xs:element name="a"/></xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="R">
+    <xs:complexContent>
+      <xs:extension base="B"><xs:sequence><xs:element name="d" minOccurs="0"/></xs:sequence></xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="temp" type="R"/>
+</xs:schema>'''
+schema_valid = false
+expected_codes = ["particle-restriction"]
+
+[[case]]
+id = "override/replace-type-and-group-valid"
+xsd11 = true
+description = "xs:override replaces a complex type and a model group with different content"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over001/over006"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:complexType name="T">
+      <xs:sequence><xs:group ref="g"/></xs:sequence>
+    </xs:complexType>
+    <xs:group name="g">
+      <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+    </xs:group>
+  </xs:override>
+  <xs:element name="r" type="T"/>
+</xs:schema>
+'''
+instance = '''
+<r><b>x</b></r>
+'''
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="T"><xs:sequence>
+    <xs:element name="old" type="xs:string"/></xs:sequence></xs:complexType>
+  <xs:group name="g"><xs:sequence>
+    <xs:element name="a" type="xs:string"/></xs:sequence></xs:group>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/replaces-type-with-different-kind-valid"
+xsd11 = true
+description = "An override may replace a complex type with a simple type of the same name"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over013"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:simpleType name="structuredDate">
+      <xs:restriction base="xs:date"/>
+    </xs:simpleType>
+  </xs:override>
+  <xs:element name="r" type="structuredDate"/>
+</xs:schema>
+'''
+instance = '''
+<r>2001-01-01</r>
+'''
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="structuredDate"><xs:sequence>
+    <xs:element name="year"/></xs:sequence></xs:complexType>
+  <xs:element name="doc" type="structuredDate"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/illegal-child-invalid"
+xsd11 = true
+description = "An element outside the xs:override child grammar is an override violation"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:sequence><xs:element name="e"/></xs:sequence>
+  </xs:override>
+  <xs:element name="r" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["override-invalid"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/duplicate-target-invalid"
+xsd11 = true
+description = "The same component may not be named twice in one xs:override"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over021"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:element name="doc" type="xs:date"/>
+    <xs:element name="doc" type="xs:time"/>
+  </xs:override>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["override-invalid"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/missing-component-ignored-valid"
+xsd11 = true
+description = "Overriding a component the target set lacks is legal and the declaration is ignored"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over007/over026"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:simpleType name="ghost"><xs:restriction base="xs:string"/></xs:simpleType>
+  </xs:override>
+  <xs:element name="r" type="xs:string"/>
+</xs:schema>
+'''
+instance = '''
+<r>x</r>
+'''
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/missing-component-not-added-invalid"
+xsd11 = true
+description = "A declaration inside xs:override matching nothing is not added, so a reference to it fails"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over026"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:simpleType name="ghost"><xs:restriction base="xs:string"/></xs:simpleType>
+  </xs:override>
+  <xs:element name="r" type="ghost"/>
+</xs:schema>
+'''
+instance = '''
+<r>x</r>
+'''
+instance_valid = false
+expected_codes = ["unknown-type"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="doc" type="xs:string"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/self-reference-resolves-to-override-valid"
+xsd11 = true
+description = "A self reference inside an overriding declaration names the override, not the base"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over006"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:element name="section">
+      <xs:complexType>
+        <xs:sequence>
+          <xs:element name="head" type="xs:string"/>
+          <xs:element ref="section" minOccurs="0" maxOccurs="unbounded"/>
+        </xs:sequence>
+        <xs:attribute name="nr" type="xs:decimal" use="required"/>
+      </xs:complexType>
+    </xs:element>
+  </xs:override>
+</xs:schema>
+'''
+instance = '''
+<section nr="1"><head>a</head><section nr="2"><head>b</head></section></section>
+'''
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="section">
+    <xs:complexType><xs:sequence>
+      <xs:element name="head" type="xs:string"/>
+      <xs:element ref="section" minOccurs="1" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/namespace-mismatch-invalid"
+xsd11 = true
+description = "A no-namespace overriding document may not override a namespaced base document"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over016"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:element name="doc" type="xs:string"/>
+  </xs:override>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["compose-invalid"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:b">
+  <xs:element name="doc"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/nested-override-valid"
+xsd11 = true
+description = "Nested overrides compose outermost first; the innermost declaration wins"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Override over009/over023"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="mid.xsd">
+    <xs:simpleType name="T">
+      <xs:restriction base="xs:string"><xs:maxLength value="3"/></xs:restriction>
+    </xs:simpleType>
+  </xs:override>
+  <xs:element name="r" type="T"/>
+</xs:schema>
+'''
+instance = '''
+<r>abc</r>
+'''
+[case.files]
+"mid.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:simpleType name="T">
+      <xs:restriction base="xs:string"><xs:maxLength value="5"/></xs:restriction>
+    </xs:simpleType>
+  </xs:override>
+</xs:schema>
+'''
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="T"><xs:restriction base="xs:string"/></xs:simpleType>
+</xs:schema>
+'''
+
+[[case]]
+id = "override/default-open-content-scoped-to-overridden-invalid"
+xsd11 = true
+description = "A type defined within xs:override uses the overridden document's default open content"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Open open043"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:override schemaLocation="base.xsd">
+    <xs:complexType name="beta"><xs:sequence/></xs:complexType>
+  </xs:override>
+  <xs:defaultOpenContent mode="suffix" appliesToEmpty="true">
+    <xs:any namespace="urn:open" processContents="lax"/>
+  </xs:defaultOpenContent>
+  <xs:element name="r" type="xs:string"/>
+</xs:schema>
+'''
+instance = '''
+<doc><extra xmlns="urn:open"/></doc>
+'''
+instance_valid = false
+expected_codes = ["unexpected-element"]
+[case.files]
+"base.xsd" = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="beta"><xs:sequence/></xs:complexType>
+  <xs:element name="doc" type="beta"/>
+</xs:schema>
+'''
+
+[[case]]
+id = "vc/type-unavailable-excludes-declaration"
+xsd11 = true
+description = "vc:typeUnavailable naming an available built-in removes the declaration for this processor"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc011"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required" vc:typeUnavailable="xs:integer"/>
+      <xs:attribute name="y" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<temp x="1"/>
+'''
+instance_valid = false
+expected_codes = ["unexpected-attribute"]
+
+[[case]]
+id = "vc/type-available-mixed-excludes-declaration"
+xsd11 = true
+description = "vc:typeAvailable with any unavailable item removes the declaration (vc012)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc012"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required" vc:typeAvailable="xs:string xs:bananaSkin"/>
+      <xs:attribute name="y" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<temp x="1"/>
+'''
+instance_valid = false
+expected_codes = ["unexpected-attribute"]
+
+[[case]]
+id = "vc/facet-available-unknown-excludes-declaration"
+xsd11 = true
+description = "vc:facetAvailable naming an unknown facet removes the declaration"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc022"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp">
+    <xs:complexType>
+      <xs:sequence/>
+      <xs:attribute name="x" use="required" vc:facetAvailable="xs:pattern xs:bananaSkin"/>
+      <xs:attribute name="y" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<temp x="1"/>
+'''
+instance_valid = false
+expected_codes = ["unexpected-attribute"]
+
+[[case]]
+id = "vc/max-version-removes-declaration"
+xsd11 = true
+description = "A declaration whose vc:maxVersion is at or below the processor version is absent"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc002"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp" type="xs:string" vc:maxVersion="1.0"/>
+</xs:schema>
+'''
+instance = '''
+<temp>x</temp>
+'''
+instance_valid = false
+expected_codes = ["unknown-root"]
+
+[[case]]
+id = "vc/root-version-selector-empties-schema"
+xsd11 = true
+description = "A vc:maxVersion on xs:schema empties the whole document (vc006)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc006"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning"
+           vc:maxVersion="0.9">
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>
+'''
+instance = '''
+<temp>x</temp>
+'''
+instance_valid = false
+expected_codes = ["unknown-root"]
+
+[[case]]
+id = "vc/bad-version-selector-invalid"
+description = "A vc:minVersion that is not an xs:decimal is a schema error"
+xsd11 = true
+derived_from = "W3C XMLSchema1TestSuite, Saxon VC vc901"
+mode = "namespaced"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning">
+  <xs:element name="temp" type="xs:string" vc:minVersion="1.1.3"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["versioning-invalid"]
+
+[[case]]
+id = "datatypes/dateTimeStamp-valid"
+xsd11 = true
+description = "xs:dateTimeStamp accepts zoned dateTimes (XSD 1.1 §3.4.28)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="stamp" type="xs:dateTimeStamp" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <stamp>2001-10-26T21:32:52+02:00</stamp>
+  <stamp>2001-10-26T21:32:52Z</stamp>
+  <stamp>2004-02-01T00:00:00.999-09:00</stamp>
+</root>
+'''
+
+[[case]]
+id = "datatypes/dateTimeStamp-missing-timezone"
+xsd11 = true
+description = "xs:dateTimeStamp rejects a dateTime without a timezone (D3_4_28ii01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="stamp" type="xs:dateTimeStamp"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <stamp>2004-02-01T00:00:00.999</stamp>
+</root>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/dateTimeStamp-explicit-timezone-fixed"
+xsd11 = true
+description = "dateTimeStamp fixes explicitTimezone to required; optional is a schema error (D3_4_28si11)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="loose">
+    <xs:restriction base="xs:dateTimeStamp">
+      <xs:explicitTimezone value="optional"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/yearMonthDuration-value-space"
+xsd11 = true
+description = "xs:yearMonthDuration rejects day/time components (D3_4_26ii01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_26 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" type="xs:yearMonthDuration"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <d>P3Y348M1D</d>
+</root>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/dayTimeDuration-value-space"
+xsd11 = true
+description = "xs:dayTimeDuration rejects year/month components (D3_4_27ii01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_27 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" type="xs:dayTimeDuration"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <d>P3DT348M1H</d>
+</root>
+'''
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/yearMonthDuration-facet-bounds"
+xsd11 = true
+description = "yearMonthDuration min/max facets compare signed whole months (D3_4_26v01)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_26"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="window">
+    <xs:restriction base="xs:yearMonthDuration">
+      <xs:minInclusive value="-P2Y"/>
+      <xs:maxInclusive value="P2Y"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" type="window" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '''
+<root>
+  <d>-P1Y</d>
+  <d>P1Y11M</d>
+</root>
+'''
+
+[[case]]
+id = "datatypes/fixed-facet-cannot-change"
+xsd11 = true
+description = "A restriction may not change a bound a base type fixed (D3_4_26si11)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_26 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="baseWindow">
+    <xs:restriction base="xs:yearMonthDuration">
+      <xs:minInclusive value="P1Y1M" fixed="true"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="derivedWindow">
+    <xs:restriction base="baseWindow">
+      <xs:minInclusive value="P1Y2M"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/explicitTimezone-required-rejects-unzoned"
+xsd11 = true
+description = "explicitTimezone required rejects an unzoned dateTime (D4_3_16ii02/ii03)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:dateTime">
+        <xs:explicitTimezone value="required"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root>2001-01-01T00:00:00</root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/explicitTimezone-prohibited-rejects-zoned"
+xsd11 = true
+description = "explicitTimezone prohibited rejects a zoned dateTime (D4_3_16ii02)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:dateTime">
+        <xs:explicitTimezone value="prohibited"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root>2001-01-01T00:00:00Z</root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/explicitTimezone-optional-accepts-both"
+xsd11 = true
+description = "explicitTimezone optional accepts zoned and unzoned values (D4_3_16v04)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (valid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" minOccurs="0" maxOccurs="unbounded">
+        <xs:simpleType>
+          <xs:restriction base="xs:dateTime">
+            <xs:explicitTimezone value="optional"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:element>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root><d>2001-01-01T00:00:00Z</d><d>2001-01-01T00:00:00</d></root>'
+
+[[case]]
+id = "datatypes/explicitTimezone-inapplicable-to-string"
+xsd11 = true
+description = "explicitTimezone does not apply to xs:string (facet applicability)"
+derived_from = "XSD 1.1 §4.3.16"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:explicitTimezone value="required"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/explicitTimezone-duplicate-facet"
+xsd11 = true
+description = "A restriction may not specify explicitTimezone twice (D4_3_16si02)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:dateTime">
+        <xs:explicitTimezone value="optional"/>
+        <xs:explicitTimezone value="prohibited"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/explicitTimezone-fixed-cannot-change"
+xsd11 = true
+description = "A fixed explicitTimezone may be restated but not changed (D4_3_16si04)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="baseStamp">
+    <xs:restriction base="xs:dateTime">
+      <xs:explicitTimezone value="optional" fixed="true"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="derivedStamp">
+    <xs:restriction base="baseStamp">
+      <xs:explicitTimezone value="prohibited"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/bound-restating-base-exclusive-allowed"
+xsd11 = true
+description = "Restating a base maxExclusive exactly is legal (D3_4_28v09)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28 (valid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="baseStamp">
+    <xs:restriction base="xs:dateTime">
+      <xs:maxExclusive value="2002-02-01T00:00:00+09:00"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="derivedStamp">
+    <xs:restriction base="baseStamp">
+      <xs:maxExclusive value="2002-02-01T00:00:00+09:00"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:element name="root" type="derivedStamp"/>
+</xs:schema>
+'''
+instance = '<root>2001-01-01T00:00:00+09:00</root>'
+
+[[case]]
+id = "datatypes/inclusive-bound-at-base-exclusive-invalid"
+xsd11 = true
+description = "maxInclusive equal to the base maxExclusive widens the value space (D3_4_28si10)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_4_28 (schema invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="baseStamp">
+    <xs:restriction base="xs:dateTime">
+      <xs:maxExclusive value="2002-02-01T00:00:00+09:00"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="derivedStamp">
+    <xs:restriction base="baseStamp">
+      <xs:maxInclusive value="2002-02-01T00:00:00+09:00"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]
+
+[[case]]
+id = "datatypes/empty-union-has-empty-value-space"
+xsd11 = true
+description = "XSD 1.1 allows a union with no member types; its value space is empty (D2_4_1_3)"
+derived_from = "XSD 1.1 (bug 4912: Allow empty unions)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="emptyUnion">
+    <xs:union memberTypes=""/>
+  </xs:simpleType>
+  <xs:element name="root" type="emptyUnion"/>
+</xs:schema>
+'''
+instance = '<root>x</root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/union-inline-member-enforced"
+xsd11 = true
+description = "An inline union member type is built and enforced (D4_3_16ii04)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D4_3_16 (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:union>
+        <xs:simpleType>
+          <xs:restriction base="xs:dateTime">
+            <xs:explicitTimezone value="prohibited"/>
+          </xs:restriction>
+        </xs:simpleType>
+        <xs:simpleType>
+          <xs:restriction base="xs:integer"/>
+        </xs:simpleType>
+      </xs:union>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root>2001-01-01T00:00:00Z</root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/gMonthDay-rejects-impossible-day"
+xsd11 = true
+description = "gMonthDay rejects --02-30 and --11-31 (MS gMonthDay006)"
+derived_from = "W3C XMLSchema1TestSuite, MS DataTypes (instance invalid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType><xs:sequence>
+      <xs:element name="d" type="xs:gMonthDay" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root><d>--02-30</d><d>--11-31</d></root>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "datatypes/gDay-bounds-across-extreme-timezones"
+xsd11 = true
+description = "gDay minInclusive orders by instant with offsets beyond +12:00 (D3_3_14)"
+derived_from = "W3C XMLSchema1TestSuite, IBM group D3_3_14 (valid)"
+schema = '''
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:simpleType>
+      <xs:restriction base="xs:gDay">
+        <xs:minInclusive value="---16+13:00"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<root>---15-13:00</root>'
+
+[[case]]
+id = "xsd11/default-attributes-applied"
+xsd11 = true
+description = "A schema defaultAttributes group supplies attribute uses to the types it declares"
+derived_from = "W3C XMLSchema1TestSuite, IBM group S3_4_2_4 (valid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" defaultAttributes="da">
+  <xs:attributeGroup name="da">
+    <xs:attribute name="extra" type="xs:boolean" use="required"/>
+  </xs:attributeGroup>
+  <xs:element name="temp"><xs:complexType><xs:sequence/></xs:complexType></xs:element>
+</xs:schema>
+'''
+instance = '<temp extra="true"/>'
+
+[[case]]
+id = "xsd11/default-attributes-apply-false-rejects-attribute"
+xsd11 = true
+description = "defaultAttributesApply=false keeps the schema default attribute group off one type"
+derived_from = "W3C XMLSchema1TestSuite, IBM group S3_4_2_4 (instance invalid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" defaultAttributes="da">
+  <xs:attributeGroup name="da">
+    <xs:attribute name="extra" type="xs:boolean" use="required"/>
+  </xs:attributeGroup>
+  <xs:element name="temp">
+    <xs:complexType defaultAttributesApply="false"><xs:sequence/></xs:complexType>
+  </xs:element>
+</xs:schema>
+'''
+instance = '<temp extra="true"/>'
+instance_valid = false
+expected_codes = ["unexpected-attribute"]
+
+[[case]]
+id = "xsd11/default-attributes-unresolved-group"
+xsd11 = true
+description = "defaultAttributes must resolve to a global attribute group"
+derived_from = "W3C XMLSchema1TestSuite, IBM group S3_4_2_4 (schema invalid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" defaultAttributes="missing">
+  <xs:element name="temp" type="xs:string"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["unknown-attributeGroup"]
+
+[[case]]
+id = "xsd11/substitution-member-of-two-heads"
+xsd11 = true
+description = "A member declared under two heads stands for either head's particle (Subsgroup subsgroup001)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Subsgroup subsgroup001 (valid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="elem0" type="xs:string"/>
+  <xs:element name="elem1" type="xs:string"/>
+  <xs:complexType name="rootType"><xs:sequence>
+    <xs:element ref="elem0"/><xs:element ref="elem1"/>
+  </xs:sequence></xs:complexType>
+  <xs:element name="root" type="rootType"/>
+  <xs:element name="elem2" type="xs:string" substitutionGroup="elem0 elem1"/>
+</xs:schema>
+'''
+instance = '<root><elem2>a</elem2><elem2>b</elem2></root>'
+
+[[case]]
+id = "xsd11/substitution-abstract-member-reached-through-head"
+xsd11 = true
+description = "An abstract substitution member may not appear even when reached through its head (Subsgroup subsgroup002)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon Subsgroup subsgroup002 (instance invalid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="content" type="xs:string" abstract="true"/>
+  <xs:element name="chap" type="xs:string" abstract="true" substitutionGroup="content"/>
+  <xs:complexType name="rt"><xs:sequence>
+    <xs:element ref="content" minOccurs="0" maxOccurs="unbounded"/>
+  </xs:sequence></xs:complexType>
+  <xs:element name="root" type="rt"/>
+</xs:schema>
+'''
+instance = '<root><chap/></root>'
+instance_valid = false
+expected_codes = ["abstract-element"]
+
+[[case]]
+id = "xsd11/pattern-name-char-complement-excludes-astral"
+xsd11 = true
+description = "The \\C complement uses the XML 1.1 name-char table including astral characters (XmlVersions xv008)"
+derived_from = "W3C XMLSchema1TestSuite, Saxon XmlVersions xv008 (instance invalid)"
+mode = "namespaced"
+schema = '''
+<?xml version="1.1"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="c"><xs:restriction base="xs:string">
+    <xs:pattern value="\C"/>
+  </xs:restriction></xs:simpleType>
+  <xs:element name="r" type="c"/>
+</xs:schema>
+'''
+instance = '<r>&#x12000;</r>'
+instance_valid = false
+expected_codes = ["value"]

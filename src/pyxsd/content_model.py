@@ -19,7 +19,7 @@ from __future__ import annotations
 import itertools
 from collections import deque
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, NamedTuple
 
 from pyxsd.wildcards import DISALLOWED_SIBLING, WildcardSpec, wildcard_spec
@@ -58,6 +58,11 @@ class Particle:
     #: declaration in the type's own content model (substitution-group
     #: members included). ``None`` when the keyword does not apply.
     siblings: frozenset[str] | None = None
+    #: True for the wildcard particle that carries a type's *effective
+    #: open content* (XSD 1.1 ``xs:openContent``). Such a particle is
+    #: subject to the attribution rule of §3.4.4.3 clause 3.3/2.3: it may
+    #: not consume a node that the declared particle can still consume.
+    open_content: bool = False
 
     def is_element(self) -> bool:
         return self.kind == "element"
@@ -305,6 +310,68 @@ def all_members(model: Particle) -> list[Particle]:
 def _empty_model() -> Particle:
     """A model that accepts zero child elements."""
     return Particle("sequence", 1, 1, [])
+
+
+def _interleave_open(model: Particle, wildcard: Particle) -> Particle:
+    """Rewrites *model* so the wildcard may appear around every leaf.
+
+    ``interleave(P, W)`` admits any merge of a sequence valid against
+    ``P`` with a sequence of ``W``-matching elements. Each leaf is
+    wrapped as ``W* leaf`` and any repetition sits on that wrapper, so
+    ``W`` may appear between the occurrences of a repeated particle
+    (``open007``) as well as around the compositor. An ``all`` group
+    takes the wildcard as an additional unordered member, so the
+    declared members are still tried first during attribution.
+    """
+    if model.kind in ("element", "any"):
+        inner = replace(model, min_occurs=1, max_occurs=1)
+        return Particle("sequence", model.min_occurs, model.max_occurs, [wildcard, inner])
+    if model.kind == "sequence":
+        return Particle(
+            "sequence",
+            model.min_occurs,
+            model.max_occurs,
+            [_interleave_open(child, wildcard) for child in model.children],
+            synthetic=model.synthetic,
+        )
+    if model.kind == "choice":
+        return Particle(
+            "choice",
+            model.min_occurs,
+            model.max_occurs,
+            [_interleave_open(child, wildcard) for child in model.children],
+        )
+    if model.kind == "all":
+        return Particle("all", model.min_occurs, model.max_occurs, [*model.children, wildcard])
+    return model
+
+
+def merge_open_content(
+    model: Particle | None, open_content: Any, py_xsd: Any = None
+) -> Particle | None:
+    """Merges a type's effective open content into its compiled model.
+
+    XSD 1.1 §3.4.4.3: with a ``suffix`` open content the declared
+    particle comes first and the wildcard admits trailing children; with
+    ``interleave`` the wildcard admits children around and among the
+    declared particles. ``none`` (or no open content) leaves the model
+    untouched. The wildcard is a normal ``any`` particle, so admitted
+    children are bound and validated through the existing
+    ``processContents`` path (strict/lax/skip) with no second matcher.
+    """
+    if model is None or open_content is None:
+        return model
+    mode = getattr(open_content, "mode", "none")
+    spec = getattr(open_content, "wildcard", None)
+    if mode == "none" or spec is None:
+        return model
+    wildcard = Particle("any", 0, None, [], None, spec, open_content=True)
+    if mode == "suffix":
+        merged = Particle("sequence", 1, 1, [model, wildcard])
+    else:
+        merged = Particle("sequence", 1, 1, [_interleave_open(model, wildcard), wildcard])
+    _annotate_defined_siblings(merged, py_xsd)
+    return merged
 
 
 def _base_model(type_er: Any, py_xsd: Any) -> tuple[str | None, Particle | None]:
@@ -611,10 +678,45 @@ class _MatchContext(NamedTuple):
     target_namespace: str | None
     namespace_checked: bool
     defined: frozenset[str] | None = None
+    #: Node positions the *open content* wildcard must not consume. When
+    #: the initial match lets the open wildcard absorb a node the
+    #: declared particle could still consume (§3.4.4.3 clause 3.3), the
+    #: caller blocks that position and matches again so attribution
+    #: follows the declared particle.
+    open_blocked: frozenset[int] = frozenset()
+    #: Member instance name -> the set of every transitive head name the
+    #: member may stand for (XSD 1.1 allows an element declaration to name
+    #: several substitution-group heads). ``None`` falls back to the
+    #: single-hop ``member_head_map`` chain.
+    member_heads: dict[str, frozenset[str]] | None = None
 
 
-def _accepts(node_name: str, particle: Particle, ctx: _MatchContext) -> bool:
+def _head_closure(member_head_map: dict[str, str]) -> dict[str, frozenset[str]]:
+    """Transitive head sets derived from a single-valued member->head map.
+
+    Kept for callers that only have the historical one-head-per-member
+    map; a member's single head is followed up its own chain.
+    """
+    closure: dict[str, frozenset[str]] = {}
+    for member in member_head_map:
+        heads: set[str] = set()
+        stack = [member_head_map[member]]
+        while stack:
+            head = stack.pop()
+            if not head or head in heads or head == member:
+                continue
+            heads.add(head)
+            nxt = member_head_map.get(head)
+            if nxt is not None:
+                stack.append(nxt)
+        closure[member] = frozenset(heads)
+    return closure
+
+
+def _accepts(node_name: str, particle: Particle, ctx: _MatchContext, index: int = -1) -> bool:
     if particle.kind == "any":
+        if particle.open_content and index in ctx.open_blocked:
+            return False
         if not ctx.namespace_checked or particle.spec is None:
             return True
         return particle.spec.allows_name(
@@ -625,21 +727,13 @@ def _accepts(node_name: str, particle: Particle, ctx: _MatchContext) -> bool:
         )
     # Substitution-group admission: a member child matches the particle
     # of its own declaration, of its direct head, or of any transitive
-    # head (membership is transitive across the head chain). Walking the
-    # chain per check also keeps a member name that is itself declared
-    # in this content model matchable (the old single-step rewrite to
-    # the head lost that match). The hop bound mirrors the head-walk
-    # cap used by the derivation checks; cycles are schema errors that
-    # are reported separately, so the walk just stops.
-    current = node_name
-    for _ in range(16):
-        if particle.name == current:
-            return True
-        following = ctx.member_head_map.get(current)
-        if following is None or following == current:
-            return False
-        current = following
-    return False
+    # head (membership is transitive across the head chain, and XSD 1.1
+    # lets a member name several heads). The caller precomputes each
+    # member's transitive head set, so the check is one lookup.
+    if particle.name == node_name:
+        return True
+    heads = ctx.member_heads or {}
+    return particle.name in heads.get(node_name, ())
 
 
 def _match_all(
@@ -664,7 +758,7 @@ def _match_all(
             limit = member.max_occurs
             if limit is not None and counts[i] >= limit:
                 continue
-            if _accepts(node_name, member, ctx):
+            if _accepts(node_name, member, ctx, index):
                 chosen = i
                 break
         if chosen is None:
@@ -704,7 +798,9 @@ def _ends_one(
         return cached
 
     if particle.is_element() or particle.kind == "any":
-        if position < len(nodes) and _accepts(ctx.name_of(nodes[position]), particle, ctx):
+        if position < len(nodes) and _accepts(
+            ctx.name_of(nodes[position]), particle, ctx, position
+        ):
             result = frozenset({position + 1})
         else:
             result = frozenset()
@@ -906,6 +1002,8 @@ def match_content_associations(
     target_namespace: str | None = None,
     namespace_checked: bool = False,
     defined: frozenset[str] | None = None,
+    open_blocked: frozenset[int] = frozenset(),
+    member_heads: dict[str, frozenset[str]] | None = None,
 ) -> tuple[bool, list[Any], list[ChildMatch]]:
     """Matches children and reports which particle admitted each node.
 
@@ -915,7 +1013,9 @@ def match_content_associations(
     checking for wildcard particles (strict namespace mode); in legacy
     mode a wildcard absorbs any name no declared particle claims.
     ``defined`` supplies the schema's top-level declaration names for
-    the ``##defined`` keyword.
+    the ``##defined`` keyword. ``member_heads`` gives each substitution
+    member's transitive head set (XSD 1.1 multi-head membership); when
+    omitted it is derived from the single-hop ``member_head_map``.
 
     Returns ``(complete, leftover, associations)``: ``complete`` is True
     when the whole model is satisfied and consumes every node;
@@ -924,12 +1024,16 @@ def match_content_associations(
     wildcard particle that admitted it.
     """
     member_head_map = member_head_map or {}
+    if member_heads is None:
+        member_heads = _head_closure(member_head_map)
     ctx = _MatchContext(
         member_head_map,
         name_of,
         target_namespace,
         namespace_checked,
         defined,
+        open_blocked,
+        member_heads,
     )
     memo: dict[Any, frozenset[int]] = {}
     ends = _ends_repeated(model, nodes, 0, ctx, memo, 0)
@@ -952,6 +1056,7 @@ def match_content(
     target_namespace: str | None = None,
     namespace_checked: bool = False,
     defined: frozenset[str] | None = None,
+    member_heads: dict[str, frozenset[str]] | None = None,
 ) -> tuple[bool, list[Any]]:
     """Matches child elements against a compiled content model.
 
@@ -967,5 +1072,132 @@ def match_content(
         target_namespace,
         namespace_checked,
         defined,
+        member_heads=member_heads,
     )
     return complete, leftover
+
+
+def _open_attribution_violations(
+    declared_model: Particle,
+    nodes: list[Any],
+    matches: list[ChildMatch],
+    member_head_map: dict[str, str],
+    name_of: Any,
+    target_namespace: str | None,
+    namespace_checked: bool,
+    defined: frozenset[str] | None,
+    blocked: frozenset[int],
+    member_heads: dict[str, frozenset[str]] | None = None,
+) -> frozenset[int]:
+    """Open-content nodes the declared particle could still have consumed.
+
+    XSD 1.1 §3.4.4.3 clause 3.3 (interleave) / 2.3 (suffix): an element
+    may be attributed to the open content only when the declared
+    particle's prefix before it *cannot* be extended by it. Here that is
+    approximated by re-matching the declared particle against the
+    declared prefix plus the candidate node: a complete match means the
+    node could have been declared and so must not fall to open content.
+    """
+    declared_names = particle_names(declared_model)
+    if not declared_names:
+        return frozenset()
+    declared_positions = [
+        match.position
+        for match in matches
+        if not (match.particle.kind == "any" and match.particle.open_content)
+    ]
+    found: set[int] = set()
+    for match in matches:
+        if not (match.particle.kind == "any" and match.particle.open_content):
+            continue
+        position = match.position
+        if position in blocked or position in found:
+            continue
+        node = nodes[position]
+        if name_of(node) not in declared_names:
+            continue
+        prefix = [nodes[p] for p in declared_positions if p < position]
+        complete, _leftover, _matches = match_content_associations(
+            declared_model,
+            [*prefix, node],
+            member_head_map,
+            name_of,
+            target_namespace,
+            namespace_checked,
+            defined,
+            member_heads=member_heads,
+        )
+        if complete:
+            found.add(position)
+    return frozenset(found)
+
+
+def match_content_with_open_content(
+    instance_model: Particle,
+    declared_model: Particle | None,
+    nodes: list[Any],
+    member_head_map: dict[str, str] | None = None,
+    name_of: Any = _name_of,
+    target_namespace: str | None = None,
+    namespace_checked: bool = False,
+    defined: frozenset[str] | None = None,
+    member_heads: dict[str, frozenset[str]] | None = None,
+) -> tuple[bool, list[Any], list[ChildMatch]]:
+    """Matches children, forcing declared attribution over open content.
+
+    Runs the interleaved instance model, then re-runs it with any
+    open-content node that the declared particle could still consume
+    blocked from the open wildcard, until attribution is stable. This is
+    the §3.4.4.3 attribution rule; validity is unaffected for a node the
+    declared particle cannot place, which stays open content.
+    """
+    if declared_model is None or instance_model is declared_model:
+        # No open content was merged into the instance model; skip the
+        # attribution pass entirely (the common case for most schemas).
+        return match_content_associations(
+            instance_model,
+            nodes,
+            member_head_map,
+            name_of,
+            target_namespace,
+            namespace_checked,
+            defined,
+            member_heads=member_heads,
+        )
+    blocked: frozenset[int] = frozenset()
+    while True:
+        complete, leftover, matches = match_content_associations(
+            instance_model,
+            nodes,
+            member_head_map,
+            name_of,
+            target_namespace,
+            namespace_checked,
+            defined,
+            blocked,
+            member_heads,
+        )
+        if not complete:
+            return complete, leftover, matches
+        violations = (
+            _open_attribution_violations(
+                declared_model,
+                nodes,
+                matches,
+                member_head_map or {},
+                name_of,
+                target_namespace,
+                namespace_checked,
+                defined,
+                blocked,
+                member_heads,
+            )
+            - blocked
+        )
+        if not violations:
+            return complete, leftover, matches
+        # Re-match with only the earliest offending node blocked: the
+        # declared prefix used to judge the later candidates must itself
+        # be corrected first, or an earlier open node would wrongly make a
+        # later declared node look absorbable.
+        blocked = blocked | {min(violations)}

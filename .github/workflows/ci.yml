@@ -9,9 +9,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -26,6 +30,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -38,8 +43,40 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Resolve the pinned xsdtests corpus commit
+        id: corpus
+        run: echo "sha=$(git rev-parse HEAD:tests/xsts/corpus)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the xsdtests corpus submodule
+        uses: actions/cache@v6
+        with:
+          path: |
+            tests/xsts/corpus
+            .git/modules/tests/xsts/corpus
+          key: xsdtests-${{ runner.os }}-${{ steps.corpus.outputs.sha }}
+
+      - name: Check out the xsdtests corpus
+        run: git submodule update --init --depth 1 tests/xsts/corpus
+
+      - name: Cache downloaded example schemas
+        id: schemas
+        uses: actions/cache@v6
+        with:
+          path: |
+            examples/musicxml/schemas
+            examples/gpx/schemas
+            examples/docx/schemas
+          key: example-schemas-${{ runner.os }}-${{ hashFiles('examples/*/download_schemas.py') }}
+
       - name: Sync environment
         run: uv sync --group dev --python ${{ matrix.python-version }}
+
+      - name: Download example schemas
+        if: steps.schemas.outputs.cache-hit != 'true'
+        run: |
+          uv run python examples/musicxml/download_schemas.py
+          uv run python examples/gpx/download_schemas.py
+          uv run python examples/docx/download_schemas.py
 
       - name: Run tests with coverage
         run: uv run pytest --cov=pyxsd --cov-report=term-missing
@@ -53,6 +90,7 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -67,6 +105,7 @@ jobs:
 
   oracle:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 

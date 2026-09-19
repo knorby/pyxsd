@@ -223,26 +223,31 @@ class Attribute(ElementRepresentative):
         See the Python documentation for full documentation on
         descriptors.
         """
-        if issubclass(self.getType(), XsdDataType):
-            if self.getType() is Boolean and isinstance(value, str):
+        declared_type = self.getType()
+        if isinstance(declared_type, type) and issubclass(declared_type, XsdDataType):
+            if declared_type is Boolean and isinstance(value, str):
                 if value in ("true", "True"):
                     value = 1
                 elif value in ("False", "false"):
                     value = 0
             try:
-                value = self.getType()(value)
+                # Each datatype class validates through its overriding
+                # ``__new__``; the base's signature does not model the
+                # value parameter, so the call stays dynamic.
+                constructor: Any = declared_type
+                value = constructor(value)
             except Exception as e:
                 message = f"attribute '{self.name}' has an invalid value: {e}"
                 parser = getattr(self, "pyXSD", None)
                 if parser is not None:
                     parser.report.add_error(
                         message,
-                        code="invalid-attribute",
+                        code=getattr(e, "code", "invalid-attribute"),
                         element=getattr(obj, "_name_", None),
                     )
                 else:
                     logger.error(message)
-        elif not isinstance(value, self.getType()):
+        elif declared_type is None or not isinstance(value, declared_type):
             # The declared type did not resolve to a validating datatype
             # (a malformed or unresolved declaration). Record a
             # structured error; assignment must never raise out of

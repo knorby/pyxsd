@@ -75,6 +75,11 @@ class ComplexType(XsdType):
         # complex type, whose element representatives record them here
         # (the other facet attributes are set on first assignment).
         self.patterns = []
+        self.assertions = []
+        # Parsed by the xs:openContent ER during the declaration walk
+        # (XSD 1.1 §3.4.2): ``None`` when the type declares no open
+        # content. Content-model use is a later task.
+        self.openContent = None
         super().__init__(xsdElement, parent)
         self.getSchema().complexTypes[self.name] = self
 
@@ -87,12 +92,31 @@ class ComplexType(XsdType):
         another type) is anonymous, and a stray ``name`` there is a
         schema error even though ``getName`` would happily register it
         as a global type.
+
+        The XSD 1.1 ``assert`` children are compiled here (the parser
+        sweep reaches every type before any class is built) and stored on
+        ``compiledAssertions`` for the class builder; an unusable
+        ``test`` is reported as ``assert-invalid``.
         """
+        # Assertions are compiled first: an inline (bookkeeping-named)
+        # declaration returns early below and would otherwise never
+        # compile.
+        from pyxsd.assertions import compile_assertions
+
+        self.compiledAssertions = compile_assertions(self)
         mixed = self.tagAttributes.get("mixed")
         if mixed is not None and self._invalidBoolean(mixed):
             self._reportSchemaError(
                 f"complexType '{self.name}' has an invalid mixed value "
                 f"'{mixed}'; expected true, false, 1 or 0",
+                code="declaration-attribute",
+            )
+        apply = self.tagAttributes.get("defaultAttributesApply")
+        if apply is not None and self._invalidBoolean(apply):
+            self._reportSchemaError(
+                f"complexType '{self.name}' has an invalid "
+                f"defaultAttributesApply value '{apply}'; expected true, "
+                "false, 1 or 0",
                 code="declaration-attribute",
             )
         name = self.xsdElement.get("name")
@@ -189,6 +213,114 @@ class ComplexType(XsdType):
         if kind in ("All", "Sequence"):
             return True
         return particle._silentOccurs("minOccurs") == 0
+
+    def defaultAttributesApplies(self) -> bool:
+        """Whether the schema document's default attribute group applies.
+
+        XSD 1.1 §3.1.2 / §3.4.2: a schema-level ``defaultAttributes``
+        supplies extra attribute uses to every complex type definition in
+        the same schema document unless that type sets
+        ``defaultAttributesApply="false"`` (the default is ``true``).
+        """
+        value = self.tagAttributes.get("defaultAttributesApply")
+        return value is None or _isTrue(value)
+
+    def acceptsDefaultOpenContent(self, *, appliesToEmpty: bool) -> bool:
+        """Whether a schema-level default open content may attach to this type.
+
+        XSD 1.1 §3.4.2.4: a schema's ``defaultOpenContent`` supplies the
+        open content of every complex type declared in the same schema
+        document that has no explicit ``xs:openContent``; the default
+        attaches only when the type's explicit content type is not empty,
+        or -- for an empty content type -- when ``appliesToEmpty`` is
+        true. A type carrying its own ``xs:openContent`` is never touched.
+
+        The effective content type is used, not the type's own particle:
+        an extension whose own content is empty but whose base carries
+        element-only/mixed content reuses the base content type
+        (§3.4.2.3.3 clause 4.2.2), so it is *not* empty and the default
+        applies (Saxon bug 13459, ``open046``).
+        """
+        if self.openContent is not None:
+            return False
+        return appliesToEmpty or self._effectiveContentVariety() != "empty"
+
+    def _explicitContentIsEmpty(self) -> bool:
+        """Whether the explicit content type has {variety} ``empty``.
+
+        Unlike :meth:`_explicitContentEmpty`, a ``simpleContent`` type has
+        {variety} ``simple`` (not ``empty``), so it is *not* empty here.
+        """
+        for child in self.processedChildren or ():
+            if child is not None and type(child).__name__ == "SimpleContent":
+                return False
+        return self._explicitContentEmpty()
+
+    def _effectiveContentVariety(self, _seen: set[int] | None = None) -> str:
+        """The {content type}.{variety} of this type (extension-aware).
+
+        ``empty``, ``simple``, ``element-only`` or ``mixed``. An extension
+        with empty explicit content over a base whose final content type
+        is element-only/mixed reuses the base content type (§3.4.2.3.3
+        clause 4.2.2), so it takes the base's variety rather than reading
+        empty. ``_seen`` guards a derivation cycle.
+        """
+        seen = _seen or set()
+        if id(self) in seen:
+            return "empty"
+        seen = seen | {id(self)}
+        if self._firstProcessedChild(self, "SimpleContent") is not None:
+            return "simple"
+        if self.getDerivation() == "extension" and self._explicitContentEmpty():
+            base = self._baseComplexType(seen)
+            if base is not None:
+                base_variety = base._effectiveContentVariety(seen)
+                if base_variety in ("element-only", "mixed"):
+                    return base_variety
+        if self.effectiveMixed(_seen):
+            return "mixed"
+        if self._explicitContentEmpty():
+            return "empty"
+        return "element-only"
+
+    def effectiveOpenContent(self, _seen: set[int] | None = None):
+        """The type's effective {open content}, or ``None`` (XSD 1.1 §3.4.2.3.3).
+
+        ``self.openContent`` is the parsed ``<openContent>`` wildcard
+        element (explicit, or the schema default the parser attached). An
+        extension's explicit content type already carries its base's open
+        content, so an explicit (or default) wildcard element combines
+        with it by namespace union (clause 6.2); with no wildcard element
+        the base's open content is inherited. A restriction's explicit
+        content type never carries the base's open content, so only the
+        wildcard element (if any) applies. Simple content has no open
+        content. ``_seen`` guards a derivation cycle.
+        """
+        from pyxsd.open_content import OpenContent, combine_open_content
+
+        seen = _seen or set()
+        if id(self) in seen:
+            return None
+        seen = seen | {id(self)}
+        if self._firstProcessedChild(self, "SimpleContent") is not None:
+            return None
+        explicit = None
+        if self.getDerivation() == "extension":
+            base = self._baseComplexType(seen)
+            if base is not None and base._effectiveContentVariety(seen) in (
+                "element-only",
+                "mixed",
+            ):
+                explicit = base.effectiveOpenContent(seen)
+        own = self.openContent
+        if own is None:
+            return explicit
+        if own.mode == "none":
+            return explicit
+        combined = combine_open_content(explicit, own, self.getNamespace())
+        if combined is None and own.wildcard is not None:
+            return OpenContent(own.mode, copy.copy(own.wildcard))
+        return combined
 
     def _baseComplexType(self, _seen: set[int] | None = None) -> "ComplexType | None":
         """The first base type that is a complex type, or ``None``."""

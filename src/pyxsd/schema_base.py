@@ -1,4 +1,5 @@
 import logging
+import xml.etree.ElementTree as ElementTree
 from typing import Any, ClassVar
 
 from pyxsd import xsi
@@ -6,7 +7,7 @@ from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.content_model import (
     first_required_name,
     locally_declared_element,
-    match_content_associations,
+    match_content_with_open_content,
     particle_names,
 )
 from pyxsd.derivation import (
@@ -53,6 +54,32 @@ def _global_declaration(components, local: str, kind: str, uri: str | None):
             continue
         return entry
     return None
+
+
+def _inheritable_attribute_names(type_class: Any) -> frozenset[str]:
+    """Attribute names a governing type flags ``inheritable``.
+
+    Walks the generated MRO nearest-first so a derived re-declaration
+    wins over an inherited one, and reads each attribute descriptor's
+    effective ``inheritable`` use (XSD 1.1 §3.4.2.5). Returns the names
+    whose use is inheritable.
+    """
+    if type_class is None:
+        return frozenset()
+    seen: dict[str, bool] = {}
+    for klass in getattr(type_class, "__mro__", ()):
+        for value in klass.__dict__.values():
+            if not isinstance(value, Attribute):
+                continue
+            name = getattr(value, "name", None)
+            if name is None or name in seen:
+                continue
+            raw = (getattr(value, "tagAttributes", None) or {}).get("inheritable")
+            if raw is None:
+                xsd_element = getattr(value, "xsdElement", None)
+                raw = xsd_element.get("inheritable") if xsd_element is not None else None
+            seen[name] = raw is not None and str(raw).strip().lower() in ("true", "1")
+    return frozenset(name for name, inheritable in seen.items() if inheritable)
 
 
 def _defined_declaration_names(parser: Any, kind: str) -> frozenset[str]:
@@ -391,7 +418,7 @@ class SchemaBase:
         except Exception as e:
             cls._report_error(
                 f"attribute '{local}' has an invalid value: {e}",
-                code="value",
+                code=getattr(e, "code", "value"),
                 element=cls.__name__,
             )
             return False
@@ -603,6 +630,13 @@ class SchemaBase:
         - ``forcedText`` - a default or fixed value to use when the
           element has no text of its own
         """
+        parser = getattr(cls, "pyXSD", None)
+        element_types = getattr(parser, "_elementTypes", None) if parser is not None else None
+        if element_types is not None:
+            # Record the governing class of this bound element. A
+            # descendant's conditional type assignment may need an
+            # ancestor's inheritable attributes (XSD 1.1 §3.4.2.5).
+            element_types[id(elementTag)] = cls
         content_cls = getattr(cls, "_simpleContentType_", None)
         if not isinstance(content_cls, type):
             content_cls = None
@@ -621,6 +655,11 @@ class SchemaBase:
         cls.addElementsTo(instance, elementTag)
         if content_cls is None:
             cls.addValueTo(instance, elementTag)
+
+        if any(klass.__dict__.get("_assertions_") for klass in cls.__mro__):
+            from pyxsd.assertions import check_element_assertions
+
+            check_element_assertions(cls, elementTag)
 
         return instance
 
@@ -646,7 +685,7 @@ class SchemaBase:
             cls._report_error(
                 f"the value of the '{elementTag.tag.split('}')[-1]}' element "
                 f"is not valid for its type: {e}",
-                code="value",
+                code=getattr(e, "code", "value"),
                 element=cls.__name__,
             )
             if _mode_for(cls).invalid_value == "raw":
@@ -654,7 +693,12 @@ class SchemaBase:
                 if forcedText is not None and elementTag.text is None:
                     raw._value_ = [forcedText]
                 return raw
-            unvalidated = cls._unvalidated()  # type: ignore[attr-defined]
+            # A simple-content complex type is ordinarily a datatype
+            # subclass, but a restriction of a complex type (for example
+            # Saxon CTA cta0001's messageTypeDate) is not; fall back to a
+            # bare shell there.
+            unvalidated_factory = getattr(cls, "_unvalidated", None)
+            unvalidated = unvalidated_factory() if unvalidated_factory is not None else cls()
             unvalidated._attribs_ = dict(elementTag.attrib)
             unvalidated._value_ = None
             unvalidated._children_ = []
@@ -824,13 +868,32 @@ class SchemaBase:
             getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
         }
         memberHeadMap: dict[str, str] = {}
+        memberToHeads: dict[str, set[str]] = {}
         for headName, members in substitutionGroups.items():
             headDescriptor = declaredByName.get(headName) or declaredByExpanded.get(headName)
             headMatch = (
                 cls._instance_name_of(headDescriptor) if headDescriptor is not None else headName
             )
             for member in members:
-                memberHeadMap[cls._instance_name_of(member)] = headMatch
+                memberName = cls._instance_name_of(member)
+                if memberName is None:
+                    continue
+                memberHeadMap.setdefault(memberName, headMatch)
+                memberToHeads.setdefault(memberName, set()).add(headMatch)
+        # XSD 1.1 lets one member belong to several substitution groups, so
+        # a single member->head map cannot represent the admission relation.
+        # Precompute each member's transitive head set for the matcher.
+        memberHeadSets: dict[str, frozenset[str]] = {}
+        for memberName, heads in memberToHeads.items():
+            seen: set[str] = set()
+            stack = list(heads)
+            while stack:
+                head = stack.pop()
+                if head is None or head in seen or head == memberName:
+                    continue
+                seen.add(head)
+                stack.extend(memberToHeads.get(head, ()))
+            memberHeadSets[memberName] = frozenset(seen)
 
         # Wildcard (xs:any) constraints live in the compiled model as
         # "any" particles, so order and occurrence are checked for
@@ -848,6 +911,12 @@ class SchemaBase:
         )
 
         model = getattr(instance, "_contentModel_", None)
+        # The instance model additionally folds in the type's effective
+        # open content (XSD 1.1 §3.4.4.3) while the declared model above
+        # backs base composition and the schema-phase UPA checks.
+        instanceModel = getattr(instance, "_instanceContentModel_", None)
+        if instanceModel is not None:
+            model = instanceModel
         if model is not None and getattr(cls, "_elementOnly_", False):
             cls._reportStrayCharacters(elementTag)
         if model is None and hasWildcard:
@@ -872,14 +941,16 @@ class SchemaBase:
             declaredChildren = subElements
 
         if model is not None:
-            complete, leftover, childMatches = match_content_associations(
+            complete, leftover, childMatches = match_content_with_open_content(
                 model,
+                getattr(instance, "_contentModel_", None),
                 declaredChildren,
                 memberHeadMap,
                 name_of=cls._node_name,
                 target_namespace=targetNamespace,
                 namespace_checked=strictNamespaces,
                 defined=definedElements,
+                member_heads=memberHeadSets,
             )
         else:
             complete, leftover, childMatches = False, None, []
@@ -1074,6 +1145,72 @@ class SchemaBase:
             return None
 
     @classmethod
+    def _ctaContextNode(cls, elementTag):
+        """Returns the element node a CTA test is evaluated against.
+
+        An element's XSD 1.1 inherited attributes (``inheritable="true"``
+        uses on ancestors, §3.4.2.5) are part of the attribute context a
+        conditional type assignment test sees, but they are not on the
+        raw instance element. This builds a shallow copy carrying the
+        ancestor-contributed attributes, with the element's own
+        attributes taking precedence. With no inherited attributes the
+        node is returned unchanged.
+        """
+        parser = getattr(cls, "pyXSD", None)
+        parents = getattr(parser, "_elementParents", None) if parser is not None else None
+        if not parents:
+            return elementTag
+        element_types = getattr(parser, "_elementTypes", None) or {}
+        inherited: dict[str, str] = {}
+        chain = []
+        ancestor = parents.get(id(elementTag))
+        while ancestor is not None:
+            chain.append(ancestor)
+            ancestor = parents.get(id(ancestor))
+        # Farthest-first so a nearer ancestor's inheritable value wins.
+        for node in reversed(chain):
+            names = _inheritable_attribute_names(element_types.get(id(node)))
+            if not names:
+                continue
+            for name, value in node.attrib.items():
+                if name in names:
+                    inherited[name] = value
+        if not inherited:
+            return elementTag
+        merged = dict(inherited)
+        merged.update(elementTag.attrib)
+        return ElementTree.Element(elementTag.tag, merged)
+
+    @classmethod
+    def _conditionalType(cls, descriptor, declared, subElement):
+        """Applies XSD 1.1 conditional type assignment for one element.
+
+        Evaluates the declaration's type alternatives (``xs:alternative``)
+        against the element's attribute context and returns the first
+        matching alternative's type. The declared type governs when no
+        alternative matches or the declaration has none. An alternative
+        whose type is ``xs:error`` is reported (``alternative-error``) and
+        the declared type is kept so the tree still binds. Must not be
+        called when an ``xsi:type`` is present: ``xsi:type`` takes
+        precedence (XSD 1.1 §3.3.4.1).
+        """
+        from pyxsd.alternatives import ERROR_TYPE, select_alternative_type
+
+        context = cls._ctaContextNode(subElement)
+        selected = select_alternative_type(descriptor, context, getattr(cls, "pyXSD", None))
+        if selected is None:
+            return declared
+        if selected is ERROR_TYPE:
+            cls._report_error(
+                f"element '{cls._node_name(subElement)}' selects the xs:error type, "
+                "whose value space is empty, so it cannot be valid",
+                code="alternative-error",
+                element=cls.__name__,
+            )
+            return declared
+        return selected
+
+    @classmethod
     def _classForChild(cls, descriptor, subElement):
         """Resolves the class used to build one matched child element.
 
@@ -1086,7 +1223,7 @@ class SchemaBase:
         subElCls = descriptor.getType() if descriptor is not None else None
         xsiTypeName = xsi.xsi_type_name(subElement)
         if xsiTypeName is None:
-            return subElCls
+            return cls._conditionalType(descriptor, subElCls, subElement)
         pyXSD = getattr(cls, "pyXSD", None)
         resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
         if resolvedName is None:
@@ -1189,6 +1326,7 @@ class SchemaBase:
             if nilled:
                 subInstance = cls._nilPrimitive(subElCls, subElement, subElementName)
             else:
+                cls._checkPrimitiveElementAttributes(subElement, subElementName)
                 subInstance = cls._primitiveForElement(subElCls, subElement, descriptor)
             if subInstance is not None:
                 # invalid values are skipped; the error is
@@ -1285,6 +1423,30 @@ class SchemaBase:
         return accessor, False
 
     @classmethod
+    def _checkPrimitiveElementAttributes(cls, subElement, subElementName):
+        """Rejects undeclared attributes on a simple-typed element.
+
+        A simple type has no attribute uses and no attribute wildcard, so
+        any attribute other than the schema-instance bookkeeping
+        (``xsi:*``), a namespace declaration, or an explicitly admitted
+        ``xml:*`` is invalid (open035.n2). ``xml:*`` is *not* admitted
+        automatically — only a complex type with a matching wildcard or an
+        explicit use accepts it (open045) — and the ``xmlns`` spellings are
+        namespace declarations, never instance attributes.
+        """
+        for attr in subElement.attrib:
+            if "xmlns" in attr:
+                continue
+            if namespace_of(attr) == xsi.XSI_NAMESPACE:
+                continue
+            cls._report_error(
+                f"attribute '{xsi.xsi_attr_key(attr)}' is not declared in the "
+                "schema and was not parsed",
+                code="unexpected-attribute",
+                element=subElementName,
+            )
+
+    @classmethod
     def _primitiveForElement(cls, subElCls, subElement, descriptor):
         """Builds a typed instance for a primitive-typed child element.
 
@@ -1319,7 +1481,7 @@ class SchemaBase:
                 f"the forced value {forcedValue!r} of the "
                 f"'{subElement.tag.split('}')[-1]}' element is not valid "
                 f"for its type: {e}",
-                code=code,
+                code=getattr(e, "code", code),
                 element=cls.__name__,
             )
             return None
@@ -1464,6 +1626,16 @@ class SchemaBase:
             for memberER in closure:
                 if cls._instance_name_of(memberER) != subElementName:
                     continue
+                if memberER.isAbstract():
+                    # An abstract member may itself head further members,
+                    # but the abstract declaration cannot appear directly
+                    # (subsgroup002.n1).
+                    cls._report_error(
+                        f"element '{subElementName}' is declared abstract; "
+                        "only its substitution group members may appear in the xml",
+                        code="abstract-element",
+                        element=cls.__name__,
+                    )
                 block = headDescriptor.getBlock()
                 if block and ("substitution" in block.split() or block == "#all"):
                     cls._report_error(
@@ -1505,9 +1677,13 @@ class SchemaBase:
                 # override is resolved (and its derivation checked)
                 # exactly as for a directly declared element, so an
                 # invalid or unresolvable xsi:type is reported instead
-                # of silently keeping the declared type.
+                # of silently keeping the declared type. When no
+                # xsi:type is present, XSD 1.1 conditional type
+                # assignment selects the member's type.
                 xsiTypeName = xsi.xsi_type_name(subElement)
-                if xsiTypeName is not None:
+                if xsiTypeName is None:
+                    subElCls = cls._conditionalType(memberER, subElCls, subElement)
+                else:
                     pyXSD = getattr(cls, "pyXSD", None)
                     resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
                     if resolvedName is not None:
@@ -1829,7 +2005,7 @@ class SchemaBase:
             cls._report_error(
                 f"the value of the '{subElement.tag.split('}')[-1]}' element "
                 f"is not valid for its type: {e}",
-                code="value",
+                code=getattr(e, "code", "value"),
                 element=cls.__name__,
             )
             if _mode_for(cls).invalid_value == "raw":
@@ -1981,13 +2157,22 @@ class SchemaBase:
             for attrET in attrInElementTag:
                 if attrET in usedAttrs or attrET in rejected:
                     continue
-                # Attributes in the schema-instance and XML namespaces are
-                # allowed to appear without a declaration (xsi:type,
-                # xsi:nil, xsi:schemaLocation, xml:lang, ...). Everything
-                # else that survives the declaration and wildcard passes
-                # is genuinely undeclared and makes the instance invalid
-                # (AttrDecl ad_name00101m1-4, ad_targetns00101m1-3).
-                if namespace_of(attrET) in (xsi.XSI_NAMESPACE, XML_NS):
+                # Attributes in the schema-instance namespace are allowed to
+                # appear without a declaration (xsi:type, xsi:nil,
+                # xsi:schemaLocation, ...). An XML-namespace attribute is
+                # admitted only when the element's type actually allows it:
+                # the implicit ``xml:*`` declarations are global components,
+                # not automatic attribute uses, so a type with no attribute
+                # wildcard (or explicit use) rejects ``xml:lang`` and friends
+                # (open045). Everything else that survives the declaration
+                # and wildcard passes is genuinely undeclared and makes the
+                # instance invalid (AttrDecl ad_name00101m1-4,
+                # ad_targetns00101m1-3).
+                if namespace_of(attrET) == xsi.XSI_NAMESPACE:
+                    continue
+                if namespace_of(attrET) == XML_NS and getattr(
+                    self, "hasWildcardAttributes_", False
+                ):
                     continue
                 if attrET.startswith("xml:") or attrET.startswith("xmlns"):
                     continue

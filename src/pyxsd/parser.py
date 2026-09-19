@@ -54,7 +54,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
-from typing import IO, Any
+from typing import IO, Any, ClassVar
 from xml.etree import ElementTree as ET
 
 from pyxsd import __version__, xsi
@@ -82,6 +82,7 @@ from pyxsd.element_representatives.element_representative import (
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning
 from pyxsd.namespaces import (
+    XLINK_NS,
     XML_NS,
     XSD_NS,
     XSI_NS,
@@ -102,6 +103,7 @@ from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_context import SchemaContext, remember_components, with_schema_context
 from pyxsd.upa import upa_violations
 from pyxsd.validation import ValidationReport
+from pyxsd.versioning import VC_NS, apply_conditional_inclusion
 from pyxsd.wildcards import (
     NAMESPACE_ANY,
     PROCESS_SEVERITY,
@@ -138,13 +140,25 @@ _COMPOSABLE_TAGS = {
 
 #: Namespace of the XSD 1.1 conditional-inclusion attributes
 #: (``vc:minVersion`` etc.). Version selectors may legitimately leave
-#: several same-named declarations for different versions.
-_VC_NS = "http://www.w3.org/2007/XMLSchema-versioning"
+#: several same-named declarations for different versions; the selector
+#: namespace and its pre-processing live in ``pyxsd.versioning``.
 
 
 def _qnameLocal(value: str) -> str:
     """Returns the local part of a lexical QName or Clark name."""
     return local_name(value.rpartition(":")[2])
+
+
+def _redefined_qname(value: str) -> str:
+    """Rewrites a self-reference onto the redefined ``Name|base`` copy.
+
+    The prefix is preserved: dropping it made an unprefixed value resolve
+    through the in-scope default namespace (the XML Schema namespace on a
+    ``default xmlns`` document), so a namespaced redefine could not find
+    its renamed original (ii03/ii05/ii06/ii07).
+    """
+    prefix, _, local = value.rpartition(":")
+    return f"{prefix}:{local}|base" if prefix else f"{value}|base"
 
 
 def _stackPrefix(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
@@ -256,11 +270,21 @@ class PyXSD:
         # Source-document form defaults per spliced component:
         # id(xsdElement) -> (elementFormDefault, attributeFormDefault).
         self._formDefaults: dict[int, tuple[str | None, str | None]] = {}
+        # Source-document ``xpathDefaultNamespace`` per spliced component
+        # (only documents that declare one are recorded), so an included
+        # document's XPath default survives the splice.
+        self._xpathDefaultNamespaces: dict[int, str | None] = {}
         # Element identities that came from an included/imported schema
         # document. ``id`` uniqueness is an XML (per-document) rule, so
         # components spliced from another document must not be compared
         # against the main document's ids.
         self._composedElementIds: set[int] = set()
+        # Source schema-document root per element spliced in from an
+        # included/imported document. A ``xs:defaultOpenContent`` is
+        # scoped to the schema document a complex type is declared in
+        # (XSD 1.1 §3.4.2.4), so an inherited default must be looked up
+        # on the type's own source document rather than the host schema.
+        self._composedSchemaRoots: dict[int, Any] = {}
         # ``id`` attributes on the main document's composition directives
         # (include/import/redefine). The directives are removed before the
         # ER walk, but their ids still take part in the document's xs:ID
@@ -275,6 +299,11 @@ class PyXSD:
         # For each redefined ``(base path, kind, name)``, the
         # ``_composeStack`` snapshot at its first redefine.
         self._redefineOrigins: dict[tuple[str, str, str], tuple[str, ...]] = {}
+        # For each overridden ``(base path, symbol space, name)``, the
+        # ``_composeStack`` snapshot at its first override. A later
+        # override of the same base component from an unrelated ancestry
+        # is a conflict (the override duplicate rule).
+        self._overrideOrigins: dict[tuple[str, str, str], tuple[str, ...]] = {}
         # Namespaces for which a schema was supplied or successfully
         # loaded. A namespace-only import of one of these is satisfied by
         # that supply rather than an unresolved hint.
@@ -418,6 +447,47 @@ class PyXSD:
         ("noNamespaceSchemaLocation", "anyURI"),
     )
 
+    #: The built-in attribute declarations of the XLink 1.0 namespace
+    #: (http://www.w3.org/1999/xlink). XSD 1.1 §4.2.3 resolves a
+    #: namespace name to the schema for that namespace; the XLink
+    #: vocabulary is available without retrieving ``xlink.xsd``. The
+    #: declarations are typed as strings, a safe under-approximation of
+    #: the canonical schema's token/anyURI/NCName restrictions (the xml
+    #: built-in attributes are typed the same way).
+    _XLINK_BUILTIN_ATTRIBUTES = (
+        "type",
+        "href",
+        "role",
+        "arcrole",
+        "title",
+        "show",
+        "actuate",
+        "label",
+        "from",
+        "to",
+    )
+
+    def _injectXlinkNamespaceAttributes(self, schemaRoot: Any) -> None:
+        """Registers the built-in XLink attribute declarations.
+
+        A conforming processor resolves the XLink namespace to a schema,
+        so ``<xs:attribute ref="xlink:type"/>`` resolves even when the
+        (remote) ``xlink.xsd`` is unreachable and a namespace-only
+        ``xs:import`` of the XLink namespace is satisfied. As with the
+        ``xml``/``xsi`` built-ins, a user document targeting the XLink
+        namespace is not exempted (its declarations stay subject to the
+        ordinary legality checks); only these injected components are
+        recorded as built-ins.
+        """
+        for local in self._XLINK_BUILTIN_ATTRIBUTES:
+            attributeElement = ET.Element(
+                clark(XSD_NS, "attribute"),
+                {"name": local, "type": clark(XSD_NS, "string")},
+            )
+            self._namespaceOverrides[id(attributeElement)] = XLINK_NS
+            self._injectedBuiltinIds.add(id(attributeElement))
+            schemaRoot.append(attributeElement)
+
     def _injectXsiNamespaceAttributes(self, schemaRoot: Any) -> None:
         """Registers the built-in XML-Schema-instance attribute declarations.
 
@@ -469,6 +539,12 @@ class PyXSD:
                 raise PyXSDError(f"the schema file is not well-formed XML: {e}") from e
         logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")
 
+        # XSD 1.1 §4.2.2 conditional inclusion runs on every schema document
+        # before anything else, so the element-representative walk never sees
+        # a declaration a ``vc:*`` selector excludes. Included and imported
+        # documents are filtered as they are parsed (``_parseIncludedSchema``).
+        apply_conditional_inclusion(root, self.namespaceContext, self.report)
+
         baseDir, visited = self._schemaCompositionContext()
         # Documents already fully composed; their components must not be
         # spliced twice (diamond includes) and a repeat encounter is not
@@ -486,6 +562,7 @@ class PyXSD:
         if getattr(self.mode, "namespaces", "legacy") == "strict":
             self._injectXmlNamespaceAttributes(root)
             self._injectXsiNamespaceAttributes(root)
+            self._injectXlinkNamespaceAttributes(root)
 
         # XSD 1.1 allows a local element or attribute declaration to state
         # its own target namespace, but only inside an xs:restriction
@@ -501,6 +578,7 @@ class PyXSD:
         self.schemaContext.namespace_overrides = dict(self._namespaceOverrides)
         self.schemaContext.injected_builtin_ids = set(self._injectedBuiltinIds)
         self.schemaContext.form_defaults = dict(self._formDefaults)
+        self.schemaContext.xpath_default_namespaces = dict(self._xpathDefaultNamespaces)
         schemaER = ElementRepresentative.factory(root, None)
         if schemaER is None or schemaER.__class__.__name__ != "Schema":
             # A document that is not an XML Schema at all (for example
@@ -533,6 +611,21 @@ class PyXSD:
         remember_components(self.components)
         self._reportDeclarationIssues(schemaER)
         self._checkKeyrefReferences(schemaER)
+        # After the declaration walk (which parses every explicit
+        # ``xs:openContent`` and the host document's
+        # ``xs:defaultOpenContent``), attach the applicable schema default
+        # to each complex type that declares none of its own.
+        self._applyDefaultOpenContent(schemaER)
+        # XSD 1.1 §3.1.2: attach each schema document's default attribute
+        # group to the complex types it declares, unless the type sets
+        # ``defaultAttributesApply="false"``. Runs before class building so
+        # ``resolveAttributeGroupRefs`` folds the group in with the
+        # explicit references.
+        self._applyDefaultAttributes(schemaER)
+        # With every type's effective open content settled (explicit or
+        # inherited default), check the open-content derivation rules
+        # (mode rank and wildcard subset for restriction/extension).
+        self._reportOpenContentDerivations(schemaER)
 
         # The schema root is itself the instance class used to dispatch
         # the document root's element declarations.
@@ -548,6 +641,14 @@ class PyXSD:
             for typeER in entries:
                 if componentKind(typeER) != "type" or id(typeER) in built:
                     continue
+                if getattr(typeER, "_alternativeInline", False):
+                    # An ``xs:alternative``'s inline type is built on
+                    # demand (when a test selects it, or when the
+                    # derivation check needs it), never eagerly: building
+                    # every one here would surface an unimplemented base
+                    # as a schema error even for alternatives the instance
+                    # phase never selects.
+                    continue
                 built.add(id(typeER))
                 cls = typeER.clsFor(self)
                 self.classes[typeER.name] = cls
@@ -559,6 +660,7 @@ class PyXSD:
         self._checkSubstitutionGroupExclusions(schemaER)
         self._checkValueConstraints(schemaER)
         self._checkTypeReferences(schemaER)
+        self._checkAlternatives(schemaER)
 
         return None
 
@@ -636,6 +738,218 @@ class PyXSD:
                 code, message = misplacement
                 self.report.add_error(message, code=code)
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _applyDefaultOpenContent(self, schemaER: Any) -> None:
+        """Attaches each schema document's default open content to its types.
+
+        XSD 1.1 §3.4.2.4: the ``xs:defaultOpenContent`` child of the
+        ``xs:schema`` ancestor element supplies the {open content} of a
+        complex type with no explicit ``xs:openContent``, when the type's
+        explicit content type is non-empty or ``appliesToEmpty`` is true.
+        The default is scoped to the schema *document* a type is declared
+        in, so a type spliced in from an include/import looks up its own
+        document's default (which may be absent), never the host's.
+        """
+        mainDefault = getattr(schemaER, "defaultOpenContent", None)
+        composedDefaults = self._composedDefaultOpenContent()
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "ComplexType":
+                sourceRoot = self._composedSchemaRoots.get(id(er.xsdElement))
+                if sourceRoot is None:
+                    default = mainDefault
+                else:
+                    default = composedDefaults.get(id(sourceRoot))
+                if default is not None and er.acceptsDefaultOpenContent(
+                    appliesToEmpty=default.applies_to_empty
+                ):
+                    er.openContent = default.component()
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _applyDefaultAttributes(self, schemaER: Any) -> None:
+        """Attaches each schema document's default attribute group to its types.
+
+        XSD 1.1 §3.1.2: the ``defaultAttributes`` attribute of an
+        ``xs:schema`` names a global attribute group whose {attribute uses}
+        and {attribute wildcard} are added to every complex type definition
+        declared in that same schema document, unless the type sets
+        ``defaultAttributesApply="false"``. The default is scoped to the
+        schema *document* a type is declared in (open044/open205), so a type
+        spliced in from an include/import/redefine looks up its own
+        document's group (which may be absent), never the host's. Types
+        written inside an ``xs:override`` are scoped to the overridden
+        document by ``_spliceOverride`` (ii08/ii10).
+        """
+        mainGroup = self._resolveDefaultAttributeGroup(schemaER.xsdElement)
+        composedGroups = self._composedDefaultAttributeGroups()
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "ComplexType":
+                sourceRoot = self._composedSchemaRoots.get(id(er.xsdElement))
+                group = mainGroup if sourceRoot is None else composedGroups.get(id(sourceRoot))
+                if group is not None and er.defaultAttributesApplies():
+                    er.defaultAttributeGroup = group
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _composedDefaultAttributeGroups(self) -> dict[int, Any]:
+        """Resolves every composed schema document's ``defaultAttributes``.
+
+        Returns ``id(source schema root) -> AttributeGroup | None``.
+        """
+        result: dict[int, Any] = {}
+        roots = list({id(root): root for root in self._composedSchemaRoots.values()}.values())
+        for root in roots:
+            key = id(root)
+            if key in result:
+                continue
+            result[key] = self._resolveDefaultAttributeGroup(root)
+        return result
+
+    def _resolveDefaultAttributeGroup(self, root: Any) -> Any:
+        """Resolves a schema document's ``defaultAttributes`` QName.
+
+        Returns the global ``AttributeGroup`` the value names, or ``None``
+        when the schema declares no default. A value that does not resolve
+        to a global attribute group in the named namespace is a schema error
+        (si01/open203/open204).
+        """
+        raw = root.get("defaultAttributes")
+        if raw is None:
+            return None
+        value = raw.strip()
+        try:
+            resolved = self.namespaceContext.resolve(root, value)
+        except NamespaceError:
+            self.report.add_error(
+                f"the defaultAttributes value '{value}' uses a prefix that is not bound in scope",
+                code="unknown-namespace-prefix",
+                phase="schema",
+            )
+            return None
+        local = local_name(resolved)
+        uri = namespace_of(resolved)
+        for entries in self.components.values():
+            for entry in entries:
+                if type(entry).__name__ != "AttributeGroup":
+                    continue
+                if not entry.checkTopLevelType():
+                    continue
+                if entry.name != local:
+                    continue
+                if uri is None or entry.getNamespace() == uri:
+                    return entry
+        self.report.add_error(
+            f"the defaultAttributes attribute group '{value}' could not be "
+            "resolved to a global xs:attributeGroup",
+            code="unknown-attributeGroup",
+            phase="schema",
+        )
+        return None
+
+    def _reportOpenContentDerivations(self, schemaER: Any) -> None:
+        """Reports open-content derivation violations on complex types.
+
+        XSD 1.1 §3.4.6.2 clause 1.4.3.2.2 and §3.4.6.4 pin the relation
+        between a derived type's effective open content and its base's:
+        a restriction may not widen the mode/wildcard (with the
+        unobservable empty-particle exception) and an extension may not
+        narrow them. Runs after the default-open-content pass so a type
+        that inherits its open content is compared with its final
+        component. Violations are reported as ``particle-restriction``
+        (the existing derivation code); unresolved bases and non-complex
+        derivations are skipped.
+        """
+        from pyxsd.open_content import open_content_derivation_problem
+
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "ComplexType":
+                self._checkOneOpenContentDerivation(er, open_content_derivation_problem)
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkOneOpenContentDerivation(self, er: Any, checker: Any) -> None:
+        """Checks one complex type's open-content derivation, if applicable."""
+        derivation = er.getDerivation()
+        if derivation not in ("restriction", "extension"):
+            return
+        if er._firstProcessedChild(er, "SimpleContent") is not None:
+            return
+        base = er._baseComplexType()
+        if base is None or base._firstProcessedChild(base, "SimpleContent") is not None:
+            return
+        derived = er.effectiveOpenContent()
+        base_open = base.effectiveOpenContent()
+        if derived is None and base_open is None:
+            return
+        reason = checker(
+            derived,
+            base_open,
+            derivation,
+            derived_model=compile_content_model(er, self),
+            base_model=compile_content_model(base, self),
+            target_namespace=er.getNamespace(),
+            derived_variety=er._effectiveContentVariety(),
+            base_variety=base._effectiveContentVariety(),
+        )
+        if reason is not None:
+            self.report.add_error(
+                f"type '{getattr(er, 'name', '?')}' has invalid open content: {reason}",
+                code="particle-restriction",
+            )
+
+    def _composedDefaultOpenContent(self) -> dict[int, Any]:
+        """Parses the ``defaultOpenContent`` of every composed schema document.
+
+        The element is not part of the spliced main tree, so its legality
+        is checked here through the same helper the declaration walk uses
+        for the host document. Returns ``id(source schema root) ->
+        DefaultOpenContent | None``.
+        """
+        from pyxsd.open_content import default_open_content_element, parse_default_open_content
+
+        result: dict[int, Any] = {}
+        roots = list({id(root): root for root in self._composedSchemaRoots.values()}.values())
+        for root in roots:
+            key = id(root)
+            if key in result:
+                continue
+            element = default_open_content_element(root)
+            if element is None:
+                result[key] = None
+                continue
+            result[key] = parse_default_open_content(
+                element,
+                report_error=lambda message, code: self.report.add_error(
+                    message, code=code, phase="schema"
+                ),
+                target_namespace=root.get("targetNamespace"),
+                resolve_qname=self._openContentResolver(element),
+            )
+        return result
+
+    def _openContentResolver(self, element: Any) -> Any:
+        """A ``notQName`` QName expander for a composed document's element."""
+        context = self.namespaceContext
+
+        def resolve(token: str) -> str:
+            return context.resolve(element, token)
+
+        return resolve
 
     def _checkKeyrefReferences(self, schemaER: Any) -> None:
         """Checks every keyref's ``refer`` and every constraint
@@ -2244,9 +2558,13 @@ class PyXSD:
         every representative once, so uniqueness is tracked here rather
         than on each subclass.
         """
-        value = getattr(er, "id", None)
-        if value is None:
+        raw = getattr(er, "id", None)
+        if raw is None:
             return
+        # ``id`` is an ``xs:ID`` (an ``xs:NCName`` with whiteSpace=collapse),
+        # so compare the collapsed value: two ids differing only in
+        # surrounding whitespace are the same XML ID.
+        value = str(raw).strip()
         try:
             NCName(value)
         except TypeError:
@@ -2316,11 +2634,12 @@ class PyXSD:
             if kind is None or not er.isGlobalDeclaration():
                 return
             namespace = er.getNamespace()
-            if namespace == XML_NS:
-                # The XML-namespace attributes (xml:lang, xml:space, ...)
-                # are registered as built-ins before the ER run and may
-                # also be imported from the XML namespace schema; a
-                # repeat there is not an authoring error.
+            if namespace in (XML_NS, XLINK_NS):
+                # The XML-namespace (xml:lang, xml:space, ...) and XLink
+                # attribute declarations are registered as built-ins
+                # before the ER run and may also be reached from the
+                # namespace's own schema; a repeat there is not an
+                # authoring error.
                 return
             key = (kind, namespace, name)
             label = {
@@ -2352,7 +2671,7 @@ class PyXSD:
         while node is not None:
             element = getattr(node, "xsdElement", None)
             if element is not None and any(
-                key.startswith(f"{{{_VC_NS}}}") for key in element.attrib
+                key.startswith(f"{{{VC_NS}}}") for key in element.attrib
             ):
                 return True
             node = getattr(node, "parent", None)
@@ -2671,13 +2990,35 @@ class PyXSD:
         """The namespaces a schema reference may resolve into.
 
         Every composed target namespace and satisfied import, plus the
-        namespaces XSD defines itself (XML Schema, XSI and ``xml``) and
-        the unnamed space.
+        namespaces XSD defines itself (XML Schema, XSI, ``xml`` and
+        XLink) and the unnamed space.
         """
         loaded: set = set(self._composedTargetNamespaces)
         loaded.update(self._resolvedImports)
-        loaded.update({XSD_NS, XSI_NS, XML_NS, None})
+        loaded.update({XSD_NS, XSI_NS, XML_NS, XLINK_NS, None})
         return loaded
+
+    def _checkAlternatives(self, schemaER: Any) -> None:
+        """Resolves and checks every element's XSD 1.1 type alternatives.
+
+        Runs after the generated classes are built, so each alternative's
+        type reference resolves to the same class the instance phase will
+        see.  The heavy lifting (resolving each type and checking it is
+        validly derived from the declared type) lives in
+        :func:`pyxsd.alternatives.check_element_alternatives`.
+        """
+        from pyxsd.alternatives import check_element_alternatives
+
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "Element":
+                check_element_alternatives(er)
+            stack.extend(getattr(er, "processedChildren", None) or ())
 
     def _checkFormDefaults(self, schemaRoot: Any) -> None:
         """Validates ``elementFormDefault``/``attributeFormDefault`` values.
@@ -2977,7 +3318,7 @@ class PyXSD:
         """
         for child in list(schemaRoot):
             local = child.tag.split("}")[-1]
-            if local in ("include", "redefine", "import") and mainDocument:
+            if local in ("include", "redefine", "override", "import") and mainDocument:
                 self._noteDirectiveId(child)
             if local == "include":
                 schemaRoot.remove(child)
@@ -2985,6 +3326,9 @@ class PyXSD:
             elif local == "redefine":
                 schemaRoot.remove(child)
                 self._spliceRedefine(child, schemaRoot, baseDir, visited)
+            elif local == "override":
+                schemaRoot.remove(child)
+                self._spliceOverride(child, schemaRoot, baseDir, visited)
             elif local == "import":
                 schemaRoot.remove(child)
                 if child.get("namespace") == XSD_NS:
@@ -3065,7 +3409,7 @@ class PyXSD:
                 # importing document actually references is fatal; an
                 # unused hint is only a warning.
                 namespace = tag.get("namespace")
-                if strict and namespace and namespace not in (XML_NS, XSD_NS, XSI_NS):
+                if strict and namespace and namespace not in (XML_NS, XLINK_NS, XSD_NS, XSI_NS):
                     otherTargets = self._composedTargetNamespaces - {
                         schemaRoot.get("targetNamespace")
                     }
@@ -3199,6 +3543,7 @@ class PyXSD:
         # main root: ``id`` uniqueness is scoped to a schema document.
         for element in includedRoot.iter():
             self._composedElementIds.add(id(element))
+            self._composedSchemaRoots.setdefault(id(element), includedRoot)
         self._appendNamedComponents(includedRoot, schemaRoot, componentNamespace)
         self._composedDocuments.add(key)
         return None
@@ -3241,6 +3586,7 @@ class PyXSD:
                 phase="schema",
             )
             return None
+        apply_conditional_inclusion(root, self.namespaceContext, self.report)
         return root
 
     def _checkDirectiveAnnotation(self, tag: Any, isImport: bool) -> None:
@@ -3391,6 +3737,7 @@ class PyXSD:
             includedRoot.get("elementFormDefault"),
             includedRoot.get("attributeFormDefault"),
         )
+        sourceXPathDefault = includedRoot.get("xpathDefaultNamespace")
         self._checkFormDefaults(includedRoot)
         for component in list(includedRoot):
             if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
@@ -3398,6 +3745,8 @@ class PyXSD:
                     for element in component.iter():
                         self._namespaceOverrides.setdefault(id(element), namespace)
                         self._formDefaults.setdefault(id(element), sourceDefaults)
+                        if sourceXPathDefault is not None:
+                            self._xpathDefaultNamespaces.setdefault(id(element), sourceXPathDefault)
                 schemaRoot.append(component)
         return None
 
@@ -3461,11 +3810,27 @@ class PyXSD:
                 phase="schema",
             )
         if str(includedPath) in visited:
-            self.report.add_warning(
-                f"the schema '{location}' is already being composed; "
-                "the circular redefine is skipped",
-                code="compose-cycle",
-            )
+            if mainNS is None:
+                # A no-namespace (chameleon) redefiner caught in a cycle
+                # is the disputed W3C schU1 case; it stays a skipped
+                # repetition rather than a rule violation.
+                self.report.add_warning(
+                    f"the schema '{location}' is already being composed; "
+                    "the circular redefine is skipped",
+                    code="compose-cycle",
+                )
+            else:
+                # XSD 1.1 §4.2.4: a schema document must not redefine,
+                # directly or indirectly, a component of a document that
+                # (transitively) redefines it. Unlike an include cycle,
+                # this is a composition rule violation, not a harmless
+                # repetition (IBM S4_2_4 cyclic redefine).
+                self.report.add_error(
+                    f"the schema '{location}' is already being composed; "
+                    "a cyclic redefine is not allowed",
+                    code="compose-invalid",
+                    phase="schema",
+                )
             return None
         redefined: list[tuple[str, str]] = []
         for child in list(redefineTag):
@@ -3497,11 +3862,223 @@ class PyXSD:
         # document; scope ``id`` uniqueness provenance to it.
         for element in includedRoot.iter():
             self._composedElementIds.add(id(element))
+            self._composedSchemaRoots.setdefault(id(element), includedRoot)
         self._appendNamedComponents(includedRoot, schemaRoot, mainNS)
         self._rebindRedefineReferences(redefineTag, redefinedNames, includedNS, mainNS)
         for child in list(redefineTag):
             schemaRoot.append(child)
         return None
+
+    def _spliceOverride(
+        self,
+        overrideTag: Any,
+        schemaRoot: Any,
+        baseDir: Path,
+        visited: set[str],
+    ) -> None:
+        """Splices an ``xs:override`` block (XSD 1.1 §4.2.5).
+
+        Unlike ``xs:redefine`` an override need not modify an existing
+        component: a declaration matching nothing in the target set is
+        silently ignored, not an error (so a brand-new declaration in the
+        overriding document is available, but one written *inside* the
+        override is not added). A match replaces the base component
+        wholesale — the base copy is dropped from the composed tree so a
+        reference from inside the overriding declaration resolves to the
+        override, not to the definition it replaced (over011/over014).
+        The target set is the composed base document (its own includes
+        and overrides included), which is why the base is spliced before
+        the match.
+        """
+        targets = self._collectOverrideTargets(overrideTag)
+        self._checkOverrideTargetDuplicates(targets)
+        location = overrideTag.get("schemaLocation")
+        if not location:
+            self.report.add_error(
+                "an override tag has no schemaLocation; the schema could not be composed",
+                code="schema-compose",
+            )
+            return None
+        includedRoot = self._parseIncludedSchema(location, baseDir, missing_severity="warning")
+        if includedRoot is None:
+            # An override with content needs its base document: without it
+            # the target set cannot be established. An override carrying
+            # only annotations is just the missing-resource warning.
+            hasContent = any(
+                isinstance(child.tag, str) and child.tag.split("}")[-1] != "annotation"
+                for child in list(overrideTag)
+            )
+            if hasContent:
+                self.report.add_error(
+                    f"the base schema '{location}' for the override could not be opened",
+                    code="schema-compose",
+                    phase="schema",
+                )
+            return None
+        mainNS = schemaRoot.get("targetNamespace")
+        includedNS = includedRoot.get("targetNamespace")
+        includedPath = (baseDir / location).resolve()
+        if includedNS is not None and (mainNS is None or includedNS != mainNS):
+            # XSD 1.1 §4.2.5 clause 2: a namespaced base may only be
+            # overridden by a document with the identical target
+            # namespace; a no-namespace base may be ported into a
+            # namespaced overrider (chameleon, below).
+            self.report.add_error(
+                f"the overridden schema '{location}' declares targetNamespace "
+                f"'{includedNS}', which does not match the overriding schema's "
+                f"namespace ({mainNS or 'none'})",
+                code="compose-invalid",
+                phase="schema",
+            )
+        if str(includedPath) in visited:
+            self.report.add_warning(
+                f"the schema '{location}' is already being composed; "
+                "the circular override is skipped",
+                code="compose-cycle",
+            )
+            return None
+        if includedNS is None and mainNS is not None:
+            # Chameleon pre-processing (Appendix F.2 on top of F.1): a
+            # no-namespace base is ported into the overrider's namespace
+            # before the override is applied.
+            includedRoot.set("targetNamespace", mainNS)
+            self._applyChameleonNamespace(includedRoot, mainNS)
+            includedNS = mainNS
+        if includedNS:
+            self._composedTargetNamespaces.add(includedNS)
+        self._checkOverrideDuplicates(includedPath, location, targets)
+        # Compose the base document first so its effective component set
+        # (its own includes/overrides included) is the override's target.
+        self._composeStack.append(str(includedPath))
+        try:
+            self._spliceComposedSchemas(
+                includedRoot, includedPath.parent, visited | {str(includedPath)}
+            )
+        finally:
+            self._composeStack.pop()
+        targetKeys = {(space, name) for space, name, _ in targets}
+        present: set[tuple[str, str]] = set()
+        for component in list(includedRoot):
+            if not isinstance(component.tag, str):
+                continue
+            local = component.tag.split("}")[-1]
+            space = self._OVERRIDE_SYMBOL_SPACES.get(local)
+            name = component.get("name")
+            if space is None or not name or name.endswith("|base"):
+                continue
+            present.add((space, name))
+            if (space, name) in targetKeys:
+                # The overriding definition replaces the base wholesale:
+                # dropping the base copy makes the override the unique
+                # plain-named component, so every reference (including a
+                # self-reference inside the override) resolves to it. The
+                # base cannot be kept under the redefine ``|base`` name
+                # because an attribute or notation name is NCName-checked.
+                includedRoot.remove(component)
+        # The base document's components come from another schema
+        # document; scope ``id`` uniqueness provenance to it.
+        for element in includedRoot.iter():
+            self._composedElementIds.add(id(element))
+            self._composedSchemaRoots.setdefault(id(element), includedRoot)
+        self._appendNamedComponents(
+            includedRoot, schemaRoot, includedNS if includedNS is not None else mainNS
+        )
+        for space, name, child in targets:
+            if (space, name) in present:
+                # XSD 1.1 §3.4.2.4 / §3.1.2: for a type defined *within*
+                # ``xs:override`` the relevant default open content (and
+                # default attribute group) is the overridden document's,
+                # not the overriding document's. Scoping the override
+                # children to the base root keeps the host's defaults off
+                # them (open043/open045).
+                for element in child.iter():
+                    self._composedSchemaRoots.setdefault(id(element), includedRoot)
+                schemaRoot.append(child)
+        # The base document has been composed; a later include/import of
+        # the same document must not splice it a second time (XSD
+        # composition treats one document once, §4.2.3). ``xs:override``
+        # itself does not consult this set, so two overrides of the same
+        # base are still reprocessed and reported as a conflict.
+        self._composedDocuments.add(str(includedPath))
+        return None
+
+    def _collectOverrideTargets(self, overrideTag: Any) -> list[tuple[str, str, Any]]:
+        """Returns the ``(symbol space, name, child)`` of an override block.
+
+        Reports ``override-invalid`` for a child outside the XSD 1.1
+        §4.2.5 grammar or one that does not name a component; the
+        offending child is dropped so it is not spliced in.
+        """
+        targets: list[tuple[str, str, Any]] = []
+        for child in list(overrideTag):
+            if not isinstance(child.tag, str):
+                continue
+            local = child.tag.split("}")[-1]
+            if local == "annotation":
+                continue
+            space = self._OVERRIDE_SYMBOL_SPACES.get(local)
+            if space is None:
+                self.report.add_error(
+                    f"<override> does not allow a '{local}' child",
+                    code="override-invalid",
+                    phase="schema",
+                )
+                continue
+            name = child.get("name")
+            if not name:
+                self.report.add_error(
+                    f"the <override> child '{local}' must name a schema component",
+                    code="override-invalid",
+                    phase="schema",
+                )
+                continue
+            targets.append((space, name, child))
+        return targets
+
+    def _checkOverrideTargetDuplicates(self, targets: list[tuple[str, str, Any]]) -> None:
+        """Reports one component named twice inside a single override block."""
+        seen: set[tuple[str, str]] = set()
+        for space, name, _ in targets:
+            key = (space, name)
+            if key in seen:
+                self.report.add_error(
+                    f"the component '{name}' is declared more than once in <override>",
+                    code="override-invalid",
+                    phase="schema",
+                )
+            seen.add(key)
+
+    def _checkOverrideDuplicates(
+        self, includedPath: Path, location: str, targets: list[tuple[str, str, Any]]
+    ) -> None:
+        """Reports a base component overridden twice from unrelated ancestries.
+
+        An override chain (the outer block targets the inner redefining
+        document) has a different base key and is not a conflict; the same
+        base component reached twice from the same or unrelated ancestry
+        is (over022).
+        """
+        current = tuple(self._composeStack)
+        seen: list[tuple[str, str, str]] = []
+        for space, name, _ in targets:
+            key = (str(includedPath), space, name)
+            origin = self._overrideOrigins.get(key)
+            if origin is None:
+                seen.append(key)
+                continue
+            nested = origin != current and (
+                _stackPrefix(origin, current) or _stackPrefix(current, origin)
+            )
+            if nested:
+                continue
+            self.report.add_error(
+                f"the component '{name}' of the overridden schema "
+                f"'{location}' is overridden more than once",
+                code="override-invalid",
+                phase="schema",
+            )
+        for key in seen:
+            self._overrideOrigins[key] = current
 
     def _checkRedefineTargets(
         self, includedRoot: Any, location: str, redefined: list[tuple[str, str]]
@@ -3530,6 +4107,20 @@ class PyXSD:
                 )
 
     _COMPOSABLE_REDEFINE_KINDS = ("complexType", "simpleType", "group", "attributeGroup")
+
+    #: The XSD symbol spaces an ``xs:override`` may replace, keyed by the
+    #: declaration's element name. ``simpleType`` and ``complexType``
+    #: share the ``type`` space, so an override may replace a complex
+    #: type with a simple type of the same name (over013).
+    _OVERRIDE_SYMBOL_SPACES: ClassVar[dict[str, str]] = {
+        "simpleType": "type",
+        "complexType": "type",
+        "element": "element",
+        "attribute": "attribute",
+        "group": "group",
+        "attributeGroup": "attributeGroup",
+        "notation": "notation",
+    }
 
     def _declaredComponentKinds(self, root: Any) -> set[tuple[str, str]]:
         """Returns ``(kind, name)`` for the global components *root* declares.
@@ -3771,14 +4362,14 @@ class PyXSD:
                 tagLocal = element.tag.split("}")[-1]
                 base = element.get("base")
                 if base and base.split(":")[-1] in redefinedNames:
-                    element.set("base", f"{base.split(':')[-1]}|base")
+                    element.set("base", _redefined_qname(base))
                 localRef = element.get("ref")
                 if (
                     tagLocal in ("group", "attributeGroup")
                     and localRef
                     and localRef.split(":")[-1] in redefinedNames
                 ):
-                    element.set("ref", f"{localRef.split(':')[-1]}|base")
+                    element.set("ref", _redefined_qname(localRef))
                 if includedNS is not None or mainNS is None:
                     continue
                 candidates = []
@@ -3830,6 +4421,19 @@ class PyXSD:
         # Binding diagnostics from here on belong to the instance phase.
         self.report.phase = "instance"
 
+        # XSD 1.1 attribute inheritance and conditional type assignment
+        # both need to relate a bound element to its ancestors: the parent
+        # links are indexed once, and the governing class of each bound
+        # element is recorded as binding proceeds (schema_base).
+        self._elementParents: dict[int, Any] = {}
+        self._elementTypes: dict[int, Any] = {}
+        stack = [self.xmlRoot]
+        while stack:
+            parent = stack.pop()
+            for child in parent:
+                self._elementParents[id(child)] = parent
+                stack.append(child)
+
         schemaClass = self.getClasses()["schema"]
 
         schemaClassInstance = schemaClass()
@@ -3838,11 +4442,10 @@ class PyXSD:
 
         topLevelDescriptors = schemaClassInstance._getElements()
 
-        if not topLevelDescriptors:
-            raise PyXSDError(
-                "invalid XML Schema - the parser could not find any root elements in the schema"
-            )
-
+        # A schema with no global element declarations is legal (and is what
+        # conditional inclusion leaves behind when it empties a document):
+        # there is then no descriptor for the root to match, and the
+        # ``unknown-root`` branch below reports it instead of aborting.
         if getattr(self.mode, "namespaces", "legacy") == "strict":
             matching = [
                 descriptor
@@ -4087,7 +4690,7 @@ class PyXSD:
                     except (TypeError, ValueError) as exc:
                         self.report.add_error(
                             f"the root element '{rootName}' has an invalid default value: {exc}",
-                            code="default",
+                            code=getattr(exc, "code", "default"),
                             element=rootName,
                         )
                 else:
@@ -4098,7 +4701,7 @@ class PyXSD:
                             f"the root element '{rootName}' has an invalid "
                             f"{getattr(dataTypeClass, 'name', dataTypeClass.__name__)} "
                             f"value: {exc}",
-                            code="value",
+                            code=getattr(exc, "code", "value"),
                             element=rootName,
                         )
                         if self.mode.invalid_value == "raw":
@@ -4190,6 +4793,22 @@ class PyXSD:
 
         xsiTypeName = xsi.xsi_type_name(self.xmlRoot)
         if xsiTypeName is None:
+            # xsi:type takes precedence over conditional type assignment
+            # (XSD 1.1 §3.3.4.1); without it, the declaration's
+            # alternatives select the governing type.
+            from pyxsd.alternatives import ERROR_TYPE, select_alternative_type
+
+            selected = select_alternative_type(rootElement, self.xmlRoot, self)
+            if selected is ERROR_TYPE:
+                self.report.add_error(
+                    f"root element '{rootElement.name}' selects the xs:error "
+                    "type, whose value space is empty, so it cannot be valid",
+                    code="alternative-error",
+                    element=rootElement.name,
+                )
+                return subCls
+            if selected is not None:
+                return selected
             return subCls
 
         resolvedName = self._resolveXsiTypeName(xsiTypeName, self.xmlRoot)

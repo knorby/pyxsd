@@ -100,6 +100,10 @@ class Element(ElementRepresentative):
         # Identity constraints (xs:key/xs:unique/xs:keyref) declared
         # inside this element record themselves here.
         self.identities = []
+        # XSD 1.1 type alternatives (xs:alternative) record themselves
+        # here in declaration order; the schema phase compiles them and
+        # the instance phase selects among them.
+        self.alternatives = []
         super().__init__(xsdElement, parent)
         # A stray ``element`` declaration may appear inside a parent
         # that carries no element list (for example an identity
@@ -514,6 +518,32 @@ class Element(ElementRepresentative):
             self._checkElementFinalAndBlock()
         else:
             self._checkLocalElementAttributes()
+        self._checkElementAlternatives()
+
+    def _checkElementAlternatives(self) -> None:
+        """Compiles the element's XSD 1.1 ``xs:alternative`` children.
+
+        The alternatives are collected in declaration order and their
+        ``test`` expressions parsed with the CTA XPath subset; the type
+        references and the derivation rules are checked once generated
+        classes exist (see :func:`pyxsd.alternatives.check_element_alternatives`).
+        A non-final alternative must carry a ``test``: only the final
+        entry may omit it to become the default (XSD 1.1 §3.3.2.1, the
+        ``{default type definition}`` mapping).
+        """
+        alternatives = getattr(self, "alternatives", None) or []
+        if not alternatives:
+            return
+        from pyxsd.alternatives import compile_alternatives
+
+        self.compiledAlternatives = compile_alternatives(self)
+        for index, alternative in enumerate(alternatives):
+            if alternative.test is None and index != len(alternatives) - 1:
+                self._reportSchemaError(
+                    f"type alternative {index + 1} of element '{self.name}' has "
+                    "no test but is not the final alternative",
+                    code="alternative-invalid",
+                )
 
     def _checkElementName(self) -> None:
         """Reports a ``name`` that is not an ``xs:NCName``.

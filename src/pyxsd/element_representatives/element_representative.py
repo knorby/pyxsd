@@ -1391,9 +1391,22 @@ def set_active_form_defaults(
     context_or_ambient().form_defaults = dict(defaults)
 
 
+def get_active_xpath_default_namespaces() -> dict[int, str | None]:
+    """Returns a snapshot of the active source XPath-default map.
+
+    Only included/imported documents that declare an
+    ``xpathDefaultNamespace`` are recorded, so the main document's value
+    still applies to components that carry none of their own. Read once,
+    at ``Schema`` construction time.
+    """
+    return dict(context_or_ambient().xpath_default_namespaces)
+
+
 # Import all of the tag-specific classes after the ER class definition
 # (the tag modules import this module's ElementRepresentative).  This
 # replaces the old exec-based import loop.
+from pyxsd.alternatives import AlternativeER  # noqa: E402
+from pyxsd.assertions import Assert, AssertionFacet  # noqa: E402
 from pyxsd.element_representatives.all import All  # noqa: E402
 from pyxsd.element_representatives.annotation import Annotation  # noqa: E402
 from pyxsd.element_representatives.any import Any  # noqa: E402
@@ -1406,6 +1419,7 @@ from pyxsd.element_representatives.complex_type import ComplexType  # noqa: E402
 from pyxsd.element_representatives.documentation import Documentation  # noqa: E402
 from pyxsd.element_representatives.element import Element  # noqa: E402
 from pyxsd.element_representatives.enumeration import Enumeration  # noqa: E402
+from pyxsd.element_representatives.explicit_timezone import ExplicitTimezone  # noqa: E402
 from pyxsd.element_representatives.extension import Extension  # noqa: E402
 from pyxsd.element_representatives.fraction_digits import FractionDigits  # noqa: E402
 from pyxsd.element_representatives.group import Group  # noqa: E402
@@ -1435,6 +1449,7 @@ from pyxsd.element_representatives.total_digits import TotalDigits  # noqa: E402
 from pyxsd.element_representatives.union import Union  # noqa: E402
 from pyxsd.element_representatives.white_space import WhiteSpace  # noqa: E402
 from pyxsd.element_representatives.xsd_type import XsdType  # noqa: E402
+from pyxsd.open_content import DefaultOpenContentER, OpenContentER  # noqa: E402
 
 TAG_CLASSES = {
     "Element": Element,
@@ -1455,6 +1470,11 @@ TAG_CLASSES = {
     "Group": Group,
     "Any": Any,
     "AnyAttribute": AnyAttribute,
+    "OpenContent": OpenContentER,
+    "DefaultOpenContent": DefaultOpenContentER,
+    "Assert": Assert,
+    "Assertion": AssertionFacet,
+    "Alternative": AlternativeER,
     "Key": Key,
     "Keyref": Keyref,
     "Unique": Unique,
@@ -1464,6 +1484,7 @@ TAG_CLASSES = {
     "SimpleContent": SimpleContent,
     "ComplexContent": ComplexContent,
     "Enumeration": Enumeration,
+    "ExplicitTimezone": ExplicitTimezone,
     "Pattern": Pattern,
     "Length": Length,
     "MinLength": MinLength,

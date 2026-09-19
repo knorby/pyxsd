@@ -57,6 +57,8 @@ __all__ = [
     "Byte",
     "Date",
     "DateTime",
+    "DateTimeStamp",
+    "DayTimeDuration",
     "Decimal",
     "Double",
     "Duration",
@@ -89,6 +91,7 @@ __all__ = [
     "UnsignedLong",
     "UnsignedShort",
     "XsdDataType",
+    "YearMonthDuration",
 ]
 
 
@@ -484,12 +487,31 @@ class HexBinary(_PatternString):
 # ---------------------------------------------------------------------------
 
 _TIMEZONE = r"(?:Z|[+-](?:0[0-9]|1[0-3]):[0-5][0-9]|[+-]14:00)?"
+# ``dateTimeStamp`` requires an explicit timezone (XSD 1.1 §3.4.28); the
+# same offset grammar without the optional marker.
+_TIMEZONE_REQUIRED = r"(?:Z|[+-](?:0[0-9]|1[0-3]):[0-5][0-9]|[+-]14:00)"
 # XSD 1.1 allows year 0000 (1 BCE, optionally written -0000) for the
 # temporal types.  Extended years still may not carry redundant leading
 # zeros, so five or more digits must start with a non-zero digit.
 _YEAR = r"-?(?:[0-9]{4}|[1-9][0-9]{4,})"
 _MONTH = r"(?:0[1-9]|1[0-2])"
 _DAY = r"(?:0[1-9]|[12][0-9]|3[01])"
+#: The largest day number each month may take in ``gMonthDay``.  February
+#: accepts 29 because no year (and so no leap-day rule) is present.
+_MONTH_DAY_MAX = {
+    1: 31,
+    2: 29,
+    3: 31,
+    4: 30,
+    5: 31,
+    6: 30,
+    7: 31,
+    8: 31,
+    9: 30,
+    10: 31,
+    11: 30,
+    12: 31,
+}
 _HOUR = r"(?:[01][0-9]|2[0-3])"
 _MINUTE = r"(?:[0-5][0-9])"
 _SECOND = r"(?:[0-5][0-9](?:\.[0-9]+)?)"
@@ -502,6 +524,21 @@ class DateTime(_PatternString):
 
     name = "dateTime"
     _pattern = re.compile(rf"{_YEAR}-{_MONTH}-{_DAY}T{_TIME_BODY}{_TIMEZONE}")
+
+
+class DateTimeStamp(DateTime):
+    """``xs:dateTimeStamp``: an ``xs:dateTime`` with a required timezone.
+
+    XSD 1.1 derives ``dateTimeStamp`` from ``dateTime`` by fixing the
+    ``explicitTimezone`` facet to ``required``, so the lexical space is
+    ``dateTime``'s with the timezone fragment made mandatory.  The value
+    space is therefore ``dateTime`` restricted to values carrying an
+    explicit offset; the inherited ``_datetime_key`` gives the same
+    instant-based ordering and equality.
+    """
+
+    name = "dateTimeStamp"
+    _pattern = re.compile(rf"{_YEAR}-{_MONTH}-{_DAY}T{_TIME_BODY}{_TIMEZONE_REQUIRED}")
 
 
 class Date(_PatternString):
@@ -545,6 +582,18 @@ class GMonthDay(_PatternString):
     name = "gMonthDay"
     _pattern = re.compile(rf"--{_MONTH}-{_DAY}{_TIMEZONE}")
 
+    def __new__(cls, val: str) -> Self:
+        instance = super().__new__(cls, val)
+        # The lexical grammar admits day 31 in every month, but the value
+        # space holds only real month/day combinations: ``--02-30`` and
+        # ``--02-31`` (and April/June/September/November 31) are invalid.
+        text = str(instance)
+        month = int(text[2:4])
+        day = int(text[5:7])
+        if day > _MONTH_DAY_MAX[month]:
+            raise TypeError(f"Not a valid {cls.name}: {instance!r}")
+        return instance
+
 
 class GDay(_PatternString):
     """``xs:gDay``: e.g. ``---30``."""
@@ -558,17 +607,61 @@ _DURATION_PARTS = re.compile(
     r"(?:T(?=\d)(\d+H)?(\d+M)?(\d+(?:\.\d+)?S)?)?"
 )
 
+#: ``yearMonthDuration``'s lexical space (XSD 1.1 §3.4.26): only the year
+#: and month fragments may appear, and at least one must be present.
+_YEAR_MONTH_DURATION = re.compile(r"-?P(?:(?:[0-9]+Y)(?:[0-9]+M)?|[0-9]+M)")
+
+#: A single day-time time fragment: ``H``/``M``/``S`` in order, at least
+#: one present, with the seconds part optionally fractional.
+_DAY_TIME_TIME = (
+    r"(?:(?:[0-9]+H)(?:[0-9]+M)?(?:[0-9]+(?:\.[0-9]+)?S)?"
+    r"|(?:[0-9]+M)(?:[0-9]+(?:\.[0-9]+)?S)?"
+    r"|[0-9]+(?:\.[0-9]+)?S)"
+)
+#: ``dayTimeDuration``'s lexical space (XSD 1.1 §3.4.27): no year/month
+#: fragments, and a day and/or time fragment must be present.
+_DAY_TIME_DURATION = re.compile(rf"-?P(?:(?:[0-9]+D)(?:T{_DAY_TIME_TIME})?|T{_DAY_TIME_TIME})")
+
 
 class Duration(String):
     """``xs:duration``: e.g. ``P1Y2M3DT4H5M6S``."""
 
     name = "duration"
+    _pattern = _DURATION_PARTS
 
     def __new__(cls, val: str) -> Self:
         text = _ws_collapse(str(val))
-        if _DURATION_PARTS.fullmatch(text) is None:
-            raise TypeError(f"Not a valid Duration: {text!r}")
+        if cls._pattern.fullmatch(text) is None:
+            raise TypeError(f"Not a valid {cls.name}: {text!r}")
         return super().__new__(cls, text)
+
+
+class YearMonthDuration(Duration):
+    """``xs:yearMonthDuration``: a ``duration`` with only year/month fields.
+
+    XSD 1.1 derives this from ``duration`` by restricting the value space
+    to durations whose seconds property is zero, so only the year and
+    month components are allowed (``P1Y``, ``P45M``, ``-P34Y233M``); a
+    day or time field makes the lexical invalid.  Its value space is
+    totally ordered and compares by whole months.
+    """
+
+    name = "yearMonthDuration"
+    _pattern = _YEAR_MONTH_DURATION
+
+
+class DayTimeDuration(Duration):
+    """``xs:dayTimeDuration``: a ``duration`` with only day/time fields.
+
+    XSD 1.1 derives this from ``duration`` by restricting the value space
+    to durations whose months property is zero, so only day, hour, minute
+    and second components are allowed (``P2D``, ``-PT43M4.2S``); a year
+    or month field makes the lexical invalid.  Its value space is totally
+    ordered and compares by total seconds.
+    """
+
+    name = "dayTimeDuration"
+    _pattern = _DAY_TIME_DURATION
 
 
 # ---------------------------------------------------------------------------
@@ -999,32 +1092,51 @@ def _gyearmonth_key(text: str) -> int | tuple[str, str]:
     return _days_from_civil(year, month, 1) * 86400 * 1_000_000 - offset * 1_000_000
 
 
-def _gmonth_key(text: str) -> tuple:
-    """A value-space key for ``xs:gMonth``: ``(month, offset)``."""
+def _gmonth_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:gMonth``: microseconds on a timeline.
+
+    The missing year is fixed to 1972 (a leap year, the reference XSD
+    uses for the recurring types) and the timezone offset shifts the
+    instant, so a month with a later offset can wrap into the neighbouring
+    month.  Comparing the bare ``(month, offset)`` pair would order by
+    offset instead of by instant.
+    """
     match = _TEMPORAL_GMONTH.match(text)
     if match is None:
         return ("lex", text)
-    return (int(match.group(1)), _offset_seconds(match.group(2)))
+    month = int(match.group(1))
+    offset = _offset_seconds(match.group(2))
+    return _days_from_civil(1972, month, 1) * 86400 * 1_000_000 - offset * 1_000_000
 
 
-def _gmonthday_key(text: str) -> tuple:
-    """A value-space key for ``xs:gMonthDay``: ``(month, day, offset)``."""
+def _gmonthday_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:gMonthDay``: microseconds on a timeline.
+
+    As with :func:`_gmonth_key`, the missing year is fixed to 1972 so the
+    month/day pair and the timezone offset fold into one instant.
+    """
     match = _TEMPORAL_GMONTHDAY.match(text)
     if match is None:
         return ("lex", text)
-    return (
-        int(match.group(1)),
-        int(match.group(2)),
-        _offset_seconds(match.group(3)),
-    )
+    month, day = int(match.group(1)), int(match.group(2))
+    offset = _offset_seconds(match.group(3))
+    return _days_from_civil(1972, month, day) * 86400 * 1_000_000 - offset * 1_000_000
 
 
-def _gday_key(text: str) -> tuple:
-    """A value-space key for ``xs:gDay``: ``(day, offset)``."""
+def _gday_key(text: str) -> int | tuple[str, str]:
+    """A value-space key for ``xs:gDay``: microseconds on a timeline.
+
+    The day-of-month and the timezone offset combine into one instant; a
+    ``(day, offset)`` pair would compare the offset first within the same
+    day, which is not the XSD order (``---15-13:00`` is later than
+    ``---16+13:00``).
+    """
     match = _TEMPORAL_GDAY.match(text)
     if match is None:
         return ("lex", text)
-    return (int(match.group(1)), _offset_seconds(match.group(2)))
+    day = int(match.group(1))
+    offset = _offset_seconds(match.group(2))
+    return (day - 1) * 86400 * 1_000_000 - offset * 1_000_000
 
 
 def _duration_key(text: str) -> tuple:
@@ -1048,6 +1160,24 @@ def _duration_key(text: str) -> tuple:
     total_seconds = int(days) * 86400 + int(hours) * 3600 + int(minutes) * 60 + seconds
     sign = -1 if text.startswith("-") else 1
     return (sign, total_months, total_seconds)
+
+
+def _year_month_duration_key(text: str) -> int:
+    """A total-order key for ``xs:yearMonthDuration``: signed whole months.
+
+    The value space is totally ordered (XSD 1.1 §3.4.26), so the sign
+    must be folded into the magnitude; the ``(sign, months, seconds)``
+    tuple used for the partial ``duration`` order would place ``-P1Y``
+    below ``-P2Y``.
+    """
+    sign, months, _ = _duration_key(text)
+    return sign * months
+
+
+def _day_time_duration_key(text: str) -> float:
+    """A total-order key for ``xs:dayTimeDuration``: signed total seconds."""
+    sign, _, seconds = _duration_key(text)
+    return sign * seconds
 
 
 def _has_timezone(text: str) -> bool:

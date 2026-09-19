@@ -15,7 +15,13 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from .catalog import Catalog, DocumentRef, load_catalog
-from .drivers import HarnessError, PyXSDDriver, XmlSchemaDriver, build_bundle
+from .drivers import (
+    HarnessError,
+    PyXSDDriver,
+    XmlSchemaDriver,
+    build_bundle,
+    build_permissive_schema,
+)
 from .outcomes import EngineResult, Outcome, classify
 from .selection import MetadataError, Profile, expected_is_valid, select_expected
 
@@ -219,17 +225,48 @@ class Runner:
                 detail="version tokens not claimed by the profile",
             )
         if not case.schema_documents:
-            return CaseResult(
-                test_id=case.test_id,
-                set_name=case.set_name,
-                contributor=case.contributor,
-                group_name=case.group_name,
-                kind=case.kind,
-                engine=engine_name,
-                outcome=Outcome.ADAPTER_GAP,
-                expected=case.expected_validity,
-                detail="group has no schema; built-in components only",
-            )
+            synthesizes = bool(getattr(engine, "synthesize_missing_schema", False))
+            if not (synthesizes and case.kind == INSTANCE and case.instance_ref is not None):
+                return CaseResult(
+                    test_id=case.test_id,
+                    set_name=case.set_name,
+                    contributor=case.contributor,
+                    group_name=case.group_name,
+                    kind=case.kind,
+                    engine=engine_name,
+                    outcome=Outcome.ADAPTER_GAP,
+                    expected=case.expected_validity,
+                    detail="group has no schema; built-in components only",
+                )
+            assert case.instance_ref is not None
+            instance = Path(case.corpus_root) / case.instance_ref.path
+            if not instance.is_file():
+                return CaseResult(
+                    test_id=case.test_id,
+                    set_name=case.set_name,
+                    contributor=case.contributor,
+                    group_name=case.group_name,
+                    kind=case.kind,
+                    engine=engine_name,
+                    outcome=Outcome.ERROR,
+                    expected=case.expected_validity,
+                    detail=f"instance document is missing: {instance}",
+                )
+            try:
+                bundle = build_permissive_schema(instance, self.workdir)
+            except HarnessError as exc:
+                return CaseResult(
+                    test_id=case.test_id,
+                    set_name=case.set_name,
+                    contributor=case.contributor,
+                    group_name=case.group_name,
+                    kind=case.kind,
+                    engine=engine_name,
+                    outcome=Outcome.ADAPTER_GAP,
+                    expected=case.expected_validity,
+                    detail=str(exc),
+                )
+            bundle_error = None
         if bundle_error is not None:
             return CaseResult(
                 test_id=case.test_id,
@@ -353,16 +390,18 @@ def configure_logging() -> None:
     warnings.filterwarnings("ignore", module=r"pyxsd\.")
 
 
-def _run_batch(payload: tuple[str, int, list[Case], str, bool, float]) -> list[CaseResult]:
+def _run_batch(
+    payload: tuple[str, int, list[Case], str, bool, float, bool],
+) -> list[CaseResult]:
     """Worker entry point: run a batch of cases to completion."""
     from .selection import PROFILES
 
-    temp_root, index, chunk, profile_name, oracle_enabled, timeout = payload
+    temp_root, index, chunk, profile_name, oracle_enabled, timeout, synthesize = payload
     configure_logging()
     workdir = Path(temp_root) / f"w{index}"
     workdir.mkdir(parents=True, exist_ok=True)
     profile = PROFILES[profile_name]
-    driver = PyXSDDriver(timeout=timeout)
+    driver = PyXSDDriver(timeout=timeout, synthesize_missing_schema=synthesize)
     oracle = XmlSchemaDriver(profile_name, timeout=timeout) if oracle_enabled else None
     runner = Runner(profile=profile, driver=driver, oracle=oracle, workdir=workdir)
     results: list[CaseResult] = []
@@ -380,16 +419,27 @@ def run_parallel(
     jobs: int,
     temp_root: Path,
     on_progress: Callable[[int, int], None] | None = None,
+    synthesize_missing_schema: bool = False,
 ) -> list[CaseResult]:
     """Run cases across *jobs* worker processes.
 
     Cases are batched to amortise process and pickling overhead.  Each task
     gets its own scratch directory, so multi-document driver schemas cannot
-    collide between workers.
+    collide between workers.  *synthesize_missing_schema* opts the PyXSD
+    driver into permissive-schema synthesis for groups with no ``schemaTest``;
+    the oracle is never affected.
     """
     chunks = [cases[i : i + BATCH_SIZE] for i in range(0, len(cases), BATCH_SIZE)]
     payloads = [
-        (str(temp_root), index, chunk, profile_name, oracle_enabled, timeout)
+        (
+            str(temp_root),
+            index,
+            chunk,
+            profile_name,
+            oracle_enabled,
+            timeout,
+            synthesize_missing_schema,
+        )
         for index, chunk in enumerate(chunks)
     ]
     results: list[CaseResult] = []

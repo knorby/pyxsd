@@ -25,6 +25,25 @@ _FACET_CHILDREN = (
     "last-day-of-month",
 )
 
+#: Facets that may appear at most once in a single restriction step
+#: (XSD 1.1 §4.3.2 / §3.14.1).  ``pattern``, ``enumeration`` and
+#: ``assertion`` are repeatable, so they are deliberately absent.
+_SINGLETON_FACETS = frozenset(
+    {
+        "minExclusive",
+        "minInclusive",
+        "maxExclusive",
+        "maxInclusive",
+        "totalDigits",
+        "fractionDigits",
+        "length",
+        "minLength",
+        "maxLength",
+        "whiteSpace",
+        "explicitTimezone",
+    }
+)
+
 
 class Restriction(ElementRepresentative):
     """The class for the restriction tag."""
@@ -98,3 +117,24 @@ class Restriction(ElementRepresentative):
         """
         contName = self.getContainingTypeName()
         return contName + "|restriction"
+
+    def checkDeclarationLegality(self):
+        """Reports a facet specified more than once in a restriction.
+
+        XSD 1.1 §4.3.2 forbids repeating a facet other than ``pattern``,
+        ``enumeration`` and ``assertion`` within one restriction step; a
+        repeated ``explicitTimezone`` (D4_3_16si02) or any other singleton
+        facet makes the declaration invalid.
+        """
+        super().checkDeclarationLegality()
+        counts: dict[str, int] = {}
+        for child in self.xsdElement:
+            local = child.tag.rpartition("}")[2]
+            if local in _SINGLETON_FACETS:
+                counts[local] = counts.get(local, 0) + 1
+        for name in sorted(counts):
+            if counts[name] > 1:
+                self._reportSchemaError(
+                    f"facet {name!r} is specified more than once in a restriction",
+                    code="facet",
+                )

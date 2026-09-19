@@ -335,6 +335,41 @@ class XsdType(ElementRepresentative):
                     continue
                 attr.pyXSD = pyXSD
                 self.attributes[attrName] = attr
+        self._applyDefaultAttributeGroup(pyXSD)
+
+    def _applyDefaultAttributeGroup(self, pyXSD) -> None:
+        """Merges the schema document's default attribute group into this type.
+
+        XSD 1.1 §3.1.2: when a schema document carries ``defaultAttributes``
+        and the type does not set ``defaultAttributesApply="false"`` (the
+        parser records the resolved group on ``defaultAttributeGroup``), the
+        group's attribute uses and attribute wildcard join the type's. An
+        attribute name already contributed by the type's own declaration or
+        by an explicitly referenced group is a duplicate attribute use
+        (si02), reported rather than silently shadowed.
+        """
+        group = getattr(self, "defaultAttributeGroup", None)
+        if group is None:
+            return
+        groupName = getattr(group, "name", None) or "?"
+        groupKey = getattr(group, "expandedName", None) or groupName
+        for spec in getattr(group, "wildcardElementSpecs", ()):
+            register_wildcard(self, spec)
+        for spec in getattr(group, "wildcardAttributeSpecs", ()):
+            register_wildcard(self, spec)
+        for attrName, attr in self._collectAttributeGroup(
+            group, frozenset({groupKey}), pyXSD
+        ).items():
+            if attrName in self.attributes:
+                self._report_ref_error(
+                    f"attribute '{attrName}' is contributed both by the "
+                    f"schema's default attribute group '{groupName}' and by "
+                    f"type '{self.name}'",
+                    code="duplicate-attribute",
+                )
+                continue
+            attr.pyXSD = pyXSD
+            self.attributes[attrName] = attr
 
     def resolveAttributeRefs(self, pyXSD):
         """Resolves attribute reference sites to global declarations.
@@ -531,36 +566,41 @@ class XsdType(ElementRepresentative):
         namedMembers = [
             self.resolveSchemaQName(memberName, parser=pyXSD) for memberName in self.unionSpec
         ]
-        memberNames = [(name, True) for name in namedMembers]
-        memberNames += [(name, False) for name in getattr(self, "unionInline", ())]
         members = []
-        for memberName, isNamed in memberNames:
+        for memberName in namedMembers:
             if memberName in pyXSD.classes:
                 resolved = pyXSD.classes[memberName]
             else:
                 resolved = ElementRepresentative.typeFromName(memberName, pyXSD)
             if resolved is None:
-                if isNamed:
-                    # A ``memberTypes`` name that resolves to no type is a
-                    # schema error; report it rather than silently
-                    # accepting a union over an undefined type.
-                    self._report_ref_error(
-                        f"member type '{memberName}' of union '{self.name}' could not be resolved",
-                        code="unknown-type",
-                    )
-                else:
-                    # An inline member is built from its own ER, so a
-                    # miss here is a name-resolution gap in ``typeFromName``
-                    # rather than a missing declaration; keep the historical
-                    # warning-and-skip behaviour.
-                    logger.warning(
-                        "union member type %r of %r could not be resolved and was skipped",
-                        memberName,
-                        self.name,
-                    )
+                # A ``memberTypes`` name that resolves to no type is a
+                # schema error; report it rather than silently
+                # accepting a union over an undefined type.
+                self._report_ref_error(
+                    f"member type '{memberName}' of union '{self.name}' could not be resolved",
+                    code="unknown-type",
+                )
                 continue
             if hasattr(resolved, "_unionMembers"):
                 # A union member that is itself a union: flatten.
+                members.extend(resolved._unionMembers)
+            else:
+                members.append(resolved)
+
+        # Inline ``simpleType`` members are built from their own ER
+        # directly.  Name lookup would miss them because an anonymous
+        # member is not in the component table under the pipe name the
+        # union records (D3_4_28v04, D3_4_26v03, D3_4_27v03).
+        for inlineER in getattr(self, "unionInline", ()):
+            resolved = inlineER.clsFor(pyXSD)
+            if resolved is None:
+                logger.warning(
+                    "inline union member %r of %r could not be built and was skipped",
+                    getattr(inlineER, "name", inlineER),
+                    self.name,
+                )
+                continue
+            if hasattr(resolved, "_unionMembers"):
                 members.extend(resolved._unionMembers)
             else:
                 members.append(resolved)
@@ -665,16 +705,22 @@ class XsdType(ElementRepresentative):
         return names
 
     def _constraintNamespace(self, pyXSD, source, base, parent):
-        """Builds the ``_facetConstraints_`` and ``__new__`` entries for a
-        definition that restricts *base*.
+        """Builds the ``_facetConstraints_``/``_assertionFacets_`` and
+        ``__new__`` entries for a definition that restricts *base*.
 
         The constraint set is merged with the base class's own constraints
         (a restriction can only tighten), and the ``__new__`` wrapper
         applies the whiteSpace facet to the lexical form, constructs the
-        value through the base class's validating ``__new__``, and then
-        checks every other facet.  A violation raises ``TypeError``, which
-        the binding paths already record as a ``value`` issue.
+        value through the base class's validating ``__new__``, then checks
+        every other facet and finally the XSD 1.1 ``xs:assertion`` facets
+        (assertions accumulate across restriction steps).  A facet
+        violation raises ``TypeError``, which the binding paths already
+        record as a ``value`` issue; a failed assertion raises a coded
+        ``SimpleAssertionError`` the binding paths record as
+        ``assert-failed``.
         """
+        from pyxsd.assertions import check_simple_assertions, compile_simple_assertions
+
         if getattr(getattr(pyXSD, "mode", None), "facets", "strict") == "off":
             return {}
         if not isinstance(base, type) or not issubclass(base, XsdDataType):
@@ -696,7 +742,12 @@ class XsdType(ElementRepresentative):
         for message in result.conflicts:
             self._report_ref_error(message, code="facet-conflict")
         constraints = result.constraints
-        if constraints.is_empty:
+        # This type's own assertions; the base class's effective assertions
+        # are injected by its own ``__new__`` (which this wrapper chains
+        # through ``baseNew``), so the restriction step's set accumulates
+        # without evaluating an inherited assertion twice (XSD 1.1 §4.3.15).
+        assertion_facets = tuple(compile_simple_assertions(source))
+        if constraints.is_empty and not assertion_facets:
             return {}
         baseNew: Any = base.__new__
         # Element classes whose type is (or extends) this simple type are
@@ -712,10 +763,18 @@ class XsdType(ElementRepresentative):
             if constraints.white_space is not None and isinstance(lexical, str):
                 lexical = facets.whitespace_transform(constraints.white_space, lexical)
             instance = baseNew(cls, lexical, *args, **kwargs)
-            constraints.check(instance, lexical if isinstance(lexical, str) else None)
+            checked_lexical = lexical if isinstance(lexical, str) else None
+            if not constraints.is_empty:
+                constraints.check(instance, checked_lexical)
+            check_simple_assertions(instance, checked_lexical, assertion_facets)
             return instance
 
-        return {"_facetConstraints_": constraints, "__new__": __new__}
+        namespace: dict[str, Any] = {"__new__": __new__}
+        if not constraints.is_empty:
+            namespace["_facetConstraints_"] = constraints
+        if assertion_facets:
+            namespace["_assertionFacets_"] = list(assertion_facets)
+        return namespace
 
     def _simpleContentNamespace(self, pyXSD, bases):
         """Builds the ``_simpleContentType_`` entry for a complex type.
@@ -847,6 +906,17 @@ class XsdType(ElementRepresentative):
             # invalid or unresolved content.
             "_parseMode_": getattr(pyXSD, "mode", ParseModes.STRICT),
         }
+        # XSD 1.1 assertion set owned by this declaration; the bind-time hook
+        # unions it with the base classes' sets by walking the MRO. The
+        # class builder may run before the declaration sweep reaches this
+        # declaration (a derived one resolves its base), so compile on demand.
+        if self.__class__.__name__ == "ComplexType":
+            from pyxsd.assertions import compile_assertions
+
+            own_assertions: Any = compile_assertions(self)
+        else:
+            own_assertions = getattr(self, "compiledAssertions", None) or ()
+        namespace["_assertions_"] = list(own_assertions)
         itemCls = self._listItemClass(pyXSD)
         if itemCls is not None:
             namespace["itemType"] = itemCls
@@ -906,6 +976,19 @@ class XsdType(ElementRepresentative):
         contentModel = compile_content_model(self, pyXSD)
         if contentModel is not None:
             namespace["_contentModel_"] = contentModel
+        # The instance matcher additionally admits the type's effective
+        # open content (XSD 1.1 §3.4.4.3): a suffix wildcard after the
+        # declared particles or an interleaved one around them. The
+        # declared particle tree above stays open-content-free for the
+        # schema-phase particle/UPA checks and for base composition.
+        if self.__class__.__name__ == "ComplexType":
+            effective = getattr(self, "effectiveOpenContent", lambda: None)()
+            if effective is not None:
+                from pyxsd.content_model import merge_open_content
+
+                instanceModel = merge_open_content(contentModel, effective, pyXSD)
+                if instanceModel is not None:
+                    namespace["_instanceContentModel_"] = instanceModel
 
         # Accessor allocation must consider every inherited and
         # same-class declaration, not just the names assembled so far:

@@ -42,6 +42,8 @@ from pyxsd.xsd_data_types import (
     Boolean,
     Date,
     DateTime,
+    DateTimeStamp,
+    DayTimeDuration,
     Duration,
     GDay,
     GMonth,
@@ -51,20 +53,25 @@ from pyxsd.xsd_data_types import (
     HexBinary,
     QName,
     Time,
+    XsdDataType,
     XsdList,
+    YearMonthDuration,
     _date_key,
     _datetime_key,
+    _day_time_duration_key,
     _duration_key,
     _gday_key,
     _gmonth_key,
     _gmonthday_key,
     _gyear_key,
     _gyearmonth_key,
+    _has_timezone,
     _ListString,
     _time_key,
     _ws_collapse,
     _ws_remove,
     _ws_replace,
+    _year_month_duration_key,
     xsd_comparable_key,
 )
 
@@ -99,6 +106,10 @@ def order_key(value: Any) -> Any:
         return int(value)
     if isinstance(value, float):
         return float(value)
+    if isinstance(value, YearMonthDuration):
+        return _year_month_duration_key(str(value))
+    if isinstance(value, DayTimeDuration):
+        return _day_time_duration_key(str(value))
     if isinstance(value, Duration):
         return _duration_key(str(value))
     if isinstance(value, DateTime):
@@ -209,6 +220,12 @@ class FacetConstraints:
     max_exclusive: Any | None = None
     total_digits: int | None = None
     fraction_digits: int | None = None
+    #: Explicit-timezone value fixed/inherited for this type (XSD 1.1
+    #: §4.3.16): ``optional``, ``required`` or ``prohibited``.
+    explicit_timezone: str | None = None
+    #: Facets whose value a base type fixed, as ``(name, key)`` pairs; a
+    #: restriction may not change such a facet's value.
+    fixed: tuple[tuple[str, Any], ...] = ()
 
     @property
     def is_empty(self) -> bool:
@@ -226,6 +243,7 @@ class FacetConstraints:
             and self.max_exclusive is None
             and self.total_digits is None
             and self.fraction_digits is None
+            and self.explicit_timezone is None
         )
 
     def check(self, value: Any, lexical: str | None = None) -> None:
@@ -242,6 +260,7 @@ class FacetConstraints:
         self._check_digits(value)
         self._check_patterns(value, lexical)
         self._check_enumerations(value)
+        self._check_explicit_timezone(value, lexical)
 
     def _check_lengths(self, value: Any, items: list[str] | None) -> None:
         if self.length is None and self.min_length is None and self.max_length is None:
@@ -328,6 +347,25 @@ class FacetConstraints:
         if xsd_comparable_key(value) not in self.enumerations:
             raise TypeError(
                 f"facet 'enumeration' violated: {value!r} is not one of the allowed values"
+            )
+
+    def _check_explicit_timezone(self, value: Any, lexical: str | None) -> None:
+        """Enforce the ``explicitTimezone`` facet (XSD 1.1 §4.3.16).
+
+        The facet is a property of the lexical form, so this must see the
+        original spelling: ``required`` rejects a value with no timezone,
+        ``prohibited`` rejects one that carries a timezone, and
+        ``optional`` accepts both.
+        """
+        if self.explicit_timezone is None:
+            return
+        text = lexical if isinstance(lexical, str) else str(value)
+        zoned = _has_timezone(text)
+        if self.explicit_timezone == "required" and not zoned:
+            raise TypeError(f"facet 'explicitTimezone' violated: {text!r} has no explicit timezone")
+        if self.explicit_timezone == "prohibited" and zoned:
+            raise TypeError(
+                f"facet 'explicitTimezone' violated: {text!r} carries an explicit timezone"
             )
 
 
@@ -458,6 +496,28 @@ def _base_fixed_bounds(base: type | None) -> tuple[Any | None, Any | None, Any |
             low, high = _INTEGER_FIXED_BOUNDS[name]
             return (low, None, high, None)
     return (None, None, None, None)
+
+
+def _bound_literal_factory(
+    base: type | None, base_factory: Callable[[str], Any]
+) -> Callable[[str], Any]:
+    """The type used to parse a bound facet literal.
+
+    A bound literal is validated against the *primitive* value space, not
+    the base type's own facets: a restriction may restate a base bound
+    exactly, and a base's exclusive bound is itself outside the base's
+    value space, so validating it through the base would reject the legal
+    restatement ``maxExclusive`` of ``d3_4_28v09``.  Union and list bases
+    keep their own factory, because bounds are not applicable to them.
+    """
+    if base is None or hasattr(base, "_unionMembers"):
+        return base_factory
+    if issubclass(base, (_ListString, XsdList)):
+        return base_factory
+    for klass in getattr(base, "__mro__", ()):
+        if klass.__module__ == "pyxsd.xsd_data_types" and klass is not XsdDataType:
+            return klass
+    return base_factory
 
 
 def _effective_lower(inclusive: Any | None, exclusive: Any | None) -> tuple[Any, bool] | None:
@@ -620,6 +680,17 @@ def _xml11_name_classes(text: str) -> str:
                 out.append(name_class if depth == 0 else name_class[1:-1])
                 i += 2
                 continue
+            if nxt in "IC" and depth == 0:
+                # Complement escapes (``\I`` start, ``\C`` name char). The
+                # XML 1.0 table elementpath uses stops before the astral
+                # name characters, so ``\I``/``\C`` wrongly admitted them
+                # (xv006.n02, xv008.n01). Spell out the negated XML 1.1
+                # class here. Inside a character class the escape is not
+                # legal XSD, so leave it for the translator to reject.
+                contents = _XML11_NAME_START_CONTENTS if nxt == "I" else _XML11_NAME_CHAR_CONTENTS
+                out.append(f"[^{contents}]")
+                i += 2
+                continue
             out.append(char)
             out.append(nxt)
             i += 2
@@ -631,6 +702,54 @@ def _xml11_name_classes(text: str) -> str:
         out.append(char)
         i += 1
     return "".join(out)
+
+
+def _fixed_true(text: str | None) -> bool:
+    """The ``xs:boolean`` reading of a facet's ``fixed`` attribute."""
+    return text is not None and text.strip() in ("true", "1")
+
+
+def _own_fixed_facet_names(source: Any) -> set[str]:
+    """The local names of facets this restriction step declares as fixed."""
+    names: set[str] = set()
+    root = getattr(source, "xsdElement", None)
+    if root is None:
+        return names
+    for child in root:
+        if child.tag.rpartition("}")[2] != "restriction":
+            continue
+        for facet in child:
+            if _fixed_true(facet.get("fixed")):
+                names.add(facet.tag.rpartition("}")[2])
+    return names
+
+
+#: The date/time datatypes the ``explicitTimezone`` facet applies to
+#: (XSD 1.1 §4.3.16; ``dateTimeStamp`` is a ``dateTime`` subclass).
+_TIMEZONE_APPLICABLE = (DateTime, Date, Time, GYear, GYearMonth, GMonth, GMonthDay, GDay)
+
+#: Derived ``explicitTimezone`` values whose value space is a subset of a
+#: base value's; ``optional`` admits zoned and unzoned values, ``required``
+#: only zoned, ``prohibited`` only unzoned.
+_TZ_ALLOWED: dict[str, frozenset[str]] = {
+    "optional": frozenset({"optional", "required", "prohibited"}),
+    "required": frozenset({"required"}),
+    "prohibited": frozenset({"prohibited"}),
+}
+
+
+def _timezone_applicable(base: type | None) -> bool:
+    return base is not None and issubclass(base, _TIMEZONE_APPLICABLE)
+
+
+def _base_explicit_timezone(base: type | None, parent: FacetConstraints | None) -> str | None:
+    """The explicitTimezone value a base type fixes (``None`` if unconstrained)."""
+    if parent is not None and parent.explicit_timezone is not None:
+        return parent.explicit_timezone
+    if base is not None and issubclass(base, DateTimeStamp):
+        # ``dateTimeStamp`` fixes the facet to ``required`` (XSD 1.1 §3.4.28).
+        return "required"
+    return None
 
 
 def _compile_pattern(text: str) -> re.Pattern[str]:
@@ -647,11 +766,15 @@ def _compile_pattern(text: str) -> re.Pattern[str]:
             back_references=False,
             lazy_quantifiers=False,
         )
-    except (ElementPathError, RegexError, re.error) as exc:
+    except (ElementPathError, RegexError, re.error, OverflowError) as exc:
         raise ValueError(f"illegal XSD pattern {text!r}: {exc}") from exc
     try:
         return re.compile(translated)
-    except re.error as exc:
+    except (re.error, OverflowError) as exc:
+        # ``OverflowError``: a repetition count beyond what ``re`` can
+        # build (e.g. ``a{4294967296}``) is a legal-looking XSD pattern
+        # whose regex is unconstructible, so it is a schema problem like
+        # any other illegal pattern.
         raise ValueError(f"illegal XSD pattern {text!r}: {exc}") from exc
 
 
@@ -805,6 +928,9 @@ def build_constraints(
                 else own
             )
 
+    #: The inherited-constraints attribute a restatable exclusive bound maps to.
+    restatable_bounds = {"maxExclusive": "max_exclusive", "minExclusive": "min_exclusive"}
+
     def parse_bound(name: str) -> Any | None:
         text = facet_value(name)
         if text is None:
@@ -812,6 +938,21 @@ def build_constraints(
         try:
             value = _parse_bound(base_factory, text)
         except (TypeError, ValueError) as exc:
+            # A restatement of the base's own *exclusive* bound lies on the
+            # excluded boundary, so it is outside the base's value space but
+            # is still a legal restriction (d3_4_28v09).  Any other bound
+            # outside the base's value space widens it and is an error
+            # (d3_4_28si10, MS-DataTypes int_maxInclusive004b).
+            inherited = (
+                getattr(parent, restatable_bounds[name]) if name in restatable_bounds else None
+            )
+            if inherited is not None:
+                try:
+                    restated = _parse_bound(_bound_literal_factory(base, base_factory), text)
+                except (TypeError, ValueError):
+                    restated = None
+                if restated is not None and restated == inherited:
+                    return restated if name in allowed else None
             errors.append(f"{name} value {text!r} is not valid for its base type: {exc}")
             return None
         # A bound on an inapplicable facet is still parsed (so its value is
@@ -819,11 +960,16 @@ def build_constraints(
         return value if name in allowed else None
 
     # Each bound facet tightens the inherited one (restriction can only
-    # narrow a value space).
-    min_inclusive = _tighten_min(parse_bound("minInclusive"), parent.min_inclusive)
-    min_exclusive = _tighten_min(parse_bound("minExclusive"), parent.min_exclusive)
-    max_inclusive = _tighten_max(parse_bound("maxInclusive"), parent.max_inclusive)
-    max_exclusive = _tighten_max(parse_bound("maxExclusive"), parent.max_exclusive)
+    # narrow a value space).  The raw parsed value is kept for the fixed
+    # facet check below.
+    declared_min_inclusive = parse_bound("minInclusive")
+    declared_min_exclusive = parse_bound("minExclusive")
+    declared_max_inclusive = parse_bound("maxInclusive")
+    declared_max_exclusive = parse_bound("maxExclusive")
+    min_inclusive = _tighten_min(declared_min_inclusive, parent.min_inclusive)
+    min_exclusive = _tighten_min(declared_min_exclusive, parent.min_exclusive)
+    max_inclusive = _tighten_max(declared_max_inclusive, parent.max_inclusive)
+    max_exclusive = _tighten_max(declared_max_exclusive, parent.max_exclusive)
 
     # The two lower bounds and the two upper bounds are mutually exclusive
     # within one restriction step.
@@ -885,6 +1031,75 @@ def build_constraints(
         parent.fraction_digits,
     )
 
+    # A facet value a base type fixed may be restated but never changed by
+    # a restriction (XSD 1.1 §4.3.2); track the fixed facets and compare
+    # every facet this step declares against an inherited fixed value.
+    def declared_int(name: str) -> int | None:
+        text = facet_value(name)
+        if text is None:
+            return None
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            return None
+
+    declared_keys: dict[str, Any] = {}
+    for bound_name, bound_value in (
+        ("minInclusive", declared_min_inclusive),
+        ("minExclusive", declared_min_exclusive),
+        ("maxInclusive", declared_max_inclusive),
+        ("maxExclusive", declared_max_exclusive),
+    ):
+        if bound_value is not None:
+            declared_keys[bound_name] = bound_value
+    for int_name in ("length", "minLength", "maxLength", "totalDigits", "fractionDigits"):
+        int_value = declared_int(int_name)
+        if int_value is not None:
+            declared_keys[int_name] = int_value
+    declared_ws = facet_value("whiteSpace")
+    if declared_ws is not None:
+        declared_keys["whiteSpace"] = declared_ws
+    declared_tz = facet_value("explicitTimezone")
+    if declared_tz is not None:
+        declared_keys["explicitTimezone"] = declared_tz
+
+    parent_fixed = dict(parent.fixed)
+    for fixed_name, fixed_value in declared_keys.items():
+        if fixed_name in parent_fixed and parent_fixed[fixed_name] != fixed_value:
+            errors.append(f"facet {fixed_name!r} is fixed on the base type and may not be changed")
+    own_fixed = {
+        name: declared_keys[name]
+        for name in _own_fixed_facet_names(source)
+        if name in declared_keys
+    }
+    merged_fixed = {**parent_fixed, **own_fixed}
+    fixed = tuple(sorted(merged_fixed.items(), key=lambda item: item[0]))
+
+    # ``explicitTimezone`` (XSD 1.1 §4.3.16): value legality, applicability
+    # to the date/time family, and the restriction lattice.  Instance-phase
+    # enforcement lives with the datatype binding.
+    explicit_timezone = parent.explicit_timezone
+    base_timezone = _base_explicit_timezone(base, parent)
+    if base_timezone is not None:
+        explicit_timezone = base_timezone
+    declared_timezone = getattr(source, "explicitTimezone", None)
+    if declared_timezone is not None:
+        declared_timezone = str(declared_timezone)
+        base_label = getattr(base, "name", None) or (
+            base.__name__ if base is not None else "unknown"
+        )
+        if declared_timezone not in _TZ_ALLOWED:
+            errors.append(f"illegal explicitTimezone facet value {declared_timezone!r}")
+        elif not _timezone_applicable(base):
+            errors.append(f"facet 'explicitTimezone' is not applicable to base type {base_label!r}")
+        elif base_timezone is not None and declared_timezone not in _TZ_ALLOWED[base_timezone]:
+            errors.append(
+                f"facet 'explicitTimezone' value {declared_timezone!r} does not "
+                f"restrict the base type's {base_timezone!r}"
+            )
+        else:
+            explicit_timezone = declared_timezone
+
     # Effective length semantics: an explicit length pins min and max and
     # overrides inherited length facets; otherwise min/max tighten the
     # inherited values.
@@ -920,6 +1135,8 @@ def build_constraints(
         max_exclusive=max_exclusive,
         total_digits=total_digits,
         fraction_digits=fraction_digits,
+        explicit_timezone=explicit_timezone,
+        fixed=fixed,
     )
     return FacetBuildResult(
         constraints=constraints, errors=tuple(errors), conflicts=tuple(conflicts)

@@ -11,6 +11,7 @@ import pytest
 
 from pyxsd.binding import ParseModes
 from pyxsd.namespaces import (
+    XLINK_NS,
     XSD_NS,
     XSI_NS,
     NamespaceContext,
@@ -1064,6 +1065,87 @@ class TestWellKnownNamespaceImports:
             i.code == "import-unresolved" and i.severity is IssueSeverity.ERROR
             for i in parser.report.issues
         )
+
+
+def _xlink_ref_schema(attribute_site: str, *, import_line: str = "") -> str:
+    """A schema whose only extension hook is one XLink ``xs:attribute`` site."""
+    return f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xlink="{XLINK_NS}">
+{import_line}
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence><xs:element name="a" type="xs:string" minOccurs="0"/></xs:sequence>
+      {attribute_site}
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
+
+class TestXLinkBuiltins:
+    """The XLink attribute declarations are built into the namespace.
+
+    XSD 1.1 §4.2.3 resolves a namespace name to a schema for it; the
+    XLink 1.0 vocabulary is available without loading ``xlink.xsd``, so a
+    bare ``ref`` into the namespace and a namespace-only ``xs:import``
+    both resolve, exactly as for ``xml:*``/``xsi:*``.
+    """
+
+    def test_xlink_type_ref_resolves_without_import(self, tmp_path):
+        parser = _strict_parse(
+            _xlink_ref_schema('<xs:attribute ref="xlink:type" default="locator"/>'),
+            f'<root xmlns:xlink="{XLINK_NS}" xlink:type="locator"><a>x</a></root>',
+            tmp_path,
+        )
+        assert "unknown-attributeRef" not in [i.code for i in parser.report.issues]
+        assert not parser.report.has_errors
+
+    def test_xlink_href_ref_resolves_without_import(self, tmp_path):
+        parser = _strict_parse(
+            _xlink_ref_schema('<xs:attribute ref="xlink:href"/>'),
+            f'<root xmlns:xlink="{XLINK_NS}" xlink:href="#a"><a>x</a></root>',
+            tmp_path,
+        )
+        assert "unknown-attributeRef" not in [i.code for i in parser.report.issues]
+        assert not parser.report.has_errors
+
+    def test_import_xlink_namespace_without_location(self, tmp_path):
+        parser = _strict_parse(
+            _xlink_ref_schema(
+                '<xs:attribute ref="xlink:href"/>',
+                import_line=f'  <xs:import namespace="{XLINK_NS}"/>',
+            ),
+            f'<root xmlns:xlink="{XLINK_NS}" xlink:href="#a"><a>x</a></root>',
+            tmp_path,
+        )
+        codes = [i.code for i in parser.report.issues]
+        assert "import-unresolved" not in codes
+        assert "unknown-attributeRef" not in codes
+
+    def test_user_declaration_in_xlink_namespace_is_allowed(self, tmp_path):
+        """User components in the XLink namespace follow the xml rules.
+
+        The XLink namespace is not reserved like ``xsi``: a schema may
+        target it and declare new components, and those coexist with the
+        injected built-ins without an ``unknown-attributeRef`` or a
+        spurious ``declaration-duplicate``.
+        """
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xlink="{XLINK_NS}"
+            targetNamespace="{XLINK_NS}" attributeFormDefault="qualified">
+          <xs:attribute name="hreflang" type="xs:string"/>
+          <xs:complexType name="T">
+            <xs:attribute ref="xlink:type"/>
+            <xs:attribute ref="xlink:hreflang"/>
+          </xs:complexType>
+          <xs:element name="root" type="xlink:T"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<xlink:root xmlns:xlink="{XLINK_NS}" xlink:type="locator" xlink:hreflang="en"/>',
+            tmp_path,
+        )
+        codes = [i.code for i in parser.report.issues]
+        assert "unknown-attributeRef" not in codes
+        assert "declaration-duplicate" not in codes
+        assert not parser.report.has_errors
 
 
 class TestMixedAttributeConflict:

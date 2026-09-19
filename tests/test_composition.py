@@ -786,3 +786,333 @@ class TestComposeInvalid:
             '<xs:attributeGroup ref="ag"/><xs:attribute name="b" type="xs:string"/>',
         )
         assert "compose-invalid" not in self._error_codes(parser)
+
+
+# ---------------------------------------------------------------------------
+# xs:override component replacement (Task 10)
+
+
+class TestOverrideComposition:
+    """XSD 1.1 ``xs:override`` replaces components wholesale.
+
+    Unlike ``xs:redefine`` an override need not modify an existing
+    component (it may match nothing, in which case it is ignored) and it
+    may replace a component with one of a different kind in the same
+    symbol space (a simple type for a complex type). References from
+    inside the overriding component resolve to the override, not to the
+    replaced base definition.
+    """
+
+    def _parser(self, tmp_path, schema, instance, files=None):
+        (tmp_path / "schema.xsd").write_text(schema, encoding="utf-8")
+        for name, content in (files or {}).items():
+            (tmp_path / name).write_text(content, encoding="utf-8")
+        (tmp_path / "instance.xml").write_text(instance, encoding="utf-8")
+        return PyXSD(
+            tmp_path / "instance.xml",
+            xsdFile=tmp_path / "schema.xsd",
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+        )
+
+    def _error_codes(self, parser):
+        return {i.code for i in parser.report.errors}
+
+    def test_override_replaces_type_and_group(self, tmp_path):
+        base = (
+            f"<xs:schema {XS}>"
+            '<xs:complexType name="T"><xs:sequence>'
+            '<xs:element name="old" type="xs:string"/></xs:sequence></xs:complexType>'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:element name="a" type="xs:string"/></xs:sequence></xs:group>'
+            "</xs:schema>"
+        )
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:complexType name="T"><xs:sequence>'
+            '<xs:group ref="g"/></xs:sequence></xs:complexType>'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:element name="b" type="xs:string"/></xs:sequence></xs:group>'
+            "</xs:override>"
+            '<xs:element name="r" type="T"/>'
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<r><b/></r>", {"base.xsd": base})
+        assert not parser.report.has_errors
+        # The overriding type wholly replaces the base, which is dropped.
+        assert "T" in parser.classes
+        assert "T|base" not in parser.classes
+        assert [d.name for d in parser.classes["T"]()._getElements()] == ["b"]
+
+    def test_override_replaces_complex_type_with_simple_type(self, tmp_path):
+        # over013: the override matches by symbol space, so a simpleType
+        # may replace a complexType of the same name.
+        base = (
+            f"<xs:schema {XS}>"
+            '<xs:complexType name="structuredDate"><xs:sequence>'
+            '<xs:element name="year"/></xs:sequence></xs:complexType>'
+            '<xs:element name="doc" type="structuredDate"/>'
+            "</xs:schema>"
+        )
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:simpleType name="structuredDate">'
+            '<xs:restriction base="xs:date"/></xs:simpleType>'
+            "</xs:override>"
+            '<xs:element name="r" type="structuredDate"/>'
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<r>2001-01-01</r>", {"base.xsd": base})
+        assert not parser.report.has_errors
+
+    def test_override_uses_component_added_by_the_overriding_document(self, tmp_path):
+        # A brand-new component declared by the overriding schema (here a
+        # simple type used by the overriding element) is available, as in
+        # over028/over019.
+        base = f'<xs:schema {XS}><xs:element name="doc" type="xs:string"/></xs:schema>'
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:element name="doc" type="smallInt"/>'
+            "</xs:override>"
+            '<xs:simpleType name="smallInt">'
+            '<xs:restriction base="xs:int"><xs:maxInclusive value="16"/></xs:restriction>'
+            "</xs:simpleType>"
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<doc>16</doc>", {"base.xsd": base})
+        assert not parser.report.has_errors
+
+    def test_override_matching_nothing_is_ignored_not_added(self, tmp_path):
+        # over026: a declaration matching nothing in the target set is
+        # silently ignored (XSD 1.1 §4.2.5), so it does not satisfy a
+        # reference into it.
+        base = f'<xs:schema {XS}><xs:element name="doc" type="xs:string"/></xs:schema>'
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:simpleType name="ghost">'
+            '<xs:restriction base="xs:string"/></xs:simpleType>'
+            "</xs:override>"
+            '<xs:element name="r" type="ghost"/>'
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<r>x</r>", {"base.xsd": base})
+        assert "unknown-type" in self._error_codes(parser)
+        assert "override-invalid" not in self._error_codes(parser)
+
+    def test_override_of_a_missing_component_is_legal(self, tmp_path):
+        # The same as above but no reference to the ignored component:
+        # overriding a component the target set lacks is not an error.
+        base = f'<xs:schema {XS}><xs:element name="doc" type="xs:string"/></xs:schema>'
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:simpleType name="ghost">'
+            '<xs:restriction base="xs:string"/></xs:simpleType>'
+            "</xs:override>"
+            '<xs:element name="r" type="xs:string"/>'
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<r>x</r>", {"base.xsd": base})
+        assert "override-invalid" not in self._error_codes(parser)
+        assert "compose-invalid" not in self._error_codes(parser)
+        assert not parser.report.has_errors
+
+    def test_override_self_reference_resolves_to_the_override(self, tmp_path):
+        # over006: ``ref="section"`` inside the overriding declaration
+        # names the overriding (recursive) element, not the base copy.
+        base = (
+            f"<xs:schema {XS}>"
+            '<xs:element name="section">'
+            "<xs:complexType><xs:sequence>"
+            '<xs:element name="head" type="xs:string"/>'
+            '<xs:element ref="section" minOccurs="1" maxOccurs="unbounded"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+            "</xs:schema>"
+        )
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:element name="section">'
+            "<xs:complexType><xs:sequence>"
+            '<xs:element name="head" type="xs:string"/>'
+            '<xs:element ref="section" minOccurs="0" maxOccurs="unbounded"/>'
+            "</xs:sequence>"
+            '<xs:attribute name="nr" type="xs:decimal" use="required"/>'
+            "</xs:complexType></xs:element>"
+            "</xs:override>"
+            "</xs:schema>"
+        )
+        parser = self._parser(
+            tmp_path,
+            schema,
+            '<section nr="1"><head>a</head><section nr="2"><head>b</head></section></section>',
+            {"base.xsd": base},
+        )
+        assert not parser.report.has_errors
+
+    def test_illegal_override_child_is_override_invalid(self, tmp_path):
+        base = f'<xs:schema {XS}><xs:element name="doc" type="xs:string"/></xs:schema>'
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:sequence><xs:element name="e"/></xs:sequence>'
+            "</xs:override>"
+            '<xs:element name="r" type="xs:string"/>'
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<r>x</r>", {"base.xsd": base})
+        assert "override-invalid" in self._error_codes(parser)
+
+    def test_duplicate_override_target_in_one_block_is_override_invalid(self, tmp_path):
+        # over021: the same component named twice in one xs:override.
+        base = f'<xs:schema {XS}><xs:element name="doc" type="xs:string"/></xs:schema>'
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:element name="doc" type="xs:date"/>'
+            '<xs:element name="doc" type="xs:time"/>'
+            "</xs:override>"
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<doc>2001-01-01</doc>", {"base.xsd": base})
+        assert "override-invalid" in self._error_codes(parser)
+
+    def test_duplicate_override_across_blocks_is_override_invalid(self, tmp_path):
+        # over022: the same base component overridden by two blocks.
+        base = f'<xs:schema {XS}><xs:element name="doc" type="xs:string"/></xs:schema>'
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:element name="doc" type="xs:date"/>'
+            "</xs:override>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:element name="doc" type="xs:time"/>'
+            "</xs:override>"
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<doc>2001-01-01</doc>", {"base.xsd": base})
+        assert "override-invalid" in self._error_codes(parser)
+
+    def test_override_namespace_mismatch_is_error(self, tmp_path):
+        # over016: a no-namespace overriding document may not override a
+        # namespaced base document.
+        base = f'<xs:schema {XS} targetNamespace="urn:b"><xs:element name="doc"/></xs:schema>'
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:element name="doc" type="xs:string"/>'
+            "</xs:override>"
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<doc>x</doc>", {"base.xsd": base})
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_override_missing_base_with_content_is_error(self, tmp_path):
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="absent.xsd">'
+            '<xs:element name="doc" type="xs:string"/>'
+            "</xs:override>"
+            '<xs:element name="r" type="xs:string"/>'
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<r>x</r>")
+        assert "schema-compose" in self._error_codes(parser)
+
+    def test_override_type_ignores_host_default_open_content(self, tmp_path):
+        # open043: a type defined within xs:override takes its default open
+        # content from the overridden document, not the overriding host.
+        base = (
+            f"<xs:schema {XS}>"
+            '<xs:complexType name="beta"><xs:sequence/></xs:complexType>'
+            '<xs:element name="doc" type="beta"/>'
+            "</xs:schema>"
+        )
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:complexType name="beta"><xs:sequence/></xs:complexType>'
+            "</xs:override>"
+            '<xs:defaultOpenContent mode="suffix" appliesToEmpty="true">'
+            '<xs:any namespace="urn:open" processContents="lax"/>'
+            "</xs:defaultOpenContent>"
+            '<xs:element name="r" type="xs:string"/>'
+            "</xs:schema>"
+        )
+        parser = self._parser(
+            tmp_path, schema, '<doc><extra xmlns="urn:open"/></doc>', {"base.xsd": base}
+        )
+        # The override's beta does not inherit the host's default open
+        # content, so the wildcard-admitted extra element is rejected.
+        assert "unexpected-element" in {i.code for i in parser.report.errors}
+
+    def test_nested_override(self, tmp_path):
+        # top overrides mid, which overrides base; the innermost
+        # declaration (top) wins.
+        base = (
+            f"<xs:schema {XS}>"
+            '<xs:simpleType name="T"><xs:restriction base="xs:string"/></xs:simpleType>'
+            "</xs:schema>"
+        )
+        mid = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="base.xsd">'
+            '<xs:simpleType name="T"><xs:restriction base="xs:string">'
+            '<xs:maxLength value="5"/></xs:restriction></xs:simpleType>'
+            "</xs:override>"
+            "</xs:schema>"
+        )
+        schema = (
+            f"<xs:schema {XS}>"
+            '<xs:override schemaLocation="mid.xsd">'
+            '<xs:simpleType name="T"><xs:restriction base="xs:string">'
+            '<xs:maxLength value="3"/></xs:restriction></xs:simpleType>'
+            "</xs:override>"
+            '<xs:element name="r" type="T"/>'
+            "</xs:schema>"
+        )
+        parser = self._parser(tmp_path, schema, "<r>abc</r>", {"base.xsd": base, "mid.xsd": mid})
+        assert not parser.report.has_errors
+
+
+def test_redefine_base_reference_keeps_its_namespace_prefix(tmp_path):
+    """A redefine self-reference must stay in the redefining namespace.
+
+    Dropping the prefix made ``base="a:c"`` rewrite to an unprefixed
+    ``c|base``, which resolved through the default XML Schema namespace
+    instead of the target namespace, so the renamed original could not be
+    found (XSTS defaultAttributesApply s3_4_2_4ii03-ii07).
+    """
+    (tmp_path / "base.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'targetNamespace="urn:a" xmlns:a="urn:a">'
+        '<xs:complexType name="c"><xs:sequence/></xs:complexType>'
+        '<xs:element name="root" type="a:c"/></xs:schema>'
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'targetNamespace="urn:a" xmlns:a="urn:a" defaultAttributes="a:da">'
+        '<xs:redefine schemaLocation="base.xsd">'
+        '<xs:complexType name="c"><xs:complexContent>'
+        '<xs:extension base="a:c"><xs:sequence/></xs:extension>'
+        "</xs:complexContent></xs:complexType></xs:redefine>"
+        '<xs:attributeGroup name="da">'
+        '<xs:attribute name="extra" type="xs:boolean" use="required"/></xs:attributeGroup>'
+        "</xs:schema>"
+    )
+    parser = PyXSD(
+        StringIO('<a:root xmlns:a="urn:a"/>'),
+        str(tmp_path / "main.xsd"),
+        xmlFileOutput="_No_Output_",
+        transformOutputName="_No_Output_",
+        mode=ParseModes.NAMESPACED,
+    )
+    codes = [issue.code for issue in parser.report.errors]
+    assert "unknown-type" not in codes
+    # The redefined type is declared in the host document, so the host's
+    # default attribute group applies and the attribute is required.
+    assert "missing-attribute" in codes
