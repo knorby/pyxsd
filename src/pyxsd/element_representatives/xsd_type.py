@@ -579,6 +579,12 @@ class XsdType(ElementRepresentative):
             if baseSpec is not None:
                 break
         if own is None:
+            if self.getDerivation() == "restriction":
+                # A restriction that states no wildcard drops the base's
+                # (the intersection is empty): an attribute wildcard is
+                # never inherited across a restriction (SUN test008,
+                # XSD 1.1 §3.4.6.3).
+                return None
             return baseSpec
         if baseSpec is None:
             return own
@@ -983,10 +989,13 @@ class XsdType(ElementRepresentative):
         # (extension unions, restriction intersects). A type without a
         # wildcard of its own still inherits its base's.
         effectiveWildcard = self._effectiveAttributeWildcard(bases)
-        if effectiveWildcard is not None:
-            namespace["effectiveAttributeWildcard_"] = effectiveWildcard
-        if getattr(self, "hasWildcardAttributes", False) or effectiveWildcard is not None:
-            namespace["hasWildcardAttributes_"] = True
+        # Stamp the effective wildcard even when it is absent: a
+        # restriction that drops the base's wildcard must not inherit it
+        # through the Python MRO (SUN test008, XSD 1.1 §3.4.6.3).
+        namespace["effectiveAttributeWildcard_"] = effectiveWildcard
+        namespace["hasWildcardAttributes_"] = bool(
+            getattr(self, "hasWildcardAttributes", False) or effectiveWildcard is not None
+        )
         elementSpecs = getattr(self, "wildcardElementSpecs", None)
         if elementSpecs:
             namespace["wildcardElementSpecs_"] = list(elementSpecs)

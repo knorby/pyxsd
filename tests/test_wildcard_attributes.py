@@ -460,6 +460,30 @@ def test_restriction_of_an_extension_keeps_the_absent_namespace():
     assert errors(bad) == ["wildcard-namespace"]
 
 
+RESTRICTION_WITHOUT_WILDCARD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+    ' targetNamespace="urn:t" xmlns:t="urn:t">'
+    ' <xs:complexType name="base"><xs:sequence/>'
+    '  <xs:anyAttribute namespace="urn:a urn:b" processContents="skip"/>'
+    " </xs:complexType>"
+    ' <xs:complexType name="alias"><xs:complexContent>'
+    '  <xs:restriction base="t:base"/></xs:complexContent></xs:complexType>'
+    ' <xs:element name="doc" type="t:alias"/>'
+    "</xs:schema>"
+)
+
+
+def test_restriction_without_a_wildcard_accepts_no_foreign_attribute():
+    # SUN test008 test.10/test.11: a restriction that states no wildcard
+    # drops the base's, so the foreign attribute is simply undeclared.
+    for attr in ("a:xxx", "b:xxx"):
+        parser = run(
+            RESTRICTION_WITHOUT_WILDCARD_SCHEMA,
+            f'<t:doc xmlns:t="urn:t" xmlns:a="urn:a" xmlns:b="urn:b" {attr}="x"/>',
+        )
+        assert "unexpected-attribute" in codes(parser), attr
+
+
 # --- Rule 4: xsd:anyType roots admit undeclared children -------------------
 
 ANY_TYPE_SCHEMA = (
