@@ -628,15 +628,10 @@ class GYearMonth(_PatternString):
 
 
 class GMonth(_PatternString):
-    """``xs:gMonth``: e.g. ``--08`` or the legacy ``--08--``.
-
-    XSD 1.1 keeps the XSD 1.0 spelling ``--MM--`` (a redundant trailing
-    ``--``) in the lexical space alongside ``--MM`` (MS-DataTypes
-    gMonth002/004).
-    """
+    """``xs:gMonth``: e.g. ``--08``."""
 
     name = "gMonth"
-    _pattern = re.compile(rf"--{_MONTH}(?:--)?{_TIMEZONE}")
+    _pattern = re.compile(rf"--{_MONTH}{_TIMEZONE}")
 
 
 class GMonthDay(_PatternString):
@@ -1130,7 +1125,7 @@ def _date_key(text: str) -> int | tuple[str, str]:
 
 _TEMPORAL_GYEAR = re.compile(r"^(-?[0-9]{4,})(Z|[+-][0-9]{2}:[0-9]{2})?$")
 _TEMPORAL_GYEARMONTH = re.compile(r"^(-?[0-9]{4,})-([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
-_TEMPORAL_GMONTH = re.compile(r"^--([0-9]{2})(?:--)?(Z|[+-][0-9]{2}:[0-9]{2})?$")
+_TEMPORAL_GMONTH = re.compile(r"^--([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
 _TEMPORAL_GMONTHDAY = re.compile(r"^--([0-9]{2})-([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
 _TEMPORAL_GDAY = re.compile(r"^---([0-9]{2})(Z|[+-][0-9]{2}:[0-9]{2})?$")
 
