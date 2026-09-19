@@ -1192,6 +1192,35 @@ class TestNamespacedAttributeUses:
         assert [i.code for i in parser.report.issues] == []
 
 
+class TestUntypedRootIsAnyType:
+    """An element declaration with no type is implicitly xs:anyType.
+
+    Its children are bound through the lax wildcard, so a matching global
+    declaration's required attribute is enforced (AU_required00101m1_n).
+    """
+
+    def test_required_attribute_of_wildcard_child_is_enforced(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="urn:t" '
+            f'xmlns:t="urn:t">'
+            f'<xs:element name="root"/>'
+            f'<xs:attribute name="number" type="xs:integer"/>'
+            f'<xs:element name="child"><xs:complexType>'
+            f'<xs:attribute ref="t:number" use="required"/>'
+            f"</xs:complexType></xs:element></xs:schema>"
+        )
+        (tmp_path / "s.xsd").write_text(schema)
+        (tmp_path / "instance.xml").write_text('<t:root xmlns:t="urn:t"><t:child/></t:root>')
+        parser = PyXSD(
+            tmp_path / "instance.xml",
+            xsdFile=tmp_path / "s.xsd",
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=ParseModes.NAMESPACED,
+        )
+        assert "missing-attribute" in [i.code for i in parser.report.issues]
+
+
 def _xlink_ref_schema(attribute_site: str, *, import_line: str = "") -> str:
     """A schema whose only extension hook is one XLink ``xs:attribute`` site."""
     return f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xlink="{XLINK_NS}">

@@ -2132,3 +2132,63 @@ class TestAttributeGroupDeclarationLegality:
             "</xsd:attributeGroup></xsd:schema>"
         )
         assert "duplicate-attribute" in _schema_codes(report)
+
+
+class TestStrictReferenceResolution:
+    """Strict QName resolution of schema references (AU_attrDecl00101m1_n)."""
+
+    def test_unprefixed_ref_does_not_match_target_namespace(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t'>"
+            "<xsd:element name='root'/>"
+            "<xsd:attribute name='number' type='xsd:integer'/>"
+            "<xsd:element name='e'><xsd:complexType>"
+            "<xsd:attribute ref='number' use='required'/>"
+            "</xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "unknown-attributeRef" in _schema_codes(report)
+
+    def test_prefixed_ref_still_resolves(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t'>"
+            "<xsd:element name='root'/>"
+            "<xsd:attribute name='number' type='xsd:integer'/>"
+            "<xsd:element name='e'><xsd:complexType>"
+            "<xsd:attribute ref='t:number' use='required'/>"
+            "</xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "unknown-attributeRef" not in _schema_codes(report)
+
+
+class TestIdentityConstraintSymbolSpace:
+    """Identity-constraint names are unique per target namespace."""
+
+    def test_same_key_name_in_one_namespace_is_rejected(self, tmp_path, monkeypatch):
+        import io
+
+        (tmp_path / "inc.xsd").write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t'>"
+            "<xsd:element name='roota'><xsd:complexType><xsd:sequence/></xsd:complexType>"
+            "<xsd:key name='KEY'><xsd:selector xpath='./person'/><xsd:field xpath='.'/></xsd:key>"
+            "</xsd:element></xsd:schema>"
+        )
+        schema = (
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t'>"
+            "<xsd:include schemaLocation='inc.xsd'/>"
+            "<xsd:element name='root'><xsd:complexType><xsd:sequence/></xsd:complexType>"
+            "<xsd:key name='KEY'><xsd:selector xpath='./person'/><xsd:field xpath='.'/></xsd:key>"
+            "</xsd:element></xsd:schema>"
+        )
+        monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
+        (tmp_path / "s.xsd").write_text(schema)
+        report = PyXSD(
+            io.StringIO("<probe/>"),
+            str(tmp_path / "s.xsd"),
+            xmlFileOutput=False,
+            mode=ParseModes.NAMESPACED,
+        ).report
+        assert "declaration-duplicate" in _schema_codes(report)

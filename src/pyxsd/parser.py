@@ -2644,25 +2644,33 @@ class PyXSD:
         name = element.get("name") if element is not None else None
         if not name:
             return
-        if element is not None and id(element) in self._composedElementIds:
+        typeName = type(er).__name__
+        isIdentity = typeName in self._IDENTITY_KINDS
+        if element is not None and id(element) in self._composedElementIds and not isIdentity:
             # A component spliced in from an included, imported or
             # redefined document is not compared against the main
             # schema's components. Composition may legitimately expose a
             # name twice (nested redefines, a re-parsed document), so the
             # check is scoped to the main document, matching the ``id``
-            # uniqueness scope in ``_checkDeclarationId``.
+            # uniqueness scope in ``_checkDeclarationId``. Identity
+            # constraints are compared across composed documents because
+            # their names share the target namespace's symbol space
+            # (targetNS00101m2).
             return
         if self._inConditionalInclusion(er):
             # XSD 1.1 conditional-inclusion declarations (``vc:*``) may
             # share a name, selected by version or availability. Without
             # evaluating the selectors, do not report the duplicate.
             return
-        typeName = type(er).__name__
-        if typeName in self._IDENTITY_KINDS:
+        if isIdentity:
             parent = getattr(er, "parent", None)
             if parent is None or type(parent).__name__ != "Element":
                 return
-            key = ("identity", id(parent), name)
+            # Identity-constraint names are unique per target namespace
+            # (not per containing element): the same key name on two
+            # elements of one namespace is a schema error, while the same
+            # name in another namespace is not (targetNS00101m1/m2).
+            key = ("identity", er.getNamespace(), name)
             label = "identity constraint"
         else:
             kind = componentKind(er)
@@ -4525,9 +4533,17 @@ class PyXSD:
         subInstance = None
         if rootElementName == rootName:
             with whitespace_mode(self.mode.whitespace):
-                subCls = self._classForRoot(rootElement)
+                subCls: Any = self._classForRoot(rootElement)
                 if subCls is None:
                     return None
+                if subCls is SchemaBase:
+                    # An element declaration with no type is implicitly
+                    # xs:anyType. Bind it through the ur-type class so
+                    # its children go through the lax wildcard and a
+                    # matching global declaration is validated (so a
+                    # required attribute on the child is enforced,
+                    # AU_required00101m1_n).
+                    subCls = AnyType
                 self.generateCorrectSchemaTags()
                 contentKind = getattr(subCls, "_contentKind_", None)
                 isComplex = (

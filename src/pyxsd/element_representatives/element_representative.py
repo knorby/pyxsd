@@ -975,25 +975,35 @@ class ElementRepresentative:
 
         ``candidates`` is an iterable of element representatives (for
         example ``schema.elements`` or ``schema.groups.values()``). In
-        ``legacy`` mode, or when the prefix cannot be resolved, the
-        reference's local name selects the first same-named candidate.
-        In ``strict`` mode the resolved namespace must also match the
+        ``strict`` mode the resolved namespace must also match the
         candidate's namespace, so a reference into another namespace
-        never falls back to a same-named local declaration. Returns
-        ``None`` when nothing matches.
+        never falls back to a same-named local declaration, and an
+        unprefixed name with no default namespace stays in no namespace
+        (AU_attrDecl00101m1_n). In ``legacy`` mode, or when the prefix
+        cannot be resolved, the reference's local name selects the first
+        same-named candidate. Returns ``None`` when nothing matches.
         """
         if value is None:
             return None
         resolved = self.resolveSchemaQName(value, parser=parser)
         local = local_name(resolved)
         uri = namespace_of(resolved)
+        mode = getattr(parser, "mode", None)
+        strict = getattr(mode, "namespaces", "legacy") == "strict"
         for candidate in candidates:
             if getattr(candidate, "name", None) != local:
                 continue
+            getter = getattr(candidate, "getNamespace", None)
+            candidate_ns = getter() if getter is not None else None
             if uri is not None:
-                getter = getattr(candidate, "getNamespace", None)
-                if getter is None or getter() != uri:
+                if candidate_ns != uri:
                     continue
+            elif strict and candidate_ns not in (None, ""):
+                # An unprefixed QName resolves through the in-scope
+                # default namespace; with none in scope it is in no
+                # namespace and must not select a namespaced
+                # declaration.
+                continue
             return candidate
         return None
 
