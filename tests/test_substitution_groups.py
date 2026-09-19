@@ -174,6 +174,18 @@ class TestSubstitutionDerivationBlock:
         )
         assert not [i for i in report.errors if i.code != "schema-hint"]
 
+    def test_untyped_substitution_member_adopts_head_type(self, parse_document):
+        # SUN typeDef00204m: an untyped declaration that is a substitution
+        # member takes the head's type definition.
+        report = parse_document(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='Head' type='xsd:boolean'/>"
+            "<xsd:element name='root' substitutionGroup='Head'/>"
+            "</xsd:schema>",
+            "<root>Yes</root>",
+        )
+        assert any(issue.severity is IssueSeverity.ERROR for issue in report.issues)
+
 
 class TestElementDeclarationsConsistent:
     _TEMPLATE = (

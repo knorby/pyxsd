@@ -4924,6 +4924,21 @@ class PyXSD:
             )
 
         subCls = rootElement.getType()
+        if subCls is SchemaBase and rootElement.tagAttributes.get("type") is None:
+            # An untyped declaration that is a substitution-group member
+            # takes the head's type definition (SUN typeDef00204m).
+            headName = rootElement.getSubstitutionGroupHead(parser=self)
+            if headName:
+                schemaER = rootElement.getSchema()
+                for candidate in getattr(schemaER, "elements", None) or []:
+                    if candidate is rootElement:
+                        continue
+                    names = {candidate.name, getattr(candidate, "expandedName", None)}
+                    if headName in names:
+                        headCls = candidate.getType()
+                        if headCls is not None and headCls is not SchemaBase:
+                            subCls = headCls
+                        break
         if subCls is None:
             self.report.add_error(
                 f"the type of root element '{rootElement.name}' could not be resolved",
