@@ -1244,6 +1244,21 @@ class TestSubstitutionGroupLegality:
         )
         assert "substitution-type" not in _schema_codes(report)
 
+    def test_simple_member_with_an_any_simple_type_head_is_clean(self, parse_schema):
+        """A member with two heads, one of them ``xs:anySimpleType``, and a
+        plain simple type is validly derived from the simple ur-type head
+        (pyxsd's lattice has no String/AnySimpleType edge, so the
+        multi-head ``strict_heads`` branch must exempt it)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='headSimple' type='xsd:anySimpleType'/>"
+            "<xsd:element name='headString' type='xsd:string'/>"
+            "<xsd:element name='member' type='xsd:string' "
+            "substitutionGroup='headSimple headString'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
     def test_unrelated_simple_member_under_simple_head_is_clean(self, parse_schema):
         """The shipped fixture: an integer member under a string head stays
         tolerated (the documented single-head under-approximation)."""

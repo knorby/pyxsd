@@ -2954,20 +2954,23 @@ class PyXSD:
                     )
                 elif reason == "not-derived" and not inline:
                     # pyxsd's lattice does not model the ur-types as a
-                    # subclass edge, so a simple member under an
+                    # subclass edge, so a plain simple member under an
                     # anySimpleType head reports not-derived even though
                     # the simple ur-type roots every simple derivation.
-                    # Only the clear category mismatches are reported for
-                    # a single head (stZ048: complex under anySimpleType;
-                    # stZ049: anySimpleType under a complex head); the
-                    # general single-head under-approximation stays.
+                    # The ur-type heads are therefore exempt from both the
+                    # single-head category check and the multi-head
+                    # ``strict_heads`` report; only the clear category
+                    # mismatches are reported (stZ048: complex under
+                    # anySimpleType; stZ049: anySimpleType under a complex
+                    # head; stZ050/stZ053: anyType admits every type). The
+                    # general under-approximation for a single ordinary
+                    # head stays (the shipped substitution fixture).
                     head_is_simple_ur = headCls is AnySimpleType
                     member_is_simple_ur = memberCls is AnySimpleType
                     member_is_complex = getattr(memberCls, "_contentKind_", None) == "complex"
-                    # ``xs:anyType`` admits every type (stZ050/stZ053):
-                    # an anySimpleType member under it is legal.
                     head_admits_all = headCls is AnyType
-                    mismatch = strict_heads or (
+                    head_exempt = head_admits_all or head_is_simple_ur
+                    mismatch = (strict_heads and not head_exempt) or (
                         not head_admits_all
                         and (member_is_simple_ur or (head_is_simple_ur and member_is_complex))
                     )
