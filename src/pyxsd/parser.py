@@ -717,6 +717,7 @@ class PyXSD:
         self._checkContentKindDerivation(schemaER)
         self._checkAlternatives(schemaER)
         self._checkAlternativeTableEDC(schemaER)
+        self._checkConditionalTypeSubstitutable(schemaER)
         self._checkGroupRedefineRestrictions(schemaER)
 
         return None
@@ -2580,6 +2581,100 @@ class PyXSD:
             typeKey = particle.tagAttributes.get("type") or ""
             resolved.append((name, typeKey, particle))
         return resolved
+
+    def _checkConditionalTypeSubstitutable(self, schemaER: Any) -> None:
+        """Reports a restriction whose alternative types are not substitutable.
+
+        XSD 1.1 cos-cta-substitutable (§3.4.6.4): for a restriction, each
+        type in the derived type's type table at a given test must be
+        validly derived from the base's type at the same test, and the two
+        tables must carry the same tests. Runs after the generated classes
+        exist so alternative types have resolved classes (cta0043).
+        """
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "ComplexType" and er.getDerivation() == "restriction":
+                self._checkOneConditionalType(er)
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkOneConditionalType(self, er: Any) -> None:
+        if er._firstProcessedChild(er, "SimpleContent") is not None:
+            return
+        base_class = self._baseTypeClass(er)
+        if base_class is None:
+            return
+        base_model = getattr(base_class, "_contentModel_", None)
+        derived_model = getattr(getattr(er, "_generatedClass", None), "_contentModel_", None)
+        if derived_model is None:
+            derived_model = compile_content_model(er, self)
+        if base_model is None or derived_model is None:
+            return
+        base_decls = self._modelElementDeclarations(base_model)
+        derived_decls = self._modelElementDeclarations(derived_model)
+        for name, base_decl in base_decls.items():
+            derived_decl = derived_decls.get(name)
+            if derived_decl is None:
+                continue
+            reason = self._alternativeSubstitutabilityViolation(base_decl, derived_decl)
+            if reason is not None:
+                self.report.add_error(
+                    f"particle restriction (cos-cta-substitutable): the type "
+                    f"alternatives of element '{name[1] or '?'}' in type "
+                    f"'{getattr(er, 'name', '?')}' are not substitutable for the "
+                    f"base type's ({reason})",
+                    code="particle-restriction",
+                    phase="schema",
+                )
+
+    @staticmethod
+    def _modelElementDeclarations(model: Any) -> dict[tuple[str, str], Any]:
+        """Maps each element particle's expanded name to its declaration."""
+        found: dict[tuple[str, str], Any] = {}
+
+        def walk(particle: Any) -> None:
+            if particle.kind == "element":
+                declaration = getattr(particle, "descriptor", None)
+                if declaration is not None and getattr(declaration, "name", None):
+                    namespace = element_namespace(declaration) or ""
+                    found.setdefault((namespace, declaration.name), declaration)
+            for child in particle.children:
+                walk(child)
+
+        walk(model)
+        return found
+
+    def _alternativeSubstitutabilityViolation(
+        self, base_decl: Any, derived_decl: Any
+    ) -> str | None:
+        base_alts = getattr(base_decl, "compiledAlternatives", None) or []
+        derived_alts = getattr(derived_decl, "compiledAlternatives", None) or []
+        if not base_alts and not derived_alts:
+            return None
+        for alt in (*base_alts, *derived_alts):
+            # The declarations may be untyped (their alternatives were
+            # never resolved by ``check_element_alternatives``), so resolve
+            # each alternative's type class here.
+            alt.er.resolveTypeClass(self)
+        base_table = {alt.test: alt for alt in base_alts}
+        derived_table = {alt.test: alt for alt in derived_alts}
+        if set(base_table) != set(derived_table):
+            return "the type tables carry different tests"
+        for test, base_alt in base_table.items():
+            derived_alt = derived_table[test]
+            if base_alt.is_error or derived_alt.is_error:
+                continue
+            base_cls = base_alt.type_class
+            derived_cls = derived_alt.type_class
+            if base_cls is None or derived_cls is None:
+                continue
+            if is_validly_derived(derived_cls, base_cls) is not None:
+                return f"the type at test {test!r} is not validly derived from the base's"
+        return None
 
     def _checkAlternativeTableEDC(self, schemaER: Any) -> None:
         """Reports like-named particles whose ``xs:alternative`` tables differ.

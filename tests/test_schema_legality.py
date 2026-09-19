@@ -3240,6 +3240,52 @@ class TestSubstitutionBlockInRestriction:
         assert "particle-restriction" not in _schema_codes(report)
 
 
+class TestConditionalTypeSubstitutable:
+    """A restriction's alternative types must be substitutable for the
+    base's (cta0043)."""
+
+    BASE = (
+        "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+        "<xsd:element name='doc' type='base'/>"
+        "<xsd:complexType name='base'><xsd:sequence>"
+        "<xsd:element name='stamp'>"
+        "<xsd:alternative test=\"@t='1'\" type='narrow'/>"
+        "<xsd:alternative type='wide'/>"
+        "</xsd:element>"
+        "</xsd:sequence></xsd:complexType>"
+        "<xsd:complexType name='wide'><xsd:simpleContent>"
+        "<xsd:extension base='xsd:string'/></xsd:simpleContent></xsd:complexType>"
+        "<xsd:complexType name='narrow'><xsd:simpleContent>"
+        "<xsd:restriction base='wide'/></xsd:simpleContent></xsd:complexType>"
+    )
+
+    def test_alternative_type_not_derived_rejected(self, parse_schema):
+        report = parse_schema(
+            self.BASE + "<xsd:complexType name='derived'><xsd:complexContent>"
+            "<xsd:restriction base='base'><xsd:sequence>"
+            "<xsd:element name='stamp'>"
+            "<xsd:alternative test=\"@t='1'\" type='wide'/>"
+            "<xsd:alternative type='wide'/>"
+            "</xsd:element>"
+            "</xsd:sequence></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "particle-restriction" in _schema_codes(report)
+
+    def test_alternative_type_derived_accepted(self, parse_schema):
+        report = parse_schema(
+            self.BASE + "<xsd:complexType name='derived'><xsd:complexContent>"
+            "<xsd:restriction base='base'><xsd:sequence>"
+            "<xsd:element name='stamp'>"
+            "<xsd:alternative test=\"@t='1'\" type='narrow'/>"
+            "<xsd:alternative type='wide'/>"
+            "</xsd:element>"
+            "</xsd:sequence></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "particle-restriction" not in _schema_codes(report)
+
+
 class TestAttributeWildcardRestriction:
     """Attribute wildcard/use derivation on a restriction (ctO004/ctO005)."""
 
