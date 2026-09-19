@@ -716,6 +716,7 @@ class PyXSD:
         self._checkSimpleContentRestrictionBase(schemaER)
         self._checkContentKindDerivation(schemaER)
         self._checkAlternatives(schemaER)
+        self._checkAlternativeTableEDC(schemaER)
         self._checkGroupRedefineRestrictions(schemaER)
 
         return None
@@ -1344,6 +1345,64 @@ class PyXSD:
             self._checkSubstitutionOverlap(resolved)
             self._checkAllWildcardOverlap(er)
         self._checkSubstitutionEDC(resolved)
+
+    def _checkWildcardElementEDC(self, er: Any, resolved: list[Any]) -> None:
+        """Reports a wildcard whose global match has a conflicting type table.
+
+        XSD 1.1 Element Declarations Consistent (bug 11076) compares the
+        *type tables* of governing declarations: a strict or lax wildcard
+        that admits a globally-declared element which also appears as a
+        like-named local particle makes the two declarations inconsistent
+        when their ``xs:alternative`` tables differ — including one being
+        absent (wild078/wild079/wild081). The narrower comparison keeps
+        the historical acceptance of a wildcard over a global whose plain
+        type merely differs, which the corpus does not pin.
+        """
+        if not resolved:
+            return
+        wildcards = [
+            child
+            for child in getattr(er, "_particleChildren", lambda: ())()
+            if child.__class__.__name__ == "Any"
+            and child.xsdElement.get("notNamespace") is None
+            and child.xsdElement.get("notQName") is None
+        ]
+        wildcards = [wc for wc in wildcards if getattr(wc, "wildcardSpec", None) is not None]
+        if not wildcards:
+            return
+        lookup = self._globalElementLookup(er)
+        try:
+            target = er.getNamespace()
+        except AttributeError:
+            target = None
+        byName: dict[tuple[str, str], list[Any]] = {}
+        for name, _typeKey, particle in resolved:
+            if type(particle).__name__ == "Element":
+                byName.setdefault(name, []).append(particle)
+        if not byName:
+            return
+        for wildcard in wildcards:
+            spec = wildcard.wildcardSpec
+            if spec.process_contents == "skip":
+                continue
+            effective = spec.effective_target(target)
+            for (namespace, local), particles in byName.items():
+                globalName = f"{{{namespace}}}{local}" if namespace else local
+                if not spec.allows_name(globalName, effective):
+                    continue
+                globalDecl = lookup(globalName)
+                if globalDecl is None:
+                    continue
+                globalSignature = self._alternativeTableSignature(globalDecl)
+                for particle in particles:
+                    if self._alternativeTableSignature(particle) != globalSignature:
+                        self.report.add_error(
+                            f"element declarations consistent: element '{local}' "
+                            "matched by a wildcard is declared with a conflicting "
+                            "alternative type table",
+                            code="element-consistent",
+                        )
+                        break
 
     def _checkSubstitutionEDC(self, resolved: list[Any]) -> None:
         """Reports a substitution member redeclared with a conflicting type.
@@ -2488,6 +2547,62 @@ class PyXSD:
             typeKey = particle.tagAttributes.get("type") or ""
             resolved.append((name, typeKey, particle))
         return resolved
+
+    def _checkAlternativeTableEDC(self, schemaER: Any) -> None:
+        """Reports like-named particles whose ``xs:alternative`` tables differ.
+
+        Element Declarations Consistent compares the *type table* of
+        same-named element particles as well as their declared types
+        (bug 11076): two ``xs:alternative`` lists that differ — including
+        one absent — assign conflicting governing types
+        (cta9009err/cta9010err). Runs after the declaration walk (and
+        after ``_checkAlternatives``) because alternatives are compiled on
+        each element during that walk.
+        """
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ in self._COMPOSITOR_KINDS:
+                raw: list[Any] = []
+                self._collectParticles(er, raw, set())
+                resolved = self._resolveParticles(raw)
+                byName: dict[tuple[str, str], list[Any]] = {}
+                for name, _typeKey, particle in resolved:
+                    byName.setdefault(name, []).append(particle)
+                for (_, local), particles in byName.items():
+                    if len(particles) < 2:
+                        continue
+                    if len({self._alternativeTableSignature(p) for p in particles}) > 1:
+                        self.report.add_error(
+                            f"element declarations consistent: element '{local}' "
+                            "is declared with conflicting alternative type tables "
+                            "in the same content model",
+                            code="all-rule",
+                        )
+                self._checkWildcardElementEDC(er, resolved)
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _alternativeTableSignature(self, particle: Any) -> tuple:
+        """An element particle's ``xs:alternative`` type table signature.
+
+        Returns a tuple of ``(test, type)`` pairs in declaration order, or
+        an empty tuple when the declaration carries no alternatives. A
+        reference site follows its ``referredElement`` to the declaration
+        that owns the alternatives.
+        """
+        seen: set[int] = set()
+        current = particle
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            alternatives = getattr(current, "compiledAlternatives", None)
+            if alternatives:
+                return tuple((alt.test, alt.type_name or alt.inline_type) for alt in alternatives)
+            current = getattr(current, "referredElement", None)
+        return ()
 
     def _collectParticles(self, er: Any, out: list[Any], visited: set[int]) -> None:
         """Collects element particles under *er* transitively.

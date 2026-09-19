@@ -3079,6 +3079,83 @@ class TestSubstitutionMemberUnionDerivation:
         assert "invalid-base" not in _schema_codes(report)
 
 
+class TestEDCTypeTables:
+    """Element Declarations Consistent compares ``xs:alternative`` type
+    tables too (cta9009err/cta9010err)."""
+
+    def test_same_name_different_alternative_tables_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "<xsd:alternative test=\"@t='2'\" type='xsd:double'/>"
+            "</xsd:element>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "</xsd:element>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "all-rule" in _schema_codes(report)
+
+    def test_one_alternative_table_absent_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "</xsd:element>"
+            "<xsd:element name='a' type='xsd:string'/>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "all-rule" in _schema_codes(report)
+
+    def test_wildcard_match_conflicting_global_table_rejected(self, parse_schema):
+        """wild078: a strict wildcard matching a global element whose type
+        table differs from the like-named local particle."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a'/>"
+            "<xsd:any namespace='##local' processContents='strict'/>"
+            "</xsd:sequence></xsd:complexType>"
+            "<xsd:element name='a'><xsd:alternative type='xsd:integer'/></xsd:element>"
+            "</xsd:schema>"
+        )
+        assert "element-consistent" in _schema_codes(report)
+
+    def test_wildcard_match_consistent_global_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a' type='xsd:string'/>"
+            "<xsd:any namespace='##local' processContents='strict'/>"
+            "</xsd:sequence></xsd:complexType>"
+            "<xsd:element name='a' type='xsd:string'/>"
+            "</xsd:schema>"
+        )
+        assert "element-consistent" not in _schema_codes(report)
+
+    def test_same_name_identical_alternative_tables_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "</xsd:element>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "</xsd:element>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "all-rule" not in _schema_codes(report)
+
+
 class TestAttributeWildcardRestriction:
     """Attribute wildcard/use derivation on a restriction (ctO004/ctO005)."""
 
