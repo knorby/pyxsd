@@ -46,6 +46,10 @@ class ComplexType(XsdType):
         "openContent",
         "simpleContent",
         "complexContent",
+        "group",
+        "all",
+        "choice",
+        "sequence",
         "anyAttribute",
     )
     _CHILD_ORDER = (
@@ -119,6 +123,24 @@ class ComplexType(XsdType):
                 "false, 1 or 0",
                 code="declaration-attribute",
             )
+        abstract = self.tagAttributes.get("abstract")
+        if abstract is not None and self._invalidBoolean(abstract):
+            self._reportSchemaError(
+                f"complexType '{self.name}' has an invalid abstract value "
+                f"'{abstract}'; expected true, false, 1 or 0",
+                code="declaration-attribute",
+            )
+        # ``final``/``block`` on a complexType admit only the type-derivation
+        # methods; ``substitution`` belongs to element declarations and to
+        # the schema-level ``finalDefault``/``blockDefault`` (ctA016/ctA025).
+        for attr in ("final", "block"):
+            value = self.tagAttributes.get(attr)
+            if value is not None and self._invalidTokenList(value, {"extension", "restriction"}):
+                self._reportSchemaError(
+                    f"complexType '{self.name}' has an invalid {attr} value "
+                    f"'{value}'; expected extension, restriction or #all",
+                    code="declaration-attribute",
+                )
         name = self.xsdElement.get("name")
         if name is None or "|" in name:
             # A pipe marks an internal bookkeeping name (an inline type,

@@ -14,6 +14,21 @@ class ComplexContent(ElementRepresentative):
         """See ElementRepresentative for documentation."""
         super().__init__(xsdElement, parent)
 
+    def checkDeclarationLegality(self) -> None:
+        """Reports a ``complexContent`` without a derivation (ctF012/ctF015).
+
+        ``complexContent`` wraps exactly one ``restriction``/``extension``;
+        an empty or annotation-only body carries none, so the type has no
+        content definition.
+        """
+        for child in self.processedChildren or ():
+            if child is not None and type(child).__name__ in ("Restriction", "Extension"):
+                return
+        self._reportSchemaError(
+            "complexContent must contain a restriction or extension",
+            code="declaration-child",
+        )
+
     def getName(self):
         """Makes a name like this- ``ContainingTypeName``|complexContent.
         The name on this class is used for almost nothing.

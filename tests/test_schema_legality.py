@@ -2073,6 +2073,79 @@ class TestDeclarationAttributeLegality:
         )
         assert "declaration-attribute" in _schema_codes(report)
 
+    @pytest.mark.parametrize("value", ["-1", "TRUE", "FALSE", "False", "", "boolean"])
+    def test_invalid_complex_type_abstract_boolean(self, parse_schema, value):
+        """ctA004/ctA006/ctA007/ctA008: ``abstract`` on a complexType is an
+        ``xs:boolean``: only true/false/1/0 are legal."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' abstract='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("value", ["true", "false", "1", "0"])
+    def test_legal_complex_type_abstract_boolean_accepted(self, parse_schema, value):
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' abstract='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_complex_type_final_substitution_rejected(self, parse_schema):
+        """ctA025: ``final`` on a complexType admits only extension/restriction."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' final='substitution'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_complex_type_block_substitution_rejected(self, parse_schema):
+        """ctA016: ``block`` on a complexType admits only extension/restriction."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' block='substitution'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("attr", ["final", "block"])
+    @pytest.mark.parametrize("value", ["extension", "restriction", "extension restriction", "#all"])
+    def test_complex_type_final_block_legal_tokens_accepted(self, parse_schema, attr, value):
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' {attr}='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    @pytest.mark.parametrize(
+        "particle",
+        [
+            "<xsd:all><xsd:element name='a' type='xsd:string'/></xsd:all>"
+            "<xsd:all><xsd:element name='b' type='xsd:string'/></xsd:all>",
+            "<xsd:choice><xsd:element name='a' type='xsd:string'/></xsd:choice>"
+            "<xsd:choice><xsd:element name='b' type='xsd:string'/></xsd:choice>",
+            "<xsd:sequence><xsd:element name='a' type='xsd:string'/></xsd:sequence>"
+            "<xsd:sequence><xsd:element name='b' type='xsd:string'/></xsd:sequence>",
+            "<xsd:group ref='g'/><xsd:group ref='h'/>",
+        ],
+    )
+    def test_complex_type_repeated_particle_rejected(self, parse_schema, particle):
+        """ctB035/ctB050/ctB065/ctB080: a complexType holds a single particle."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t'>{particle}</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    @pytest.mark.parametrize("wrapper", ["simpleContent", "complexContent"])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "",
+            "<xsd:annotation><xsd:documentation/></xsd:annotation>",
+        ],
+    )
+    def test_content_wrapper_without_derivation_rejected(self, parse_schema, wrapper, body):
+        """ctC009/ctF012/ctF015: a content kind wraps exactly one derivation."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t'><xsd:{wrapper}>"
+            f"{body}</xsd:{wrapper}></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
     @pytest.mark.parametrize("value", ["true", "false", "1", "0"])
     def test_legal_boolean_values_accepted(self, parse_schema, value):
         report = parse_schema(
