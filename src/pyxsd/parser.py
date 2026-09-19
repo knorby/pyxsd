@@ -1342,8 +1342,14 @@ class PyXSD:
                     code="all-rule",
                 )
         if isAll:
-            self._checkSubstitutionOverlap(resolved)
             self._checkAllWildcardOverlap(er)
+        if isAll or type(er).__name__ == "Choice":
+            # In an ``all`` or ``choice`` every alternative is live at once,
+            # so a head and one of its members (or two members of one head)
+            # can match the same item and violate UPA (all303,
+            # particlesZ033_g). A ``sequence`` is positionally ordered, so
+            # the ambiguity is decided by the UPA machinery, not here.
+            self._checkSubstitutionOverlap(resolved)
         self._checkSubstitutionEDC(resolved)
 
     def _checkWildcardElementEDC(self, er: Any, resolved: list[Any]) -> None:
@@ -2293,6 +2299,21 @@ class PyXSD:
                         code="particle-restriction",
                     )
                     return
+        # Two element particles from opposite sides can also overlap
+        # through a shared substitution member (all303): the composed
+        # ``all`` holds both, so a member common to both heads makes it
+        # non-deterministic.
+        resolved: list[Any] = []
+        for member in [*base_members, *own_members]:
+            if member.kind != "element":
+                continue
+            declaration = getattr(member, "descriptor", None)
+            if declaration is None or type(declaration).__name__ != "Element":
+                continue
+            namespace = declaration.getNamespace() or ""
+            resolved.append(((namespace, declaration.name or ""), "", declaration))
+        if resolved:
+            self._checkSubstitutionOverlap(resolved)
 
     @staticmethod
     def _particleIsEmpty(model: Any) -> bool:
@@ -2687,12 +2708,21 @@ class PyXSD:
                     namespace, _, local = head[1:].partition("}")
                     names.add((namespace, local))
                 else:
-                    names.add((holder.getNamespace() or "", head.split(":")[-1]))
+                    names.add((element_namespace(holder) or "", head.split(":")[-1]))
             return names
 
         def nameOf(holder: Any) -> tuple[str, str]:
-            return (holder.getNamespace() or "", getattr(holder, "name", None) or "")
+            return (element_namespace(holder) or "", getattr(holder, "name", None) or "")
 
+        # Form-aware names: an unqualified local declaration never
+        # collides with a same-spelled global (elemZ020), and a
+        # reference site adopts its global's expanded name.
+        entries: list[tuple[tuple[str, str], Any]] = []
+        for name, _typeKey, particle in resolved:
+            if getattr(particle, "isElementRef", False):
+                entries.append((name, particle))
+            else:
+                entries.append((nameOf(particle), particle))
         for element in getattr(schema, "elements", None) or ():
             if type(element).__name__ != "Element" or not element.name:
                 continue
@@ -2701,7 +2731,7 @@ class PyXSD:
                 blockedHeads.add(nameOf(element))
             if element.tagAttributes.get("substitutionGroup"):
                 memberHeads.setdefault(nameOf(element), set()).update(headsOf(element))
-        for name, _typeKey, particle in resolved:
+        for name, particle in entries:
             block = (particle.tagAttributes.get("block") or "").split()
             if "substitution" in block or "#all" in block:
                 blockedHeads.add(name)
@@ -2709,7 +2739,7 @@ class PyXSD:
                 memberHeads.setdefault(name, set()).update(headsOf(particle))
 
         expanded: list[tuple[tuple[str, str], set[tuple[str, str]]]] = []
-        for name in {name for name, _, _ in resolved}:
+        for name in {name for name, _particle in entries}:
             names = {name}
             if name not in blockedHeads:
                 for member, heads in memberHeads.items():
@@ -2724,7 +2754,7 @@ class PyXSD:
                     self.report.add_error(
                         f"content model is ambiguous: elements '{firstLabel}' and "
                         f"'{secondLabel}' can match the same substitution member "
-                        "in the same all",
+                        "in the same content model",
                         code="all-rule",
                     )
                     return

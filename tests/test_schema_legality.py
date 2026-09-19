@@ -3156,6 +3156,53 @@ class TestEDCTypeTables:
         assert "all-rule" not in _schema_codes(report)
 
 
+class TestChoiceSubstitutionOverlap:
+    """A head and its member (or two members) in one choice violate UPA
+    (particlesZ033_g)."""
+
+    def test_head_and_member_in_one_choice_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:choice>"
+            "<xsd:element ref='head'/><xsd:element ref='m1'/>"
+            "</xsd:choice></xsd:complexType>"
+            "<xsd:element name='head'/>"
+            "<xsd:element name='m1' substitutionGroup='head'/>"
+            "</xsd:schema>"
+        )
+        assert "all-rule" in _schema_codes(report)
+
+    def test_all_extension_shared_substitution_member_rejected(self, parse_schema):
+        """all303: the composed all holds two particles with a common
+        substitution member."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:all><xsd:element ref='d'/></xsd:all>"
+            "</xsd:complexType>"
+            "<xsd:complexType name='e'><xsd:complexContent>"
+            "<xsd:extension base='b'><xsd:all><xsd:element ref='g'/></xsd:all>"
+            "</xsd:extension></xsd:complexContent></xsd:complexType>"
+            "<xsd:element name='d'/><xsd:element name='g'/>"
+            "<xsd:element name='dg' substitutionGroup='d g'/>"
+            "</xsd:schema>"
+        )
+        assert "all-rule" in _schema_codes(report)
+
+    def test_unrelated_members_in_one_choice_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:choice>"
+            "<xsd:element ref='m1'/><xsd:element ref='m2'/>"
+            "</xsd:choice></xsd:complexType>"
+            "<xsd:element name='m1'/>"
+            "<xsd:element name='m2'/>"
+            "</xsd:schema>"
+        )
+        assert "all-rule" not in _schema_codes(report)
+
+
 class TestAttributeWildcardRestriction:
     """Attribute wildcard/use derivation on a restriction (ctO004/ctO005)."""
 
