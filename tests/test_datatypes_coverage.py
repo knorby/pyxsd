@@ -113,6 +113,16 @@ class _SubUnion:
     _unionMembers = (_Year,)
 
 
+class _NestedUnion:
+    """A union member that is itself a union."""
+
+    _unionMembers = (_Year, _Timeish)
+
+
+class _RestrictionOfNestedUnion(_NestedUnion):
+    """A restriction of a nested member union (inherits no own members)."""
+
+
 class _OddUnion:
     _unionMembers = (_Year, object)
 
@@ -184,8 +194,14 @@ class TestUnionMemberDerivation:
         assert derivation.derived_from_union_member(_SubUnion, None) is False
 
     def test_restriction_of_a_union_member_is_derived_from_the_union(self):
-        # saxonSimple012: sub-chap restricts dt, a member of chap.
-        assert derivation.derived_from_union_member(_SubUnion, _BaseUnion) is True
+        # saxonSimple012/016: sub-chap restricts dt, a nested union that
+        # is a member of chap.
+        assert derivation.derived_from_union_member(_RestrictionOfNestedUnion, _BaseUnion) is True
+
+    def test_member_subset_union_is_not_derived_from_the_union(self):
+        # saxonSimple011: a union derived by restriction (its members a
+        # subset of the base union's) is not substitutable.
+        assert derivation.derived_from_union_member(_SubUnion, _BaseUnion) is False
 
     def test_union_with_a_foreign_member_is_not_derived(self):
         assert derivation.derived_from_union_member(_OddUnion, _BaseUnion) is False
@@ -626,6 +642,19 @@ class TestSchemaFacetLegality:
     def test_qname_values_satisfy_the_length_family_vacuously(self):
         body = element("xs:QName", '<xs:length value="3"/>')
         assert errors(parse(body, "<r>xs:string</r>")) == []
+
+    def test_notation_values_satisfy_the_length_family_vacuously(self):
+        # MS-DataTypes NOTATION_length001/003, minLength003, maxLength001:
+        # the TSTF ruling extends to NOTATION, whose value space is a set
+        # of notation names (QNames).
+        body = (
+            '<xs:simpleType name="buildNotation"><xs:restriction base="xs:NOTATION">'
+            '<xs:enumeration value="mpeg"/></xs:restriction></xs:simpleType>'
+            '<xs:notation name="mpeg" public="image/mpeg" system="viewer.exe"/>'
+            '<xs:element name="r"><xs:simpleType><xs:restriction base="buildNotation">'
+            '<xs:length value="1"/></xs:restriction></xs:simpleType></xs:element>'
+        )
+        assert errors(parse(body, "<r>mpeg</r>")) == []
 
     def test_whitespace_cannot_be_loosened(self):
         body = element("xs:token", '<xs:whiteSpace value="preserve"/>')

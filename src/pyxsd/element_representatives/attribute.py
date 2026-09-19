@@ -79,6 +79,16 @@ class Attribute(ElementRepresentative):
         container = self.getContainingType()
         attributes = getattr(container, "attributes", None)
         if attributes is not None:
+            if not getattr(self, "isAttributeRef", False) and self.name in attributes:
+                # Two direct declarations with one expanded name in the
+                # same complex type or attributeGroup are duplicate
+                # attribute uses; the container reports them once its
+                # declaration legality is checked (attgD009).
+                duplicateNames = getattr(container, "_duplicateAttributeNames_", None)
+                if duplicateNames is None:
+                    duplicateNames = []
+                    container._duplicateAttributeNames_ = duplicateNames
+                duplicateNames.append(self.name)
             attributes[self.name] = self
         else:
             self.misplacement = (
@@ -102,19 +112,42 @@ class Attribute(ElementRepresentative):
     def __set_name__(self, owner, name):
         """Called when this descriptor is bound as ``name`` on ``owner``.
 
-        Stores the owning generated class so error messages can name
-        it, and warns if the class attribute name does not match the
-        schema attribute name (they are normally identical; a mismatch
-        means a descriptor was rebound under a different name).
+        Stores the owning generated class and the class-attribute key it
+        was bound under (``bindingKey``). For most descriptors the key
+        equals the schema attribute name. When two attribute uses share
+        a local name but belong to different namespaces (attQ019), the
+        later one is re-keyed under an expanded/aliased name, and that
+        alias is recorded here as an intentional binding.
         """
         self.owner = owner
+        self.bindingKey = name
         if name != self.name:
-            logger.warning(
-                "attribute descriptor for %r was bound as %r on %s",
-                self.name,
-                name,
-                owner.__name__,
-            )
+            if getattr(self, "_aliased_", False):
+                logger.debug(
+                    "attribute descriptor for %r aliased as %r on %s",
+                    self.name,
+                    name,
+                    owner.__name__,
+                )
+            else:
+                logger.warning(
+                    "attribute descriptor for %r was bound as %r on %s",
+                    self.name,
+                    name,
+                    owner.__name__,
+                )
+
+    def _storageKey(self):
+        """Returns the instance-dictionary key this descriptor stores under.
+
+        Values are ordinarily keyed by the schema attribute name; an
+        aliased descriptor (two same-local-name attributes in different
+        namespaces) stores under its unique binding key so the two never
+        share one storage slot.
+        """
+        if getattr(self, "_aliased_", False):
+            return getattr(self, "bindingKey", self.name)
+        return self.name
 
     def __str__(self):
         """Prints its name in a form that allows for quick identification
@@ -209,8 +242,8 @@ class Attribute(ElementRepresentative):
         """
         if obj is None:
             return self
-        if self.name in obj.__dict__:
-            return obj.__dict__[self.name]
+        if self._storageKey() in obj.__dict__:
+            return obj.__dict__[self._storageKey()]
         default = getattr(self, "default", None)
         return default
 
@@ -266,7 +299,7 @@ class Attribute(ElementRepresentative):
             else:
                 logger.error(message)
 
-        obj.__dict__[self.name] = value
+        obj.__dict__[self._storageKey()] = value
 
     def __delete__(self, obj):
         """Deletes an entry from the dictionary.
@@ -274,7 +307,7 @@ class Attribute(ElementRepresentative):
         See the Python documentation for full documentation on
         descriptors.
         """
-        del obj.__dict__[self.name]
+        del obj.__dict__[self._storageKey()]
 
     def getUse(self):
         """Returns the 'use' value, which says if the attribute is
@@ -336,6 +369,22 @@ class Attribute(ElementRepresentative):
         self._checkAttributeType()
         self._checkAttributeName()
         self._checkAttributeNamespace()
+        self._checkAttributeBooleanAttributes()
+
+    def _checkAttributeBooleanAttributes(self) -> None:
+        """Reports ``inheritable`` values outside ``xs:boolean``.
+
+        XSD 1.1 types the attribute as ``xs:boolean``; the lexical space is
+        exactly true/false/1/0 (cta9006err/cta9007err). Other consumers
+        read an unrecognised spelling as false.
+        """
+        value = self.xsdElement.get("inheritable")
+        if value is not None and self._invalidBoolean(value):
+            self._reportSchemaError(
+                f"attribute '{self.name}' has an invalid inheritable value "
+                f"'{value}'; expected true, false, 1 or 0",
+                code="declaration-attribute",
+            )
 
     def _checkAttributeUnknownAttributes(self) -> None:
         """Reports attributes outside the attribute-declaration grammar.

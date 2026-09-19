@@ -31,6 +31,19 @@ _CLASS_IN_PROGRESS = object()
 _SELF_CONTENT = object()
 
 
+def _isInlineTypeName(value: Any) -> bool:
+    """Whether *value* is an unprefixed inline-type bookkeeping name.
+
+    Such a name (``parent|tag``) is an identity in the component table,
+    not a QName reference, so it must not be resolved through the
+    schema's default namespace: SUN combined xsd011 binds the XML Schema
+    namespace as its default ``xmlns``, which would otherwise corrupt the
+    name. A prefixed pipe name (a redefine clone such as ``a:c|base``)
+    still resolves through its prefix.
+    """
+    return isinstance(value, str) and "|" in value and ":" not in value.split("|", 1)[0]
+
+
 class XsdType(ElementRepresentative):
     """Base class for SimpleType and ComplexType.
 
@@ -133,7 +146,10 @@ class XsdType(ElementRepresentative):
             )
             rawNames = []
         for rawName in rawNames:
-            superClassName = self.resolveSchemaQName(rawName, parser=pyXSD)
+            if _isInlineTypeName(rawName):
+                superClassName = rawName
+            else:
+                superClassName = self.resolveSchemaQName(rawName, parser=pyXSD)
             if superClassName in (self.name, self.expandedName):
                 # A type deriving from itself would re-enter clsFor
                 # forever; report the cycle and skip the base.
@@ -155,7 +171,10 @@ class XsdType(ElementRepresentative):
             self._checkFinal(base, superClassName)
             baseList.append(base)
         listItem = getattr(self, "listItemType", None)
-        if listItem is not None and not any(
+        hasListDerivation = (
+            listItem is not None or getattr(self, "listInlineItem", None) is not None
+        )
+        if hasListDerivation and not any(
             isinstance(base, type) and issubclass(base, XsdList) for base in baseList
         ):
             # A schema-declared xs:list simple type is a value list, not
@@ -175,8 +194,18 @@ class XsdType(ElementRepresentative):
         """
         rawName = getattr(self, "listItemType", None)
         if rawName is None:
-            return None
-        itemName = self.resolveSchemaQName(rawName, parser=pyXSD)
+            inline = getattr(self, "listInlineItem", None)
+            if inline is None:
+                return None
+            # A list whose item type is an inline ``simpleType``: build
+            # that declaration so its facets are enforced per token
+            # (msData stH004, SUN ST_baseTD00301m).
+            itemCls = inline.clsFor(pyXSD)
+            return itemCls if itemCls is not None else AnySimpleType
+        if _isInlineTypeName(rawName):
+            itemName = rawName
+        else:
+            itemName = self.resolveSchemaQName(rawName, parser=pyXSD)
         itemCls = ElementRepresentative.typeFromName(itemName, pyXSD)
         if itemCls is None:
             self._report_ref_error(
@@ -200,7 +229,7 @@ class XsdType(ElementRepresentative):
                 derivation = "extension"
             elif childName == "Restriction":
                 derivation = derivation or "restriction"
-            elif childName == "ComplexContent":
+            elif childName in ("ComplexContent", "SimpleContent"):
                 for grandchild in getattr(child, "processedChildren", []):
                     grandName = grandchild.__class__.__name__ if grandchild is not None else ""
                     if grandName == "Extension":
@@ -269,6 +298,15 @@ class XsdType(ElementRepresentative):
             lookupName = superClassName.split(":")[-1]
         baseER = ElementRepresentative.getFromName(lookupName, kind="type")
         final = getattr(baseER, "final", None) if baseER is not None else None
+        if final is None and baseER is not None:
+            # A type that states no ``final`` takes the declaring schema
+            # document's ``finalDefault`` (Saxon simple005).
+            baseSchema = None
+            getter = getattr(baseER, "getSchema", None)
+            if getter is not None:
+                baseSchema = getter()
+            if baseSchema is not None:
+                final = getattr(baseSchema, "tagAttributes", {}).get("finalDefault")
         if final is None:
             return
         derivation = self.getDerivation()
@@ -324,13 +362,22 @@ class XsdType(ElementRepresentative):
             for attrName, attr in self._collectAttributeGroup(
                 group, frozenset({groupKey}), pyXSD
             ).items():
-                if attrName in self.attributes:
-                    logger.debug(
-                        "attribute %r from attributeGroup %r is already "
-                        "declared on %r; keeping the local declaration",
-                        attrName,
-                        groupName,
-                        self.name,
+                if attr.getUse() == "prohibited":
+                    # A prohibited use contributed by an attributeGroup
+                    # is not an attribute use of the referring type
+                    # (attZ015); the base type's own use, if any, stays.
+                    continue
+                if self._attributeCollides(self.attributes.values(), attr, pyXSD):
+                    # A complex type's {attribute uses} must not contain
+                    # two uses with the same expanded name; a group
+                    # contributing a name the type already has (from its
+                    # own declaration or an earlier group) is a schema
+                    # error, not a silent override (attQ009, attQ013).
+                    self._report_ref_error(
+                        f"attribute '{attrName}' is contributed more than "
+                        f"once to type '{self.name}' (from attributeGroup "
+                        f"'{groupName}')",
+                        code="duplicate-attribute",
                     )
                     continue
                 attr.pyXSD = pyXSD
@@ -371,6 +418,26 @@ class XsdType(ElementRepresentative):
             attr.pyXSD = pyXSD
             self.attributes[attrName] = attr
 
+    def _attributeMatchName(self, attr, pyXSD) -> str | None:
+        """The expanded instance name an attribute use matches under.
+
+        Two attribute uses collide only when their qualified names match;
+        two local declarations with one local name in different
+        namespaces (or with different forms) are distinct (attQ019).
+        A reference site that is not resolved yet contributes its
+        bookkeeping name, so an unresolved ref never collides with a
+        local declaration here.
+        """
+        name = attr.instanceName(is_attribute=True, parser=pyXSD)
+        return name if name is not None else getattr(attr, "name", None)
+
+    def _attributeCollides(self, existing, candidate, pyXSD) -> bool:
+        """Whether *candidate* reuses an expanded name already present."""
+        key = self._attributeMatchName(candidate, pyXSD)
+        if key is None:
+            return False
+        return any(self._attributeMatchName(attr, pyXSD) == key for attr in existing)
+
     def resolveAttributeRefs(self, pyXSD):
         """Resolves attribute reference sites to global declarations.
 
@@ -379,13 +446,35 @@ class XsdType(ElementRepresentative):
         adopt the declaration's name so instance matching and Python
         access use the real attribute name. Unresolvable references are
         reported and dropped rather than crashing class construction.
+        A resolved use whose expanded name is already present is a
+        duplicate attribute use (attQ011, attQ012).
         """
         resolved = {}
+        match_names: dict[str, object] = {}
         for attr in self.attributes.values():
             effective = self._resolveAttributeRef(attr, pyXSD)
             if effective is None:
                 continue
-            resolved[effective.name] = effective
+            key = self._attributeMatchName(effective, pyXSD)
+            if key is not None and key in match_names:
+                self._report_ref_error(
+                    f"attribute '{effective.name}' is contributed more than "
+                    f"once to type '{self.name}'",
+                    code="duplicate-attribute",
+                )
+                continue
+            if key is not None:
+                match_names[key] = effective
+            localKey = effective.name
+            if localKey in resolved:
+                # Two uses share a local name but have distinct expanded
+                # names (different namespaces): keep both, the later one
+                # under its expanded name, so instance matching can
+                # address each (attQ019).
+                localKey = key if key is not None else localKey
+                while localKey in resolved:
+                    localKey = f"{localKey}|2"
+            resolved[localKey] = effective
         self.attributes = resolved
 
     def _globalAttributeCandidates(self, pyXSD):
@@ -460,10 +549,11 @@ class XsdType(ElementRepresentative):
 
         Direct declarations win over those pulled in from a nested
         ``attributeGroup`` reference. Circular references are skipped
-        rather than recursed into. Every visited group's wildcards are
-        registered on the referring type, so an ``xs:anyAttribute``
-        inside a group definition reaches the type's effective
-        attribute wildcard.
+        rather than recursed into: XSD 1.1 allows a circular attribute
+        group definition (bug 15795), so the cycle is not an error.
+        Every visited group's wildcards are registered on the referring
+        type, so an ``xs:anyAttribute`` inside a group definition reaches
+        the type's effective attribute wildcard.
         """
         for spec in getattr(group, "wildcardElementSpecs", ()):
             register_wildcard(self, spec)
@@ -484,11 +574,8 @@ class XsdType(ElementRepresentative):
                 continue
             nestedKey = getattr(nested, "expandedName", None) or nestedName
             if nestedKey in visited:
-                message = (
-                    f"circular attributeGroup reference chain involving "
-                    f"'{nestedName}' (reached from '{self.name}')"
-                )
-                self._report_ref_error(message, code="circular-attributeGroup")
+                # A reference back into the current chain closes a cycle;
+                # XSD 1.1 accepts it (bug 15795, attgC010/C020/C031/D015).
                 continue
             for spec in getattr(nested, "wildcardElementSpecs", ()):
                 register_wildcard(self, spec)
@@ -530,6 +617,12 @@ class XsdType(ElementRepresentative):
             if baseSpec is not None:
                 break
         if own is None:
+            if self.getDerivation() == "restriction":
+                # A restriction that states no wildcard drops the base's
+                # (the intersection is empty): an attribute wildcard is
+                # never inherited across a restriction (SUN test008,
+                # XSD 1.1 §3.4.6.3).
+                return None
             return baseSpec
         if baseSpec is None:
             return own
@@ -564,7 +657,10 @@ class XsdType(ElementRepresentative):
         inherit ``SchemaBase.__init__``, which takes no value.
         """
         namedMembers = [
-            self.resolveSchemaQName(memberName, parser=pyXSD) for memberName in self.unionSpec
+            memberName
+            if _isInlineTypeName(memberName)
+            else self.resolveSchemaQName(memberName, parser=pyXSD)
+            for memberName in self.unionSpec
         ]
         members = []
         for memberName in namedMembers:
@@ -581,8 +677,13 @@ class XsdType(ElementRepresentative):
                     code="unknown-type",
                 )
                 continue
-            if hasattr(resolved, "_unionMembers"):
-                # A union member that is itself a union: flatten.
+            if vars(resolved).get("_unionMembers"):
+                # A member that is *itself* a union (declares its own
+                # members) flattens. A restriction of a union inherits
+                # ``_unionMembers`` through its MRO but is a distinct
+                # declaration; flattening it would expose the base
+                # union's members as if they were members here, which the
+                # corpus rejects (simple015).
                 members.extend(resolved._unionMembers)
             else:
                 members.append(resolved)
@@ -600,7 +701,7 @@ class XsdType(ElementRepresentative):
                     self.name,
                 )
                 continue
-            if hasattr(resolved, "_unionMembers"):
+            if vars(resolved).get("_unionMembers"):
                 members.extend(resolved._unionMembers)
             else:
                 members.append(resolved)
@@ -934,10 +1035,13 @@ class XsdType(ElementRepresentative):
         # (extension unions, restriction intersects). A type without a
         # wildcard of its own still inherits its base's.
         effectiveWildcard = self._effectiveAttributeWildcard(bases)
-        if effectiveWildcard is not None:
-            namespace["effectiveAttributeWildcard_"] = effectiveWildcard
-        if getattr(self, "hasWildcardAttributes", False) or effectiveWildcard is not None:
-            namespace["hasWildcardAttributes_"] = True
+        # Stamp the effective wildcard even when it is absent: a
+        # restriction that drops the base's wildcard must not inherit it
+        # through the Python MRO (SUN test008, XSD 1.1 §3.4.6.3).
+        namespace["effectiveAttributeWildcard_"] = effectiveWildcard
+        namespace["hasWildcardAttributes_"] = bool(
+            getattr(self, "hasWildcardAttributes", False) or effectiveWildcard is not None
+        )
         elementSpecs = getattr(self, "wildcardElementSpecs", None)
         if elementSpecs:
             namespace["wildcardElementSpecs_"] = list(elementSpecs)
@@ -969,6 +1073,8 @@ class XsdType(ElementRepresentative):
         # overrides at instance time.
         namespace["_derivation_"] = self.getDerivation()
         blockValue = self.tagAttributes.get("block")
+        if blockValue is None:
+            blockValue = self.getSchemaBlockDefault()
         if blockValue:
             namespace["_block_"] = blockValue
         # Compile the particle tree before getElements() flattens and
@@ -1072,7 +1178,19 @@ class XsdType(ElementRepresentative):
 
         for attr in attributes:
             attr.pyXSD = pyXSD
-            namespace[attr.name] = attr
+            key = attr.name
+            if key in namespace:
+                # Two attribute uses share a local name but differ in
+                # namespace (attQ019): bind the later one under a unique
+                # key so both descriptors reach ``_attributeNames_`` and
+                # instance matching sees both expanded names.
+                counter = 2
+                key = f"{attr.name}|{counter}"
+                while key in namespace:
+                    counter += 1
+                    key = f"{attr.name}|{counter}"
+                attr._aliased_ = True
+            namespace[key] = attr
 
         try:
             cls = types.new_class(self.name, bases, {}, lambda ns: ns.update(namespace))

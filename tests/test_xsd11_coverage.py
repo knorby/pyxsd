@@ -124,9 +124,11 @@ def test_misplaced_assert_inside_complex_content_is_reported() -> None:
 
 def test_assertion_facet_nested_in_annotated_simple_content() -> None:
     body = (
+        '<xs:complexType name="base"><xs:simpleContent>'
+        '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
         '<xs:element name="t"><xs:complexType><xs:simpleContent>'
         "<xs:annotation><xs:documentation>d</xs:documentation></xs:annotation>"
-        '<xs:restriction base="xs:string">'
+        '<xs:restriction base="base">'
         "<xs:assertion test=\"$value = 'ok'\"/>"
         "</xs:restriction>"
         "</xs:simpleContent></xs:complexType></xs:element>"
@@ -781,6 +783,50 @@ def test_default_open_content_applies_to_empty_false_is_valid() -> None:
         '<xs:element name="t" type="E"/>'
     )
     assert codes(parse(body, "<t/>")) == []
+
+
+def test_empty_content_model_rejects_whitespace_only_content() -> None:
+    # Saxon open012.n3: a complex type whose content type is *empty* has
+    # no character content at all, not even whitespace.
+    body = (
+        '<xs:defaultOpenContent mode="suffix" appliesToEmpty="false">'
+        '<xs:any namespace="urn:d"/></xs:defaultOpenContent>'
+        '<xs:complexType name="E"><xs:sequence/></xs:complexType>'
+        '<xs:element name="t" type="E"/>'
+    )
+    assert "unexpected-character" in codes(parse(body, "<t>\n  \n</t>"))
+
+
+def test_element_only_content_still_allows_whitespace() -> None:
+    body = (
+        '<xs:complexType name="E"><xs:sequence>'
+        '<xs:element name="x" minOccurs="0"/></xs:sequence></xs:complexType>'
+        '<xs:element name="t" type="E"/>'
+    )
+    assert codes(parse(body, "<t>\n  <x/>\n</t>")) == []
+
+
+_SIMPLE_CONTENT_BODY = (
+    '<xs:complexType name="E"><xs:simpleContent>'
+    '<xs:extension base="xs:date"><xs:attribute name="evidence"/></xs:extension>'
+    "</xs:simpleContent></xs:complexType>"
+    '<xs:element name="t" type="E"/>'
+)
+
+
+def test_simple_content_rejects_child_elements() -> None:
+    # Saxon open016.n1: default open content does not apply to simple
+    # content, and a simple-content element admits no child elements.
+    body = (
+        '<xs:defaultOpenContent mode="suffix" appliesToEmpty="false">'
+        '<xs:any namespace="urn:d"/></xs:defaultOpenContent>' + _SIMPLE_CONTENT_BODY
+    )
+    xml = '<t xmlns:d="urn:d" evidence="none">2009-12-12<d:extra>42</d:extra></t>'
+    assert "unexpected-element" in codes(parse(body, xml))
+
+
+def test_simple_content_with_text_only_is_valid() -> None:
+    assert codes(parse(_SIMPLE_CONTENT_BODY, '<t evidence="none">2009-12-12</t>')) == []
 
 
 def test_default_open_content_rejects_stray_child() -> None:

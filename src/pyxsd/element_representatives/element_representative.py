@@ -471,6 +471,24 @@ class ElementRepresentative:
         local name and the namespace of the reference; there is no
         cross-namespace local-name fallback.
         """
+        if "|" in name:
+            # An unprefixed inline-type bookkeeping name is unique in the
+            # component table regardless of namespace: look it up without
+            # a namespace filter (the name already embeds the declaring
+            # chain). A prefixed redefine clone (``{ns}c|base``) keeps its
+            # namespace and is resolved through the normal branch below.
+            uri = namespace_of(name)
+            local = local_name(name)
+            if uri is None:
+                found = table.getFromName(local, kind="type")
+                if found:
+                    return found.clsFor(pyXSD)
+                return None
+            if uri == XSD_NS:
+                logger.warning("XsdTypeName Error: %s does not correspond to a class", local)
+                return None
+            found = table.getFromName(local, kind="type", namespace=uri)
+            return found.clsFor(pyXSD) if found else None
         uri = namespace_of(name)
         local = local_name(name)
         if uri == XSD_NS:
@@ -820,6 +838,26 @@ class ElementRepresentative:
         """
         return self.parent.getSchema()
 
+    def getSchemaBlockDefault(self):
+        """Returns the containing schema's ``blockDefault`` value.
+
+        The schema-level ``blockDefault`` supplies the effective
+        ``block`` of every element declaration and complex-type
+        definition that does not state one of its own; an explicit
+        ``block=""`` overrides it with "none". Returns ``None`` when the
+        schema or the attribute is unavailable.
+        """
+        try:
+            schema = self.getSchema()
+        except (AttributeError, TypeError):
+            return None
+        if schema is None:
+            return None
+        xsdElement = getattr(schema, "xsdElement", None)
+        if xsdElement is None:
+            return None
+        return xsdElement.get("blockDefault")
+
     def getNamespace(self):
         """Returns the namespace URI this declaration belongs to.
 
@@ -848,6 +886,27 @@ class ElementRepresentative:
     def isGlobalDeclaration(self):
         """Returns True when this declaration is a direct schema child."""
         return isinstance(self.parent, Schema)
+
+    def effectiveFinal(self):
+        """Returns this type's effective ``final`` token list.
+
+        A type that states no ``final`` takes its declaring schema
+        document's ``finalDefault`` (XSD 1.1 §3.16.1); the explicit
+        empty string clears it. Returns ``None`` when neither applies.
+        """
+        final = getattr(self, "final", None)
+        if final is not None:
+            return final
+        schema = None
+        getter = getattr(self, "getSchema", None)
+        if getter is not None:
+            try:
+                schema = getter()
+            except Exception:  # pragma: no cover - defensive
+                schema = None
+        if schema is None:
+            return None
+        return getattr(schema, "tagAttributes", {}).get("finalDefault")
 
     @property
     def expandedName(self):
@@ -975,25 +1034,35 @@ class ElementRepresentative:
 
         ``candidates`` is an iterable of element representatives (for
         example ``schema.elements`` or ``schema.groups.values()``). In
-        ``legacy`` mode, or when the prefix cannot be resolved, the
-        reference's local name selects the first same-named candidate.
-        In ``strict`` mode the resolved namespace must also match the
+        ``strict`` mode the resolved namespace must also match the
         candidate's namespace, so a reference into another namespace
-        never falls back to a same-named local declaration. Returns
-        ``None`` when nothing matches.
+        never falls back to a same-named local declaration, and an
+        unprefixed name with no default namespace stays in no namespace
+        (AU_attrDecl00101m1_n). In ``legacy`` mode, or when the prefix
+        cannot be resolved, the reference's local name selects the first
+        same-named candidate. Returns ``None`` when nothing matches.
         """
         if value is None:
             return None
         resolved = self.resolveSchemaQName(value, parser=parser)
         local = local_name(resolved)
         uri = namespace_of(resolved)
+        mode = getattr(parser, "mode", None)
+        strict = getattr(mode, "namespaces", "legacy") == "strict"
         for candidate in candidates:
             if getattr(candidate, "name", None) != local:
                 continue
+            getter = getattr(candidate, "getNamespace", None)
+            candidate_ns = getter() if getter is not None else None
             if uri is not None:
-                getter = getattr(candidate, "getNamespace", None)
-                if getter is None or getter() != uri:
+                if candidate_ns != uri:
                     continue
+            elif strict and candidate_ns not in (None, ""):
+                # An unprefixed QName resolves through the in-scope
+                # default namespace; with none in scope it is in no
+                # namespace and must not select a namespaced
+                # declaration.
+                continue
             return candidate
         return None
 
@@ -1309,7 +1378,7 @@ _PRIMITIVE_TYPES = {
 _BUILTIN_LIST_TYPES = frozenset({"IDREFS", "ENTITIES", "NMTOKENS"})
 
 #: Built-in XSD types that have no atomic value space (the ur-types).
-_NON_ATOMIC_BUILTINS = frozenset({"anySimpleType", "anyType"})
+_NON_ATOMIC_BUILTINS = frozenset({"anySimpleType", "anyType", "anyAtomicType"})
 
 
 def _builtinVariety(localName):

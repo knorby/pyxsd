@@ -14,7 +14,16 @@ class List(ElementRepresentative):
         """See ElementRepresentative for documentation."""
         super().__init__(xsdElement, parent)
         self.itemType = self.xsdElement.get("itemType")
-        self.getContainingType().listItemType = self.itemType
+        containing = self.getContainingType()
+        containing.listItemType = self.itemType
+        # An inline item ``simpleType`` is the other way a list names its
+        # item type; record it so class building resolves and enforces it.
+        inline = [
+            child
+            for child in self.processedChildren
+            if child is not None and child.__class__.__name__ == "SimpleType"
+        ]
+        containing.listInlineItem = inline[0] if inline else None
         # the 'xs' is used so that it can be properly identified as a
         # primitive data type later on
         self.type = "xs:list"
@@ -37,14 +46,31 @@ class List(ElementRepresentative):
         ``atomic-required``.
         """
         containingName = self.getContainingTypeName()
+        inline = [
+            child
+            for child in self.processedChildren or ()
+            if child is not None and child.__class__.__name__ == "SimpleType"
+        ]
+        if self.itemType is not None and inline:
+            # XSD 1.1 §3.16.2.1: a list takes its item type from either
+            # the ``itemType`` attribute or an inline ``simpleType``
+            # child, never both (stD018).
+            self._reportSchemaError(
+                f"list '{containingName}' has both an itemType attribute and an inline simpleType",
+                code="declaration-duplicate",
+            )
         if self.itemType is not None:
             self._checkItemType(self.itemType, f"list '{containingName}'")
-        for child in self.processedChildren or ():
-            if child is not None and child.__class__.__name__ == "SimpleType":
-                self._checkInlineItemType(child, containingName)
+        for child in inline:
+            self._checkInlineItemType(child, containingName)
 
     def _checkItemType(self, itemType, owner):
         variety, er = self.varietyOfReference(itemType)
+        if er is not None and self._finalBlocks(er, "list"):
+            self._reportSchemaError(
+                f"item type '{itemType}' of {owner} is final for list derivation",
+                code="final",
+            )
         if self._itemVarietyIsAtomic(variety, er):
             return
         self._reportSchemaError(
@@ -53,6 +79,12 @@ class List(ElementRepresentative):
         )
 
     def _checkInlineItemType(self, child, containingName):
+        if self._finalBlocks(child, "list"):
+            self._reportSchemaError(
+                f"inline item type '{child.name}' of list '{containingName}' is "
+                "final for list derivation",
+                code="final",
+            )
         variety = child.simpleVariety()
         if self._itemVarietyIsAtomic(variety, child):
             return
@@ -61,6 +93,18 @@ class List(ElementRepresentative):
             "an atomic simple type",
             code="atomic-required",
         )
+
+    @staticmethod
+    def _finalBlocks(er, method):
+        """Whether a type's effective ``final`` excludes *method*."""
+        getter = getattr(er, "effectiveFinal", None)
+        if getter is None:
+            return False
+        final = getter()
+        if not final:
+            return False
+        tokens = str(final).split()
+        return "#all" in tokens or method in tokens
 
     def _itemVarietyIsAtomic(self, variety, er):
         """Whether a resolved item type satisfies the atomicity rule.

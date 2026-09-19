@@ -106,3 +106,28 @@ def test_extension_inherited_declaration_keeps_its_fixed_value(tmp_path):
 
     valid = parse(tmp_path, schema, "<r><a>1</a><a>2</a></r>")
     assert codes(valid) == []
+
+
+def test_strict_wildcard_admits_a_child_with_xsi_type(tmp_path):
+    """A strict wildcard accepts an undeclared child carrying xsi:type.
+
+    MS addB116: the xsi:type supplies the governing type, so the
+    element need not have a top-level declaration.
+    """
+    schema = (
+        XSD_OPEN
+        + "<xs:element name='foo'><xs:complexType><xs:sequence>"
+        + "<xs:element name='a'/>"
+        + "<xs:any namespace='##any' processContents='strict'"
+        + " minOccurs='0' maxOccurs='unbounded'/>"
+        + "</xs:sequence></xs:complexType></xs:element>"
+        + "</xs:schema>"
+    )
+    instance = (
+        '<foo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+        ' xmlns:xsd="http://www.w3.org/2001/XMLSchema">'
+        "<a/><b xsi:type='xsd:string'>abc</b>"
+        "<c xsi:type='xsd:int'>123</c></foo>"
+    )
+    parser = parse(tmp_path, schema, instance)
+    assert codes(parser) == []

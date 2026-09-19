@@ -460,6 +460,30 @@ def test_restriction_of_an_extension_keeps_the_absent_namespace():
     assert errors(bad) == ["wildcard-namespace"]
 
 
+RESTRICTION_WITHOUT_WILDCARD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+    ' targetNamespace="urn:t" xmlns:t="urn:t">'
+    ' <xs:complexType name="base"><xs:sequence/>'
+    '  <xs:anyAttribute namespace="urn:a urn:b" processContents="skip"/>'
+    " </xs:complexType>"
+    ' <xs:complexType name="alias"><xs:complexContent>'
+    '  <xs:restriction base="t:base"/></xs:complexContent></xs:complexType>'
+    ' <xs:element name="doc" type="t:alias"/>'
+    "</xs:schema>"
+)
+
+
+def test_restriction_without_a_wildcard_accepts_no_foreign_attribute():
+    # SUN test008 test.10/test.11: a restriction that states no wildcard
+    # drops the base's, so the foreign attribute is simply undeclared.
+    for attr in ("a:xxx", "b:xxx"):
+        parser = run(
+            RESTRICTION_WITHOUT_WILDCARD_SCHEMA,
+            f'<t:doc xmlns:t="urn:t" xmlns:a="urn:a" xmlns:b="urn:b" {attr}="x"/>',
+        )
+        assert "unexpected-attribute" in codes(parser), attr
+
+
 # --- Rule 4: xsd:anyType roots admit undeclared children -------------------
 
 ANY_TYPE_SCHEMA = (
@@ -495,6 +519,24 @@ def test_anytype_root_validates_a_childs_xsi_type():
         "</x:root_elem>",
     )
     assert "unexpected-element" in errors(parser)
+
+
+ANY_TYPE_CHILD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:element name="root"><xs:complexType><xs:sequence>'
+    '<xs:element name="c" type="xs:anyType"/>'
+    "</xs:sequence></xs:complexType></xs:element>"
+    "</xs:schema>"
+)
+
+
+def test_anytype_typed_child_binds_children_and_attributes():
+    # MS isDefault072, errC007: an anyType-typed child is mixed content
+    # with a lax wildcard, not a simple type containing children.
+    parser = run(ANY_TYPE_CHILD_SCHEMA, '<root><c att="x"><d>1</d></c></root>')
+    assert codes(parser) == []
+    child = parser.schemaRootInstance._children_[0]
+    assert [node._name_ for node in child._children_] == ["d"]
 
 
 # --- controls ---------------------------------------------------------------
@@ -812,4 +854,54 @@ def test_xml_namespace_attribute_needs_a_wildcard():
 def test_xml_namespace_attribute_is_admitted_by_a_wildcard():
     # wild054.v1: an any-attribute wildcard admits xml:lang.
     parser = run(XML_NAMESPACE_ATTRIBUTE_WILDCARD_SCHEMA, '<open xml:lang="de"/>')
+    assert codes(parser) == []
+
+
+PROHIBITED_WILDCARD_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+    'attributeFormDefault="unqualified">'
+    '<xs:element name="root"><xs:complexType>'
+    '<xs:attribute name="attr" use="prohibited"/>'
+    '<xs:anyAttribute namespace="##local" processContents="lax"/>'
+    "</xs:complexType></xs:element></xs:schema>"
+)
+
+
+def test_prohibited_attribute_admitted_by_wildcard_is_valid():
+    # attZ002: the wildcard governs once the prohibited use is not a use
+    parser = run(PROHIBITED_WILDCARD_SCHEMA, '<root attr="123"/>')
+    assert codes(parser) == []
+
+
+PROHIBITED_PLAIN_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:element name="record"><xs:complexType>'
+    '<xs:attribute name="legacy" type="xs:string" use="prohibited"/>'
+    "</xs:complexType></xs:element></xs:schema>"
+)
+
+
+def test_prohibited_attribute_without_wildcard_is_rejected():
+    # conformance/attribute/prohibited-present: a direct prohibited use
+    # with no wildcard rejects the attribute.
+    parser = run(PROHIBITED_PLAIN_SCHEMA, '<record legacy="old"/>')
+    assert "prohibited-attribute" in errors(parser)
+
+
+GROUP_PROHIBITED_RESTRICTION_SCHEMA = (
+    '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+    '<xs:complexType name="base"><xs:attribute name="a"/></xs:complexType>'
+    '<xs:complexType name="derived"><xs:complexContent>'
+    '<xs:restriction base="base"><xs:attributeGroup ref="attG"/></xs:restriction>'
+    "</xs:complexContent></xs:complexType>"
+    '<xs:attributeGroup name="attG"><xs:attribute name="a" use="prohibited"/></xs:attributeGroup>'
+    '<xs:element name="doc" type="derived"/>'
+    "</xs:schema>"
+)
+
+
+def test_group_prohibited_use_is_not_an_attribute_use():
+    # attZ015.v: a prohibited use inside an attributeGroup is not a use,
+    # so the base's optional attribute stays and the instance is valid.
+    parser = run(GROUP_PROHIBITED_RESTRICTION_SCHEMA, '<doc a="a"/>')
     assert codes(parser) == []

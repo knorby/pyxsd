@@ -229,6 +229,36 @@ class TestKeyref:
         parser = _parse(schema, instance, tmp_path)
         assert not parser.report.has_errors
 
+    def test_keyref_field_with_complex_content_is_reported(self, tmp_path):
+        """idH006: a keyref field selecting a complex-content element is a
+        violation, not an absent value."""
+        schema = (
+            f"<xs:schema {_xs}>\n"
+            '  <xs:element name="root">\n'
+            "    <xs:complexType>\n"
+            "      <xs:sequence>\n"
+            '        <xs:element ref="kid" maxOccurs="unbounded"/>\n'
+            '        <xs:element ref="uid" maxOccurs="unbounded"/>\n'
+            "      </xs:sequence>\n"
+            "    </xs:complexType>\n"
+            '    <xs:key name="k"><xs:selector xpath=".//kid"/>'
+            '<xs:field xpath="@val"/></xs:key>\n'
+            '    <xs:keyref name="kr" refer="k"><xs:selector xpath=".//uid"/>'
+            '<xs:field xpath="pid"/></xs:keyref>\n'
+            "  </xs:element>\n"
+            '  <xs:element name="kid"><xs:complexType>'
+            '<xs:attribute name="val" type="xs:string"/></xs:complexType></xs:element>\n'
+            '  <xs:element name="uid"><xs:complexType><xs:sequence>'
+            '<xs:element name="pid"><xs:complexType>'
+            '<xs:attribute name="p" type="xs:string"/></xs:complexType></xs:element>'
+            "</xs:sequence></xs:complexType></xs:element>\n"
+            "</xs:schema>\n"
+        )
+        instance = '<root><kid val="1"/><uid><pid p="1"/></uid></root>'
+        parser = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in parser.report.errors]
+        assert "identity-keyref" in codes
+
     def test_keyref_to_unknown_refer_is_reported(self, tmp_path):
         schema = _link_schema(constraints=_keyref("linkRef", "noSuchKey", "link", "@ref"))
         instance = '<catalog>\n  <item id="a1"/>\n  <link ref="a1"/>\n</catalog>\n'

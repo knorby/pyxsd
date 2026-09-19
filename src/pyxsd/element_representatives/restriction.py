@@ -119,12 +119,19 @@ class Restriction(ElementRepresentative):
         return contName + "|restriction"
 
     def checkDeclarationLegality(self):
-        """Reports a facet specified more than once in a restriction.
+        """Reports facet and base problems of a restriction.
 
         XSD 1.1 §4.3.2 forbids repeating a facet other than ``pattern``,
         ``enumeration`` and ``assertion`` within one restriction step; a
         repeated ``explicitTimezone`` (D4_3_16si02) or any other singleton
         facet makes the declaration invalid.
+
+        A restriction serves both the simple-type and complex-type
+        contexts. In the simple-type context (the containing type is a
+        ``simpleType``) its children are the facets plus an optional
+        inline ``simpleType`` -- no attribute or particle children
+        (stC029) -- and its base must be a simple type that is not an
+        ur-type (stC003, stI004, stZ005).
         """
         super().checkDeclarationLegality()
         counts: dict[str, int] = {}
@@ -138,3 +145,37 @@ class Restriction(ElementRepresentative):
                     f"facet {name!r} is specified more than once in a restriction",
                     code="facet",
                 )
+        containing = type(self.getContainingType()).__name__
+        if containing == "ComplexType":
+            # A complex-content restriction carries a particle and
+            # attributes, never constraining facets (addB112: a facet
+            # inside ``complexContent``/``restriction``). A
+            # simpleContent restriction may apply facets because it
+            # constrains a simple value.
+            parent = self.parent
+            if parent is None or type(parent).__name__ != "SimpleContent":
+                for tag in self.childTags:
+                    if tag in _FACET_CHILDREN:
+                        self._reportSchemaError(
+                            f"<{tag}> is not allowed inside a complex content restriction",
+                            code="declaration-child",
+                        )
+            return
+        if containing != "SimpleType":
+            return
+        allowed = {"annotation", "simpleType", *_FACET_CHILDREN}
+        for tag in self.childTags:
+            if tag not in allowed:
+                self._reportSchemaError(
+                    f"<{tag}> is not allowed inside a simple type restriction",
+                    code="declaration-child",
+                )
+        base = self.tagAttributes.get("base")
+        if base is None:
+            return
+        variety, _er = self.varietyOfReference(base)
+        if variety in ("complex", "non-atomic"):
+            self._reportSchemaError(
+                f"the base type '{base}' of a simple type restriction is not a simple type",
+                code="invalid-base",
+            )

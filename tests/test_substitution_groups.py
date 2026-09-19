@@ -100,6 +100,92 @@ class TestSubstitutionDerivationBlock:
         )
         assert "blocked" in {issue.code for issue in report.issues}
 
+    def test_head_type_block_rejects_restriction_member(self, parse_document):
+        # SUN disallowedSubst00503m3: blockDefault/block on the head's
+        # *type* excludes a member whose derivation uses that method.
+        report = parse_document(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:t='urn:t' targetNamespace='urn:t' elementFormDefault='qualified'>"
+            "<xsd:element name='root'><xsd:complexType><xsd:sequence>"
+            "<xsd:element ref='t:Head'/>"
+            "</xsd:sequence></xsd:complexType></xsd:element>"
+            "<xsd:element name='Head' type='t:Type'/>"
+            "<xsd:complexType name='Type' block='restriction'/>"
+            "<xsd:complexType name='derivedFromType'><xsd:complexContent>"
+            "<xsd:restriction base='t:Type'/>"
+            "</xsd:complexContent></xsd:complexType>"
+            "<xsd:element name='Member1' type='t:derivedFromType' "
+            "substitutionGroup='t:Head'/>"
+            "</xsd:schema>",
+            "<t:root xmlns:t='urn:t'><t:Member1/></t:root>",
+        )
+        assert "blocked" in {issue.code for issue in report.issues}
+
+    def test_simple_content_extension_member_is_blocked(self, parse_document):
+        # MS elemT065: a simpleContent extension of the head's simple type
+        # is an extension step, so head block="extension" excludes it.
+        report = parse_document(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "elementFormDefault='qualified'>"
+            "<xsd:simpleType name='A'><xsd:restriction base='xsd:int'>"
+            "<xsd:enumeration value='1'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:complexType name='E-A'><xsd:simpleContent>"
+            "<xsd:extension base='A'>"
+            "<xsd:attribute name='att' type='xsd:int'/>"
+            "</xsd:extension></xsd:simpleContent></xsd:complexType>"
+            "<xsd:element name='root'><xsd:complexType><xsd:sequence>"
+            "<xsd:element ref='test1' minOccurs='0'/>"
+            "</xsd:sequence></xsd:complexType></xsd:element>"
+            "<xsd:element name='test1' type='A' block='extension'/>"
+            "<xsd:element name='sa2' type='E-A' substitutionGroup='test1'/>"
+            "</xsd:schema>",
+            "<root><sa2 att='1'>1</sa2></root>",
+        )
+        assert "blocked" in {issue.code for issue in report.issues}
+
+    def test_local_declaration_sharing_head_name_admits_no_member(self, parse_document):
+        # MS elemZ021b/f/g, elemZ023: a *local* declaration that shares a
+        # global head's name is not that head, so its substitution-group
+        # members are not admissible where the local declaration is used.
+        report = parse_document(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:f='urn:f' targetNamespace='urn:f' elementFormDefault='qualified'>"
+            "<xsd:element name='root'><xsd:complexType><xsd:sequence>"
+            "<xsd:element name='e' type='xsd:string'/>"
+            "</xsd:sequence></xsd:complexType></xsd:element>"
+            "<xsd:element name='e'/>"
+            "<xsd:element name='e1' type='xsd:int' substitutionGroup='f:e'/>"
+            "</xsd:schema>",
+            "<f:root xmlns:f='urn:f'><f:e1>123</f:e1></f:root>",
+        )
+        assert any(issue.severity is IssueSeverity.ERROR for issue in report.issues)
+
+    def test_reference_to_global_head_admits_member(self, parse_document):
+        report = parse_document(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:f='urn:f' targetNamespace='urn:f' elementFormDefault='qualified'>"
+            "<xsd:element name='root'><xsd:complexType><xsd:sequence>"
+            "<xsd:element ref='f:e'/>"
+            "</xsd:sequence></xsd:complexType></xsd:element>"
+            "<xsd:element name='e'/>"
+            "<xsd:element name='e1' type='xsd:int' substitutionGroup='f:e'/>"
+            "</xsd:schema>",
+            "<f:root xmlns:f='urn:f'><f:e1>123</f:e1></f:root>",
+        )
+        assert not [i for i in report.errors if i.code != "schema-hint"]
+
+    def test_untyped_substitution_member_adopts_head_type(self, parse_document):
+        # SUN typeDef00204m: an untyped declaration that is a substitution
+        # member takes the head's type definition.
+        report = parse_document(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='Head' type='xsd:boolean'/>"
+            "<xsd:element name='root' substitutionGroup='Head'/>"
+            "</xsd:schema>",
+            "<root>Yes</root>",
+        )
+        assert any(issue.severity is IssueSeverity.ERROR for issue in report.issues)
+
 
 class TestElementDeclarationsConsistent:
     _TEMPLATE = (

@@ -28,12 +28,19 @@ class SimpleContent(ElementRepresentative):
         ``Extension`` grammar admits those tags for the
         ``complexContent`` case.
         """
-        for derivation in self.processedChildren or ():
-            if derivation is None or type(derivation).__name__ not in (
-                "Restriction",
-                "Extension",
-            ):
-                continue
+        derivations = [
+            child
+            for child in self.processedChildren or ()
+            if child is not None and type(child).__name__ in ("Restriction", "Extension")
+        ]
+        if not derivations:
+            # ctC009: ``simpleContent`` wraps exactly one derivation; an
+            # annotation-only (or empty) body has none.
+            self._reportSchemaError(
+                "simpleContent must contain a restriction or extension",
+                code="declaration-child",
+            )
+        for derivation in derivations:
             for child in derivation.processedChildren or ():
                 if child is None:
                     continue

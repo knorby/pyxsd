@@ -200,6 +200,7 @@ class Runner:
         bundle_error: str | None = None,
     ) -> CaseResult:
         engine_name = getattr(engine, "name", type(engine).__name__)
+        synthesized = False
         if case.metadata_error is not None:
             return CaseResult(
                 test_id=case.test_id,
@@ -254,6 +255,7 @@ class Runner:
                 )
             try:
                 bundle = build_permissive_schema(instance, self.workdir)
+                synthesized = True
             except HarnessError as exc:
                 return CaseResult(
                     test_id=case.test_id,
@@ -299,7 +301,7 @@ class Runner:
                         expected=case.expected_validity,
                         detail=f"instance document is missing: {instance}",
                     )
-                result = engine.validate(bundle, instance)  # type: ignore[attr-defined]
+                result = engine.validate(bundle, instance, synthesized=synthesized)  # type: ignore[attr-defined]
         except HarnessError as exc:
             return CaseResult(
                 test_id=case.test_id,

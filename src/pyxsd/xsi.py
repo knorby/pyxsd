@@ -53,6 +53,27 @@ def xsi_attr_key(attr: str) -> str:
     return _XSI_BUILTIN_KEYS.get(attr, attr)
 
 
+def is_builtin_xsi_attribute(attr: str) -> bool:
+    """True when *attr* is one of the four built-in xsi attributes.
+
+    Both Clark notation (``{namespace}type``) and the raw ``xsi:``
+    spelling are recognized, matching :func:`xsi_attr_key`.
+    """
+    return attr in _XSI_BUILTIN_KEYS
+
+
+def unknown_xsi_attribute(attr: str) -> bool:
+    """True when *attr* is in the xsi namespace but not a built-in.
+
+    Such an attribute has no special standing: it must be declared or
+    admitted by an attribute wildcard like any other attribute
+    (attMd001-011).
+    """
+    if attr in _XSI_BUILTIN_KEYS:
+        return False
+    return attr.startswith("xsi:") or attr.startswith(f"{{{XSI_NAMESPACE}}}")
+
+
 def xsi_type_name(elementTag: Any) -> str | None:
     """Returns the ``xsi:type`` value on an element, or ``None``.
 

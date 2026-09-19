@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import io
 import signal
+import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
@@ -287,6 +288,41 @@ def _schema_provides_root(
     return False
 
 
+def _supplied_schema_declares_instance_root(schema_path: Path, instance_path: Path) -> bool:
+    """Whether *schema_path* declares the instance's root element.
+
+    Used to tell a genuine schema error from a collision between the
+    stipulated schema and an instance's advisory ``xsi`` schema hint.
+    """
+    try:
+        root = ET.parse(str(instance_path)).getroot()
+    except (OSError, ET.ParseError):
+        return False
+    root_namespace, local = _split_expanded_name(root.tag)
+    return _schema_provides_root(schema_path, None, root_namespace, local, set())
+
+
+def _strip_instance_schema_hints(instance_path: Path, workdir: Path) -> Path | None:
+    """Copy *instance_path* without its advisory ``xsi`` schema-location hints.
+
+    Returns ``None`` when the instance carries no such hint (or cannot be
+    parsed), so the caller can leave the original document untouched.
+    """
+    try:
+        tree = ET.parse(str(instance_path))
+    except (OSError, ET.ParseError):
+        return None
+    root = tree.getroot()
+    hints = (f"{{{_XSI_NS}}}schemaLocation", f"{{{_XSI_NS}}}noNamespaceSchemaLocation")
+    if not any(root.get(name) is not None for name in hints):
+        return None
+    for name in hints:
+        root.attrib.pop(name, None)
+    stripped = workdir / instance_path.name
+    tree.write(stripped, encoding="utf-8", xml_declaration=True)
+    return stripped
+
+
 def build_permissive_schema(instance_path: Path, workdir: Path) -> Path:
     """Synthesize a wrapper schema for a group whose ``schemaTest`` is absent.
 
@@ -375,8 +411,31 @@ class PyXSDDriver:
         """Observe only the schema phase."""
         return _schema_only_call(schema_path, self.timeout)
 
-    def validate(self, schema_path: Path, instance_path: Path) -> EngineResult:
-        """Observe both phases for an instance document."""
+    def validate(
+        self, schema_path: Path, instance_path: Path, *, synthesized: bool = False
+    ) -> EngineResult:
+        """Observe both phases for an instance document.
+
+        A ``synthesized`` schema is the harness's permissive wrapper for a
+        group with no ``schemaTest``; its design deliberately surfaces a
+        hinted schema that fails to compile, so no hint is dropped for it.
+        """
+        result = self._bind_and_observe(schema_path, instance_path)
+        if synthesized or result.adapter_gap is None:
+            return result
+        if not _supplied_schema_declares_instance_root(schema_path, instance_path):
+            return result
+        with tempfile.TemporaryDirectory(prefix="pyxsd-hints-") as scratch:
+            stripped = _strip_instance_schema_hints(instance_path, Path(scratch))
+            if stripped is None:
+                return result
+            retry = self._bind_and_observe(schema_path, stripped)
+        if retry.schema_valid is True:
+            return retry
+        return result
+
+    def _bind_and_observe(self, schema_path: Path, instance_path: Path) -> EngineResult:
+        """Bind one instance against *schema_path* and observe both phases."""
         result = EngineResult()
         try:
             with time_limit(self.timeout):
@@ -457,7 +516,9 @@ class XmlSchemaDriver:
         result.schema_valid = True
         return result
 
-    def validate(self, schema_path: Path, instance_path: Path) -> EngineResult:
+    def validate(
+        self, schema_path: Path, instance_path: Path, *, synthesized: bool = False
+    ) -> EngineResult:
         result = self.compile_schema(schema_path)
         if result.error is not None or result.timeout:
             return result

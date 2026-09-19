@@ -125,8 +125,10 @@ class TestUnprefixedBuiltinsUnderDefaultXsdNs:
         schema = (
             f'<xs:schema xmlns:xs="{XSD}" xmlns="{XSD}" xmlns:u="urn:u" '
             'targetNamespace="urn:u">'
+            '<complexType name="base"><simpleContent>'
+            '<extension base="xs:string"/></simpleContent></complexType>'
             '<complexType name="string">'
-            '<simpleContent><restriction base="xs:string">'
+            '<simpleContent><restriction base="u:base">'
             '<enumeration value="only"/>'
             "</restriction></simpleContent>"
             "</complexType>"
@@ -355,3 +357,154 @@ class TestXsiTypeDispatch:
         instance = f'<root xmlns:xsi="{XSI}"><a>x</a></root>'
         parser = _parse(schema, instance, tmp_path)
         assert "abstract-type" in _codes(parser)
+
+    def test_simple_xsi_type_root_rejects_undeclared_attribute(self, tmp_path):
+        # SUN typeDef01201m1/01202m1: an xsi:type override to a simple type
+        # leaves the element with no attribute uses, so a non-xsi
+        # attribute is undeclared.
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD}"><xs:element name="root" nillable="true"/></xs:schema>'
+        )
+        instance = (
+            f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" '
+            'xsi:nil="true" xsi:type="xsd:string" attr="x"/>'
+        )
+        parser = _parse(schema, instance, tmp_path)
+        assert "unexpected-attribute" in _codes(parser)
+
+    def test_simple_xsi_type_root_without_extra_attribute_is_valid(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD}"><xs:element name="root" nillable="true"/></xs:schema>'
+        )
+        instance = (
+            f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" xsi:nil="true" xsi:type="xsd:string"/>'
+        )
+        parser = _parse(schema, instance, tmp_path)
+        assert "unexpected-attribute" not in _codes(parser)
+
+
+class TestSchemaBlockDefault:
+    """``blockDefault`` folds into element and type ``block``.
+
+    A schema's ``blockDefault`` supplies the effective ``block`` of every
+    element declaration and complex-type definition that does not state
+    one (SUN combined test003/003a/003b). An ``xsi:type`` override whose
+    derivation chain contains a blocked step is invalid; an explicit
+    ``block=""`` on the element clears the element's own contribution but
+    the declared type's blocked method still applies.
+    """
+
+    SCHEMA = (
+        f'<xs:schema xmlns:xs="{XSD}" xmlns:t="urn:b" targetNamespace="urn:b" '
+        'blockDefault="extension" elementFormDefault="qualified">'
+        '<xs:complexType name="B"><xs:sequence>'
+        '<xs:element name="foo" type="xs:string"/></xs:sequence></xs:complexType>'
+        '<xs:complexType name="De"><xs:complexContent>'
+        '<xs:extension base="t:B"/></xs:complexContent></xs:complexType>'
+        '<xs:complexType name="Dr"><xs:complexContent>'
+        '<xs:restriction base="t:B"><xs:sequence>'
+        '<xs:element name="foo" type="xs:string"/></xs:sequence></xs:restriction>'
+        "</xs:complexContent></xs:complexType>"
+        '<xs:element name="root"><xs:complexType><xs:sequence>'
+        '<xs:element name="item" type="t:B"/>'
+        "</xs:sequence></xs:complexType></xs:element>"
+        "</xs:schema>"
+    )
+
+    def _instance(self, override):
+        return (
+            f'<root xmlns="urn:b" xmlns:t="urn:b" xmlns:xsi="{XSI}">'
+            f'<item xsi:type="t:{override}"><foo>x</foo></item></root>'
+        )
+
+    def test_block_default_extension_rejects_extension_override(self, tmp_path):
+        parser = _parse(self.SCHEMA, self._instance("De"), tmp_path)
+        assert "xsi-type" in _codes(parser)
+
+    def test_block_default_extension_admits_restriction_override(self, tmp_path):
+        parser = _parse(self.SCHEMA, self._instance("Dr"), tmp_path)
+        assert "xsi-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+
+    def test_explicit_empty_element_block_keeps_the_type_block(self, tmp_path):
+        # SUN test003a: ``block=""`` clears the element's own contribution,
+        # but the complex type B still inherits blockDefault=extension.
+        schema = self.SCHEMA.replace(
+            '<xs:element name="item" type="t:B"/>',
+            '<xs:element name="item" type="t:B" block=""/>',
+        )
+        parser = _parse(schema, self._instance("De"), tmp_path)
+        assert "xsi-type" in _codes(parser)
+
+
+class TestAnyAtomicTypeXsiType:
+    """``xsi:type`` against an ``xs:anyAtomicType``-typed declaration.
+
+    Every atomic type is validly derived from anyAtomicType (Saxon
+    simple050), but a complex type is not.
+    """
+
+    SCHEMA = (
+        f'<xs:schema xmlns:xs="{XSD}">'
+        '<xs:element name="root" type="xs:anyAtomicType"/>'
+        '<xs:complexType name="C"><xs:sequence/></xs:complexType>'
+        "</xs:schema>"
+    )
+
+    def test_atomic_override_is_valid(self, tmp_path):
+        parser = _parse(
+            self.SCHEMA,
+            f'<root xmlns:xsi="{XSI}" xmlns:xs="{XSD}" xsi:type="xs:date">2010-11-10</root>',
+            tmp_path,
+        )
+        assert "xsi-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+
+    def test_complex_override_is_rejected(self, tmp_path):
+        parser = _parse(self.SCHEMA, f'<root xmlns:xsi="{XSI}" xsi:type="C"/>', tmp_path)
+        assert "xsi-type" in _codes(parser)
+
+
+class TestAnonymousInlineTypePseudoNames:
+    """An inline type's generated ``parent|tag`` name resolves anywhere a
+    type reference can point.
+
+    The name embeds the declaring chain and must survive QName resolution
+    unchanged even when the schema has a default namespace in scope (SUN
+    combined xsd011 uses the XML Schema namespace as its default xmlns),
+    and it is looked up without a namespace filter (Saxon simple016
+    restricts a union declared as a nested inline type).
+    """
+
+    def test_nested_inline_restriction_resolves_under_default_xsd_namespace(self, tmp_path):
+        schema = (
+            f'<schema xmlns="{XSD}" xmlns:foo="foo" targetNamespace="foo" '
+            'elementFormDefault="qualified">'
+            '<element name="root"><complexType><sequence>'
+            '<element ref="foo:nillable2"/>'
+            "</sequence></complexType></element>"
+            '<element name="nillable2" nillable="true">'
+            "<simpleType><restriction>"
+            '<simpleType><list itemType="int"/></simpleType>'
+            '<minLength value="2"/>'
+            "</restriction></simpleType></element>"
+            "</schema>"
+        )
+        parser = _parse(
+            schema, '<root xmlns="foo"><nillable2>51 32 59</nillable2></root>', tmp_path
+        )
+        assert "unknown-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+        assert not _errors(parser), [i.format() for i in parser.report.issues]
+
+    def test_inline_union_under_restriction_resolves(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD}" xmlns:s="urn:u" targetNamespace="urn:u" '
+            'elementFormDefault="qualified">'
+            '<xs:simpleType name="dt"><xs:restriction>'
+            '<xs:simpleType><xs:union memberTypes="xs:date xs:dateTime"/></xs:simpleType>'
+            '<xs:pattern value=".*Z"/>'
+            "</xs:restriction></xs:simpleType>"
+            '<xs:element name="root" type="s:dt"/>'
+            "</xs:schema>"
+        )
+        parser = _parse(schema, '<root xmlns="urn:u">2020-01-01T00:00:00Z</root>', tmp_path)
+        assert "unknown-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+        assert not _errors(parser), [i.format() for i in parser.report.issues]

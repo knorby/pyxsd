@@ -1200,6 +1200,76 @@ class TestSubstitutionGroupLegality:
         )
         assert "circular-substitution-group" in _schema_codes(report)
 
+    def test_complex_member_under_any_simple_type_head_reports(self, parse_schema):
+        """stZ048: a complex element-only member is not derived from anySimpleType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='item' type='xsd:anySimpleType'/>"
+            "<xsd:complexType name='ct'><xsd:sequence>"
+            "<xsd:element name='e1'/></xsd:sequence></xsd:complexType>"
+            "<xsd:element name='a' type='ct' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" in _schema_codes(report)
+
+    def test_any_simple_type_member_under_complex_head_reports(self, parse_schema):
+        """stZ049: a simple member is not derived from a complex head."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct1'><xsd:sequence/></xsd:complexType>"
+            "<xsd:complexType name='ct2'><xsd:complexContent>"
+            "<xsd:restriction base='xsd:anyType'/></xsd:complexContent></xsd:complexType>"
+            "<xsd:element name='item' type='ct2'/>"
+            "<xsd:element name='a' type='xsd:anySimpleType' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" in _schema_codes(report)
+
+    def test_simple_member_under_any_simple_type_head_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='item' type='xsd:anySimpleType'/>"
+            "<xsd:element name='a' type='xsd:string' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
+    def test_any_simple_type_member_under_any_type_head_is_clean(self, parse_schema):
+        """stZ050/stZ053: anyType admits every type, including anySimpleType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='item' type='xsd:anyType'/>"
+            "<xsd:element name='a' type='xsd:anySimpleType' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
+    def test_simple_member_with_an_any_simple_type_head_is_clean(self, parse_schema):
+        """A member with two heads, one of them ``xs:anySimpleType``, and a
+        plain simple type is validly derived from the simple ur-type head
+        (pyxsd's lattice has no String/AnySimpleType edge, so the
+        multi-head ``strict_heads`` branch must exempt it)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='headSimple' type='xsd:anySimpleType'/>"
+            "<xsd:element name='headString' type='xsd:string'/>"
+            "<xsd:element name='member' type='xsd:string' "
+            "substitutionGroup='headSimple headString'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
+    def test_unrelated_simple_member_under_simple_head_is_clean(self, parse_schema):
+        """The shipped fixture: an integer member under a string head stays
+        tolerated (the documented single-head under-approximation)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='item' type='xsd:string'/>"
+            "<xsd:element name='a' type='xsd:integer' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
 
 class TestNotationDeclarationLegality:
     """Semantic notation-declaration legality (notatA/notatB)."""
@@ -1255,6 +1325,63 @@ class TestNotationDeclarationLegality:
             "</xsd:schema>"
         )
         assert not {"declaration-attribute", "declaration-duplicate"} & _schema_codes(report)
+
+    def test_element_typed_by_notation_reports(self, parse_schema):
+        """simple090: a direct NOTATION element type needs an enumeration."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:element name='elem' type='xsd:NOTATION'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" in _schema_codes(report)
+
+    def test_attribute_typed_by_notation_is_rejected(self, parse_schema):
+        """simple091: a direct NOTATION attribute type needs an enumeration."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:attribute name='a' type='xsd:NOTATION'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" in _schema_codes(report)
+
+    def test_list_item_type_notation_reports(self, parse_schema):
+        """simple092: a bare NOTATION list item type needs an enumeration."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:simpleType name='notationList'>"
+            "<xsd:list itemType='xsd:NOTATION'/></xsd:simpleType>"
+            "<xsd:attribute name='a' type='notationList'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" in _schema_codes(report)
+
+    def test_union_member_notation_is_tolerated(self, parse_schema):
+        """simple093 vs MS particlesZ007 are contradictory in the corpus
+        (both in the xsd11 profile): the MS XSD 1.0-era test expects a
+        union member NOTATION valid while Saxon expects it invalid. The
+        open question (w3c/xsdtests#12) keeps the historical acceptance,
+        so a union member NOTATION alone is not reported."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:simpleType name='notationUnion'>"
+            "<xsd:union memberTypes='xsd:QName xsd:NOTATION'/></xsd:simpleType>"
+            "<xsd:attribute name='a' type='notationUnion'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" not in _schema_codes(report)
+
+    def test_enumerated_notation_restriction_is_clean(self, parse_schema):
+        """A NOTATION restriction with an enumeration naming a declared
+        notation is a legal type for an element."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:simpleType name='restrictedNotation'>"
+            "<xsd:restriction base='xsd:NOTATION'>"
+            "<xsd:enumeration value='jpeg'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:attribute name='a' type='restrictedNotation'/></xsd:schema>"
+        )
+        assert "notation-enumeration-required" not in _schema_codes(report)
 
 
 class TestAnnotationDeclarationLegality:
@@ -1657,6 +1784,67 @@ class TestFacetLegality:
         )
         assert "facet-conflict" in _schema_codes(report)
 
+    def test_widened_max_length_reports_facet(self, parse_schema):
+        """msData stI005: a derived maxLength may not exceed the base's."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:restriction base='xsd:string'>"
+            "<xsd:maxLength value='5'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='myType'>"
+            "<xsd:maxLength value='8'/></xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_widened_min_length_reports_facet(self, parse_schema):
+        """A derived minLength may not fall below the base's."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:restriction base='xsd:string'>"
+            "<xsd:minLength value='3'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='myType'>"
+            "<xsd:minLength value='1'/></xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_widened_total_digits_reports_facet(self, parse_schema):
+        """msData stZ014: totalDigits may not grow on a derived type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='DecimalType'><xsd:restriction base='xsd:decimal'>"
+            "<xsd:totalDigits value='4'/><xsd:fractionDigits value='2'/>"
+            "</xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='DecimalType2'><xsd:restriction base='DecimalType'>"
+            "<xsd:totalDigits value='5'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_widened_fraction_digits_reports_facet(self, parse_schema):
+        """msData stZ014: fractionDigits may not grow either."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='DecimalType'><xsd:restriction base='xsd:decimal'>"
+            "<xsd:totalDigits value='4'/><xsd:fractionDigits value='2'/>"
+            "</xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='DecimalType2'><xsd:restriction base='DecimalType'>"
+            "<xsd:fractionDigits value='4'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" in _schema_codes(report)
+
+    def test_tightened_length_facets_are_clean(self, parse_schema):
+        """An equal or tighter facet is a legal restriction."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='myType'><xsd:restriction base='xsd:string'>"
+            "<xsd:maxLength value='5'/><xsd:minLength value='2'/>"
+            "</xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='myType'>"
+            "<xsd:maxLength value='4'/><xsd:minLength value='3'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "facet" not in _schema_codes(report)
+
 
 class TestSimpleTypeAtomicity:
     """A list's item type and a union's member types must be simple types.
@@ -1885,6 +2073,79 @@ class TestDeclarationAttributeLegality:
         )
         assert "declaration-attribute" in _schema_codes(report)
 
+    @pytest.mark.parametrize("value", ["-1", "TRUE", "FALSE", "False", "", "boolean"])
+    def test_invalid_complex_type_abstract_boolean(self, parse_schema, value):
+        """ctA004/ctA006/ctA007/ctA008: ``abstract`` on a complexType is an
+        ``xs:boolean``: only true/false/1/0 are legal."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' abstract='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("value", ["true", "false", "1", "0"])
+    def test_legal_complex_type_abstract_boolean_accepted(self, parse_schema, value):
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' abstract='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    def test_complex_type_final_substitution_rejected(self, parse_schema):
+        """ctA025: ``final`` on a complexType admits only extension/restriction."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' final='substitution'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_complex_type_block_substitution_rejected(self, parse_schema):
+        """ctA016: ``block`` on a complexType admits only extension/restriction."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' block='substitution'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("attr", ["final", "block"])
+    @pytest.mark.parametrize("value", ["extension", "restriction", "extension restriction", "#all"])
+    def test_complex_type_final_block_legal_tokens_accepted(self, parse_schema, attr, value):
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t' {attr}='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    @pytest.mark.parametrize(
+        "particle",
+        [
+            "<xsd:all><xsd:element name='a' type='xsd:string'/></xsd:all>"
+            "<xsd:all><xsd:element name='b' type='xsd:string'/></xsd:all>",
+            "<xsd:choice><xsd:element name='a' type='xsd:string'/></xsd:choice>"
+            "<xsd:choice><xsd:element name='b' type='xsd:string'/></xsd:choice>",
+            "<xsd:sequence><xsd:element name='a' type='xsd:string'/></xsd:sequence>"
+            "<xsd:sequence><xsd:element name='b' type='xsd:string'/></xsd:sequence>",
+            "<xsd:group ref='g'/><xsd:group ref='h'/>",
+        ],
+    )
+    def test_complex_type_repeated_particle_rejected(self, parse_schema, particle):
+        """ctB035/ctB050/ctB065/ctB080: a complexType holds a single particle."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t'>{particle}</xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    @pytest.mark.parametrize("wrapper", ["simpleContent", "complexContent"])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "",
+            "<xsd:annotation><xsd:documentation/></xsd:annotation>",
+        ],
+    )
+    def test_content_wrapper_without_derivation_rejected(self, parse_schema, wrapper, body):
+        """ctC009/ctF012/ctF015: a content kind wraps exactly one derivation."""
+        report = parse_schema(
+            f"{self.XSD}<xsd:complexType name='t'><xsd:{wrapper}>"
+            f"{body}</xsd:{wrapper}></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
     @pytest.mark.parametrize("value", ["true", "false", "1", "0"])
     def test_legal_boolean_values_accepted(self, parse_schema, value):
         report = parse_schema(
@@ -1994,3 +2255,1299 @@ class TestUnloadedNamespaceTypeReference:
         )
         assert "import-unresolved" not in _schema_codes(report)
         assert "unknown-type" not in _schema_codes(report)
+
+    def test_unqualified_type_naming_a_type_in_target_namespace_is_reported(self, parse_schema):
+        """addB009/xsd015.e: an unprefixed type with no default namespace
+        names no namespace; a same-named type in the target namespace is
+        the likely intent, so the reference is reported."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:books' xmlns:x='urn:books'>"
+            "<xsd:complexType name='CatalogData'><xsd:sequence/></xsd:complexType>"
+            "<xsd:element name='root' type='CatalogData'/></xsd:schema>"
+        )
+        assert "unknown-type" in _schema_codes(report)
+
+    def test_type_in_xsd_namespace_that_is_not_a_builtin_is_reported(self, parse_schema):
+        """xsd015.e/xsd016.e: a name in the XML Schema namespace must be a
+        built-in datatype; an unknown one is a bad type reference."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='xsd:NoSuchBuiltin'/></xsd:schema>"
+        )
+        assert "unknown-type" in _schema_codes(report)
+
+    def test_type_in_xsd_namespace_that_is_a_builtin_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='xsd:string'/></xsd:schema>"
+        )
+        assert "unknown-type" not in _schema_codes(report)
+
+    def test_unqualified_type_resolving_in_no_namespace_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='T'><xsd:sequence/></xsd:complexType>"
+            "<xsd:element name='root' type='T'/></xsd:schema>"
+        )
+        assert "unknown-type" not in _schema_codes(report)
+
+    def test_unqualified_unknown_type_without_candidate_is_tolerated(self, parse_schema):
+        """The historical tolerance stays for a no-namespace reference
+        with no same-named candidate anywhere (elemM002 false-accept)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:x' xmlns:x='urn:x'>"
+            "<xsd:element name='root' type='NoSuchType'/></xsd:schema>"
+        )
+        assert "unknown-type" not in _schema_codes(report)
+
+
+class TestDuplicateAttributeUses:
+    """Duplicate attribute uses in one complex type (attQ009-013, attQ017).
+
+    An attribute use contributed twice to a complex type — by a local
+    declaration and a referenced attribute group, or by two groups — is
+    a schema error, whether the collision is on a direct name or only
+    appears once a ``ref`` resolves to its global declaration.
+    """
+
+    def test_local_and_group_use_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t' attributeFormDefault='qualified'>"
+            "<xsd:attributeGroup name='attG'>"
+            "<xsd:attribute name='aga1' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:complexType name='attRef'>"
+            "<xsd:attributeGroup ref='t:attG'/>"
+            "<xsd:attribute name='aga1'/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)
+
+    def test_two_group_uses_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t' attributeFormDefault='qualified'>"
+            "<xsd:attributeGroup name='g1'>"
+            "<xsd:attribute name='aga1' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:attributeGroup name='g2'>"
+            "<xsd:attribute name='aga1' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:complexType name='attRef'>"
+            "<xsd:attributeGroup ref='t:g1'/>"
+            "<xsd:attributeGroup ref='t:g2'/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)
+
+    def test_global_ref_and_group_local_duplicate(self, parse_schema):
+        # attQ011/012: a ``ref`` to a global attribute collides with a
+        # same-named local declaration pulled in through a nested group.
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t' attributeFormDefault='qualified'>"
+            "<xsd:attribute name='foo'/>"
+            "<xsd:attributeGroup name='red'><xsd:attribute name='foo'/></xsd:attributeGroup>"
+            "<xsd:attributeGroup name='attG'>"
+            "<xsd:attribute ref='t:foo'/>"
+            "<xsd:attributeGroup ref='t:red'/></xsd:attributeGroup>"
+            "<xsd:complexType name='attRef'>"
+            "<xsd:attributeGroup ref='t:attG'/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)
+
+    def test_direct_duplicate_attribute_uses_rejected(self, parse_schema):
+        """ctM003: two direct attribute uses with the same name collide."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "</xsd:extension></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)
+
+    def test_distinct_groups_are_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t' attributeFormDefault='qualified'>"
+            "<xsd:attributeGroup name='g1'>"
+            "<xsd:attribute name='a1' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:attributeGroup name='g2'>"
+            "<xsd:attribute name='a2' form='qualified'/></xsd:attributeGroup>"
+            "<xsd:complexType name='attRef'>"
+            "<xsd:attributeGroup ref='t:g1'/>"
+            "<xsd:attributeGroup ref='t:g2'/></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "duplicate-attribute" not in _schema_codes(report)
+
+
+class TestAttributeGroupDeclarationLegality:
+    """AttributeGroup grammar and reference legality (attgB006, attgC001-011, attgD).
+
+    A global ``attributeGroup`` is a definition carrying ``name``; a
+    ``ref`` names a global attributeGroup and must not carry members.
+    """
+
+    XSD = "xmlns:xsd='http://www.w3.org/2001/XMLSchema'"
+
+    def test_top_level_reference_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attributeGroup name='abc'><xsd:attribute name='att1' type='xsd:int'/>"
+            "</xsd:attributeGroup>"
+            "<xsd:attributeGroup ref='abc'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_empty_ref_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attributeGroup name='abc'><xsd:attributeGroup ref=''/>"
+            "<xsd:attribute name='att' type='xsd:int'/></xsd:attributeGroup>"
+            "<xsd:attributeGroup name='g'><xsd:attribute name='foo' type='xsd:int'/>"
+            "<xsd:attribute name='bar'/></xsd:attributeGroup></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_reference_with_member_child_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attributeGroup name='attG'><xsd:attribute name='att1' type='xsd:int'/>"
+            "</xsd:attributeGroup>"
+            "<xsd:complexType name='t'><xsd:attributeGroup ref='attG'>"
+            "<xsd:attribute name='gg'/></xsd:attributeGroup></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_reference_to_global_attribute_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attribute name='foo' type='xsd:string'/>"
+            "<xsd:attributeGroup name='ext'><xsd:attributeGroup ref='foo'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "unknown-attributeGroup" in _schema_codes(report)
+
+    def test_group_name_must_be_ncname(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attribute name='att1' type='xsd:string'/>"
+            "<xsd:attributeGroup name='0' id='abc'><xsd:attribute name='att' type='xsd:int'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_duplicate_attribute_in_group_is_rejected(self, parse_schema):
+        report = parse_schema(
+            f"<xsd:schema {self.XSD}>"
+            "<xsd:attributeGroup name='attG' id='abc'>"
+            "<xsd:attribute name='att1' type='xsd:int'/>"
+            "<xsd:attribute name='att1' type='xsd:string'/>"
+            "</xsd:attributeGroup></xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)
+
+
+class TestStrictReferenceResolution:
+    """Strict QName resolution of schema references (AU_attrDecl00101m1_n)."""
+
+    def test_unprefixed_ref_does_not_match_target_namespace(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t'>"
+            "<xsd:element name='root'/>"
+            "<xsd:attribute name='number' type='xsd:integer'/>"
+            "<xsd:element name='e'><xsd:complexType>"
+            "<xsd:attribute ref='number' use='required'/>"
+            "</xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "unknown-attributeRef" in _schema_codes(report)
+
+    def test_prefixed_ref_still_resolves(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t'>"
+            "<xsd:element name='root'/>"
+            "<xsd:attribute name='number' type='xsd:integer'/>"
+            "<xsd:element name='e'><xsd:complexType>"
+            "<xsd:attribute ref='t:number' use='required'/>"
+            "</xsd:complexType></xsd:element></xsd:schema>"
+        )
+        assert "unknown-attributeRef" not in _schema_codes(report)
+
+
+class TestIdentityConstraintSymbolSpace:
+    """Identity-constraint names are unique per target namespace."""
+
+    def test_same_key_name_in_one_namespace_is_rejected(self, tmp_path, monkeypatch):
+        import io
+
+        (tmp_path / "inc.xsd").write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t'>"
+            "<xsd:element name='roota'><xsd:complexType><xsd:sequence/></xsd:complexType>"
+            "<xsd:key name='KEY'><xsd:selector xpath='./person'/><xsd:field xpath='.'/></xsd:key>"
+            "</xsd:element></xsd:schema>"
+        )
+        schema = (
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t'>"
+            "<xsd:include schemaLocation='inc.xsd'/>"
+            "<xsd:element name='root'><xsd:complexType><xsd:sequence/></xsd:complexType>"
+            "<xsd:key name='KEY'><xsd:selector xpath='./person'/><xsd:field xpath='.'/></xsd:key>"
+            "</xsd:element></xsd:schema>"
+        )
+        monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
+        (tmp_path / "s.xsd").write_text(schema)
+        report = PyXSD(
+            io.StringIO("<probe/>"),
+            str(tmp_path / "s.xsd"),
+            xmlFileOutput=False,
+            mode=ParseModes.NAMESPACED,
+        ).report
+        assert "declaration-duplicate" in _schema_codes(report)
+
+
+class TestSelfImportRejected:
+    """An import must not name the importing schema's own targetNamespace."""
+
+    def test_self_import_is_rejected(self, tmp_path, monkeypatch):
+        import io
+
+        (tmp_path / "other.xsd").write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t'>"
+            "<xsd:attributeGroup name='car'><xsd:attribute name='age'/></xsd:attributeGroup>"
+            "</xsd:schema>"
+        )
+        schema = (
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:t' xmlns:t='urn:t'>"
+            "<xsd:import namespace='urn:t' schemaLocation='other.xsd'/>"
+            "</xsd:schema>"
+        )
+        monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
+        (tmp_path / "s.xsd").write_text(schema)
+        report = PyXSD(
+            io.StringIO("<probe/>"),
+            str(tmp_path / "s.xsd"),
+            xmlFileOutput=False,
+            mode=ParseModes.NAMESPACED,
+        ).report
+        assert "compose-invalid" in _schema_codes(report)
+
+
+class TestSimpleTypeRepresentationLegality:
+    """The XML representation of a ``simpleType`` declaration.
+
+    Mirrors the msData ``simpleType`` syntax family (stA008-stA017,
+    stB001, stC003/stC029, stD018, stE012): a local ``simpleType`` is
+    anonymous, a ``name`` is an ``NCName``, a ``simpleType`` carries
+    exactly one derivation, a ``list``/``union`` has at least one item
+    or member, and a simple-type ``restriction`` cannot derive from a
+    complex type or an ur-type.
+    """
+
+    def test_inline_named_simple_type_under_restriction_is_rejected(self, parse_schema):
+        """stA008/stA013: a restriction's inline simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='parent'><xsd:restriction>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:string'>"
+            "<xsd:length value='4'/></xsd:restriction></xsd:simpleType>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_inline_named_simple_type_under_list_is_rejected(self, parse_schema):
+        """stA009: a list's inline item simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='parent'><xsd:list>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:string'>"
+            "<xsd:length value='4'/></xsd:restriction></xsd:simpleType>"
+            "</xsd:list></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_inline_named_simple_type_under_union_is_rejected(self, parse_schema):
+        """stA010: a union's inline member simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='parent'><xsd:union>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:string'>"
+            "<xsd:length value='4'/></xsd:restriction></xsd:simpleType>"
+            "</xsd:union></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_inline_named_simple_type_under_attribute_is_rejected(self, parse_schema):
+        """stA011: an attribute's inline simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:attribute name='parent'><xsd:simpleType name='fooType'>"
+            "<xsd:restriction base='xsd:string'><xsd:length value='4'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:attribute></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_inline_named_simple_type_under_element_is_rejected(self, parse_schema):
+        """stA012: an element's inline simpleType is anonymous."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='parent'><xsd:simpleType name='fooType'>"
+            "<xsd:restriction base='xsd:string'><xsd:length value='4'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_global_simple_type_name_with_colon_is_rejected(self, parse_schema):
+        """stA014: a ``name`` is an NCName and cannot carry a colon."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='a:b'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_global_simple_type_name_with_leading_digit_is_rejected(self, parse_schema):
+        """stA017: a ``name`` cannot start with a digit."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='1foo'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    def test_simple_type_without_derivation_is_rejected(self, parse_schema):
+        """stB001: a simpleType is annotation plus one derivation."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:annotation/></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_list_with_item_type_and_inline_simple_type_is_rejected(self, parse_schema):
+        """stD018: ``itemType`` and an inline ``simpleType`` are exclusive."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:list itemType='xsd:integer'>"
+            "<xsd:simpleType><xsd:restriction base='xsd:integer'/>"
+            "</xsd:simpleType></xsd:list></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_union_without_members_is_clean(self, parse_schema):
+        """XSD 1.1 bug 4912: a union with no member types is legal (its
+        value space is empty); only XSD 1.0 required a member."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:union><xsd:annotation/>"
+            "</xsd:union></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)
+
+    def test_restriction_base_complex_type_is_rejected(self, parse_schema):
+        """stI004: a simple-type restriction cannot derive from a complexType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='myComplexType'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:positiveInteger'/></xsd:simpleContent>"
+            "</xsd:complexType>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='myComplexType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_base_any_type_is_rejected(self, parse_schema):
+        """stC003: a simple-type restriction cannot derive from ``anyType``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:anyType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_base_any_simple_type_is_rejected(self, parse_schema):
+        """stZ005: a simple-type restriction cannot derive from ``anySimpleType``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t1'><xsd:restriction base='xsd:anySimpleType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_simple_type_restriction_with_any_attribute_is_rejected(self, parse_schema):
+        """stC029: ``anyAttribute`` is not part of a simple-type restriction."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:integer'>"
+            "<xsd:anyAttribute processContents='lax'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_simple_type_restriction_of_simple_type_is_clean(self, parse_schema):
+        """A restriction of an ordinary simple type stays valid."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:restriction base='xsd:string'>"
+            "<xsd:length value='4'/></xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+        assert "declaration-child" not in _schema_codes(report)
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_inline_anonymous_simple_type_is_clean(self, parse_schema):
+        """An anonymous inline simpleType is not a name error."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='e'><xsd:simpleType><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType></xsd:element></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+
+class TestAnyAtomicTypeUse:
+    """``xs:anyAtomicType`` is registered as an XSD 1.1 ur-type.
+
+    Registered so a simple-content extension may name it (IBM
+    D4_3_15v19), but bug 11103 forbids it as the base of a restriction
+    (Saxon simple051), a list item type (simple052) or a union member
+    (simple053).
+    """
+
+    def test_restriction_base_any_atomic_type_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:anyAtomicType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_list_item_type_any_atomic_type_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:list itemType='xsd:anyAtomicType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
+    def test_union_member_any_atomic_type_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:union "
+            "memberTypes='xsd:anyAtomicType xsd:string'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
+    def test_simple_content_extension_of_any_atomic_type_is_clean(self, parse_schema):
+        """D4_3_15v19: a simpleContent extension may name anyAtomicType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='rootType'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:anyAtomicType'>"
+            "<xsd:attribute name='attr' type='xsd:string'/>"
+            "</xsd:extension></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+        assert "unknown-type" not in _schema_codes(report)
+
+    def test_element_of_any_atomic_type_is_ok(self, parse_schema):
+        """Saxon simple050: anyAtomicType is a legal element type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='e' type='xsd:anyAtomicType'/></xsd:schema>"
+        )
+        assert "unknown-type" not in _schema_codes(report)
+
+
+class TestFinalItemAndMemberRestriction:
+    """``final`` keeps a type out of a list item / union member.
+
+    XSD 1.1 forbids a list item type whose ``{final}`` contains ``list``
+    and a union member type whose ``{final}`` contains ``union`` (SUN
+    ST_final st_final00102m1/00103m1; msData stF035/stF037, where the
+    value comes from ``finalDefault``).
+    """
+
+    def test_list_item_type_final_for_list_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='Test' final='list'><xsd:restriction base='xsd:string'>"
+            "<xsd:pattern value='1|2'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='Test1'><xsd:list itemType='Test'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "final" in _schema_codes(report)
+
+    def test_union_member_type_final_for_union_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='Test' final='union'><xsd:restriction base='xsd:string'>"
+            "<xsd:pattern value='1|2'/></xsd:restriction></xsd:simpleType>"
+            "<xsd:simpleType name='Test1'><xsd:union memberTypes='Test'/></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "final" in _schema_codes(report)
+
+    def test_final_default_list_blocks_a_list_item(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' finalDefault='list'>"
+            "<xsd:simpleType name='parent'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='myParentList'><xsd:list itemType='parent'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "final" in _schema_codes(report)
+
+    def test_final_default_union_blocks_a_union_member(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' finalDefault='union'>"
+            "<xsd:simpleType name='parent'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='myParentUnion'><xsd:union memberTypes='parent'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "final" in _schema_codes(report)
+
+    def test_final_for_list_does_not_block_a_union_member(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='Test' final='list'><xsd:restriction base='xsd:string'/>"
+            "</xsd:simpleType>"
+            "<xsd:simpleType name='Test1'><xsd:union memberTypes='Test'/></xsd:simpleType>"
+            "</xsd:schema>"
+        )
+        assert "final" not in _schema_codes(report)
+
+
+class TestComplexContentRestrictionFacets:
+    """A complex-content restriction carries a particle, not facets."""
+
+    def test_facet_in_complex_content_restriction_is_rejected(self, parse_schema):
+        """addB112: ``length`` is not legal inside a complexContent
+        restriction."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='xsd:anyType'><xsd:length value='9'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_facet_in_simple_content_restriction_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:restriction base='xsd:string'><xsd:maxLength value='3'/>"
+            "</xsd:restriction></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)
+
+    def test_facet_in_simple_type_restriction_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:string'>"
+            "<xsd:maxLength value='3'/></xsd:restriction></xsd:simpleType></xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)
+
+
+class TestContentKindDerivationBase:
+    """The base-kind rules for complexContent/simpleContent derivations
+    (ctE003/ctE004, ctJ002/ctJ003)."""
+
+    def test_complex_content_extension_of_builtin_simple_type_rejected(self, parse_schema):
+        """ctJ003: complexContent cannot derive from ``xs:string``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='xsd:string'><xsd:all>"
+            "<xsd:element name='e' type='xsd:string'/></xsd:all>"
+            "</xsd:extension></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_complex_content_extension_of_simple_type_rejected(self, parse_schema):
+        """ctJ002: complexContent cannot derive from a ``simpleType``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='s'><xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='s'><xsd:all>"
+            "<xsd:element name='e' type='xsd:string'/></xsd:all>"
+            "</xsd:extension></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_simple_content_extension_of_element_only_base_rejected(self, parse_schema):
+        """ctE003: the base of a simpleContent extension has simple content."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence>"
+            "<xsd:element name='e' type='xsd:string'/></xsd:sequence></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='b'/></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_simple_content_extension_of_any_type_rejected(self, parse_schema):
+        """ctE004: ``xs:anyType`` has mixed complex content."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:anyType'/></xsd:simpleContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_simple_content_extension_of_builtin_simple_type_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'/></xsd:simpleContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_simple_content_extension_of_simple_content_base_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='b'/></xsd:simpleContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_complex_content_extension_of_complex_base_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence>"
+            "<xsd:element name='e' type='xsd:string'/></xsd:sequence></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='b'/></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_complex_content_extension_of_any_type_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='xsd:anyType'/></xsd:complexContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+
+class TestAttributeInheritable:
+    """The XSD 1.1 ``inheritable`` attribute (cta9004-9007)."""
+
+    @pytest.mark.parametrize("value", ["", "2", "TRUE", "False"])
+    def test_invalid_inheritable_boolean_rejected(self, parse_schema, value):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            f"<xsd:attribute name='a' inheritable='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" in _schema_codes(report)
+
+    @pytest.mark.parametrize("value", ["true", "false", "1", "0"])
+    def test_legal_inheritable_boolean_accepted(self, parse_schema, value):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            f"<xsd:attribute name='a' inheritable='{value}'/></xsd:schema>"
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
+
+    @pytest.mark.parametrize("base_inheritable,derived", [("true", "false"), (None, "true")])
+    def test_restriction_changing_inheritable_rejected(
+        self, parse_schema, base_inheritable, derived
+    ):
+        base_attr = "<xsd:attribute name='lang'"
+        if base_inheritable is not None:
+            base_attr += f" inheritable='{base_inheritable}'"
+        base_attr += "/>"
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            f"<xsd:complexType name='b'><xsd:sequence/>{base_attr}</xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            f"<xsd:attribute name='lang' inheritable='{derived}'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" in _schema_codes(report)
+
+    def test_restriction_preserving_inheritable_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:attribute name='lang' inheritable='true'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='lang' inheritable='true'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" not in _schema_codes(report)
+
+
+class TestAttributeTypeDerivation:
+    """An attribute use's type must derive from its base's (particlesZ013/Z021)."""
+
+    def test_restriction_to_unrelated_union_type_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='u'><xsd:union memberTypes='xsd:float xsd:integer'/></xsd:simpleType>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:integer'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='u'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" in _schema_codes(report)
+
+    def test_restriction_to_a_narrower_type_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:string'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:token'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" not in _schema_codes(report)
+
+
+class TestSubstitutionMemberUnionDerivation:
+    """A substitution member's type must derive from the head's
+    (particlesZ014/Z021; a union is not derived from its members)."""
+
+    def test_union_member_over_atomic_head_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='u'><xsd:union memberTypes='xsd:float xsd:integer'/></xsd:simpleType>"
+            "<xsd:element name='e1' type='xsd:integer'/>"
+            "<xsd:element name='e2' substitutionGroup='e1' type='u'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" in _schema_codes(report)
+
+    def test_derived_member_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='d'><xsd:restriction base='xsd:integer'/></xsd:simpleType>"
+            "<xsd:element name='e1' type='xsd:integer'/>"
+            "<xsd:element name='e2' substitutionGroup='e1' type='d'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
+    def test_restriction_with_unrelated_inline_type_rejected(self, parse_schema):
+        """particlesZ018: an inline list-of-int is not derived from the
+        base's ``xs:decimal`` simple content."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:decimal'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:restriction base='b'><xsd:simpleType>"
+            "<xsd:list itemType='xsd:int'/></xsd:simpleType>"
+            "</xsd:restriction></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_with_derived_inline_type_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:decimal'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:restriction base='b'><xsd:simpleType>"
+            "<xsd:restriction base='xsd:decimal'/></xsd:simpleType>"
+            "</xsd:restriction></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+
+class TestEDCTypeTables:
+    """Element Declarations Consistent compares ``xs:alternative`` type
+    tables too (cta9009err/cta9010err)."""
+
+    def test_same_name_different_alternative_tables_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "<xsd:alternative test=\"@t='2'\" type='xsd:double'/>"
+            "</xsd:element>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "</xsd:element>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "all-rule" in _schema_codes(report)
+
+    def test_one_alternative_table_absent_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "</xsd:element>"
+            "<xsd:element name='a' type='xsd:string'/>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "all-rule" in _schema_codes(report)
+
+    def test_wildcard_match_conflicting_global_table_rejected(self, parse_schema):
+        """wild078: a strict wildcard matching a global element whose type
+        table differs from the like-named local particle."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a'/>"
+            "<xsd:any namespace='##local' processContents='strict'/>"
+            "</xsd:sequence></xsd:complexType>"
+            "<xsd:element name='a'><xsd:alternative type='xsd:integer'/></xsd:element>"
+            "</xsd:schema>"
+        )
+        assert "element-consistent" in _schema_codes(report)
+
+    def test_wildcard_match_consistent_global_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a' type='xsd:string'/>"
+            "<xsd:any namespace='##local' processContents='strict'/>"
+            "</xsd:sequence></xsd:complexType>"
+            "<xsd:element name='a' type='xsd:string'/>"
+            "</xsd:schema>"
+        )
+        assert "element-consistent" not in _schema_codes(report)
+
+    def test_same_name_identical_alternative_tables_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "</xsd:element>"
+            "<xsd:element name='a' type='xsd:string'>"
+            "<xsd:alternative test=\"@t='1'\" type='xsd:integer'/>"
+            "</xsd:element>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "all-rule" not in _schema_codes(report)
+
+    def test_same_name_identical_inline_alternative_tables_accepted(self, parse_schema):
+        """Two like-named particles with structurally identical *inline*
+        alternative types are EDC-consistent (the inline ERs are distinct
+        objects, so the signature must compare them by structure)."""
+        inline = (
+            "<xsd:alternative test=\"@t='1'\"><xsd:simpleType>"
+            "<xsd:restriction base='xsd:string'><xsd:length value='3'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:alternative>"
+        )
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            f"<xsd:element name='a'>{inline}</xsd:element>"
+            f"<xsd:element name='a'>{inline}</xsd:element>"
+            "</xsd:sequence></xsd:complexType></xsd:schema>"
+        )
+        assert "all-rule" not in _schema_codes(report)
+        assert "element-consistent" not in _schema_codes(report)
+
+    def test_wildcard_match_identical_inline_tables_accepted(self, parse_schema):
+        """A local particle and a wildcard-matched global with structurally
+        identical inline alternative types are EDC-consistent."""
+        inline = (
+            "<xsd:alternative test=\"@t='1'\"><xsd:simpleType>"
+            "<xsd:restriction base='xsd:string'><xsd:length value='3'/>"
+            "</xsd:restriction></xsd:simpleType></xsd:alternative>"
+        )
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:sequence>"
+            f"<xsd:element name='a'>{inline}</xsd:element>"
+            "<xsd:any namespace='##local' processContents='strict'/>"
+            "</xsd:sequence></xsd:complexType>"
+            f"<xsd:element name='a'>{inline}</xsd:element>"
+            "</xsd:schema>"
+        )
+        assert "element-consistent" not in _schema_codes(report)
+        assert "all-rule" not in _schema_codes(report)
+
+
+class TestChoiceSubstitutionOverlap:
+    """A head and its member (or two members) in one choice violate UPA
+    (particlesZ033_g)."""
+
+    def test_head_and_member_in_one_choice_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:choice>"
+            "<xsd:element ref='head'/><xsd:element ref='m1'/>"
+            "</xsd:choice></xsd:complexType>"
+            "<xsd:element name='head'/>"
+            "<xsd:element name='m1' substitutionGroup='head'/>"
+            "</xsd:schema>"
+        )
+        assert "all-rule" in _schema_codes(report)
+
+    def test_all_extension_shared_substitution_member_rejected(self, parse_schema):
+        """all303: the composed all holds two particles with a common
+        substitution member."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:all><xsd:element ref='d'/></xsd:all>"
+            "</xsd:complexType>"
+            "<xsd:complexType name='e'><xsd:complexContent>"
+            "<xsd:extension base='b'><xsd:all><xsd:element ref='g'/></xsd:all>"
+            "</xsd:extension></xsd:complexContent></xsd:complexType>"
+            "<xsd:element name='d'/><xsd:element name='g'/>"
+            "<xsd:element name='dg' substitutionGroup='d g'/>"
+            "</xsd:schema>"
+        )
+        assert "all-rule" in _schema_codes(report)
+
+    def test_unrelated_members_in_one_choice_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='root' type='z'/>"
+            "<xsd:complexType name='z'><xsd:choice>"
+            "<xsd:element ref='m1'/><xsd:element ref='m2'/>"
+            "</xsd:choice></xsd:complexType>"
+            "<xsd:element name='m1'/>"
+            "<xsd:element name='m2'/>"
+            "</xsd:schema>"
+        )
+        assert "all-rule" not in _schema_codes(report)
+
+
+class TestSubstitutionBlockInRestriction:
+    """A blocked head breaks a substitution chain for particle restriction
+    (elemZ027_c)."""
+
+    def test_member_below_a_blocked_head_cannot_restrict_the_head(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='a' substitutionGroup='b'/>"
+            "<xsd:element name='b' substitutionGroup='d' block='substitution'/>"
+            "<xsd:element name='d'/>"
+            "<xsd:complexType name='base'><xsd:sequence>"
+            "<xsd:element ref='d'/></xsd:sequence></xsd:complexType>"
+            "<xsd:complexType name='derived'><xsd:complexContent>"
+            "<xsd:restriction base='base'><xsd:sequence><xsd:choice>"
+            "<xsd:element ref='a'/>"
+            "</xsd:choice></xsd:sequence></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "particle-restriction" in _schema_codes(report)
+
+    def test_member_below_an_unblocked_head_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='a' substitutionGroup='b'/>"
+            "<xsd:element name='b' substitutionGroup='d'/>"
+            "<xsd:element name='d'/>"
+            "<xsd:complexType name='base'><xsd:sequence>"
+            "<xsd:element ref='d'/></xsd:sequence></xsd:complexType>"
+            "<xsd:complexType name='derived'><xsd:complexContent>"
+            "<xsd:restriction base='base'><xsd:sequence><xsd:choice>"
+            "<xsd:element ref='a'/>"
+            "</xsd:choice></xsd:sequence></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "particle-restriction" not in _schema_codes(report)
+
+
+class TestConditionalTypeSubstitutable:
+    """A restriction's alternative types must be substitutable for the
+    base's (cta0043)."""
+
+    BASE = (
+        "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+        "<xsd:element name='doc' type='base'/>"
+        "<xsd:complexType name='base'><xsd:sequence>"
+        "<xsd:element name='stamp'>"
+        "<xsd:alternative test=\"@t='1'\" type='narrow'/>"
+        "<xsd:alternative type='wide'/>"
+        "</xsd:element>"
+        "</xsd:sequence></xsd:complexType>"
+        "<xsd:complexType name='wide'><xsd:simpleContent>"
+        "<xsd:extension base='xsd:string'/></xsd:simpleContent></xsd:complexType>"
+        "<xsd:complexType name='narrow'><xsd:simpleContent>"
+        "<xsd:restriction base='wide'/></xsd:simpleContent></xsd:complexType>"
+    )
+
+    def test_alternative_type_not_derived_rejected(self, parse_schema):
+        report = parse_schema(
+            self.BASE + "<xsd:complexType name='derived'><xsd:complexContent>"
+            "<xsd:restriction base='base'><xsd:sequence>"
+            "<xsd:element name='stamp'>"
+            "<xsd:alternative test=\"@t='1'\" type='wide'/>"
+            "<xsd:alternative type='wide'/>"
+            "</xsd:element>"
+            "</xsd:sequence></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "particle-restriction" in _schema_codes(report)
+
+    def test_alternative_type_derived_accepted(self, parse_schema):
+        report = parse_schema(
+            self.BASE + "<xsd:complexType name='derived'><xsd:complexContent>"
+            "<xsd:restriction base='base'><xsd:sequence>"
+            "<xsd:element name='stamp'>"
+            "<xsd:alternative test=\"@t='1'\" type='narrow'/>"
+            "<xsd:alternative type='wide'/>"
+            "</xsd:element>"
+            "</xsd:sequence></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "particle-restriction" not in _schema_codes(report)
+
+
+class TestAttributeWildcardRestriction:
+    """Attribute wildcard/use derivation on a restriction (ctO004/ctO005)."""
+
+    def test_restricted_attribute_not_admitted_by_base_wildcard_rejected(self, parse_schema):
+        """ctO004: a derived attribute use must be admitted by the base's
+        attribute wildcard; with no target namespace ``##other`` excludes
+        the absent namespace."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:anyAttribute namespace='##other'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" in _schema_codes(report)
+
+    def test_restricted_attribute_admitted_by_base_wildcard_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:anyAttribute namespace='##any'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" not in _schema_codes(report)
+
+    def test_derived_wildcard_over_base_without_wildcard_rejected(self, parse_schema):
+        """ctO005: when the base has no attribute wildcard the derived type
+        must have none either."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:anyAttribute namespace='##other'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "wildcard-invalid" in _schema_codes(report)
+
+    def test_derived_without_wildcard_over_base_without_wildcard_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "wildcard-invalid" not in _schema_codes(report)
+        assert "attribute-restriction" not in _schema_codes(report)
+
+
+class TestSimpleContentRestrictionBase:
+    """A simpleContent restriction derives from a *complex* type whose
+    simple content is not ``xs:anySimpleType`` (XSD 1.1 bug 14559)."""
+
+    def test_extension_of_any_simple_type_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:anySimpleType'/></xsd:simpleContent>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_restriction_of_any_simple_type_is_rejected(self, parse_schema):
+        """stZ009: the base of a simpleContent restriction is a complex type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:restriction base='xsd:anySimpleType'/></xsd:simpleContent>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_of_a_simple_type_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:restriction base='xsd:string'/></xsd:simpleContent>"
+            "</xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_of_an_any_simple_type_content_is_rejected(self, parse_schema):
+        """stZ007: t1's simple content primitive is anySimpleType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:anySimpleType'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t2'><xsd:simpleContent>"
+            "<xsd:restriction base='t1'/></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_of_element_only_complex_type_is_rejected(self, parse_schema):
+        """xsd020.e: a simpleContent restriction needs a base whose
+        content is simple; an element-only complex type has none."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "targetNamespace='urn:x' xmlns:f='urn:x'>"
+            "<xsd:complexType name='abc'><xsd:sequence><xsd:any/></xsd:sequence>"
+            "</xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:restriction base='f:abc'><xsd:pattern value='2'/>"
+            "</xsd:restriction></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_restriction_of_a_string_content_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t1'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t2'><xsd:simpleContent>"
+            "<xsd:restriction base='t1'><xsd:maxLength value='3'/></xsd:restriction>"
+            "</xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+
+class TestNotationAttributeAndContentLegality:
+    """The ``notation`` declaration's name, attributes and empty content.
+
+    W3C: notatB005 (duplicate name), notatE002/E003 (unknown
+    attribute), notatG001/G003 (character content), addB010 and SUN
+    name00201m1 (missing name).
+    """
+
+    def test_notation_missing_name_reports_declaration_name(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation public='image/jpeg'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-name" in _schema_codes(report)
+
+    def test_duplicate_notation_reports_declaration_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_notation_unknown_attribute_reports_unexpected_attribute(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg' foo='bar'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" in _schema_codes(report)
+
+    def test_notation_character_content_reports_declaration_child(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'>Some Text</xsd:notation>"
+            "</xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_notation_whitespace_only_content_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'>\n  </xsd:notation>"
+            "</xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)
+
+
+class TestAnnotationAttributeLegality:
+    """annotF009: ``annotation`` admits only the ``id`` attribute."""
+
+    def test_annotation_unknown_attribute_reports_unexpected_attribute(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:annotation foo='bar'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" in _schema_codes(report)
+
+    def test_annotation_id_attribute_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:annotation id='anno1'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" not in _schema_codes(report)
+
+
+class TestSchemaNamespaceQualifiedAttributes:
+    """addB070a/addB082/notatE002: an attribute in the XML Schema
+    namespace is never a legal attribute of a schema element."""
+
+    def test_xsd_namespaced_target_namespace_reports_unexpected_attribute(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'"
+            " xsd:targetNamespace='urn:x'>"
+            "<xsd:element name='root'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" in _schema_codes(report)
+
+    def test_xsd_namespaced_type_on_complex_type_reports_unexpected_attribute(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t' xsd:type='xsd:integer'/>"
+            "<xsd:element name='root'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" in _schema_codes(report)
+
+    def test_foreign_namespaced_attribute_is_not_reported(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'"
+            " xmlns:f='urn:foreign'>"
+            "<xsd:element name='root' f:extra='x'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" not in _schema_codes(report)

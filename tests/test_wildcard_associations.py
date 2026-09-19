@@ -107,14 +107,15 @@ def test_inherited_wildcard_keeps_source_target_namespace(tmp_path):
     """##targetNamespace in an imported base type means the base's namespace."""
     main = (
         '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
-        ' targetNamespace="urn:h" xmlns:a="urn:a" elementFormDefault="unqualified">'
+        ' targetNamespace="urn:h" xmlns:a="urn:a" xmlns:h="urn:h"'
+        ' elementFormDefault="unqualified">'
         '  <xs:import namespace="urn:a" schemaLocation="a.xsd"/>'
         '  <xs:complexType name="D"><xs:complexContent>'
         '    <xs:extension base="a:T"><xs:sequence>'
         '      <xs:element name="end" type="xs:string"/>'
         "    </xs:sequence></xs:extension>"
         "  </xs:complexContent></xs:complexType>"
-        '  <xs:element name="r" type="D"/>'
+        '  <xs:element name="r" type="h:D"/>'
         "</xs:schema>"
     )
     imported = (

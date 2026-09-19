@@ -9097,3 +9097,71 @@ schema = '''
 instance = '<r>&#x12000;</r>'
 instance_valid = false
 expected_codes = ["value"]
+
+[[case]]
+id = "regex/word-class-includes-marks-valid"
+xsd11 = true
+description = "\\w follows the XSD definition (all characters except P/Z/C), so a combining mark is a word character (MS reV16)"
+derived_from = "W3C XMLSchema1TestSuite, MS Regex reV16 (instance valid under XSD word semantics)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="w"><xs:restriction base="xs:string">
+    <xs:pattern value="\w"/>
+  </xs:restriction></xs:simpleType>
+  <xs:element name="r" type="w"/>
+</xs:schema>
+'''
+instance = '<r>&#x64B;</r>'
+
+[[case]]
+id = "regex/word-class-excludes-underscore-invalid"
+xsd11 = true
+description = "\\w excludes the punctuation category, so underscore is not a word character (MS reV33 family)"
+derived_from = "W3C XMLSchema1TestSuite, MS Regex reV family (instance invalid under XSD word semantics)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="w"><xs:restriction base="xs:string">
+    <xs:pattern value="\w"/>
+  </xs:restriction></xs:simpleType>
+  <xs:element name="r" type="w"/>
+</xs:schema>
+'''
+instance = '<r>_</r>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "regex/space-class-is-xsd-four-invalid"
+xsd11 = true
+description = "\\s is exactly [#x20\\t\\n\\r], so a no-break space is not whitespace (XSD 1.1 G.4.2)"
+derived_from = "W3C XMLSchema1TestSuite, MS Regex reP family (instance invalid under XSD whitespace semantics)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="sp"><xs:restriction base="xs:string">
+    <xs:pattern value="\s"/>
+  </xs:restriction></xs:simpleType>
+  <xs:element name="r" type="sp"/>
+</xs:schema>
+'''
+instance = '<r>&#xA0;</r>'
+instance_valid = false
+expected_codes = ["value"]
+
+[[case]]
+id = "regex/empty-block-escape-invalid"
+description = "\\p{Is} has an empty block name and does not match the XSD IsBlock production, so the schema is in error (XSD 1.1 G.4.2.4)"
+derived_from = "W3C XMLSchema1TestSuite, MS Regex reK86/reK87 (schema error)"
+schema = '''
+<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="p"><xs:restriction base="xs:string">
+    <xs:pattern value="\p{Is}"/>
+  </xs:restriction></xs:simpleType>
+  <xs:element name="r" type="p"/>
+</xs:schema>
+'''
+schema_valid = false
+expected_codes = ["facet"]

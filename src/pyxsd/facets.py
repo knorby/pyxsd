@@ -37,7 +37,9 @@ from elementpath import translate_pattern
 from elementpath.exceptions import ElementPathError
 from elementpath.regex import RegexError
 
+from pyxsd.regex_charset import reject_malformed_escapes, rewrite_xsd_shorthands
 from pyxsd.xsd_data_types import (
+    NOTATION,
     Base64Binary,
     Boolean,
     Date,
@@ -559,15 +561,18 @@ def _effective_upper(inclusive: Any | None, exclusive: Any | None) -> tuple[Any,
 
 
 def _is_qname_like(base: type) -> bool:
-    """Whether *base* is QName or derives from it.
+    """Whether *base* is QName/NOTATION or derives from one.
 
     XSD 1.1 deprecates the length family on QName, and the test suite
     encodes the XSD 1.0 ruling that every QName value satisfies those
-    facets.  Schema legality is still checked, but enforcement is
-    vacuous.
+    facets; the TSTF extended that ruling to NOTATION, whose value space
+    is likewise a set of notation names (MS-DataTypes NOTATION_length*).
+    Schema legality is still checked, but enforcement is vacuous.
     """
     name = getattr(base, "name", "")
-    return name == "QName" or issubclass(base, QName)
+    if name in ("QName", "NOTATION"):
+        return True
+    return issubclass(base, (QName, NOTATION))
 
 
 #: whiteSpace values ordered from least to most restrictive; a restriction
@@ -758,9 +763,13 @@ def _compile_pattern(text: str) -> re.Pattern[str]:
     Raises :class:`ValueError` when the pattern is not legal XSD, so the
     caller can report it as a schema problem.
     """
+    prepared = _xml11_name_classes(text)
+    # ``\p{Is}`` is not a legal category/block escape; reject it before
+    # elementpath silently treats it as "all characters".
+    reject_malformed_escapes(prepared)
     try:
         translated = translate_pattern(
-            _xml11_name_classes(text),
+            prepared,
             xsd_version=PATTERN_XSD_VERSION,
             anchors=False,
             back_references=False,
@@ -768,6 +777,9 @@ def _compile_pattern(text: str) -> re.Pattern[str]:
         )
     except (ElementPathError, RegexError, re.error, OverflowError) as exc:
         raise ValueError(f"illegal XSD pattern {text!r}: {exc}") from exc
+    # elementpath leaves ``\w``/``\W``/``\s``/``\S`` for Python; expand them
+    # to the XSD definitions over the full Unicode range.
+    translated = rewrite_xsd_shorthands(translated)
     try:
         return re.compile(translated)
     except (re.error, OverflowError) as exc:
@@ -853,6 +865,30 @@ def build_constraints(
                     f"facet {facet!r} value {value} is less than the base type's "
                     f"minimum {base_min_length}"
                 )
+    # A restriction can only narrow a value space: a declared length facet
+    # may not go beyond the base's effective range (msData stI005). The
+    # effective constraints below still tighten silently so the rest of
+    # the schema compiles.
+    if max_length is not None and parent.max_length is not None and max_length > parent.max_length:
+        errors.append(
+            f"facet 'maxLength' value {max_length} is greater than the base "
+            f"type's {parent.max_length}"
+        )
+    if min_length is not None and parent.min_length is not None and min_length < parent.min_length:
+        errors.append(
+            f"facet 'minLength' value {min_length} is less than the base type's {parent.min_length}"
+        )
+    if length is not None:
+        if parent.max_length is not None and length > parent.max_length:
+            errors.append(
+                f"facet 'length' value {length} is greater than the base "
+                f"type's maximum {parent.max_length}"
+            )
+        if parent.min_length is not None and length < parent.min_length:
+            errors.append(
+                f"facet 'length' value {length} is less than the base "
+                f"type's minimum {parent.min_length}"
+            )
     if "length" not in allowed:
         length = None
     if "minLength" not in allowed:
@@ -1021,6 +1057,26 @@ def build_constraints(
         errors.append(
             f"facet 'fractionDigits' value {fraction_digits_value!r} is not allowed "
             f"for base type {base_label!r} (fixed to 0 on integer types)"
+        )
+    if (
+        total_digits_value is not None
+        and "totalDigits" in allowed
+        and parent.total_digits is not None
+        and total_digits_value > parent.total_digits
+    ):
+        errors.append(
+            f"facet 'totalDigits' value {total_digits_value} is greater than the "
+            f"base type's {parent.total_digits}"
+        )
+    if (
+        fraction_digits_value is not None
+        and "fractionDigits" in allowed
+        and parent.fraction_digits is not None
+        and fraction_digits_value > parent.fraction_digits
+    ):
+        errors.append(
+            f"facet 'fractionDigits' value {fraction_digits_value} is greater than "
+            f"the base type's {parent.fraction_digits}"
         )
     total_digits = _min_optional(
         total_digits_value if "totalDigits" in allowed else None,

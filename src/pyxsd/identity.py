@@ -649,9 +649,19 @@ def _checkKeyref(
         resolved = _fieldValues(selectedNode, constraint, report)
         if resolved is _UNSUPPORTED:
             return None
-        if resolved in (_MISSING, _AMBIGUOUS, _COMPLEX):
-            # A keyref with a missing, ambiguous or complex-content
-            # field is simply absent.
+        if resolved is _COMPLEX:
+            # XSD 1.1 §3.13.4 clause 3: a field must select a node with a
+            # simple type or an attribute; a complex-content element has
+            # no value, so the keyref is violated (idH006).
+            report.add_error(
+                f"keyref '{constraint.constraintName}': a field selects an "
+                f"element with complex content on the '{_nameOf(selectedNode)}' element",
+                code="identity-keyref",
+                element=constraint.constraintName,
+            )
+            continue
+        if resolved in (_MISSING, _AMBIGUOUS):
+            # A keyref with a missing or ambiguous field is simply absent.
             continue
         if resolved not in known:
             report.add_error(

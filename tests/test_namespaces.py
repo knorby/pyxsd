@@ -1067,6 +1067,160 @@ class TestWellKnownNamespaceImports:
         )
 
 
+class TestUnknownXsiAttributes:
+    """Only the four built-in xsi attributes are special (attMd001-011).
+
+    An attribute in the schema-instance namespace whose local name is
+    not ``type``/``nil``/``schemaLocation``/``noNamespaceSchemaLocation``
+    is an ordinary attribute and must be declared or admitted by a
+    wildcard; it is not silently accepted because of its namespace.
+    """
+
+    def test_unknown_xsi_attribute_on_anytype_root_is_rejected(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:element name="doc" type="xs:anyType"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<doc xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}" xsi:Type="xs:int">1</doc>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+
+    def test_unknown_xsi_attribute_case_variant_on_anytype_root_is_rejected(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:element name="doc" type="xs:anyType"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<doc xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}" xsi:Nil="false">1</doc>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+
+    def test_unknown_xsi_attribute_with_child_is_rejected(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:element name="doc" type="xs:anyType"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<doc xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}" xsi:Type="xs:int">'
+            f'<e xsi:SchemaLocation="foo foo.xsd"/></doc>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+
+    def test_unknown_xsi_attribute_on_simple_element_is_rejected(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}"><a xsi:blah="x">v</a></root>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+
+    def test_builtin_xsi_attributes_remain_admitted(self, tmp_path):
+        """A legitimate ``xsi:type`` is not reported as undeclared."""
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
+            targetNamespace="urn:t" elementFormDefault="qualified">
+          <xs:complexType name="A"><xs:sequence/></xs:complexType>
+          <xs:element name="root" type="xs:anyType"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}" xmlns:t="urn:t" xsi:type="t:A"/>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" not in [i.code for i in parser.report.issues]
+
+    def test_unknown_xsi_attribute_admitted_by_xsi_wildcard(self, tmp_path):
+        """A wildcard that admits the xsi namespace still admits it (wild042)."""
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:complexType name="computer">
+            <xs:sequence/>
+            <xs:anyAttribute namespace="{XSI_NS}" processContents="skip"/>
+          </xs:complexType>
+          <xs:element name="computer" type="computer"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<computer xmlns:xsi="{XSI_NS}" xsi:banana="1234"/>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" not in [i.code for i in parser.report.issues]
+        assert not parser.report.has_errors
+
+
+class TestNamespacedAttributeUses:
+    """Two attribute uses with one local name in different namespaces.
+
+    A complex type may carry ``{t}a1`` and ``{i}a1`` together; instance
+    matching must address each by its expanded name (attQ019).
+    """
+
+    def test_same_local_name_in_two_namespaces(self, tmp_path):
+        (tmp_path / "i.xsd").write_text(
+            f'<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="urn:i" '
+            f'xmlns:i="urn:i" attributeFormDefault="qualified">'
+            f'<xs:attribute name="a1"/></xs:schema>'
+        )
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="urn:t" '
+            f'xmlns:t="urn:t" xmlns:i="urn:i" attributeFormDefault="qualified">'
+            f'<xs:import namespace="urn:i" schemaLocation="i.xsd"/>'
+            f'<xs:attributeGroup name="g">'
+            f'<xs:attribute name="a1"/><xs:attribute ref="i:a1"/></xs:attributeGroup>'
+            f'<xs:complexType name="T"><xs:attributeGroup ref="t:g"/></xs:complexType>'
+            f'<xs:element name="doc" type="t:T"/></xs:schema>'
+        )
+        (tmp_path / "s.xsd").write_text(schema)
+        instance = '<t:doc xmlns:t="urn:t" xmlns:i="urn:i" t:a1="1" i:a1="2"/>'
+        (tmp_path / "instance.xml").write_text(instance)
+        parser = PyXSD(
+            tmp_path / "instance.xml",
+            xsdFile=tmp_path / "s.xsd",
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=ParseModes.NAMESPACED,
+        )
+        assert [i.code for i in parser.report.issues] == []
+
+
+class TestUntypedRootIsAnyType:
+    """An element declaration with no type is implicitly xs:anyType.
+
+    Its children are bound through the lax wildcard, so a matching global
+    declaration's required attribute is enforced (AU_required00101m1_n).
+    """
+
+    def test_required_attribute_of_wildcard_child_is_enforced(self, tmp_path):
+        schema = (
+            f'<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="urn:t" '
+            f'xmlns:t="urn:t">'
+            f'<xs:element name="root"/>'
+            f'<xs:attribute name="number" type="xs:integer"/>'
+            f'<xs:element name="child"><xs:complexType>'
+            f'<xs:attribute ref="t:number" use="required"/>'
+            f"</xs:complexType></xs:element></xs:schema>"
+        )
+        (tmp_path / "s.xsd").write_text(schema)
+        (tmp_path / "instance.xml").write_text('<t:root xmlns:t="urn:t"><t:child/></t:root>')
+        parser = PyXSD(
+            tmp_path / "instance.xml",
+            xsdFile=tmp_path / "s.xsd",
+            xmlFileOutput="_No_Output_",
+            transformOutputName="_No_Output_",
+            mode=ParseModes.NAMESPACED,
+        )
+        assert "missing-attribute" in [i.code for i in parser.report.issues]
+
+
 def _xlink_ref_schema(attribute_site: str, *, import_line: str = "") -> str:
     """A schema whose only extension hook is one XLink ``xs:attribute`` site."""
     return f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xlink="{XLINK_NS}">

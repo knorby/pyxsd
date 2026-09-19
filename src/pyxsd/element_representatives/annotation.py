@@ -20,3 +20,20 @@ class Annotation(ElementRepresentative):
         """
         contName = self.getContainingTypeName()
         return f"{contName}|{self.__class__.__name__}"
+
+    def checkDeclarationLegality(self):
+        """Reports an attribute that is not the annotation's own ``id``.
+
+        The schema-for-schemas gives ``annotation`` a single ``id``
+        attribute; arbitrary content belongs in ``appinfo`` (annotF009:
+        ``foo="bar"`` is illegal). A namespaced attribute is left to the
+        parser's schema-attribute check.
+        """
+        for attr in self.xsdElement.attrib:
+            if attr.startswith("{"):
+                continue
+            if attr != "id":
+                self._reportSchemaError(
+                    f"attribute '{attr}' is not allowed on <annotation>",
+                    code="unexpected-attribute",
+                )

@@ -360,8 +360,8 @@ LATTICE = [
     (Byte, ["127", "-128", "0"], ["128", "-129"]),
     (
         Date,
-        ["2006-08-30", "-0001-01-01", "2006-08-30Z", "2006-08-30+05:00"],
-        ["2006-13-01", "2006-08-32", "06-08-30", "2006-8-30"],
+        ["2006-08-30", "-0001-01-01", "2006-08-30Z", "2006-08-30+05:00", "2000-02-29"],
+        ["2006-13-01", "2006-08-32", "06-08-30", "2006-8-30", "1999-02-29", "1900-02-29"],
     ),
     (
         DateTime,
@@ -372,8 +372,14 @@ LATTICE = [
             "2006-08-30T23:59:59",
             # End-of-day is legal when minutes and seconds are zero.
             "2006-08-30T24:00:00",
+            "2000-02-29T00:00:00",
         ],
-        ["2006-08-30 14:30:00", "2006-08-30T14:30", "2006-08-30T14:30:60"],
+        [
+            "2006-08-30 14:30:00",
+            "2006-08-30T14:30",
+            "2006-08-30T14:30:60",
+            "1999-02-29T00:00:00",
+        ],
     ),
     (
         DateTimeStamp,
@@ -499,7 +505,7 @@ LATTICE = [
         [],
     ),
     (PositiveInteger, ["1", "99999"], ["0", "-3"]),
-    (QName, ["xs:string", "local", "_a:b9"], [":x", "a:", "1:b"]),
+    (QName, ["xs:string", "local", "_a:b9"], [":x", "a:", "1:b", "xmlns:xsi"]),
     (Short, ["32767", "-32768"], ["32768", "-32769"]),
     (String, ["anything", ""], []),
     (
@@ -775,10 +781,10 @@ class TestBuiltinNameTable:
             assert klass.name in _PRIMITIVE_TYPES, klass.__name__
             assert _PRIMITIVE_TYPES[klass.name] is klass
 
-    def test_table_has_49_builtins(self):
+    def test_table_has_50_builtins(self):
         from pyxsd.element_representatives.element_representative import _PRIMITIVE_TYPES
 
-        assert len(_PRIMITIVE_TYPES) == 49
+        assert len(_PRIMITIVE_TYPES) == 50
         # Spot-check XSD spellings.
         for xsd_name in (
             "string",
@@ -808,5 +814,6 @@ class TestBuiltinNameTable:
             "positiveInteger",
             "anySimpleType",
             "anyType",
+            "anyAtomicType",
         ):
             assert xsd_name in _PRIMITIVE_TYPES

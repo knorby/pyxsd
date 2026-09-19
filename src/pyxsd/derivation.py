@@ -151,10 +151,19 @@ def derived_from_union_member(derived: type | None, base: type | None) -> bool:
         if any(isinstance(b, type) and issubclass(ancestor, b) for b in base_members):
             return True
         ancestor_members = vars(ancestor).get("_unionMembers")
-        if ancestor_members and all(
-            any(isinstance(b, type) and issubclass(member, b) for b in base_members)
-            for member in ancestor_members
+        if (
+            ancestor_members
+            and not vars(derived).get("_unionMembers")
+            and all(
+                any(isinstance(b, type) and issubclass(member, b) for b in base_members)
+                for member in ancestor_members
+            )
         ):
+            # A class that *restricts* a nested member union (simple012's
+            # sub-chap restricts dt, a member of chap) is valid; a union
+            # that is merely a member-subset of the base union is not
+            # (simple011). The ``derived``-is-itself-a-union guard makes
+            # that distinction.
             return True
     return False
 
@@ -273,6 +282,23 @@ def is_valid_xsi_type(
         if override is None or override is xsd_data_types.AnyType:
             return "not-derived"
         if not _isSimpleTypeClass(override):
+            return "not-derived"
+        return None
+    if declared is xsd_data_types.AnyAtomicType:
+        # ``xs:anyAtomicType`` is the ur-type of the atomic types: an
+        # atomic override is valid, but a list, a union or a complex
+        # declaration is not (Saxon simple050.v02 admits the date type).
+        if override is None or not _isSimpleTypeClass(override):
+            return "not-derived"
+        if override in (
+            xsd_data_types.AnyType,
+            xsd_data_types.AnySimpleType,
+            xsd_data_types.AnyAtomicType,
+        ):
+            return "not-derived"
+        if vars(override).get("_unionMembers") is not None:
+            return "not-derived"
+        if issubclass(override, xsd_data_types.XsdList):
             return "not-derived"
         return None
     return is_validly_derived(override, declared, blocked)

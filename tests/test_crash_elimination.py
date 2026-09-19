@@ -574,11 +574,26 @@ class TestNotationSupport:
             tmp_path,
             '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
             '<xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>'
+            '<xs:simpleType name="n"><xs:restriction base="xs:NOTATION">'
+            '<xs:enumeration value="jpeg"/></xs:restriction></xs:simpleType>'
+            '<xs:complexType name="c"><xs:attribute name="foo" '
+            'type="n"/></xs:complexType></xs:schema>',
+            monkeypatch,
+        )
+        assert parser.report.has_errors is False
+
+    def test_bare_notation_attribute_reports_not_crashes(self, tmp_path, monkeypatch):
+        # XSD 1.1: a direct NOTATION attribute type needs an enumeration
+        # (simple091). It must be reported, never crash the parser.
+        parser = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:notation name="jpeg" public="image/jpeg" system="viewer.exe"/>'
             '<xs:complexType name="c"><xs:attribute name="foo" '
             'type="xs:NOTATION"/></xs:complexType></xs:schema>',
             monkeypatch,
         )
-        assert parser.report.has_errors is False
+        assert "notation-enumeration-required" in _codes(parser)
 
     def test_nested_notation_reports(self, tmp_path, monkeypatch):
         parser = _parse_schema(

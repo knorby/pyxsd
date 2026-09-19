@@ -369,8 +369,10 @@ def test_simple_content_extension_user_simple_type_facets():
 
 def test_simple_content_restriction_direct_facets():
     body = (
+        '<xs:complexType name="base"><xs:simpleContent>'
+        '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
         '<xs:element name="r"><xs:complexType><xs:simpleContent>'
-        '<xs:restriction base="xs:string"><xs:maxLength value="3"/></xs:restriction>'
+        '<xs:restriction base="base"><xs:maxLength value="3"/></xs:restriction>'
         "</xs:simpleContent></xs:complexType></xs:element>"
     )
     assert errors(parse(body, "<r>abc</r>")) == []
@@ -379,8 +381,10 @@ def test_simple_content_restriction_direct_facets():
 
 def test_simple_content_restriction_inline_type_facets():
     body = (
+        '<xs:complexType name="base"><xs:simpleContent>'
+        '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
         '<xs:element name="r"><xs:complexType><xs:simpleContent>'
-        '<xs:restriction base="xs:string"><xs:simpleType><xs:restriction base="xs:string">'
+        '<xs:restriction base="base"><xs:simpleType><xs:restriction base="xs:string">'
         '<xs:enumeration value="red"/><xs:enumeration value="green"/>'
         "</xs:restriction></xs:simpleType></xs:restriction>"
         "</xs:simpleContent></xs:complexType></xs:element>"
@@ -599,3 +603,50 @@ def test_gMonthDay_rejects_impossible_day():
     assert codes(body, "<r>--02-30</r>")
     assert codes(body, "<r>--11-31</r>")
     assert errors(parse(body, "<r>--02-29</r>")) == []
+
+
+LIST_CONTAINER = (
+    '<xs:element name="r"><xs:complexType><xs:sequence>'
+    '<xs:element name="e" type="{name}"/></xs:sequence></xs:complexType></xs:element>'
+)
+
+_INLINE_STATE_LIST = (
+    '<xs:simpleType name="L1"><xs:list><xs:simpleType>'
+    '<xs:restriction base="xs:string"><xs:enumeration value="WA"/>'
+    '<xs:enumeration value="OR"/></xs:restriction></xs:simpleType></xs:list></xs:simpleType>'
+)
+_INLINE_ZIP_LIST = (
+    '<xs:simpleType name="L2"><xs:list><xs:simpleType>'
+    '<xs:restriction base="xs:positiveInteger"><xs:pattern value="[1-9]{5}"/>'
+    "</xs:restriction></xs:simpleType></xs:list></xs:simpleType>"
+)
+
+
+def test_list_inline_item_enumeration_rejects_bad_item():
+    """msData stH004/stH008: an inline item type's facets are enforced."""
+    body = LIST_CONTAINER.format(name="L1") + _INLINE_STATE_LIST
+    assert errors(parse(body, "<r><e>NY</e></r>"))
+    assert errors(parse(body, "<r><e>WA OR CA</e></r>"))
+
+
+def test_list_inline_item_max_length_rejects_long_item():
+    """ST_baseTD00301m: a list item over the inline maxLength is invalid."""
+    body = (
+        LIST_CONTAINER.format(name="L") + '<xs:simpleType name="L"><xs:list><xs:simpleType>'
+        '<xs:restriction base="xs:string"><xs:maxLength value="6"/>'
+        '<xs:pattern value="a+"/></xs:restriction></xs:simpleType></xs:list></xs:simpleType>'
+    )
+    assert errors(parse(body, "<r><e>a aa aaa aaaaaaa</e></r>"))
+    assert errors(parse(body, "<r><e>a aa aaa aaaa</e></r>")) == []
+
+
+def test_union_of_inline_item_lists_rejects_bad_value():
+    """msData stH004: a value matching no union member list is invalid."""
+    body = (
+        LIST_CONTAINER.format(name="U")
+        + _INLINE_STATE_LIST
+        + _INLINE_ZIP_LIST
+        + '<xs:simpleType name="U"><xs:union memberTypes="L1 L2"/></xs:simpleType>'
+    )
+    assert errors(parse(body, "<r><e>NY</e></r>"))
+    assert errors(parse(body, "<r><e>12345</e></r>")) == []

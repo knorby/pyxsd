@@ -299,6 +299,22 @@ class TestCompositionCorrectness:
         assert not parser.report.has_errors
         assert parser.schemaRootInstance._attribs_["a"] == "5"
 
+    def test_circular_attribute_group_is_accepted(self):
+        # attgC010: XSD 1.1 allows circular attribute group definitions.
+        parser = _parse_text(
+            f"<xs:schema {XS}>"
+            '<xs:complexType name="test"><xs:attributeGroup ref="test"/></xs:complexType>'
+            '<xs:attributeGroup name="test">'
+            '<xs:attributeGroup ref="test"/>'
+            '<xs:attribute name="foo" type="xs:int"/>'
+            "</xs:attributeGroup>"
+            '<xs:element name="T" type="test"/>'
+            "</xs:schema>",
+            '<T foo="3"/>',
+        )
+        assert not parser.report.has_errors
+        assert parser.schemaRootInstance._attribs_["foo"] == "3"
+
     def test_import_without_schema_location_is_allowed(self):
         parser = _parse_text(
             f"<xs:schema {XS}>"
@@ -672,6 +688,59 @@ class TestComposeInvalid:
         )
         assert "compose-invalid" not in self._error_codes(parser)
 
+    def test_import_illegal_child_is_error(self, tmp_path):
+        # notatF033: the only legal child of ``xs:import`` (and
+        # ``xs:include``) is an annotation; a nested declaration such as
+        # a notation is not a legal directive child.
+        parser = self._parser(
+            tmp_path,
+            f"<xs:schema {XS}>"
+            "<xs:import>"
+            '<xs:notation name="jpeg" public="image/jpeg"/>'
+            "</xs:import>"
+            '<xs:element name="root"/></xs:schema>',
+        )
+        assert "declaration-child" in self._error_codes(parser)
+
+    def test_import_annotation_child_is_valid(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f"<xs:schema {XS}>"
+            '<xs:import schemaLocation="base.xsd">'
+            "<xs:annotation/>"
+            "</xs:import>"
+            '<xs:element name="root"/></xs:schema>',
+            files={"base.xsd": f'<xs:schema {XS}><xs:element name="e"/></xs:schema>'},
+        )
+        assert "declaration-child" not in self._error_codes(parser)
+
+    def test_import_without_namespace_into_no_namespace_schema_is_error(self, tmp_path):
+        # schF3/addB008/addB035: an import with no namespace attribute
+        # imports the absent target namespace, which cannot differ from a
+        # no-namespace importing schema's own.
+        parser = self._parser(
+            tmp_path,
+            f"<xs:schema {XS}>"
+            '<xs:import schemaLocation="base.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"base.xsd": f'<xs:schema {XS}><xs:element name="e"/></xs:schema>'},
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_empty_import_namespace_is_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:import namespace=""/><xs:element name="root"/></xs:schema>',
+        )
+        assert "declaration-attribute" in self._error_codes(parser)
+
+    def test_empty_target_namespace_is_error(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS} targetNamespace=""><xs:element name="root"/></xs:schema>',
+        )
+        assert "declaration-attribute" in self._error_codes(parser)
+
     def test_redefine_base_namespace_mismatch_is_error(self, tmp_path):
         parser = self._parser(
             tmp_path,
@@ -784,6 +853,223 @@ class TestComposeInvalid:
             tmp_path,
             '<xs:attribute name="a" type="xs:string"/>',
             '<xs:attributeGroup ref="ag"/><xs:attribute name="b" type="xs:string"/>',
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
+    def _redefine(self, tmp_path, derived_body, base_body):
+        return self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine schemaLocation="base.xsd">'
+            f"{derived_body}"
+            '</xs:redefine><xs:element name="root"/></xs:schema>',
+            files={"base.xsd": f"<xs:schema {XS}>{base_body}</xs:schema>"},
+        )
+
+    def test_include_of_well_formed_non_schema_is_error(self, tmp_path):
+        # schB5: a schemaLocation that resolves to well-formed XML that is
+        # not an xs:schema is a composition error, not a silent skip.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:include schemaLocation="notaschema.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"notaschema.xsd": "<not-a-schema/>"},
+        )
+        assert "schema-compose" in self._error_codes(parser)
+
+    def test_import_of_well_formed_non_schema_is_error(self, tmp_path):
+        # schE6/schE10.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:import namespace="urn:x" '
+            'schemaLocation="notaschema.xsd"/>'
+            '<xs:element name="root"/></xs:schema>',
+            files={"notaschema.xsd": "<notAnXsd/>"},
+        )
+        assert "schema-compose" in self._error_codes(parser)
+
+    def test_redefine_namespace_attribute_is_error(self, tmp_path):
+        # schH4: ``xs:redefine`` carries a schemaLocation, never a
+        # namespace attribute.
+        parser = self._parser(
+            tmp_path,
+            f'<xs:schema {XS}><xs:redefine namespace="foo" schemaLocation="base.xsd">'
+            '<xs:group name="g"><xs:sequence><xs:element name="a"/></xs:sequence></xs:group>'
+            '</xs:redefine><xs:element name="root"/></xs:schema>',
+            files={
+                "base.xsd": f'<xs:schema {XS}><xs:group name="g"><xs:sequence>'
+                '<xs:element name="a"/></xs:sequence></xs:group></xs:schema>'
+            },
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_of_element_component_is_error(self, tmp_path):
+        # SUN xsd003-1.e: an element declaration cannot be redefined;
+        # redefine covers only types, groups and attribute groups.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:element name="root"/>',
+            '<xs:element name="root"/>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_of_attribute_component_is_error(self, tmp_path):
+        # SUN xsd003-2.e.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:attribute name="gAtt" type="xs:string"/>',
+            '<xs:attribute name="gAtt" type="xs:string"/>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_simple_type_without_self_base_is_error(self, tmp_path):
+        # schJ2: a redefined simple type must restrict the original.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:simpleType name="t"><xs:restriction base="xs:string">'
+            '<xs:minLength value="2"/></xs:restriction></xs:simpleType>',
+            '<xs:simpleType name="t"><xs:restriction base="xs:string"/></xs:simpleType>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_simple_type_with_self_base_is_valid(self, tmp_path):
+        parser = self._redefine(
+            tmp_path,
+            '<xs:simpleType name="t"><xs:restriction base="t">'
+            '<xs:minLength value="2"/></xs:restriction></xs:simpleType>',
+            '<xs:simpleType name="t"><xs:restriction base="xs:string"/></xs:simpleType>',
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
+    def test_redefine_complex_type_without_self_base_is_error(self, tmp_path):
+        # schK2: the restriction must name the original type.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:restriction base="u"><xs:sequence><xs:element name="a"/></xs:sequence>'
+            "</xs:restriction></xs:complexContent></xs:complexType>",
+            '<xs:complexType name="t"><xs:sequence><xs:element name="a"/>'
+            "</xs:sequence></xs:complexType>"
+            '<xs:complexType name="u"><xs:sequence><xs:element name="a"/>'
+            "</xs:sequence></xs:complexType>",
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_complex_type_without_derivation_is_error(self, tmp_path):
+        # schK3: a redefined complex type with no complexContent at all
+        # cannot derive from the original.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:complexType name="t"><xs:sequence><xs:element name="a"/></xs:sequence>'
+            "</xs:complexType>",
+            '<xs:complexType name="t"><xs:sequence><xs:element name="a"/>'
+            "</xs:sequence></xs:complexType>",
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_redefine_complex_type_with_self_base_is_valid(self, tmp_path):
+        parser = self._redefine(
+            tmp_path,
+            '<xs:complexType name="t"><xs:complexContent>'
+            '<xs:restriction base="t"><xs:sequence><xs:element name="a"/></xs:sequence>'
+            "</xs:restriction></xs:complexContent></xs:complexType>",
+            '<xs:complexType name="t"><xs:sequence><xs:element name="a"/>'
+            '<xs:element name="b"/></xs:sequence></xs:complexType>',
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
+    def test_group_redefine_self_reference_min_occurs_zero_is_error(self, tmp_path):
+        # schR3: a redefine's self reference must be exactly 1/1.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:choice><xs:element name="c23" type="xs:int"/>'
+            '<xs:group ref="g" minOccurs="0"/><xs:element name="c24" type="xs:int"/>'
+            "</xs:choice></xs:group>",
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int"/>'
+            '<xs:element name="c22" type="xs:int"/></xs:choice></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_self_reference_max_occurs_two_is_error(self, tmp_path):
+        # schR4.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:choice><xs:element name="c23" type="xs:int"/>'
+            '<xs:group ref="g" maxOccurs="2"/><xs:element name="c24" type="xs:int"/>'
+            "</xs:choice></xs:group>",
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int"/>'
+            '<xs:element name="c22" type="xs:int"/></xs:choice></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_self_reference_one_one_is_valid(self, tmp_path):
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:sequence><xs:group ref="g"/>'
+            '<xs:element name="b" type="xs:string"/></xs:sequence></xs:group>',
+            '<xs:group name="g"><xs:sequence><xs:element name="a" type="xs:string"/>'
+            "</xs:sequence></xs:group>",
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
+    def test_group_redefine_superset_without_self_reference_is_error(self, tmp_path):
+        # schL8: without a self reference the new model must restrict the
+        # original, so adding an element is a violation.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:sequence><xs:element name="c31" type="xs:int"/>'
+            '<xs:element name="c32" type="xs:int"/><xs:element name="c33" type="xs:int"/>'
+            "</xs:sequence></xs:group>",
+            '<xs:group name="g"><xs:sequence><xs:element name="c31" type="xs:int"/>'
+            '<xs:element name="c32" type="xs:int"/></xs:sequence></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_reorder_without_self_reference_is_error(self, tmp_path):
+        # schL6.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:sequence><xs:element name="c32" type="xs:int"/>'
+            '<xs:element name="c31" type="xs:int"/></xs:sequence></xs:group>',
+            '<xs:group name="g"><xs:sequence><xs:element name="c31" type="xs:int"/>'
+            '<xs:element name="c32" type="xs:int"/></xs:sequence></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_drop_required_all_member_is_error(self, tmp_path):
+        # schL1.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:all><xs:element name="c11" type="xs:string"/>'
+            '<xs:element name="c13" type="xs:string"/></xs:all></xs:group>',
+            '<xs:group name="g"><xs:all><xs:element name="c11" type="xs:string"/>'
+            '<xs:element name="c12" type="xs:string"/>'
+            '<xs:element name="c13" type="xs:string"/></xs:all></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_type_change_without_self_reference_is_error(self, tmp_path):
+        # schO2: narrowing maxOccurs is fine but swapping an element's
+        # declared type is not a restriction.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:string" '
+            'maxOccurs="2"/><xs:element name="c22" type="xs:int" maxOccurs="2"/>'
+            "</xs:choice></xs:group>",
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int" '
+            'maxOccurs="3"/><xs:element name="c22" type="xs:int" maxOccurs="3"/>'
+            "</xs:choice></xs:group>",
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_narrowing_occurrence_is_valid(self, tmp_path):
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int" '
+            'maxOccurs="2"/><xs:element name="c22" type="xs:int" maxOccurs="2"/>'
+            "</xs:choice></xs:group>",
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int" '
+            'maxOccurs="3"/><xs:element name="c22" type="xs:int" maxOccurs="3"/>'
+            "</xs:choice></xs:group>",
         )
         assert "compose-invalid" not in self._error_codes(parser)
 

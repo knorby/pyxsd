@@ -20,14 +20,66 @@ from pyxsd.derivation import (
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import WildcardSpec
-from pyxsd.xsd_data_types import AnySimpleType, XsdDataType, qname_context, xsd_value_key
+from pyxsd.xsd_data_types import (
+    AnySimpleType,
+    AnyType,
+    XsdDataType,
+    qname_context,
+    xsd_value_key,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _requires_unsatisfiable_content(model: Any) -> bool:
+    """Whether *model* demands content no instance can supply.
+
+    An empty ``choice`` with ``minOccurs`` at least one has no branch to
+    satisfy, so the element can never be valid, not even when empty
+    (Saxon complex022.n1). An empty ``sequence``/``all`` matches zero
+    children and is satisfiable.
+    """
+    if model is None:
+        return False
+    if getattr(model, "kind", None) == "choice" and model.min_occurs > 0 and not model.children:
+        return True
+    return any(_requires_unsatisfiable_content(child) for child in getattr(model, "children", ()))
 
 
 def _mode_for(cls) -> BindingPolicy:
     """The binding policy stamped on a generated class (or STRICT)."""
     return getattr(cls, "_parseMode_", ParseModes.STRICT)
+
+
+def _model_is_empty(model: Any) -> bool:
+    """Whether a compiled content model admits no element children.
+
+    The empty model is a childless ``sequence``/``all`` particle, which
+    gives the type the ``empty`` content variety: no character content
+    is allowed at all (Saxon open012.n3).
+    """
+    if model is None:
+        return False
+    return getattr(model, "kind", None) in ("sequence", "all") and not getattr(
+        model, "children", ()
+    )
+
+
+def _is_substitution_head(descriptor: Any) -> bool:
+    """Whether *descriptor* may head a substitution group.
+
+    Only a *global* element declaration heads a substitution group; a
+    particle that references one does so through ``ref`` (which the ER
+    run resolves either to the global declaration or to a reference
+    site). A local declaration that happens to share the head's name
+    does not head anything.
+    """
+    if descriptor is None:
+        return False
+    if getattr(descriptor, "isElementRef", False):
+        return True
+    is_global = getattr(descriptor, "isGlobalDeclaration", None)
+    return bool(is_global()) if callable(is_global) else False
 
 
 def _global_declaration(components, local: str, kind: str, uri: str | None):
@@ -287,22 +339,25 @@ class SchemaBase:
         cls._report_issue(IssueSeverity.WARNING, message, code=code, element=element)
 
     @classmethod
-    def _reportStrayCharacters(cls, elementTag):
+    def _reportStrayCharacters(cls, elementTag, *, empty=False):
         """Reports character data under an element-only content model.
 
         XSD 1.1 §3.4.3.2 (Element Locally Valid (Complex Type)): an
         element whose governing type's content type is element-only has
-        no character content other than whitespace. Mixed types and
-        simple content are not checked here (their text is legal or is
-        the value), and elements whose content model could not be
-        compiled keep the legacy tolerance. Only direct text of
-        *elementTag* is inspected; deeper nodes are checked when the
-        binder recurses into them.
+        no character content other than whitespace. A content type of
+        *empty* admits no character content at all, not even whitespace
+        (Saxon open012.n3). Mixed types and simple content are not
+        checked here (their text is legal or is the value), and elements
+        whose content model could not be compiled keep the legacy
+        tolerance. Only direct text of *elementTag* is inspected; deeper
+        nodes are checked when the binder recurses into them.
         """
         texts = [elementTag.text]
         texts.extend(child.tail for child in elementTag)
         for text in texts:
-            if text is not None and text.strip():
+            if not text:
+                continue
+            if empty or text.strip():
                 cls._report_error(
                     f"element '{elementTag.tag.split('}')[-1]}' has character "
                     "content but its content model is element-only",
@@ -503,6 +558,26 @@ class SchemaBase:
             cls._checkDynamicEDC(instance, subElement, governing, descriptor, memberHeadMap)
             instance._children_.append(cls.makeGenericInstance(subElement))
             return
+        if xsi.xsi_type_name(subElement) is not None:
+            # A strict wildcard admits an undeclared child whose
+            # ``xsi:type`` supplies the governing type, so no top-level
+            # declaration is required (MS addB116).
+            governing = cls._classForChild(None, subElement)
+            if governing is not None:
+                cls._checkDynamicEDC(instance, subElement, governing, None, memberHeadMap)
+                if isinstance(governing, type) and issubclass(governing, SchemaBase):
+                    subInstance = governing.makeInstanceFromTag(subElement)
+                else:
+                    subInstance = cls.primitiveValueFor(governing, subElement)
+                if subInstance is not None:
+                    subInstance._name_ = cls._node_name(subElement)
+                    subInstance._descriptor_ = None
+                    subInstance._nil_ = False
+                    instance._children_.append(subInstance)
+                # The xsi:type handled the child (an invalid lexical
+                # value was already reported); do not also demand a
+                # declaration.
+                return
         cls._report_error(
             f"no declaration found for element '{local}' required by a strict wildcard",
             code="wildcard-no-declaration",
@@ -671,8 +746,17 @@ class SchemaBase:
         constraints; the element instance itself is typed by the same
         base, so the bound ``_value_`` is the validated one.  An invalid
         value is reported with code ``value`` and yields an unvalidated
-        instance (or the raw text under the ``raw`` policy).
+        instance (or the raw text under the ``raw`` policy). A
+        simple-content element admits no child elements (Saxon
+        open016.n1).
         """
+        if list(elementTag):
+            cls._report_error(
+                f"the '{elementTag.tag.split('}')[-1]}' element has a simple "
+                "type but contains child elements",
+                code="unexpected-element",
+                element=cls.__name__,
+            )
         text = elementTag.text
         if text is None and forcedText is not None:
             text = forcedText
@@ -733,16 +817,19 @@ class SchemaBase:
         """
         self._attribs_ = {}
         usedAttributes = []
-        xsiPrefix = f"{{{xsi.XSI_NAMESPACE}}}"
         # QName-valued attributes resolve against this element's in-scope
         # prefix bindings (strict mode only).
         with qname_context(self._qname_bindings(elementTag)):
-            # XSI-namespace attributes (xsi:nil, xsi:type, ...) are stored
+            # Built-in XSI-namespace attributes (xsi:nil, xsi:type,
+            # xsi:schemaLocation, xsi:noNamespaceSchemaLocation) are stored
             # under their conventional display spelling so the writers emit
             # valid xml (the document's own xmlns:xsi declaration, a plain
-            # attribute here, keeps the output reparseable).
+            # attribute here, keeps the output reparseable). Any other
+            # attribute in the xsi namespace is not special: it passes
+            # through the ordinary declaration/wildcard checks below
+            # (attMd001-011).
             for attr in elementTag.attrib:
-                if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
+                if "xmlns" in attr or xsi.is_builtin_xsi_attribute(attr):
                     displayKey = xsi.xsi_attr_key(attr)
                     value = elementTag.attrib[attr]
                     if displayKey == "xsi:nil":
@@ -793,7 +880,7 @@ class SchemaBase:
                 rejected: set[str] = set()
                 skipped: set[str] = set()
                 for attr, value in elementTag.attrib.items():
-                    if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
+                    if "xmlns" in attr or xsi.is_builtin_xsi_attribute(attr):
                         continue
                     if attr in usedAttributes:
                         continue
@@ -871,6 +958,11 @@ class SchemaBase:
         memberToHeads: dict[str, set[str]] = {}
         for headName, members in substitutionGroups.items():
             headDescriptor = declaredByName.get(headName) or declaredByExpanded.get(headName)
+            if headDescriptor is not None and not _is_substitution_head(headDescriptor):
+                # A *local* declaration that shares a global head's name is
+                # not that head, so its members are not admissible where the
+                # local declaration is used (MS elemZ021b/f/g, elemZ023).
+                continue
             headMatch = (
                 cls._instance_name_of(headDescriptor) if headDescriptor is not None else headName
             )
@@ -918,7 +1010,7 @@ class SchemaBase:
         if instanceModel is not None:
             model = instanceModel
         if model is not None and getattr(cls, "_elementOnly_", False):
-            cls._reportStrayCharacters(elementTag)
+            cls._reportStrayCharacters(elementTag, empty=_model_is_empty(model))
         if model is None and hasWildcard:
             declaredNames = {cls._instance_name_of(descriptor) for descriptor in elemDescriptors}
             declaredNames.update(memberHeadMap)
@@ -1029,6 +1121,12 @@ class SchemaBase:
                     cls._report_error(
                         f"the content model requires element '{missing}', "
                         "which is missing from the xml",
+                        code="occurrence-min",
+                        element=cls.__name__,
+                    )
+                elif stalled and _requires_unsatisfiable_content(model):
+                    cls._report_error(
+                        "the content model requires element content that is missing from the xml",
                         code="occurrence-min",
                         element=cls.__name__,
                     )
@@ -1307,7 +1405,8 @@ class SchemaBase:
 
         # for elements with primitive types
         contentKind = getattr(subElCls, "_contentKind_", None)
-        isComplex = (
+        isAnyType = subElCls is AnyType
+        isComplex = isAnyType or (
             contentKind == "complex"
             if contentKind is not None
             else issubclass(subElCls, SchemaBase)
@@ -1362,11 +1461,27 @@ class SchemaBase:
             return None
 
         forcedText = None
-        if subElement.text is None and not list(subElement):
-            forcedText = descriptor.getDefault()
-            if forcedText is None:
-                forcedText = descriptor.getFixed()
-        subInstance = subElCls.makeInstanceFromTag(subElement, forcedText)
+        if isAnyType:
+            # The ur-type is mixed content plus a lax ``##any`` wildcard;
+            # an anyType-typed child may carry child elements (MS
+            # isDefault072, errC007). Build it through the lax wildcard
+            # instead of the primitive path, which would reject children.
+            parser = getattr(cls, "pyXSD", None)
+            builder = getattr(parser, "_anyTypeChildInstance", None)
+            if builder is not None:
+                subInstance = builder(subElCls, subElement)
+            else:
+                subInstance = subElCls._unvalidated()
+                subInstance._children_ = []
+                subInstance._attribs_ = {
+                    xsi.xsi_attr_key(key): value for key, value in subElement.attrib.items()
+                }
+        else:
+            if subElement.text is None and not list(subElement):
+                forcedText = descriptor.getDefault()
+                if forcedText is None:
+                    forcedText = descriptor.getFixed()
+            subInstance = subElCls.makeInstanceFromTag(subElement, forcedText)
         subInstance._name_ = subElementName
         subInstance._descriptor_ = descriptor
         subInstance._nil_ = nilled
@@ -1379,6 +1494,10 @@ class SchemaBase:
             # Simple-content complex types carry a scalar value whose
             # fixed declaration constrains it like a primitive's.
             cls._checkFixedElement(descriptor, subElCls, subInstance, subElementName)
+        elif not nilled and getattr(subElCls, "_simpleContentType_", None) is None:
+            # Mixed-content and ur-type elements carry their character
+            # content as the value the fixed declaration constrains.
+            cls._checkElementValueConstraint(descriptor, subElCls, subInstance, subElementName)
         return None
 
     @classmethod
@@ -1437,7 +1556,7 @@ class SchemaBase:
         for attr in subElement.attrib:
             if "xmlns" in attr:
                 continue
-            if namespace_of(attr) == xsi.XSI_NAMESPACE:
+            if xsi.is_builtin_xsi_attribute(attr):
                 continue
             cls._report_error(
                 f"attribute '{xsi.xsi_attr_key(attr)}' is not declared in the "
@@ -1561,6 +1680,45 @@ class SchemaBase:
         return subInstance
 
     @classmethod
+    def _checkElementValueConstraint(cls, descriptor, subElCls, subInstance, subElementName):
+        """Enforces an element declaration's ``fixed`` against content.
+
+        For a complex type whose content is mixed — or the ur-type
+        stand-in of an untyped declaration — the value constraint
+        applies to the element's character content. A value constraint
+        on an element-only content model does not apply (its legality is
+        a schema-phase question). When the element carries element
+        children the character content is not a single value, so the
+        constraint cannot be satisfied (SUN valueConstraint00701m1).
+        """
+        fixed = descriptor.getFixed()
+        if fixed is None:
+            return None
+        if getattr(subElCls, "_elementOnly_", False):
+            return None
+        if getattr(subInstance, "_children_", None):
+            cls._report_error(
+                f"element '{subElementName}' has element children and cannot "
+                f"satisfy its fixed value {fixed!r}",
+                code="fixed-element",
+                element=cls.__name__,
+            )
+            return None
+        if not subInstance._value_:
+            # Empty (or whitespace-only) content takes the fixed value; it
+            # is supplied, not compared (MS isDefault073/076).
+            return None
+        content = " ".join(subInstance._value_)
+        if " ".join(content.split()) != " ".join(str(fixed).split()):
+            cls._report_error(
+                f"element '{subElementName}' has a value that conflicts "
+                f"with its fixed value {fixed!r}",
+                code="fixed-element",
+                element=cls.__name__,
+            )
+        return None
+
+    @classmethod
     def _checkFixedElement(cls, descriptor, subElCls, subInstance, subElementName):
         """Validates a primitive element's value against ``fixed``."""
         fixed = descriptor.getFixed()
@@ -1597,10 +1755,18 @@ class SchemaBase:
         ``block`` attribute are reported and rejected.
         """
         subElementName = cls._node_name(subElement)
-        declared = {descriptor.name: descriptor for descriptor in elemDescriptors}
-        declaredExpanded = {
-            getattr(descriptor, "expandedName", None): descriptor for descriptor in elemDescriptors
-        }
+        declared: dict[Any, Any] = {}
+        declaredExpanded: dict[Any, Any] = {}
+        for descriptor in elemDescriptors:
+            if not _is_substitution_head(descriptor):
+                # A *local* declaration that merely shares a global head's
+                # name is not that head, so its substitution-group members
+                # are not admissible where the local declaration is used
+                # (MS elemZ021b/f/g, elemZ023). Only a global declaration
+                # or a reference to one can head a substitution.
+                continue
+            declared[descriptor.name] = descriptor
+            declaredExpanded[getattr(descriptor, "expandedName", None)] = descriptor
         substitutionGroups = cls._schemaSubstitutionGroups(elemDescriptors)
         if not substitutionGroups:
             return False
@@ -1653,16 +1819,19 @@ class SchemaBase:
                     return False
                 # XSD 1.1 §3.3.4.3: a member whose type is derived from the
                 # head's type by a method named in the head element's
-                # ``block`` is excluded from the actual substitution group
-                # (MS elemT063/065, SUN disallowedSubst*). The check is on
-                # the member's *declared* type, not on any xsi:type
-                # override applied below.
+                # ``block`` or in the head type's own ``block`` (or the
+                # schema's ``blockDefault``) is excluded from the actual
+                # substitution group (MS elemT063/065, SUN
+                # disallowedSubst*). The check is on the member's
+                # *declared* type, not on any xsi:type override applied
+                # below.
                 headCls = headDescriptor.getType()
+                effectiveBlock = combinedBlock(block, headCls)
                 if (
                     headCls is not None
                     and subElCls is not headCls
-                    and block
-                    and is_validly_derived(subElCls, headCls, block) == "blocked"
+                    and effectiveBlock
+                    and is_validly_derived(subElCls, headCls, effectiveBlock) == "blocked"
                 ):
                     cls._report_error(
                         f"substitution-group member '{subElementName}' has a "
@@ -2125,6 +2294,28 @@ class SchemaBase:
         """
         return list(self.descAttributes().keys())
 
+    def _attributeWildcardAdmits(self, matchName) -> bool:
+        """Whether the type's effective attribute wildcard admits *matchName*.
+
+        A prohibited attribute use is not part of the type's
+        {attribute uses}, so a wildcard that admits the attribute makes
+        its presence valid and the prohibition is not enforced
+        (attZ002).
+        """
+        cls = type(self)
+        if not getattr(cls, "hasWildcardAttributes_", False):
+            return False
+        if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
+            return False
+        spec = getattr(cls, "effectiveAttributeWildcard_", None)
+        if spec is None:
+            return False
+        parser = getattr(cls, "pyXSD", None)
+        defined = _defined_declaration_names(parser, "attribute")
+        return bool(
+            spec.allows_name(matchName, getattr(cls, "_targetNamespace_", None), defined=defined)
+        )
+
     def checkAttributes(self, usedAttrs, elementTag):
         """Checks to see that required attributes are used in the xml,
         and does other such checks on the attributes.
@@ -2157,9 +2348,12 @@ class SchemaBase:
             for attrET in attrInElementTag:
                 if attrET in usedAttrs or attrET in rejected:
                     continue
-                # Attributes in the schema-instance namespace are allowed to
-                # appear without a declaration (xsi:type, xsi:nil,
-                # xsi:schemaLocation, ...). An XML-namespace attribute is
+                # The four built-in schema-instance attributes are allowed
+                # to appear without a declaration (xsi:type, xsi:nil,
+                # xsi:schemaLocation, xsi:noNamespaceSchemaLocation). Any
+                # other attribute in the xsi namespace is an ordinary
+                # attribute and must survive the declaration/wildcard
+                # passes (attMd001-011). An XML-namespace attribute is
                 # admitted only when the element's type actually allows it:
                 # the implicit ``xml:*`` declarations are global components,
                 # not automatic attribute uses, so a type with no attribute
@@ -2168,7 +2362,7 @@ class SchemaBase:
                 # and wildcard passes is genuinely undeclared and makes the
                 # instance invalid (AttrDecl ad_name00101m1-4,
                 # ad_targetns00101m1-3).
-                if namespace_of(attrET) == xsi.XSI_NAMESPACE:
+                if xsi.is_builtin_xsi_attribute(attrET):
                     continue
                 if namespace_of(attrET) == XML_NS and getattr(
                     self, "hasWildcardAttributes_", False
@@ -2201,7 +2395,7 @@ class SchemaBase:
                     code="missing-attribute",
                     element=elementName,
                 )
-            if found and attrUse == "prohibited":
+            if found and attrUse == "prohibited" and not self._attributeWildcardAdmits(matchName):
                 self._report_error(
                     f"attribute '{descriptorAttrName}' is prohibited and "
                     "must not appear in the xml",

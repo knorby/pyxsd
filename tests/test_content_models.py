@@ -2093,6 +2093,87 @@ class TestAttributeUseDerivation:
         )
         assert "attribute-restriction" not in schema_codes(report)
 
+    def test_restriction_different_fixed_value_is_invalid(self, parse):
+        # attZ008_e: the derived fixed must equal the base's fixed
+        report = parse(
+            "<xs:complexType name='Person'><xs:sequence/>"
+            "<xs:attribute name='att' type='xs:string' fixed='not_fixed'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='Someone'><xs:complexContent>"
+            "<xs:restriction base='Person'><xs:sequence/>"
+            "<xs:attribute name='att' type='xs:string' fixed='fixed'/>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" in schema_codes(report)
+
+    def test_restriction_fixed_replaced_by_default_is_invalid(self, parse):
+        # attZ008_f: a fixed base use cannot become a defaulted one
+        report = parse(
+            "<xs:complexType name='Person'><xs:sequence/>"
+            "<xs:attribute name='att' type='xs:string' fixed='fixed'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='Someone'><xs:complexContent>"
+            "<xs:restriction base='Person'><xs:sequence/>"
+            "<xs:attribute name='att' type='xs:string' default='fixed'/>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" in schema_codes(report)
+
+    def test_restriction_fixed_dropped_is_invalid(self, parse):
+        # attZ008_h: a fixed base use must be reproduced with the same fixed
+        report = parse(
+            "<xs:complexType name='Person'><xs:sequence/>"
+            "<xs:attribute name='att' type='xs:string' fixed='fixed'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='Someone'><xs:complexContent>"
+            "<xs:restriction base='Person'><xs:sequence/>"
+            "<xs:attribute name='att' type='xs:string'/>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" in schema_codes(report)
+
+    def test_restriction_matching_fixed_value_is_accepted(self, parse):
+        # attZ008_a/g
+        report = parse(
+            "<xs:complexType name='Person'><xs:sequence/>"
+            "<xs:attribute name='att' type='xs:string' fixed='fixed'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='Someone'><xs:complexContent>"
+            "<xs:restriction base='Person'><xs:sequence/>"
+            "<xs:attribute name='att' type='xs:string' fixed='fixed'/>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" not in schema_codes(report)
+
+    def test_restriction_base_default_to_derived_fixed_is_accepted(self, parse):
+        # attZ008_b/d: a base default may be replaced by a fixed
+        for base_value in ("fixed", "not_fixed"):
+            report = parse(
+                "<xs:complexType name='Person'><xs:sequence/>"
+                f"<xs:attribute name='att' type='xs:string' default='{base_value}'/>"
+                "</xs:complexType>"
+                "<xs:complexType name='Someone'><xs:complexContent>"
+                "<xs:restriction base='Person'><xs:sequence/>"
+                "<xs:attribute name='att' type='xs:string' fixed='fixed'/>"
+                "</xs:restriction></xs:complexContent></xs:complexType>"
+            )
+            assert "attribute-restriction" not in schema_codes(report)
+
+    def test_restriction_respaced_list_fixed_is_accepted(self, parse):
+        # addB183: a list type's fixed value compares by value, so extra
+        # whitespace is not a different fixed value
+        report = parse(
+            "<xs:simpleType name='intList'><xs:list itemType='xs:int'/></xs:simpleType>"
+            "<xs:complexType name='base1'><xs:sequence/>"
+            "<xs:attribute name='Att' type='intList' fixed='1   2        3'/>"
+            "</xs:complexType>"
+            "<xs:complexType name='derived1'><xs:complexContent>"
+            "<xs:restriction base='base1'><xs:sequence/>"
+            "<xs:attribute name='Att' type='intList' fixed='1  2   3'/>"
+            "</xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert "attribute-restriction" not in schema_codes(report)
+
     def test_extension_different_fixed_value_is_invalid(self, parse):
         # particlesZ026a: ManagedItemType redeclares StatementAssembly
         # with a different fixed value than its base's use
