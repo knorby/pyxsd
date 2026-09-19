@@ -14,7 +14,16 @@ class List(ElementRepresentative):
         """See ElementRepresentative for documentation."""
         super().__init__(xsdElement, parent)
         self.itemType = self.xsdElement.get("itemType")
-        self.getContainingType().listItemType = self.itemType
+        containing = self.getContainingType()
+        containing.listItemType = self.itemType
+        # An inline item ``simpleType`` is the other way a list names its
+        # item type; record it so class building resolves and enforces it.
+        inline = [
+            child
+            for child in self.processedChildren
+            if child is not None and child.__class__.__name__ == "SimpleType"
+        ]
+        containing.listInlineItem = inline[0] if inline else None
         # the 'xs' is used so that it can be properly identified as a
         # primitive data type later on
         self.type = "xs:list"

@@ -171,7 +171,10 @@ class XsdType(ElementRepresentative):
             self._checkFinal(base, superClassName)
             baseList.append(base)
         listItem = getattr(self, "listItemType", None)
-        if listItem is not None and not any(
+        hasListDerivation = (
+            listItem is not None or getattr(self, "listInlineItem", None) is not None
+        )
+        if hasListDerivation and not any(
             isinstance(base, type) and issubclass(base, XsdList) for base in baseList
         ):
             # A schema-declared xs:list simple type is a value list, not
@@ -191,7 +194,14 @@ class XsdType(ElementRepresentative):
         """
         rawName = getattr(self, "listItemType", None)
         if rawName is None:
-            return None
+            inline = getattr(self, "listInlineItem", None)
+            if inline is None:
+                return None
+            # A list whose item type is an inline ``simpleType``: build
+            # that declaration so its facets are enforced per token
+            # (msData stH004, SUN ST_baseTD00301m).
+            itemCls = inline.clsFor(pyXSD)
+            return itemCls if itemCls is not None else AnySimpleType
         if _isInlineTypeName(rawName):
             itemName = rawName
         else:
