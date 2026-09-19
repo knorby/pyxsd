@@ -2393,3 +2393,58 @@ class TestSimpleTypeRepresentationLegality:
             "</xsd:simpleType></xsd:element></xsd:schema>"
         )
         assert "declaration-attribute" not in _schema_codes(report)
+
+
+class TestAnyAtomicTypeUse:
+    """``xs:anyAtomicType`` is registered as an XSD 1.1 ur-type.
+
+    Registered so a simple-content extension may name it (IBM
+    D4_3_15v19), but bug 11103 forbids it as the base of a restriction
+    (Saxon simple051), a list item type (simple052) or a union member
+    (simple053).
+    """
+
+    def test_restriction_base_any_atomic_type_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:restriction base='xsd:anyAtomicType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_list_item_type_any_atomic_type_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:list itemType='xsd:anyAtomicType'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
+    def test_union_member_any_atomic_type_is_rejected(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='t'><xsd:union "
+            "memberTypes='xsd:anyAtomicType xsd:string'/>"
+            "</xsd:simpleType></xsd:schema>"
+        )
+        assert "atomic-required" in _schema_codes(report)
+
+    def test_simple_content_extension_of_any_atomic_type_is_clean(self, parse_schema):
+        """D4_3_15v19: a simpleContent extension may name anyAtomicType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='rootType'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:anyAtomicType'>"
+            "<xsd:attribute name='attr' type='xsd:string'/>"
+            "</xsd:extension></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+        assert "unknown-type" not in _schema_codes(report)
+
+    def test_element_of_any_atomic_type_is_ok(self, parse_schema):
+        """Saxon simple050: anyAtomicType is a legal element type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='e' type='xsd:anyAtomicType'/></xsd:schema>"
+        )
+        assert "unknown-type" not in _schema_codes(report)

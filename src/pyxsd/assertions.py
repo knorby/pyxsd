@@ -45,7 +45,7 @@ from pyxsd.xpath_subset import XPathError
 #: The simple types that carry no usable value space for comparison;
 #: an attribute declared as one of these stays untyped in the XPath data
 #: model.
-_NON_ATOMIC_BUILTINS = frozenset({"anyType", "anySimpleType"})
+_NON_ATOMIC_BUILTINS = frozenset({"anyType", "anySimpleType", "anyAtomicType"})
 
 #: Sentinel marking an ``AssertionFacet`` whose ``test`` has not been
 #: compiled yet (its compiled form may legitimately be ``None``).

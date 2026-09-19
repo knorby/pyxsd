@@ -430,6 +430,19 @@ class AnySimpleType(String):
     name = "anySimpleType"
 
 
+class AnyAtomicType(String):
+    """``xs:anyAtomicType``: the ur-type of the atomic types.
+
+    XSD 1.1 registers it so a simple-content extension may name it
+    (assertion D4_3_15), and so an element or attribute may be typed by
+    it (Saxon simple050). It is one of the ur-types, however: bug 11103
+    forbids it as the base of a restriction, a list item type or a union
+    member. It carries no constraints of its own.
+    """
+
+    name = "anyAtomicType"
+
+
 class NOTATION(String):
     """``xs:NOTATION``: a reference to a notation declaration.
 

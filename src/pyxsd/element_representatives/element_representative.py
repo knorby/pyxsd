@@ -1339,7 +1339,7 @@ _PRIMITIVE_TYPES = {
 _BUILTIN_LIST_TYPES = frozenset({"IDREFS", "ENTITIES", "NMTOKENS"})
 
 #: Built-in XSD types that have no atomic value space (the ur-types).
-_NON_ATOMIC_BUILTINS = frozenset({"anySimpleType", "anyType"})
+_NON_ATOMIC_BUILTINS = frozenset({"anySimpleType", "anyType", "anyAtomicType"})
 
 
 def _builtinVariety(localName):
