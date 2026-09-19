@@ -117,6 +117,8 @@ from pyxsd.xpath_subset import XPathError
 from pyxsd.xsd_data_types import (
     AnySimpleType,
     AnyType,
+    Boolean,
+    Integer,
     NCName,
     XsdDataType,
     qname_context,
@@ -164,6 +166,35 @@ def _redefined_qname(value: str) -> str:
 def _stackPrefix(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
     """Whether *shorter* is a prefix of *longer* (document ancestry)."""
     return len(shorter) <= len(longer) and longer[: len(shorter)] == shorter
+
+
+class _GroupRedefineDeclaration:
+    """A declaration whose built-in integer type is normalized to ``Integer``.
+
+    Used only by the group-redefine restriction check so that narrowing
+    one built-in integer type to another (``xs:int`` to ``xs:byte``) is
+    not mistaken for an unrelated type change. Every other attribute and
+    method delegates to the wrapped declaration.
+    """
+
+    __slots__ = ("_declaration",)
+
+    def __init__(self, declaration: Any) -> None:
+        self._declaration = declaration
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._declaration, name)
+
+    def getType(self) -> Any:
+        cls = self._declaration.getType()
+        if cls is None:
+            return None
+        try:
+            isInteger = issubclass(cls, Integer)
+            isBoolean = issubclass(cls, Boolean)
+        except TypeError:
+            return cls
+        return Integer if isInteger and not isBoolean else cls
 
 
 def _mixedIsTrue(value: str) -> bool:
@@ -664,8 +695,88 @@ class PyXSD:
         self._checkNotationUses(schemaER)
         self._checkSimpleContentRestrictionBase(schemaER)
         self._checkAlternatives(schemaER)
+        self._checkGroupRedefineRestrictions(schemaER)
 
         return None
+
+    def _checkGroupRedefineRestrictions(self, schemaER: Any) -> None:
+        """Reports a group redefine that is not a valid restriction.
+
+        XSD 1.0 §4.2.4: the model group of a redefined group must be a
+        valid restriction of the original. A redefine written without a
+        self reference *replaces* the original outright, so the compiled
+        particle trees are compared with the same predicate used for a
+        complex-type particle restriction (schL1/schL6/schL8/schO2). A
+        redefine that does carry a self reference keeps pyxsd's
+        extension-style semantics (the reference pulls the original in),
+        which the corpus accepts for the standard pattern.
+        """
+        groups = getattr(schemaER, "groups", None) or {}
+        suffix = "|base"
+        for name, base_er in list(groups.items()):
+            if not isinstance(name, str) or not name.endswith(suffix):
+                continue
+            derived_name = name[: -len(suffix)]
+            derived = groups.get(derived_name)
+            if derived is None:
+                continue
+            if self._groupRedefineHasSelfReference(derived.xsdElement, derived_name):
+                continue
+            base_model = compile_own_content(base_er, self)
+            derived_model = compile_own_content(derived, self)
+            if base_model is None or derived_model is None:
+                continue
+            resolver = self._groupRedefineResolver
+            try:
+                reasons = list(
+                    is_valid_particle_restriction(
+                        base_model,
+                        derived_model,
+                        resolver,
+                        head_lookup=self._substitution_head_lookup(derived),
+                        member_lookup=self._substitution_member_lookup(derived),
+                    )
+                )
+            except RecursionError:  # pragma: no cover - defensive
+                continue
+            for reason in reasons:
+                self.report.add_error(
+                    f"the redefined group '{derived_name}' does not validly "
+                    f"restrict its original: {reason}",
+                    code="compose-invalid",
+                    phase="schema",
+                )
+
+    @staticmethod
+    def _groupRedefineResolver(particle: Any) -> Any:
+        """Resolves a particle to its declaration for the restriction check.
+
+        Element declarations are wrapped so the type-subsumption clause
+        treats the whole built-in integer family as one type: the Python
+        storage lattice makes ``xs:byte``/``xs:short``/``xs:int`` siblings
+        rather than a derivation chain, so a redefined group that narrows
+        ``xs:int`` to ``xs:byte`` (schH1/schH2, valid) would otherwise be
+        reported. Unrelated built-ins (``xs:string`` over ``xs:int``) and
+        user types still compare normally.
+        """
+        declaration = getattr(particle, "descriptor", None)
+        if declaration is None:
+            return None
+        return _GroupRedefineDeclaration(declaration)
+
+    @staticmethod
+    def _groupRedefineHasSelfReference(declaration: Any, name: str) -> bool:
+        """Whether a redefined group refers to itself (or its base copy)."""
+        candidates = {name, f"{name}|base"}
+        for element in declaration.iter():
+            if not isinstance(element.tag, str):
+                continue
+            if element.tag.split("}")[-1] != "group":
+                continue
+            ref = element.get("ref")
+            if ref and _qnameLocal(ref) in candidates:
+                return True
+        return False
 
     def _refineWildcardSpecs(self, schema_root: Any) -> None:
         """Expands the XSD 1.1 ``notQName`` names on every wildcard ER.

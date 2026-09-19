@@ -977,6 +977,68 @@ class TestComposeInvalid:
         )
         assert "compose-invalid" not in self._error_codes(parser)
 
+    def test_group_redefine_superset_without_self_reference_is_error(self, tmp_path):
+        # schL8: without a self reference the new model must restrict the
+        # original, so adding an element is a violation.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:sequence><xs:element name="c31" type="xs:int"/>'
+            '<xs:element name="c32" type="xs:int"/><xs:element name="c33" type="xs:int"/>'
+            "</xs:sequence></xs:group>",
+            '<xs:group name="g"><xs:sequence><xs:element name="c31" type="xs:int"/>'
+            '<xs:element name="c32" type="xs:int"/></xs:sequence></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_reorder_without_self_reference_is_error(self, tmp_path):
+        # schL6.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:sequence><xs:element name="c32" type="xs:int"/>'
+            '<xs:element name="c31" type="xs:int"/></xs:sequence></xs:group>',
+            '<xs:group name="g"><xs:sequence><xs:element name="c31" type="xs:int"/>'
+            '<xs:element name="c32" type="xs:int"/></xs:sequence></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_drop_required_all_member_is_error(self, tmp_path):
+        # schL1.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:all><xs:element name="c11" type="xs:string"/>'
+            '<xs:element name="c13" type="xs:string"/></xs:all></xs:group>',
+            '<xs:group name="g"><xs:all><xs:element name="c11" type="xs:string"/>'
+            '<xs:element name="c12" type="xs:string"/>'
+            '<xs:element name="c13" type="xs:string"/></xs:all></xs:group>',
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_type_change_without_self_reference_is_error(self, tmp_path):
+        # schO2: narrowing maxOccurs is fine but swapping an element's
+        # declared type is not a restriction.
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:string" '
+            'maxOccurs="2"/><xs:element name="c22" type="xs:int" maxOccurs="2"/>'
+            "</xs:choice></xs:group>",
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int" '
+            'maxOccurs="3"/><xs:element name="c22" type="xs:int" maxOccurs="3"/>'
+            "</xs:choice></xs:group>",
+        )
+        assert "compose-invalid" in self._error_codes(parser)
+
+    def test_group_redefine_narrowing_occurrence_is_valid(self, tmp_path):
+        parser = self._redefine(
+            tmp_path,
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int" '
+            'maxOccurs="2"/><xs:element name="c22" type="xs:int" maxOccurs="2"/>'
+            "</xs:choice></xs:group>",
+            '<xs:group name="g"><xs:choice><xs:element name="c21" type="xs:int" '
+            'maxOccurs="3"/><xs:element name="c22" type="xs:int" maxOccurs="3"/>'
+            "</xs:choice></xs:group>",
+        )
+        assert "compose-invalid" not in self._error_codes(parser)
+
 
 # ---------------------------------------------------------------------------
 # xs:override component replacement (Task 10)
