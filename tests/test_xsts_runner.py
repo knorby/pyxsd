@@ -78,6 +78,28 @@ A_SET = f"""<testSet xmlns="{TS}" xmlns:xlink="{XLINK}" contributor="NIST" name=
       <expected validity="valid"/>
     </schemaTest>
   </testGroup>
+  <testGroup name="hintvalid">
+    <schemaTest name="hv"><schemaDocument xlink:href="../data/hv.xsd"/>
+      <expected validity="valid"/></schemaTest>
+    <instanceTest name="hvi"><instanceDocument xlink:href="../data/hvi.xml"/>
+      <expected validity="valid"/></instanceTest>
+  </testGroup>
+  <testGroup name="hintinvalid">
+    <schemaTest name="hi"><schemaDocument xlink:href="../data/hi.xsd"/>
+      <expected validity="valid"/></schemaTest>
+    <instanceTest name="hii"><instanceDocument xlink:href="../data/hii.xml"/>
+      <expected validity="invalid"/></instanceTest>
+  </testGroup>
+  <testGroup name="hintbadschema">
+    <schemaTest name="hb"><schemaDocument xlink:href="../data/hb.xsd"/>
+      <expected validity="valid"/></schemaTest>
+    <instanceTest name="hbi"><instanceDocument xlink:href="../data/hbi.xml"/>
+      <expected validity="valid"/></instanceTest>
+  </testGroup>
+  <testGroup name="noschema-badhint">
+    <instanceTest name="i6"><instanceDocument xlink:href="../data/i6.xml"/>
+      <expected validity="invalid"/></instanceTest>
+  </testGroup>
 </testSet>
 """
 
@@ -105,7 +127,9 @@ class ScriptedDriver:
         self.calls.append(("schema", str(schema_path), ""))
         return EngineResult(schema_valid=self.schema.get("default", True))
 
-    def validate(self, schema_path: Path, instance_path: Path) -> EngineResult:
+    def validate(
+        self, schema_path: Path, instance_path: Path, *, synthesized: bool = False
+    ) -> EngineResult:
         self.calls.append(("instance", str(schema_path), str(instance_path)))
         return EngineResult(
             schema_valid=self.schema.get("default", True),
@@ -116,7 +140,9 @@ class ScriptedDriver:
 class SchemaFailingDriver(ScriptedDriver):
     """A driver whose schema phase always fails (adapter-gap reason set)."""
 
-    def validate(self, schema_path: Path, instance_path: Path) -> EngineResult:
+    def validate(
+        self, schema_path: Path, instance_path: Path, *, synthesized: bool = False
+    ) -> EngineResult:
         self.calls.append(("instance", str(schema_path), str(instance_path)))
         return EngineResult(schema_valid=False, adapter_gap="group schema did not compile")
 
@@ -180,6 +206,47 @@ def write_corpus(root: Path) -> None:
         f'<xs:schema xmlns:xs="{XS}" targetNamespace="urn:rr" xmlns:rr="urn:rr">'
         '<xs:element name="right" type="xs:string"/>'
         "</xs:schema>"
+    )
+    (root / "data" / "hv.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="root"><xs:complexType>'
+        '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+        "</xs:complexType></xs:element></xs:schema>"
+    )
+    (root / "data" / "hv_hint.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="root"><xs:complexType>'
+        '<xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>'
+        "</xs:complexType></xs:element></xs:schema>"
+    )
+    (root / "data" / "hvi.xml").write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="hv_hint.xsd"><a>x</a></root>'
+    )
+    (root / "data" / "hi.xsd").write_text((root / "data" / "hv.xsd").read_text())
+    (root / "data" / "hi_hint.xsd").write_text((root / "data" / "hv_hint.xsd").read_text())
+    (root / "data" / "hii.xml").write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="hi_hint.xsd"><b>x</b></root>'
+    )
+    # A genuinely invalid stipulated schema (``root`` declared twice) plus an
+    # instance hint: dropping the hint must not mask the schema error.
+    (root / "data" / "hb.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}">'
+        '<xs:element name="root" type="xs:string"/>'
+        '<xs:element name="root" type="xs:string"/>'
+        "</xs:schema>"
+    )
+    (root / "data" / "hbi.xml").write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="hv.xsd"/>'
+    )
+    # A no-schema group whose instance hints a schema that is not well-formed
+    # XML: the permissive wrapper must surface the bad hint, not mask it.
+    (root / "data" / "i6.xml").write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="bad.xsd"/>'
+    )
+    (root / "data" / "bad.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="z"></xs:schema>'
     )
 
 
@@ -357,6 +424,76 @@ def _schema_case(catalog, group_name: str):
         for case in build_cases(catalog, XSD11)
         if case.group_name == group_name and case.kind == SCHEMA
     )
+
+
+def _instance_case(catalog, group_name: str):
+    return next(
+        case
+        for case in build_cases(catalog, XSD11)
+        if case.group_name == group_name and case.kind == INSTANCE
+    )
+
+
+def _run_instance(tmp_path: Path, group_name: str):
+    write_corpus(tmp_path)
+    catalog = load_catalog(PurePosixPath(str(tmp_path)))
+    case = _instance_case(catalog, group_name)
+    driver = PyXSDDriver(timeout=10.0)
+    runner = Runner(profile=XSD11, driver=driver, workdir=tmp_path)
+    return runner.run_case(case)[0]
+
+
+def test_instance_schema_hint_collision_yields_a_verdict(tmp_path: Path) -> None:
+    """An instance's advisory ``xsi`` hint collides with the stipulated schema.
+
+    The instance hints a different no-namespace schema that also declares
+    ``root``; loading both is a ``multiple-roots`` schema error.  The
+    stipulated schema already decides the case, so the hint must not turn it
+    into an adapter-gap: the instance is valid under the stipulated schema.
+    """
+    result = _run_instance(tmp_path, "hintvalid")
+
+    assert result.outcome is Outcome.PASS
+    assert result.actual is True
+
+
+def test_stipulated_schema_decides_over_the_instance_hint(tmp_path: Path) -> None:
+    """The stipulated schema, not the instance's hint, fixes the verdict.
+
+    The hint schema would accept child ``b``; the stipulated schema requires
+    ``a``, so the instance must be judged invalid.
+    """
+    result = _run_instance(tmp_path, "hintinvalid")
+
+    assert result.outcome is Outcome.PASS
+    assert result.actual is False
+
+
+def test_genuine_schema_error_survives_dropping_the_hint(tmp_path: Path) -> None:
+    """Dropping an advisory hint must not mask an invalid stipulated schema."""
+    result = _run_instance(tmp_path, "hintbadschema")
+
+    assert result.outcome is Outcome.ADAPTER_GAP
+    assert result.detail == "group schema did not compile"
+
+
+def test_synthesized_permissive_schema_surfaces_a_bad_hint(tmp_path: Path) -> None:
+    """A no-schema group's unreadable hint stays a schema-phase gap.
+
+    The permissive wrapper exists to drive groups with no stipulated schema;
+    dropping the instance hint there would mask a hinted schema that does not
+    compile, which its design deliberately avoids.
+    """
+    write_corpus(tmp_path)
+    catalog = load_catalog(PurePosixPath(str(tmp_path)))
+    case = _instance_case(catalog, "noschema-badhint")
+    driver = PyXSDDriver(timeout=10.0, synthesize_missing_schema=True)
+    runner = Runner(profile=XSD11, driver=driver, workdir=tmp_path)
+
+    result = runner.run_case(case)[0]
+
+    assert result.outcome is Outcome.ADAPTER_GAP
+    assert result.detail == "group schema did not compile"
 
 
 def test_bundle_single_document_is_returned_unchanged(tmp_path: Path) -> None:
