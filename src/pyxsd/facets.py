@@ -766,11 +766,15 @@ def _compile_pattern(text: str) -> re.Pattern[str]:
             back_references=False,
             lazy_quantifiers=False,
         )
-    except (ElementPathError, RegexError, re.error) as exc:
+    except (ElementPathError, RegexError, re.error, OverflowError) as exc:
         raise ValueError(f"illegal XSD pattern {text!r}: {exc}") from exc
     try:
         return re.compile(translated)
-    except re.error as exc:
+    except (re.error, OverflowError) as exc:
+        # ``OverflowError``: a repetition count beyond what ``re`` can
+        # build (e.g. ``a{4294967296}``) is a legal-looking XSD pattern
+        # whose regex is unconstructible, so it is a schema problem like
+        # any other illegal pattern.
         raise ValueError(f"illegal XSD pattern {text!r}: {exc}") from exc
 
 
