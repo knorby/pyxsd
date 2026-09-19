@@ -2751,3 +2751,105 @@ class TestSimpleContentRestrictionBase:
             "</xsd:simpleContent></xsd:complexType></xsd:schema>"
         )
         assert "invalid-base" not in _schema_codes(report)
+
+
+class TestNotationAttributeAndContentLegality:
+    """The ``notation`` declaration's name, attributes and empty content.
+
+    W3C: notatB005 (duplicate name), notatE002/E003 (unknown
+    attribute), notatG001/G003 (character content), addB010 and SUN
+    name00201m1 (missing name).
+    """
+
+    def test_notation_missing_name_reports_declaration_name(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation public='image/jpeg'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-name" in _schema_codes(report)
+
+    def test_duplicate_notation_reports_declaration_duplicate(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "<xsd:notation name='jpeg' public='image/jpeg'/>"
+            "</xsd:schema>"
+        )
+        assert "declaration-duplicate" in _schema_codes(report)
+
+    def test_notation_unknown_attribute_reports_unexpected_attribute(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg' foo='bar'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" in _schema_codes(report)
+
+    def test_notation_character_content_reports_declaration_child(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'>Some Text</xsd:notation>"
+            "</xsd:schema>"
+        )
+        assert "declaration-child" in _schema_codes(report)
+
+    def test_notation_whitespace_only_content_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:notation name='jpeg' public='image/jpeg'>\n  </xsd:notation>"
+            "</xsd:schema>"
+        )
+        assert "declaration-child" not in _schema_codes(report)
+
+
+class TestAnnotationAttributeLegality:
+    """annotF009: ``annotation`` admits only the ``id`` attribute."""
+
+    def test_annotation_unknown_attribute_reports_unexpected_attribute(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:annotation foo='bar'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" in _schema_codes(report)
+
+    def test_annotation_id_attribute_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:annotation id='anno1'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" not in _schema_codes(report)
+
+
+class TestSchemaNamespaceQualifiedAttributes:
+    """addB070a/addB082/notatE002: an attribute in the XML Schema
+    namespace is never a legal attribute of a schema element."""
+
+    def test_xsd_namespaced_target_namespace_reports_unexpected_attribute(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'"
+            " xsd:targetNamespace='urn:x'>"
+            "<xsd:element name='root'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" in _schema_codes(report)
+
+    def test_xsd_namespaced_type_on_complex_type_reports_unexpected_attribute(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t' xsd:type='xsd:integer'/>"
+            "<xsd:element name='root'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" in _schema_codes(report)
+
+    def test_foreign_namespaced_attribute_is_not_reported(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'"
+            " xmlns:f='urn:foreign'>"
+            "<xsd:element name='root' f:extra='x'/>"
+            "</xsd:schema>"
+        )
+        assert "unexpected-attribute" not in _schema_codes(report)

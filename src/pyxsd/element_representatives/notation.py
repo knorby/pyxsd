@@ -41,6 +41,13 @@ class Notation(ElementRepresentative):
         its ``name`` must be a valid NCName. The ``id`` (lexical and
         uniqueness) is checked generically by the parser.
         """
+        self._checkUnexpectedAttributes()
+        if self._hasCharacterContent():
+            self._reportSchemaError(
+                f"notation '{self.name}' must be empty; character content "
+                "is not allowed inside <notation>",
+                code="declaration-child",
+            )
         if self.tagAttributes.get("public") is None and self.tagAttributes.get("system") is None:
             self._reportSchemaError(
                 f"notation '{self.name}' must have a public or system identifier",
@@ -55,3 +62,33 @@ class Notation(ElementRepresentative):
                     f"notation name '{name}' is not a valid NCName",
                     code="declaration-attribute",
                 )
+
+    #: The only attributes a notation declaration may carry, unqualified
+    #: (the ``id`` is validated generically by the parser).
+    _ALLOWED_ATTRIBUTES = frozenset({"name", "id", "public", "system"})
+
+    def _checkUnexpectedAttributes(self) -> None:
+        """Reports an unqualified attribute that is not the notation's own.
+
+        ``notatE003`` writes ``foo="bar"``; a namespaced attribute (an
+        XML-Schema-namespace one is ``notatE002``) is handled by the
+        parser's schema-attribute check.
+        """
+        for attr in self.xsdElement.attrib:
+            if attr.startswith("{"):
+                continue
+            if attr not in self._ALLOWED_ATTRIBUTES:
+                self._reportSchemaError(
+                    f"attribute '{attr}' is not allowed on <notation>",
+                    code="unexpected-attribute",
+                )
+
+    def _hasCharacterContent(self) -> bool:
+        """Whether the notation element carries non-whitespace text.
+
+        The schema-for-schemas gives ``notation`` empty content; text or
+        an entity reference (``notatG001``/``notatG003``) is illegal.
+        """
+        if self.xsdElement.text and self.xsdElement.text.strip():
+            return True
+        return any(child.tail and child.tail.strip() for child in self.xsdElement)

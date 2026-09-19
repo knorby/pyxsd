@@ -688,6 +688,32 @@ class TestComposeInvalid:
         )
         assert "compose-invalid" not in self._error_codes(parser)
 
+    def test_import_illegal_child_is_error(self, tmp_path):
+        # notatF033: the only legal child of ``xs:import`` (and
+        # ``xs:include``) is an annotation; a nested declaration such as
+        # a notation is not a legal directive child.
+        parser = self._parser(
+            tmp_path,
+            f"<xs:schema {XS}>"
+            "<xs:import>"
+            '<xs:notation name="jpeg" public="image/jpeg"/>'
+            "</xs:import>"
+            '<xs:element name="root"/></xs:schema>',
+        )
+        assert "declaration-child" in self._error_codes(parser)
+
+    def test_import_annotation_child_is_valid(self, tmp_path):
+        parser = self._parser(
+            tmp_path,
+            f"<xs:schema {XS}>"
+            '<xs:import schemaLocation="base.xsd">'
+            "<xs:annotation/>"
+            "</xs:import>"
+            '<xs:element name="root"/></xs:schema>',
+            files={"base.xsd": f'<xs:schema {XS}><xs:element name="e"/></xs:schema>'},
+        )
+        assert "declaration-child" not in self._error_codes(parser)
+
     def test_redefine_base_namespace_mismatch_is_error(self, tmp_path):
         parser = self._parser(
             tmp_path,

@@ -710,6 +710,7 @@ class PyXSD:
             "Key",
             "Keyref",
             "Unique",
+            "Notation",
         )
         seen: set[int] = set()
         seenIds: dict[str, Any] = dict(self._directiveIds)
@@ -731,6 +732,7 @@ class PyXSD:
                     code="declaration-name",
                 )
             self._checkChildGrammar(er)
+            self._checkSchemaNamespacedAttributes(er)
             self._checkDeclarationId(er, seenIds)
             self._checkDuplicateName(er, declared)
             er.checkDeclarationLegality()
@@ -2648,6 +2650,20 @@ class PyXSD:
             return
         typeName = type(er).__name__
         isIdentity = typeName in self._IDENTITY_KINDS
+        if typeName == "Notation":
+            # A notation definition occupies the notation symbol space of
+            # its target namespace (notatB005).
+            key = ("notation", er.getNamespace(), name)
+            if key in declared:
+                self.report.add_error(
+                    f"duplicate notation declaration '{name}'",
+                    code="declaration-duplicate",
+                    element=er.rawTag,
+                    phase="schema",
+                )
+                return
+            declared[key] = er
+            return
         if element is not None and id(element) in self._composedElementIds and not isIdentity:
             # A component spliced in from an included, imported or
             # redefined document is not compared against the main
@@ -2721,6 +2737,34 @@ class PyXSD:
                 return True
             node = getattr(node, "parent", None)
         return False
+
+    def _checkSchemaNamespacedAttributes(self, er: Any) -> None:
+        """Reports an XML-Schema-namespace attribute on a schema element.
+
+        Schema components carry unqualified attributes; a qualified
+        attribute in the XML Schema namespace (``xsd:targetNamespace``
+        on ``schema``, ``xsd:type`` on an ``attribute``) is never a legal
+        attribute of a schema element (addB070a, addB082, notatE002).
+        Attributes from a genuinely foreign namespace are not examined.
+        ``documentation`` bodies are arbitrary XML and are skipped.
+        """
+        element = getattr(er, "xsdElement", None)
+        if element is None or namespace_of(element.tag) != XSD_NS:
+            return
+        if type(er).__name__ == "Documentation":
+            return
+        prefix = f"{{{XSD_NS}}}"
+        for attr in element.attrib:
+            if not attr.startswith(prefix):
+                continue
+            local = attr[len(prefix) :]
+            self.report.add_error(
+                f"the attribute '{local}' is in the XML Schema namespace and is "
+                f"not a legal attribute of <{er.rawTag}>",
+                code="unexpected-attribute",
+                element=er.name if isinstance(er.name, str) else None,
+                phase="schema",
+            )
 
     def _checkChildGrammar(self, er: Any) -> None:
         """Reports a declaration's children against its grammar table.
@@ -3788,6 +3832,19 @@ class PyXSD:
             self.report.add_error(
                 f"<{local}> may carry at most one <annotation>; found {count}",
                 code="schema-compose",
+                phase="schema",
+            )
+        for child in tag:
+            if not isinstance(child.tag, str):
+                continue
+            if namespace_of(child.tag) != XSD_NS:
+                continue
+            localChild = child.tag.split("}")[-1]
+            if localChild == "annotation":
+                continue
+            self.report.add_error(
+                f"<{localChild}> is not allowed inside <{local}>",
+                code="declaration-child",
                 phase="schema",
             )
 
