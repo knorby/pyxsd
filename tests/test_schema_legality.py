@@ -1200,6 +1200,61 @@ class TestSubstitutionGroupLegality:
         )
         assert "circular-substitution-group" in _schema_codes(report)
 
+    def test_complex_member_under_any_simple_type_head_reports(self, parse_schema):
+        """stZ048: a complex element-only member is not derived from anySimpleType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='item' type='xsd:anySimpleType'/>"
+            "<xsd:complexType name='ct'><xsd:sequence>"
+            "<xsd:element name='e1'/></xsd:sequence></xsd:complexType>"
+            "<xsd:element name='a' type='ct' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" in _schema_codes(report)
+
+    def test_any_simple_type_member_under_complex_head_reports(self, parse_schema):
+        """stZ049: a simple member is not derived from a complex head."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct1'><xsd:sequence/></xsd:complexType>"
+            "<xsd:complexType name='ct2'><xsd:complexContent>"
+            "<xsd:restriction base='xsd:anyType'/></xsd:complexContent></xsd:complexType>"
+            "<xsd:element name='item' type='ct2'/>"
+            "<xsd:element name='a' type='xsd:anySimpleType' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" in _schema_codes(report)
+
+    def test_simple_member_under_any_simple_type_head_is_clean(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='item' type='xsd:anySimpleType'/>"
+            "<xsd:element name='a' type='xsd:string' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
+    def test_any_simple_type_member_under_any_type_head_is_clean(self, parse_schema):
+        """stZ050/stZ053: anyType admits every type, including anySimpleType."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='item' type='xsd:anyType'/>"
+            "<xsd:element name='a' type='xsd:anySimpleType' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
+    def test_unrelated_simple_member_under_simple_head_is_clean(self, parse_schema):
+        """The shipped fixture: an integer member under a string head stays
+        tolerated (the documented single-head under-approximation)."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:element name='item' type='xsd:string'/>"
+            "<xsd:element name='a' type='xsd:integer' substitutionGroup='item'/>"
+            "</xsd:schema>"
+        )
+        assert "substitution-type" not in _schema_codes(report)
+
 
 class TestNotationDeclarationLegality:
     """Semantic notation-declaration legality (notatA/notatB)."""

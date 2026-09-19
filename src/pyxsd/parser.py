@@ -2943,11 +2943,6 @@ class PyXSD:
                     # violate derivation against it (subsgroup001's
                     # abstract chapContent/appendixContent heads).
                     continue
-                if getattr(headCls, "name", None) == "anySimpleType":
-                    # The simple ur-type roots every simple-type
-                    # derivation, which pyxsd's lattice does not model
-                    # as a subclass edge.
-                    continue
                 reason = is_validly_derived(memberCls, headCls, excluded)
                 if reason == "blocked":
                     self.report.add_error(
@@ -2957,14 +2952,33 @@ class PyXSD:
                         element=member.name,
                         phase="schema",
                     )
-                elif reason == "not-derived" and not inline and strict_heads:
-                    self.report.add_error(
-                        f"element '{member.name}' has a type that is not validly "
-                        f"derived from substitution head '{head.name}'",
-                        code="substitution-type",
-                        element=member.name,
-                        phase="schema",
+                elif reason == "not-derived" and not inline:
+                    # pyxsd's lattice does not model the ur-types as a
+                    # subclass edge, so a simple member under an
+                    # anySimpleType head reports not-derived even though
+                    # the simple ur-type roots every simple derivation.
+                    # Only the clear category mismatches are reported for
+                    # a single head (stZ048: complex under anySimpleType;
+                    # stZ049: anySimpleType under a complex head); the
+                    # general single-head under-approximation stays.
+                    head_is_simple_ur = headCls is AnySimpleType
+                    member_is_simple_ur = memberCls is AnySimpleType
+                    member_is_complex = getattr(memberCls, "_contentKind_", None) == "complex"
+                    # ``xs:anyType`` admits every type (stZ050/stZ053):
+                    # an anySimpleType member under it is legal.
+                    head_admits_all = headCls is AnyType
+                    mismatch = strict_heads or (
+                        not head_admits_all
+                        and (member_is_simple_ur or (head_is_simple_ur and member_is_complex))
                     )
+                    if mismatch:
+                        self.report.add_error(
+                            f"element '{member.name}' has a type that is not validly "
+                            f"derived from substitution head '{head.name}'",
+                            code="substitution-type",
+                            element=member.name,
+                            phase="schema",
+                        )
 
     @staticmethod
     def _declaredTypeClass(element: Any) -> Any:
