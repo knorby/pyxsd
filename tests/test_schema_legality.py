@@ -2949,6 +2949,61 @@ class TestContentKindDerivationBase:
         assert "invalid-base" not in _schema_codes(report)
 
 
+class TestAttributeWildcardRestriction:
+    """Attribute wildcard/use derivation on a restriction (ctO004/ctO005)."""
+
+    def test_restricted_attribute_not_admitted_by_base_wildcard_rejected(self, parse_schema):
+        """ctO004: a derived attribute use must be admitted by the base's
+        attribute wildcard; with no target namespace ``##other`` excludes
+        the absent namespace."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:anyAttribute namespace='##other'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" in _schema_codes(report)
+
+    def test_restricted_attribute_admitted_by_base_wildcard_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/>"
+            "<xsd:anyAttribute namespace='##any'/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "attribute-restriction" not in _schema_codes(report)
+
+    def test_derived_wildcard_over_base_without_wildcard_rejected(self, parse_schema):
+        """ctO005: when the base has no attribute wildcard the derived type
+        must have none either."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/>"
+            "<xsd:anyAttribute namespace='##other'/>"
+            "</xsd:restriction></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "wildcard-invalid" in _schema_codes(report)
+
+    def test_derived_without_wildcard_over_base_without_wildcard_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence/></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:restriction base='b'><xsd:sequence/></xsd:restriction>"
+            "</xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "wildcard-invalid" not in _schema_codes(report)
+        assert "attribute-restriction" not in _schema_codes(report)
+
+
 class TestSimpleContentRestrictionBase:
     """A simpleContent restriction derives from a *complex* type whose
     simple content is not ``xs:anySimpleType`` (XSD 1.1 bug 14559)."""

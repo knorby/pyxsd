@@ -1902,9 +1902,6 @@ class PyXSD:
         """
         if er.getDerivation() != "restriction":
             return
-        ownSpecs = getattr(er, "wildcardAttributeSpecs", None)
-        if not ownSpecs:
-            return
         baseER = self._baseTypeER(er)
         if baseER is None:
             logger.debug(
@@ -1913,20 +1910,24 @@ class PyXSD:
                 getattr(er, "name", "?"),
             )
             return
+        ownSpecs = getattr(er, "wildcardAttributeSpecs", None)
         baseSpecs = getattr(baseER, "wildcardAttributeSpecs", None)
-        if not baseSpecs:
-            # The base has no attribute wildcard; whether a derived
-            # wildcard is a valid restriction is a semantic question
-            # (an empty derived wildcard admits nothing and is fine), so
-            # the structural comparison below has nothing to check.
-            logger.debug(
-                "attribute wildcard restriction: base type %s has no attribute wildcard; skipped",
-                getattr(baseER, "name", "?"),
+        target = er.getNamespace()
+        baseNS = baseER.getNamespace()
+        own = effective_attribute_wildcard(ownSpecs, target) if ownSpecs else None
+        base = effective_attribute_wildcard(baseSpecs, baseNS) if baseSpecs else None
+        # A derived wildcard over a base with no attribute wildcard is
+        # never a valid restriction (ctO005): the base admits nothing
+        # beyond its own uses.
+        if own is not None and base is None:
+            self.report.add_error(
+                f"restriction of type '{er.name}' declares an attribute "
+                "wildcard but its base type has none",
+                code="wildcard-invalid",
             )
             return
-        target = er.getNamespace()
-        own = effective_attribute_wildcard(ownSpecs, target)
-        base = effective_attribute_wildcard(baseSpecs, baseER.getNamespace())
+        if base is not None:
+            self._reportRestrictedAttributeUses(er, baseER, base, baseNS)
         if own is None or base is None:
             return
         if not wildcard_subset(own, base, target):
@@ -1946,6 +1947,35 @@ class PyXSD:
                 f"than '{base.process_contents}')",
                 code="wildcard-invalid",
             )
+
+    def _reportRestrictedAttributeUses(self, er: Any, baseER: Any, base: Any, baseNS: Any) -> None:
+        """Reports derived uses the base's attribute wildcard does not admit.
+
+        Derivation Valid (Restriction, Complex) clause 2: an attribute use
+        of the restricting type that does not redeclare a base use must be
+        admitted by the base type's {attribute wildcard} (ctO004). Uses
+        that share a base use's expanded name are left to the
+        attribute-use derivation check.
+        """
+        base_uses = self._effectiveAttributeUses(baseER)[0]
+        base_keys = {
+            attr.instanceName(is_attribute=True, parser=self) or getattr(attr, "name", None)
+            for attr in base_uses.values()
+        }
+        base_keys.discard(None)
+        own_uses = getattr(er, "attributes", None) or {}
+        for attr in own_uses.values():
+            key = attr.instanceName(is_attribute=True, parser=self) or getattr(attr, "name", None)
+            if key is None or key in base_keys:
+                continue
+            if not base.allows(namespace_of(key), baseNS):
+                self.report.add_error(
+                    f"attribute-use restriction: attribute '{key}' of type "
+                    f"'{getattr(er, 'name', '?')}' is not admitted by the "
+                    f"attribute wildcard of its base type "
+                    f"'{getattr(baseER, 'name', '?')}'",
+                    code="attribute-restriction",
+                )
 
     def _baseTypeClass(self, er: Any) -> Any | None:
         """The generated class of the first resolvable base type."""
