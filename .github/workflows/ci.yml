@@ -9,9 +9,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -26,6 +30,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +48,7 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD:tests/xsts/corpus)" >> "$GITHUB_OUTPUT"
 
       - name: Cache the xsdtests corpus submodule
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             tests/xsts/corpus
@@ -55,7 +60,7 @@ jobs:
 
       - name: Cache downloaded example schemas
         id: schemas
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             examples/musicxml/schemas
@@ -85,6 +90,7 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -99,6 +105,7 @@ jobs:
 
   oracle:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
