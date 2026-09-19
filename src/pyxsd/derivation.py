@@ -284,6 +284,23 @@ def is_valid_xsi_type(
         if not _isSimpleTypeClass(override):
             return "not-derived"
         return None
+    if declared is xsd_data_types.AnyAtomicType:
+        # ``xs:anyAtomicType`` is the ur-type of the atomic types: an
+        # atomic override is valid, but a list, a union or a complex
+        # declaration is not (Saxon simple050.v02 admits the date type).
+        if override is None or not _isSimpleTypeClass(override):
+            return "not-derived"
+        if override in (
+            xsd_data_types.AnyType,
+            xsd_data_types.AnySimpleType,
+            xsd_data_types.AnyAtomicType,
+        ):
+            return "not-derived"
+        if vars(override).get("_unionMembers") is not None:
+            return "not-derived"
+        if issubclass(override, xsd_data_types.XsdList):
+            return "not-derived"
+        return None
     return is_validly_derived(override, declared, blocked)
 
 

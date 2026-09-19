@@ -434,6 +434,33 @@ class TestSchemaBlockDefault:
         assert "xsi-type" in _codes(parser)
 
 
+class TestAnyAtomicTypeXsiType:
+    """``xsi:type`` against an ``xs:anyAtomicType``-typed declaration.
+
+    Every atomic type is validly derived from anyAtomicType (Saxon
+    simple050), but a complex type is not.
+    """
+
+    SCHEMA = (
+        f'<xs:schema xmlns:xs="{XSD}">'
+        '<xs:element name="root" type="xs:anyAtomicType"/>'
+        '<xs:complexType name="C"><xs:sequence/></xs:complexType>'
+        "</xs:schema>"
+    )
+
+    def test_atomic_override_is_valid(self, tmp_path):
+        parser = _parse(
+            self.SCHEMA,
+            f'<root xmlns:xsi="{XSI}" xmlns:xs="{XSD}" xsi:type="xs:date">2010-11-10</root>',
+            tmp_path,
+        )
+        assert "xsi-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+
+    def test_complex_override_is_rejected(self, tmp_path):
+        parser = _parse(self.SCHEMA, f'<root xmlns:xsi="{XSI}" xsi:type="C"/>', tmp_path)
+        assert "xsi-type" in _codes(parser)
+
+
 class TestAnonymousInlineTypePseudoNames:
     """An inline type's generated ``parent|tag`` name resolves anywhere a
     type reference can point.
