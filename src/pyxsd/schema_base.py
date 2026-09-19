@@ -733,16 +733,19 @@ class SchemaBase:
         """
         self._attribs_ = {}
         usedAttributes = []
-        xsiPrefix = f"{{{xsi.XSI_NAMESPACE}}}"
         # QName-valued attributes resolve against this element's in-scope
         # prefix bindings (strict mode only).
         with qname_context(self._qname_bindings(elementTag)):
-            # XSI-namespace attributes (xsi:nil, xsi:type, ...) are stored
+            # Built-in XSI-namespace attributes (xsi:nil, xsi:type,
+            # xsi:schemaLocation, xsi:noNamespaceSchemaLocation) are stored
             # under their conventional display spelling so the writers emit
             # valid xml (the document's own xmlns:xsi declaration, a plain
-            # attribute here, keeps the output reparseable).
+            # attribute here, keeps the output reparseable). Any other
+            # attribute in the xsi namespace is not special: it passes
+            # through the ordinary declaration/wildcard checks below
+            # (attMd001-011).
             for attr in elementTag.attrib:
-                if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
+                if "xmlns" in attr or xsi.is_builtin_xsi_attribute(attr):
                     displayKey = xsi.xsi_attr_key(attr)
                     value = elementTag.attrib[attr]
                     if displayKey == "xsi:nil":
@@ -793,7 +796,7 @@ class SchemaBase:
                 rejected: set[str] = set()
                 skipped: set[str] = set()
                 for attr, value in elementTag.attrib.items():
-                    if "xmlns" in attr or "xsi:" in attr or attr.startswith(xsiPrefix):
+                    if "xmlns" in attr or xsi.is_builtin_xsi_attribute(attr):
                         continue
                     if attr in usedAttributes:
                         continue
@@ -1437,7 +1440,7 @@ class SchemaBase:
         for attr in subElement.attrib:
             if "xmlns" in attr:
                 continue
-            if namespace_of(attr) == xsi.XSI_NAMESPACE:
+            if xsi.is_builtin_xsi_attribute(attr):
                 continue
             cls._report_error(
                 f"attribute '{xsi.xsi_attr_key(attr)}' is not declared in the "
@@ -2157,9 +2160,12 @@ class SchemaBase:
             for attrET in attrInElementTag:
                 if attrET in usedAttrs or attrET in rejected:
                     continue
-                # Attributes in the schema-instance namespace are allowed to
-                # appear without a declaration (xsi:type, xsi:nil,
-                # xsi:schemaLocation, ...). An XML-namespace attribute is
+                # The four built-in schema-instance attributes are allowed
+                # to appear without a declaration (xsi:type, xsi:nil,
+                # xsi:schemaLocation, xsi:noNamespaceSchemaLocation). Any
+                # other attribute in the xsi namespace is an ordinary
+                # attribute and must survive the declaration/wildcard
+                # passes (attMd001-011). An XML-namespace attribute is
                 # admitted only when the element's type actually allows it:
                 # the implicit ``xml:*`` declarations are global components,
                 # not automatic attribute uses, so a type with no attribute
@@ -2168,7 +2174,7 @@ class SchemaBase:
                 # and wildcard passes is genuinely undeclared and makes the
                 # instance invalid (AttrDecl ad_name00101m1-4,
                 # ad_targetns00101m1-3).
-                if namespace_of(attrET) == xsi.XSI_NAMESPACE:
+                if xsi.is_builtin_xsi_attribute(attrET):
                     continue
                 if namespace_of(attrET) == XML_NS and getattr(
                     self, "hasWildcardAttributes_", False

@@ -1067,6 +1067,96 @@ class TestWellKnownNamespaceImports:
         )
 
 
+class TestUnknownXsiAttributes:
+    """Only the four built-in xsi attributes are special (attMd001-011).
+
+    An attribute in the schema-instance namespace whose local name is
+    not ``type``/``nil``/``schemaLocation``/``noNamespaceSchemaLocation``
+    is an ordinary attribute and must be declared or admitted by a
+    wildcard; it is not silently accepted because of its namespace.
+    """
+
+    def test_unknown_xsi_attribute_on_anytype_root_is_rejected(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:element name="doc" type="xs:anyType"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<doc xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}" xsi:Type="xs:int">1</doc>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+
+    def test_unknown_xsi_attribute_case_variant_on_anytype_root_is_rejected(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:element name="doc" type="xs:anyType"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<doc xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}" xsi:Nil="false">1</doc>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+
+    def test_unknown_xsi_attribute_with_child_is_rejected(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:element name="doc" type="xs:anyType"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<doc xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}" xsi:Type="xs:int">'
+            f'<e xsi:SchemaLocation="foo foo.xsd"/></doc>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+
+    def test_unknown_xsi_attribute_on_simple_element_is_rejected(self, tmp_path):
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}"><a xsi:blah="x">v</a></root>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+
+    def test_builtin_xsi_attributes_remain_admitted(self, tmp_path):
+        """A legitimate ``xsi:type`` is not reported as undeclared."""
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
+            targetNamespace="urn:t" elementFormDefault="qualified">
+          <xs:complexType name="A"><xs:sequence/></xs:complexType>
+          <xs:element name="root" type="xs:anyType"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<root xmlns:xsi="{XSI_NS}" xmlns:t="urn:t" xsi:type="t:A"/>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" not in [i.code for i in parser.report.issues]
+
+    def test_unknown_xsi_attribute_admitted_by_xsi_wildcard(self, tmp_path):
+        """A wildcard that admits the xsi namespace still admits it (wild042)."""
+        schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:complexType name="computer">
+            <xs:sequence/>
+            <xs:anyAttribute namespace="{XSI_NS}" processContents="skip"/>
+          </xs:complexType>
+          <xs:element name="computer" type="computer"/>
+        </xs:schema>"""
+        parser = _strict_parse(
+            schema,
+            f'<computer xmlns:xsi="{XSI_NS}" xsi:banana="1234"/>',
+            tmp_path,
+        )
+        assert "unexpected-attribute" not in [i.code for i in parser.report.issues]
+        assert not parser.report.has_errors
+
+
 def _xlink_ref_schema(attribute_site: str, *, import_line: str = "") -> str:
     """A schema whose only extension hook is one XLink ``xs:attribute`` site."""
     return f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xlink="{XLINK_NS}">

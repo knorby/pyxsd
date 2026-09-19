@@ -4564,6 +4564,23 @@ class PyXSD:
 
         return subInstance
 
+    def _report_unknown_xsi_attributes(self, elementTag: Any, elementName: str) -> None:
+        """Rejects schema-instance attributes that are not built-ins.
+
+        The four built-in xsi attributes are handled specially; any
+        other attribute in the namespace is an ordinary attribute. The
+        ur-type and primitive root paths do not run attribute-declaration
+        or wildcard checks, so an undeclared unknown xsi attribute is
+        reported here (attMd001-011).
+        """
+        for attr in elementTag.attrib:
+            if xsi.unknown_xsi_attribute(attr):
+                self.report.add_error(
+                    f"attribute '{attr}' is not declared in the schema and was not parsed",
+                    code="unexpected-attribute",
+                    element=elementName,
+                )
+
     def _anyTypeRootInstance(self, dataTypeClass: Any, rootElement: Any, binder: Any) -> Any:
         """Builds the root instance for an ``xsd:anyType``-typed element.
 
@@ -4581,6 +4598,7 @@ class PyXSD:
             if getattr(self.mode, "namespaces", "legacy") == "strict"
             else self.xmlRoot.tag.split("}")[-1]
         )
+        self._report_unknown_xsi_attributes(self.xmlRoot, rootName)
         nilled = xsi.xsi_nil_is_true(self.xmlRoot)
         if xsi.xsi_nil_declared(self.xmlRoot) and not rootElement.isNillable():
             self.report.add_error(
@@ -4638,6 +4656,7 @@ class PyXSD:
             if getattr(self.mode, "namespaces", "legacy") == "strict"
             else self.xmlRoot.tag.split("}")[-1]
         )
+        self._report_unknown_xsi_attributes(self.xmlRoot, rootName)
         nilled = xsi.xsi_nil_is_true(self.xmlRoot)
         if xsi.xsi_nil_declared(self.xmlRoot) and not rootElement.isNillable():
             self.report.add_error(
