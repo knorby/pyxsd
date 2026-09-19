@@ -694,6 +694,7 @@ class PyXSD:
         self._checkTypeReferences(schemaER)
         self._checkNotationUses(schemaER)
         self._checkSimpleContentRestrictionBase(schemaER)
+        self._checkContentKindDerivation(schemaER)
         self._checkAlternatives(schemaER)
         self._checkGroupRedefineRestrictions(schemaER)
 
@@ -3332,6 +3333,85 @@ class PyXSD:
                                 phase="schema",
                             )
             stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkContentKindDerivation(self, schemaER: Any) -> None:
+        """Reports a content kind derived from an inadmissible base kind.
+
+        ``complexContent`` derives from a complex type (or ``xs:anyType``):
+        a ``simpleType`` or built-in simple type base is invalid
+        (ctJ002/ctJ003). ``simpleContent`` ``extension`` derives from a
+        simple type or a complex type whose content is simple; an
+        element-only/mixed complex base (ctE003) or ``xs:anyType``
+        (ctE004) is invalid. A base that cannot be resolved is left to
+        the unknown-type check. ``simpleContent`` ``restriction`` has its
+        own rule (``_checkSimpleContentRestrictionBase``).
+        """
+        seen: set[int] = set()
+        stack = [schemaER]
+        while stack:
+            er = stack.pop()
+            if er is None or id(er) in seen:
+                continue
+            seen.add(id(er))
+            if type(er).__name__ == "ComplexType":
+                self._checkOneContentKindDerivation(er)
+            stack.extend(getattr(er, "processedChildren", None) or ())
+
+    def _checkOneContentKindDerivation(self, er: Any) -> None:
+        """Applies the base-kind rule to one complex type."""
+        if er._firstProcessedChild(er, "SimpleContent") is not None:
+            if er.getDerivation() != "extension":
+                return
+            if self._baseIsAnyType(er):
+                self.report.add_error(
+                    f"the base of the simpleContent extension of type "
+                    f"'{er.name}' is xs:anyType, whose content is not simple",
+                    code="invalid-base",
+                    element=er.name,
+                    phase="schema",
+                )
+                return
+            base_er = self._baseTypeER(er)
+            if base_er is not None and type(base_er).__name__ == "ComplexType":
+                variety = base_er._effectiveContentVariety()
+                if variety in ("element-only", "mixed"):
+                    self.report.add_error(
+                        f"the base of the simpleContent extension of type "
+                        f"'{er.name}' has {variety} content, not simple content",
+                        code="invalid-base",
+                        element=er.name,
+                        phase="schema",
+                    )
+            return
+        if er._firstProcessedChild(er, "ComplexContent") is None:
+            return
+        # complexContent: the base must be a complex type (or anyType).
+        if self._baseIsAnyType(er):
+            return
+        derivation = er.getDerivation()
+        if derivation is None:
+            return
+        base_er = self._baseTypeER(er)
+        if base_er is not None:
+            if type(base_er).__name__ != "ComplexType":
+                self.report.add_error(
+                    f"the base of the complexContent {derivation} of type "
+                    f"'{er.name}' is a simple type, not a complex type",
+                    code="invalid-base",
+                    element=er.name,
+                    phase="schema",
+                )
+            return
+        # No ER: a built-in simple type (or an unresolved reference, which
+        # the unknown-type check already reports).
+        if self._baseTypeClass(er) is not None:
+            self.report.add_error(
+                f"the base of the complexContent {derivation} of type "
+                f"'{er.name}' is a simple type, not a complex type",
+                code="invalid-base",
+                element=er.name,
+                phase="schema",
+            )
 
     @staticmethod
     def _simpleContentRestriction(er: Any) -> Any | None:

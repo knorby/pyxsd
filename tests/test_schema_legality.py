@@ -2357,6 +2357,18 @@ class TestDuplicateAttributeUses:
         )
         assert "duplicate-attribute" in _schema_codes(report)
 
+    def test_direct_duplicate_attribute_uses_rejected(self, parse_schema):
+        """ctM003: two direct attribute uses with the same name collide."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "<xsd:attribute name='a' type='xsd:string'/>"
+            "</xsd:extension></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "duplicate-attribute" in _schema_codes(report)
+
     def test_distinct_groups_are_accepted(self, parse_schema):
         report = parse_schema(
             "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
@@ -2847,6 +2859,94 @@ class TestComplexContentRestrictionFacets:
             "<xsd:maxLength value='3'/></xsd:restriction></xsd:simpleType></xsd:schema>"
         )
         assert "declaration-child" not in _schema_codes(report)
+
+
+class TestContentKindDerivationBase:
+    """The base-kind rules for complexContent/simpleContent derivations
+    (ctE003/ctE004, ctJ002/ctJ003)."""
+
+    def test_complex_content_extension_of_builtin_simple_type_rejected(self, parse_schema):
+        """ctJ003: complexContent cannot derive from ``xs:string``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='xsd:string'><xsd:all>"
+            "<xsd:element name='e' type='xsd:string'/></xsd:all>"
+            "</xsd:extension></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_complex_content_extension_of_simple_type_rejected(self, parse_schema):
+        """ctJ002: complexContent cannot derive from a ``simpleType``."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='s'><xsd:restriction base='xsd:string'/></xsd:simpleType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='s'><xsd:all>"
+            "<xsd:element name='e' type='xsd:string'/></xsd:all>"
+            "</xsd:extension></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_simple_content_extension_of_element_only_base_rejected(self, parse_schema):
+        """ctE003: the base of a simpleContent extension has simple content."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence>"
+            "<xsd:element name='e' type='xsd:string'/></xsd:sequence></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='b'/></xsd:simpleContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_simple_content_extension_of_any_type_rejected(self, parse_schema):
+        """ctE004: ``xs:anyType`` has mixed complex content."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:anyType'/></xsd:simpleContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "invalid-base" in _schema_codes(report)
+
+    def test_simple_content_extension_of_builtin_simple_type_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'/></xsd:simpleContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_simple_content_extension_of_simple_content_base_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:simpleContent>"
+            "<xsd:extension base='xsd:string'/></xsd:simpleContent></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:simpleContent>"
+            "<xsd:extension base='b'/></xsd:simpleContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_complex_content_extension_of_complex_base_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='b'><xsd:sequence>"
+            "<xsd:element name='e' type='xsd:string'/></xsd:sequence></xsd:complexType>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='b'/></xsd:complexContent></xsd:complexType></xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
+
+    def test_complex_content_extension_of_any_type_accepted(self, parse_schema):
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='t'><xsd:complexContent>"
+            "<xsd:extension base='xsd:anyType'/></xsd:complexContent></xsd:complexType>"
+            "</xsd:schema>"
+        )
+        assert "invalid-base" not in _schema_codes(report)
 
 
 class TestSimpleContentRestrictionBase:

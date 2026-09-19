@@ -69,9 +69,14 @@ FACET_SCHEMA = f"""\
   <xs:simpleType name="listType">
     <xs:list itemType="xs:int"/>
   </xs:simpleType>
+  <xs:complexType name="rangeIntComplex">
+    <xs:sequence>
+      <xs:element name="n" type="rangeInt"/>
+    </xs:sequence>
+  </xs:complexType>
   <xs:complexType name="derived">
     <xs:complexContent>
-      <xs:extension base="rangeInt"/>
+      <xs:extension base="rangeIntComplex"/>
     </xs:complexContent>
   </xs:complexType>
   <xs:element name="doc">
@@ -530,7 +535,7 @@ class TestParserErrorBranches:
         # The derivedType complexType was produced from the complexContent
         # extension and carries the base type in its superclass names.
         complex_er = _schema_er().complexTypes["derived"]
-        assert complex_er.superClassNames == ["rangeInt"]
+        assert complex_er.superClassNames == ["rangeIntComplex"]
 
     def test_load_class_from_file_missing(self, tmp_path):
         parser = _parse(FACET_SCHEMA, "<doc><a>abcd</a></doc>", tmp_path)

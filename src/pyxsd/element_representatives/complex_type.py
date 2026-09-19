@@ -108,6 +108,20 @@ class ComplexType(XsdType):
         from pyxsd.assertions import compile_assertions
 
         self.compiledAssertions = compile_assertions(self)
+        if type(self).__name__ == "ComplexType":
+            # The schema root is a ComplexType subclass whose attribute
+            # table holds injected XML/XSI/XLink declaration stand-ins, so
+            # its duplicate list is not a schema-author collision.
+            for duplicate in getattr(self, "_duplicateAttributeNames_", None) or ():
+                # Two direct attribute declarations with one expanded name
+                # in the same complex type are duplicate attribute uses;
+                # the second silently overwrote the first in
+                # ``self.attributes`` (ctM003; a group contribution is
+                # reported separately).
+                self._reportSchemaError(
+                    f"attribute '{duplicate}' is declared more than once in type '{self.name}'",
+                    code="duplicate-attribute",
+                )
         mixed = self.tagAttributes.get("mixed")
         if mixed is not None and self._invalidBoolean(mixed):
             self._reportSchemaError(
