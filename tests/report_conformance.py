@@ -4,7 +4,7 @@ Usage::
 
     uv run python tests/report_conformance.py [--json]
 
-Runs every corpus case through the real PyXSD pipeline and prints a
+Runs every corpus case through the real pipeline and prints a
 pass-rate table by feature area, followed by the explicit
 unsupported-features table. Exits non-zero when any case fails.
 """

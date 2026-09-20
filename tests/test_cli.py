@@ -2,17 +2,25 @@
 
 import shutil
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 
-from conftest import assert_xml_canonically_equal, fixture_dir, run_parser
-from pyxsd.parser import (
-    PyXSD,
-    _transformModuleNames,
+from conftest import assert_xml_canonically_equal, fixture_dir
+from pyxsd.cli import (
+    _transform_module_names as _transformModuleNames,
+)
+from pyxsd.cli import (
     main,
-    parseTransformCall,
     split_transform_chain,
 )
+from pyxsd.cli import (
+    parse_transform_call as parseTransformCall,
+)
+from pyxsd.schema_hints import schema_location_info
+from pyxsd.transforms import Transform
+
+EXAMPLES_TRANSFORMS = Path(__file__).parent.parent / "examples" / "legacy"
 
 
 def stage_fixture(tmp_path, fixture):
@@ -79,6 +87,25 @@ def test_transform_default_output_name(tmp_path, monkeypatch):
     stage_fixture(tmp_path, "inventory")
     main(["-i", "instance.xml", "-t", "PrintData()", "-d"])
     assert (tmp_path / "instanceTransformed.xml").exists()
+
+
+def test_stream_input_default_transform_output(tmp_path, monkeypatch):
+    """``-d`` with stream input writes output.xml to the working directory."""
+    monkeypatch.chdir(tmp_path)
+    xml = fixture_dir("inventory").joinpath("instance.xml").read_text()
+    monkeypatch.setattr("sys.stdin", _FakeStdin(xml))
+    main(["-s", str(fixture_dir("inventory") / "schema.xsd"), "-t", "PrintData()", "-d"])
+    assert (tmp_path / "output.xml").exists()
+
+
+def test_pass_through_final_transform_skips_output(tmp_path, monkeypatch):
+    """A last transform that does not return a tree skips the output write."""
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    (tmp_path / "noop_probe.py").write_text("def NoopProbe(root):\n    return 'plain'\n")
+    output = tmp_path / "out.xml"
+    main(["-i", "instance.xml", "-t", "NoopProbe()", "-o", str(output)])
+    assert not output.exists()
 
 
 def test_transform_file(tmp_path, monkeypatch):
@@ -412,97 +439,179 @@ class TestSplitTransformChain:
         assert "Traceback" not in captured.err
 
 
+class TestResolveTransformClass:
+    def test_resolves_via_explicit_search_path(self, tmp_path, monkeypatch):
+        """An explicit search path is consulted when cwd has no match."""
+        monkeypatch.chdir(tmp_path)
+        from pyxsd.cli import resolve_transform_class
+
+        transformCls = resolve_transform_class("ExpandCell", search_paths=[EXAMPLES_TRANSFORMS])
+        assert transformCls.__name__ == "ExpandCell"
+        assert issubclass(transformCls, Transform)
+
+    def test_cwd_is_checked_before_search_paths(self, tmp_path, monkeypatch):
+        """The working directory wins over a later search path."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "bogus.py").write_text("class Bogus:\n    here = 'cwd'\n")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "bogus.py").write_text("class Bogus:\n    here = 'search'\n")
+        from pyxsd.cli import resolve_transform_class
+
+        assert resolve_transform_class("Bogus", search_paths=[elsewhere]).here == "cwd"
+
+    def test_module_without_the_class_raises_pyxsd_error(self, tmp_path, monkeypatch):
+        """A module that imports but lacks the class is a clean PyXSDError."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "bogus.py").write_text("OTHER = 1\n")
+        from pyxsd.cli import resolve_transform_class
+        from pyxsd.exceptions import PyXSDError
+
+        with pytest.raises(PyXSDError, match="does not define that class"):
+            resolve_transform_class("Bogus")
+
+    def test_unknown_transform_still_raises_import_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from pyxsd.cli import resolve_transform_class
+
+        with pytest.raises(ImportError, match="NoSuchTransform"):
+            resolve_transform_class("NoSuchTransform")
+
+
+class TestMaterialize:
+    def test_transform_class_is_wrapped(self, tmp_path, monkeypatch):
+        """A Transform subclass becomes a root-first callable."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "dummy_probe.py").write_text(
+            "from pyxsd.transforms.transform import Transform\n"
+            "\n"
+            "\n"
+            "class DummyProbe(Transform):\n"
+            "    def __init__(self, root):\n"
+            "        super().__init__(root)\n"
+            "\n"
+            "    def __call__(self, multiplier=1):\n"
+            "        self.root.seen = multiplier\n"
+            "        return self.root\n"
+        )
+        from pyxsd.cli import _materialize
+
+        fn, args, kwargs = _materialize("DummyProbe(multiplier=3)")
+        assert args == []
+        assert kwargs == {"multiplier": 3}
+
+        class Root:
+            pass
+
+        root = Root()
+        assert fn(root, *args, **kwargs) is root
+        assert root.seen == 3
+
+    def test_plain_callable_is_used_directly(self, tmp_path, monkeypatch):
+        """A non-Transform callable receives the root as its first argument."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "fn_probe.py").write_text(
+            "def FnProbe(root, tag=None):\n    root.tagged = tag\n    return 'plain'\n"
+        )
+        from pyxsd.cli import _materialize
+
+        fn, args, kwargs = _materialize("FnProbe(tag='x')")
+        assert args == []
+        assert kwargs == {"tag": "x"}
+
+        class Root:
+            pass
+
+        root = Root()
+        assert fn(root, *args, **kwargs) == "plain"
+        assert root.tagged == "x"
+
+    def test_signature_mismatch_raises_pyxsd_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "dummy_probe.py").write_text(
+            "from pyxsd.transforms.transform import Transform\n"
+            "\n"
+            "\n"
+            "class DummyProbe(Transform):\n"
+            "    def __init__(self, root):\n"
+            "        super().__init__(root)\n"
+            "\n"
+            "    def __call__(self, multiplier=1):\n"
+            "        return self.root\n"
+        )
+        from pyxsd.cli import _materialize
+        from pyxsd.exceptions import PyXSDError
+
+        with pytest.raises(PyXSDError, match="does not match the signature"):
+            _materialize("DummyProbe(bogus=1)")
+
+
 class TestTransformModuleNames:
     def test_single_word(self):
         assert _transformModuleNames("PrintData") == ["printData", "print_data"]
 
     def test_multi_word(self):
         # The generic camel->snake conversion splits acronym runs, so
-        # 'PyXSD' becomes 'py_xsd'; module resolution compensates with
-        # an underscore-insensitive fallback (see
+        # 'ParseHTMLTree' becomes 'parse_html_tree'; module resolution
+        # compensates with an underscore-insensitive fallback (see
         # test_transform_module_load_acronym_fallback).
-        assert _transformModuleNames("SendTreeToPyXSD") == [
-            "sendTreeToPyXSD",
-            "send_tree_to_py_xsd",
+        assert _transformModuleNames("ParseHTMLTree") == [
+            "parseHTMLTree",
+            "parse_html_tree",
         ]
 
     def test_no_case_conversion_collapses_to_one(self):
         assert _transformModuleNames("Foo") == ["foo"]
 
-    def test_transform_module_load_acronym_fallback(self):
-        """Acronym-split names still resolve to the shipped module."""
-        parser = run_parser("inventory")
-        module = parser.getTransformModuleAndLoad("SendTreeToPyXSD")
-        assert hasattr(module, "SendTreeToPyXSD")
+    def test_transform_module_load_acronym_fallback(self, tmp_path, monkeypatch):
+        """Acronym-split names still resolve to a matching module file.
 
+        Neither exact candidate (``parseHTMLTree`` /
+        ``parse_html_tree``) matches a file named
+        ``parse_htmltree.py``; the underscore-insensitive fallback
+        must pick it up.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "parse_htmltree.py").write_text("class ParseHTMLTree:\n    pass\n")
+        from pyxsd.cli import resolve_transform_class
 
-class TestDefaultFileNames:
-    def test_parsed_output_name(self, tmp_path):
-        parser = run_parser("inventory")
-        assert parser.getXmlOutputFileName().name == "instanceParsed.xml"
-
-    def test_transforms_output_name(self, tmp_path):
-        parser = run_parser("inventory")
-        assert parser.getTransformsFileName().name == "instanceTransformed.xml"
-
-    def test_transforms_output_name_without_file_input(self):
-        parser = run_parser("inventory")
-        parser.xmlFileInputName = None
-        assert parser.getTransformsFileName().name == "output.xml"
-
-    def test_boolean_parsed_output_uses_default_name(self, tmp_path):
-        """``xmlFileOutput=True`` means 'use the default parsed name'."""
-        import shutil
-
-        source = fixture_dir("inventory")
-        for name in ("instance.xml", "schema.xsd"):
-            shutil.copy(source / name, tmp_path / name)
-        PyXSD(
-            str(tmp_path / "instance.xml"),
-            str(tmp_path / "schema.xsd"),
-            xmlFileOutput=True,
-            transformOutputName=None,
-        )
-        assert (tmp_path / "instanceParsed.xml").is_file()
+        assert resolve_transform_class("ParseHTMLTree").__module__ == "parse_htmltree"
 
 
 def _unparsed_root(xml_text, tmp_path):
-    """Build a PyXSD with only ``xmlRoot`` set, bypassing the pipeline.
+    """The plain ElementTree root of *xml_text*.
 
-    ``getSchemaInfo`` is a pure function of the parsed root element;
-    the full constructor consumes/rewrites the hint attributes, so the
-    schema-info tests inspect it on an untouched root.
+    The schema-hint helpers are pure functions of the parsed root
+    element, so the tests inspect them on an untouched tree.
     """
     source = tmp_path / "probe.xml"
     source.write_text(xml_text)
-    parser = PyXSD.__new__(PyXSD)
-    parser.xmlRoot = ET.parse(source).getroot()
-    return parser
+    return ET.parse(source).getroot()
 
 
 class TestSchemaInfo:
     def test_no_namespace_schema_location(self, tmp_path):
-        parser = _unparsed_root(
+        root = _unparsed_root(
             '<inventory xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
             ' xsi:noNamespaceSchemaLocation="schema.xsd"/>',
             tmp_path,
         )
-        assert parser.getSchemaInfo("l") == "schema.xsd"
-        assert parser.getSchemaInfo("n") is None
-        assert parser.getSchemaInfo("t").endswith("noNamespaceSchemaLocation")
+        assert schema_location_info(root, "l") == "schema.xsd"
+        assert schema_location_info(root, "n") is None
+        assert schema_location_info(root, "t").endswith("noNamespaceSchemaLocation")
 
     def test_namespace_schema_location(self, tmp_path):
-        parser = _unparsed_root(
+        root = _unparsed_root(
             '<inventory xmlns="http://example.com/ns"'
             ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
             ' xsi:schemaLocation="http://example.com/ns schema.xsd"/>',
             tmp_path,
         )
-        assert parser.getSchemaInfo("l") == "schema.xsd"
-        assert parser.getSchemaInfo("n") == "http://example.com/ns"
-        assert parser.getSchemaInfo("t").endswith("schemaLocation")
+        assert schema_location_info(root, "l") == "schema.xsd"
+        assert schema_location_info(root, "n") == "http://example.com/ns"
+        assert schema_location_info(root, "t").endswith("schemaLocation")
 
     def test_no_hints_returns_none(self, tmp_path):
-        parser = _unparsed_root("<inventory/>", tmp_path)
-        assert parser.getSchemaInfo("l") is None
-        assert parser.getSchemaInfo("n") is None
+        root = _unparsed_root("<inventory/>", tmp_path)
+        assert schema_location_info(root, "l") is None
+        assert schema_location_info(root, "n") is None

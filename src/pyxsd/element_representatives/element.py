@@ -81,7 +81,7 @@ class Element(ElementRepresentative):
     # owning parser is attached during clsFor.  Annotations only: the
     # attributes are assigned dynamically.
     referredElement: Any
-    pyXSD: Any
+    host: Any
 
     def __init__(self, xsdElement, parent):
         """Adds itself to the element list in its parent.
@@ -166,10 +166,10 @@ class Element(ElementRepresentative):
         return None
 
     def getType(self):
-        """Returns its type from the class dictionary in PyXSD.
+        """Returns its type from the compiled class dictionary.
 
         Reference sites use the referenced declaration's type. The
-        instance of PyXSD is attached to every element and attribute
+        compiled schema's host is attached to every element and attribute
         while the classes for the schema types are being built.
         Clearly, this function is used after the main ER run.
         """
@@ -195,9 +195,9 @@ class Element(ElementRepresentative):
         # ``resolvedTypeName`` returns the raw type, so this is the same
         # lookup as before. Declarations that are not installed as class
         # descriptors (for example a named group's shared elements) were
-        # never stamped with ``pyXSD`` by the class builder; fall back to
+        # never stamped with ``host`` by the class builder; fall back to
         # the owning schema's parser, as ``instanceName`` does.
-        parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
+        parser = getattr(self, "host", None) or getattr(self.getSchema(), "host", None)
         resolved = self.resolvedTypeName()
         if parser is not None and resolved is not None and resolved in parser.classes:
             return parser.classes[resolved]
@@ -302,7 +302,7 @@ class Element(ElementRepresentative):
             # lexical value failed validation is bound as a plain string
             # so no data is lost; the validation report still records
             # the problem.
-            parser = getattr(self, "pyXSD", None)
+            parser = getattr(self, "host", None)
             policy = getattr(parser, "mode", None)
             if getattr(policy, "invalid_value", "drop") != "raw" and not _xsd_derived(
                 type(value), self.getType()

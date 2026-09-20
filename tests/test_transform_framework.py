@@ -5,10 +5,10 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from conftest import canonicalize, fixture_dir, run_parser
+from conftest import canonicalize, fixture_dir
+from pyxsd.schema import Schema
 from pyxsd.transforms.displayer import Displayer
 from pyxsd.transforms.print_data import PrintData
-from pyxsd.transforms.send_tree_to_pyxsd import SendTreeToPyXSD
 from pyxsd.transforms.transform import Transform
 
 
@@ -184,33 +184,63 @@ class TestPrintData:
         assert "one" in out
 
 
-class TestSendTreeToPyXSD:
-    def test_reparse_round_trip(self, tmp_path, monkeypatch):
-        """The written tree is fed back into a fresh PyXSD parse."""
+class TestRevalidateRoundTrip:
+    def test_revalidate_round_trip(self, tmp_path, monkeypatch):
+        """The re-validated tree round-trips without touching the cwd.
+
+        Replaces the old send-tree reparse test: the Document
+        API revalidates in memory, so no temporary file is created.
+        """
         monkeypatch.chdir(tmp_path)
-        parser = run_parser("inventory")
-        root = parser.parseXML()
-        result = SendTreeToPyXSD(root)(
-            xsdFile=str(fixture_dir("inventory") / "schema.xsd"),
-            xmlFileOutput="_No_Output_",
-        )
-        assert result is root
+        schema = Schema.compile(fixture_dir("inventory") / "schema.xsd")
+        document = schema.parse(fixture_dir("inventory") / "instance.xml")
+        again = document.revalidate()
+        assert again.to_string() == document.to_string()
+        assert len(again.report) == 0
         # Regression: the default transform-output filename was once
         # assigned to the parsed-output variable, leaking
         # 'tempFileTransformed.xml' into the working directory.
         assert list(tmp_path.iterdir()) == []
 
 
-class TestTransformIntegration:
-    def test_transform_pipeline_via_parser(self, tmp_path):
-        """The parser runs loaded transforms in order and writes output."""
-        output = tmp_path / "transformed.xml"
-        run_parser(
-            "inventory",
-            xmlFileOutput=False,
-            transformOutputName=str(output),
-            transforms=["PrintData()"],
-        )
-        root = ET.parse(output).getroot()
-        assert root.tag == "inventory"
-        assert [item.attrib["id"] for item in root] == ["a1", "a2"]
+class TestTransformsAsPlainCallables:
+    """Exploration transforms work through ``Document.transform``."""
+
+    def _document(self):
+        schema = Schema.compile(fixture_dir("inventory") / "schema.xsd")
+        return schema.parse(fixture_dir("inventory") / "instance.xml")
+
+    def test_print_data_via_document(self, capsys):
+        """PrintData prints the bound tree and the document carries on."""
+        document = self._document()
+        result = document.transform(lambda root: PrintData(root)())
+        out = capsys.readouterr().out
+        assert "<inventory" in out
+        assert "wrench" in out
+        # PrintData returns the tree, so the caller gets a Document.
+        assert result.to_string() == document.to_string()
+
+    def test_displayer_subclass_via_document(self, tmp_path):
+        """A Displayer subclass writes the bound tree through its own call."""
+
+        class TreeDisplayer(Displayer):
+            def __init__(self, root):
+                super().__init__(root)
+
+            def __call__(self, fileName=None):
+                output = self.openFile(fileName)
+                try:
+                    self.writeTree(output)
+                finally:
+                    # stdout is shared; files opened here are ours to close.
+                    if output is not sys.stdout:
+                        output.close()
+                return self.root
+
+        document = self._document()
+        target = tmp_path / "shown.xml"
+        result = document.transform(lambda root: TreeDisplayer(root)(str(target)))
+        assert target.exists()
+        parsed = ET.parse(target)
+        assert canonicalize(parsed.getroot())[0] == "inventory"
+        assert result.to_string() == document.to_string()

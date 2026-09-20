@@ -2,11 +2,12 @@
 
 The ElementRepresentative (ER) system converts the schema file into a
 collection of classes that represent the types in the schema.  The
-system takes in the ElementTree representation of the schema file.  The
-PyXSD class calls ElementTree to parse the schema file in order to keep
-all calls to ElementTree in one place.  The classmethod ``factory`` in
-the ElementRepresentative class starts the system up, and it is the
-function PyXSD calls.  ``factory`` reads an ElementTree element and
+system takes in the ElementTree representation of the schema file.
+Schema compilation calls ElementTree to parse the schema file in order
+to keep all calls to ElementTree in one place.  The classmethod
+``factory`` in the ElementRepresentative class starts the system up,
+and it is the function the compilation pipeline calls.  ``factory``
+reads an ElementTree element and
 finds the class that has the same name as the element's tag type, then
 makes an instance of that class.
 
@@ -66,8 +67,8 @@ and a name. As each class is created, the standard Python protocols do
 the wiring: ``__set_name__`` binds every element and attribute
 descriptor to the new class, and ``SchemaBase.__init_subclass__``
 collects the descriptor bookkeeping (``_elementNames_`` and
-``_attributeNames_``) automatically. The classes are stored in a
-dictionary in the PyXSD instance.
+``_attributeNames_``) automatically. The classes are stored in the
+compiled :class:`~pyxsd.schema.Schema`'s class dictionary.
 """
 
 import logging
@@ -75,7 +76,8 @@ import re
 
 from pyxsd import xsd_data_types
 from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, namespace_of
-from pyxsd.schema_context import context_or_ambient, last_components
+from pyxsd.schema_context import context_or_ambient, current_context, last_components
+from pyxsd.validation import IssueSeverity, report_or_log
 from pyxsd.wildcards import (
     not_qname_consistency_problems,
     replace_wildcard,
@@ -118,6 +120,23 @@ class _AnyNamespace:
 ANY_NAMESPACE = _AnyNamespace()
 
 
+def _record_lookup_warning(message, element):
+    """Records a failed component lookup on the active context's report.
+
+    The component table outlives its owning representatives, so the
+    report comes from the active context only (the compilation and each
+    parse install theirs); with no parse running there is nothing to
+    record on and the call site's log line stands alone. Recorded
+    issues are schema-phase: a failed lookup is a property of the
+    schema's references, not of the instance document that happened to
+    trigger the resolution.
+    """
+    context = current_context()
+    report = context.report if context is not None else None
+    if report is not None:
+        report.add_warning(message, code="unknown-component", element=element, phase="schema")
+
+
 class ComponentTable(dict):
     """A parser-owned table of element representatives by name.
 
@@ -136,12 +155,15 @@ class ComponentTable(dict):
         whose expanded name is in that namespace are considered; pass
         ``None`` to select no-namespace declarations. Ambiguous or
         missing lookups warn (unless ``warn`` is false) and return
-        ``None``.
+        ``None``. A failed lookup also records an ``unknown-component``
+        schema-phase warning on the active context's report, when one
+        is attached; the log line is kept either way.
         """
         entries = self.get(name)
         if not entries:
             if warn:
                 logger.warning("getFromName Error: %s is not a key in the registry", name)
+                _record_lookup_warning(f"component '{name}' could not be resolved", name)
             return None
         if kind is not None:
             entries = [entry for entry in entries if componentKind(entry) == kind]
@@ -156,6 +178,9 @@ class ComponentTable(dict):
         if not entries:
             if warn:
                 logger.warning("getFromName Error: %s has no %r declaration", name, kind)
+                _record_lookup_warning(
+                    f"no {kind!r} declaration of '{name}' could be resolved", name
+                )
             return None
         logger.warning("ElementRepresentative Error: %r", entries)
         return None
@@ -229,9 +254,6 @@ class _RegistryProxy:
 
     def getFromName(self, name, kind=None, namespace=ANY_NAMESPACE, warn=True):
         return self._active().getFromName(name, kind, namespace, warn)
-
-    def getFromNameNS(self, name, kind=None, namespace=ANY_NAMESPACE):
-        return self._active().getFromName(name, kind, namespace)
 
 
 def _schemaOf(obj):
@@ -422,7 +444,7 @@ class ElementRepresentative:
         return bool(isinstance(self.parent, Schema))
 
     @classmethod
-    def typeFromName(cls, xsdTypeName, pyXSD):
+    def typeFromName(cls, xsdTypeName, host, *, warn=True):
         """Returns a schema type given the type's name.
 
         Returns data type classes from ``xsd_data_types`` for built-in
@@ -432,21 +454,25 @@ class ElementRepresentative:
         registry first (by full name, then by local name so prefixed
         references like ``my:customType`` resolve), with a built-in
         fallback on the local name so default-namespace schemas
-        (``type="string"``) still resolve.
+        (``type="string"``) still resolve. The qualified lookup and
+        its local-name fallback are one resolution attempt: the pair
+        records a single ``unknown-component`` warning when both
+        fail, and a caller that reports the failure itself passes
+        ``warn=False`` so only its own issue is recorded.
         """
-        table = getattr(pyXSD, "components", None)
+        table = getattr(host, "components", None)
         if not isinstance(table, ComponentTable):
             table = registry
-        mode = getattr(pyXSD, "mode", None)
+        mode = getattr(host, "mode", None)
         if getattr(mode, "namespaces", "legacy") == "strict":
-            return cls._typeFromExpandedName(xsdTypeName, table, pyXSD)
+            return cls._typeFromExpandedName(xsdTypeName, table, host, warn=warn)
         if not xsdTypeName.startswith(("xs:", "xsd:")):
-            getFromNameReturned = table.getFromName(xsdTypeName, kind="type")
+            getFromNameReturned = table.getFromName(xsdTypeName, kind="type", warn=False)
             if not getFromNameReturned:
                 local = xsdTypeName.split(":", 1)[-1]
-                getFromNameReturned = table.getFromName(local, kind="type")
+                getFromNameReturned = table.getFromName(local, kind="type", warn=False)
             if getFromNameReturned:
-                return getFromNameReturned.clsFor(pyXSD)
+                return getFromNameReturned.clsFor(host)
             local = xsdTypeName.split(":", 1)[-1]
             primitive = _PRIMITIVE_TYPES.get(local)
             if primitive is not None:
@@ -454,6 +480,10 @@ class ElementRepresentative:
             logger.warning(
                 "typeFromName() error: getFromName() is returning None for %s", xsdTypeName
             )
+            if warn:
+                _record_lookup_warning(
+                    f"component '{xsdTypeName}' could not be resolved", xsdTypeName
+                )
             return None
         local = xsdTypeName.split(":", 1)[1]
         primitive = _PRIMITIVE_TYPES.get(local)
@@ -463,13 +493,15 @@ class ElementRepresentative:
         return None
 
     @classmethod
-    def _typeFromExpandedName(cls, name, table, pyXSD):
+    def _typeFromExpandedName(cls, name, table, host, *, warn=True):
         """Strict-mode type lookup by expanded (Clark) name.
 
         Built-ins are recognised by the XML Schema namespace URI, so
         any prefix bound to it works. User types must match both the
         local name and the namespace of the reference; there is no
-        cross-namespace local-name fallback.
+        cross-namespace local-name fallback. ``warn=False`` silences
+        the lookup's own ``unknown-component`` record for callers
+        that report the failure themselves.
         """
         if "|" in name:
             # An unprefixed inline-type bookkeeping name is unique in the
@@ -480,15 +512,15 @@ class ElementRepresentative:
             uri = namespace_of(name)
             local = local_name(name)
             if uri is None:
-                found = table.getFromName(local, kind="type")
+                found = table.getFromName(local, kind="type", warn=warn)
                 if found:
-                    return found.clsFor(pyXSD)
+                    return found.clsFor(host)
                 return None
             if uri == XSD_NS:
                 logger.warning("XsdTypeName Error: %s does not correspond to a class", local)
                 return None
-            found = table.getFromName(local, kind="type", namespace=uri)
-            return found.clsFor(pyXSD) if found else None
+            found = table.getFromName(local, kind="type", namespace=uri, warn=warn)
+            return found.clsFor(host) if found else None
         uri = namespace_of(name)
         local = local_name(name)
         if uri == XSD_NS:
@@ -497,9 +529,9 @@ class ElementRepresentative:
                 return primitive
             logger.warning("XsdTypeName Error: %s does not correspond to a class", local)
             return None
-        found = table.getFromName(local, kind="type", namespace=uri)
+        found = table.getFromName(local, kind="type", namespace=uri, warn=warn)
         if found:
-            return found.clsFor(pyXSD)
+            return found.clsFor(host)
         if uri is None:
             primitive = _PRIMITIVE_TYPES.get(local)
             if primitive is not None:
@@ -525,17 +557,34 @@ class ElementRepresentative:
     # form drops them, but the lexical space does not).
     _OCCURS_PATTERN = re.compile(r"^\+?[0-9]+$")
 
-    def _reportSchemaError(self, message, *, code):
-        """Records a schema problem on the parser's report.
+    def _reportSchemaIssue(self, severity, message, *, code, phase=None):
+        """Records a schema problem on the owning report.
 
-        Falls back to logging when no parser is attached (for example
-        when ERs are built in isolation).
+        The report is resolved as the active context's binding report
+        first (the compilation installs the schema-phase report there,
+        a parse installs the instance report), then the one attached to
+        the owning schema representative (``getSchema().report``).
+        Falls back to logging when no report is reachable (for example
+        when ERs are built in isolation); the ``getSchema`` parent walk
+        never raises on a detached representative.
         """
-        parser = getattr(self.getSchema(), "pyXSD", None)
-        if parser is not None:
-            parser.report.add_error(message, code=code, element=self.name)
-        else:
-            logger.error("%s[%s] %s", self.name, code, message)
+        report = None
+        context = current_context()
+        if context is not None:
+            report = context.report
+        if report is None:
+            schema = _schemaOf(self)
+            if schema is not None:
+                report = getattr(schema, "report", None)
+        report_or_log(report, severity, code=code, message=message, element=self.name, phase=phase)
+
+    def _reportSchemaError(self, message, *, code):
+        """Records an error-severity schema problem (see _reportSchemaIssue)."""
+        self._reportSchemaIssue(IssueSeverity.ERROR, message, code=code)
+
+    def _reportSchemaWarning(self, message, *, code, phase=None):
+        """Records a warning-severity schema problem (see _reportSchemaIssue)."""
+        self._reportSchemaIssue(IssueSeverity.WARNING, message, code=code, phase=phase)
 
     def _checkWildcardDeclaration(self, *, is_attribute: bool) -> None:
         """Reports wildcard XML-attribute grammar problems.
@@ -629,7 +678,7 @@ class ElementRepresentative:
         ``default``/``fixed`` consistency, ``use`` legality or the
         lexical space of a name). Subclasses override it; the default
         does nothing. The parser calls it once per representative after
-        the ER tree is built, when ``getSchema().pyXSD`` is attached and
+        the ER tree is built, when the schema's ``report`` is attached and
         ``_reportSchemaError`` can reach the report.
         """
         return None
@@ -809,7 +858,7 @@ class ElementRepresentative:
             return None
         resolver = getattr(refSite, "resolveReference", None)
         if resolver is not None:
-            resolved = resolver(ref, groups.values(), parser=getattr(schema, "pyXSD", None))
+            resolved = resolver(ref, groups.values(), parser=getattr(schema, "host", None))
             if resolved is not None:
                 return resolved
         return groups.get(ref) or groups.get(ref.split(":")[-1])
@@ -939,7 +988,7 @@ class ElementRepresentative:
         if local is None:
             return None
         if parser is None:
-            parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
+            parser = getattr(self, "host", None) or getattr(self.getSchema(), "host", None)
         mode = getattr(parser, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
             return local
@@ -998,15 +1047,15 @@ class ElementRepresentative:
         caller's legacy fallback can still run.
 
         ``parser`` overrides the attached parser, which is needed while
-        a class is being built before its descriptors own ``pyXSD``.
+        a class is being built before its descriptors own ``host``.
         """
         if parser is None:
-            parser = getattr(self, "pyXSD", None)
+            parser = getattr(self, "host", None)
             if parser is None:
                 # During class building the parser is attached to the
                 # schema rather than to every declaration; fall back to
                 # it so schema-time references resolve in strict mode.
-                parser = getattr(self.getSchema(), "pyXSD", None)
+                parser = getattr(self.getSchema(), "host", None)
         mode = getattr(parser, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
             return value
@@ -1216,7 +1265,7 @@ class ElementRepresentative:
         In ``legacy`` mode the historical mapping is used unchanged.
         """
         if parser is None:
-            parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
+            parser = getattr(self, "host", None) or getattr(self.getSchema(), "host", None)
         mode = getattr(parser, "mode", None)
         legacy = legacy_values if isinstance(legacy_values, dict) else None
         if getattr(mode, "namespaces", "legacy") != "strict":
@@ -1316,14 +1365,16 @@ class ElementRepresentative:
         entries.append(obj)
 
     @classmethod
-    def getFromName(cls, name, kind=None):
+    def getFromName(cls, name, kind=None, *, warn=True):
         """Retrieve an entry in this parser's component table.
 
         ``kind`` restricts the lookup to one XSD component kind (for
         example ``"type"``), which is how a type lookup ignores a
-        same-named element declaration.
+        same-named element declaration. A caller that reports a failed
+        lookup itself passes ``warn=False`` so the resolution is not
+        recorded twice.
         """
-        return registry.getFromName(name, kind)
+        return registry.getFromName(name, kind, warn=warn)
 
     @staticmethod
     def tryConvert(variable):
@@ -1394,8 +1445,8 @@ def _builtinVariety(localName):
     return "atomic"
 
 
-# The active parser's component table, keyed by name. Each ``PyXSD``
-# parse installs its own :class:`ComponentTable` here so registrations
+# The active compile's component table, keyed by name. Each schema
+# compile installs its own :class:`ComponentTable` here so registrations
 # during class building and detached lookups (``getFromName``) see the
 # right parser's declarations. Multiple ERs may share a name and are
 # disambiguated by component kind (see ``ComponentTable.getFromName``).

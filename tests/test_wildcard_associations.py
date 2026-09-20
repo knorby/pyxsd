@@ -16,7 +16,7 @@ consumes them. These regressions pin the reviewed defects:
 """
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 XSD_OPEN = '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
 
@@ -24,21 +24,17 @@ XSD_OPEN = '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
 def parse(tmp_path, schema_body, instance):
     (tmp_path / "schema.xsd").write_text(schema_body)
     (tmp_path / "instance.xml").write_text(instance)
-    return PyXSD(
-        str(tmp_path / "instance.xml"),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=ParseModes.NAMESPACED,
+    return Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED).parse(
+        str(tmp_path / "instance.xml")
     )
 
 
-def codes(parser):
-    return [issue.code for issue in parser.report]
+def codes(doc):
+    return [issue.code for issue in doc.report]
 
 
-def child_names(parser):
-    root = parser.schemaRootInstance
+def child_names(doc):
+    root = doc.root
     return [child._name_ for child in root._children_]
 
 
@@ -51,11 +47,11 @@ def test_second_wildcard_uses_its_own_process_contents(tmp_path):
         + "<xs:any processContents='strict'/>"
         + "</xs:sequence></xs:complexType></xs:element></xs:schema>"
     )
-    parser = parse(tmp_path, schema, "<r><a/><b/></r>")
-    assert codes(parser) == ["wildcard-no-declaration"]
+    doc = parse(tmp_path, schema, "<r><a/><b/></r>")
+    assert codes(doc) == ["wildcard-no-declaration"]
     # The rejected child is reported, but (as before) binding keeps a
     # generic placeholder so the tree still mirrors the document.
-    assert child_names(parser) == ["a", "b"]
+    assert child_names(doc) == ["a", "b"]
 
 
 def test_group_wildcard_binds_generic_child(tmp_path):
@@ -69,9 +65,9 @@ def test_group_wildcard_binds_generic_child(tmp_path):
         + "<xs:group ref='g'/>"
         + "</xs:complexType></xs:element></xs:schema>"
     )
-    parser = parse(tmp_path, schema, "<r><a/></r>")
-    assert codes(parser) == []
-    assert child_names(parser) == ["a"]
+    doc = parse(tmp_path, schema, "<r><a/></r>")
+    assert codes(doc) == []
+    assert child_names(doc) == ["a"]
 
 
 def test_wildcard_can_consume_a_declared_name_positionally(tmp_path):
@@ -88,7 +84,7 @@ def test_wildcard_can_consume_a_declared_name_positionally(tmp_path):
     assert codes(valid) == []
     # The first child was admitted by the wildcard, so it is generic
     # content: only the declared occurrence reaches the typed accessor.
-    assert valid.schemaRootInstance.a == [2]
+    assert valid.root.a == [2]
 
     # One a is not enough for both a minOccurs=1 wildcard and the element.
     (tmp_path / "short").mkdir(exist_ok=True)
@@ -155,8 +151,8 @@ def test_strict_wildcard_ignores_local_declarations(tmp_path):
         + "<xs:any processContents='strict'/>"
         + "</xs:sequence></xs:complexType></xs:element></xs:schema>"
     )
-    parser = parse(tmp_path, schema, "<r><a>7</a></r>")
-    assert "wildcard-no-declaration" in codes(parser)
+    doc = parse(tmp_path, schema, "<r><a>7</a></r>")
+    assert "wildcard-no-declaration" in codes(doc)
 
 
 def test_strict_attribute_wildcard_ignores_local_declarations(tmp_path):
@@ -170,8 +166,8 @@ def test_strict_attribute_wildcard_ignores_local_declarations(tmp_path):
         + "<xs:anyAttribute processContents='strict'/>"
         + "</xs:complexType></xs:element></xs:schema>"
     )
-    parser = parse(tmp_path, schema, '<r a="7"/>')
-    assert "wildcard-no-declaration" in codes(parser)
+    doc = parse(tmp_path, schema, '<r a="7"/>')
+    assert "wildcard-no-declaration" in codes(doc)
 
 
 def test_optional_suffix_does_not_hide_wildcard_associations(tmp_path):
@@ -185,11 +181,11 @@ def test_optional_suffix_does_not_hide_wildcard_associations(tmp_path):
         "  </xs:sequence></xs:complexType></xs:element>"
         "</xs:schema>"
     )
-    parser = parse(tmp_path, schema, "<r><a/><b/></r>")
+    doc = parse(tmp_path, schema, "<r><a/><b/></r>")
     # ''a'' matches the first (skip) wildcard generically; ''b'' falls to the
     # strict wildcard, which finds no global declaration.
-    assert codes(parser) == ["wildcard-no-declaration"]
-    assert child_names(parser) == ["a", "b"]
+    assert codes(doc) == ["wildcard-no-declaration"]
+    assert child_names(doc) == ["a", "b"]
 
 
 def test_other_namespace_excludes_unqualified_content(tmp_path):

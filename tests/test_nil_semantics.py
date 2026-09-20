@@ -8,7 +8,7 @@ behavior.
 """
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 XSI_DECL = 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
 
@@ -62,64 +62,60 @@ ROOT_PRIMITIVE_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
 def parse(tmp_path, instance_xml, schema_xml, mode=ParseModes.STRICT):
     (tmp_path / "instance.xml").write_text(instance_xml)
     (tmp_path / "schema.xsd").write_text(schema_xml)
-    return PyXSD(
-        str(tmp_path / "instance.xml"),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=mode,
+    return Schema.compile(str(tmp_path / "schema.xsd"), mode=mode).parse(
+        str(tmp_path / "instance.xml")
     )
 
 
-def codes(parser):
-    return [issue.code for issue in parser.report.issues]
+def codes(doc):
+    return [issue.code for issue in doc.report.issues]
 
 
 def test_empty_nilled_complex_child_binds_clean(tmp_path):
     """A valid empty nil of a complex type needs no content validation."""
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL}><v xsi:nil="true"/></r>',
         COMPLEX_SCHEMA,
     )
-    assert not parser.report.has_errors
-    v = parser.schemaRootInstance._children_[0]
+    assert not doc.report.has_errors
+    v = doc.root._children_[0]
     assert v._nil_ is True
     assert v._children_ == []
 
 
 def test_nilled_complex_child_with_children_is_reported(tmp_path):
     """A nilled element may not carry element content."""
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL}><v xsi:nil="true"><a>7</a></v></r>',
         COMPLEX_SCHEMA,
     )
-    assert "nil" in codes(parser)
-    v = parser.schemaRootInstance._children_[0]
+    assert "nil" in codes(doc)
+    v = doc.root._children_[0]
     assert v._children_ == []
 
 
 def test_content_bearing_nilled_primitive_is_reported(tmp_path):
     """A nilled element may not carry character content."""
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL}><v xsi:nil="true">7</v></r>',
         PRIMITIVE_SCHEMA,
     )
-    assert "nil" in codes(parser)
-    v = parser.schemaRootInstance._children_[0]
+    assert "nil" in codes(doc)
+    v = doc.root._children_[0]
     assert v._value_ is None
 
 
 def test_empty_nilled_primitive_still_binds(tmp_path):
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL}><v xsi:nil="true"/></r>',
         PRIMITIVE_SCHEMA,
     )
-    assert not parser.report.has_errors
-    v = parser.schemaRootInstance._children_[0]
+    assert not doc.report.has_errors
+    v = doc.root._children_[0]
     assert v._nil_ is True
     assert v._value_ is None
 
@@ -134,52 +130,52 @@ def test_nilled_child_attribute_validation_continues(tmp_path):
         "</xs:extension></xs:simpleContent></xs:complexType>"
         "</xs:element>",
     )
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL}><v xsi:nil="true"/></r>',
         schema,
     )
-    assert "missing-attribute" in codes(parser)
+    assert "missing-attribute" in codes(doc)
 
 
 def test_root_primitive_nilled_with_text_is_reported(tmp_path):
     """A nilled root of primitive type rejects character content."""
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL} xsi:nil="true">not an int</r>',
         ROOT_PRIMITIVE_SCHEMA,
     )
-    assert "nil" in codes(parser)
+    assert "nil" in codes(doc)
 
 
 def test_root_primitive_nilled_empty_is_clean(tmp_path):
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL} xsi:nil="true"/>',
         ROOT_PRIMITIVE_SCHEMA,
     )
-    assert not parser.report.has_errors
+    assert not doc.report.has_errors
 
 
 def test_root_complex_nilled_empty_is_clean(tmp_path):
     """A nilled root of complex type skips content validation."""
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL} xsi:nil="true"/>',
         ROOT_COMPLEX_SCHEMA,
     )
-    assert not parser.report.has_errors
-    assert parser.schemaRootInstance._nil_ is True
-    assert parser.schemaRootInstance._children_ == []
+    assert not doc.report.has_errors
+    assert doc.root._nil_ is True
+    assert doc.root._children_ == []
 
 
 def test_root_complex_nilled_with_children_is_reported(tmp_path):
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL} xsi:nil="true"><a>7</a></r>',
         ROOT_COMPLEX_SCHEMA,
     )
-    assert "nil" in codes(parser)
+    assert "nil" in codes(doc)
 
 
 def test_nilled_root_with_fixed_value_is_reported(tmp_path):
@@ -195,41 +191,41 @@ def test_nilled_root_with_fixed_value_is_reported(tmp_path):
 def test_nilled_child_with_fixed_value_is_reported(tmp_path):
     """The same fixed conflict is reported for nilled children."""
     schema = PRIMITIVE_SCHEMA.replace('nillable="true"', 'nillable="true" fixed="7"')
-    parser = parse(tmp_path, f'<r {XSI_DECL}><v xsi:nil="true"/></r>', schema)
-    assert "nil" in codes(parser)
+    doc = parse(tmp_path, f'<r {XSI_DECL}><v xsi:nil="true"/></r>', schema)
+    assert "nil" in codes(doc)
 
 
 def test_whitespace_only_nilled_root_is_reported(tmp_path):
     """Whitespace is character content; a nilled element must be empty."""
-    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="true"> </r>', ROOT_PRIMITIVE_SCHEMA)
-    assert "nil" in codes(parser)
+    doc = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="true"> </r>', ROOT_PRIMITIVE_SCHEMA)
+    assert "nil" in codes(doc)
 
 
 def test_whitespace_only_nilled_child_is_reported(tmp_path):
-    parser = parse(
+    doc = parse(
         tmp_path,
         f'<r {XSI_DECL}><v xsi:nil="true"> </v></r>',
         COMPLEX_SCHEMA,
     )
-    assert "nil" in codes(parser)
+    assert "nil" in codes(doc)
 
 
 def test_xsi_nil_value_outside_the_boolean_lexical_space_is_reported(tmp_path):
     """The built-in xsi:nil declaration is xs:boolean; '1234' is not."""
-    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1234"/>', ROOT_COMPLEX_SCHEMA)
-    assert "nil" in codes(parser)
+    doc = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1234"/>', ROOT_COMPLEX_SCHEMA)
+    assert "nil" in codes(doc)
 
 
 def test_xsi_nil_boolean_spellings_are_accepted(tmp_path):
     """The lexical check keeps the historical case-insensitive reading."""
     for value in ("false", "0", "False"):
-        parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="{value}"/>', ROOT_COMPLEX_SCHEMA)
-        assert "nil" not in codes(parser), value
+        doc = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="{value}"/>', ROOT_COMPLEX_SCHEMA)
+        assert "nil" not in codes(doc), value
 
 
 def test_whitespace_padded_xsi_nil_value_is_accepted(tmp_path):
-    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil=" true "/>', ROOT_COMPLEX_SCHEMA)
-    assert not parser.report.has_errors
+    doc = parse(tmp_path, f'<r {XSI_DECL} xsi:nil=" true "/>', ROOT_COMPLEX_SCHEMA)
+    assert not doc.report.has_errors
 
 
 NILLABLE_ONE_ROOT_SCHEMA = ROOT_COMPLEX_SCHEMA.replace('nillable="true"', 'nillable="1"')
@@ -239,32 +235,32 @@ NILLABLE_ONE_CHILD_SCHEMA = COMPLEX_SCHEMA.replace('nillable="true"', 'nillable=
 def test_nillable_boolean_one_root_nilled_is_clean(tmp_path):
     """``nillable="1"`` is an xs:boolean true, so xsi:nil skips the model
     (Saxon all004.v02)."""
-    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1"/>', NILLABLE_ONE_ROOT_SCHEMA)
-    assert not parser.report.has_errors
-    assert parser.schemaRootInstance._nil_ is True
+    doc = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1"/>', NILLABLE_ONE_ROOT_SCHEMA)
+    assert not doc.report.has_errors
+    assert doc.root._nil_ is True
 
 
 def test_nillable_boolean_one_root_with_children_is_reported(tmp_path):
     """The emptiness rule still applies to a ``nillable="1"`` element
     (all004.n01)."""
-    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1"><a>7</a></r>', NILLABLE_ONE_ROOT_SCHEMA)
-    assert "nil" in codes(parser)
+    doc = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1"><a>7</a></r>', NILLABLE_ONE_ROOT_SCHEMA)
+    assert "nil" in codes(doc)
 
 
 def test_nillable_boolean_one_root_with_whitespace_is_reported(tmp_path):
     """Whitespace is character content, nillable="1" or not (all004.n02)."""
-    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1"> </r>', NILLABLE_ONE_ROOT_SCHEMA)
-    assert "nil" in codes(parser)
+    doc = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="1"> </r>', NILLABLE_ONE_ROOT_SCHEMA)
+    assert "nil" in codes(doc)
 
 
 def test_nillable_boolean_zero_is_not_nillable(tmp_path):
     """``nillable="0"`` is xs:boolean false, so xsi:nil is reported."""
     schema = ROOT_COMPLEX_SCHEMA.replace('nillable="true"', 'nillable="0"')
-    parser = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="true"/>', schema)
-    assert "nil" in codes(parser)
+    doc = parse(tmp_path, f'<r {XSI_DECL} xsi:nil="true"/>', schema)
+    assert "nil" in codes(doc)
 
 
 def test_nillable_boolean_one_child_nilled_is_clean(tmp_path):
-    parser = parse(tmp_path, f'<r {XSI_DECL}><v xsi:nil="1"/></r>', NILLABLE_ONE_CHILD_SCHEMA)
-    assert not parser.report.has_errors
-    assert parser.schemaRootInstance._children_[0]._nil_ is True
+    doc = parse(tmp_path, f'<r {XSI_DECL}><v xsi:nil="1"/></r>', NILLABLE_ONE_CHILD_SCHEMA)
+    assert not doc.report.has_errors
+    assert doc.root._children_[0]._nil_ is True

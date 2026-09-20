@@ -75,14 +75,15 @@ NMTOKENS/IDREFS/ENTITIES.
 
 ## Validation reporting
 
-Non-fatal, code-tagged issue reporting via `PyXSD.report` (see
-{doc}`validation`), plus `--strict` CI-friendly exit codes and the
-`ValidationReport` API for library users. `PyXSD(mode=...)` / `--mode`
+Non-fatal, code-tagged issue reporting via `Schema.report` and
+`Document.report` (see {doc}`validation`), plus `--strict` CI-friendly
+exit codes, `require_valid()`, and the `ValidationReport` API for
+library users. `Schema.compile(..., mode=...)` / `--mode`
 selects how invalid or unrecognized content is **bound** (strict vs. lax)
 without changing what is **reported** — see {doc}`binding`. The same policy
-carries a `namespaces` field: `PyXSD(mode=ParseModes.NAMESPACED)` or
-`--namespaces strict` turns on namespace-aware validation (the default
-legacy behavior is unchanged).
+carries a `namespaces` field: `Schema.compile(...,
+mode=ParseModes.NAMESPACED)` or `--namespaces strict` turns on
+namespace-aware validation (the default legacy behavior is unchanged).
 
 ## Known gaps
 

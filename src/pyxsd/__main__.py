@@ -1,6 +1,6 @@
 """Command-line entry point for pyxsd."""
 
-from pyxsd.parser import main
+from pyxsd.cli import main
 
 if __name__ == "__main__":
     main()

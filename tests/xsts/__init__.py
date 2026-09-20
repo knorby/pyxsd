@@ -1,6 +1,6 @@
 """W3C XML Schema Test Suite integration.
 
-This package runs the pinned ``w3c/xsdtests`` corpus against PyXSD and an
+This package runs the pinned ``w3c/xsdtests`` corpus against pyxsd and an
 independent ``xmlschema`` oracle.  It is test infrastructure: it does not
 change the library under test.
 

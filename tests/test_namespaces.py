@@ -9,6 +9,7 @@ from io import StringIO
 
 import pytest
 
+import pyxsd
 from pyxsd.binding import ParseModes
 from pyxsd.namespaces import (
     XLINK_NS,
@@ -21,7 +22,7 @@ from pyxsd.namespaces import (
     namespace_of,
     parse_with_namespaces,
 )
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.validation import IssueSeverity
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 from pyxsd.xsd_data_types import QName, qname_context, xsd_comparable_key, xsd_value_key
@@ -102,13 +103,7 @@ def _strict_parse(schema: str, instance: str, tmp_path):
     schema_path.write_text(schema)
     instance_path = tmp_path / "instance.xml"
     instance_path.write_text(instance)
-    return PyXSD(
-        instance_path,
-        xsdFile=schema_path,
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=ParseModes.NAMESPACED,
-    )
+    return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(str(instance_path))
 
 
 _TNS_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
@@ -122,32 +117,32 @@ _TNS_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
 
 class TestSchemaComponentIdentity:
     def test_global_type_is_keyed_by_expanded_name(self, tmp_path):
-        parser = _strict_parse(_TNS_SCHEMA, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
-        table = parser.components
+        doc = _strict_parse(_TNS_SCHEMA, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        table = doc.schema.components
         assert table.getFromName("Foo", kind="type", namespace="urn:t") is not None
         # No cross-namespace fallback to the no-namespace form.
         assert table.getFromName("Foo", kind="type", namespace=None) is None
 
     def test_expanded_alias_resolves_user_type(self, tmp_path):
-        parser = _strict_parse(_TNS_SCHEMA, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
-        cls = parser.classes["{urn:t}Foo"]
-        assert cls is parser.classes["Foo"]
-        assert not parser.report.has_errors
+        doc = _strict_parse(_TNS_SCHEMA, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        cls = doc.schema.classes["{urn:t}Foo"]
+        assert cls is doc.schema.classes["Foo"]
+        assert not doc.report.has_errors
 
     def test_alternate_prefix_for_schema_namespace_resolves_builtin(self, tmp_path):
         schema = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:sd="{XSD_NS}">
   <xs:element name="r" type="sd:int"/>
 </xs:schema>"""
-        parser = _strict_parse(schema, "<r>7</r>", tmp_path)
-        element = parser.components.getFromName("r", kind="element", namespace=None)
+        doc = _strict_parse(schema, "<r>7</r>", tmp_path)
+        element = doc.schema.components.getFromName("r", kind="element", namespace=None)
         assert element is not None
         assert element.resolvedTypeName() == f"{{{XSD_NS}}}int"
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_unbound_type_prefix_is_reported(self, tmp_path):
         schema = f'<xs:schema xmlns:xs="{XSD_NS}"><xs:element name="r" type="p:int"/></xs:schema>'
-        parser = _strict_parse(schema, "<r>7</r>", tmp_path)
-        assert "unknown-namespace-prefix" in [issue.code for issue in parser.report.issues]
+        doc = _strict_parse(schema, "<r>7</r>", tmp_path)
+        assert "unknown-namespace-prefix" in [issue.code for issue in doc.report.issues]
 
 
 def _tns_schema(body: str, *, extra_ns: str = "") -> str:
@@ -168,10 +163,10 @@ class TestSchemaQNameReferences:
             "</xs:complexType>"
             '<xs:element name="root" type="t:Foo"/>'
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
-        codes = [issue.code for issue in parser.report.issues]
+        doc = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        codes = [issue.code for issue in doc.report.issues]
         assert "unknown-elementRef" not in codes
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_element_ref_other_namespace_does_not_fall_back(self, tmp_path):
         schema = _tns_schema(
@@ -182,8 +177,8 @@ class TestSchemaQNameReferences:
             '<xs:element name="root" type="t:Foo"/>',
             extra_ns='xmlns:o="urn:o"',
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
-        codes = [issue.code for issue in parser.report.issues]
+        doc = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        codes = [issue.code for issue in doc.report.issues]
         assert "unknown-elementRef" in codes
 
     def test_unbound_ref_prefix_is_reported(self, tmp_path):
@@ -194,8 +189,8 @@ class TestSchemaQNameReferences:
             "</xs:complexType>"
             '<xs:element name="root" type="t:Foo"/>'
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t"/>', tmp_path)
-        codes = [issue.code for issue in parser.report.issues]
+        doc = _strict_parse(schema, '<root xmlns="urn:t"/>', tmp_path)
+        codes = [issue.code for issue in doc.report.issues]
         assert "unknown-namespace-prefix" in codes
         assert "unknown-elementRef" in codes
 
@@ -207,10 +202,10 @@ class TestSchemaQNameReferences:
             '<xs:complexType name="Foo"><xs:group ref="t:g"/></xs:complexType>'
             '<xs:element name="root" type="t:Foo"/>'
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
-        codes = [issue.code for issue in parser.report.issues]
+        doc = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        codes = [issue.code for issue in doc.report.issues]
         assert "unknown-group" not in codes
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_attribute_group_ref_in_target_namespace_resolves(self, tmp_path):
         schema = _tns_schema(
@@ -220,10 +215,10 @@ class TestSchemaQNameReferences:
             '<xs:complexType name="Foo"><xs:attributeGroup ref="t:ag"/></xs:complexType>'
             '<xs:element name="root" type="t:Foo"/>'
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t" x="5"/>', tmp_path)
-        codes = [issue.code for issue in parser.report.issues]
+        doc = _strict_parse(schema, '<root xmlns="urn:t" x="5"/>', tmp_path)
+        codes = [issue.code for issue in doc.report.issues]
         assert "unknown-attributeGroup" not in codes
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_substitution_group_in_target_namespace_resolves(self, tmp_path):
         schema = _tns_schema(
@@ -234,10 +229,10 @@ class TestSchemaQNameReferences:
             "</xs:complexType>"
             '<xs:element name="root" type="t:Foo"/>'
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t"><m>7</m></root>', tmp_path)
-        codes = [issue.code for issue in parser.report.issues]
+        doc = _strict_parse(schema, '<root xmlns="urn:t"><m>7</m></root>', tmp_path)
+        codes = [issue.code for issue in doc.report.issues]
         assert "unknown-substitution-head" not in codes
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_union_member_types_resolve_in_target_namespace(self, tmp_path):
         schema = _tns_schema(
@@ -245,10 +240,10 @@ class TestSchemaQNameReferences:
             '<xs:simpleType name="U"><xs:union memberTypes="t:A"/></xs:simpleType>'
             '<xs:element name="root" type="t:U"/>'
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t">5</root>', tmp_path)
-        assert "U" in parser.classes
-        assert parser.classes["U"]._unionMembers
-        assert not parser.report.has_errors
+        doc = _strict_parse(schema, '<root xmlns="urn:t">5</root>', tmp_path)
+        assert "U" in doc.schema.classes
+        assert doc.schema.classes["U"]._unionMembers
+        assert not doc.report.has_errors
 
     def test_union_rejects_value_matching_no_member(self, tmp_path):
         schema = _tns_schema(
@@ -256,8 +251,8 @@ class TestSchemaQNameReferences:
             '<xs:simpleType name="U"><xs:union memberTypes="t:A"/></xs:simpleType>'
             '<xs:element name="root" type="t:U"/>'
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t">not-an-int</root>', tmp_path)
-        assert "value" in [issue.code for issue in parser.report.issues]
+        doc = _strict_parse(schema, '<root xmlns="urn:t">not-an-int</root>', tmp_path)
+        assert "value" in [issue.code for issue in doc.report.issues]
 
 
 class TestInstanceMatching:
@@ -270,9 +265,9 @@ class TestInstanceMatching:
             "</xs:complexType>"
             '<xs:element name="root" type="t:Foo"/>'
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
-        assert not parser.report.has_errors
-        assert parser.schemaRootInstance._children_
+        doc = _strict_parse(schema, '<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        assert not doc.report.has_errors
+        assert doc.root._children_
 
     def test_wrong_namespace_local_element_is_rejected(self, tmp_path):
         schema = _tns_schema(
@@ -281,12 +276,12 @@ class TestInstanceMatching:
             "</xs:complexType>"
             '<xs:element name="root" type="t:Foo"/>'
         )
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             '<root xmlns="urn:t" xmlns:o="urn:o"><o:a>x</o:a></root>',
             tmp_path,
         )
-        codes = [issue.code for issue in parser.report.issues]
+        codes = [issue.code for issue in doc.report.issues]
         assert "unexpected-element" in codes or "order" in codes
 
     def test_unqualified_local_element_requires_bare_name(self, tmp_path):
@@ -315,19 +310,17 @@ class TestInstanceMatching:
             '<xs:element name="root" type="t:Foo"/>'
             "</xs:schema>"
         )
-        parser = _strict_parse(schema, '<root xmlns="urn:t" xmlns:t="urn:t" t:x="5"/>', tmp_path)
-        assert not parser.report.has_errors
-        parser2 = _strict_parse(schema, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="5"/>', tmp_path)
-        codes = [issue.code for issue in parser2.report.issues]
+        doc = _strict_parse(schema, '<root xmlns="urn:t" xmlns:t="urn:t" t:x="5"/>', tmp_path)
+        assert not doc.report.has_errors
+        doc2 = _strict_parse(schema, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="5"/>', tmp_path)
+        codes = [issue.code for issue in doc2.report.issues]
         assert "missing-attribute" in codes
 
     def test_legacy_mode_matches_by_local_name(self, tmp_path):
-        parser = PyXSD(
-            StringIO('<root xmlns="urn:t" xmlns:o="urn:o"><o:a>x</o:a></root>'),
-            xsdFile=StringIO(_TNS_SCHEMA),
-            xmlFileOutput="_No_Output_",
+        doc = Schema.compile(StringIO(_TNS_SCHEMA)).parse(
+            StringIO('<root xmlns="urn:t" xmlns:o="urn:o"><o:a>x</o:a></root>')
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
 
 def _xsi_schema(body: str) -> str:
@@ -355,8 +348,8 @@ class TestXsiTypeNamespaces:
             '<root xmlns="urn:t" xmlns:t="urn:t" '
             f'xmlns:xsi="{XSI_NS}"><item xsi:type="t:D"><b>y</b></item></root>'
         )
-        parser = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
-        assert not parser.report.has_errors
+        doc = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
+        assert not doc.report.has_errors
 
     def test_root_xsi_type_dispatches_to_derived_type(self, tmp_path):
         schema = _xsi_schema(
@@ -371,22 +364,22 @@ class TestXsiTypeNamespaces:
             '<root xmlns="urn:t" xmlns:t="urn:t" '
             f'xmlns:xsi="{XSI_NS}" xsi:type="t:D"><b>y</b></root>'
         )
-        parser = _strict_parse(schema, instance, tmp_path)
-        assert not parser.report.has_errors
-        assert type(parser.schemaRootInstance).__name__ == "D"
+        doc = _strict_parse(schema, instance, tmp_path)
+        assert not doc.report.has_errors
+        assert type(doc.root).__name__ == "D"
 
     def test_unbound_xsi_type_prefix_is_reported(self, tmp_path):
         instance = f'<root xmlns="urn:t" xmlns:xsi="{XSI_NS}"><item xsi:type="p:D"/></root>'
-        parser = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
-        assert "unknown-namespace-prefix" in [i.code for i in parser.report.issues]
+        doc = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
+        assert "unknown-namespace-prefix" in [i.code for i in doc.report.issues]
 
     def test_xsi_type_wrong_namespace_is_rejected(self, tmp_path):
         instance = (
             '<root xmlns="urn:t" xmlns:o="urn:o" '
             f'xmlns:xsi="{XSI_NS}"><item xsi:type="o:D"/></root>'
         )
-        parser = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
-        assert "xsi-type" in [i.code for i in parser.report.issues]
+        doc = _strict_parse(_DERIVED_SCHEMA, instance, tmp_path)
+        assert "xsi-type" in [i.code for i in doc.report.issues]
 
 
 _MAIN_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" xmlns:o="urn:o"
@@ -434,37 +427,35 @@ def _multi_parse(instance, main, other, tmp_path, *, use_schema_location=False, 
         xsd_file = main_path
         if supply_other:
             kwargs["namespace_schemas"] = {"urn:o": other_path}
-    return PyXSD(
-        instance_path,
-        xsdFile=xsd_file,
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=ParseModes.NAMESPACED,
-        **kwargs,
+    if xsd_file is None:
+        # The instance's own xsi:schemaLocation hints name the schema(s).
+        return pyxsd.parse(str(instance_path), mode=ParseModes.NAMESPACED, **kwargs)
+    return Schema.compile(str(xsd_file), mode=ParseModes.NAMESPACED, **kwargs).parse(
+        str(instance_path)
     )
 
 
 class TestMultiNamespaceComposition:
-    """Cross-namespace schemas compose into one parser-owned table."""
+    """Cross-namespace schemas compose into one per-parse component table."""
 
     def test_cross_namespace_type_reference_resolves(self, tmp_path):
-        parser = _multi_parse(_MULTI_INSTANCE, _MAIN_SCHEMA, _OTHER_SCHEMA, tmp_path)
-        assert not parser.report.has_errors
-        thing = parser.components.getFromName("Thing", kind="type", namespace="urn:o")
+        doc = _multi_parse(_MULTI_INSTANCE, _MAIN_SCHEMA, _OTHER_SCHEMA, tmp_path)
+        assert not doc.report.has_errors
+        thing = doc.schema.components.getFromName("Thing", kind="type", namespace="urn:o")
         assert thing is not None
         # The same local name in the other namespace is distinct.
-        assert parser.components.getFromName("Thing", kind="type", namespace="urn:t") is None
+        assert doc.schema.components.getFromName("Thing", kind="type", namespace="urn:t") is None
 
     def test_cross_namespace_element_ref_resolves(self, tmp_path):
-        parser = _multi_parse(
+        doc = _multi_parse(
             '<root xmlns="urn:t"><o:thing xmlns:o="urn:o">x</o:thing></root>',
             _MAIN_REF_SCHEMA,
             _OTHER_ELEMENT_SCHEMA,
             tmp_path,
         )
-        codes = [i.code for i in parser.report.issues]
+        codes = [i.code for i in doc.report.issues]
         assert "unknown-elementRef" not in codes
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_multi_pair_schema_location_loads_all_namespaces(self, tmp_path):
         instance = (
@@ -473,15 +464,17 @@ class TestMultiNamespaceComposition:
             'xsi:schemaLocation="urn:t main.xsd urn:o other.xsd">'
             '<thing><b xmlns="urn:o">x</b></thing></root>'
         )
-        parser = _multi_parse(
+        doc = _multi_parse(
             instance,
             _MAIN_SCHEMA,
             _OTHER_SCHEMA,
             tmp_path,
             use_schema_location=True,
         )
-        assert not parser.report.has_errors
-        assert parser.components.getFromName("Thing", kind="type", namespace="urn:o") is not None
+        assert not doc.report.has_errors
+        assert (
+            doc.schema.components.getFromName("Thing", kind="type", namespace="urn:o") is not None
+        )
 
     def test_namespace_schemas_supplies_namespace_only_import(self, tmp_path):
         main = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" xmlns:o="urn:o"
@@ -492,15 +485,15 @@ class TestMultiNamespaceComposition:
           </xs:complexType>
           <xs:element name="root" type="t:Holder"/>
         </xs:schema>"""
-        parser = _multi_parse(
+        doc = _multi_parse(
             _MULTI_INSTANCE,
             main,
             _OTHER_SCHEMA,
             tmp_path,
         )
-        codes = [i.code for i in parser.report.issues]
+        codes = [i.code for i in doc.report.issues]
         assert "import-unresolved" not in codes
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_unresolved_namespace_only_import_is_reported(self, tmp_path):
         main = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
@@ -508,27 +501,24 @@ class TestMultiNamespaceComposition:
           <xs:import namespace="urn:o"/>
           <xs:element name="root" type="xs:string"/>
         </xs:schema>"""
-        parser = _multi_parse(
+        doc = _multi_parse(
             '<root xmlns="urn:t">x</root>',
             main,
             _OTHER_SCHEMA,
             tmp_path,
             supply_other=False,
         )
-        assert "import-unresolved" in [i.code for i in parser.report.issues]
+        assert "import-unresolved" in [i.code for i in doc.report.issues]
 
     def test_legacy_mode_still_merges_by_local_name(self, tmp_path):
         main_path = tmp_path / "main.xsd"
         main_path.write_text(_MAIN_SCHEMA)
         other_path = tmp_path / "other.xsd"
         other_path.write_text(_OTHER_SCHEMA)
-        parser = PyXSD(
-            StringIO(_MULTI_INSTANCE),
-            xsdFile=main_path,
-            xmlFileOutput="_No_Output_",
-            namespace_schemas={"urn:o": other_path},
+        doc = Schema.compile(str(main_path), namespace_schemas={"urn:o": other_path}).parse(
+            StringIO(_MULTI_INSTANCE)
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
 
 def _wildcard_main(any_decl: str) -> str:
@@ -557,13 +547,8 @@ def _wildcard_parse(instance, any_decl, tmp_path, *, other=None, mode=None):
         other_path = tmp_path / "other.xsd"
         other_path.write_text(other)
         kwargs["namespace_schemas"] = {"urn:o": other_path}
-    return PyXSD(
-        instance_path,
-        xsdFile=main_path,
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=mode or ParseModes.NAMESPACED,
-        **kwargs,
+    return Schema.compile(str(main_path), mode=mode or ParseModes.NAMESPACED, **kwargs).parse(
+        str(instance_path)
     )
 
 
@@ -610,21 +595,19 @@ class TestWildcardNamespaces:
 
     def test_strict_without_declaration_is_reported(self, tmp_path):
         decl = '<xs:any namespace="##other" processContents="strict"/>'
-        parser = _wildcard_parse(
-            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
-        )
-        assert "wildcard-no-declaration" in [i.code for i in parser.report.issues]
+        doc = _wildcard_parse('<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path)
+        assert "wildcard-no-declaration" in [i.code for i in doc.report.issues]
 
     def test_strict_with_declaration_validates(self, tmp_path):
         decl = '<xs:any namespace="##other" processContents="strict"/>'
-        parser = _wildcard_parse(
+        doc = _wildcard_parse(
             '<root xmlns="urn:t"><extra xmlns="urn:o">7</extra></root>',
             decl,
             tmp_path,
             other=_OTHER_DECL,
         )
-        assert not parser.report.has_errors
-        assert int(parser.schemaRootInstance.extra) == 7
+        assert not doc.report.has_errors
+        assert int(doc.root.extra) == 7
         bad = _wildcard_parse(
             '<root xmlns="urn:t"><extra xmlns="urn:o">x</extra></root>',
             decl,
@@ -635,28 +618,24 @@ class TestWildcardNamespaces:
 
     def test_lax_without_declaration_binds_generically(self, tmp_path):
         decl = '<xs:any namespace="##other" processContents="lax"/>'
-        parser = _wildcard_parse(
-            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
-        )
-        assert "wildcard-no-declaration" not in [i.code for i in parser.report.issues]
-        assert len(parser.schemaRootInstance._children_) == 1
+        doc = _wildcard_parse('<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path)
+        assert "wildcard-no-declaration" not in [i.code for i in doc.report.issues]
+        assert len(doc.root._children_) == 1
 
     def test_skip_without_declaration_is_clean(self, tmp_path):
         decl = '<xs:any namespace="##other" processContents="skip"/>'
-        parser = _wildcard_parse(
-            '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path
-        )
-        assert not parser.report.has_errors
+        doc = _wildcard_parse('<root xmlns="urn:t"><extra xmlns="urn:o"/></root>', decl, tmp_path)
+        assert not doc.report.has_errors
 
     def test_legacy_mode_ignores_namespace_constraint(self, tmp_path):
         decl = '<xs:any namespace="##local" processContents="skip"/>'
-        parser = _wildcard_parse(
+        doc = _wildcard_parse(
             '<root xmlns="urn:t"><extra xmlns="urn:o"/></root>',
             decl,
             tmp_path,
             mode=ParseModes.STRICT,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
 
 class TestWildcardAttributes:
@@ -676,29 +655,25 @@ class TestWildcardAttributes:
         schema_path.write_text(self._schema(any_attr))
         instance_path = tmp_path / "instance.xml"
         instance_path.write_text(instance)
-        return PyXSD(
-            instance_path,
-            xsdFile=schema_path,
-            xmlFileOutput="_No_Output_",
-            transformOutputName="_No_Output_",
-            mode=ParseModes.NAMESPACED,
+        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(
+            str(instance_path)
         )
 
     def test_other_attribute_passes(self, tmp_path):
         decl = '<xs:anyAttribute namespace="##other" processContents="skip"/>'
         accepted = self._parse(decl, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="1"/>', tmp_path)
         assert not accepted.report.has_errors
-        assert accepted.schemaRootInstance._attribs_["{urn:o}x"] == "1"
+        assert accepted.root._attribs_["{urn:o}x"] == "1"
 
     def test_target_namespace_attribute_rejects_foreign(self, tmp_path):
         decl = '<xs:anyAttribute namespace="##targetNamespace" processContents="skip"/>'
         rejected = self._parse(decl, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="1"/>', tmp_path)
-        assert "{urn:o}x" not in rejected.schemaRootInstance._attribs_
+        assert "{urn:o}x" not in rejected.root._attribs_
 
     def test_strict_attribute_requires_declaration(self, tmp_path):
         decl = '<xs:anyAttribute namespace="##other" processContents="strict"/>'
-        parser = self._parse(decl, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="1"/>', tmp_path)
-        assert "wildcard-no-declaration" in [i.code for i in parser.report.issues]
+        doc = self._parse(decl, '<root xmlns="urn:t" xmlns:o="urn:o" o:x="1"/>', tmp_path)
+        assert "wildcard-no-declaration" in [i.code for i in doc.report.issues]
 
 
 class TestQNameValueSemantics:
@@ -754,33 +729,27 @@ def _qname_parse(instance, tmp_path):
     schema_path.write_text(_QNAME_SCHEMA)
     instance_path = tmp_path / "instance.xml"
     instance_path.write_text(instance)
-    return PyXSD(
-        instance_path,
-        xsdFile=schema_path,
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=ParseModes.NAMESPACED,
-    )
+    return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(str(instance_path))
 
 
 class TestQNameIdentity:
     """Identity constraints use the QName value space, not the spelling."""
 
     def test_prefix_spellings_collide(self, tmp_path):
-        parser = _qname_parse(
+        doc = _qname_parse(
             '<root xmlns="urn:t" xmlns:p="urn:t" xmlns:q="urn:t">'
             '<item ref="p:a"/><item ref="q:a"/></root>',
             tmp_path,
         )
-        assert "identity-unique" in [i.code for i in parser.report.issues]
+        assert "identity-unique" in [i.code for i in doc.report.issues]
 
     def test_distinct_names_do_not_collide(self, tmp_path):
-        parser = _qname_parse(
+        doc = _qname_parse(
             '<root xmlns="urn:t" xmlns:p="urn:t"><item ref="p:a"/><item ref="p:b"/></root>',
             tmp_path,
         )
-        assert not parser.report.has_errors
-        assert len(parser.schemaRootInstance._children_) == 2
+        assert not doc.report.has_errors
+        assert len(doc.root._children_) == 2
 
 
 _NS_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
@@ -795,9 +764,9 @@ _NS_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
 </xs:schema>"""
 
 
-def _write_instance(parser):
+def _write_instance(doc):
     output = StringIO()
-    XmlTreeWriter(parser.schemaRootInstance, output)
+    XmlTreeWriter(doc.root, output)
     return output.getvalue()
 
 
@@ -809,19 +778,13 @@ class TestWriterNamespaces:
         schema_path.write_text(_NS_SCHEMA)
         instance_path = tmp_path / "instance.xml"
         instance_path.write_text(instance)
-        return PyXSD(
-            instance_path,
-            xsdFile=schema_path,
-            xmlFileOutput="_No_Output_",
-            transformOutputName="_No_Output_",
-            mode=mode,
-        )
+        return Schema.compile(str(schema_path), mode=mode).parse(str(instance_path))
 
     def test_strict_round_trip_preserves_expanded_names(self, tmp_path):
         instance = f'<root xmlns="urn:t" xmlns:xsi="{XSI_NS}"><a>x</a><note xsi:nil="true"/></root>'
-        parser = self._parse(instance, tmp_path)
-        assert not parser.report.has_errors
-        output = _write_instance(parser)
+        doc = self._parse(instance, tmp_path)
+        assert not doc.report.has_errors
+        output = _write_instance(doc)
 
         reparsed = ET.fromstring(output)
         assert [element.tag for element in reparsed.iter()] == [
@@ -832,8 +795,8 @@ class TestWriterNamespaces:
         assert reparsed.find("{urn:t}note").get(f"{{{XSI_NS}}}nil") == "true"
 
     def test_strict_output_declares_namespaces(self, tmp_path):
-        parser = self._parse('<root xmlns="urn:t"><a>x</a></root>', tmp_path)
-        output = _write_instance(parser)
+        doc = self._parse('<root xmlns="urn:t"><a>x</a></root>', tmp_path)
+        output = _write_instance(doc)
         assert "xmlns:ns0" in output
         assert "urn:t" in output
         assert "<ns0:root" in output
@@ -841,18 +804,18 @@ class TestWriterNamespaces:
 
     def test_xsi_prefix_is_bound_when_used(self, tmp_path):
         instance = f'<root xmlns="urn:t" xmlns:xsi="{XSI_NS}"><note xsi:nil="true"/></root>'
-        parser = self._parse(instance, tmp_path)
-        output = _write_instance(parser)
+        doc = self._parse(instance, tmp_path)
+        output = _write_instance(doc)
         assert "xmlns:xsi" in output
         assert "xsi:nil" in output
 
     def test_legacy_output_unchanged(self, tmp_path):
-        parser = self._parse(
+        doc = self._parse(
             '<root xmlns="urn:t"><a>x</a></root>',
             tmp_path,
             mode=ParseModes.STRICT,
         )
-        output = _write_instance(parser)
+        output = _write_instance(doc)
         assert "ns0:" not in output
         assert "<root" in output
         assert "<a" in output
@@ -877,15 +840,9 @@ class TestWriterNamespaces:
         schema_path.write_text(schema)
         instance_path = tmp_path / "instance.xml"
         instance_path.write_text('<root xmlns="urn:t" xml:space="preserve"><a>x</a></root>')
-        parser = PyXSD(
-            instance_path,
-            xsdFile=schema_path,
-            xmlFileOutput="_No_Output_",
-            transformOutputName="_No_Output_",
-            mode=ParseModes.NAMESPACED,
-        )
-        assert not parser.report.has_errors
-        output = _write_instance(parser)
+        doc = Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(str(instance_path))
+        assert not doc.report.has_errors
+        output = _write_instance(doc)
 
         reparsed = ET.fromstring(output)
         assert reparsed.get("{http://www.w3.org/XML/1998/namespace}space") == "preserve"
@@ -933,21 +890,21 @@ class TestWellKnownNamespaceImports:
         instance = (
             f'<root xmlns:xsi="{XSI_NS}" xmlns:xs="{XSD_NS}" xsi:type="xs:integer">1<a/></root>'
         )
-        parser = _strict_parse(schema, instance, tmp_path)
-        codes = [i.code for i in parser.report.issues]
+        doc = _strict_parse(schema, instance, tmp_path)
+        codes = [i.code for i in doc.report.issues]
         assert "import-unresolved" not in codes
         assert "unknown-attributeRef" not in codes
 
     def test_xsi_ref_ok_without_import(self, tmp_path):
         """The built-in declarations are present even with no ``xs:import``."""
         schema = _xsi_ref_schema('<xs:attribute ref="xsi:nil"/>')
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}">12.5</root>',
             tmp_path,
         )
-        assert "unknown-attributeRef" not in [i.code for i in parser.report.issues]
-        assert not parser.report.has_errors
+        assert "unknown-attributeRef" not in [i.code for i in doc.report.issues]
+        assert not doc.report.has_errors
 
     def test_xsi_type_default_is_ignored_when_attribute_absent(self, tmp_path):
         """A defaulted ``xsi:type`` is never applied (complex004.n2 shape).
@@ -956,22 +913,22 @@ class TestWellKnownNamespaceImports:
         default QName would be unresolvable; the value stays a decimal.
         """
         schema = _xsi_ref_schema('<xs:attribute ref="xsi:type" default="xs:integer"/>')
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}">123.456</root>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_xsi_attribute_fixed_enforced_when_present(self, tmp_path):
         """A present ``xsi:type`` must match ``fixed`` (complex005.n1 shape)."""
         schema = _xsi_ref_schema('<xs:attribute ref="xsi:type" fixed="xs:integer"/>')
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}" xmlns:xs="{XSD_NS}" xsi:type="xs:short">1234</root>',
             tmp_path,
         )
-        assert "fixed-attribute" in [i.code for i in parser.report.issues]
+        assert "fixed-attribute" in [i.code for i in doc.report.issues]
 
     def test_xsi_type_fixed_present_match_reports_no_fixed_error(self, tmp_path):
         """A matching fixed value is not a fixed violation (complex005.v1).
@@ -982,12 +939,12 @@ class TestWellKnownNamespaceImports:
         ``fixed-attribute`` mismatch.
         """
         schema = _xsi_ref_schema('<xs:attribute ref="xsi:type" fixed="xs:integer"/>')
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}" xmlns:xs="{XSD_NS}" xsi:type="xs:integer">1234</root>',
             tmp_path,
         )
-        codes = [i.code for i in parser.report.issues]
+        codes = [i.code for i in doc.report.issues]
         assert "xsi-type" in codes
         assert "fixed-attribute" not in codes
 
@@ -998,22 +955,22 @@ class TestWellKnownNamespaceImports:
         empty content; the value stays decimal.
         """
         schema = _xsi_ref_schema('<xs:attribute ref="xsi:nil" fixed="true"/>')
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}">12.5</root>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_xsi_nil_fixed_present_enforced(self, tmp_path):
         """A present ``xsi:nil`` must match ``fixed``."""
         schema = _xsi_ref_schema('<xs:attribute ref="xsi:nil" fixed="true"/>')
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}" xsi:nil="false">12.5</root>',
             tmp_path,
         )
-        assert "fixed-attribute" in [i.code for i in parser.report.issues]
+        assert "fixed-attribute" in [i.code for i in doc.report.issues]
 
     def test_xsi_attribute_required_enforced(self, tmp_path):
         """``use="required"`` reads the instance's xsi attribute (complex009)."""
@@ -1025,12 +982,12 @@ class TestWellKnownNamespaceImports:
           </xs:complexType>
           <xs:element name="root" type="B"/>
         </xs:schema>"""
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}"><e/></root>',
             tmp_path,
         )
-        assert "missing-attribute" in [i.code for i in parser.report.issues]
+        assert "missing-attribute" in [i.code for i in doc.report.issues]
 
     def test_xsi_attribute_required_satisfied_when_present(self, tmp_path):
         schema = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}">
@@ -1041,12 +998,12 @@ class TestWellKnownNamespaceImports:
           </xs:complexType>
           <xs:element name="root" type="B"/>
         </xs:schema>"""
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}" xmlns:xs="{XSD_NS}" xsi:type="B"><e/></root>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_user_namespace_attribute_ref_still_unresolved(self, tmp_path):
         """No loosening: a user namespace keeps both failures."""
@@ -1058,12 +1015,12 @@ class TestWellKnownNamespaceImports:
             </xs:complexType>
           </xs:element>
         </xs:schema>"""
-        parser = _strict_parse(schema, "<root/>", tmp_path)
-        codes = [i.code for i in parser.report.issues]
+        doc = _strict_parse(schema, "<root/>", tmp_path)
+        codes = [i.code for i in doc.report.issues]
         assert "unknown-attributeRef" in codes
         assert any(
             i.code == "import-unresolved" and i.severity is IssueSeverity.ERROR
-            for i in parser.report.issues
+            for i in doc.report.issues
         )
 
 
@@ -1080,35 +1037,35 @@ class TestUnknownXsiAttributes:
         schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
           <xs:element name="doc" type="xs:anyType"/>
         </xs:schema>"""
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<doc xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}" xsi:Type="xs:int">1</doc>',
             tmp_path,
         )
-        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+        assert "unexpected-attribute" in [i.code for i in doc.report.issues]
 
     def test_unknown_xsi_attribute_case_variant_on_anytype_root_is_rejected(self, tmp_path):
         schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
           <xs:element name="doc" type="xs:anyType"/>
         </xs:schema>"""
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<doc xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}" xsi:Nil="false">1</doc>',
             tmp_path,
         )
-        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+        assert "unexpected-attribute" in [i.code for i in doc.report.issues]
 
     def test_unknown_xsi_attribute_with_child_is_rejected(self, tmp_path):
         schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
           <xs:element name="doc" type="xs:anyType"/>
         </xs:schema>"""
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<doc xmlns:xs="{XSD_NS}" xmlns:xsi="{XSI_NS}" xsi:Type="xs:int">'
             f'<e xsi:SchemaLocation="foo foo.xsd"/></doc>',
             tmp_path,
         )
-        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+        assert "unexpected-attribute" in [i.code for i in doc.report.issues]
 
     def test_unknown_xsi_attribute_on_simple_element_is_rejected(self, tmp_path):
         schema = f"""<xs:schema xmlns:xs="{XSD_NS}">
@@ -1118,12 +1075,12 @@ class TestUnknownXsiAttributes:
             </xs:complexType>
           </xs:element>
         </xs:schema>"""
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}"><a xsi:blah="x">v</a></root>',
             tmp_path,
         )
-        assert "unexpected-attribute" in [i.code for i in parser.report.issues]
+        assert "unexpected-attribute" in [i.code for i in doc.report.issues]
 
     def test_builtin_xsi_attributes_remain_admitted(self, tmp_path):
         """A legitimate ``xsi:type`` is not reported as undeclared."""
@@ -1132,12 +1089,12 @@ class TestUnknownXsiAttributes:
           <xs:complexType name="A"><xs:sequence/></xs:complexType>
           <xs:element name="root" type="xs:anyType"/>
         </xs:schema>"""
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<root xmlns:xsi="{XSI_NS}" xmlns:t="urn:t" xsi:type="t:A"/>',
             tmp_path,
         )
-        assert "unexpected-attribute" not in [i.code for i in parser.report.issues]
+        assert "unexpected-attribute" not in [i.code for i in doc.report.issues]
 
     def test_unknown_xsi_attribute_admitted_by_xsi_wildcard(self, tmp_path):
         """A wildcard that admits the xsi namespace still admits it (wild042)."""
@@ -1148,13 +1105,13 @@ class TestUnknownXsiAttributes:
           </xs:complexType>
           <xs:element name="computer" type="computer"/>
         </xs:schema>"""
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<computer xmlns:xsi="{XSI_NS}" xsi:banana="1234"/>',
             tmp_path,
         )
-        assert "unexpected-attribute" not in [i.code for i in parser.report.issues]
-        assert not parser.report.has_errors
+        assert "unexpected-attribute" not in [i.code for i in doc.report.issues]
+        assert not doc.report.has_errors
 
 
 class TestNamespacedAttributeUses:
@@ -1182,14 +1139,10 @@ class TestNamespacedAttributeUses:
         (tmp_path / "s.xsd").write_text(schema)
         instance = '<t:doc xmlns:t="urn:t" xmlns:i="urn:i" t:a1="1" i:a1="2"/>'
         (tmp_path / "instance.xml").write_text(instance)
-        parser = PyXSD(
-            tmp_path / "instance.xml",
-            xsdFile=tmp_path / "s.xsd",
-            xmlFileOutput="_No_Output_",
-            transformOutputName="_No_Output_",
-            mode=ParseModes.NAMESPACED,
+        doc = Schema.compile(str(tmp_path / "s.xsd"), mode=ParseModes.NAMESPACED).parse(
+            str(tmp_path / "instance.xml")
         )
-        assert [i.code for i in parser.report.issues] == []
+        assert [i.code for i in doc.report.issues] == []
 
 
 class TestUntypedRootIsAnyType:
@@ -1211,14 +1164,10 @@ class TestUntypedRootIsAnyType:
         )
         (tmp_path / "s.xsd").write_text(schema)
         (tmp_path / "instance.xml").write_text('<t:root xmlns:t="urn:t"><t:child/></t:root>')
-        parser = PyXSD(
-            tmp_path / "instance.xml",
-            xsdFile=tmp_path / "s.xsd",
-            xmlFileOutput="_No_Output_",
-            transformOutputName="_No_Output_",
-            mode=ParseModes.NAMESPACED,
+        doc = Schema.compile(str(tmp_path / "s.xsd"), mode=ParseModes.NAMESPACED).parse(
+            str(tmp_path / "instance.xml")
         )
-        assert "missing-attribute" in [i.code for i in parser.report.issues]
+        assert "missing-attribute" in [i.code for i in doc.report.issues]
 
 
 def _xlink_ref_schema(attribute_site: str, *, import_line: str = "") -> str:
@@ -1244,25 +1193,25 @@ class TestXLinkBuiltins:
     """
 
     def test_xlink_type_ref_resolves_without_import(self, tmp_path):
-        parser = _strict_parse(
+        doc = _strict_parse(
             _xlink_ref_schema('<xs:attribute ref="xlink:type" default="locator"/>'),
             f'<root xmlns:xlink="{XLINK_NS}" xlink:type="locator"><a>x</a></root>',
             tmp_path,
         )
-        assert "unknown-attributeRef" not in [i.code for i in parser.report.issues]
-        assert not parser.report.has_errors
+        assert "unknown-attributeRef" not in [i.code for i in doc.report.issues]
+        assert not doc.report.has_errors
 
     def test_xlink_href_ref_resolves_without_import(self, tmp_path):
-        parser = _strict_parse(
+        doc = _strict_parse(
             _xlink_ref_schema('<xs:attribute ref="xlink:href"/>'),
             f'<root xmlns:xlink="{XLINK_NS}" xlink:href="#a"><a>x</a></root>',
             tmp_path,
         )
-        assert "unknown-attributeRef" not in [i.code for i in parser.report.issues]
-        assert not parser.report.has_errors
+        assert "unknown-attributeRef" not in [i.code for i in doc.report.issues]
+        assert not doc.report.has_errors
 
     def test_import_xlink_namespace_without_location(self, tmp_path):
-        parser = _strict_parse(
+        doc = _strict_parse(
             _xlink_ref_schema(
                 '<xs:attribute ref="xlink:href"/>',
                 import_line=f'  <xs:import namespace="{XLINK_NS}"/>',
@@ -1270,7 +1219,7 @@ class TestXLinkBuiltins:
             f'<root xmlns:xlink="{XLINK_NS}" xlink:href="#a"><a>x</a></root>',
             tmp_path,
         )
-        codes = [i.code for i in parser.report.issues]
+        codes = [i.code for i in doc.report.issues]
         assert "import-unresolved" not in codes
         assert "unknown-attributeRef" not in codes
 
@@ -1291,15 +1240,15 @@ class TestXLinkBuiltins:
           </xs:complexType>
           <xs:element name="root" type="xlink:T"/>
         </xs:schema>"""
-        parser = _strict_parse(
+        doc = _strict_parse(
             schema,
             f'<xlink:root xmlns:xlink="{XLINK_NS}" xlink:type="locator" xlink:hreflang="en"/>',
             tmp_path,
         )
-        codes = [i.code for i in parser.report.issues]
+        codes = [i.code for i in doc.report.issues]
         assert "unknown-attributeRef" not in codes
         assert "declaration-duplicate" not in codes
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
 
 class TestMixedAttributeConflict:
@@ -1327,26 +1276,26 @@ class TestMixedAttributeConflict:
 </xs:schema>"""
 
     def test_conflicting_mixed_attributes_rejected(self, tmp_path):
-        parser = _strict_parse(
+        doc = _strict_parse(
             self._schema(' mixed="true"', ' mixed="0"'),
             "<root><a>x</a></root>",
             tmp_path,
         )
-        issues = parser.report.issues
+        issues = doc.report.issues
         assert any(i.code == "declaration-attribute" for i in issues)
 
     def test_agreeing_mixed_attributes_accepted(self, tmp_path):
-        parser = _strict_parse(
+        doc = _strict_parse(
             self._schema(' mixed="true"', ' mixed="true"'),
             "<root><a>x</a></root>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_single_sided_mixed_attribute_accepted(self, tmp_path):
-        parser = _strict_parse(
+        doc = _strict_parse(
             self._schema("", ' mixed="true"'),
             "<root><a>x</a></root>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors

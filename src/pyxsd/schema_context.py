@@ -16,14 +16,13 @@ nested parser restores the enclosing context when it finishes.
 
 from __future__ import annotations
 
-import functools
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any
 
-_T = TypeVar("_T", bound=Callable[..., Any])
+from pyxsd.validation import ValidationReport
 
 
 @dataclass
@@ -43,6 +42,12 @@ class SchemaContext:
       ``namespace_overrides`` because a user document may legally target
       a well-known namespace, and the declaration-legality checks must
       tell the injected declarations from such spliced user ones.
+
+    - ``report``: the report instance-binding issues are routed to while
+      this context is active (``None`` during schema compilation, which
+      reports through the composition context instead). Set per parse so
+      each document bound against a shared :class:`~pyxsd.schema.Schema`
+      gets a fresh report.
     """
 
     components: Any = None
@@ -50,6 +55,7 @@ class SchemaContext:
     form_defaults: dict[int, tuple[str | None, str | None]] = field(default_factory=dict)
     xpath_default_namespaces: dict[int, str | None] = field(default_factory=dict)
     injected_builtin_ids: set[int] = field(default_factory=set)
+    report: ValidationReport | None = None
 
 
 _local = threading.local()
@@ -109,8 +115,15 @@ def last_components() -> Any:
 def active_context(context: SchemaContext) -> Iterator[SchemaContext]:
     """Makes *context* current for the duration of the block.
 
-    Nested activations restore the previously active context, and the
-    stack is per-thread, so concurrent parsers stay isolated.
+    Nested activations restore the previously active context. The
+    stack itself is per-thread, so two *different* parsers on
+    different threads cannot see each other's contexts — but this is
+    not a license to share one parser across threads: the
+    ``SchemaContext`` object is owned by a single parser (see
+    :func:`context_report`), so concurrent use of one
+    ``Schema``/parser from several threads races on its shared
+    fields, the binding ``report`` included. The contract is
+    one-thread-per-Schema at a time.
     """
     stack = _stack()
     stack.append(context)
@@ -120,20 +133,28 @@ def active_context(context: SchemaContext) -> Iterator[SchemaContext]:
         stack.pop()
 
 
-def with_schema_context(method: _T) -> _T:
-    """Decorates a ``PyXSD`` method so it runs under ``self.schemaContext``.
+@contextmanager
+def context_report(context: SchemaContext, report: ValidationReport) -> Iterator[SchemaContext]:
+    """Installs *report* as *context*'s routing report for the block.
 
-    The context is pushed on entry and popped on exit (including
-    exceptions), which preserves the enclosing context for nested
-    parser construction.
+    Diagnostic routing reads the active context's report first (see
+    ``SchemaBase._report_issue`` and the ER-layer ``_reportSchemaError``):
+    schema compilation installs the schema-phase report for the run, and
+    a caller binding an instance document installs its fresh per-parse
+    report here; the previous value is restored afterwards.
+
+    The install mutates the single ``report`` field of the *shared*
+    context object owned by the parser, even though the activation
+    stack is per-thread: two threads calling ``Schema.parse`` on the
+    same schema concurrently overwrite each other's instance report.
+    The restore-previous behaviour keeps repeated sequential parses
+    correct; cross-thread safety is the one-thread-per-Schema
+    contract (see :func:`active_context`). Making the report itself
+    thread-local is future work, not done here.
     """
-
-    @functools.wraps(method)
-    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        context = getattr(self, "schemaContext", None)
-        if context is None:
-            return method(self, *args, **kwargs)
-        with active_context(context):
-            return method(self, *args, **kwargs)
-
-    return wrapper  # type: ignore[return-value]
+    previous = context.report
+    context.report = report
+    try:
+        yield context
+    finally:
+        context.report = previous

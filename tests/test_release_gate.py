@@ -17,23 +17,18 @@ import pyxsd.element_representatives.element_representative as ermod
 from pyxsd.binding import ParseModes
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.exceptions import PyXSDError
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema, load_overlay_classes
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
 
 def _parse(schema_text, instance_text, tmp_path):
-    """Parses an inline instance against an inline schema."""
+    """Compiles an inline schema and binds an inline instance document."""
     schema_path = tmp_path / "schema.xsd"
     schema_path.write_text(schema_text)
     instance_path = tmp_path / "instance.xml"
     instance_path.write_text(instance_text)
-    return PyXSD(
-        instance_path,
-        xsdFile=schema_path,
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-    )
+    return Schema.compile(str(schema_path)).parse(str(instance_path))
 
 
 def _schema_er():
@@ -92,8 +87,8 @@ FACET_SCHEMA = f"""\
 
 class TestFacetElementRepresentatives:
     def test_facets_are_recorded_on_the_simple_type(self, tmp_path):
-        parser = _parse(FACET_SCHEMA, "<doc><a>abcd</a></doc>", tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(FACET_SCHEMA, "<doc><a>abcd</a></doc>", tmp_path)
+        assert not doc.report.has_errors
 
         simple = _schema_er().simpleTypes["boundedString"]
         assert simple.length == "4"
@@ -199,11 +194,11 @@ class TestXsdTypeEdges:
   </xs:element>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc><v>2024-01-02</v></doc>", tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, "<doc><v>2024-01-02</v></doc>", tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "unknown-type" in codes
 
-        root = _root_instance(parser)
+        root = _root_instance(doc)
         member = root.v
         assert member.memberValue == "2024-01-02"
         assert len(member._unionMembers) == 1
@@ -235,18 +230,14 @@ class TestXsdTypeEdges:
         schema_path = tmp_path / "schema.xsd"
         schema_path.write_text(schema)
         caplog.set_level(logging.WARNING)
-        parser = PyXSD(
-            StringIO('<t:root xmlns:t="urn:t"/>'),
-            xsdFile=schema_path,
-            xmlFileOutput="_No_Output_",
-            transformOutputName="_No_Output_",
-            mode=ParseModes.NAMESPACED,
+        doc = Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(
+            StringIO('<t:root xmlns:t="urn:t"/>')
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
         assert not any(
             "could not be built and was skipped" in record.getMessage() for record in caplog.records
         )
-        union_cls = parser.classes["lang|simpleType"]
+        union_cls = doc.schema.classes["lang|simpleType"]
         assert len(union_cls._unionMembers) == 2
 
     def test_union_equality_hash_and_repr(self, tmp_path):
@@ -265,8 +256,8 @@ class TestXsdTypeEdges:
   </xs:element>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc><v>7</v></doc>", tmp_path)
-        root = _root_instance(parser)
+        doc = _parse(schema, "<doc><v>7</v></doc>", tmp_path)
+        root = _root_instance(doc)
         member = root.v
         assert member == 7
         assert member != "7"
@@ -292,8 +283,8 @@ class TestXsdTypeEdges:
   </xs:element>
 </xs:schema>
 """
-        parser = _parse(schema, '<doc color="5"/>', tmp_path)
-        assert any(issue.code == "duplicate-attribute" for issue in parser.report.issues)
+        doc = _parse(schema, '<doc color="5"/>', tmp_path)
+        assert any(issue.code == "duplicate-attribute" for issue in doc.report.issues)
 
     def test_repeated_element_names_get_disambiguated(self, tmp_path):
         schema = f"""\
@@ -308,8 +299,8 @@ class TestXsdTypeEdges:
   </xs:element>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc><dup>a</dup><dup>b</dup></doc>", tmp_path)
-        root = _root_instance(parser)
+        doc = _parse(schema, "<doc><dup>a</dup><dup>b</dup></doc>", tmp_path)
+        root = _root_instance(doc)
         names = [descriptor.name for descriptor in root._getElements()]
         assert names == ["dup", "dup"]
         # Both descriptors are disambiguated on the class ('dup', 'dup|2').
@@ -338,9 +329,9 @@ class TestSchemaBaseEdges:
   </xs:element>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc><v/></doc>", tmp_path)
-        assert parser.report.has_errors
-        assert any(issue.code == "default" for issue in parser.report.issues)
+        doc = _parse(schema, "<doc><v/></doc>", tmp_path)
+        assert doc.report.has_errors
+        assert any(issue.code == "default" for issue in doc.report.issues)
 
     def test_invalid_fixed_element_value_is_reported(self, tmp_path):
         schema = f"""\
@@ -354,9 +345,9 @@ class TestSchemaBaseEdges:
   </xs:element>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc><v>9</v></doc>", tmp_path)
-        assert parser.report.has_errors
-        assert any(issue.code == "fixed-element" for issue in parser.report.issues)
+        doc = _parse(schema, "<doc><v>9</v></doc>", tmp_path)
+        assert doc.report.has_errors
+        assert any(issue.code == "fixed-element" for issue in doc.report.issues)
 
     def test_invalid_fixed_attribute_value_is_reported(self, tmp_path):
         schema = f"""\
@@ -369,9 +360,9 @@ class TestSchemaBaseEdges:
   </xs:element>
 </xs:schema>
 """
-        parser = _parse(schema, '<doc n="5"/>', tmp_path)
-        assert parser.report.has_errors
-        assert any(issue.code == "fixed-attribute" for issue in parser.report.issues)
+        doc = _parse(schema, '<doc n="5"/>', tmp_path)
+        assert doc.report.has_errors
+        assert any(issue.code == "fixed-attribute" for issue in doc.report.issues)
 
     def test_mismatched_fixed_attribute_value_is_reported(self, tmp_path):
         schema = f"""\
@@ -384,9 +375,9 @@ class TestSchemaBaseEdges:
   </xs:element>
 </xs:schema>
 """
-        parser = _parse(schema, '<doc n="7"/>', tmp_path)
-        assert parser.report.has_errors
-        assert any(issue.code == "fixed-attribute" for issue in parser.report.issues)
+        doc = _parse(schema, '<doc n="7"/>', tmp_path)
+        assert doc.report.has_errors
+        assert any(issue.code == "fixed-attribute" for issue in doc.report.issues)
 
     def test_wildcard_ignores_namespace_declarations(self, tmp_path):
         schema = f"""\
@@ -403,9 +394,9 @@ class TestSchemaBaseEdges:
 </xs:schema>
 """
         instance = '<doc xmlns:z="urn:z" z:extra="1" unit="m"><title>t</title><extra/></doc>'
-        parser = _parse(schema, instance, tmp_path)
-        assert not parser.report.has_errors
-        root = _root_instance(parser)
+        doc = _parse(schema, instance, tmp_path)
+        assert not doc.report.has_errors
+        root = _root_instance(doc)
         # Namespace declarations never reach the instance attributes.
         assert not any(key.startswith("xmlns") for key in root._attribs_)
         assert root._attribs_["unit"] == "m"
@@ -424,8 +415,8 @@ class TestSchemaBaseEdges:
 </xs:schema>
 """
         # Valid: one 'a' within its per-descriptor maxOccurs.
-        parser = _parse(schema, "<doc><a/></doc>", tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(schema, "<doc><a/></doc>", tmp_path)
+        assert not doc.report.has_errors
 
     def test_group_ref_occurrences_repeat_the_group_as_a_unit(self, tmp_path):
         schema = f"""\
@@ -445,8 +436,8 @@ class TestSchemaBaseEdges:
 """
         # The reference repeats the whole (x, y) group; two repeats are
         # x, y, x, y, not four independent element occurrences.
-        parser = _parse(schema, "<doc><x/><y/><x/><y/></doc>", tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(schema, "<doc><x/><y/><x/><y/></doc>", tmp_path)
+        assert not doc.report.has_errors
 
         # The reference site carries the occurrence attributes.
         ref_er = next(
@@ -474,7 +465,7 @@ class TestSchemaBaseEdges:
 class TestParserErrorBranches:
     def test_malformed_schema_file_object_raises(self):
         with pytest.raises(PyXSDError, match="not well-formed"):
-            PyXSD(StringIO("<x/>"), xsdFile=StringIO("<xs:schema>"), xmlFileOutput="_No_Output_")
+            Schema.compile(StringIO("<xs:schema>"))
 
     def test_include_without_schema_location(self, tmp_path):
         schema = f"""\
@@ -483,8 +474,8 @@ class TestParserErrorBranches:
   <xs:element name="doc" type="xs:string"/>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc>hi</doc>", tmp_path)
-        assert any(issue.code == "schema-compose" for issue in parser.report.issues)
+        doc = _parse(schema, "<doc>hi</doc>", tmp_path)
+        assert any(issue.code == "schema-compose" for issue in doc.report.issues)
 
     def test_redefine_without_schema_location(self, tmp_path):
         schema = f"""\
@@ -493,8 +484,8 @@ class TestParserErrorBranches:
   <xs:element name="doc" type="xs:string"/>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc>hi</doc>", tmp_path)
-        assert any(issue.code == "schema-compose" for issue in parser.report.issues)
+        doc = _parse(schema, "<doc>hi</doc>", tmp_path)
+        assert any(issue.code == "schema-compose" for issue in doc.report.issues)
 
     def test_redefine_cycle_is_reported(self, tmp_path):
         (tmp_path / "cycle.xsd").write_text(
@@ -506,8 +497,8 @@ class TestParserErrorBranches:
   <xs:element name="doc" type="xs:string"/>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc>hi</doc>", tmp_path)
-        codes = {issue.code for issue in parser.report.issues}
+        doc = _parse(schema, "<doc>hi</doc>", tmp_path)
+        codes = {issue.code for issue in doc.report.issues}
         assert "compose-cycle" in codes
 
     def test_multiple_roots_with_the_same_name(self, tmp_path):
@@ -517,8 +508,8 @@ class TestParserErrorBranches:
   <xs:element name="doc" type="xs:string"/>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc>hi</doc>", tmp_path)
-        assert any(issue.code == "multiple-roots" for issue in parser.report.issues)
+        doc = _parse(schema, "<doc>hi</doc>", tmp_path)
+        assert any(issue.code == "multiple-roots" for issue in doc.report.issues)
 
     def test_abstract_root_is_rejected(self, tmp_path):
         schema = f"""\
@@ -526,44 +517,28 @@ class TestParserErrorBranches:
   <xs:element name="doc" type="xs:string" abstract="true"/>
 </xs:schema>
 """
-        parser = _parse(schema, "<doc>hi</doc>", tmp_path)
-        assert any(issue.code == "abstract-element" for issue in parser.report.issues)
+        doc = _parse(schema, "<doc>hi</doc>", tmp_path)
+        assert any(issue.code == "abstract-element" for issue in doc.report.issues)
 
     def test_complex_content_extension_resolves_base(self, tmp_path):
-        parser = _parse(FACET_SCHEMA, "<doc><a>abcd</a></doc>", tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(FACET_SCHEMA, "<doc><a>abcd</a></doc>", tmp_path)
+        assert not doc.report.has_errors
         # The derivedType complexType was produced from the complexContent
         # extension and carries the base type in its superclass names.
         complex_er = _schema_er().complexTypes["derived"]
         assert complex_er.superClassNames == ["rangeIntComplex"]
 
     def test_load_class_from_file_missing(self, tmp_path):
-        parser = _parse(FACET_SCHEMA, "<doc><a>abcd</a></doc>", tmp_path)
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(FACET_SCHEMA)
+        schema = Schema.compile(str(schema_path))
         with pytest.raises(ImportError, match="was not found"):
-            parser.loadClassFromFile("definitelyNotHere")
-
-    def test_send_tree_to_pyxsd_default_names(self, tmp_path, monkeypatch):
-        import pyxsd.transforms.send_tree_to_pyxsd as stp
-
-        monkeypatch.chdir(tmp_path)
-        parser = _parse(FACET_SCHEMA, "<doc><a>abcd</a></doc>", tmp_path)
-        root = _root_instance(parser)
-
-        transform = stp.SendTreeToPyXSD(root)
-        result = transform(
-            xsdFile=str(tmp_path / "schema.xsd"),
-            xmlFileOutput=False,
-            transformOutputName=None,
-        )
-        assert result is root
-        # Falsy parsed output falls back to the historical default name.
-        assert (tmp_path / "tempFileParsed.xml").is_file()
-        # No transforms were supplied, so no transformed file is written;
-        # the None transformOutputName branch still resolved its default.
-        assert not (tmp_path / "tempFileTransformed.xml").is_file()
+            load_overlay_classes(schema, "definitelyNotHere")
 
     def test_load_transform_file_by_normalized_name_handles_errors(self, tmp_path):
-        from pyxsd.parser import _loadTransformFileByNormalizedName
+        from pyxsd.cli import (
+            _load_transform_file_by_normalized_name as _loadTransformFileByNormalizedName,
+        )
 
         # A directory that does not exist yields None rather than raising.
         assert _loadTransformFileByNormalizedName("PrintData", tmp_path / "missing") is None
@@ -571,13 +546,16 @@ class TestParserErrorBranches:
         assert _loadTransformFileByNormalizedName("Nope", tmp_path) is None
 
 
-def _root_instance(parser):
-    """Rebuilds the parser's root instance the way parseXML does."""
+def _root_instance(doc):
+    """Rebuilds the document's root instance from its raw element tree."""
+    from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
+
     schema_er = _schema_er()
-    root_name = parser.xmlRoot.tag.split("}")[-1]
+    xml_root = parse_with_namespaces(doc.source, NamespaceContext())
+    root_name = xml_root.tag.split("}")[-1]
     root_er = next(
         (element for element in schema_er.elements if element.name == root_name),
         schema_er.elements[0],
     )
     sub_cls = root_er.getType()
-    return sub_cls.makeInstanceFromTag(parser.xmlRoot)
+    return sub_cls.makeInstanceFromTag(xml_root)

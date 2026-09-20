@@ -5,19 +5,19 @@ Shared by ``tests/test_conformance.py`` (pytest) and
 
 Each case is materialized into a scratch directory as ``schema.xsd``,
 ``instance.xml`` (when present), and any auxiliary files, then run
-through the real PyXSD pipeline. Each parser owns its component table,
-so cases are independent without any global-state reset.
+through the real pipeline (``Schema.compile`` plus ``schema.parse``).
+Each parse owns its component table, so cases are independent without
+any global-state reset.
 """
 
 from __future__ import annotations
 
-import io
 import tomllib
 from pathlib import Path
 from typing import Any
 
 from pyxsd.binding import BindingPolicy, ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.validation import IssueSeverity, ValidationIssue
 
 HERE = Path(__file__).parent
@@ -76,41 +76,27 @@ def run_case(case: dict[str, Any], directory: Path) -> tuple[bool, str]:
     Returns ``(passed, detail)``. *detail* explains the first failed
     expectation and is empty on success.
 
-    ``PyXSD.__init__`` runs the whole pipeline eagerly, so a single
-    construction executes the schema step and (when present) the
-    instance step. Schema and instance diagnostics are checked
-    **separately** (issues carry a ``phase``): a case marked
-    ``schema_valid`` never passes if the schema produced errors, even
-    when the instance step also failed. Schema-only cases get an
-    in-memory dummy instance whose ``unknown-root`` issue belongs to the
-    instance phase and so cannot mask a schema failure.
+    The schema is compiled first and the instance (when present) bound
+    against it, so the schema step and the instance step execute in
+    order. Schema and instance diagnostics are checked **separately**
+    (issues carry a ``phase``): a case marked ``schema_valid`` never
+    passes if the schema produced errors, even when the instance step
+    also failed. Schema-only cases skip instance binding entirely.
     """
     directory = _materialize(case, directory)
     has_instance = "instance" in case
 
-    if has_instance:
-        instance_input: str | io.StringIO = str(directory / "instance.xml")
-    else:
-        instance_input = io.StringIO("<x/>")
-
     try:
-        parser = PyXSD(
-            instance_input,
-            str(directory / "schema.xsd"),
-            xmlFileOutput=False,
-            transformOutputName=None,
-            mode=case_mode(case),
-        )
+        schema = Schema.compile(str(directory / "schema.xsd"), mode=case_mode(case))
     except Exception as exc:
         return False, f"parse raised {type(exc).__name__}: {exc}"
 
-    report = parser.report
-    schema_issues = report.for_phase("schema")
+    schema_issues = schema.report.for_phase("schema")
     schema_errors = _errors(schema_issues)
 
     if not case.get("schema_valid", True):
         if not schema_errors:
-            return False, f"schema errors expected, schema phase was clean: {report}"
+            return False, f"schema errors expected, schema phase was clean: {schema.report}"
         return _check_codes(case, schema_errors, "schema")
 
     if schema_errors:
@@ -119,18 +105,24 @@ def run_case(case: dict[str, Any], directory: Path) -> tuple[bool, str]:
     if not has_instance:
         return True, ""
 
+    try:
+        document = schema.parse(str(directory / "instance.xml"))
+    except Exception as exc:
+        return False, f"parse raised {type(exc).__name__}: {exc}"
+
+    report = document.report
     instance_issues = report.for_phase("instance")
     if case.get("instance_valid", True):
         if instance_issues:
             return False, f"clean parse expected, got instance issues: {instance_issues}"
-        return _check_values(case, parser)
+        return _check_values(case, document)
     instance_errors = _errors(instance_issues)
     if not instance_errors:
         return False, f"instance errors expected, instance phase was clean: {report}"
     return _check_codes(case, instance_errors, "instance")
 
 
-def _check_values(case: dict[str, Any], parser: Any) -> tuple[bool, str]:
+def _check_values(case: dict[str, Any], document: Any) -> tuple[bool, str]:
     """Verify manifest ``expected_values`` against the bound instance tree.
 
     A clean report only proves the parser found nothing wrong; it does
@@ -140,7 +132,7 @@ def _check_values(case: dict[str, Any], parser: Any) -> tuple[bool, str]:
     the string form so manifest integers/floats need no special casing.
     """
     expected = case.get("expected_values") or {}
-    root = parser.schemaRootInstance
+    root = document.root
     for path, want in expected.items():
         obj: Any = root
         try:

@@ -15,8 +15,8 @@ import io
 
 import pytest
 
+import pyxsd
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
 
 XSD = "http://www.w3.org/2001/XMLSchema"
 XSI = "http://www.w3.org/2001/XMLSchema-instance"
@@ -25,21 +25,17 @@ XSI = "http://www.w3.org/2001/XMLSchema-instance"
 def _parse(schema_text, instance_text, tmp_path, mode=ParseModes.NAMESPACED, **kwargs):
     schema_path = tmp_path / "schema.xsd"
     schema_path.write_text(schema_text)
-    return PyXSD(
-        io.StringIO(instance_text),
-        xsdFile=str(schema_path),
-        xmlFileOutput=False,
-        mode=mode,
-        **kwargs,
-    )
+    # pyxsd.parse with an explicit xsd: the instance's own
+    # schemaLocation hints stay advisory composition inputs.
+    return pyxsd.parse(io.StringIO(instance_text), xsd=str(schema_path), mode=mode, **kwargs)
 
 
-def _codes(parser):
-    return [issue.code for issue in parser.report.issues]
+def _codes(doc):
+    return [issue.code for issue in doc.report.issues]
 
 
-def _errors(parser):
-    return [issue for issue in parser.report.issues if issue.severity.name == "ERROR"]
+def _errors(doc):
+    return [issue for issue in doc.report.issues if issue.severity.name == "ERROR"]
 
 
 class TestReboundDefaultXmlns:
@@ -56,10 +52,10 @@ class TestReboundDefaultXmlns:
     )
 
     def test_brief_repro_lacks_unknown_type(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             self.BRIEF_SCHEMA, '<out xmlns="urn:nist" attr="foo"><a>foo</a></out>', tmp_path
         )
-        assert "unknown-type" not in _codes(parser)
+        assert "unknown-type" not in _codes(doc)
 
     def test_rebound_inline_complex_type_binds_cleanly(self, tmp_path):
         schema = (
@@ -72,8 +68,8 @@ class TestReboundDefaultXmlns:
             '<attribute name="attr" type="string"/></complexType>'
             "</xs:element></xs:schema>"
         )
-        parser = _parse(schema, '<out xmlns="urn:nist" attr="foo"><a>foo</a></out>', tmp_path)
-        assert parser.report.issues == []
+        doc = _parse(schema, '<out xmlns="urn:nist" attr="foo"><a>foo</a></out>', tmp_path)
+        assert doc.report.issues == []
 
     def test_prefixed_control_binds_cleanly(self, tmp_path):
         schema = (
@@ -86,8 +82,8 @@ class TestReboundDefaultXmlns:
             '<xs:attribute name="attr" type="xs:string"/></xs:complexType>'
             "</xs:element></xs:schema>"
         )
-        parser = _parse(schema, '<out xmlns="urn:nist" attr="foo"><a>foo</a></out>', tmp_path)
-        assert parser.report.issues == []
+        doc = _parse(schema, '<out xmlns="urn:nist" attr="foo"><a>foo</a></out>', tmp_path)
+        assert doc.report.issues == []
 
 
 class TestUnprefixedBuiltinsUnderDefaultXsdNs:
@@ -104,8 +100,8 @@ class TestUnprefixedBuiltinsUnderDefaultXsdNs:
     )
 
     def test_schema_compiles_and_instance_validates(self, tmp_path):
-        parser = _parse(self.SCHEMA, '<out xmlns="urn:t" attr="foo"><a>foo</a></out>', tmp_path)
-        assert parser.report.issues == []
+        doc = _parse(self.SCHEMA, '<out xmlns="urn:t" attr="foo"><a>foo</a></out>', tmp_path)
+        assert doc.report.issues == []
 
     def test_unqualified_local_form_also_binds(self, tmp_path):
         schema = (
@@ -114,12 +110,12 @@ class TestUnprefixedBuiltinsUnderDefaultXsdNs:
             '<element name="a" type="string"/>'
             "</sequence></complexType></element></xs:schema>"
         )
-        parser = _parse(
+        doc = _parse(
             schema,
             '<out xmlns="urn:t"><a xmlns="">foo</a></out>',
             tmp_path,
         )
-        assert parser.report.issues == []
+        assert doc.report.issues == []
 
     def test_builtin_reference_does_not_shadow_user_type_in_other_namespace(self, tmp_path):
         schema = (
@@ -139,13 +135,13 @@ class TestUnprefixedBuiltinsUnderDefaultXsdNs:
         # The unprefixed reference resolves to the xs:string built-in,
         # which accepts any text; the user type named "string" in urn:u
         # would reject this value.
-        parser = _parse(schema, '<builtinRef xmlns="urn:u">anything goes</builtinRef>', tmp_path)
-        assert parser.report.issues == []
+        doc = _parse(schema, '<builtinRef xmlns="urn:u">anything goes</builtinRef>', tmp_path)
+        assert doc.report.issues == []
         # The prefixed reference resolves to the user type in urn:u.
-        parser = _parse(schema, '<userRef xmlns="urn:u">wrong</userRef>', tmp_path)
-        assert _errors(parser)
-        parser = _parse(schema, '<userRef xmlns="urn:u">only</userRef>', tmp_path)
-        assert parser.report.issues == []
+        doc = _parse(schema, '<userRef xmlns="urn:u">wrong</userRef>', tmp_path)
+        assert _errors(doc)
+        doc = _parse(schema, '<userRef xmlns="urn:u">only</userRef>', tmp_path)
+        assert doc.report.issues == []
 
 
 class TestSchemaLocationHints:
@@ -167,7 +163,7 @@ class TestSchemaLocationHints:
 
     def test_missing_hint_is_warning_not_error(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        parser = _parse(
+        doc = _parse(
             self.MAIN_SCHEMA,
             self.INSTANCE,
             tmp_path,
@@ -175,13 +171,13 @@ class TestSchemaLocationHints:
         # The hint resolves against the working directory (the instance
         # arrived as a stream, so it has no directory of its own) and
         # cannot be opened: a warning, never an error.
-        assert "schema-hint" in _codes(parser)
-        assert "import-unresolved" not in _codes(parser)
-        assert not _errors(parser)
+        assert "schema-hint" in _codes(doc)
+        assert "import-unresolved" not in _codes(doc)
+        assert not _errors(doc)
 
     def test_explicit_namespace_schemas_failure_stays_error(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        parser = _parse(
+        doc = _parse(
             self.MAIN_SCHEMA,
             '<root xmlns="urn:m"><a>hi</a></root>',
             tmp_path,
@@ -189,11 +185,11 @@ class TestSchemaLocationHints:
         )
         unresolved = [
             issue
-            for issue in parser.report.issues
+            for issue in doc.report.issues
             if issue.code == "import-unresolved" and issue.severity.name == "ERROR"
         ]
         assert unresolved
-        assert "schema-hint" not in _codes(parser)
+        assert "schema-hint" not in _codes(doc)
 
     def test_loadable_hint_still_splices(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -201,14 +197,14 @@ class TestSchemaLocationHints:
             f'<xs:schema xmlns:xs="{XSD}" targetNamespace="urn:o">'
             '<xs:element name="o" type="xs:string"/></xs:schema>'
         )
-        parser = _parse(
+        doc = _parse(
             self.MAIN_SCHEMA,
             f'<root xmlns="urn:m" xmlns:xsi="{XSI}" '
             'xsi:schemaLocation="urn:m extra.xsd">'
             "<a>hi</a></root>",
             tmp_path,
         )
-        assert parser.report.issues == []
+        assert doc.report.issues == []
 
 
 class TestTransitiveSubstitutionDispatch:
@@ -247,8 +243,8 @@ class TestTransitiveSubstitutionDispatch:
             "<leaf><payload>x</payload></leaf>"
             "</inner></root>"
         )
-        parser = _parse(self.SCHEMA, instance, tmp_path)
-        assert parser.report.issues == []
+        doc = _parse(self.SCHEMA, instance, tmp_path)
+        assert doc.report.issues == []
 
     def test_member_admitted_under_own_declaration(self, tmp_path):
         instance = (
@@ -257,8 +253,8 @@ class TestTransitiveSubstitutionDispatch:
             "<leaf><payload>x</payload></leaf>"
             "</midSlot></root>"
         )
-        parser = _parse(self.SCHEMA, instance, tmp_path)
-        assert parser.report.issues == []
+        doc = _parse(self.SCHEMA, instance, tmp_path)
+        assert doc.report.issues == []
 
     def test_member_head_chain_admits_head_itself_repeatedly(self, tmp_path):
         instance = (
@@ -268,8 +264,8 @@ class TestTransitiveSubstitutionDispatch:
             "<leaf><payload>y</payload></leaf>"
             "</inner></root>"
         )
-        parser = _parse(self.SCHEMA, instance, tmp_path)
-        assert parser.report.issues == []
+        doc = _parse(self.SCHEMA, instance, tmp_path)
+        assert doc.report.issues == []
 
 
 @pytest.mark.parametrize("mode", [ParseModes.NAMESPACED, ParseModes.STRICT])
@@ -283,14 +279,14 @@ def test_legacy_mode_hint_failure_is_still_advisory(tmp_path, monkeypatch, mode)
     instance = (
         f'<root xmlns="urn:m" xmlns:xsi="{XSI}" xsi:schemaLocation="urn:m missing.xsd">hi</root>'
     )
-    parser = _parse(schema, instance, tmp_path, mode=mode)
+    doc = _parse(schema, instance, tmp_path, mode=mode)
     if mode.namespaces == "strict":
-        assert "schema-hint" in _codes(parser)
-        assert "import-unresolved" not in _codes(parser)
+        assert "schema-hint" in _codes(doc)
+        assert "import-unresolved" not in _codes(doc)
     else:
         # Legacy mode does not consume extra hint pairs at all; the
         # parse must not fail either way.
-        assert not _errors(parser)
+        assert not _errors(doc)
 
 
 class TestXsiTypeDispatch:
@@ -311,8 +307,8 @@ class TestXsiTypeDispatch:
         instance = (
             f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" xsi:nil="true" xsi:type="xsd:string"/>'
         )
-        parser = _parse(self.UNTYPED_ROOT, instance, tmp_path)
-        assert not _errors(parser), [i.format() for i in parser.report.issues]
+        doc = _parse(self.UNTYPED_ROOT, instance, tmp_path)
+        assert not _errors(doc), [i.format() for i in doc.report.issues]
 
     def test_untyped_child_admits_simple_xsi_type(self, tmp_path):
         schema = (
@@ -323,8 +319,8 @@ class TestXsiTypeDispatch:
             "</xs:schema>"
         )
         instance = f'<doc xmlns:xsi="{XSI}" xmlns:xsd="{XSD}"><e2 xsi:type="xsd:Name">a</e2></doc>'
-        parser = _parse(schema, instance, tmp_path)
-        assert not _errors(parser), [i.format() for i in parser.report.issues]
+        doc = _parse(schema, instance, tmp_path)
+        assert not _errors(doc), [i.format() for i in doc.report.issues]
 
     def test_xsi_type_ws_collapsed(self, tmp_path):
         schema = (
@@ -336,14 +332,14 @@ class TestXsiTypeDispatch:
             f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" '
             'xsi:type="\n    xsd:boolean\n    ">true</root>'
         )
-        parser = _parse(schema, instance, tmp_path)
-        assert not _errors(parser), [i.format() for i in parser.report.issues]
+        doc = _parse(schema, instance, tmp_path)
+        assert not _errors(doc), [i.format() for i in doc.report.issues]
 
     def test_declared_type_still_rejects_unrelated_xsi_type(self, tmp_path):
         schema = f'<xs:schema xmlns:xs="{XSD}"><xs:element name="r" type="xs:string"/></xs:schema>'
         instance = f'<r xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" xsi:type="xsd:int">1</r>'
-        parser = _parse(schema, instance, tmp_path)
-        assert "xsi-type" in _codes(parser)
+        doc = _parse(schema, instance, tmp_path)
+        assert "xsi-type" in _codes(doc)
 
     def test_abstract_dynamic_type_is_reported(self, tmp_path):
         schema = (
@@ -355,8 +351,8 @@ class TestXsiTypeDispatch:
             "</xs:schema>"
         )
         instance = f'<root xmlns:xsi="{XSI}"><a>x</a></root>'
-        parser = _parse(schema, instance, tmp_path)
-        assert "abstract-type" in _codes(parser)
+        doc = _parse(schema, instance, tmp_path)
+        assert "abstract-type" in _codes(doc)
 
     def test_simple_xsi_type_root_rejects_undeclared_attribute(self, tmp_path):
         # SUN typeDef01201m1/01202m1: an xsi:type override to a simple type
@@ -369,8 +365,8 @@ class TestXsiTypeDispatch:
             f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" '
             'xsi:nil="true" xsi:type="xsd:string" attr="x"/>'
         )
-        parser = _parse(schema, instance, tmp_path)
-        assert "unexpected-attribute" in _codes(parser)
+        doc = _parse(schema, instance, tmp_path)
+        assert "unexpected-attribute" in _codes(doc)
 
     def test_simple_xsi_type_root_without_extra_attribute_is_valid(self, tmp_path):
         schema = (
@@ -379,8 +375,8 @@ class TestXsiTypeDispatch:
         instance = (
             f'<root xmlns:xsi="{XSI}" xmlns:xsd="{XSD}" xsi:nil="true" xsi:type="xsd:string"/>'
         )
-        parser = _parse(schema, instance, tmp_path)
-        assert "unexpected-attribute" not in _codes(parser)
+        doc = _parse(schema, instance, tmp_path)
+        assert "unexpected-attribute" not in _codes(doc)
 
 
 class TestSchemaBlockDefault:
@@ -418,12 +414,12 @@ class TestSchemaBlockDefault:
         )
 
     def test_block_default_extension_rejects_extension_override(self, tmp_path):
-        parser = _parse(self.SCHEMA, self._instance("De"), tmp_path)
-        assert "xsi-type" in _codes(parser)
+        doc = _parse(self.SCHEMA, self._instance("De"), tmp_path)
+        assert "xsi-type" in _codes(doc)
 
     def test_block_default_extension_admits_restriction_override(self, tmp_path):
-        parser = _parse(self.SCHEMA, self._instance("Dr"), tmp_path)
-        assert "xsi-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+        doc = _parse(self.SCHEMA, self._instance("Dr"), tmp_path)
+        assert "xsi-type" not in _codes(doc), [i.format() for i in doc.report.issues]
 
     def test_explicit_empty_element_block_keeps_the_type_block(self, tmp_path):
         # SUN test003a: ``block=""`` clears the element's own contribution,
@@ -432,8 +428,8 @@ class TestSchemaBlockDefault:
             '<xs:element name="item" type="t:B"/>',
             '<xs:element name="item" type="t:B" block=""/>',
         )
-        parser = _parse(schema, self._instance("De"), tmp_path)
-        assert "xsi-type" in _codes(parser)
+        doc = _parse(schema, self._instance("De"), tmp_path)
+        assert "xsi-type" in _codes(doc)
 
 
 class TestAnyAtomicTypeXsiType:
@@ -451,16 +447,16 @@ class TestAnyAtomicTypeXsiType:
     )
 
     def test_atomic_override_is_valid(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             self.SCHEMA,
             f'<root xmlns:xsi="{XSI}" xmlns:xs="{XSD}" xsi:type="xs:date">2010-11-10</root>',
             tmp_path,
         )
-        assert "xsi-type" not in _codes(parser), [i.format() for i in parser.report.issues]
+        assert "xsi-type" not in _codes(doc), [i.format() for i in doc.report.issues]
 
     def test_complex_override_is_rejected(self, tmp_path):
-        parser = _parse(self.SCHEMA, f'<root xmlns:xsi="{XSI}" xsi:type="C"/>', tmp_path)
-        assert "xsi-type" in _codes(parser)
+        doc = _parse(self.SCHEMA, f'<root xmlns:xsi="{XSI}" xsi:type="C"/>', tmp_path)
+        assert "xsi-type" in _codes(doc)
 
 
 class TestAnonymousInlineTypePseudoNames:
@@ -488,11 +484,9 @@ class TestAnonymousInlineTypePseudoNames:
             "</restriction></simpleType></element>"
             "</schema>"
         )
-        parser = _parse(
-            schema, '<root xmlns="foo"><nillable2>51 32 59</nillable2></root>', tmp_path
-        )
-        assert "unknown-type" not in _codes(parser), [i.format() for i in parser.report.issues]
-        assert not _errors(parser), [i.format() for i in parser.report.issues]
+        doc = _parse(schema, '<root xmlns="foo"><nillable2>51 32 59</nillable2></root>', tmp_path)
+        assert "unknown-type" not in _codes(doc), [i.format() for i in doc.report.issues]
+        assert not _errors(doc), [i.format() for i in doc.report.issues]
 
     def test_inline_union_under_restriction_resolves(self, tmp_path):
         schema = (
@@ -505,6 +499,6 @@ class TestAnonymousInlineTypePseudoNames:
             '<xs:element name="root" type="s:dt"/>'
             "</xs:schema>"
         )
-        parser = _parse(schema, '<root xmlns="urn:u">2020-01-01T00:00:00Z</root>', tmp_path)
-        assert "unknown-type" not in _codes(parser), [i.format() for i in parser.report.issues]
-        assert not _errors(parser), [i.format() for i in parser.report.issues]
+        doc = _parse(schema, '<root xmlns="urn:u">2020-01-01T00:00:00Z</root>', tmp_path)
+        assert "unknown-type" not in _codes(doc), [i.format() for i in doc.report.issues]
+        assert not _errors(doc), [i.format() for i in doc.report.issues]

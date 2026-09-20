@@ -1,7 +1,7 @@
 # W3C XML Schema Test Suite integration
 
 This package runs the official [W3C XML Schema Test Suite][suite]
-(`w3c/xsdtests`) against PyXSD, with
+(`w3c/xsdtests`) against pyxsd, with
 [`xmlschema`](https://xmlschema.readthedocs.io/) as an independent oracle.
 It is test infrastructure: it does not change `src/pyxsd/`.
 
@@ -55,18 +55,18 @@ laptop with `--jobs 8`.
 - **Applicability.** A test is `not-applicable` when no version dimension it
   is tagged with is claimed by the profile. Version tokens on sets, groups
   and tests are a disjunction; `expected/@version` is a conjunction.
-- **Verdict.** For PyXSD, a phase is valid when it produced no `ERROR`
+- **Verdict.** For pyxsd, a phase is valid when it produced no `ERROR`
   issues. A `PyXSDError` is an invalid schema or instance; any other
   exception is a harness-level `error`, because a crash is not a verdict.
 - **Expectations.** Where a test carries an unversioned expectation and a
   version-tagged one, the version-tagged one wins for a matching profile.
-- **Multi-document schemas.** PyXSD takes one schema path, so a group listing
+- **Multi-document schemas.** pyxsd takes one schema path, so a group listing
   several documents is driven by an otherwise-empty schema that imports
   namespaced documents and includes chameleons, in listed order. Documents
   are referenced by absolute path so their own relative includes still
   resolve.
 - **No schema.** A group with only instance tests is an `adapter-gap`:
-  PyXSD cannot validate without a schema.
+  pyxsd cannot validate without a schema.
 - **Oracle.** The `xmlschema` result is compared to the suite's expectations
   too. Where the oracle disagrees with the suite, that is an oracle-erratum
   candidate, not proof the suite is wrong.
@@ -74,7 +74,7 @@ laptop with `--jobs 8`.
 ## Baseline
 
 `baseline-xsd11.toml` records the outcome of every case under both engines.
-It is how the suite becomes a regression gate without requiring PyXSD to be
+It is how the suite becomes a regression gate without requiring pyxsd to be
 correct everywhere. Any change — a pass turning into a fail, or a known fail
 turning into a pass — fails the `--baseline` comparison until the baseline is
 intentionally regenerated.
@@ -99,7 +99,7 @@ Passing this suite is evidence, not certification:
 
 ## Continuous integration
 
-The suite is deliberately **not** wired into CI yet: it is slow, and PyXSD
+The suite is deliberately **not** wired into CI yet: it is slow, and pyxsd
 does not yet pass it, so a required job would be permanently red. The intended
 shape, once the pass rate makes it useful, is a nightly job sharded by
 contributor that compares against the baseline. Revisit after the engine has

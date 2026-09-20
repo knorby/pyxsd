@@ -18,7 +18,7 @@ from typing import ClassVar
 
 import pytest
 
-import pyxsd.parser  # noqa: F401 -- imported first; pyxsd.identity is circular otherwise
+import pyxsd.schema  # noqa: F401  (first import loads the ER stack in its safe order)
 from pyxsd.binding import ParseModes
 from pyxsd.content_model import (
     ChildMatch,
@@ -66,7 +66,7 @@ from pyxsd.identity import (
     _valueSpaceKey,
     check_identity_constraints,
 )
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import ValidationReport
 from pyxsd.writers import XmlTagWriter
@@ -90,24 +90,13 @@ XSD_TAIL = "</xs:schema>"
 
 
 @pytest.fixture
-def schema_report(tmp_path, monkeypatch):
-    """Parse a schema fragment and return the report, instance phase stubbed.
-
-    Mirrors ``tests/test_content_models.py`` so schemas without a root
-    element declaration can still be inspected.
-    """
-    monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
+def schema_report(tmp_path):
+    """Compile a schema fragment and return its schema-phase report."""
     schema_path = tmp_path / "schema.xsd"
 
     def _parse(schema_string):
         schema_path.write_text(XSD_HEAD + schema_string + XSD_TAIL, encoding="utf-8")
-        parser = PyXSD(
-            io.StringIO("<pyxsd-schema-probe/>"),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        )
-        return parser.report
+        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
 
     return _parse
 
@@ -118,13 +107,7 @@ def full_parse(body, xml, tmp_path):
     instance_path = tmp_path / "instance.xml"
     schema_path.write_text(XSD_HEAD + body + XSD_TAIL, encoding="utf-8")
     instance_path.write_text(xml, encoding="utf-8")
-    return PyXSD(
-        str(instance_path),
-        str(schema_path),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
-    )
+    return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(str(instance_path))
 
 
 def schema_tree(body):
@@ -183,7 +166,8 @@ def test_importing_the_main_module_does_not_run_the_cli():
 def test_lazy_package_exports_resolve():
     import pyxsd
 
-    assert pyxsd.PyXSD.__name__ == "PyXSD"
+    assert pyxsd.Schema.__name__ == "Schema"
+    assert pyxsd.Document.__name__ == "Document"
     assert pyxsd.XMLNode.__name__ == "XMLNode"
     assert pyxsd.BindingPolicy.__name__ == "BindingPolicy"
     assert pyxsd.ParseModes.NAMESPACED
@@ -628,8 +612,8 @@ def test_typed_attribute_value_survives_broken_declarations():
 
 def test_root_id_value_binds_nothing_and_is_reported(tmp_path):
     """The validation root's own ID-typed value identifies no element."""
-    parser = full_parse('<xs:element name="r" type="xs:ID"/>', "<r>abc</r>", tmp_path)
-    unresolved = [issue for issue in parser.report.errors if issue.code == "idref-unresolved"]
+    doc = full_parse('<xs:element name="r" type="xs:ID"/>', "<r>abc</r>", tmp_path)
+    unresolved = [issue for issue in doc.report.errors if issue.code == "idref-unresolved"]
     assert len(unresolved) == 1
     assert "identifies no element" in unresolved[0].message
 
@@ -904,20 +888,20 @@ ATTRIBUTE_BODY = (
 
 
 def _descriptor(tmp_path, body=ATTRIBUTE_BODY, xml="<r/>"):
-    parser = full_parse(body, xml, tmp_path)
-    return type(parser.schemaRootInstance).a
+    doc = full_parse(body, xml, tmp_path)
+    return type(doc.root).a
 
 
 def test_descriptor_get_returns_the_default_for_an_absent_attribute(tmp_path):
-    parser = full_parse(
+    doc = full_parse(
         "<xs:element name='r'><xs:complexType>"
         "<xs:attribute name='a' type='xs:int' default='5'/>"
         "</xs:complexType></xs:element>",
         "<r/>",
         tmp_path,
     )
-    assert parser.report.errors == []
-    assert parser.schemaRootInstance.a == 5
+    assert doc.report.errors == []
+    assert doc.root.a == 5
 
 
 def test_descriptor_set_reports_values_outside_the_declared_type(tmp_path):
@@ -928,8 +912,8 @@ def test_descriptor_set_reports_values_outside_the_declared_type(tmp_path):
         "<xs:complexType name='Ct'><xs:sequence>"
         "<xs:element name='x' type='xs:string'/></xs:sequence></xs:complexType>"
     )
-    parser = full_parse(complex_type_body, '<r a="boom"/>', tmp_path)
-    invalid = [issue for issue in parser.report.errors if issue.code == "invalid-attribute"]
+    doc = full_parse(complex_type_body, '<r a="boom"/>', tmp_path)
+    invalid = [issue for issue in doc.report.errors if issue.code == "invalid-attribute"]
     assert len(invalid) == 1
     assert "cannot be validated" in invalid[0].message
 
@@ -940,7 +924,6 @@ def test_descriptor_set_without_a_parser_logs_invalid_values(tmp_path, monkeypat
         "<xs:element name='r'><xs:complexType>"
         "<xs:attribute name='a' type='xs:int'/></xs:complexType></xs:element>",
     )
-    monkeypatch.delattr(descriptor, "pyXSD", raising=False)
     with caplog.at_level(logging.ERROR, logger="pyxsd.element_representatives.attribute"):
         Attribute.__set__(descriptor, SimpleNamespace(), "not-an-int")
     assert "has an invalid value" in caplog.text
@@ -948,7 +931,6 @@ def test_descriptor_set_without_a_parser_logs_invalid_values(tmp_path, monkeypat
 
 def test_descriptor_set_without_a_parser_logs_unvalidatable_values(tmp_path, monkeypatch, caplog):
     descriptor = _descriptor(tmp_path)
-    monkeypatch.delattr(descriptor, "pyXSD", raising=False)
     monkeypatch.setattr(descriptor, "getType", lambda: type("Plain", (), {}))
     with caplog.at_level(logging.ERROR, logger="pyxsd.element_representatives.attribute"):
         Attribute.__set__(descriptor, SimpleNamespace(), "x")
@@ -1049,13 +1031,10 @@ def test_user_declaration_in_the_xsi_namespace_is_reported(tmp_path):
         "<xs:attribute name='userFoo' type='xs:string'/></xs:schema>"
     )
     (tmp_path / "schema.xsd").write_text(schema, encoding="utf-8")
-    parser = PyXSD(
-        io.StringIO("<probe/>"),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
+    schema_obj = Schema.compile(str(tmp_path / "schema.xsd"))
+    assert any(
+        "XML Schema instance namespace" in issue.message for issue in schema_obj.report.errors
     )
-    assert any("XML Schema instance namespace" in issue.message for issue in parser.report.errors)
 
 
 def test_attribute_declaration_reports_unrecognised_attributes(schema_report):
@@ -1129,10 +1108,10 @@ def test_extension_base_resolution_with_a_resolvable_base(tmp_path):
         "<xs:sequence><xs:element name='b'/></xs:sequence>"
         "</xs:extension></xs:complexContent></xs:complexType>"
     )
-    parser = full_parse(body, "<r><a>x</a><b>y</b></r>", tmp_path)
+    doc = full_parse(body, "<r><a>x</a><b>y</b></r>", tmp_path)
     types = [
         entry
-        for entries in parser.components.values()
+        for entries in doc.schema.components.values()
         for entry in entries
         if type(entry).__name__ == "ComplexType"
     ]

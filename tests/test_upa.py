@@ -128,23 +128,16 @@ class TestChoiceDeterminism:
 
 
 @pytest.fixture
-def parse(tmp_path, monkeypatch):
-    import io
+def parse(tmp_path):
 
-    from pyxsd.parser import PyXSD
+    from pyxsd.schema import Schema
 
-    monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
     schema_path = tmp_path / "schema.xsd"
     head = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
 
     def _parse(schema_string: str, head: str = head):
         schema_path.write_text(head + schema_string + "</xs:schema>", encoding="utf-8")
-        return PyXSD(
-            io.StringIO("<pyxsd-schema-probe/>"),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
 
     return _parse
 

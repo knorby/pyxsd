@@ -13,17 +13,17 @@ from conftest import run_parser
 
 class TestAllCompositor:
     def test_fixture_parses_clean(self):
-        parser = run_parser("all")
-        assert parser.report.has_errors is False
+        doc = run_parser("all")
+        assert doc.report.has_errors is False
 
     def test_elements_declared_from_all(self):
-        parser = run_parser("all")
-        flag_cls = parser.classes["flagSet"]
+        doc = run_parser("all")
+        flag_cls = doc.schema.classes["flagSet"]
         assert flag_cls._elementNames_ == ["red", "green", "blue"]
 
     def test_any_order_accepted(self):
-        parser = run_parser("all")
-        root = parser.parseXML()
+        doc = run_parser("all")
+        root = doc.root
         # blue comes before red in the instance; both accepted (order
         # checking in an 'all' compositor is order-agnostic). Children
         # are recorded in declaration order.
@@ -31,8 +31,8 @@ class TestAllCompositor:
         assert names == ["blue", "red"]
 
     def test_typed_values(self):
-        parser = run_parser("all")
-        root = parser.parseXML()
+        doc = run_parser("all")
+        root = doc.root
         values = {child._name_: child for child in root._children_}
         assert str(values["red"]) == "bright"
 
@@ -48,14 +48,15 @@ class TestAllCompositor:
             '<xs:element name="flags" type="flagSet"/></xs:schema>'
         )
         instance.write_text("<flags><blue>x</blue></flags>")
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
-        parser = PyXSD(str(instance), str(schema), xmlFileOutput=False, transformOutputName=None)
-        codes = [issue.code for issue in parser.report.issues]
+        compiled = Schema.compile(str(schema))
+        doc = compiled.parse(str(instance))
+        codes = [issue.code for issue in doc.report.issues]
         assert "occurrence-min" in codes
 
     def test_too_many_occurrences(self, tmp_path):
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
         instance = tmp_path / "instance.xml"
@@ -67,13 +68,14 @@ class TestAllCompositor:
             '<xs:element name="flags" type="flagSet"/></xs:schema>'
         )
         instance.write_text("<flags><red>a</red><red>b</red></flags>")
-        parser = PyXSD(str(instance), str(schema), xmlFileOutput=False, transformOutputName=None)
-        codes = [issue.code for issue in parser.report.issues]
+        compiled = Schema.compile(str(schema))
+        doc = compiled.parse(str(instance))
+        codes = [issue.code for issue in doc.report.issues]
         assert "occurrence-max" in codes
 
     def test_maxOccurs_in_all_warns(self, caplog, tmp_path):
         """XSD 1.0 forbids maxOccurs > 1 inside xs:all."""
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
         instance = tmp_path / "instance.xml"
@@ -87,12 +89,7 @@ class TestAllCompositor:
         instance.write_text("<flags><red>a</red></flags>")
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="pyxsd.element_representatives.complex_type"):
-            PyXSD(
-                str(instance),
-                str(schema),
-                xmlFileOutput=False,
-                transformOutputName=None,
-            )
+            Schema.compile(str(schema)).parse(str(instance))
         assert any("maxOccurs" in record.message for record in caplog.records)
 
 
@@ -103,29 +100,29 @@ class TestAllCompositor:
 
 class TestGroups:
     def test_fixture_parses_clean(self):
-        parser = run_parser("groups")
-        assert parser.report.has_errors is False
+        doc = run_parser("groups")
+        assert doc.report.has_errors is False
 
     def test_group_elements_flattened_in_order(self):
-        parser = run_parser("groups")
-        point_cls = parser.classes["auditPoint"]
+        doc = run_parser("groups")
+        point_cls = doc.schema.classes["auditPoint"]
         assert point_cls._elementNames_ == ["x", "y"]
 
     def test_attribute_group_merged(self):
-        parser = run_parser("groups")
-        point_cls = parser.classes["auditPoint"]
+        doc = run_parser("groups")
+        point_cls = doc.schema.classes["auditPoint"]
         assert point_cls._attributeNames_ == ["by", "note"]
 
     def test_instance_values(self):
-        parser = run_parser("groups")
-        root = parser.parseXML()
+        doc = run_parser("groups")
+        root = doc.root
         assert str(root.by) == "kali"
         assert str(root.note) == "first point"
         names = [child._name_ for child in root._children_]
         assert names == ["x", "y"]
 
     def test_unknown_group_ref(self, tmp_path):
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
         instance = tmp_path / "instance.xml"
@@ -135,12 +132,13 @@ class TestGroups:
             '<xs:element name="root" type="t"/></xs:schema>'
         )
         instance.write_text("<root/>")
-        parser = PyXSD(str(instance), str(schema), xmlFileOutput=False, transformOutputName=None)
-        codes = [issue.code for issue in parser.report.issues]
+        compiled = Schema.compile(str(schema))
+        doc = compiled.parse(str(instance))
+        codes = [issue.code for issue in doc.report.issues]
         assert "unknown-group" in codes
 
     def test_circular_group_ref(self, tmp_path):
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
         instance = tmp_path / "instance.xml"
@@ -157,12 +155,13 @@ class TestGroups:
             "</xs:schema>"
         )
         instance.write_text("<root/>")
-        parser = PyXSD(str(instance), str(schema), xmlFileOutput=False, transformOutputName=None)
-        codes = [issue.code for issue in parser.report.issues]
+        compiled = Schema.compile(str(schema))
+        doc = compiled.parse(str(instance))
+        codes = [issue.code for issue in doc.report.issues]
         assert "circular-group" in codes
 
     def test_wrong_order_in_group_sequence(self, tmp_path):
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
         instance = tmp_path / "instance.xml"
@@ -176,12 +175,13 @@ class TestGroups:
             "</xs:sequence></xs:group></xs:schema>"
         )
         instance.write_text("<root><y>2</y><x>1</x></root>")
-        parser = PyXSD(str(instance), str(schema), xmlFileOutput=False, transformOutputName=None)
-        codes = [issue.code for issue in parser.report.issues]
+        compiled = Schema.compile(str(schema))
+        doc = compiled.parse(str(instance))
+        codes = [issue.code for issue in doc.report.issues]
         assert "order" in codes
 
     def test_unknown_attribute_group_ref(self, tmp_path):
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
         instance = tmp_path / "instance.xml"
@@ -191,8 +191,9 @@ class TestGroups:
             '<xs:element name="root" type="t"/></xs:schema>'
         )
         instance.write_text('<root by="x"/>')
-        parser = PyXSD(str(instance), str(schema), xmlFileOutput=False, transformOutputName=None)
-        codes = [issue.code for issue in parser.report.issues]
+        compiled = Schema.compile(str(schema))
+        doc = compiled.parse(str(instance))
+        codes = [issue.code for issue in doc.report.issues]
         assert "unknown-attributeGroup" in codes
 
 
@@ -203,27 +204,27 @@ class TestGroups:
 
 class TestUnions:
     def test_fixture_parses_clean(self):
-        parser = run_parser("unions")
-        assert parser.report.has_errors is False
+        doc = run_parser("unions")
+        assert doc.report.has_errors is False
 
     def test_named_member_union_integer(self):
-        parser = run_parser("unions")
-        root = parser.parseXML()
+        doc = run_parser("unions")
+        root = doc.root
         size = root.size
-        assert isinstance(size, parser.classes["sizeOrName"])
+        assert isinstance(size, doc.schema.classes["sizeOrName"])
         assert size.memberValue == 42
 
     def test_inline_member_union_token(self):
-        parser = run_parser("unions")
-        root = parser.parseXML()
+        doc = run_parser("unions")
+        root = doc.root
         tag = root.tag
-        assert isinstance(tag, parser.classes["tokenOrCount"])
+        assert isinstance(tag, doc.schema.classes["tokenOrCount"])
         # the raw text stays on the instance; the stripped form is in
         # _value_ (set by primitiveValueFor)
         assert tag._value_ == ["padded"]
 
     def test_string_member_catches_all(self, tmp_path):
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
         instance = tmp_path / "instance.xml"
@@ -236,11 +237,12 @@ class TestUnions:
             '<xs:element name="root" type="t"/></xs:schema>'
         )
         instance.write_text("<root><v>1.5</v></root>")
-        parser = PyXSD(str(instance), str(schema), xmlFileOutput=False, transformOutputName=None)
-        assert parser.parseXML().v.memberValue == "1.5"
+        compiled = Schema.compile(str(schema))
+        doc = compiled.parse(str(instance))
+        assert doc.root.v.memberValue == "1.5"
 
     def test_no_matching_member_reports_error(self, tmp_path):
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
         instance = tmp_path / "instance.xml"
@@ -253,13 +255,14 @@ class TestUnions:
             '<xs:element name="root" type="t"/></xs:schema>'
         )
         instance.write_text("<root><v>not a date or integer</v></root>")
-        parser = PyXSD(str(instance), str(schema), xmlFileOutput=False, transformOutputName=None)
-        codes = [issue.code for issue in parser.report.issues]
+        compiled = Schema.compile(str(schema))
+        doc = compiled.parse(str(instance))
+        codes = [issue.code for issue in doc.report.issues]
         assert "value" in codes
 
     def test_union_membership_introspection(self):
-        parser = run_parser("unions")
-        union = parser.classes["sizeOrName"]
+        doc = run_parser("unions")
+        union = doc.schema.classes["sizeOrName"]
         from pyxsd.xsd_data_types import Integer, String
 
         assert union._unionMembers == [Integer, String]
@@ -272,39 +275,39 @@ class TestUnions:
 
 class TestWildcards:
     def test_fixture_parses_clean(self):
-        parser = run_parser("wildcards")
-        assert parser.report.has_errors is False
+        doc = run_parser("wildcards")
+        assert doc.report.has_errors is False
 
     def test_undeclared_children_parsed_generically(self):
-        parser = run_parser("wildcards")
-        root = parser.parseXML()
+        doc = run_parser("wildcards")
+        root = doc.root
         children = {child._name_: child for child in root._children_}
         assert "title" in children
         extra = [child for child in root._children_ if child._name_ == "extra"]
         assert len(extra) == 2
 
     def test_generic_instance_attributes_and_text(self):
-        parser = run_parser("wildcards")
-        root = parser.parseXML()
+        doc = run_parser("wildcards")
+        root = doc.root
         extra = next(child for child in root._children_ if child._name_ == "extra")
         assert extra._attribs_ == {"unit": "m"}
         assert extra._value_ == ["3.5"]
 
     def test_generic_children_recursed(self):
-        parser = run_parser("wildcards")
-        root = parser.parseXML()
+        doc = run_parser("wildcards")
+        root = doc.root
         extra = next(child for child in root._children_ if child._name_ == "extra")
         assert extra._children_ == []
 
     def test_any_attribute_accepted(self):
-        parser = run_parser("wildcards")
-        root = parser.parseXML()
+        doc = run_parser("wildcards")
+        root = doc.root
         assert root._attribs_.get("source") == "web"
-        codes = [issue.code for issue in parser.report.issues]
+        codes = [issue.code for issue in doc.report.issues]
         assert "unexpected-attribute" not in codes
 
     def test_no_wildcard_still_reports_unexpected(self, tmp_path):
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
         instance = tmp_path / "instance.xml"
@@ -315,6 +318,7 @@ class TestWildcards:
             '<xs:element name="root" type="t"/></xs:schema>'
         )
         instance.write_text('<root stray="1"><v>x</v></root>')
-        parser = PyXSD(str(instance), str(schema), xmlFileOutput=False, transformOutputName=None)
-        codes = [issue.code for issue in parser.report.issues]
+        compiled = Schema.compile(str(schema))
+        doc = compiled.parse(str(instance))
+        codes = [issue.code for issue in doc.report.issues]
         assert "unexpected-attribute" in codes

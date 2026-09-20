@@ -66,12 +66,21 @@ class Extension(ElementRepresentative):
 
     def addBaseToComplexType(self):
         """Used by complexContent. Adds its base to the complexType."""
-        baseType = self.getFromName(self.tagAttributes["base"])
+        # Silent lookup: the failure is reported below as this site's
+        # own ``unknown-base`` (report hygiene: no second
+        # ``unknown-component`` record for the same name).
+        baseType = self.getFromName(self.tagAttributes["base"], warn=False)
         if not baseType:
             logger.warning(
                 "could not resolve the base %r for the extension of %s",
                 self.tagAttributes.get("base"),
                 self.name,
+            )
+            self._reportSchemaWarning(
+                f"could not resolve the base {self.tagAttributes.get('base')!r} "
+                f"for the extension of {self.name}",
+                code="unknown-base",
+                phase="schema",
             )
             return None
         return None

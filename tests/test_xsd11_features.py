@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.xpath_assertions import (
     CompiledXPath,
     _AssertionChecker,
@@ -163,14 +163,13 @@ SCHEMA = """\
 
 
 def parse(body, xml, extra=""):
-    parser = PyXSD(
-        io.StringIO(xml),
-        io.StringIO(SCHEMA.format(body=body, extra=extra)),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
+    return (
+        Schema.compile(
+            io.StringIO(SCHEMA.format(body=body, extra=extra)), mode=ParseModes.NAMESPACED
+        )
+        .parse(io.StringIO(xml))
+        .report
     )
-    return parser.report
 
 
 def errors(report):
@@ -897,16 +896,12 @@ def test_open_content_component_is_stored_on_complex_type() -> None:
         '<xs:element name="temp" type="T"/>'
         "</xs:schema>"
     )
-    parser = PyXSD(
-        io.StringIO("<temp/>"),
-        io.StringIO(schema),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
+    doc = Schema.compile(io.StringIO(schema), mode=ParseModes.NAMESPACED).parse(
+        io.StringIO("<temp/>")
     )
     found = [
         entry
-        for entries in parser.components.values()
+        for entries in doc.schema.components.values()
         for entry in entries
         if type(entry).__name__ == "ComplexType" and entry.name == "T"
     ]
@@ -933,18 +928,14 @@ _DEFAULT_OPEN_CONTENT_BODY = (
 )
 
 
-def _parse_parser(body: str, xml: str = "<temp/>", extra: str = "") -> PyXSD:
-    return PyXSD(
-        io.StringIO(xml),
-        io.StringIO(SCHEMA.format(body=body, extra=extra)),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
-    )
+def _parse_doc(body: str, xml: str = "<temp/>", extra: str = ""):
+    return Schema.compile(
+        io.StringIO(SCHEMA.format(body=body, extra=extra)), mode=ParseModes.NAMESPACED
+    ).parse(io.StringIO(xml))
 
 
-def _named_type(parser: PyXSD, name: str):
-    for entries in parser.components.values():
+def _named_type(doc, name: str):
+    for entries in doc.schema.components.values():
         for entry in entries:
             if type(entry).__name__ == "ComplexType" and entry.name == name:
                 return entry
@@ -952,9 +943,9 @@ def _named_type(parser: PyXSD, name: str):
 
 
 def test_default_open_content_applies_to_type_without_open_content() -> None:
-    parser = _parse_parser(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix"'))
-    assert errors(parser.report) == []
-    stored = _named_type(parser, "NonEmpty").openContent
+    doc = _parse_doc(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix"'))
+    assert errors(doc.report) == []
+    stored = _named_type(doc, "NonEmpty").openContent
     assert stored is not None
     assert stored.mode == "suffix"
     assert stored.wildcard is not None
@@ -962,8 +953,8 @@ def test_default_open_content_applies_to_type_without_open_content() -> None:
 
 
 def test_default_open_content_does_not_touch_explicit_open_content() -> None:
-    parser = _parse_parser(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix"'))
-    stored = _named_type(parser, "Own").openContent
+    doc = _parse_doc(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix"'))
+    stored = _named_type(doc, "Own").openContent
     assert stored is not None
     assert stored.mode == "interleave"
     assert stored.wildcard is not None
@@ -973,15 +964,13 @@ def test_default_open_content_does_not_touch_explicit_open_content() -> None:
 def test_default_open_content_skips_empty_type_by_default() -> None:
     # appliesToEmpty defaults to false: an empty content type keeps no
     # open content even though the schema declares a default.
-    parser = _parse_parser(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix"'))
-    assert _named_type(parser, "Empty").openContent is None
+    doc = _parse_doc(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix"'))
+    assert _named_type(doc, "Empty").openContent is None
 
 
 def test_default_open_content_applies_to_empty_type_when_requested() -> None:
-    parser = _parse_parser(
-        _DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix" appliesToEmpty="true"')
-    )
-    stored = _named_type(parser, "Empty").openContent
+    doc = _parse_doc(_DEFAULT_OPEN_CONTENT_BODY.format(mode=' mode="suffix" appliesToEmpty="true"'))
+    stored = _named_type(doc, "Empty").openContent
     assert stored is not None
     assert stored.mode == "suffix"
 
@@ -996,9 +985,9 @@ def test_default_open_content_attachments_are_independent() -> None:
         '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
         '<xs:element name="temp" type="One"/>'
     )
-    parser = _parse_parser(body)
-    one = _named_type(parser, "One").openContent
-    two = _named_type(parser, "Two").openContent
+    doc = _parse_doc(body)
+    one = _named_type(doc, "One").openContent
+    two = _named_type(doc, "Two").openContent
     assert one is not None and two is not None
     assert one is not two
     assert one.wildcard is not two.wildcard
@@ -1014,8 +1003,8 @@ def test_default_open_content_applies_to_simple_content_type() -> None:
         '<xs:extension base="xs:string"/></xs:simpleContent></xs:complexType>'
         '<xs:element name="temp" type="S"/>'
     )
-    parser = _parse_parser(body, "<temp>text</temp>")
-    assert _named_type(parser, "S").openContent is not None
+    doc = _parse_doc(body, "<temp>text</temp>")
+    assert _named_type(doc, "S").openContent is not None
 
 
 def test_default_open_content_bad_mode_reports_open_content_invalid() -> None:
@@ -1097,18 +1086,14 @@ def test_default_open_content_redefine_type_takes_host_default(tmp_path) -> None
         '<xs:any namespace="urn:default" processContents="lax"/></xs:defaultOpenContent>'
         '<xs:element name="temp" type="beta"/></xs:schema>'
     )
-    parser = PyXSD(
-        io.StringIO("<temp/>"),
-        str(tmp_path / "main.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
+    doc = Schema.compile(str(tmp_path / "main.xsd"), mode=ParseModes.NAMESPACED).parse(
+        io.StringIO("<temp/>")
     )
-    assert errors(parser.report) == []
-    redefined = _named_type(parser, "beta").openContent
+    assert errors(doc.report) == []
+    redefined = _named_type(doc, "beta").openContent
     assert redefined is not None
     assert redefined.mode == "suffix"
-    assert _named_type(parser, "alpha").openContent is None
+    assert _named_type(doc, "alpha").openContent is None
 
 
 def test_default_open_content_not_applied_across_include(tmp_path) -> None:
@@ -1126,15 +1111,11 @@ def test_default_open_content_not_applied_across_include(tmp_path) -> None:
         '<xs:complexType name="alpha"><xs:sequence/></xs:complexType>'
         '<xs:element name="temp" type="alpha"/></xs:schema>'
     )
-    parser = PyXSD(
-        io.StringIO("<temp/>"),
-        str(tmp_path / "main.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
+    doc = Schema.compile(str(tmp_path / "main.xsd"), mode=ParseModes.NAMESPACED).parse(
+        io.StringIO("<temp/>")
     )
-    assert _named_type(parser, "alpha").openContent is not None
-    assert _named_type(parser, "beta").openContent is None
+    assert _named_type(doc, "alpha").openContent is not None
+    assert _named_type(doc, "beta").openContent is None
 
 
 def test_included_default_open_content_applies_in_its_document(tmp_path) -> None:
@@ -1152,15 +1133,11 @@ def test_included_default_open_content_applies_in_its_document(tmp_path) -> None
         '<xs:complexType name="alpha"><xs:sequence/></xs:complexType>'
         '<xs:element name="temp" type="alpha"/></xs:schema>'
     )
-    parser = PyXSD(
-        io.StringIO("<temp/>"),
-        str(tmp_path / "main.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
+    doc = Schema.compile(str(tmp_path / "main.xsd"), mode=ParseModes.NAMESPACED).parse(
+        io.StringIO("<temp/>")
     )
-    assert _named_type(parser, "alpha").openContent is None
-    beta = _named_type(parser, "beta").openContent
+    assert _named_type(doc, "alpha").openContent is None
+    beta = _named_type(doc, "beta").openContent
     assert beta is not None
     assert beta.wildcard is not None
     assert beta.wildcard.namespace == "urn:included"
@@ -1630,22 +1607,14 @@ def test_default_attributes_scoped_to_the_declaring_document(tmp_path) -> None:
         '<xs:attribute name="extra" type="xs:boolean" use="required"/></xs:attributeGroup>'
         '<xs:element name="temp" type="inc"/></xs:schema>'
     )
-    parser = PyXSD(
-        io.StringIO('<temp extra="true"/>'),
-        str(tmp_path / "main.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
+    doc = Schema.compile(str(tmp_path / "main.xsd"), mode=ParseModes.NAMESPACED).parse(
+        io.StringIO('<temp extra="true"/>')
     )
-    assert errors(parser.report) == ["unexpected-attribute"]
-    parser = PyXSD(
-        io.StringIO("<temp/>"),
-        str(tmp_path / "main.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
+    assert errors(doc.report) == ["unexpected-attribute"]
+    doc = Schema.compile(str(tmp_path / "main.xsd"), mode=ParseModes.NAMESPACED).parse(
+        io.StringIO("<temp/>")
     )
-    assert errors(parser.report) == []
+    assert errors(doc.report) == []
 
 
 # --- multi-head substitution (XSD 1.1 §3.3.6) -------------------------------

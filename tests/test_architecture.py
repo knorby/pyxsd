@@ -28,8 +28,8 @@ class TestInitSubclass:
         assert Plain._attributeNames_ == []
 
     def test_subclass_collects_descriptors_from_class_body(self):
-        parser = run_parser("inventory")
-        id_attr = parser.getClasses()["itemType"].__dict__["id"]
+        doc = run_parser("inventory")
+        id_attr = doc.schema.classes["itemType"].__dict__["id"]
 
         class WithAttr(SchemaBase):
             ident = id_attr
@@ -38,8 +38,8 @@ class TestInitSubclass:
         assert WithAttr._attributeNames_ == ["ident"]
 
     def test_attribute_descriptors_merge_through_mro(self):
-        parser = run_parser("inventory")
-        id_attr = parser.getClasses()["itemType"].__dict__["id"]
+        doc = run_parser("inventory")
+        id_attr = doc.schema.classes["itemType"].__dict__["id"]
 
         class WithAttr(SchemaBase):
             ident = id_attr
@@ -52,14 +52,14 @@ class TestInitSubclass:
 
 class TestSetName:
     def test_generated_descriptors_know_their_owner(self):
-        parser = run_parser("inventory")
-        item_cls = parser.getClasses()["itemType"]
+        doc = run_parser("inventory")
+        item_cls = doc.schema.classes["itemType"]
         assert item_cls.__dict__["name"].owner is item_cls
         assert item_cls.__dict__["id"].owner is item_cls
 
     def test_mismatched_binding_logs_warning(self, caplog):
-        parser = run_parser("inventory")
-        id_attr = parser.getClasses()["itemType"].__dict__["id"]
+        doc = run_parser("inventory")
+        id_attr = doc.schema.classes["itemType"].__dict__["id"]
 
         with caplog.at_level(logging.WARNING, logger="pyxsd.element_representatives.attribute"):
 
@@ -71,16 +71,16 @@ class TestSetName:
 
 class TestElementDescriptorSemantics:
     def test_set_stores_single_value(self):
-        parser = run_parser("inventory")
-        item_cls = parser.getClasses()["itemType"]
+        doc = run_parser("inventory")
+        item_cls = doc.schema.classes["itemType"]
         item = item_cls()
         item.name = String("wrench")
         assert item.name == "wrench"
         assert isinstance(item.name, String)
 
     def test_set_appends_unbounded_values(self):
-        parser = run_parser("inventory")
-        classes = parser.getClasses()
+        doc = run_parser("inventory")
+        classes = doc.schema.classes
         inventory_cls = classes["inventory|complexType"]
         item_cls = classes["itemType"]
         inventory = inventory_cls()
@@ -90,15 +90,15 @@ class TestElementDescriptorSemantics:
         assert inventory.item == [first, second]
 
     def test_set_rejects_wrong_type(self):
-        parser = run_parser("inventory")
-        item_cls = parser.getClasses()["itemType"]
+        doc = run_parser("inventory")
+        item_cls = doc.schema.classes["itemType"]
         item = item_cls()
         with pytest.raises(TypeError, match="quantity"):
             item.quantity = String("not an integer")
 
     def test_class_level_descriptor_access_returns_descriptor(self):
-        parser = run_parser("inventory")
-        item_cls = parser.getClasses()["itemType"]
+        doc = run_parser("inventory")
+        item_cls = doc.schema.classes["itemType"]
         # Accessing the descriptor through the class (rather than an
         # instance) returns the descriptor itself per the descriptor
         # protocol; the 0.1 code raised AttributeError instead.
@@ -108,14 +108,14 @@ class TestElementDescriptorSemantics:
 
 class TestHelpfulGetattr:
     def test_unknown_name_error_mentions_class_and_name(self):
-        parser = run_parser("inventory")
-        item_cls = parser.getClasses()["itemType"]
+        doc = run_parser("inventory")
+        item_cls = doc.schema.classes["itemType"]
         with pytest.raises(AttributeError, match=r"itemType.*no attribute 'widget'"):
             _ = item_cls().widget
 
     def test_error_lists_declared_elements_and_attributes(self):
-        parser = run_parser("inventory")
-        item_cls = parser.getClasses()["itemType"]
+        doc = run_parser("inventory")
+        item_cls = doc.schema.classes["itemType"]
         with pytest.raises(AttributeError) as excinfo:
             _ = item_cls().widget
         message = str(excinfo.value)
@@ -134,4 +134,7 @@ class TestHelpfulGetattr:
         class Plain(SchemaBase):
             pass
 
-        assert getattr(Plain(), "pyXSD", None) is None
+        # ``schema`` is the only parser seam a generated class carries;
+        # a plain subclass has neither it nor any host attribute.
+        assert getattr(Plain(), "host", None) is None
+        assert getattr(Plain(), "schema", None) is None

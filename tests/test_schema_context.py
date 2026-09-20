@@ -1,8 +1,8 @@
 """Schema-context isolation tests.
 
-Two live PyXSD parsers must not corrupt each other's schema context:
-the namespace overrides and form defaults are a per-parser snapshot on a
-thread-local context, re-parsing a tree activates that parser's own
+Two live parses must not corrupt each other's schema context: the
+namespace overrides and form defaults are a per-compile snapshot on a
+thread-local context, re-parsing a tree activates that parse's own
 context, and failed or nested constructions restore the enclosing
 context.
 """
@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+import pyxsd.document
 import pyxsd.schema_context as schema_context
 from pyxsd.binding import ParseModes
 from pyxsd.element_representatives.element_representative import (
@@ -18,7 +19,7 @@ from pyxsd.element_representatives.element_representative import (
     set_active_namespace_overrides,
 )
 from pyxsd.exceptions import PyXSDError
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 SIMPLE_SCHEMA = (
     '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
@@ -60,27 +61,19 @@ def _write_simple_files(directory):
 
 
 def _parse(directory):
-    return PyXSD(
-        directory / "instance.xml",
-        xsdFile=directory / "main.xsd",
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=ParseModes.NAMESPACED,
+    return Schema.compile(directory / "main.xsd", mode=ParseModes.NAMESPACED).parse(
+        directory / "instance.xml"
     )
 
 
 def _parse_simple(directory):
-    return PyXSD(
-        directory / "bi.xml",
-        xsdFile=directory / "bs.xsd",
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=ParseModes.NAMESPACED,
+    return Schema.compile(directory / "bs.xsd", mode=ParseModes.NAMESPACED).parse(
+        directory / "bi.xml"
     )
 
 
-def _type_namespace(parser, name):
-    for entries in parser.components.values():
+def _type_namespace(doc, name):
+    for entries in doc.schema.components.values():
         for entry in entries:
             if entry.name == name:
                 return entry.getNamespace()
@@ -166,7 +159,7 @@ def test_concurrent_parsers_capture_their_own_context(tmp_path, monkeypatch):
         if isinstance(value, BaseException):
             raise AssertionError(f"parser {key} failed under interleaving") from value
     first = results["a"]
-    assert isinstance(first, PyXSD)
+    assert isinstance(first, pyxsd.document.Document)
     assert _type_namespace(first, "T") == "urn:imp"
 
 
@@ -174,17 +167,12 @@ def test_failed_construction_leaves_no_active_context(tmp_path):
     """A parser that raises while building does not leak its context."""
     missing = tmp_path / "missing"
     with pytest.raises(PyXSDError):
-        PyXSD(
-            missing / "instance.xml",
-            xsdFile=missing / "schema.xsd",
-            xmlFileOutput="_No_Output_",
-            transformOutputName="_No_Output_",
-        )
+        Schema.compile(missing / "schema.xsd")
     assert schema_context.current_context() is None
 
-    # A later parser still builds normally.
-    parser = _parse_simple(_write_simple_files(tmp_path / "b"))
-    assert parser.report is not None
+    # A later parse still builds normally.
+    doc = _parse_simple(_write_simple_files(tmp_path / "b"))
+    assert doc.report is not None
 
 
 def test_nested_contexts_restore_the_outer_one():
@@ -199,9 +187,11 @@ def test_nested_contexts_restore_the_outer_one():
     assert schema_context.current_context() is None
 
 
-def test_parsexml_runs_under_the_parser_context(tmp_path, monkeypatch):
-    """Re-parsing an earlier parser activates its own context."""
-    first = _parse(_write_parser_files(tmp_path / "a"))
+def test_parse_runs_under_its_schema_context(tmp_path, monkeypatch):
+    """Binding a document activates its schema's own context."""
+    first_schema = Schema.compile(
+        _write_parser_files(tmp_path / "a") / "main.xsd", mode=ParseModes.NAMESPACED
+    )
     _parse_simple(_write_simple_files(tmp_path / "b"))
 
     seen = []
@@ -211,7 +201,10 @@ def test_parsexml_runs_under_the_parser_context(tmp_path, monkeypatch):
         seen.append(context)
         return original(context)
 
-    monkeypatch.setattr(schema_context, "active_context", spy)
-    first.parseXML()
+    # Schema.parse binds the name at import time; patch where it is used.
+    import pyxsd.schema as pyxsd_schema
 
-    assert first.schemaContext in seen
+    monkeypatch.setattr(pyxsd_schema, "active_context", spy)
+    first_schema.parse((tmp_path / "a") / "instance.xml")
+
+    assert first_schema._schema_context in seen

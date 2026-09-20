@@ -261,7 +261,7 @@ class AlternativeER(_DeclarationSite, ElementRepresentative):
         )
         return self._compiled
 
-    def resolveTypeClass(self, pyXSD: Any) -> type | None:
+    def resolveTypeClass(self, host: Any) -> type | None:
         """Resolves the alternative's type to a Python class.
 
         An inline type builds its class directly; a ``type`` attribute
@@ -280,19 +280,21 @@ class AlternativeER(_DeclarationSite, ElementRepresentative):
             return None
         if inline is not None:
             try:
-                alternative.type_class = inline.clsFor(pyXSD)
+                alternative.type_class = inline.clsFor(host)
             except Exception:
                 alternative.type_class = None
             return alternative.type_class
         raw = alternative.type_name
         if raw is None:
             return None
-        resolved = self.resolveSchemaQName(raw, parser=pyXSD)
+        resolved = self.resolveSchemaQName(raw, parser=host)
         alternative.resolved_name = resolved
         if _is_error_name(resolved):
             alternative.is_error = True
             return None
-        alternative.type_class = ElementRepresentative.typeFromName(resolved, pyXSD)
+        # A silent lookup: an unresolved alternative type is reported
+        # by the derivation pass (``alternative-invalid``), not here.
+        alternative.type_class = ElementRepresentative.typeFromName(resolved, host, warn=False)
         return alternative.type_class
 
 
@@ -339,7 +341,7 @@ def _alternatives_owner(descriptor: Any) -> Any:
     return descriptor
 
 
-def _alternative_usable(alternative: Alternative, pyXSD: Any) -> bool:
+def _alternative_usable(alternative: Alternative, host: Any) -> bool:
     """Whether a selected alternative's type can actually be built.
 
     A named type or an inline type whose base cannot be resolved (for
@@ -354,19 +356,19 @@ def _alternative_usable(alternative: Alternative, pyXSD: Any) -> bool:
     if alternative.is_error or alternative.type_class is not None:
         return True
     if alternative.type_name is not None and alternative.inline_type is None:
-        resolved = alternative.er.resolveSchemaQName(alternative.type_name, parser=pyXSD)
-        return ElementRepresentative.typeFromName(resolved, pyXSD) is not None
+        resolved = alternative.er.resolveSchemaQName(alternative.type_name, parser=host)
+        return ElementRepresentative.typeFromName(resolved, host, warn=False) is not None
     inline = alternative.inline_type
     if inline is None:
         return False
     for raw in getattr(inline, "superClassNames", ()) or ():
-        resolved = inline.resolveSchemaQName(raw, parser=pyXSD)
-        if ElementRepresentative.typeFromName(resolved, pyXSD) is None:
+        resolved = inline.resolveSchemaQName(raw, parser=host)
+        if ElementRepresentative.typeFromName(resolved, host, warn=False) is None:
             return False
     return True
 
 
-def _selected_class(alternative: Alternative, pyXSD: Any) -> Any:
+def _selected_class(alternative: Alternative, host: Any) -> Any:
     """Returns the selected alternative's governing type.
 
     ``ERROR_TYPE`` for ``xs:error``; otherwise the resolved Python class
@@ -377,20 +379,20 @@ def _selected_class(alternative: Alternative, pyXSD: Any) -> Any:
     if alternative.is_error:
         return ERROR_TYPE
     try:
-        usable = _alternative_usable(alternative, pyXSD)
+        usable = _alternative_usable(alternative, host)
     except Exception:
         usable = True
     if not usable:
         return None
-    if alternative.type_class is None and pyXSD is not None:
+    if alternative.type_class is None and host is not None:
         try:
-            alternative.er.resolveTypeClass(pyXSD)
+            alternative.er.resolveTypeClass(host)
         except Exception:
             return None
     return alternative.type_class
 
 
-def select_alternative_type(descriptor: Any, node: Any, pyXSD: Any) -> Any:
+def select_alternative_type(descriptor: Any, node: Any, host: Any) -> Any:
     """Selects the conditional type assignment governing *node*.
 
     Evaluates the declaration's alternatives in declaration order against
@@ -417,7 +419,7 @@ def select_alternative_type(descriptor: Any, node: Any, pyXSD: Any) -> Any:
         if alternative.test is None:
             # Only the final alternative may omit its test; it is the
             # default type (XSD 1.1 §3.3.2.1).
-            return _selected_class(alternative, pyXSD)
+            return _selected_class(alternative, host)
         compiled = alternative.compiled
         if compiled is None:
             # The schema phase already reported the unusable test; it can
@@ -428,7 +430,7 @@ def select_alternative_type(descriptor: Any, node: Any, pyXSD: Any) -> Any:
         except XPathError:
             continue
         if bool(result):
-            return _selected_class(alternative, pyXSD)
+            return _selected_class(alternative, host)
     return None
 
 
@@ -469,12 +471,12 @@ def check_element_alternatives(element: Any) -> None:
         # surfacing unrelated gaps (for example a not-yet-implemented
         # built-in base) as schema errors; skip it.
         return
-    pyXSD = getattr(element, "pyXSD", None) or getattr(element.getSchema(), "pyXSD", None)
-    if pyXSD is None:
+    host = getattr(element, "host", None) or getattr(element.getSchema(), "host", None)
+    if host is None:
         return
 
     for alternative in alternatives:
-        alternative.er.resolveTypeClass(pyXSD)
+        alternative.er.resolveTypeClass(host)
         if alternative.is_error:
             continue
         type_class = alternative.type_class

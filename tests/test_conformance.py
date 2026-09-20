@@ -22,6 +22,6 @@ def test_corpus_has_cases():
 
 @pytest.mark.parametrize("case", ALL_CASES, ids=lambda case: case["id"])
 def test_conformance_case(case, tmp_path):
-    """Run one corpus case through the real PyXSD pipeline."""
+    """Run one corpus case through the real pipeline."""
     passed, detail = run_case(case, tmp_path)
     assert passed, detail

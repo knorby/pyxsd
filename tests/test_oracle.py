@@ -28,14 +28,13 @@ corpus.
 
 from __future__ import annotations
 
-import io
 import os
 
 import pytest
 
 from conformance_runner import _errors, _materialize, case_mode, load_cases
 from pyxsd.exceptions import PyXSDError
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 _ORACLE_REQUESTED = os.environ.get("PYXSD_RUN_ORACLE") == "1"
 
@@ -147,27 +146,19 @@ _DOCUMENTED_DIVERGENCES = {
 def _pyxsd_verdict(case, directory):
     """Returns ``(schema_valid, instance_valid | None)`` for pyxsd."""
     has_instance = "instance" in case
-    instance_input: str | io.StringIO = (
-        str(directory / "instance.xml") if has_instance else io.StringIO("<x/>")
-    )
     try:
-        parser = PyXSD(
-            instance_input,
-            str(directory / "schema.xsd"),
-            xmlFileOutput=False,
-            transformOutputName=None,
-            mode=case_mode(case),
-        )
+        schema = Schema.compile(str(directory / "schema.xsd"), mode=case_mode(case))
     except PyXSDError:
         # pyxsd reports an unresolvable schema as a verdict, not a crash.
         return False, None
     except Exception as exc:
         # An internal crash is never agreement with the oracle.
         pytest.fail(f"pyxsd raised {type(exc).__name__} for {case['id']}: {exc}")
-    schema_ok = not _errors(parser.report.for_phase("schema"))
+    schema_ok = not _errors(schema.report)
     if not has_instance:
         return schema_ok, None
-    instance_ok = not _errors(parser.report.for_phase("instance"))
+    doc = schema.parse(str(directory / "instance.xml"))
+    instance_ok = not _errors(doc.report.for_phase("instance"))
     return schema_ok, instance_ok
 
 

@@ -6,12 +6,10 @@ members, the presence-based ``xsi:nil`` rule, and union-member
 ``xsi:type`` admission.
 """
 
-import io
-
 import pytest
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.validation import IssueSeverity
 
 
@@ -20,18 +18,12 @@ def _schema_codes(report) -> set[str]:
 
 
 @pytest.fixture
-def parse_schema(tmp_path, monkeypatch):
-    monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
+def parse_schema(tmp_path):
     schema_path = tmp_path / "schema.xsd"
 
     def _parse(schema_string: str):
         schema_path.write_text(schema_string, encoding="utf-8")
-        return PyXSD(
-            io.StringIO("<pyxsd-schema-probe/>"),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
 
     return _parse
 
@@ -43,12 +35,11 @@ def parse_document(tmp_path):
         instance_path = tmp_path / "instance.xml"
         schema_path.write_text(schema_string, encoding="utf-8")
         instance_path.write_text(instance_string, encoding="utf-8")
-        return PyXSD(
-            str(instance_path),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        return (
+            Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED)
+            .parse(str(instance_path))
+            .report
+        )
 
     return _parse
 

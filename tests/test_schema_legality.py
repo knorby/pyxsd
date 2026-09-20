@@ -5,12 +5,10 @@ declarations that carry a table-driven child grammar. These tests pin the
 public issue codes and the base mechanism that later tables build on.
 """
 
-import io
-
 import pytest
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.validation import IssueSeverity
 
 
@@ -23,24 +21,18 @@ def _schema_errors(report) -> list:
 
 
 @pytest.fixture
-def parse_schema(tmp_path, monkeypatch):
+def parse_schema(tmp_path):
     """Parse a schema without an instance and return the report.
 
     Mirrors ``tests/xsts/drivers.py::_schema_only_call``: the instance
     phase is stubbed out so a schema declaring no root element can still
     be inspected.
     """
-    monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
     schema_path = tmp_path / "schema.xsd"
 
     def _parse(schema_string: str):
         schema_path.write_text(schema_string, encoding="utf-8")
-        return PyXSD(
-            io.StringIO("<pyxsd-schema-probe/>"),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
 
     return _parse
 
@@ -2484,8 +2476,7 @@ class TestStrictReferenceResolution:
 class TestIdentityConstraintSymbolSpace:
     """Identity-constraint names are unique per target namespace."""
 
-    def test_same_key_name_in_one_namespace_is_rejected(self, tmp_path, monkeypatch):
-        import io
+    def test_same_key_name_in_one_namespace_is_rejected(self, tmp_path):
 
         (tmp_path / "inc.xsd").write_text(
             "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
@@ -2502,22 +2493,15 @@ class TestIdentityConstraintSymbolSpace:
             "<xsd:key name='KEY'><xsd:selector xpath='./person'/><xsd:field xpath='.'/></xsd:key>"
             "</xsd:element></xsd:schema>"
         )
-        monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
         (tmp_path / "s.xsd").write_text(schema)
-        report = PyXSD(
-            io.StringIO("<probe/>"),
-            str(tmp_path / "s.xsd"),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        report = Schema.compile(str(tmp_path / "s.xsd"), mode=ParseModes.NAMESPACED).report
         assert "declaration-duplicate" in _schema_codes(report)
 
 
 class TestSelfImportRejected:
     """An import must not name the importing schema's own targetNamespace."""
 
-    def test_self_import_is_rejected(self, tmp_path, monkeypatch):
-        import io
+    def test_self_import_is_rejected(self, tmp_path):
 
         (tmp_path / "other.xsd").write_text(
             "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
@@ -2531,14 +2515,8 @@ class TestSelfImportRejected:
             "<xsd:import namespace='urn:t' schemaLocation='other.xsd'/>"
             "</xsd:schema>"
         )
-        monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
         (tmp_path / "s.xsd").write_text(schema)
-        report = PyXSD(
-            io.StringIO("<probe/>"),
-            str(tmp_path / "s.xsd"),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        report = Schema.compile(str(tmp_path / "s.xsd"), mode=ParseModes.NAMESPACED).report
         assert "compose-invalid" in _schema_codes(report)
 
 

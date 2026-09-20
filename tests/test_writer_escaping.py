@@ -9,7 +9,7 @@ import io
 import xml.etree.ElementTree as ET
 
 from conftest import canonicalize
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.writers import XmlTreeWriter
 
 SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
@@ -38,14 +38,9 @@ def write_instance(instance_xml, schema_xml=SCHEMA, tmp_path=None):
     directory = tmp_path
     (directory / "instance.xml").write_text(instance_xml)
     (directory / "schema.xsd").write_text(schema_xml)
-    parser = PyXSD(
-        str(directory / "instance.xml"),
-        str(directory / "schema.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-    )
+    doc = Schema.compile(str(directory / "schema.xsd")).parse(str(directory / "instance.xml"))
     out = io.StringIO()
-    XmlTreeWriter(parser.schemaRootInstance, out)
+    XmlTreeWriter(doc.root, out)
     return out.getvalue()
 
 

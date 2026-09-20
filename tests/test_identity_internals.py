@@ -8,7 +8,6 @@ schema-phase declaration legality of key/unique/keyref and their
 selector/field children.
 """
 
-import io
 from types import SimpleNamespace
 
 import pytest
@@ -22,7 +21,7 @@ from pyxsd.identity import (
     _nodeValue,
     check_identity_constraints,
 )
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import IssueSeverity, ValidationReport
 from pyxsd.xpath_subset import XPathError, parse_xpath_subset
@@ -148,7 +147,6 @@ def schema_report(tmp_path, monkeypatch):
     A constraint fragment is embedded in a minimal root element; a full
     ``<xs:schema>`` document is used verbatim.
     """
-    monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
     schema_path = tmp_path / "schema.xsd"
 
     def _parse(constraint: str):
@@ -157,12 +155,7 @@ def schema_report(tmp_path, monkeypatch):
         else:
             schema = ROOT_OPEN + constraint + ROOT_CLOSE
         schema_path.write_text(schema, encoding="utf-8")
-        report = PyXSD(
-            io.StringIO("<pyxsd-schema-probe/>"),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        report = Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
         return [
             issue for issue in report.for_phase("schema") if issue.severity is IssueSeverity.ERROR
         ]

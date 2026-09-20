@@ -8,6 +8,7 @@ from conftest import (
     fixture_dir,
     run_parser,
 )
+from pyxsd.cli import main
 
 
 @pytest.mark.parametrize("fixture", ALL_FIXTURES)
@@ -19,22 +20,28 @@ def test_parsed_output_round_trips(fixture, tmp_path):
     multi-line text content must survive the parse/write cycle.
     """
     output = tmp_path / "parsed.xml"
-    parser = run_parser(fixture, xmlFileOutput=str(output))
+    doc = run_parser(fixture, xmlFileOutput=str(output))
     assert output.exists()
     assert_xml_canonically_equal(fixture_dir(fixture) / "instance.xml", output)
     # The schema classes are still reachable for inspection.
-    assert "schema" in parser.getClasses()
+    assert "schema" in doc.schema.classes
 
 
 @pytest.mark.parametrize("fixture", ALL_FIXTURES)
 def test_transformed_output_round_trips(fixture, tmp_path):
     """PrintData regurgitates the tree; the output must match the input."""
     output = tmp_path / "transformed.xml"
-    run_parser(
-        fixture,
-        xmlFileOutput=False,
-        transformOutputName=str(output),
-        transforms=["PrintData()"],
+    main(
+        [
+            "-i",
+            str(fixture_dir(fixture) / "instance.xml"),
+            "-s",
+            str(fixture_dir(fixture) / "schema.xsd"),
+            "-t",
+            "PrintData()",
+            "-o",
+            str(output),
+        ]
     )
     assert output.exists()
     assert_xml_canonically_equal(fixture_dir(fixture) / "instance.xml", output)
@@ -42,7 +49,7 @@ def test_transformed_output_round_trips(fixture, tmp_path):
 
 def test_print_data_stdout_round_trip(capsys):
     """The default transform output goes to stdout and round-trips."""
-    run_parser("inventory", transforms=["PrintData()"], transformOutputName="stdout")
+    main(["-i", str(fixture_dir("inventory") / "instance.xml"), "-t", "PrintData()"])
     out = capsys.readouterr().out
     assert "<inventory" in out
     assert "wrench" in out
@@ -67,18 +74,13 @@ def test_missing_required_attribute_is_reported(tmp_path):
     stripped.write_text(content)
     (tmp_path / "schema.xsd").write_text((directory / "schema.xsd").read_text())
 
-    from pyxsd.parser import PyXSD
+    from pyxsd.schema import Schema
 
-    parser = PyXSD(
-        str(stripped),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-    )
-    codes = [issue.code for issue in parser.report]
+    doc = Schema.compile(str(tmp_path / "schema.xsd")).parse(str(stripped))
+    codes = [issue.code for issue in doc.report]
     assert "missing-attribute" in codes
-    assert parser.report.has_errors
-    matching = [i for i in parser.report if i.code == "missing-attribute"]
+    assert doc.report.has_errors
+    matching = [i for i in doc.report if i.code == "missing-attribute"]
     assert any("required but was not found" in i.message for i in matching)
 
 
@@ -96,16 +98,11 @@ def test_wrong_element_order_is_reported(tmp_path):
     swapped.write_text(content)
     (tmp_path / "schema.xsd").write_text((directory / "schema.xsd").read_text())
 
-    from pyxsd.parser import PyXSD
+    from pyxsd.schema import Schema
 
-    parser = PyXSD(
-        str(swapped),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-    )
-    codes = [issue.code for issue in parser.report]
+    doc = Schema.compile(str(tmp_path / "schema.xsd")).parse(str(swapped))
+    codes = [issue.code for issue in doc.report]
     assert "order" in codes
-    assert parser.report.has_errors
-    matching = [i for i in parser.report if i.code == "order"]
+    assert doc.report.has_errors
+    matching = [i for i in doc.report if i.code == "order"]
     assert any("order error" in i.message for i in matching)

@@ -45,6 +45,7 @@ from typing import Any, NamedTuple
 from elementpath import XPath1Parser
 from elementpath.exceptions import ElementPathError
 
+from pyxsd.exceptions import XPathError  # re-exported for compatibility
 from pyxsd.namespaces import XML_NS, clark
 
 #: A translated step: ``('self',)``, ``('attribute', name-or-'*')`` or
@@ -54,10 +55,6 @@ Step = tuple[str, ...]
 
 #: One union alternative: ``(descendant_or_self_prefix, steps)``.
 Path = tuple[bool, tuple[Step, ...]]
-
-
-class XPathError(Exception):
-    """The expression is outside the identity-constraint XPath subset."""
 
 
 class ParsedXPath(NamedTuple):

@@ -16,7 +16,7 @@ import io
 import xml.etree.ElementTree as ET
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.writers import XmlTreeWriter
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
@@ -41,12 +41,8 @@ SCHEMA_STRING = """<?xml version="1.0" encoding="UTF-8"?>
 
 def parse(instance_xml, schema_xml):
     """Parse an in-memory instance and return the parser."""
-    return PyXSD(
-        io.StringIO(instance_xml),
-        io.StringIO(schema_xml),
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=ParseModes.NAMESPACED,
+    return Schema.compile(io.StringIO(schema_xml), mode=ParseModes.NAMESPACED).parse(
+        io.StringIO(instance_xml)
     )
 
 
@@ -59,9 +55,9 @@ def write(root):
 
 def test_unqualified_tree_with_xml_space_is_well_formed():
     """The reserved xml prefix is used even without Clark element names."""
-    parser = parse('<r xml:space="preserve"/>', SCHEMA_WITH_XML_SPACE)
-    assert [i.code for i in parser.report] == []
-    root = parser.schemaRootInstance
+    doc = parse('<r xml:space="preserve"/>', SCHEMA_WITH_XML_SPACE)
+    assert [i.code for i in doc.report] == []
+    root = doc.root
     assert root._attribs_[f"{{{XML_NS}}}space"] == "preserve"
 
     output = write(root)
@@ -74,10 +70,10 @@ def test_unqualified_tree_with_xml_space_is_well_formed():
 
 def test_carriage_return_in_text_round_trips():
     """A literal CR must be written as a character reference."""
-    parser = parse("<r>A&#13;B&#13;&#10;C</r>", SCHEMA_STRING)
-    assert parser.schemaRootInstance._value_ == ["A\rB\r\nC"]
+    doc = parse("<r>A&#13;B&#13;&#10;C</r>", SCHEMA_STRING)
+    assert doc.root._value_ == ["A\rB\r\nC"]
 
-    output = write(parser.schemaRootInstance)
+    output = write(doc.root)
     assert "&#13;" in output
 
     reparsed = ET.fromstring(output)

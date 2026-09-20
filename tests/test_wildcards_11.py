@@ -13,13 +13,12 @@ tighter EDC); instance-phase binding (``##defined`` /
 ``##definedSibling`` admission and the dynamic EDC) is a separate task.
 """
 
-import io
-
 import pytest
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.document import Document
 from pyxsd.particle_derivation import wildcard_subset
+from pyxsd.schema import Schema
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import (
     WildcardSpec,
@@ -48,50 +47,37 @@ def particle_restriction_issues(report) -> list:
 
 
 @pytest.fixture
-def parse(tmp_path, monkeypatch):
-    """Parse a schema fragment (wrapped in an ``xs:schema`` root) and
-    return the report.
-
-    Mirrors ``tests/test_content_models.py``: the instance phase is
-    stubbed out so a schema declaring no root element can still be
-    inspected.
+def parse(tmp_path):
+    """Compile a schema fragment (wrapped in an ``xs:schema`` root) and
+    return its schema-phase report.
     """
-    monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
     schema_path = tmp_path / "schema.xsd"
 
     def _parse(schema_string: str, head: str = XSD_HEAD):
         schema_path.write_text(head + schema_string + XSD_TAIL, encoding="utf-8")
-        return PyXSD(
-            io.StringIO("<pyxsd-schema-probe/>"),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
 
     return _parse
 
 
 @pytest.fixture
 def validate(tmp_path):
-    """Parse an inline instance against an inline schema and return the parser."""
+    """Bind an inline instance against an inline schema; returns the Document."""
     schema_path = tmp_path / "schema.xsd"
     instance_path = tmp_path / "instance.xml"
 
-    def _validate(schema_string: str, instance_string: str) -> PyXSD:
+    def _validate(schema_string: str, instance_string: str) -> Document:
         schema_path.write_text(schema_string, encoding="utf-8")
         instance_path.write_text(instance_string, encoding="utf-8")
-        return PyXSD(
-            str(instance_path),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
+        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(
+            str(instance_path)
         )
 
     return _validate
 
 
-def instance_codes(parser) -> set[str]:
-    return {issue.code for issue in parser.report.for_phase("instance")}
+def instance_codes(doc) -> set[str]:
+    return {issue.code for issue in doc.report.for_phase("instance")}
 
 
 # ---------------------------------------------------------------------------
@@ -1048,33 +1034,33 @@ class TestDynamicTighterEDC:
     def test_wild062_n1_unrelated_governing_type_is_invalid(self, validate):
         # wild062.n1: the second e is admitted by the lax wildcard and
         # governed by the global e (xs:time); the local e is xs:date.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + self._doc_body("xs:date", "xs:time", "lax") + XSD_TAIL,
             "<doc><e>2008-11-03</e><f/><e>12:20:02</e></doc>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def test_wild062_n2_governing_xsi_type_is_invalid(self, validate):
         # wild062.n2: xsi:type="xs:time" names the governing type, which
         # is still not derived from the local xs:date.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + self._doc_body("xs:date", "xs:time", "lax") + XSD_TAIL,
             f"<doc><e>2008-11-03</e><f/><e {_INSTANCE_XSI} xsi:type='xs:time'>12:20:02</e></doc>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def test_wild062_n3_xsi_type_on_a_wildcard_child_is_invalid(self, validate):
         # wild062.n3: the second f has no global declaration; the
         # instance-specified xs:time is the governing type and is not
         # derived from the local f's xs:string.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + self._doc_body("xs:date", "xs:time", "lax") + XSD_TAIL,
             f"<doc><e>2008-11-03</e><f/><f {_INSTANCE_XSI} xsi:type='xs:time'>12:20:02</f></doc>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def test_wild062_same_family_storage_restriction_is_valid(self, validate):
         # The storage lattice makes xs:duration a String subclass, so a
@@ -1085,20 +1071,20 @@ class TestDynamicTighterEDC:
             XSD_HEAD + "<xs:simpleType name='Dur'><xs:restriction base='xs:duration'/>"
             "</xs:simpleType>" + self._doc_body("xs:duration", "xs:duration", "lax") + XSD_TAIL
         )
-        parser = validate(
+        doc = validate(
             schema,
             f"<doc><e>P1D</e><f/><e {_INSTANCE_XSI} xsi:type='Dur'>P1Y</e></doc>",
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_wild062_v1_undeclared_wildcard_child_is_valid(self, validate):
         # wild062.v1: g is undeclared; a lax wildcard skips it, so there
         # is no governing type definition and clause 5 does not apply.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + self._doc_body("xs:date", "xs:time", "lax") + XSD_TAIL,
             "<doc><e>2008-11-03</e><f/><g>12:20:02</g></doc>",
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def _integer_body(self, wildcard: str = "lax") -> str:
         return (
@@ -1116,37 +1102,37 @@ class TestDynamicTighterEDC:
         # EDC clause passes; the lax wildcard still validates -12 against
         # the global positiveInteger it selects. Pins that the global
         # declaration survives a same-named local one.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + self._integer_body() + XSD_TAIL,
             "<doc><e>-12</e><f>42</f><e>-12</e></doc>",
         )
-        assert parser.report.has_errors
+        assert doc.report.has_errors
 
     def test_wild063_v1_derived_governing_type_is_valid(self, validate):
         # wild063.v1: a positive value is fine for the selected global.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + self._integer_body() + XSD_TAIL,
             "<doc><e>-12</e><f>42</f><e>12</e></doc>",
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_wild063_n2_base_governing_type_is_invalid(self, validate):
         # wild063.n2: xs:decimal (a base of xs:integer) does not satisfy
         # the direction of the clause.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + self._integer_body() + XSD_TAIL,
             f"<doc><e>-12</e><f>42</f><f {_INSTANCE_XSI} xsi:type='xs:decimal'>12.5</f></doc>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def test_wild063_v2_derived_xsi_type_is_valid(self, validate):
         # wild063.v2: xs:byte is derived from the local xs:integer.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + self._integer_body() + XSD_TAIL,
             f"<doc><e>-12</e><f>42</f><f {_INSTANCE_XSI} xsi:type='xs:byte'>3</f></doc>",
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def _substitution_body(self) -> str:
         return (
@@ -1164,37 +1150,37 @@ class TestDynamicTighterEDC:
         # wild064.n1: the wildcard-selected global e is xs:decimal, a
         # base of the local xs:integer (93.7 is a valid decimal, so the
         # EDC clause is the deciding rule).
-        parser = validate(
+        doc = validate(
             self._substitution_body(),
             "<doc><e>-12</e><f>42</f><e>93.7</e></doc>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def test_wild064_v1_substitution_member_is_valid(self, validate):
         # wild064.v1: g is implicitly contained (it is in e's
         # substitution group) and both its governing and locally
         # declared type are xs:byte.
-        parser = validate(
+        doc = validate(
             self._substitution_body(),
             "<doc><e>-12</e><f>42</f><g>6</g></doc>",
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_wild064_v2_xsi_type_derived_from_the_local_type_is_valid(self, validate):
         # wild064.v2: xs:int is derived from the local xs:integer even
         # though the selected global e is xs:decimal.
-        parser = validate(
+        doc = validate(
             self._substitution_body(),
             f"<doc><e>-12</e><f>42</f><e {_INSTANCE_XSI} xsi:type='xs:int'>93</e></doc>",
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_wild066_v1_union_member_governing_type_is_valid(self, validate):
         # wild066.v1: the governing global e is xs:date, a member of the
         # locally declared union(xs:date, xs:time), so the clause is
         # satisfied (the union analogue of the derived-type direction).
-        parser = validate(
+        doc = validate(
             XSD_HEAD + "<xs:complexType name='zing'><xs:sequence>"
             "<xs:element name='e'><xs:simpleType>"
             "<xs:union memberTypes='xs:date xs:time'/>"
@@ -1206,11 +1192,11 @@ class TestDynamicTighterEDC:
             "<xs:element name='e' type='xs:date'/>" + XSD_TAIL,
             "<doc><e>12:12:00</e><f>42</f><e>2008-11-02</e></doc>",
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_wild067_union_governing_type_is_invalid(self, validate):
         # wild067.n1: xs:duration is not a member of the local union.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + "<xs:complexType name='zing'><xs:sequence>"
             "<xs:element name='e'><xs:simpleType>"
             "<xs:union memberTypes='xs:date xs:time'/>"
@@ -1222,15 +1208,15 @@ class TestDynamicTighterEDC:
             "<xs:element name='e' type='xs:duration'/>" + XSD_TAIL,
             "<doc><e>12:12:00</e><f>42</f><e>PT12H</e></doc>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def test_wild068_base_type_particle_is_still_locally_declared(self, validate):
         # wild068.n1: zang's restriction drops the e particle, but the
         # locally declared type recurses to the base type (zing) before
         # it is absent, so the duration governing type is still
         # inconsistent.
-        parser = validate(
+        doc = validate(
             XSD_HEAD + "<xs:complexType name='zing'><xs:sequence>"
             "<xs:element name='e' minOccurs='0'><xs:simpleType>"
             "<xs:union memberTypes='xs:date xs:time'/>"
@@ -1248,8 +1234,8 @@ class TestDynamicTighterEDC:
             "<xs:element name='e' type='xs:duration'/>" + XSD_TAIL,
             "<doc><f>42</f><e>PT12H</e></doc>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def _wild075_body(self, process_contents: str) -> str:
         return (
@@ -1265,30 +1251,30 @@ class TestDynamicTighterEDC:
         # wild075.n1 (also wild076.n1's instance, via the test-set's
         # shared href): the second a is governed by the global a
         # (xs:date) and the local a is xs:integer.
-        parser = validate(
+        doc = validate(
             self._wild075_body("strict"),
             "<root><a>23</a><a>2010-10-16</a></root>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def test_wild076_lax_wildcard_governing_type_is_invalid(self, validate):
         # wild076.n1 against wild076.xsd: same shape with a lax wildcard.
-        parser = validate(
+        doc = validate(
             self._wild075_body("lax"),
             "<root><a>23</a><a>2010-10-16</a></root>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def test_wild077_skip_wildcard_is_exempt_from_the_edc_clause(self, validate):
         # wild077/wild080: a skip wildcard leaves the second a with no
         # governing type definition, so the clause does not fire.
-        parser = validate(
+        doc = validate(
             self._wild075_body("skip"),
             "<root><a>23</a><a>2010-10-16</a></root>",
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def _edc_wildcard_body(self) -> str:
         return (
@@ -1311,27 +1297,27 @@ class TestDynamicTighterEDC:
         # selects the global xs:integer x, and the same-named local
         # particle is xs:string. The brief's "v01 valid" is inverted;
         # the corpus wins.
-        parser = validate(
+        doc = validate(
             self._edc_wildcard_body(),
             "<root xmlns='urn:b'><x>a</x><x>3</x></root>",
         )
-        assert parser.report.has_errors
-        assert "element-consistent" in instance_codes(parser)
+        assert doc.report.has_errors
+        assert "element-consistent" in instance_codes(doc)
 
     def test_s3_8_6_ii01_governing_integer_value_is_invalid(self, validate):
         # s3_8_6ii01i: the same EDC violation, and "v" is not an
         # integer either.
-        parser = validate(
+        doc = validate(
             self._edc_wildcard_body(),
             "<root xmlns='urn:b'><x>a</x><x>v</x></root>",
         )
-        assert parser.report.has_errors
+        assert doc.report.has_errors
 
     def test_governing_type_derived_from_the_local_type_is_valid(self, validate):
         # A valid control: the global x is xs:string, so the same-named
         # local particle's type is not violated by the wildcard-selected
         # declaration.
-        parser = validate(
+        doc = validate(
             "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'"
             " targetNamespace='urn:b' xmlns:b='urn:b'"
             " elementFormDefault='qualified'>"
@@ -1344,4 +1330,4 @@ class TestDynamicTighterEDC:
             "</xs:schema>",
             "<root xmlns='urn:b'><x>a</x><x>3</x></root>",
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors

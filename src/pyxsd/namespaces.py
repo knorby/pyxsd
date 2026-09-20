@@ -18,6 +18,8 @@ import weakref
 import xml.etree.ElementTree as ET
 from typing import IO
 
+from pyxsd.exceptions import NamespaceError  # re-exported for compatibility
+
 #: The XML Schema namespace.
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 
@@ -34,10 +36,6 @@ XML_NS = "http://www.w3.org/XML/1998/namespace"
 #: conforming processor resolves for the namespace, so they are
 #: registered as built-ins.
 XLINK_NS = "http://www.w3.org/1999/xlink"
-
-
-class NamespaceError(Exception):
-    """A QName used a prefix that is not bound in its scope."""
 
 
 def clark(uri: str | None, local: str) -> str:

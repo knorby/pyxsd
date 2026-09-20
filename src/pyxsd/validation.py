@@ -4,13 +4,51 @@ While an XML instance is bound to the classes generated from a schema,
 recoverable problems (missing attributes, wrong element order, facet
 violations) are collected into a :class:`ValidationReport` instead of
 being printed immediately. The CLI prints the report to standard error
-after the run; library users inspect the ``report`` attribute of the
-:class:`pyxsd.parser.PyXSD` object.
+after the run; library users inspect the ``report`` of the
+:class:`~pyxsd.document.Document` (a merged view of the owning
+schema's compilation issues and the document's own binding issues)
+or :attr:`~pyxsd.schema.Schema.report` for the schema phase alone.
 """
 
+from __future__ import annotations
+
 import enum
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from pyxsd.schema_base import SchemaBase
+    from pyxsd.schema_context import SchemaContext
+
+logger = logging.getLogger("pyxsd")
+
+
+class CompileContextProtocol(Protocol):
+    """The slice of the compilation context the schema checks read.
+
+    Annotation-only structural view of
+    :class:`~pyxsd.schema_composition.CompositionContext`, which
+    satisfies it without inheriting from it: the declaration and
+    derivation checks in :mod:`pyxsd.schema_checks` accept this
+    protocol, so they depend on the attributes they actually touch
+    rather than on the concrete pipeline context.
+
+    Members (beyond the four the brief names) are exactly the
+    attributes the checks functions read.
+    """
+
+    report: ValidationReport
+    mode: Any
+    classes: dict[str, type[SchemaBase]]
+    schema_context: SchemaContext
+    namespace_context: Any
+    directive_ids: dict[str, Any]
+    composed_schema_roots: dict[int, Any]
+    composed_element_ids: set[int]
+    composed_target_namespaces: set[str]
+    resolved_imports: set[str]
 
 
 class IssueSeverity(enum.Enum):
@@ -60,8 +98,10 @@ class ValidationIssue:
 class ValidationReport:
     """An ordered collection of validation issues.
 
-    Reports are owned by a :class:`~pyxsd.parser.PyXSD` run and filled
-    in by the binding machinery as it walks the instance document.
+    A schema owns the report of its compilation; each document parsed
+    from it gets a fresh instance report, and the document's merged
+    report presents both phases in order. The binding machinery fills
+    the reports in as it walks the schema and instance documents.
     """
 
     def __init__(self) -> None:
@@ -101,13 +141,16 @@ class ValidationReport:
         """Only the issues attributed to *phase* (``"schema"``/``"instance"``)."""
         return [i for i in self._issues if i.phase == phase]
 
-    def extend(self, other: "ValidationReport") -> None:
+    def extend(self, other: ValidationReport) -> None:
         """Appends every issue from *other* to this report.
 
-        Used to surface the findings of a nested run (for example a
-        :class:`~pyxsd.transforms.send_tree_to_pyxsd.SendTreeToPyXSD`
-        revalidation) in the enclosing run's report. The issue objects
-        are shared, not copied; the other report is left unchanged.
+        Used to merge the phase reports of one run into a single
+        collection: :meth:`pyxsd.schema.Schema.parse` merges the
+        schema-phase and instance-phase issues into the document's
+        report, and a caller adopting the findings of a
+        :meth:`pyxsd.document.Document.revalidate` run merges that
+        document's report the same way. The issue objects are shared,
+        not copied; the other report is left unchanged.
         """
         self._issues.extend(other._issues)
 
@@ -151,3 +194,44 @@ class ValidationReport:
         lines = [header]
         lines.extend(f"  {issue.format()}" for issue in self._issues)
         return "\n".join(lines)
+
+
+def report_or_log(
+    report: ValidationReport | None,
+    severity: IssueSeverity,
+    *,
+    code: str,
+    message: str,
+    element: str | None = None,
+    phase: str | None = None,
+) -> None:
+    """Records an issue on *report*, or logs it when *report* is ``None``.
+
+    The shared sink for validation diagnostics that may run with or
+    without an owning report attached (hand-written overlay classes,
+    representatives built in isolation). With a report, *severity*
+    selects :meth:`ValidationReport.add_error` /
+    :meth:`ValidationReport.add_warning`; without one, the issue is
+    logged on the ``pyxsd`` logger at the matching level instead.
+
+    - ``report``: the report to record on, or ``None`` to log.
+    - ``severity``: the :class:`IssueSeverity` of the issue.
+    - ``code``: the machine-readable issue code.
+    - ``message``: the human-readable description.
+    - ``element``: the element or type the issue was found in, when known.
+    - ``phase``: the pipeline stage to attribute the issue to; ``None``
+      keeps the report's own default phase.
+    """
+    if report is None:
+        logger.log(
+            logging.ERROR if severity is IssueSeverity.ERROR else logging.WARNING,
+            "%s[%s] %s",
+            element or "pyxsd",
+            code,
+            message,
+        )
+        return
+    if severity is IssueSeverity.ERROR:
+        report.add_error(message, code=code, element=element, phase=phase)
+    else:
+        report.add_warning(message, code=code, element=element, phase=phase)

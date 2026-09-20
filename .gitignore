@@ -35,5 +35,10 @@ examples/docx/schemas/
 examples/gpx/schemas/
 examples/musicxml/schemas/
 
+# CLI transform output written next to the input file (the default
+# -d/--directoryTransformed and -p/--parsedOutput filenames)
+*Transformed.xml
+*Parsed.xml
+
 # OS noise
 .DS_Store

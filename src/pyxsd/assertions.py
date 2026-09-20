@@ -394,7 +394,9 @@ def attribute_type_map(cls: Any) -> dict[str, _ElementPathType]:
             if name:
                 types.setdefault(name, mapped)
             try:
-                instance_name = descriptor.instanceName(parser=getattr(cls, "pyXSD", None))
+                instance_name = descriptor.instanceName(
+                    parser=getattr(getattr(cls, "schema", None), "_host", None)
+                )
             except Exception:
                 instance_name = None
             if instance_name and instance_name != name:
@@ -433,7 +435,9 @@ def element_type_map(
             if mapped is not None and name:
                 types.setdefault(name, mapped)
                 try:
-                    instance_name = descriptor.instanceName(parser=getattr(cls, "pyXSD", None))
+                    instance_name = descriptor.instanceName(
+                        parser=getattr(getattr(cls, "schema", None), "_host", None)
+                    )
                 except Exception:
                     instance_name = None
                 if instance_name and instance_name != name:

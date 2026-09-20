@@ -316,7 +316,7 @@ def _wildcardResolvedType(node: Any, attrName: str) -> Any:
     if not isinstance(node, SchemaBase):
         return None
     cls = type(node)
-    parser = getattr(cls, "pyXSD", None)
+    parser = cls._parserHost()
     if parser is None or not getattr(node, "hasWildcardAttributes_", False):
         return None
     if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":

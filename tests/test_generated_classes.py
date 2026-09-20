@@ -27,15 +27,15 @@ def child_by_name(instance, name):
 
 class TestGeneratedSchemaClasses:
     def test_schema_class_exists(self):
-        parser = run_parser("inventory")
-        classes = parser.getClasses()
+        doc = run_parser("inventory")
+        classes = doc.schema.classes
         assert "schema" in classes
         assert "itemType" in classes
         assert "colorType" in classes
 
     def test_generated_class_element_bookkeeping(self):
-        parser = run_parser("inventory")
-        item_cls = parser.getClasses()["itemType"]
+        doc = run_parser("inventory")
+        item_cls = doc.schema.classes["itemType"]
         assert item_cls._elementNames_ == ["name", "quantity", "color", "note"]
         assert item_cls._attributeNames_ == ["id"]
         # Element descriptors are stored on the class under their names.
@@ -43,28 +43,28 @@ class TestGeneratedSchemaClasses:
         assert isinstance(item_cls.__dict__["id"], Attribute)
 
     def test_generated_class_carries_schema_metadata(self):
-        parser = run_parser("inventory")
-        item_cls = parser.getClasses()["itemType"]
+        doc = run_parser("inventory")
+        item_cls = doc.schema.classes["itemType"]
         # NB: `item_cls.name` is NOT the class name here -- itemType's
         # schema declares an element literally named "name", and element
         # descriptors are stored on the class under their element names,
         # shadowing the metadata string. Tracked for the architecture
         # rework.
         assert item_cls.__name__ == "itemType"
-        assert item_cls.pyXSD is parser
+        assert item_cls.schema is doc.schema
 
 
 class TestInstanceTree:
     def test_root_instance_structure(self):
-        parser = run_parser("inventory")
-        root = parser.parseXML()
+        doc = run_parser("inventory")
+        root = doc.root
         assert root._name_ == "inventory"
         assert len(root._children_) == 2
         assert all(child._name_ == "item" for child in root._children_)
 
     def test_typed_values(self):
-        parser = run_parser("inventory")
-        root = parser.parseXML()
+        doc = run_parser("inventory")
+        root = doc.root
         first_item = root._children_[0]
         name = child_by_name(first_item, "name")
         quantity = child_by_name(first_item, "quantity")
@@ -74,8 +74,8 @@ class TestInstanceTree:
         assert isinstance(quantity, Integer)
 
     def test_attributes_and_optional_elements(self):
-        parser = run_parser("inventory")
-        root = parser.parseXML()
+        doc = run_parser("inventory")
+        root = doc.root
         first, second = root._children_
         assert first._attribs_["id"] == "a1"
         # `note` is optional: absent from the first item, present in the
@@ -84,8 +84,8 @@ class TestInstanceTree:
         assert child_by_name(second, "note") == "handle broken"
 
     def test_primitive_type_lattice(self):
-        parser = run_parser("primitives")
-        root = parser.parseXML()
+        doc = run_parser("primitives")
+        root = doc.root
         assert child_by_name(root, "count") == 42
         assert isinstance(child_by_name(root, "count"), Integer)
         assert child_by_name(root, "total") == -7
@@ -105,28 +105,28 @@ class TestInstanceTree:
         a document are stored lexically. Typed attribute coercion is
         tracked with the value-semantics work.
         """
-        parser = run_parser("primitives")
-        root = parser.parseXML()
+        doc = run_parser("primitives")
+        root = doc.root
         assert root._attribs_["active"] == "true"
         assert root._attribs_["serial"] == "S-001"
 
     def test_multiline_typed_value_keeps_text(self):
-        parser = run_parser("primitives")
-        root = parser.parseXML()
+        doc = run_parser("primitives")
+        root = doc.root
         notes = child_by_name(root, "notes")
         # Typed primitive values store the stripped text as a single
         # item; the writer re-flows it across lines on output.
         assert notes._value_ == ["first line of notes\nsecond line of notes\nthird line of notes"]
 
     def test_choice_picks_branch(self):
-        parser = run_parser("choice")
-        root = parser.parseXML()
+        doc = run_parser("choice")
+        root = doc.root
         square = child_by_name(root, "square")
         assert child_by_name(square, "side") == 2.5
 
     def test_nested_and_named_types(self):
-        parser = run_parser("nested")
-        root = parser.parseXML()
+        doc = run_parser("nested")
+        root = doc.root
         home = child_by_name(root, "home")
         assert child_by_name(home, "street") == "123 Main St"
         emergency = child_by_name(root, "emergency")
@@ -155,15 +155,11 @@ def test_boolean_element_lexical_value(tmp_path):
     (tmp_path / "schema.xsd").write_text(schema)
     (tmp_path / "instance.xml").write_text(instance)
 
-    from pyxsd.parser import PyXSD
+    from pyxsd.schema import Schema
 
-    parser = PyXSD(
-        str(tmp_path / "instance.xml"),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-    )
-    root = parser.parseXML()
+    schema = Schema.compile(str(tmp_path / "schema.xsd"))
+    doc = schema.parse(str(tmp_path / "instance.xml"))
+    root = doc.root
     flag = child_by_name(root, "flag")
     assert flag == 1
     assert str(flag) == "true"

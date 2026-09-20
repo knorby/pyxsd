@@ -15,7 +15,7 @@ overrode particle attribution:
 """
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 XSD_OPEN = '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
 
@@ -23,21 +23,17 @@ XSD_OPEN = '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
 def parse(tmp_path, schema_body, instance, mode=ParseModes.NAMESPACED):
     (tmp_path / "schema.xsd").write_text(schema_body)
     (tmp_path / "instance.xml").write_text(instance)
-    return PyXSD(
-        str(tmp_path / "instance.xml"),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=mode,
+    return Schema.compile(str(tmp_path / "schema.xsd"), mode=mode).parse(
+        str(tmp_path / "instance.xml")
     )
 
 
-def codes(parser):
-    return [issue.code for issue in parser.report]
+def codes(doc):
+    return [issue.code for issue in doc.report]
 
 
-def child_names(parser):
-    root = parser.schemaRootInstance
+def child_names(doc):
+    root = doc.root
     return [child._name_ for child in root._children_]
 
 
@@ -51,9 +47,9 @@ def test_strict_wildcard_admitting_a_declared_name_is_validated(tmp_path):
         + "</xs:sequence></xs:complexType></xs:element>"
         + "</xs:schema>"
     )
-    parser = parse(tmp_path, schema, "<r><a>1</a><a>2</a></r>")
-    assert codes(parser) == ["wildcard-no-declaration"]
-    assert child_names(parser) == ["a", "a"]
+    doc = parse(tmp_path, schema, "<r><a>1</a><a>2</a></r>")
+    assert codes(doc) == ["wildcard-no-declaration"]
+    assert child_names(doc) == ["a", "a"]
 
 
 def test_skip_wildcard_positional_child_keeps_generic_value(tmp_path):
@@ -66,10 +62,10 @@ def test_skip_wildcard_positional_child_keeps_generic_value(tmp_path):
         + "</xs:sequence></xs:complexType></xs:element>"
         + "</xs:schema>"
     )
-    parser = parse(tmp_path, schema, "<r><a>bad</a><a>2</a></r>")
-    assert codes(parser) == []
-    assert child_names(parser) == ["a", "a"]
-    root = parser.schemaRootInstance
+    doc = parse(tmp_path, schema, "<r><a>bad</a><a>2</a></r>")
+    assert codes(doc) == []
+    assert child_names(doc) == ["a", "a"]
+    root = doc.root
     assert [child._value_ for child in root._children_] == [["bad"], ["2"]]
 
 
@@ -83,8 +79,8 @@ def test_repeated_declarations_use_each_occurrences_fixed_value(tmp_path):
         + "</xs:sequence></xs:complexType></xs:element>"
         + "</xs:schema>"
     )
-    parser = parse(tmp_path, schema, "<r><a>1</a><a>2</a><a>2</a></r>")
-    assert codes(parser) == ["fixed-element"]
+    doc = parse(tmp_path, schema, "<r><a>1</a><a>2</a><a>2</a></r>")
+    assert codes(doc) == ["fixed-element"]
 
 
 def test_extension_inherited_declaration_keeps_its_fixed_value(tmp_path):
@@ -129,5 +125,5 @@ def test_strict_wildcard_admits_a_child_with_xsi_type(tmp_path):
         "<a/><b xsi:type='xsd:string'>abc</b>"
         "<c xsi:type='xsd:int'>123</c></foo>"
     )
-    parser = parse(tmp_path, schema, instance)
-    assert codes(parser) == []
+    doc = parse(tmp_path, schema, instance)
+    assert codes(doc) == []

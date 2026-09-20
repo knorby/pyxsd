@@ -3,13 +3,13 @@
 Validation reporting is always strict: a parse mode changes only what
 value is bound into the tree when a document is not strictly valid,
 never whether the problem is reported to
-:attr:`~pyxsd.parser.PyXSD.report`. That separation lets a validation
+the run's :class:`~pyxsd.validation.ValidationReport`. That separation lets a validation
 user trust the report while a data-mapping user still gets usable
 objects out of a messy, real-world document.
 
 Policies are frozen dataclasses. :class:`ParseModes` is a namespace of
 named presets; a policy can also be built directly and passed to
-``PyXSD(mode=...)`` for per-field control, so the API can grow new
+``Schema.compile(mode=...)`` for per-field control, so the API can grow new
 fields without changing call signatures.
 """
 
@@ -77,7 +77,7 @@ class BindingPolicy:
 
 
 class ParseModes:
-    """Named :class:`BindingPolicy` presets for ``PyXSD(mode=...)``.
+    """Named :class:`BindingPolicy` presets for ``Schema.compile``.
 
     Each attribute is an ordinary policy, so a caller can pass
     ``ParseModes.LAX`` for a convenient preset or a hand-built

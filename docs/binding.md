@@ -11,18 +11,19 @@ Parse modes resolve that tension by separating the two:
 > **The validation report is always strict. A parse mode only changes
 > what value is bound into the tree.**
 
-No mode suppresses an issue. `PyXSD.report` looks the same in strict and
-lax mode; what differs is whether an invalid or unrecognized piece of the
-document is dropped or kept in a best-effort form.
+No mode suppresses an issue. `Document.report` looks the same in strict
+and lax mode; what differs is whether an invalid or unrecognized piece of
+the document is dropped or kept in a best-effort form.
 
 ## Using a mode
 
-Pass a preset to `PyXSD`:
+Pass a preset to `Schema.compile`:
 
 ```python
-from pyxsd import PyXSD, ParseModes
+from pyxsd import ParseModes, Schema
 
-app = PyXSD("document.xml", xsdFile="schema.xsd", mode=ParseModes.LAX)
+schema = Schema.compile("schema.xsd", mode=ParseModes.LAX)
+document = schema.parse("document.xml")
 ```
 
 or from the CLI:
@@ -36,10 +37,11 @@ $ pyxsd -i document.xml -s schema.xsd --namespaces strict -o out.xml
 starting point:
 
 ```python
-from pyxsd import BindingPolicy
+from pyxsd import BindingPolicy, Schema
 
 mode = ParseModes.LAX.replace(whitespace="compat")
-app = PyXSD("document.xml", xsdFile="schema.xsd", mode=mode)
+schema = Schema.compile("schema.xsd", mode=mode)
+document = schema.parse("document.xml")
 ```
 
 ## Presets
@@ -95,7 +97,8 @@ choices:
 ```python
 # namespace-aware validation, but keep binding lenient
 mode = ParseModes.LAX.replace(namespaces="strict")
-app = PyXSD("document.xml", xsdFile="schema.xsd", mode=mode)
+schema = Schema.compile("schema.xsd", mode=mode)
+document = schema.parse("document.xml")
 ```
 
 The default remains `legacy` so existing callers and output are
@@ -104,8 +107,8 @@ and namespaces are ignored during instance matching. In `strict` mode
 pyxsd records the in-scope namespace bindings while parsing, uses
 expanded names for component identity and instance matching, and honors
 `elementFormDefault` / `attributeFormDefault`. A namespace-only
-`xs:import` can be satisfied with the `PyXSD(..., namespace_schemas=...)`
-mapping or a `schemaLocation`.
+`xs:import` can be satisfied with the `Schema.compile(...,
+namespace_schemas=...)` mapping or a `schemaLocation`.
 
 See `examples/docx/` for the binding side of a namespaced document and
 the `namespaces/` cases in the conformance corpus for the validation
@@ -114,7 +117,7 @@ side.
 ## Why not just loosen the report?
 
 Because the report is the contract. Code that checks
-`app.report.has_errors` must not silently pass just because a caller
+`document.report.has_errors` must not silently pass just because a caller
 wanted lenient binding. Keeping reporting strict means one run of pyxsd
 answers both questions — "is this valid?" and "what can I use?" — without
 the answer to the first depending on the answer to the second.

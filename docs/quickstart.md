@@ -2,13 +2,14 @@
 
 pyxsd maps an XML document into a Python object tree according to its XML
 Schema (XSD), reports validation issues, runs user-defined *transforms*, and
-writes the tree back out as XML. It has **no third-party runtime
-dependencies** — the Python standard library is enough.
+writes the tree back out as XML. Its only runtime dependency is
+[elementpath](https://pypi.org/project/elementpath/) — pure Python, no
+compiled extensions.
 
 ## Requirements
 
 - Python 3.11 or newer (3.11–3.14 tested)
-- No runtime dependencies
+- One pure-Python dependency (`elementpath`, for XSD regular expressions)
 
 ## Installation
 
@@ -54,33 +55,48 @@ for transform syntax.
 
 ## Library use
 
-Constructing `PyXSD` runs the whole pipeline eagerly — parse, validate,
-write, and transform all happen in `__init__` — so a validation-only run
-looks like this:
+Two objects do the work: a compiled {class}`~pyxsd.schema.Schema` and the
+{class}`~pyxsd.document.Document` instances it produces. Compiling the
+schema builds the Python classes; each parse binds one instance document:
 
 ```python
-from pyxsd import PyXSD
+import pyxsd
 
-parser = PyXSD(
-    xmlFileInput="inventory.xml",
-    xsdFile="schema.xsd",
-    xmlFileOutput=False,  # don't write the parsed tree to disk
-)
+schema = pyxsd.Schema.compile("inventory.xsd")
+schema.require_valid()  # raises pyxsd.ValidationError if the schema is bad
 
-root = parser.schemaRootInstance  # the parsed tree's root instance
+document = schema.parse("inventory.xml")
+document.require_valid()  # raises pyxsd.ValidationError if the document is bad
+```
 
-if parser.report.has_errors:
-    for issue in parser.report.issues:
+A failed check raises {class}`~pyxsd.exceptions.ValidationError`, whose
+`report` attribute holds every issue found so far. Without it, the
+document keeps going — pyxsd is a *lax* validator — and the report is
+there when you want it:
+
+```python
+if document.report.has_errors:
+    for issue in document.report.issues:
         print(issue.format())
 ```
 
-With `transformOutputName` set (or `transforms` given), the transformed
-tree is written to that file — or to stdout when the value is
-`"stdout"`.
+`document.root` is the parsed tree's root instance. Transforms are plain
+callables that take the root; one returning a tree root comes back as a
+new `Document` you can write out:
 
-The root instance of the tree walks with `pyxsd.transforms.iter_tree` or
-the `walk`/visitor helpers in {doc}`transforms/class`; the node shape is
-documented in {doc}`data-model`.
+```python
+def normalize_units(root): ...
+
+
+updated = document.transform(normalize_units)
+updated.write("normalized.xml")
+```
+
+A transform that changes the tree's shape leaves the report describing
+the tree as it was parsed; call `updated.revalidate()` to re-parse the
+serialized tree and get a fresh report for its current shape. The tree
+walks with `pyxsd.tree.iter_tree` or the `walk`/visitor helpers in
+{doc}`transforms/class`; the node shape is documented in {doc}`data-model`.
 
 ## What pyxsd validates
 

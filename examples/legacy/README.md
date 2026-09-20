@@ -8,7 +8,7 @@
 The transforms in this directory are the crystallography library that
 shipped inside `pyxsd.transforms` in pyxsd 0.1. In pyxsd 1.0 they moved
 out of the package — the package now ships only the transform framework
-plus `PrintData` and `SendTreeToPyXSD` (**breaking change**; see the
+plus `PrintData` (**breaking change**; see the
 migration guide). They live under `examples/legacy/` as historical
 examples.
 
