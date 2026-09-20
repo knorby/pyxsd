@@ -9,7 +9,8 @@ import pytest
 
 from conftest import fixture_dir
 from pyxsd.binding import BindingPolicy, ParseModes
-from pyxsd.parser import PyXSD, main
+from pyxsd.cli import main
+from pyxsd.schema import Schema
 
 XSD = "http://www.w3.org/2001/XMLSchema"
 
@@ -23,17 +24,11 @@ def _parse(schema_body, instance_text, tmp_path, mode=ParseModes.STRICT):
     schema_path.write_text(_schema(schema_body))
     instance_path = tmp_path / "instance.xml"
     instance_path.write_text(instance_text)
-    return PyXSD(
-        instance_path,
-        xsdFile=schema_path,
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=mode,
-    )
+    return Schema.compile(str(schema_path), mode=mode).parse(str(instance_path))
 
 
-def _codes(parser):
-    return [issue.code for issue in parser.report.issues]
+def _codes(doc):
+    return [issue.code for issue in doc.report.issues]
 
 
 class TestPolicyModel:
@@ -80,21 +75,21 @@ class TestInvalidValueBinding:
     ROOT_INT = '<xs:element name="r" type="xs:int"/>'
 
     def test_strict_drops_an_invalid_root_value(self, tmp_path):
-        parser = _parse(self.ROOT_INT, "<r>abc</r>", tmp_path)
-        assert "value" in _codes(parser)
-        assert parser.report.has_errors
+        doc = _parse(self.ROOT_INT, "<r>abc</r>", tmp_path)
+        assert "value" in _codes(doc)
+        assert doc.report.has_errors
         # The stand-in for an invalid int is the unvalidated zero.
-        assert str(parser.schemaRootInstance) == "0"
+        assert str(doc.root) == "0"
 
     def test_lax_binds_the_raw_root_value(self, tmp_path):
-        parser = _parse(self.ROOT_INT, "<r>abc</r>", tmp_path, mode=ParseModes.LAX)
-        assert "value" in _codes(parser)
-        assert parser.report.has_errors
-        assert str(parser.schemaRootInstance) == "abc"
+        doc = _parse(self.ROOT_INT, "<r>abc</r>", tmp_path, mode=ParseModes.LAX)
+        assert "value" in _codes(doc)
+        assert doc.report.has_errors
+        assert str(doc.root) == "abc"
 
     def test_lax_preserves_the_original_spelling(self, tmp_path):
-        parser = _parse(self.ROOT_INT, "<r> a </r>", tmp_path, mode=ParseModes.LAX)
-        assert str(parser.schemaRootInstance) == " a "
+        doc = _parse(self.ROOT_INT, "<r> a </r>", tmp_path, mode=ParseModes.LAX)
+        assert str(doc.root) == " a "
 
     CHILD_INT = (
         '<xs:element name="r"><xs:complexType><xs:sequence>'
@@ -103,16 +98,16 @@ class TestInvalidValueBinding:
     )
 
     def test_strict_drops_an_invalid_child(self, tmp_path):
-        parser = _parse(self.CHILD_INT, "<r><a>abc</a></r>", tmp_path)
-        assert "value" in _codes(parser)
-        root = parser.schemaRootInstance
+        doc = _parse(self.CHILD_INT, "<r><a>abc</a></r>", tmp_path)
+        assert "value" in _codes(doc)
+        root = doc.root
         assert "a" not in root.__dict__
         assert root._children_ == []
 
     def test_lax_binds_the_raw_child(self, tmp_path):
-        parser = _parse(self.CHILD_INT, "<r><a>abc</a></r>", tmp_path, mode=ParseModes.LAX)
-        assert "value" in _codes(parser)
-        child = parser.schemaRootInstance.a
+        doc = _parse(self.CHILD_INT, "<r><a>abc</a></r>", tmp_path, mode=ParseModes.LAX)
+        assert "value" in _codes(doc)
+        child = doc.root.a
         assert child._name_ == "a"
         assert str(child) == "abc"
 
@@ -125,14 +120,14 @@ class TestGenericBinding:
     )
 
     def test_strict_drops_an_unresolved_subtree(self, tmp_path):
-        parser = _parse(self.UNRESOLVED, "<r><a>x</a></r>", tmp_path)
-        assert "unknown-type" in _codes(parser)
-        assert parser.schemaRootInstance._children_ == []
+        doc = _parse(self.UNRESOLVED, "<r><a>x</a></r>", tmp_path)
+        assert "unknown-type" in _codes(doc)
+        assert doc.root._children_ == []
 
     def test_lax_binds_an_unresolved_subtree_generically(self, tmp_path):
-        parser = _parse(self.UNRESOLVED, "<r><a>x</a></r>", tmp_path, mode=ParseModes.LAX)
-        assert "unknown-type" in _codes(parser)
-        names = [child._name_ for child in parser.schemaRootInstance._children_]
+        doc = _parse(self.UNRESOLVED, "<r><a>x</a></r>", tmp_path, mode=ParseModes.LAX)
+        assert "unknown-type" in _codes(doc)
+        names = [child._name_ for child in doc.root._children_]
         assert names == ["a"]
 
     SEQUENCE_A = (
@@ -142,15 +137,15 @@ class TestGenericBinding:
     )
 
     def test_strict_drops_undeclared_content(self, tmp_path):
-        parser = _parse(self.SEQUENCE_A, "<r><a/><b/></r>", tmp_path)
-        assert "unexpected-element" in _codes(parser)
-        names = [child._name_ for child in parser.schemaRootInstance._children_]
+        doc = _parse(self.SEQUENCE_A, "<r><a/><b/></r>", tmp_path)
+        assert "unexpected-element" in _codes(doc)
+        names = [child._name_ for child in doc.root._children_]
         assert names == ["a"]
 
     def test_lax_binds_undeclared_content_generically(self, tmp_path):
-        parser = _parse(self.SEQUENCE_A, "<r><a/><b/></r>", tmp_path, mode=ParseModes.LAX)
-        assert "unexpected-element" in _codes(parser)
-        names = [child._name_ for child in parser.schemaRootInstance._children_]
+        doc = _parse(self.SEQUENCE_A, "<r><a/><b/></r>", tmp_path, mode=ParseModes.LAX)
+        assert "unexpected-element" in _codes(doc)
+        names = [child._name_ for child in doc.root._children_]
         assert names == ["a", "b"]
 
 
@@ -159,22 +154,22 @@ class TestWhitespaceCompatibility:
     NBSP_INT = "<r>\u00a01\u00a0</r>"
 
     def test_xsd_whitespace_rejects_nbsp_padding(self, tmp_path):
-        parser = _parse(self.ROOT_INT, self.NBSP_INT, tmp_path)
-        assert "value" in _codes(parser)
+        doc = _parse(self.ROOT_INT, self.NBSP_INT, tmp_path)
+        assert "value" in _codes(doc)
 
     def test_lax_preset_keeps_xsd_whitespace(self, tmp_path):
-        parser = _parse(self.ROOT_INT, self.NBSP_INT, tmp_path, mode=ParseModes.LAX)
-        assert "value" in _codes(parser)
+        doc = _parse(self.ROOT_INT, self.NBSP_INT, tmp_path, mode=ParseModes.LAX)
+        assert "value" in _codes(doc)
 
     def test_compat_whitespace_folds_nbsp(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             self.ROOT_INT,
             self.NBSP_INT,
             tmp_path,
             mode=BindingPolicy(whitespace="compat"),
         )
-        assert _codes(parser) == []
-        assert int(parser.schemaRootInstance) == 1
+        assert _codes(doc) == []
+        assert int(doc.root) == 1
 
 
 class TestReportStaysStrictUnderLax:
@@ -185,11 +180,11 @@ class TestReportStaysStrictUnderLax:
             '<xs:element name="b" type="xs:string"/>'
             "</xs:sequence></xs:complexType></xs:element>"
         )
-        parser = _parse(schema, "<r><a>bad</a><x/></r>", tmp_path, mode=ParseModes.LAX)
-        codes = _codes(parser)
+        doc = _parse(schema, "<r><a>bad</a><x/></r>", tmp_path, mode=ParseModes.LAX)
+        codes = _codes(doc)
         assert "value" in codes
         assert "unexpected-element" in codes or "order" in codes
-        assert parser.report.has_errors
+        assert doc.report.has_errors
 
 
 class TestCliModeFlag:

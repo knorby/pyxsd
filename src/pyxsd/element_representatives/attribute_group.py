@@ -145,7 +145,7 @@ class AttributeGroup(ElementRepresentative):
     def _resolves_to_group(self) -> bool:
         """Whether ``self.ref`` names a global attributeGroup component."""
         schema = self.getSchema()
-        parser = getattr(schema, "pyXSD", None)
+        parser = getattr(schema, "host", None)
         candidates = []
         table = getattr(schema, "components", None)
         if table:

@@ -42,25 +42,30 @@ the `id` attribute from an item to see the `missing-attribute` report).
 ## Library
 
 ```python
-from pyxsd import PyXSD
+from pyxsd.cli import parse_transform_call, resolve_transform_class
+from pyxsd.document import Document
+from pyxsd.schema import Schema
 
-parser = PyXSD(
-    xmlFileInput="instance.xml",
-    xmlFileOutput=False,
-    transforms=["CountElements()"],
-    transformOutputName="transformed.xml",
-)
-root = parser.schemaRootInstance
-print(parser.report)  # "pyxsd: 0 errors" on a clean document
+document = Schema.compile("schema.xsd").parse("instance.xml")
+name, args, kwargs = parse_transform_call("CountElements()")
+transform_cls = resolve_transform_class(name)
+result = document.transform(lambda root: transform_cls(root)(*args, **kwargs))
+if isinstance(result, Document):
+    document = result
+document.write("transformed.xml")
+print(document.report)  # "pyxsd: 0 errors" on a clean document
 ```
 
-Construction runs the full pipeline: parse → validate → transform →
-write. `parser.report` collects every issue; `parser.schemaRootInstance`
-holds the root of the parsed tree; the class for the root element is
-named `inventory|complexType` (element name, compositor bookkeeping
-name).
+`Schema.compile` builds the schema once; `parse` binds the instance and
+returns a `Document`. `document.report` collects every issue;
+`document.root` holds the root of the parsed tree; the class for the
+root element is named `inventory|complexType` (element name,
+compositor bookkeeping name). `CountElements` returns the bound root,
+so `transform` hands back a fresh `Document` whose tree
+`document.write` serializes to `transformed.xml`.
 
-`demo.py` is exactly this script — run it with:
+`demo.py` is this script with the paths anchored to its own directory
+(so it also runs from the repository root) — run it with:
 
 ```bash
 uv run python examples/demo/demo.py

@@ -8,7 +8,7 @@ taken). Matching and binding keep using declaration names, so no
 child is silently dropped and identity constraints still run.
 """
 
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -73,20 +73,15 @@ SUFFIX_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
 def parse(schema_xml, instance_xml, tmp_path):
     (tmp_path / "instance.xml").write_text(instance_xml)
     (tmp_path / "schema.xsd").write_text(schema_xml)
-    return PyXSD(
-        str(tmp_path / "instance.xml"),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-    )
+    return Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
 
 
 def test_element_and_attribute_same_name_both_bind(tmp_path):
     """The element child is bound and validated, not silently dropped."""
     instance = "<items><item code='external'><code>7</code></item></items>"
-    parser = parse(SCHEMA, instance, tmp_path)
-    assert not parser.report.has_errors
-    items = parser.schemaRootInstance
+    doc = parse(SCHEMA, instance, tmp_path)
+    assert not doc.report.has_errors
+    items = doc.root
     item = items._children_[0]
     # The attribute keeps the natural accessor.
     assert item.code == "external"
@@ -98,8 +93,8 @@ def test_element_and_attribute_same_name_both_bind(tmp_path):
 def test_invalid_element_value_is_reported_despite_collision(tmp_path):
     """Lexical validation of the same-named element is not bypassed."""
     instance = "<items><item code='external'><code>NaN</code></item></items>"
-    parser = parse(SCHEMA, instance, tmp_path)
-    codes = [issue.code for issue in parser.report]
+    doc = parse(SCHEMA, instance, tmp_path)
+    codes = [issue.code for issue in doc.report]
     assert "value" in codes
 
 
@@ -111,8 +106,8 @@ def test_identity_constraint_sees_element_despite_collision(tmp_path):
         "<item code='internal'><code>7</code></item>"
         "</items>"
     )
-    parser = parse(IDENTITY_SCHEMA, instance, tmp_path)
-    codes = [issue.code for issue in parser.report]
+    doc = parse(IDENTITY_SCHEMA, instance, tmp_path)
+    codes = [issue.code for issue in doc.report]
     assert "identity-unique" in codes
 
 
@@ -123,16 +118,16 @@ def test_identity_constraint_accepts_distinct_element_values(tmp_path):
         "<item code='internal'><code>9</code></item>"
         "</items>"
     )
-    parser = parse(IDENTITY_SCHEMA, instance, tmp_path)
-    assert not parser.report.has_errors
+    doc = parse(IDENTITY_SCHEMA, instance, tmp_path)
+    assert not doc.report.has_errors
 
 
 def test_alias_gets_numeric_suffix_when_taken(tmp_path):
     """``<name>_element`` occupied by a real element gets a suffix."""
     instance = "<items><item code='x'><code>1</code><code_element>2</code_element></item></items>"
-    parser = parse(SUFFIX_SCHEMA, instance, tmp_path)
-    assert not parser.report.has_errors
-    item = parser.schemaRootInstance._children_[0]
+    doc = parse(SUFFIX_SCHEMA, instance, tmp_path)
+    assert not doc.report.has_errors
+    item = doc.root._children_[0]
     assert item.code == "x"
     # The element actually named 'code_element' keeps its natural alias.
     assert item.code_element == 2
@@ -142,7 +137,7 @@ def test_alias_gets_numeric_suffix_when_taken(tmp_path):
 
 def test_descriptor_bookkeeping_reflects_both_declarations(tmp_path):
     instance = "<items><item code='x'><code>1</code></item></items>"
-    parser = parse(SCHEMA, instance, tmp_path)
-    itemType = parser.getClasses()["itemType"]
+    doc = parse(SCHEMA, instance, tmp_path)
+    itemType = doc.schema.classes["itemType"]
     assert "code" in itemType._attributeNames_
     assert "code_element" in itemType._elementNames_

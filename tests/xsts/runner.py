@@ -427,7 +427,7 @@ def run_parallel(
 
     Cases are batched to amortise process and pickling overhead.  Each task
     gets its own scratch directory, so multi-document driver schemas cannot
-    collide between workers.  *synthesize_missing_schema* opts the PyXSD
+    collide between workers.  *synthesize_missing_schema* opts the pyxsd
     driver into permissive-schema synthesis for groups with no ``schemaTest``;
     the oracle is never affected.
     """

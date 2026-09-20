@@ -9,7 +9,7 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
-## [1.0.0] - 2026-09-11
+## [1.0.0] - Unreleased
 
 pyxsd 1.0.0 is a ground-up modernization of the 2006 0.1 release. The library
 was ported from Python 2.3 to Python 3.11+, reorganized into a `src/` layout,
@@ -21,6 +21,29 @@ official schemas.
 
 ### Added
 
+- The public object model: a compiled schema is a `pyxsd.Schema`
+  (`Schema.compile(xsd, mode=..., namespace_schemas=..., overlay=...)`),
+  and each `schema.parse(xml)` binds one instance document into a
+  `pyxsd.Document` carrying the merged `ValidationReport`
+  (`document.report`), `is_valid`, `require_valid()`, `transform(fn)`,
+  `revalidate()`, `walk()`, `write(dest)`, and `to_string()`. One
+  compiled schema can serve any number of documents. The one-call
+  shortcuts `pyxsd.parse(xml, xsd=...)` and `pyxsd.compile(xsd)` resolve
+  schema hints from the instance exactly like the CLI. The schema's own
+  findings are available at `schema.report` before any instance is
+  parsed.
+- `pyxsd.ValidationError` (a `PyXSDError` subclass) raised by
+  `Schema.require_valid()` and `Document.require_valid()`; its `report`
+  attribute holds every issue that failed the check.
+- Transforms are callables in the library: `document.transform(fn)`
+  applies any callable taking the tree root; one returning a tree root
+  comes back as a new `Document` against the same schema, while an
+  in-place transform returning `None` leaves the document unchanged. A
+  returned document shares the pre-transform report;
+  `document.revalidate()` re-parses the serialized tree for a report
+  that reflects its current shape. `document.walk()` yields every node
+  pre-order. On the command line the `-t 'Name(args)'` /
+  `-T file` call-string syntax is unchanged.
 - Full XSD 1.0 built-in type lattice: all 45 built-in datatypes (derivation
   families, temporal types, binary types, list types) with lexical validation.
 - Facet enforcement for user-defined simpleTypes: `enumeration`, `pattern`,
@@ -63,7 +86,9 @@ official schemas.
   post-parse validation pass.
 - `ValidationReport` — errors and warnings collected as structured
   `ValidationIssue` records with stable issue codes instead of printed
-  messages. Library users get `parser.report`; CLI users get `--strict`.
+  messages. Each document reports at `document.report` (the schema's
+  own findings at `schema.report`); CLI users get the rendered report
+  on stderr and `--strict`.
 - `XMLNode` runtime-checkable Protocol describing the instance-tree shape
   (`_name_`, `_attribs_`, `_children_`, `_value_`).
 - Element and attribute descriptors support `__set_name__`, class-level
@@ -105,15 +130,16 @@ official schemas.
   library (dev dependency; a required CI job, env-gated locally by
   `PYXSD_RUN_ORACLE=1`).
 - `ParseModes` presets (`STRICT`, `LAX`, `NAMESPACED`) and the
-  `BindingPolicy` dataclass, plus `PyXSD(mode=...)` and CLI
+  `BindingPolicy` dataclass, plus `Schema.compile(..., mode=...)` and CLI
   `--mode strict|lax` / `--namespaces strict|legacy`. Modes change only what
   is bound into the tree; the validation report stays strict. See
   `docs/binding.md`.
 - Opt-in XML Namespaces support (`BindingPolicy.namespaces`, default
   `legacy`): namespace capture during parsing, expanded-name component
-  identity, `elementFormDefault` / `attributeFormDefault`-aware instance
+  identity,   `elementFormDefault` / `attributeFormDefault`-aware instance
   matching, prefixed `type`/`ref`/`xsi:type` resolution, cross-namespace
-  `xs:import` (including `PyXSD(namespace_schemas=...)`), wildcard
+  `xs:import` (including `Schema.compile(namespace_schemas=...)`),
+  wildcard
   namespace lists and `processContents`, QName value-space identity, and
   namespace-aware output writers.
 - Validation codes `unknown-namespace-prefix`, `wildcard-no-declaration`,
@@ -128,7 +154,8 @@ official schemas.
 - Project metadata lives in `pyproject.toml` (hatchling build, src layout);
   `setup.py` removed.
 - Package code moved to `src/pyxsd/` with snake_case module names throughout
-  (`pyXSD.py` → `pyxsd/parser.py`, `xsdDataTypes.py` → `xsd_data_types.py`,
+  (`pyXSD.py` → `pyxsd/schema.py` + `pyxsd/document.py`,
+  `xsdDataTypes.py` → `xsd_data_types.py`,
   etc.).
 - Classes are generated with `types.new_class()`, class wiring runs through
   `SchemaBase.__init_subclass__()`, and descriptors bind via `__set_name__`.
@@ -164,6 +191,15 @@ official schemas.
 
 ### Removed
 
+- The monolithic `PyXSD` pipeline class (and the `pyxsd.parser` module
+  behind it), which parsed, validated, wrote, and transformed inside one
+  constructor. Its roles are split across `Schema.compile`,
+  `Schema.parse`, and the returned `Document`; see the migration guide
+  for the call-by-call mapping. Breaking change.
+- The `SendTreeToPyXSD` transform, which wrote the tree to a temporary
+  file and re-fed it through the pipeline;
+  `Document.revalidate()` does the same job in one call with no
+  temporary files. Breaking change.
 - The eight crystallography transforms (atom, vector, bravais lattice, cell
   sizer, coordinate viewer, format for visit, sphere cutter) moved out of the
   package to `examples/legacy/`; they are no longer installed with the
@@ -185,7 +221,6 @@ official schemas.
 - `xmlFileOutput=True` crashed; boolean output now uses the default file name.
 - Transform calls with `**kwargs` expansion produced garbage arguments and now
   are rejected with a clear syntax error.
-- `SendTreeToPyXSD` leaked temporary files into the working directory.
 - Schema hints (`xsi:noNamespaceSchemaLocation`) resolved relative to the
   current directory instead of the data file's directory.
 - Written documents with `xsi:` attributes lost the `xmlns:xsi` declaration;

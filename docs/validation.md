@@ -1,26 +1,35 @@
 # Validation
 
 pyxsd is a **lax validator**: it never aborts on bad data. Every problem it
-finds is recorded as a `ValidationIssue` in a single
-{class}`~pyxsd.validation.ValidationReport` reachable at `PyXSD.report`.
-A run can produce a complete object tree and a full error report at the same
-time.
+finds is recorded as a `ValidationIssue` in a
+{class}`~pyxsd.validation.ValidationReport`. A compiled schema reports its
+own findings at `Schema.report`; a bound document reports the merged run —
+schema-phase issues followed by instance-phase issues — at
+`Document.report`. A run can produce a complete object tree and a full
+error report at the same time.
 
 ```{note}
 "Lax validator" here means *reporting is non-fatal*. It is separate from
-the **parse mode** (`PyXSD(mode=...)`, `--mode`), which controls what is
-bound into the tree when a document is invalid. The report is always
-strict regardless of mode — see {doc}`binding`.
+the **parse mode** (`Schema.compile(..., mode=...)`, `--mode`), which
+controls what is bound into the tree when a document is invalid. The
+report is always strict regardless of mode — see {doc}`binding`.
 ```
 
 ```python
-from pyxsd import PyXSD
+import pyxsd
 
-parser = PyXSD(xmlFileInput="inventory.xml", xsdFile="schema.xsd")
-if parser.report.has_errors:
-    for issue in parser.report.issues:
+schema = pyxsd.Schema.compile("inventory.xsd")
+schema.require_valid()  # raises ValidationError if the schema itself is bad
+
+document = schema.parse("inventory.xml")
+if document.report.has_errors:
+    for issue in document.report.issues:
         print(issue.format())
 ```
+
+Both `Schema.require_valid()` and `Document.require_valid()` raise
+{class}`~pyxsd.exceptions.ValidationError`, whose `report` attribute is
+the report that failed the check.
 
 ## Report API
 

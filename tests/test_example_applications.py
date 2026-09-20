@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.cli import parse_transform_call, resolve_transform_class
+from pyxsd.document import Document, write_tree
+from pyxsd.schema import Schema
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
 DOCX_SCHEMA = EXAMPLES / "docx" / "schemas" / "wml.xsd"
@@ -67,21 +69,30 @@ GPX_SUBSET_SCHEMA = """\
 """
 
 
-def _run(example, transform, tmp_path, mode=ParseModes.STRICT, output_name="out.xml"):
+def _run(
+    example, instance, xsd, transform, tmp_path, mode=ParseModes.STRICT, output_name="out.xml"
+):
+    """Parses an instance against a schema and runs one transform.
+
+    Mirrors the CLI composition: the transform class is resolved from
+    the example directory, run through ``Document.transform``, and a
+    pass-through result (a synthetic tree, not a schema-bound
+    ``Document``) is written by the caller — the CLI no longer writes
+    those. A transform that writes its own output (ToMarkdown)
+    returns ``None`` and needs no write here.
+    """
     output = tmp_path / output_name
-    parser = PyXSD(
-        EXAMPLES / example / "instance.xml",
-        xsdFile=EXAMPLES / example / "schema.xsd",
-        xmlFileOutput="_No_Output_",
-        transformOutputName=str(output),
-        transforms=[transform],
-        mode=mode,
-    )
-    return parser, output
+    document = Schema.compile(xsd, mode=mode).parse(instance)
+    name, args, kwargs = parse_transform_call(transform)
+    transformCls = resolve_transform_class(name, search_paths=[EXAMPLES / example])
+    result = document.transform(lambda root: transformCls(root)(*args, **kwargs))
+    if not isinstance(result, Document) and result is not None:
+        write_tree(result, output)
+    return document, output
 
 
-def _codes(parser):
-    return [issue.code for issue in parser.report.issues]
+def _codes(document):
+    return [issue.code for issue in document.report.issues]
 
 
 class TestMusicXMLExample:
@@ -94,16 +105,16 @@ class TestMusicXMLExample:
 
     @requires_musicxml_schemas
     def test_real_score_validates_and_summarizes(self, tmp_path):
-        output = tmp_path / "note-stats.xml"
-        parser = PyXSD(
+        document, output = _run(
+            "musicxml",
             EXAMPLES / "musicxml" / "instance.xml",
-            xsdFile=MUSICXML_SCHEMA,
-            xmlFileOutput="_No_Output_",
-            transformOutputName=str(output),
-            transforms=["NoteStats()"],
+            MUSICXML_SCHEMA,
+            "NoteStats()",
+            tmp_path,
             mode=ParseModes.NAMESPACED,
+            output_name="note-stats.xml",
         )
-        assert not parser.report.has_errors
+        assert not document.report.has_errors
 
         root = ET.parse(output).getroot()
         assert root.tag == "noteStats"
@@ -128,16 +139,16 @@ class TestGpxExample:
 
     @requires_gpx_schemas
     def test_real_track_validates_and_summarizes(self, tmp_path):
-        output = tmp_path / "track-stats.xml"
-        parser = PyXSD(
+        document, output = _run(
+            "gpx",
             EXAMPLES / "gpx" / "instance.xml",
-            xsdFile=GPX_SCHEMA,
-            xmlFileOutput="_No_Output_",
-            transformOutputName=str(output),
-            transforms=["TrackStats()"],
+            GPX_SCHEMA,
+            "TrackStats()",
+            tmp_path,
             mode=ParseModes.NAMESPACED,
+            output_name="track-stats.xml",
         )
-        assert not parser.report.has_errors
+        assert not document.report.has_errors
 
         root = ET.parse(output).getroot()
         assert root.tag == "trackStats"
@@ -150,7 +161,7 @@ class TestGpxExample:
         assert float(root.attrib["avgCadence"]) > 0
 
     @requires_gpx_schemas
-    def test_segments_are_not_bridged(self, tmp_path, monkeypatch):
+    def test_segments_are_not_bridged(self, tmp_path):
         """Distances are computed within each segment, never across them.
 
         Two segments that share no recorded movement between them must
@@ -172,17 +183,16 @@ class TestGpxExample:
             "  </trk>\n"
             "</gpx>\n"
         )
-        monkeypatch.chdir(EXAMPLES / "gpx")
-        output = tmp_path / "multi-stats.xml"
-        parser = PyXSD(
+        document, output = _run(
+            "gpx",
             instance,
-            xsdFile=GPX_SCHEMA,
-            xmlFileOutput="_No_Output_",
-            transformOutputName=str(output),
-            transforms=["TrackStats()"],
+            GPX_SCHEMA,
+            "TrackStats()",
+            tmp_path,
             mode=ParseModes.NAMESPACED,
+            output_name="multi-stats.xml",
         )
-        assert not parser.report.has_errors
+        assert not document.report.has_errors
 
         root = ET.parse(output).getroot()
         assert root.tag == "trackStats"
@@ -204,27 +214,25 @@ class TestGpxSegmentsSelfContained:
     segment semantics stay covered everywhere.
     """
 
-    def _stats(self, tmp_path, monkeypatch, instance_text):
+    def _stats(self, tmp_path, instance_text):
         schema = tmp_path / "gpx-subset.xsd"
         schema.write_text(GPX_SUBSET_SCHEMA)
         instance = tmp_path / "instance.xml"
         instance.write_text(instance_text)
-        monkeypatch.chdir(EXAMPLES / "gpx")
-        output = tmp_path / "stats.xml"
-        parser = PyXSD(
+        document, output = _run(
+            "gpx",
             instance,
-            xsdFile=schema,
-            xmlFileOutput="_No_Output_",
-            transformOutputName=str(output),
-            transforms=["TrackStats()"],
+            schema,
+            "TrackStats()",
+            tmp_path,
+            output_name="stats.xml",
         )
-        assert not parser.report.has_errors
+        assert not document.report.has_errors
         return ET.parse(output).getroot()
 
-    def test_segments_are_not_bridged(self, tmp_path, monkeypatch):
+    def test_segments_are_not_bridged(self, tmp_path):
         root = self._stats(
             tmp_path,
-            monkeypatch,
             "<gpx><trk><trkseg>"
             '<trkpt lat="0.0" lon="0.0"><ele>0.0</ele></trkpt>'
             '<trkpt lat="0.0" lon="1.0"><ele>100.0</ele></trkpt>'
@@ -240,10 +248,9 @@ class TestGpxSegmentsSelfContained:
         assert root.attrib["elevationGain"] == "100.0"
         assert root.attrib["elevationLoss"] == "0.0"
 
-    def test_single_point_tracks_do_not_invent_movement(self, tmp_path, monkeypatch):
+    def test_single_point_tracks_do_not_invent_movement(self, tmp_path):
         root = self._stats(
             tmp_path,
-            monkeypatch,
             "<gpx><trk><trkseg>"
             '<trkpt lat="0.0" lon="0.0"><ele>0.0</ele></trkpt>'
             "</trkseg></trk><trk><trkseg>"
@@ -269,18 +276,19 @@ class TestDocxExample:
     @requires_docx_schemas
     def test_real_document_markdown(self, tmp_path):
         output = tmp_path / "document.md"
-        parser = PyXSD(
+        document, _ = _run(
+            "docx",
             EXAMPLES / "docx" / "document.xml",
-            xsdFile=DOCX_SCHEMA,
-            xmlFileOutput="_No_Output_",
-            transformOutputName=str(output),
-            transforms=[f"ToMarkdown('{output}')"],
+            DOCX_SCHEMA,
+            f"ToMarkdown('{output}')",
+            tmp_path,
             mode=ParseModes.NAMESPACED,
+            output_name="unused.xml",
         )
         # The real schema composes cleanly; the only diagnostics are the
         # documented circular-include warnings from dml-main.xsd.
-        assert not parser.report.has_errors
-        assert {issue.code for issue in parser.report.issues} <= {"compose-cycle"}
+        assert not document.report.has_errors
+        assert {issue.code for issue in document.report.issues} <= {"compose-cycle"}
 
         expected = (EXAMPLES / "docx" / "expected.md").read_text()
         assert output.read_text() == expected
@@ -292,6 +300,8 @@ class TestDocxLaxExample:
     def _markdown(self, mode, tmp_path):
         return _run(
             "docx/lax",
+            EXAMPLES / "docx" / "lax" / "instance.xml",
+            EXAMPLES / "docx" / "lax" / "schema.xsd",
             f"ToMarkdown('{tmp_path / 'document.md'}')",
             tmp_path,
             mode=mode,
@@ -299,26 +309,26 @@ class TestDocxLaxExample:
         )
 
     def test_markdown_output(self, tmp_path):
-        parser, output = self._markdown(ParseModes.STRICT, tmp_path)
+        document, output = self._markdown(ParseModes.STRICT, tmp_path)
         # The document is intentionally messy: an unmodeled element and
         # an invalid run size are still reported in strict mode.
-        assert "unexpected-element" in _codes(parser)
-        assert "value" in _codes(parser)
+        assert "unexpected-element" in _codes(document)
+        assert "value" in _codes(document)
         expected = (EXAMPLES / "docx" / "lax" / "expected.md").read_text()
         assert output.read_text() == expected
 
     def test_lax_mode_binds_the_mess(self, tmp_path):
-        parser, output = self._markdown(ParseModes.LAX, tmp_path)
+        document, output = self._markdown(ParseModes.LAX, tmp_path)
         # The report is still strict...
-        assert "unexpected-element" in _codes(parser)
-        assert "value" in _codes(parser)
-        assert parser.report.has_errors
+        assert "unexpected-element" in _codes(document)
+        assert "value" in _codes(document)
+        assert document.report.has_errors
         # ...but the output is identical because no data was dropped.
         expected = (EXAMPLES / "docx" / "lax" / "expected.md").read_text()
         assert output.read_text() == expected
 
         # Lax binding keeps the unmodeled element as a generic node...
-        root = parser.schemaRootInstance
+        root = document.root
         body = next(child for child in root._children_ if child._name_ == "body")
         assert "bookmarkStart" in [child._name_ for child in body._children_]
 

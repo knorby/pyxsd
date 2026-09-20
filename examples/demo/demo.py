@@ -4,10 +4,10 @@ Run from this directory (or the repository root) with::
 
     uv run python examples/demo/demo.py
 
-It parses ``instance.xml`` against ``schema.xsd`` using the full pyxsd
-pipeline (parse -> validate -> transform -> write), applies the local
-``CountElements`` transform, prints the validation report, and writes
-the transformed tree to ``transformed.xml``.
+It parses ``instance.xml`` against ``schema.xsd``, applies the local
+``CountElements`` transform through the document API, prints the
+validation report, and writes the transformed tree to
+``transformed.xml``.
 
 The equivalent command line is::
 
@@ -25,25 +25,29 @@ DEMO_DIR = Path(__file__).resolve().parent
 def main() -> int:
     # Import pyxsd (installed in the uv environment; falls back to the
     # repository src/ tree when run from a checkout without install).
-    from pyxsd import PyXSD
+    from pyxsd.cli import parse_transform_call, resolve_transform_class
+    from pyxsd.document import Document
+    from pyxsd.schema import Schema
 
-    parser = PyXSD(
-        xmlFileInput=DEMO_DIR / "instance.xml",
-        xmlFileOutput=False,  # keep the parsed tree off disk
-        transforms=["CountElements()"],  # resolved from this directory
-        transformOutputName=str(DEMO_DIR / "transformed.xml"),
-    )
+    document = Schema.compile(DEMO_DIR / "schema.xsd").parse(DEMO_DIR / "instance.xml")
 
-    report = parser.report
+    report = document.report
     print(f"\nValidation: {report}")
     for issue in report.issues:
         print("  " + issue.format())
 
-    root = parser.schemaRootInstance
+    root = document.root
     print(f"\nRoot instance: {type(root).__name__} named {root._name_!r}")
     for child in root._children_:
         name = child._attribs_.get("id", "-")
         print(f"  {child._name_} id={name}")
+
+    transform_name, args, kwargs = parse_transform_call("CountElements()")
+    transform_cls = resolve_transform_class(transform_name, search_paths=[DEMO_DIR])
+    result = document.transform(lambda tree: transform_cls(tree)(*args, **kwargs))
+    if isinstance(result, Document):
+        document = result
+    document.write(DEMO_DIR / "transformed.xml")
 
     print(f"\nTransformed tree written to {DEMO_DIR / 'transformed.xml'}")
     return 1 if report.has_errors else 0

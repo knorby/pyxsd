@@ -10,7 +10,7 @@ replacing the base particle tree.
 import xml.etree.ElementTree as ET
 
 from pyxsd.content_model import Particle
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
@@ -21,12 +21,7 @@ def _parse(schema_body, instance, tmp_path):
     schema_path.write_text(schema)
     instance_path = tmp_path / "instance.xml"
     instance_path.write_text(instance)
-    return PyXSD(
-        instance_path,
-        xsdFile=schema_path,
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-    )
+    return Schema.compile(str(schema_path)).parse(str(instance_path))
 
 
 def _element(name, type_="xs:string", attrs=""):
@@ -37,74 +32,74 @@ def _root(model):
     return f'<xs:element name="r"><xs:complexType>{model}</xs:complexType></xs:element>'
 
 
-def _codes(parser):
-    return [issue.code for issue in parser.report.issues]
+def _codes(doc):
+    return [issue.code for issue in doc.report.issues]
 
 
 class TestClosedContentModel:
     def test_trailing_undeclared_child_is_rejected(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _root("<xs:sequence>" + _element("a") + "</xs:sequence>"),
             "<r><a/><z/></r>",
             tmp_path,
         )
-        assert "unexpected-element" in _codes(parser)
+        assert "unexpected-element" in _codes(doc)
 
     def test_trailing_repeat_of_declared_child_is_rejected(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _root("<xs:sequence>" + _element("a") + _element("b") + "</xs:sequence>"),
             "<r><a/><b/><a/></r>",
             tmp_path,
         )
-        assert "order" in _codes(parser)
+        assert "order" in _codes(doc)
 
     def test_unknown_choice_branch_is_rejected(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _root("<xs:choice>" + _element("a") + _element("b") + "</xs:choice>"),
             "<r><z/></r>",
             tmp_path,
         )
-        assert "unexpected-element" in _codes(parser)
+        assert "unexpected-element" in _codes(doc)
 
     def test_children_of_empty_type_are_rejected(self, tmp_path):
-        parser = _parse(_root(""), "<r><z/></r>", tmp_path)
-        assert "unexpected-element" in _codes(parser)
+        doc = _parse(_root(""), "<r><z/></r>", tmp_path)
+        assert "unexpected-element" in _codes(doc)
 
     def test_empty_required_choice_rejects_empty_element(self, tmp_path):
         # Saxon complex022.n1: an empty choice with minOccurs=1 is
         # unsatisfiable, so even an empty element is invalid.
-        parser = _parse(_root("<xs:choice/>"), "<r/>", tmp_path)
-        assert "occurrence-min" in _codes(parser)
+        doc = _parse(_root("<xs:choice/>"), "<r/>", tmp_path)
+        assert "occurrence-min" in _codes(doc)
 
     def test_optional_empty_choice_accepts_empty_element(self, tmp_path):
-        parser = _parse(_root('<xs:choice minOccurs="0"/>'), "<r/>", tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(_root('<xs:choice minOccurs="0"/>'), "<r/>", tmp_path)
+        assert not doc.report.has_errors
 
     def test_valid_sequence_stays_clean(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _root("<xs:sequence>" + _element("a") + _element("b") + "</xs:sequence>"),
             "<r><a/><b/></r>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
 
 class TestParticleOccurrences:
     def test_repeated_choice_accepts_repeat_of_one_branch(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _root('<xs:choice maxOccurs="2">' + _element("a") + _element("b") + "</xs:choice>"),
             "<r><a/><a/></r>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_optional_sequence_with_required_child_can_be_absent(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _root('<xs:sequence minOccurs="0">' + _element("a") + "</xs:sequence>"),
             "<r/>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_repeated_group_repeats_as_a_unit(self, tmp_path):
         group = (
@@ -145,8 +140,8 @@ class TestSharedGroupReference:
             '<xs:group ref="g" minOccurs="0"/>'
             "</xs:complexType>" + _element("r", "Required")
         )
-        parser = _parse(schema, "<r/>", tmp_path)
-        assert "occurrence-min" in _codes(parser)
+        doc = _parse(schema, "<r/>", tmp_path)
+        assert "occurrence-min" in _codes(doc)
 
 
 class TestComplexRestriction:
@@ -161,12 +156,12 @@ class TestComplexRestriction:
     )
 
     def test_restriction_removes_base_particle(self, tmp_path):
-        parser = _parse(self.SCHEMA, "<r><a/><b/></r>", tmp_path)
-        assert "unexpected-element" in _codes(parser)
+        doc = _parse(self.SCHEMA, "<r><a/><b/></r>", tmp_path)
+        assert "unexpected-element" in _codes(doc)
 
     def test_restriction_allows_remaining_particle(self, tmp_path):
-        parser = _parse(self.SCHEMA, "<r><a/></r>", tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(self.SCHEMA, "<r><a/></r>", tmp_path)
+        assert not doc.report.has_errors
 
 
 class TestDerivedSimpleTypeDispatch:
@@ -177,19 +172,19 @@ class TestDerivedSimpleTypeDispatch:
     )
 
     def test_derived_simple_type_root(self, tmp_path):
-        parser = _parse(self.SCHEMA, "<r>42</r>", tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(self.SCHEMA, "<r>42</r>", tmp_path)
+        assert not doc.report.has_errors
 
     def test_derived_simple_type_as_child(self, tmp_path):
         schema = '<xs:simpleType name="T"><xs:restriction base="xs:int"/></xs:simpleType>' + _root(
             '<xs:sequence><xs:element name="c" type="T"/></xs:sequence>'
         )
-        parser = _parse(schema, "<r><c>42</c></r>", tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(schema, "<r><c>42</c></r>", tmp_path)
+        assert not doc.report.has_errors
 
     def test_derived_simple_type_invalid_value(self, tmp_path):
-        parser = _parse(self.SCHEMA, "<r>abc</r>", tmp_path)
-        assert "value" in _codes(parser)
+        doc = _parse(self.SCHEMA, "<r>abc</r>", tmp_path)
+        assert "value" in _codes(doc)
 
 
 class TestAllExtensionComposition:
@@ -204,7 +199,7 @@ class TestAllExtensionComposition:
     """
 
     def test_all_extension_is_order_insensitive(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             '<xs:complexType name="b"><xs:all>'
             '<xs:element name="a"/></xs:all></xs:complexType>'
             '<xs:complexType name="t"><xs:complexContent>'
@@ -215,7 +210,7 @@ class TestAllExtensionComposition:
             "<r><c/><a/></r>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_all_extension_requires_every_member_when_group_present(self, tmp_path):
         # Saxon all314: both groups are optional, but a present group
@@ -235,7 +230,7 @@ class TestAllExtensionComposition:
         assert _parse(schema, "<r><c/></r>", tmp_path).report.has_errors
 
     def test_all_extension_keeps_base_required_members(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             '<xs:complexType name="b"><xs:all>'
             '<xs:element name="a"/></xs:all></xs:complexType>'
             '<xs:complexType name="t"><xs:complexContent>'
@@ -246,7 +241,7 @@ class TestAllExtensionComposition:
             "<r><c/></r>",
             tmp_path,
         )
-        assert parser.report.has_errors
+        assert doc.report.has_errors
 
 
 class TestAllGroupReferenceMembers:
@@ -271,21 +266,21 @@ class TestAllGroupReferenceMembers:
 
     def test_members_match_in_any_order(self, tmp_path):
         # Saxon all007.v01 (an all001 document)
-        parser = _parse(
+        doc = _parse(
             self.SCHEMA,
             "<r><a/><b/><d/><c/><a/><c/><c/><a/><a/><b/></r>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_group_member_occurrence_limits_are_enforced(self, tmp_path):
         # Saxon all007.n01 (too few c elements)
-        parser = _parse(
+        doc = _parse(
             self.SCHEMA,
             "<r><a/><b/><d/><a/><c/><a/><a/><b/></r>",
             tmp_path,
         )
-        assert parser.report.has_errors
+        assert doc.report.has_errors
 
 
 class TestElementOnlyCharacters:
@@ -300,30 +295,30 @@ class TestElementOnlyCharacters:
     """
 
     def test_text_under_element_only_content_is_rejected(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _root("<xs:sequence>" + _element("a") + "</xs:sequence>"),
             "<r>stray<a/>text</r>",
             tmp_path,
         )
-        assert "unexpected-character" in _codes(parser)
+        assert "unexpected-character" in _codes(doc)
 
     def test_whitespace_between_children_is_fine(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _root("<xs:sequence>" + _element("a") + "</xs:sequence>"),
             "<r>\n  <a/>\n</r>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_mixed_content_keeps_its_text(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             '<xs:element name="r"><xs:complexType mixed="true"><xs:sequence>'
             + _element("a")
             + "</xs:sequence></xs:complexType></xs:element>",
             "<r>text<a/>tail</r>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_all_extension_element_only_composition_rejects_text(self, tmp_path):
         # Saxon all307.n01: all306's document (with text) against the
@@ -341,8 +336,8 @@ class TestElementOnlyCharacters:
             "</xs:all></xs:extension></xs:complexContent></xs:complexType>"
             '<xs:element name="r" type="t"/>'
         )
-        parser = _parse(schema, "<r><b/>text<a/>text<d/>text<a/></r>", tmp_path)
-        assert parser.report.has_errors
+        doc = _parse(schema, "<r><b/>text<a/>text<d/>text<a/></r>", tmp_path)
+        assert doc.report.has_errors
 
 
 class TestMixedInheritanceThroughEmptyExtension:
@@ -356,7 +351,7 @@ class TestMixedInheritanceThroughEmptyExtension:
     """
 
     def test_attribute_extension_of_mixed_sequence_base_keeps_text(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             '<xs:complexType name="b" mixed="true"><xs:sequence>'
             '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
             '<xs:complexType name="t"><xs:complexContent>'
@@ -366,10 +361,10 @@ class TestMixedInheritanceThroughEmptyExtension:
             "<r>text<a/></r>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_bare_extension_of_mixed_sequence_base_keeps_text(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             '<xs:complexType name="b" mixed="true"><xs:sequence>'
             '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
             '<xs:complexType name="t"><xs:complexContent>'
@@ -378,10 +373,10 @@ class TestMixedInheritanceThroughEmptyExtension:
             "<r>text</r>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_attribute_extension_of_mixed_all_base_keeps_text(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             '<xs:complexType name="b" mixed="true"><xs:all>'
             '<xs:element name="a" minOccurs="0"/></xs:all></xs:complexType>'
             '<xs:complexType name="t"><xs:complexContent>'
@@ -391,12 +386,12 @@ class TestMixedInheritanceThroughEmptyExtension:
             "<r>text<a/></r>",
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_element_only_base_still_rejects_text_through_empty_extension(self, tmp_path):
         # the inheritance is the base's content type, not a blanket
         # allowance: an element-only base stays element-only
-        parser = _parse(
+        doc = _parse(
             '<xs:complexType name="b"><xs:sequence>'
             '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:complexType>'
             '<xs:complexType name="t"><xs:complexContent>'
@@ -406,7 +401,7 @@ class TestMixedInheritanceThroughEmptyExtension:
             "<r>text<a/></r>",
             tmp_path,
         )
-        assert "unexpected-character" in _codes(parser)
+        assert "unexpected-character" in _codes(doc)
 
 
 class TestRepeatedParticleSearchCost:

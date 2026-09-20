@@ -21,6 +21,8 @@ pyxsd [options]
 | `-t CALLS` | `--transform` | Transform call(s): `Class(args...)`, chained with `>` when multiple. |
 | `-T FILE` | `--transformFile` | File with transform calls, one per line. Mutually exclusive with `-t`. |
 | `-c FILE` | `--overlayClassesFile` | *Experimental.* Overlay class file that extends/overrides generated classes. |
+| `--mode` | | Binding mode: `strict` (default) reports invalid values and drops them; `lax` binds best-effort values (raw strings, generic subtrees) so no data is lost. See {doc}`binding`. |
+| `--namespaces` | | Namespace handling: `legacy` (default) matches by local name and ignores namespace URIs; `strict` resolves QNames and matches by expanded name. See {doc}`binding`. |
 | `-v` | `--verbose` | Verbose logging (DEBUG). |
 | `-q` | `--quiet` | Quiet logging (CRITICAL). Validation issues are still printed. `-v` and `-q` are mutually exclusive. |
 | `--strict` | | Exit with status 1 if the validation report contains errors. |

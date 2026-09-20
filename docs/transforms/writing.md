@@ -45,17 +45,15 @@ descending into lists, tuples and dicts; non-node objects are skipped.
 ## A runnable in-memory example
 
 The transform above can be exercised without touching the filesystem:
-build a parser over string streams, run the transform directly, serialize
-the result to a `StringIO`, and revalidate the changed tree with
-`SendTreeToPyXSD` so its report can be inspected.
+compile the schema and parse the instance into a `Document`, run the
+transform through `Document.transform`, and revalidate the changed tree
+with `Document.revalidate` so its report can be inspected.
 
 ```python
 import io
 
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.transforms import Transform, iter_tree
-from pyxsd.transforms.send_tree_to_pyxsd import SendTreeToPyXSD
-from pyxsd.writers import XmlTreeWriter
 
 SCHEMA = """\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -86,27 +84,18 @@ class UpperValues(Transform):
 
 
 def main():
-    parser = PyXSD(
-        io.StringIO(INSTANCE),
-        xsdFile=io.StringIO(SCHEMA),
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-    )
+    document = Schema.compile(io.StringIO(SCHEMA)).parse(io.StringIO(INSTANCE))
 
-    print("body before:", parser.schemaRootInstance.body)
+    print("body before:", document.root.body)
 
-    transformed = UpperValues(parser.schemaRootInstance)()
+    transformed = document.transform(lambda root: UpperValues(root)())
 
-    output = io.StringIO()
-    XmlTreeWriter(transformed, output)
-    print(output.getvalue().strip())
+    print(transformed.to_string().strip())
 
-    # Revalidate the changed tree against the same schema; the transform
-    # keeps the original tree but exposes the reparse's report.
-    revalidation = SendTreeToPyXSD(transformed)
-    revalidation.outerParser = parser
-    revalidation()
-    print("revalidation errors:", [issue.code for issue in revalidation.report.issues])
+    # Revalidate the changed tree against the same schema; the new
+    # document carries a fresh report for the tree's current shape.
+    again = transformed.revalidate()
+    print("revalidation errors:", [issue.code for issue in again.report.issues])
 
 
 if __name__ == "__main__":
@@ -132,15 +121,17 @@ Use `makeElemObj(name)` to mint a node with the correct
 `makeCommentElem(text)` for comments. Anything you assemble this way is
 writable by `XmlTreeWriter`. The node shape is documented in {doc}`../data-model`.
 
-## Re-parsing after structural changes
+## Revalidating after structural changes
 
 If your transform changes the tree's shape so much that it no longer
-corresponds to the schema, wrap it with `SendTreeToPyXSD()` — it writes the
-tree to a temp file and re-runs the full parse pipeline, validating the
-new structure:
+corresponds to the schema, call `Document.revalidate()` on the
+transformed document — it re-parses the serialized tree against the same
+schema and returns a fresh document whose report reflects the new
+structure:
 
-```bash
-pyxsd -i input.xml -t 'ExpandCell() > SendTreeToPyXSD() > PrintData()'
+```python
+again = transformed.revalidate()
+print(again.report)
 ```
 
 ## Distributing transforms

@@ -3,7 +3,8 @@
 pyxsd 1.0 is the first release in twenty years, ported to modern Python and
 rebuilt for the ecosystem of 2026. It is a **new generation of the same
 idea**: schema-compiled Python classes, a validated instance tree, a
-transform pipeline, and a zero-dependency runtime. The node shape, the CLI
+transform pipeline, and a pure-Python runtime with one dependency
+(`elementpath`, for XSD regular expressions). The node shape, the CLI
 flags, and the XSD subset all survive; almost everything else around them
 was modernized.
 
@@ -28,8 +29,10 @@ modern machinery:
   its declared elements and attributes.
 - **`ValidationReport`** replaces scattered `print` statements: all
   non-fatal issues are structured objects with severity, stable code,
-  message, and optional element name, available at `PyXSD.report` and to
-  any generated class through the parser back-reference.
+  message, and optional element name. A schema reports at
+  `Schema.report`; a bound document reports the merged run at
+  `Document.report`, and `require_valid()` turns errors into a raised
+  `ValidationError` carrying that report.
 - **`logging`** replaces prints for progress/trace output. The library
   never configures handlers; the CLI maps `-v`/`-q` to DEBUG/CRITICAL.
 - **`pathlib.Path`, `argparse`, `abc.ABC`, context managers, and lazy
@@ -46,7 +49,7 @@ modern machinery:
 
 | 0.1 | 1.0 |
 | --- | --- |
-| Python 2.3+, separate ElementTree/cElementTree required | Python 3.11+ only, standard library only (zero runtime dependencies) |
+| Python 2.3+, separate ElementTree/cElementTree required | Python 3.11+ only; one pure-Python runtime dependency (`elementpath`, for XSD regular expressions) |
 | `setup.py` install, Windows exe installer | `pyproject.toml` + hatchling; `pip install pyxsd`; wheel + sdist |
 | `pyXSD.py` script | `pyxsd` console script (also `python -m pyxsd`) |
 
@@ -54,14 +57,15 @@ modern machinery:
 
 | 0.1 | 1.0 |
 | --- | --- |
-| `pyxsd/pyXSD.py` | `pyxsd/parser.py` |
+| `pyxsd/pyXSD.py` (the whole pipeline in one module) | `pyxsd/schema.py` (compile) + `pyxsd/document.py` (bind, transform, write) |
 | `pyxsd/schemaBase.py` | `pyxsd/schema_base.py` |
 | `pyxsd/xsdDataTypes.py` | `pyxsd/xsd_data_types.py` |
 | `pyxsd/elementRepresentatives/` (camelCase modules) | `pyxsd/element_representatives/` (snake_case modules) |
 | `pyxsd/writers/xmlTreeWriter.py` | `pyxsd/writers/xml_tree_writer.py` |
 | `pyxsd/writers/xmlTagWriter.py` | `pyxsd/writers/xml_tag_writer.py` |
 | `pyxsd/transforms/cellSizer.py` etc. | **moved to `examples/legacy/`** |
-| `from pyxsd.pyXSD import PyXSD` | `from pyxsd import PyXSD` |
+| the `SendTreeToPyXSD` transform | `Document.revalidate()` |
+| `from pyxsd.pyXSD import PyXSD` | `import pyxsd` (then `pyxsd.Schema.compile` / `pyxsd.parse`) |
 | `from pyxsd.writers.xmlTreeWriter import XmlTreeWriter` | `from pyxsd.writers.xml_tree_writer import XmlTreeWriter` |
 
 All internal module names are now snake_case and importable as such; every
@@ -75,17 +79,102 @@ The eight application transforms (`CellSizer`, `SphereCutter`,
 `examples/legacy/`. Importing `pyxsd.transforms.cellSizer` (or any
 snake_case variant) now raises `ImportError`. The installed package keeps
 the framework (`Transform`, `Displayer`, `iter_tree`) and the generic
-built-ins (`PrintData`, `SendTreeToPyXSD`). See
+built-ins (`PrintData`). See
 `examples/legacy/README.md` for how to run them.
+
+### The `PyXSD` pipeline → `Schema` and `Document`
+
+The biggest change: the monolithic `PyXSD` class is gone. In 0.1,
+constructing `PyXSD(xmlFileInput=..., xsdFile=..., ...)` ran the whole
+pipeline — parse the schema, bind the instance, write outputs, run
+transforms — inside `__init__`. 1.0 splits that into explicit objects
+with one job each:
+
+```python
+# 0.1
+from pyxsd.pyXSD import PyXSD
+
+parser = PyXSD(
+    xmlFileInput="inventory.xml",
+    xsdFile="inventory.xsd",
+    xmlFileOutput=False,
+)
+root = parser.schemaRootInstance
+for issue in parser.report.issues:
+    print(issue.format())
+
+# 1.0
+import pyxsd
+
+schema = pyxsd.Schema.compile("inventory.xsd")
+schema.require_valid()  # raises pyxsd.ValidationError if the schema is bad
+
+document = schema.parse("inventory.xml")
+document.require_valid()
+root = document.root
+for issue in document.report.issues:
+    print(issue.format())
+```
+
+The mapping, piece by piece:
+
+| 0.1 / interim | 1.0 |
+| --- | --- |
+| `PyXSD(xmlFileInput=..., xsdFile=...)` | `pyxsd.Schema.compile(xsd)` then `schema.parse(xml)` — or the one-call shortcut `pyxsd.parse(xml, xsd=...)`, which reads schema hints from the instance like the CLI does |
+| `parser.schemaRootInstance` | `document.root` |
+| `parser.report` | `document.report` (the schema's own findings stay at `schema.report`; a document's report merges both) |
+| checking `report.has_errors` yourself | `document.is_valid`, or `document.require_valid()` / `schema.require_valid()` which raise `pyxsd.ValidationError` (it carries the failing `.report`) |
+| `xmlFileOutput=...` | `document.write(path)` — nothing is written unless you ask |
+| `transforms=["PrintData()"]` (call strings) | `document.transform(callable)` — transforms are plain callables taking the tree root (see below) |
+| `transformOutputName=...` | write the returned document yourself: `updated.write("out.xml")` |
+
+Each parse returns a fresh `Document`, so one compiled schema can serve
+many documents (and many parses of the same document) without their
+reports mixing.
+
+### Transforms: strings → callables
+
+In 0.1, library users passed transform *call strings*
+(`transforms=["PrintData()"]`) that pyxsd resolved by class name at run
+time. In 1.0, `Document.transform` takes the callable itself:
+
+```python
+def normalize_units(root):
+    ...  # mutate the tree or return a new root
+    return root
+
+
+updated = document.transform(normalize_units)
+updated.write("normalized.xml")
+```
+
+A transform that returns a tree root comes back as a new `Document`
+against the same schema; returning anything else returns that value
+unchanged; returning `None` leaves the document as it was. A returned
+document shares the pre-transform report — after a structural change,
+call `updated.revalidate()` for a report that reflects the new shape
+(that is also the replacement for 0.1's `SendTreeToPyXSD` transform,
+which re-fed the written tree back through the pipeline).
+
+The shipped `Transform` classes still work — `__init__` takes the root,
+`__call__` does the work — they are just invoked through a one-line
+wrapper (see {doc}`transforms/using`).
+
+**On the command line, nothing changes**: `-t 'PrintData()'`,
+`>`-chained calls, and `-T` transform files are exactly the syntax they
+were; the CLI resolves the strings to callables for you.
 
 ### CLI
 
 - Same flag set (`-i`, `-s`, `-p`, `-k`, `-o`, `-d`, `-t`, `-T`, `-c`,
-  `-v`, `-q`), plus new `--strict`.
+  `-v`, `-q`), plus `--strict`, `--mode strict|lax`, and
+  `--namespaces strict|legacy`.
 - Transform calls must be **calls with parentheses**
   (`-t 'PrintData()'`); a bare class name is now a usage error. Calls are
   parsed with `ast.literal_eval` — only literal arguments are accepted
-  (0.1 used `eval`).
+  (0.1 used `eval`). This call-string syntax is unchanged by the
+  library-side move to callable transforms: the CLI resolves the strings
+  to callables itself.
 - `-t` and `-T` are mutually exclusive; `-v` and `-q` are mutually
   exclusive (both exit 2).
 - stdin input is read directly (no `stdin.xml` temp file).
@@ -132,7 +221,10 @@ built-ins (`PrintData`, `SendTreeToPyXSD`). See
 - `print` statements → `logging` (library default WARNING) plus the
   `ValidationReport`. Codes are stable strings — see {doc}`validation`.
 - Schema problems raise or record `PyXSDError` (0.1 mixed `ValueError`
-  and raw string `raise` statements).
+  and raw string `raise` statements). Invalid schemas and documents do
+  not raise by default: `Schema.require_valid()` and
+  `Document.require_valid()` raise `pyxsd.ValidationError` (carrying the
+  failing report) when you want errors to be fatal.
 - Instance validation is more complete and more correct: attribute
   defaults/prohibitions/fixed, element defaults/fixed/nil, abstract
   checks, substitution groups, `xsi:type`, and identity constraints all
@@ -153,7 +245,8 @@ Your existing invocations mostly work as-is. Check:
    `examples/legacy/` (or copied next to your data).
 3. Add `--strict` where a CI pipeline needs a failure signal.
 4. Move your log parsing from "grep stdout" to the rendered report on
-   stderr (or the JSON/tuple API on `PyXSD.report`).
+   stderr (or the issue objects on `document.report` when scripting the
+   library).
 
 ### Library users
 
@@ -170,23 +263,31 @@ parser = PyXSD(
 # ... hope the prints were useful
 
 # 1.0
-from pyxsd import PyXSD
+import pyxsd
 
-parser = PyXSD(xmlFileInput="data.xml", xsdFile="data.xsd", xmlFileOutput=False)
-if parser.report.has_errors:
-    for issue in parser.report.issues:
+schema = pyxsd.Schema.compile("data.xsd")
+schema.require_valid()  # raise on a bad schema
+
+document = schema.parse("data.xml")
+if document.report.has_errors:
+    for issue in document.report.issues:
         print(issue.format())
-root = parser.schemaRootInstance
+root = document.root
 ```
 
 Notes:
 
-- Construction runs the whole pipeline (parse → validate → write →
-  transforms). `PyXSD.report` holds every issue found.
-- `xmlFileOutput=False` (or `"_No_Output_"`) suppresses the parsed-tree
-  write; a filename or `True` (default name) writes it.
-- `transformOutputName` accepts a filename or `"stdout"`; with `transforms`
-  present, output is always written somewhere.
+- Compilation and binding are separate steps: `Schema.compile` builds
+  the schema (and its classes) once; every `schema.parse(xml)` returns a
+  fresh `Document` for one instance. `pyxsd.parse(xml)` is the shortcut
+  that also resolves the schema from the instance's own schema hints.
+- Nothing is written unless you ask: `document.write(path)` /
+  `document.to_string()` replace the `xmlFileOutput` /
+  `transformOutputName` options.
+- Transforms are callables passed to `document.transform(fn)` — call
+  strings are a CLI-only syntax now.
+- `require_valid()` raises `pyxsd.ValidationError` whose `.report`
+  attribute holds every issue; `document.is_valid` is the boolean form.
 - Import paths follow the module renames table above; writer APIs
   (`XmlTreeWriter`, `XmlTagWriter`) are unchanged in behavior.
 
@@ -200,6 +301,15 @@ Notes:
   from pyxsd.transforms import Transform, Displayer, iter_tree
   ```
 
+- Transforms run through `Document.transform`: your class is invoked as
+  `transform_cls(root)(*args, **kwargs)`, and a plain function taking the
+  root works too (no wrapper needed). The 0.1 call-string form
+  (`transforms=[...]`) is gone from the library; the CLI `-t` syntax is
+  unchanged.
+- After a transform changes the tree's shape, call
+  `transformed.revalidate()` — the 0.1 `SendTreeToPyXSD` transform
+  (re-feeding the written tree through the pipeline) is replaced by this
+  one call, without the temp files.
 - The visitor/walker API (`walk`, `classCollector`, `tagCollector`,
   `tagFinder`, `getElementsByName`, `find`/`findAll`, `makeElemObj`,
   `makeCommentElem`) is unchanged. `iter_tree(instance)` is new and

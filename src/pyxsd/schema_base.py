@@ -18,8 +18,9 @@ from pyxsd.derivation import (
     is_validly_derived,
 )
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
-from pyxsd.validation import IssueSeverity
-from pyxsd.wildcards import WildcardSpec
+from pyxsd.schema_context import current_context
+from pyxsd.validation import IssueSeverity, report_or_log
+from pyxsd.wildcards import NAMESPACE_ANY, WildcardSpec
 from pyxsd.xsd_data_types import (
     AnySimpleType,
     AnyType,
@@ -196,7 +197,7 @@ class SchemaBase:
 
     The pythonic instance tree is built from this class.  This class
     also contains the means to do non-fatal parser error checking.  A
-    little bit of the work this class does is also done in the PyXSD
+    little bit of the work this class does is also done in the schema
     parser. The schema and xml file do not line up perfectly.  The top
     level element in the schema and the schema tag both contain
     information relevant to the top-level tag in the XML. For this
@@ -215,11 +216,11 @@ class SchemaBase:
     standard ``__set_name__`` protocol.
 
     Recoverable validation problems are recorded on the
-    :class:`~pyxsd.validation.ValidationReport` owned by the running
-    :class:`~pyxsd.parser.PyXSD` instance (which every generated class
-    carries as its ``pyXSD`` attribute) instead of being printed. When
-    no parser is attached, issues fall back to the ``pyxsd`` logging
-    hierarchy.
+    :class:`~pyxsd.validation.ValidationReport` resolved through the
+    active binding context (which every generated class reaches via
+    its ``schema`` stamp) instead of
+    being printed. When nothing is attached, issues fall back to the
+    ``pyxsd`` logging hierarchy.
     """
 
     #: Default element bookkeeping for subclasses that declare no
@@ -309,24 +310,35 @@ class SchemaBase:
     def _report_issue(cls, severity, message, *, code, element=None):
         """Record a validation issue on the owning parser's report.
 
-        Falls back to logging when the class has no attached parser
-        (for example hand-written overlay classes that subclass
-        SchemaBase directly).
+        The report is resolved as the active context's binding report
+        (set per parse, so a document bound against a shared schema gets
+        its own report), then the class's ``schema`` stamp. Falls back
+        to logging when neither is attached (for example hand-written
+        overlay classes that subclass SchemaBase directly, or writes
+        outside any parse).
         """
-        parser = getattr(cls, "pyXSD", None)
-        if parser is not None:
-            if severity is IssueSeverity.ERROR:
-                parser.report.add_error(message, code=code, element=element)
-            else:
-                parser.report.add_warning(message, code=code, element=element)
-        else:
-            logger.log(
-                logging.ERROR if severity is IssueSeverity.ERROR else logging.WARNING,
-                "%s[%s] %s",
-                element or cls.__name__,
-                code,
-                message,
-            )
+        report = None
+        context = current_context()
+        if context is not None:
+            report = context.report
+        if report is None:
+            schema = getattr(cls, "schema", None)
+            if schema is not None:
+                report = getattr(schema, "report", None)
+        report_or_log(report, severity, code=code, message=message, element=element)
+
+    @classmethod
+    def _parserHost(cls):
+        """The parser-like host of the compile that generated ``cls``.
+
+        Read through the ``schema`` stamp — the only parser seam a
+        generated class carries — so per-parse state (the binding
+        indexes, namespace context, mode) follows the owning
+        :class:`~pyxsd.schema.Schema`. ``None`` for classes with no
+        owning schema (hand-written overlay bases, or classes built
+        before their compile finished).
+        """
+        return getattr(getattr(cls, "schema", None), "_host", None)
 
     @classmethod
     def _report_error(cls, message, *, code, element=None):
@@ -384,7 +396,7 @@ class SchemaBase:
         name_fn = getattr(descriptor, "instanceName", None)
         if name_fn is None:
             return getattr(descriptor, "name", None)
-        return name_fn(parser=getattr(cls, "pyXSD", None), is_attribute=is_attribute)
+        return name_fn(parser=cls._parserHost(), is_attribute=is_attribute)
 
     @classmethod
     def _qname_bindings(cls, element):
@@ -396,7 +408,7 @@ class SchemaBase:
         """
         if getattr(_mode_for(cls), "namespaces", "legacy") != "strict":
             return None
-        parser = getattr(cls, "pyXSD", None)
+        parser = cls._parserHost()
         context = getattr(parser, "namespaceContext", None)
         if context is None:
             return None
@@ -468,7 +480,7 @@ class SchemaBase:
                 return False
             return True
         try:
-            declaration.pyXSD = parser
+            declaration.host = parser
             declaration.getType()(value)
         except Exception as e:
             cls._report_error(
@@ -478,6 +490,31 @@ class SchemaBase:
             )
             return False
         return True
+
+    @classmethod
+    def _anyTypeChildInstance(cls, dataTypeClass: Any, elementTag: Any) -> Any:
+        """Builds an instance for an ``xs:anyType``-typed child element.
+
+        ``xs:anyType`` is mixed character data plus a lax ``##any``
+        wildcard over element children, so an anyType-typed child is not a
+        simple type containing child elements: its children bind through
+        the wildcard (MS isDefault072, errC007).
+        """
+        rootName = (
+            elementTag.tag
+            if _mode_for(cls).namespaces == "strict"
+            else elementTag.tag.split("}")[-1]
+        )
+        instance = dataTypeClass._unvalidated()
+        instance._name_ = rootName
+        instance._attribs_ = {xsi.xsi_attr_key(key): val for key, val in elementTag.attrib.items()}
+        text = elementTag.text
+        instance._value_ = [text] if text else None
+        instance._children_ = []
+        wildcard = WildcardSpec(namespace=NAMESPACE_ANY, process_contents="lax")
+        for child in elementTag:
+            cls._bindAnyTypeChild(instance, child, wildcard)
+        return instance
 
     @classmethod
     def _bindAnyTypeChild(cls, instance, subElement, spec) -> None:
@@ -490,7 +527,7 @@ class SchemaBase:
         :meth:`_bindWildcardChild` itself). Everything else is bound
         generically.
         """
-        parser = getattr(cls, "pyXSD", None)
+        parser = cls._parserHost()
         mode = getattr(parser, "mode", None)
         if (
             getattr(mode, "namespaces", "legacy") == "strict"
@@ -521,7 +558,7 @@ class SchemaBase:
         strict or lax match is also checked against the XSD 1.1 dynamic
         tighter EDC rule (:meth:`_checkDynamicEDC`).
         """
-        parser = getattr(cls, "pyXSD", None)
+        parser = cls._parserHost()
         mode = getattr(parser, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
             instance._children_.append(cls.makeGenericInstance(subElement))
@@ -545,7 +582,7 @@ class SchemaBase:
                     element=cls.__name__,
                 )
                 return
-            descriptor.pyXSD = parser
+            descriptor.host = parser
             subElCls = cls._classForChild(descriptor, subElement)
             if subElCls is not None:
                 cls._checkDynamicEDC(instance, subElement, subElCls, descriptor, memberHeadMap)
@@ -705,7 +742,7 @@ class SchemaBase:
         - ``forcedText`` - a default or fixed value to use when the
           element has no text of its own
         """
-        parser = getattr(cls, "pyXSD", None)
+        parser = cls._parserHost()
         element_types = getattr(parser, "_elementTypes", None) if parser is not None else None
         if element_types is not None:
             # Record the governing class of this bound element. A
@@ -875,7 +912,7 @@ class SchemaBase:
                 cls = type(self)
                 strict = getattr(_mode_for(cls), "namespaces", "legacy") == "strict"
                 targetNamespace = getattr(cls, "_targetNamespace_", None) if strict else None
-                parser = getattr(cls, "pyXSD", None)
+                parser = cls._parserHost()
                 defined = _defined_declaration_names(parser, "attribute") if strict else None
                 rejected: set[str] = set()
                 skipped: set[str] = set()
@@ -997,7 +1034,7 @@ class SchemaBase:
         wildcardSpecs = cls._wildcard_element_specs(instance) if hasWildcard else []
         targetNamespace = getattr(cls, "_targetNamespace_", None)
         definedElements = (
-            _defined_declaration_names(getattr(cls, "pyXSD", None), "element")
+            _defined_declaration_names(cls._parserHost(), "element")
             if hasWildcard and strictNamespaces
             else None
         )
@@ -1221,7 +1258,7 @@ class SchemaBase:
         return instance
 
     @classmethod
-    def _resolveXsiTypeName(cls, subElement, value: str, pyXSD) -> str | None:
+    def _resolveXsiTypeName(cls, subElement, value: str, host) -> str | None:
         """Resolves a lexical ``xsi:type`` QName against the instance scope.
 
         In ``legacy`` namespace mode the raw value is returned unchanged.
@@ -1230,10 +1267,10 @@ class SchemaBase:
         ``unknown-namespace-prefix`` and ``None`` is returned so the
         caller keeps the declared type.
         """
-        mode = getattr(pyXSD, "mode", None)
+        mode = getattr(host, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
             return value
-        context = getattr(pyXSD, "namespaceContext", None)
+        context = getattr(host, "namespaceContext", None)
         if context is None:
             return value
         try:
@@ -1254,7 +1291,7 @@ class SchemaBase:
         attributes taking precedence. With no inherited attributes the
         node is returned unchanged.
         """
-        parser = getattr(cls, "pyXSD", None)
+        parser = cls._parserHost()
         parents = getattr(parser, "_elementParents", None) if parser is not None else None
         if not parents:
             return elementTag
@@ -1295,7 +1332,7 @@ class SchemaBase:
         from pyxsd.alternatives import ERROR_TYPE, select_alternative_type
 
         context = cls._ctaContextNode(subElement)
-        selected = select_alternative_type(descriptor, context, getattr(cls, "pyXSD", None))
+        selected = select_alternative_type(descriptor, context, cls._parserHost())
         if selected is None:
             return declared
         if selected is ERROR_TYPE:
@@ -1322,11 +1359,11 @@ class SchemaBase:
         xsiTypeName = xsi.xsi_type_name(subElement)
         if xsiTypeName is None:
             return cls._conditionalType(descriptor, subElCls, subElement)
-        pyXSD = getattr(cls, "pyXSD", None)
-        resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
+        host = cls._parserHost()
+        resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, host)
         if resolvedName is None:
             return subElCls
-        resolved = ElementRepresentative.typeFromName(resolvedName, pyXSD)
+        resolved = ElementRepresentative.typeFromName(resolvedName, host, warn=False)
         if resolved is not None:
             blocked = combinedBlock(
                 descriptor.getBlock() if descriptor is not None else None,
@@ -1403,6 +1440,15 @@ class SchemaBase:
             storage = descriptor
         accessor, descriptorBound = cls._childAccessor(instance, storage, subElement)
 
+        # A child declaration that resolved to no type at all is the
+        # ur-type (XSD 1.1 §3.3.2), exactly like the root-level
+        # mapping in ``pyxsd.instance_binding``: mixed content and any
+        # attributes are admitted, and children bind through the lax
+        # wildcard. Nilled elements keep the generic class — a nilled
+        # instance carries no content to bind.
+        if subElCls is SchemaBase and not nilled:
+            subElCls = AnyType
+
         # for elements with primitive types
         contentKind = getattr(subElCls, "_contentKind_", None)
         isAnyType = subElCls is AnyType
@@ -1466,16 +1512,7 @@ class SchemaBase:
             # an anyType-typed child may carry child elements (MS
             # isDefault072, errC007). Build it through the lax wildcard
             # instead of the primitive path, which would reject children.
-            parser = getattr(cls, "pyXSD", None)
-            builder = getattr(parser, "_anyTypeChildInstance", None)
-            if builder is not None:
-                subInstance = builder(subElCls, subElement)
-            else:
-                subInstance = subElCls._unvalidated()
-                subInstance._children_ = []
-                subInstance._attribs_ = {
-                    xsi.xsi_attr_key(key): value for key, value in subElement.attrib.items()
-                }
+            subInstance = cls._anyTypeChildInstance(subElCls, subElement)
         else:
             if subElement.text is None and not list(subElement):
                 forcedText = descriptor.getDefault()
@@ -1530,7 +1567,7 @@ class SchemaBase:
             used[base] = uri
             return base, True
         prefix = ""
-        parser = getattr(cls, "pyXSD", None)
+        parser = cls._parserHost()
         context = getattr(parser, "namespaceContext", None)
         if context is not None:
             try:
@@ -1853,10 +1890,12 @@ class SchemaBase:
                 if xsiTypeName is None:
                     subElCls = cls._conditionalType(memberER, subElCls, subElement)
                 else:
-                    pyXSD = getattr(cls, "pyXSD", None)
-                    resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, pyXSD)
+                    host = cls._parserHost()
+                    resolvedName = cls._resolveXsiTypeName(subElement, xsiTypeName, host)
                     if resolvedName is not None:
-                        override = ElementRepresentative.typeFromName(resolvedName, pyXSD)
+                        override = ElementRepresentative.typeFromName(
+                            resolvedName, host, warn=False
+                        )
                         if override is not None:
                             blocked = combinedBlock(memberER.getBlock(), subElCls)
                             reason = is_valid_xsi_type(override, subElCls, blocked)
@@ -2310,7 +2349,7 @@ class SchemaBase:
         spec = getattr(cls, "effectiveAttributeWildcard_", None)
         if spec is None:
             return False
-        parser = getattr(cls, "pyXSD", None)
+        parser = cls._parserHost()
         defined = _defined_declaration_names(parser, "attribute")
         return bool(
             spec.allows_name(matchName, getattr(cls, "_targetNamespace_", None), defined=defined)

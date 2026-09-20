@@ -1,6 +1,6 @@
 """Engines that turn a test case into a schema/instance verdict.
 
-Two drivers implement the same contract: PyXSD (under the standards-oriented
+Two drivers implement the same contract: pyxsd (under the standards-oriented
 ``NAMESPACED`` binding policy) and ``xmlschema`` as an independent oracle.
 Both consume a single schema path; a group whose ``schemaTest`` lists several
 documents is materialised as an otherwise-empty driver schema that
@@ -13,7 +13,6 @@ expectation is :mod:`tests.xsts.outcomes`.
 from __future__ import annotations
 
 import contextlib
-import io
 import signal
 import tempfile
 import xml.etree.ElementTree as ET
@@ -23,7 +22,9 @@ from xml.sax.saxutils import quoteattr
 
 from pyxsd.binding import ParseModes
 from pyxsd.exceptions import PyXSDError
-from pyxsd.parser import PyXSD
+from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
+from pyxsd.schema import Schema
+from pyxsd.schema_hints import absolute_schema_location_pairs
 from pyxsd.validation import IssueSeverity
 
 from .catalog import DocumentRef
@@ -328,7 +329,7 @@ def build_permissive_schema(instance_path: Path, workdir: Path) -> Path:
 
     The suite documents such a group's schema as "built-in components only":
     validation starts at the outermost element with no stipulated declaration.
-    PyXSD needs *a* schema, so the harness writes one that declares the
+    pyxsd needs *a* schema, so the harness writes one that declares the
     instance's root element with ``xs:anyType`` (so ``xsi:type`` and built-in
     datatypes are still checked) in the root's namespace.
 
@@ -363,36 +364,23 @@ def build_permissive_schema(instance_path: Path, workdir: Path) -> Path:
 
 
 def _schema_only_call(schema_path: Path, timeout: float | None) -> EngineResult:
-    """Compile *schema_path* with PyXSD without binding an instance.
-
-    PyXSD always binds an instance during construction, so instance binding
-    is stubbed out and only the schema phase is observed.
-    """
+    """Compile *schema_path* without binding an instance."""
     result = EngineResult()
-    original = PyXSD.parseXML
-    PyXSD.parseXML = lambda self: None  # type: ignore[method-assign]
     try:
         with time_limit(timeout):
-            parser = PyXSD(
-                io.StringIO("<pyxsd-schema-probe/>"),
-                str(schema_path),
-                xmlFileOutput=False,
-                mode=ParseModes.NAMESPACED,
-            )
-        result.schema_valid = not _errors(parser.report, "schema")
+            schema = Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED)
+        result.schema_valid = not _errors(schema.report, "schema")
     except PyXSDError as exc:
         result.schema_valid = False
         result.schema_error = str(exc)
     except TimeoutError as exc:
         result.timeout = True
         result.schema_error = str(exc)
-    finally:
-        PyXSD.parseXML = original  # type: ignore[method-assign]
     return result
 
 
 class PyXSDDriver:
-    """Run cases with PyXSD under the ``NAMESPACED`` standards policy."""
+    """Run cases with pyxsd under the ``NAMESPACED`` standards policy."""
 
     name = "pyxsd"
 
@@ -435,28 +423,63 @@ class PyXSDDriver:
         return result
 
     def _bind_and_observe(self, schema_path: Path, instance_path: Path) -> EngineResult:
-        """Bind one instance against *schema_path* and observe both phases."""
+        """Compile *schema_path* and bind one instance, observing both phases.
+
+        The instance is parsed once and its extra ``xsi:schemaLocation``
+        pairs are forwarded into the schema compile (the same flow
+        :func:`pyxsd.parse` implements), so a hinted schema that fails
+        to compose surfaces in the schema phase. A fatal error during
+        the compile is a schema verdict; a fatal error during the bind
+        is an instance one (the schema already compiled, so no second,
+        schema-only pass is needed to tell them apart).
+        """
         result = EngineResult()
+        stage = "read"
         try:
             with time_limit(self.timeout):
-                parser = PyXSD(
-                    str(instance_path),
+                context = NamespaceContext()
+                try:
+                    tree = parse_with_namespaces(str(instance_path), context)
+                except OSError as e:
+                    raise PyXSDError(f"the xml input could not be read: {e}") from e
+                except ET.ParseError as e:
+                    raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
+                stage = "compile"
+                schema = Schema.compile(
                     str(schema_path),
-                    xmlFileOutput=False,
                     mode=ParseModes.NAMESPACED,
+                    namespace_context=context,
+                    schema_location_pairs=absolute_schema_location_pairs(
+                        tree, instance_path.parent
+                    ),
                 )
+                stage = "bind"
+                document = schema.parse(tree)
         except PyXSDError as exc:
-            schema = self.compile_schema(schema_path)
-            if schema.schema_valid is False:
+            if stage == "read":
+                # A fatal instance-input problem (unreadable or not
+                # well-formed XML): attribute it the way a schema-only
+                # probe would — the schema phase is only implicated
+                # when the schema itself does not compile.
+                probe = self.compile_schema(schema_path)
+                if probe.schema_valid is False:
+                    result.schema_valid = False
+                    result.schema_error = probe.schema_error or str(exc)
+                    result.adapter_gap = "group schema did not compile"
+                else:
+                    result.schema_valid = True
+                    result.instance_valid = False
+                    result.instance_error = str(exc)
+                if probe.timeout:
+                    result.timeout = True
+            elif stage == "compile":
                 result.schema_valid = False
-                result.schema_error = schema.schema_error or str(exc)
+                result.schema_error = str(exc)
                 result.adapter_gap = "group schema did not compile"
             else:
                 result.schema_valid = True
                 result.instance_valid = False
                 result.instance_error = str(exc)
-            if schema.timeout:
-                result.timeout = True
             return result
         except TimeoutError as exc:
             result.timeout = True
@@ -466,13 +489,13 @@ class PyXSDDriver:
             result.error = f"{type(exc).__name__}: {exc}"
             return result
 
-        result.schema_valid = not _errors(parser.report, "schema")
+        result.schema_valid = not _errors(schema.report, "schema")
         if result.schema_valid:
-            result.instance_valid = not _errors(parser.report, "instance")
+            result.instance_valid = not _errors(document.report, "instance")
         else:
             result.instance_valid = None
             result.adapter_gap = "group schema did not compile"
-        warnings = parser.report.warnings
+        warnings = document.report.warnings
         if warnings:
             result.instance_error = warnings[0].format()
         return result

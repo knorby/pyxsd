@@ -1,15 +1,20 @@
 # Using transforms
 
-A transform is a Python class. Each one accepts the parsed tree root and
-zero or more of its own arguments, manipulates the tree, and (usually)
-returns the root so the writer can serialize it.
+A transform is anything that accepts the parsed tree root — a plain
+function, or a `Transform` subclass — optionally takes its own
+arguments, manipulates the tree, and (usually) returns the root so the
+writer can serialize it.
 
 ## Built-in transforms
 
 | Transform | What it does |
 | --------- | ------------ |
 | `PrintData` | Writes the tree as readable text to a file or stdout. |
-| `SendTreeToPyXSD` | Re-parses the transformed tree through the full pipeline (useful after structural changes). |
+
+After a transform changes the tree's shape, revalidate the transformed
+document with `Document.revalidate()` — it re-parses the serialized tree
+against the same schema and returns a fresh document whose report
+reflects the new structure.
 
 ## Transform syntax
 
@@ -57,12 +62,33 @@ See `examples/legacy/README.md`.
 
 ## Library use
 
-When driving pyxsd as a library, transform calls are strings in a list:
+When driving pyxsd as a library, transforms are callables applied with
+`Document.transform`. A `Transform` subclass is invoked through a small
+wrapper (the class takes the root in `__init__`, its `__call__` does the
+work); a plain function taking the root needs no wrapper:
 
 ```python
-parser = PyXSD(
-    xmlFileInput="inventory.xml",
-    transforms=["PrintData()"],
-    transformOutputName="out.xml",
-)
+import pyxsd
+from pyxsd.cli import parse_transform_call, resolve_transform_class
+
+schema = pyxsd.Schema.compile("inventory.xsd")
+document = schema.parse("inventory.xml")
+
+
+def normalize_units(root): ...
+
+
+# A plain callable:
+updated = document.transform(normalize_units)
+updated.write("out.xml")
+
+# A Transform class, resolved by name exactly like the CLI does:
+name, args, kwargs = parse_transform_call("PrintData()")
+transform_cls = resolve_transform_class(name)
+document.transform(lambda root: transform_cls(root)(*args, **kwargs))
 ```
+
+A transform that returns a tree root comes back as a new `Document`; a
+transform that changes the tree in place and returns `None` leaves the
+document itself as the result. After a structural change, use
+`Document.revalidate()` (above) to refresh the report.

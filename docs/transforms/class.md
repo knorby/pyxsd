@@ -28,7 +28,4 @@ transforms.
 ```{eval-rst}
 .. autoclass:: pyxsd.transforms.print_data.PrintData
    :members:
-
-.. autoclass:: pyxsd.transforms.send_tree_to_pyxsd.SendTreeToPyXSD
-   :members:
 ```

@@ -7,18 +7,16 @@ cluster, and the particlesIa-Ik NameAndTypeOK cluster, with valid guards
 for the shapes the corpus pins legal).
 """
 
-import io
-
 import pytest
 
 from pyxsd.binding import ParseModes
 from pyxsd.content_model import Particle
-from pyxsd.parser import PyXSD
 from pyxsd.particle_derivation import (
     contains_occurs,
     is_valid_particle_restriction,
     wildcard_subset,
 )
+from pyxsd.schema import Schema
 from pyxsd.schema_base import SchemaBase
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import WildcardSpec
@@ -51,25 +49,15 @@ def particle_restriction_issues(report) -> list:
 
 
 @pytest.fixture
-def parse(tmp_path, monkeypatch):
-    """Parse a schema fragment (wrapped in an ``xs:schema`` root) and
+def parse(tmp_path):
+    """Compile a schema fragment (wrapped in an ``xs:schema`` root) and
     return the report.
-
-    Mirrors ``tests/xsts/drivers.py::_schema_only_call``: the instance
-    phase is stubbed out so a schema declaring no root element can
-    still be inspected.
     """
-    monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
     schema_path = tmp_path / "schema.xsd"
 
     def _parse(schema_string: str, head: str = XSD_HEAD):
         schema_path.write_text(head + schema_string + XSD_TAIL, encoding="utf-8")
-        return PyXSD(
-            io.StringIO("<pyxsd-schema-probe/>"),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
 
     return _parse
 
@@ -2772,7 +2760,7 @@ class TestLargeModelBudget:
     """The matcher's recursion is bounded.
 
     A restriction content model of a thousand members would otherwise
-    exhaust Python's recursion limit and crash ``PyXSD.__init__``; past
+    exhaust Python's recursion limit and crash the old single-construction pipeline; past
     the budget the pair is left unverified (skip, not reject).
     """
 

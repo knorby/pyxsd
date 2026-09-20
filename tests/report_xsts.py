@@ -7,7 +7,7 @@ Examples::
     python tests/report_xsts.py --profile xsd11 --baseline tests/xsts/baseline-xsd11.toml
     python tests/report_xsts.py --profile xsd11 --write-baseline tests/xsts/baseline-xsd11.toml
 
-This is intentionally not wired into CI: the suite is slow and PyXSD does not
+This is intentionally not wired into CI: the suite is slow and pyxsd does not
 yet pass it.  Run it locally when changing schema handling, and regenerate the
 baseline only after reviewing the differences.
 """

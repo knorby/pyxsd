@@ -1,6 +1,6 @@
 """Checked-in baseline of per-test outcomes.
 
-The baseline is how the suite becomes a gate without demanding that PyXSD be
+The baseline is how the suite becomes a gate without demanding that pyxsd be
 correct everywhere yet.  A run compares every test's outcome to the recorded
 one; *any* change is surfaced — a passing test that starts failing is a
 regression, and a failing test that starts passing is a baseline that needs

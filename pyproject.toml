@@ -112,7 +112,14 @@ warn_unreachable = false
 # Stable modules without metaprogramming must be fully annotated.
 [[tool.mypy.overrides]]
 module = [
-    "pyxsd.parser",
+    "pyxsd.cli",
+    "pyxsd.schema",
+    "pyxsd.document",
+    "pyxsd.instance_binding",
+    "pyxsd.schema_checks",
+    "pyxsd.schema_composition",
+    "pyxsd.schema_hints",
+    "pyxsd.tree",
     "pyxsd.validation",
     "pyxsd.exceptions",
     "pyxsd.xsi",

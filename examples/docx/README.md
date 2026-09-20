@@ -28,17 +28,18 @@ $ uv run pyxsd -i document.xml -s schemas/wml.xsd --namespaces strict \
 $ cat document.md
 ```
 
-Or from anywhere, using the parse-mode API:
+Or from anywhere, using the library API:
 
 ```python
-from pyxsd import PyXSD, ParseModes
+from pyxsd import ParseModes, Schema
+from pyxsd.cli import resolve_transform_class
 
-PyXSD(
-    "examples/docx/document.xml",
-    xsdFile="examples/docx/schemas/wml.xsd",
-    transforms=["ToMarkdown('document.md')"],
-    mode=ParseModes.NAMESPACED,
-)
+schema = Schema.compile("examples/docx/schemas/wml.xsd", mode=ParseModes.NAMESPACED)
+schema.require_valid()
+document = schema.parse("examples/docx/document.xml")
+
+ToMarkdown = resolve_transform_class("ToMarkdown", search_paths="examples/docx")
+document.transform(lambda root: ToMarkdown(root)("document.md"))
 ```
 
 `ToMarkdown` maps `Heading1`–`Heading3` to `#`/`##`/`###`, `ListNumber` /

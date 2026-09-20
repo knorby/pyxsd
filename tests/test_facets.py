@@ -2,7 +2,7 @@
 
 Facets are exercised through concrete schemas rather than by calling the
 machinery directly, so the tests pin the user-visible contract: a
-violation is reported as an error on the parser's report, and a
+violation is reported as an error on the document's report, and a
 conforming value is silent.
 """
 
@@ -11,7 +11,7 @@ import io
 import pytest
 
 from pyxsd.binding import BindingPolicy, ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 SCHEMA = """\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -20,14 +20,11 @@ SCHEMA = """\
 
 
 def parse(body, xml, mode=ParseModes.NAMESPACED):
-    parser = PyXSD(
-        io.StringIO(xml),
-        io.StringIO(SCHEMA.format(body=body)),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=mode,
+    return (
+        Schema.compile(io.StringIO(SCHEMA.format(body=body)), mode=mode)
+        .parse(io.StringIO(xml))
+        .report
     )
-    return parser.report
 
 
 def errors(report):
@@ -330,14 +327,11 @@ EXT_INT = (
 
 
 def instance(body, xml):
-    parser = PyXSD(
-        io.StringIO(xml),
-        io.StringIO(SCHEMA.format(body=body)),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
+    return (
+        Schema.compile(io.StringIO(SCHEMA.format(body=body)), mode=ParseModes.NAMESPACED)
+        .parse(io.StringIO(xml))
+        .root
     )
-    return parser.schemaRootInstance
 
 
 def test_simple_content_extension_value():

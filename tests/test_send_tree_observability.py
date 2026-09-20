@@ -1,100 +1,59 @@
-"""SendTreeToPyXSD observability tests.
+"""Revalidation observability tests.
 
-Revalidation inside SendTreeToPyXSD used to construct a PyXSD object
-and discard it, so its validation report vanished: CLI --strict (which
-inspects the outer run's report) could not see problems introduced by a
-transformed tree, and the temporary file backing the reparse was never
-closed.
+Revalidation inside the old send-tree transform used to construct a parser
+object and discard it, so its validation report vanished: callers could
+not see problems introduced by a transformed tree, and the temporary
+file backing the reparse was never closed. ``Document.revalidate()``
+replaces that flow: the re-parsed document carries a fresh report for
+the tree's current shape, and no temporary file is involved.
 """
 
-from conftest import fixture_dir, run_parser
-from pyxsd.binding import ParseModes
-from pyxsd.transforms.send_tree_to_pyxsd import SendTreeToPyXSD
-from pyxsd.validation import ValidationReport
+from conftest import fixture_dir
+from pyxsd.schema import Schema
 
-XSD = str(fixture_dir("primitives") / "schema.xsd")
+SCHEMA = fixture_dir("primitives") / "schema.xsd"
+INSTANCE = fixture_dir("primitives") / "instance.xml"
 
 
-def make_parser_and_invalid_tree():
-    """A parser for the primitives fixture whose tree holds a bad value."""
-    parser = run_parser("primitives")
-    root = parser.schemaRootInstance
-    # The bound tree stores leaf values as single-element lists.
-    root.count._value_ = ["not-an-int"]
-    return parser, root
+def make_doc():
+    """A document for the primitives fixture, holding a clean tree."""
+    return Schema.compile(SCHEMA).parse(INSTANCE)
 
 
 def codes(report):
     return [issue.code for issue in report]
 
 
-class TestTransformReport:
-    def test_inner_errors_exposed_on_transform(self, tmp_path, monkeypatch):
-        """The revalidation report survives on the transform object."""
-        monkeypatch.chdir(tmp_path)
-        _, root = make_parser_and_invalid_tree()
-        transformer = SendTreeToPyXSD(root)
-        result = transformer(xsdFile=XSD)
-        assert result is root
-        assert transformer.report is not None
-        assert "value" in codes(transformer.report)
+def corrupt_count(tree):
+    """Sets an invalid value on the tree's ``count`` leaf.
 
-    def test_clean_tree_has_empty_report(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        parser = run_parser("primitives")
-        transformer = SendTreeToPyXSD(parser.schemaRootInstance)
-        transformer(xsdFile=XSD)
-        assert len(transformer.report) == 0
-
-    def test_temp_input_stream_is_closed(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        parser = run_parser("primitives")
-        transformer = SendTreeToPyXSD(parser.schemaRootInstance)
-        transformer(xsdFile=XSD)
-        assert transformer._xmlInput is not None
-        assert transformer._xmlInput.closed
+    The bound tree stores leaf values as single-element lists.
+    """
+    tree.count._value_ = ["not-an-int"]
 
 
-class TestReportPropagation:
-    def test_inner_issues_reach_outer_parser_report(self, tmp_path, monkeypatch):
-        """parser.transform() merges a reparse's issues into its report."""
-        monkeypatch.chdir(tmp_path)
-        parser, root = make_parser_and_invalid_tree()
-        parser.transform([f"SendTreeToPyXSD(xsdFile='{XSD}')"], root)
-        assert "value" in codes(parser.report)
+class TestRevalidationReport:
+    def test_inner_errors_exposed_on_revalidated_document(self):
+        """The revalidation report survives on the returned document."""
+        doc = make_doc()
+        corrupt_count(doc.root)
+        again = doc.revalidate()
+        assert again is not doc
+        assert again.report is not None
+        assert "value" in codes(again.report)
+        assert all(issue.phase == "instance" for issue in again.report)
 
-    def test_same_report_is_absorbed_once(self):
-        """Merging the same report twice does not duplicate issues."""
-        parser, _ = make_parser_and_invalid_tree()
-        inner = ValidationReport()
-        inner.add_error("bad value", code="value")
-        parser._absorbTransformReport(inner)
-        parser._absorbTransformReport(inner)
-        assert len([i for i in parser.report if i.code == "value"]) == 1
-
-    def test_absorb_none_and_self_are_noops(self):
-        parser, _ = make_parser_and_invalid_tree()
-        before = len(parser.report)
-        parser._absorbTransformReport(None)
-        parser._absorbTransformReport(parser.report)
-        assert len(parser.report) == before
+    def test_clean_tree_has_empty_report(self):
+        again = make_doc().revalidate()
+        assert len(again.report) == 0
 
 
-class TestParserContextInheritance:
-    def test_schema_and_mode_inherited_from_outer_parser(self, tmp_path, monkeypatch):
-        """With no explicit xsdFile the outer run's schema is reused."""
-        monkeypatch.chdir(tmp_path)
-        parser, root = make_parser_and_invalid_tree()
-        parser.transform(["SendTreeToPyXSD()"], root)
-        # The invalid value must have been seen: the reparse used the
-        # inherited schema.
-        assert "value" in codes(parser.report)
-
-    def test_mode_is_inherited(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        parser, root = make_parser_and_invalid_tree()
-        assert parser.mode is ParseModes.STRICT
-        transformer = SendTreeToPyXSD(root)
-        transformer.outerParser = parser
-        transformer()  # no xsdFile, no mode
-        assert transformer.parser.mode is ParseModes.STRICT
+class TestFindingsVisibility:
+    def test_inner_issues_reach_the_callers_document(self):
+        """Findings from a transformed tree reach the document the
+        caller inspects: the old outer-parser report merge is now
+        ``again.report``."""
+        doc = make_doc()
+        doc.transform(corrupt_count)  # in-place mutation passes through
+        again = doc.revalidate()
+        assert "value" in codes(again.report)

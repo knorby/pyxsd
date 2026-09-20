@@ -7,12 +7,10 @@ shapes are condensed from the XSTS model-groups clusters (mgA/mgB/mgC/mgO/
 mgP/mgQ/mgR), the SUN MGroup ``all`` cases and the Saxon ``All`` suite.
 """
 
-import io
-
 import pytest
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.validation import IssueSeverity
 from pyxsd.wildcards import (
     WildcardSpec,
@@ -39,25 +37,15 @@ def all_rule_issues(report) -> list:
 
 
 @pytest.fixture
-def parse(tmp_path, monkeypatch):
-    """Parse a schema fragment (wrapped in an ``xs:schema`` root) and
-    return the report.
-
-    Mirrors ``tests/xsts/drivers.py::_schema_only_call``: the instance
-    phase is stubbed out so a schema declaring no root element can
-    still be inspected.
+def parse(tmp_path):
+    """Compile a schema fragment (wrapped in an ``xs:schema`` root) and
+    return its schema-phase report.
     """
-    monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
     schema_path = tmp_path / "schema.xsd"
 
     def _parse(schema_string: str):
         schema_path.write_text(XSD_HEAD + schema_string + XSD_TAIL, encoding="utf-8")
-        return PyXSD(
-            io.StringIO("<pyxsd-schema-probe/>"),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.NAMESPACED,
-        ).report
+        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
 
     return _parse
 
@@ -849,10 +837,9 @@ class TestExtensionOfBuiltinAnyType:
         )
         assert "particle-restriction" not in schema_codes(report)
 
-    def test_all_extends_any_type_is_invalid_in_legacy_mode(self, tmp_path, monkeypatch):
+    def test_all_extends_any_type_is_invalid_in_legacy_mode(self, tmp_path):
         # legacy namespace mode resolves no prefixes, so the builtin is
         # recognised by the conventional xs:/xsd: spelling
-        monkeypatch.setattr(PyXSD, "parseXML", lambda self: None)
         schema_path = tmp_path / "schema.xsd"
         schema_path.write_text(
             "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
@@ -862,12 +849,7 @@ class TestExtensionOfBuiltinAnyType:
             "<xs:element name='r' type='t'/></xs:schema>",
             encoding="utf-8",
         )
-        report = PyXSD(
-            io.StringIO("<pyxsd-schema-probe/>"),
-            str(schema_path),
-            xmlFileOutput=False,
-            mode=ParseModes.STRICT,
-        ).report
+        report = Schema.compile(str(schema_path), mode=ParseModes.STRICT).report
         assert "particle-restriction" in schema_codes(report)
 
 
@@ -1894,23 +1876,17 @@ FLAT_CHOICE_GROUP_SCHEMA = (
 )
 
 
-def _instance_errors(parser):
+def _instance_errors(doc):
     return [
-        issue
-        for issue in parser.report.for_phase("instance")
-        if issue.severity is IssueSeverity.ERROR
+        issue for issue in doc.report.for_phase("instance") if issue.severity is IssueSeverity.ERROR
     ]
 
 
 def _instance_parser(schema, instance, tmp_path):
     (tmp_path / "schema.xsd").write_text(schema, encoding="utf-8")
     (tmp_path / "instance.xml").write_text(instance, encoding="utf-8")
-    return PyXSD(
-        str(tmp_path / "instance.xml"),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.STRICT,
+    return Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.STRICT).parse(
+        str(tmp_path / "instance.xml")
     )
 
 
@@ -1924,50 +1900,50 @@ class TestGroupDefinitionCompositor:
     """
 
     def test_sequence_of_choices_accepts_the_second_choice(self, tmp_path):
-        parser = _instance_parser(
+        doc = _instance_parser(
             NESTED_CHOICES_SCHEMA,
             "<a><id_str>12345678900987654321J.ABC</id_str><type>#QQQQ</type></a>",
             tmp_path,
         )
-        assert _instance_errors(parser) == []
-        assert [child._name_ for child in parser.schemaRootInstance._children_] == [
+        assert _instance_errors(doc) == []
+        assert [child._name_ for child in doc.root._children_] == [
             "id_str",
             "type",
         ]
 
     def test_sequence_of_choices_requires_the_second_choice(self, tmp_path):
-        parser = _instance_parser(
+        doc = _instance_parser(
             NESTED_CHOICES_SCHEMA,
             "<a><id_str>12345678900987654321J.ABC</id_str></a>",
             tmp_path,
         )
-        assert _instance_errors(parser)
+        assert _instance_errors(doc)
 
     def test_sequence_of_sequences_accepts_all_members(self, tmp_path):
-        parser = _instance_parser(
+        doc = _instance_parser(
             NESTED_SEQUENCES_SCHEMA,
             "<a><date>2002-04-25</date><marked>true</marked><num>123</num></a>",
             tmp_path,
         )
-        assert _instance_errors(parser) == []
-        assert [child._name_ for child in parser.schemaRootInstance._children_] == [
+        assert _instance_errors(doc) == []
+        assert [child._name_ for child in doc.root._children_] == [
             "date",
             "marked",
             "num",
         ]
 
     def test_sequence_of_sequences_requires_the_second_sequence(self, tmp_path):
-        parser = _instance_parser(
+        doc = _instance_parser(
             NESTED_SEQUENCES_SCHEMA,
             "<a><date>2002-04-25</date><marked>true</marked></a>",
             tmp_path,
         )
-        assert _instance_errors(parser)
+        assert _instance_errors(doc)
 
     def test_flat_choice_group_still_selects_either_branch(self, tmp_path):
         valid = _instance_parser(FLAT_CHOICE_GROUP_SCHEMA, "<r><b>x</b></r>", tmp_path)
         assert _instance_errors(valid) == []
-        assert [child._name_ for child in valid.schemaRootInstance._children_] == ["b"]
+        assert [child._name_ for child in valid.root._children_] == ["b"]
         invalid = _instance_parser(FLAT_CHOICE_GROUP_SCHEMA, "<r><c>x</c></r>", tmp_path)
         assert _instance_errors(invalid)
 

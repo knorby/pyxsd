@@ -15,7 +15,7 @@ import pytest
 
 from pyxsd import derivation, facets
 from pyxsd import xsd_data_types as dt
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.schema_base import SchemaBase
 
 # ---------------------------------------------------------------------------
@@ -29,13 +29,7 @@ SCHEMA = """\
 
 
 def parse(body, xml):
-    parser = PyXSD(
-        io.StringIO(xml),
-        io.StringIO(SCHEMA.format(body=body)),
-        xmlFileOutput=False,
-        transformOutputName=None,
-    )
-    return parser.report
+    return Schema.compile(io.StringIO(SCHEMA.format(body=body))).parse(io.StringIO(xml)).report
 
 
 def errors(report):

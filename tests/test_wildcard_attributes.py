@@ -26,38 +26,28 @@ elements.
 import io
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 
 def run(schema, xml, mode=ParseModes.NAMESPACED):
-    return PyXSD(
-        io.StringIO(xml),
-        io.StringIO(schema),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=mode,
-    )
+    return Schema.compile(io.StringIO(schema), mode=mode).parse(io.StringIO(xml))
 
 
 def run_files(tmp_path, schema_files, instance, schema_name="main.xsd"):
     for name, text in schema_files.items():
         (tmp_path / name).write_text(text)
     (tmp_path / "instance.xml").write_text(instance)
-    return PyXSD(
-        str(tmp_path / "instance.xml"),
-        str(tmp_path / schema_name),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
+    return Schema.compile(str(tmp_path / schema_name), mode=ParseModes.NAMESPACED).parse(
+        str(tmp_path / "instance.xml")
     )
 
 
-def codes(parser):
-    return [issue.code for issue in parser.report]
+def codes(doc):
+    return [issue.code for issue in doc.report]
 
 
-def errors(parser):
-    return [issue.code for issue in parser.report.errors]
+def errors(doc):
+    return [issue.code for issue in doc.report.errors]
 
 
 # --- Rule 3: the effective wildcard decides admission ----------------------
@@ -74,21 +64,21 @@ WILDO032 = (
 
 
 def test_namespace_literal_wildcard_rejects_foreign_attribute():
-    parser = run(
+    doc = run(
         WILDO032,
         '<foo xmlns="http://foobar" xmlns:att="http://foo" att:name="bar"/>',
     )
-    assert errors(parser) == ["wildcard-namespace"]
+    assert errors(doc) == ["wildcard-namespace"]
     # One diagnostic per attribute: the generic warning is suppressed.
-    assert "unexpected-attribute" not in codes(parser)
+    assert "unexpected-attribute" not in codes(doc)
 
 
 def test_namespace_literal_wildcard_admits_listed_attribute():
-    parser = run(
+    doc = run(
         WILDO032,
         '<foo xmlns="http://foobar" xmlns:att="http://foobar" att:name="bar"/>',
     )
-    assert codes(parser) == []
+    assert codes(doc) == []
 
 
 NSCONSTRAINT_OTHER = (
@@ -103,19 +93,19 @@ NSCONSTRAINT_OTHER = (
 
 
 def test_other_wildcard_rejects_target_namespace_attribute():
-    parser = run(
+    doc = run(
         NSCONSTRAINT_OTHER,
         '<test:a xmlns:test="nsConstraint" test:date="2002-04-29"/>',
     )
-    assert errors(parser) == ["wildcard-namespace"]
+    assert errors(doc) == ["wildcard-namespace"]
 
 
 def test_other_wildcard_admits_foreign_namespace_attribute():
-    parser = run(
+    doc = run(
         NSCONSTRAINT_OTHER,
         '<test:a xmlns:test="nsConstraint" xmlns:test1="ns_test1" test1:date="2002-04-29"/>',
     )
-    assert codes(parser) == []
+    assert codes(doc) == []
 
 
 NSCONSTRAINT_LIST = (
@@ -130,20 +120,20 @@ NSCONSTRAINT_LIST = (
 
 
 def test_namespace_list_wildcard_rejects_unlisted_namespace():
-    parser = run(
+    doc = run(
         NSCONSTRAINT_LIST,
         '<test:a xmlns:test="nsConstraint" test:date="2002-04-29"/>',
     )
-    assert errors(parser) == ["wildcard-namespace"]
+    assert errors(doc) == ["wildcard-namespace"]
 
 
 def test_namespace_list_wildcard_admits_listed_namespaces():
-    parser = run(
+    doc = run(
         NSCONSTRAINT_LIST,
         '<test:a xmlns:test="nsConstraint" xmlns:test1="ns_test1"'
         ' xmlns:test2="ns_test2" test1:date="2002-04-29" test2:time="15:15:00"/>',
     )
-    assert codes(parser) == []
+    assert codes(doc) == []
 
 
 # --- Rule 1: attribute groups contribute their wildcards -------------------
@@ -296,57 +286,57 @@ def suite_328873(tmp_path, instance):
 
 def test_extension_union_keeps_base_exclusions(tmp_path):
     """derived2: ##other plus b c is still not(a) and not-absent."""
-    parser = suite_328873(
+    doc = suite_328873(
         tmp_path,
         '<a:sub a:att1="abc" att2="bc" b:att3="foo" att="a"'
         ' xmlns:a="a" xmlns:b="b" xmlns:x="x"></a:sub>',
     )
-    assert "wildcard-namespace" in errors(parser)
+    assert "wildcard-namespace" in errors(doc)
 
 
 def test_extension_union_to_any_when_own_admits_target_and_local(tmp_path):
-    parser = suite_328873(
+    doc = suite_328873(
         tmp_path,
         '<a:sub2 a:att1="abc" att2="bc" b:att3="foo" x:att4="val" att="a"'
         ' xmlns:a="a" xmlns:b="b" xmlns:x="x"/>',
     )
-    assert codes(parser) == []
+    assert codes(doc) == []
 
 
 def test_extension_union_to_any_when_base_other_has_no_target(tmp_path):
-    parser = suite_328873(
+    doc = suite_328873(
         tmp_path,
         '<a:sub3 a:att1="abc" att2="bc" b:att3="foo" x:att4="val" att="a"'
         ' xmlns:a="a" xmlns:b="b" xmlns:x="x"/>',
     )
-    assert codes(parser) == []
+    assert codes(doc) == []
 
 
 def test_extension_union_keeps_absent_excluded(tmp_path):
     """derived5: ##other without a target plus b c still rejects absent."""
-    parser = suite_328873(
+    doc = suite_328873(
         tmp_path,
         '<a:sub4 a:att1="abc" att2="bc" att="a" xmlns:a="a" xmlns:b="b" xmlns:x="x"/>',
     )
-    assert "wildcard-namespace" in errors(parser)
+    assert "wildcard-namespace" in errors(doc)
 
 
 def test_group_intersection_restricts_to_the_common_set(tmp_path):
     """intersection1: ##other(a) intersected with ##local b c is b c."""
-    parser = suite_328873(
+    doc = suite_328873(
         tmp_path,
         '<a:sub5 b:att1="abc" att2="bc" att="a" xmlns:a="a" xmlns:b="b" xmlns:x="x"/>',
     )
-    assert "wildcard-namespace" in errors(parser)
+    assert "wildcard-namespace" in errors(doc)
 
 
 def test_group_intersection_of_two_others(tmp_path):
     """intersection2: ##other(a) intersected with ##other(no target)."""
-    parser = suite_328873(
+    doc = suite_328873(
         tmp_path,
         '<a:sub6 a:att1="abc" att2="bc" att="a" xmlns:a="a" xmlns:b="b" xmlns:x="x"/>',
     )
-    assert "wildcard-namespace" in errors(parser)
+    assert "wildcard-namespace" in errors(doc)
 
 
 WILDZ011_MAIN = (
@@ -378,21 +368,21 @@ WILDZ011_B = (
 
 
 def test_empty_intersection_rejects_every_attribute(tmp_path):
-    parser = run_files(
+    doc = run_files(
         tmp_path,
         {"main.xsd": WILDZ011_MAIN, "b.xsd": WILDZ011_B},
         '<a:doc x:blah="a" xmlns:a="a" xmlns:b="b" xmlns:x="x"/>',
     )
-    assert errors(parser) == ["wildcard-namespace"]
+    assert errors(doc) == ["wildcard-namespace"]
 
 
 def test_intersection_admits_the_common_target_namespace(tmp_path):
-    parser = run_files(
+    doc = run_files(
         tmp_path,
         {"main.xsd": WILDZ011_MAIN, "b.xsd": WILDZ011_B},
         '<a:doc a:blah="a" xmlns:a="a" xmlns:b="b" xmlns:x="x"/>',
     )
-    assert codes(parser) == []
+    assert codes(doc) == []
 
 
 RESTRICTION_SCHEMA = (
@@ -477,11 +467,11 @@ def test_restriction_without_a_wildcard_accepts_no_foreign_attribute():
     # SUN test008 test.10/test.11: a restriction that states no wildcard
     # drops the base's, so the foreign attribute is simply undeclared.
     for attr in ("a:xxx", "b:xxx"):
-        parser = run(
+        doc = run(
             RESTRICTION_WITHOUT_WILDCARD_SCHEMA,
             f'<t:doc xmlns:t="urn:t" xmlns:a="urn:a" xmlns:b="urn:b" {attr}="x"/>',
         )
-        assert "unexpected-attribute" in codes(parser), attr
+        assert "unexpected-attribute" in codes(doc), attr
 
 
 # --- Rule 4: xsd:anyType roots admit undeclared children -------------------
@@ -498,27 +488,27 @@ ANY_TYPE_SCHEMA = (
 
 
 def test_anytype_root_binds_undeclared_children():
-    parser = run(
+    doc = run(
         ANY_TYPE_SCHEMA,
         '<x:root_elem xmlns:x="urn:t"'
         ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
         '<x:myelem xsi:type="x:ctype_foo"><a>hello</a></x:myelem>'
         "</x:root_elem>",
     )
-    assert codes(parser) == []
-    root = parser.schemaRootInstance
+    assert codes(doc) == []
+    root = doc.root
     assert [child._name_ for child in root._children_] == ["{urn:t}myelem"]
 
 
 def test_anytype_root_validates_a_childs_xsi_type():
-    parser = run(
+    doc = run(
         ANY_TYPE_SCHEMA,
         '<x:root_elem xmlns:x="urn:t"'
         ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
         '<x:myelem xsi:type="x:ctype_foo"><b/></x:myelem>'
         "</x:root_elem>",
     )
-    assert "unexpected-element" in errors(parser)
+    assert "unexpected-element" in errors(doc)
 
 
 ANY_TYPE_CHILD_SCHEMA = (
@@ -533,9 +523,9 @@ ANY_TYPE_CHILD_SCHEMA = (
 def test_anytype_typed_child_binds_children_and_attributes():
     # MS isDefault072, errC007: an anyType-typed child is mixed content
     # with a lax wildcard, not a simple type containing children.
-    parser = run(ANY_TYPE_CHILD_SCHEMA, '<root><c att="x"><d>1</d></c></root>')
-    assert codes(parser) == []
-    child = parser.schemaRootInstance._children_[0]
+    doc = run(ANY_TYPE_CHILD_SCHEMA, '<root><c att="x"><d>1</d></c></root>')
+    assert codes(doc) == []
+    child = doc.root._children_[0]
     assert [node._name_ for node in child._children_] == ["d"]
 
 
@@ -553,11 +543,9 @@ WILD_I001_SCHEMA = (
 def test_foreign_qualified_attribute_on_a_wildcard_stays_valid():
     from pyxsd.validation import IssueSeverity
 
-    parser = run(WILD_I001_SCHEMA, "<foo/>")
+    doc = run(WILD_I001_SCHEMA, "<foo/>")
     schema_errors = [
-        issue
-        for issue in parser.report.for_phase("schema")
-        if issue.severity is IssueSeverity.ERROR
+        issue for issue in doc.report.for_phase("schema") if issue.severity is IssueSeverity.ERROR
     ]
     assert schema_errors == []
 
@@ -569,9 +557,9 @@ def test_no_attribute_wildcard_rejects_stray_attribute():
         '<xs:element name="v" type="xs:string"/></xs:sequence></xs:complexType>'
         '<xs:element name="root" type="t"/></xs:schema>'
     )
-    parser = run(schema, '<root stray="1"><v>x</v></root>')
-    assert parser.report.has_errors
-    assert "unexpected-attribute" in codes(parser)
+    doc = run(schema, '<root stray="1"><v>x</v></root>')
+    assert doc.report.has_errors
+    assert "unexpected-attribute" in codes(doc)
 
 
 # --- XSD 1.1 exclusions reach attribute binding -----------------------------
@@ -586,24 +574,24 @@ NOT_NAMESPACE_SCHEMA = (
 
 def test_not_namespace_wildcard_rejects_an_excluded_namespace():
     # wild001.n1/n2
-    parser = run(
+    doc = run(
         NOT_NAMESPACE_SCHEMA,
         '<eden evil:eve="f" xmlns:evil="http://devil.com/"/>',
     )
-    assert errors(parser) == ["wildcard-namespace"]
-    parser = run(
+    assert errors(doc) == ["wildcard-namespace"]
+    doc = run(
         NOT_NAMESPACE_SCHEMA,
         '<eden e:eve="f" xmlns:e="http://apple.com/"/>',
     )
-    assert errors(parser) == ["wildcard-namespace"]
+    assert errors(doc) == ["wildcard-namespace"]
 
 
 def test_not_namespace_wildcard_admits_other_namespaces():
-    parser = run(
+    doc = run(
         NOT_NAMESPACE_SCHEMA,
         '<eden adam="m" xmlns:c="http://genesis.com/" c:cain="m"/>',
     )
-    assert codes(parser) == []
+    assert codes(doc) == []
 
 
 NOT_QNAME_SCHEMA = (
@@ -616,21 +604,21 @@ NOT_QNAME_SCHEMA = (
 
 def test_not_qname_wildcard_rejects_an_exact_expanded_name():
     # wild027.n1/n2
-    parser = run(
+    doc = run(
         NOT_QNAME_SCHEMA,
         '<eden a="1" b:b="2" xmlns:b="http://b.com/" xml:space="preserve"/>',
     )
-    assert errors(parser) == ["wildcard-namespace"]
-    parser = run(
+    assert errors(doc) == ["wildcard-namespace"]
+    doc = run(
         NOT_QNAME_SCHEMA,
         '<eden a="1" xml:id="N001"/>',
     )
-    assert errors(parser) == ["wildcard-namespace"]
+    assert errors(doc) == ["wildcard-namespace"]
 
 
 def test_not_qname_wildcard_admits_other_names():
-    parser = run(NOT_QNAME_SCHEMA, '<eden a="1" b:b="2" xmlns:b="http://b.com/"/>')
-    assert codes(parser) == []
+    doc = run(NOT_QNAME_SCHEMA, '<eden a="1" b:b="2" xmlns:b="http://b.com/"/>')
+    assert codes(doc) == []
 
 
 RESTRICTION_NOT_NAMESPACE_SCHEMA = (
@@ -650,16 +638,16 @@ RESTRICTION_NOT_NAMESPACE_SCHEMA = (
 def test_restriction_intersection_keeps_the_derived_exclusions():
     # wild017.n1-n3
     for local, uri in (("adam", "http://adam.com/"), ("abel", "http://abel.com/")):
-        parser = run(
+        doc = run(
             RESTRICTION_NOT_NAMESPACE_SCHEMA,
             f'<eden m:{local}="x" xmlns:m="{uri}"/>',
         )
-        assert errors(parser) == ["wildcard-namespace"], local
-    parser = run(
+        assert errors(doc) == ["wildcard-namespace"], local
+    doc = run(
         RESTRICTION_NOT_NAMESPACE_SCHEMA,
         '<eden c:cain="x" xmlns:c="http://cain.com/"/>',
     )
-    assert errors(parser) == ["wildcard-namespace"]
+    assert errors(doc) == ["wildcard-namespace"]
 
 
 DOMAIN_SCHEMA = (
@@ -680,10 +668,10 @@ DOMAIN_SCHEMA = (
 
 def test_attribute_group_intersection_rejects_an_excluded_namespace():
     # wild025.n3
-    parser = run(DOMAIN_SCHEMA, '<eden e:eve="eve" xmlns:e="http://eve.com/"/>')
-    assert errors(parser) == ["wildcard-namespace"]
-    parser = run(DOMAIN_SCHEMA, '<eden m:adam="m" xmlns:m="http://adam.com/"/>')
-    assert codes(parser) == []
+    doc = run(DOMAIN_SCHEMA, '<eden e:eve="eve" xmlns:e="http://eve.com/"/>')
+    assert errors(doc) == ["wildcard-namespace"]
+    doc = run(DOMAIN_SCHEMA, '<eden m:adam="m" xmlns:m="http://adam.com/"/>')
+    assert codes(doc) == []
 
 
 UNION_NOT_QNAME_SCHEMA = (
@@ -707,14 +695,14 @@ UNION_NOT_QNAME_SCHEMA = (
 
 def test_extension_union_keeps_cross_side_exclusions():
     # wild046.n1/n2 with the wild045 controls
-    parser = run(UNION_NOT_QNAME_SCHEMA, '<computer c="c"/>')
-    assert errors(parser) == ["wildcard-namespace"]
-    parser = run(UNION_NOT_QNAME_SCHEMA, '<computer xml:lang="de"/>')
-    assert errors(parser) == ["wildcard-namespace"]
-    parser = run(UNION_NOT_QNAME_SCHEMA, '<computer a="a"/>')
-    assert codes(parser) == []
-    parser = run(UNION_NOT_QNAME_SCHEMA, '<computer d="d"/>')
-    assert codes(parser) == []
+    doc = run(UNION_NOT_QNAME_SCHEMA, '<computer c="c"/>')
+    assert errors(doc) == ["wildcard-namespace"]
+    doc = run(UNION_NOT_QNAME_SCHEMA, '<computer xml:lang="de"/>')
+    assert errors(doc) == ["wildcard-namespace"]
+    doc = run(UNION_NOT_QNAME_SCHEMA, '<computer a="a"/>')
+    assert codes(doc) == []
+    doc = run(UNION_NOT_QNAME_SCHEMA, '<computer d="d"/>')
+    assert codes(doc) == []
 
 
 DEFINED_ATTRIBUTE_SCHEMA = (
@@ -731,18 +719,18 @@ DEFINED_ATTRIBUTE_SCHEMA = (
 
 def test_defined_marker_rejects_a_global_attribute_declaration():
     # wild054.n1/n2
-    parser = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing zang="2008-12-12"/>')
-    assert errors(parser) == ["wildcard-namespace"]
-    parser = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing jang="2008-12-12"/>')
-    assert errors(parser) == ["wildcard-namespace"]
+    doc = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing zang="2008-12-12"/>')
+    assert errors(doc) == ["wildcard-namespace"]
+    doc = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing jang="2008-12-12"/>')
+    assert errors(doc) == ["wildcard-namespace"]
 
 
 def test_defined_marker_admits_undeclared_and_xml_namespace_attributes():
     # wild054.v1/v2: the implicit xml:* declarations are not user globals
-    parser = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing xml:lang="de"/>')
-    assert codes(parser) == []
-    parser = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing wing="de"/>')
-    assert codes(parser) == []
+    doc = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing xml:lang="de"/>')
+    assert codes(doc) == []
+    doc = run(DEFINED_ATTRIBUTE_SCHEMA, '<zing wing="de"/>')
+    assert codes(doc) == []
 
 
 DEFINED_RESTRICTION_SCHEMA = (
@@ -763,12 +751,12 @@ DEFINED_RESTRICTION_SCHEMA = (
 
 def test_defined_marker_survives_a_restriction_intersection():
     # wild055.n1/n2
-    parser = run(DEFINED_RESTRICTION_SCHEMA, '<doc jing="jing"/>')
-    assert errors(parser) == ["wildcard-namespace"]
-    parser = run(DEFINED_RESTRICTION_SCHEMA, '<doc zang="2008-05-05"/>')
-    assert errors(parser) == ["wildcard-namespace"]
-    parser = run(DEFINED_RESTRICTION_SCHEMA, '<doc ping="pong"/>')
-    assert codes(parser) == []
+    doc = run(DEFINED_RESTRICTION_SCHEMA, '<doc jing="jing"/>')
+    assert errors(doc) == ["wildcard-namespace"]
+    doc = run(DEFINED_RESTRICTION_SCHEMA, '<doc zang="2008-05-05"/>')
+    assert errors(doc) == ["wildcard-namespace"]
+    doc = run(DEFINED_RESTRICTION_SCHEMA, '<doc ping="pong"/>')
+    assert codes(doc) == []
 
 
 DEFINED_UNION_SCHEMA = (
@@ -793,10 +781,10 @@ DEFINED_UNION_SCHEMA = (
 
 def test_extension_union_keeps_defined_when_both_sides_have_it():
     # wild060.v2 valid (jang), n2 invalid (a global declaration)
-    parser = run(DEFINED_UNION_SCHEMA, '<zing jang="jing"/>')
-    assert codes(parser) == []
-    parser = run(DEFINED_UNION_SCHEMA, '<zing zong="12:00:00"/>')
-    assert errors(parser) == ["wildcard-namespace"]
+    doc = run(DEFINED_UNION_SCHEMA, '<zing jang="jing"/>')
+    assert codes(doc) == []
+    doc = run(DEFINED_UNION_SCHEMA, '<zing zong="12:00:00"/>')
+    assert errors(doc) == ["wildcard-namespace"]
 
 
 XSI_WILDCARD_SCHEMA = (
@@ -811,20 +799,20 @@ XSI_WILDCARD_SCHEMA = (
 
 def test_wildcard_admitted_xsi_attribute_is_still_validated():
     # wild042.v1: an unknown xsi-namespace attribute is wildcard content.
-    parser = run(
+    doc = run(
         XSI_WILDCARD_SCHEMA,
         '<computer xsi:banana="1234" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>',
     )
-    assert codes(parser) == []
+    assert codes(doc) == []
 
 
 def test_xsi_nil_value_must_be_boolean_even_when_the_wildcard_admits_it():
     # wild042.n1: xsi:nil is governed by its built-in declaration
-    parser = run(
+    doc = run(
         XSI_WILDCARD_SCHEMA,
         '<computer xsi:nil="1234" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>',
     )
-    assert errors(parser) == ["nil"]
+    assert errors(doc) == ["nil"]
 
 
 XML_NAMESPACE_ATTRIBUTE_SCHEMA = (
@@ -847,14 +835,14 @@ def test_xml_namespace_attribute_needs_a_wildcard():
     # open045: the implicit xml:* declarations are global components, not
     # automatic attribute uses; a type with no attribute wildcard rejects
     # xml:lang rather than admitting every XML-namespace attribute.
-    parser = run(XML_NAMESPACE_ATTRIBUTE_SCHEMA, '<plain xml:lang="de"/>')
-    assert "unexpected-attribute" in errors(parser)
+    doc = run(XML_NAMESPACE_ATTRIBUTE_SCHEMA, '<plain xml:lang="de"/>')
+    assert "unexpected-attribute" in errors(doc)
 
 
 def test_xml_namespace_attribute_is_admitted_by_a_wildcard():
     # wild054.v1: an any-attribute wildcard admits xml:lang.
-    parser = run(XML_NAMESPACE_ATTRIBUTE_WILDCARD_SCHEMA, '<open xml:lang="de"/>')
-    assert codes(parser) == []
+    doc = run(XML_NAMESPACE_ATTRIBUTE_WILDCARD_SCHEMA, '<open xml:lang="de"/>')
+    assert codes(doc) == []
 
 
 PROHIBITED_WILDCARD_SCHEMA = (
@@ -869,8 +857,8 @@ PROHIBITED_WILDCARD_SCHEMA = (
 
 def test_prohibited_attribute_admitted_by_wildcard_is_valid():
     # attZ002: the wildcard governs once the prohibited use is not a use
-    parser = run(PROHIBITED_WILDCARD_SCHEMA, '<root attr="123"/>')
-    assert codes(parser) == []
+    doc = run(PROHIBITED_WILDCARD_SCHEMA, '<root attr="123"/>')
+    assert codes(doc) == []
 
 
 PROHIBITED_PLAIN_SCHEMA = (
@@ -884,8 +872,8 @@ PROHIBITED_PLAIN_SCHEMA = (
 def test_prohibited_attribute_without_wildcard_is_rejected():
     # conformance/attribute/prohibited-present: a direct prohibited use
     # with no wildcard rejects the attribute.
-    parser = run(PROHIBITED_PLAIN_SCHEMA, '<record legacy="old"/>')
-    assert "prohibited-attribute" in errors(parser)
+    doc = run(PROHIBITED_PLAIN_SCHEMA, '<record legacy="old"/>')
+    assert "prohibited-attribute" in errors(doc)
 
 
 GROUP_PROHIBITED_RESTRICTION_SCHEMA = (
@@ -903,5 +891,5 @@ GROUP_PROHIBITED_RESTRICTION_SCHEMA = (
 def test_group_prohibited_use_is_not_an_attribute_use():
     # attZ015.v: a prohibited use inside an attributeGroup is not a use,
     # so the base's optional attribute stays and the instance is valid.
-    parser = run(GROUP_PROHIBITED_RESTRICTION_SCHEMA, '<doc a="a"/>')
-    assert codes(parser) == []
+    doc = run(GROUP_PROHIBITED_RESTRICTION_SCHEMA, '<doc a="a"/>')
+    assert codes(doc) == []

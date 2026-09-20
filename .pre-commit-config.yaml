@@ -63,6 +63,11 @@ repos:
     rev: v3.96.0
     hooks:
       - id: trufflehog
+        # The Lob (mailing API) detector false-positives on snake_case test
+        # identifiers (e.g. test_compile_returns_schema_with_classes) and its
+        # verification endpoint confirms the garbage, failing every commit.
+        # This repo has no Lob integration; exclude that one detector only.
+        args: [--exclude-detectors=lob]
 
   # --- Shell scripts ---
   # https://github.com/shellcheck-py/shellcheck-py

@@ -45,7 +45,7 @@ from pyxsd.open_content import (
     namespace_resolver,
     open_content_derivation_problem,
 )
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 from pyxsd.wildcards import wildcard_spec
 from pyxsd.xpath_assertions import (
     assertion_requires_context,
@@ -64,26 +64,22 @@ SCHEMA = """\
 </xs:schema>"""
 
 
-def parse_parser(body, xml, extra=""):
-    return PyXSD(
-        io.StringIO(xml),
-        io.StringIO(SCHEMA.format(body=body, extra=extra)),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=ParseModes.NAMESPACED,
-    )
+def parse_doc(body, xml, extra=""):
+    return Schema.compile(
+        io.StringIO(SCHEMA.format(body=body, extra=extra)), mode=ParseModes.NAMESPACED
+    ).parse(io.StringIO(xml))
 
 
 def parse(body, xml, extra=""):
-    return parse_parser(body, xml, extra).report
+    return parse_doc(body, xml, extra).report
 
 
 def codes(report):
     return [issue.code for issue in report.errors]
 
 
-def component(parser, *type_names):
-    for entries in parser.components.values():
+def component(doc, *type_names):
+    for entries in doc.schema.components.values():
         for entry in entries:
             if type(entry).__name__ in type_names:
                 return entry
@@ -374,15 +370,15 @@ def test_alternative_test_free_with_unusable_xpath_default_namespace() -> None:
 
 
 def test_alternative_resolve_type_class_compiles_lazily() -> None:
-    parser = parse_parser(
+    doc = parse_doc(
         '<xs:complexType name="B"><xs:sequence/></xs:complexType>'
         '<xs:element name="t" type="B">'
         '<xs:alternative test="@k" type="B"/></xs:element>',
         "<t/>",
     )
-    representative = component(parser, "AlternativeER")
+    representative = component(doc, "AlternativeER")
     representative._compiled = _UNSET
-    assert representative.resolveTypeClass(parser) is not None
+    assert representative.resolveTypeClass(doc.schema._host) is not None
     assert representative._compiled is not _UNSET
 
 
@@ -481,55 +477,57 @@ def test_alternative_without_type_under_ur_type_keeps_declared_type() -> None:
 
 
 def test_alternative_usable_check_survives_inline_build_failure(monkeypatch) -> None:
-    parser = parse_parser(
+    doc = parse_doc(
         '<xs:element name="t">'
         "<xs:alternative test=\"@kind = 'x'\">"
         "<xs:complexType><xs:sequence/></xs:complexType>"
         "</xs:alternative></xs:element>",
         '<t kind="x"/>',
     )
-    representative = component(parser, "AlternativeER")
+    representative = component(doc, "AlternativeER")
     representative._compiled.type_class = None
 
-    def _raise(pyXSD):
+    def _raise(host):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(representative._compiled.inline_type, "clsFor", _raise)
     assert (
         select_alternative_type(
-            component(parser, "Element"), ET.fromstring('<t kind="x"/>'), parser
+            component(doc, "Element"), ET.fromstring('<t kind="x"/>'), doc.schema._host
         )
         is None
     )
 
 
 def test_selected_alternative_survives_qname_resolution_failure(monkeypatch) -> None:
-    parser = parse_parser(
+    doc = parse_doc(
         '<xs:complexType name="B"><xs:sequence/></xs:complexType>'
         '<xs:element name="t">'
         '<xs:alternative test="@k" type="B"/></xs:element>',
         "<t/>",
     )
-    representative = component(parser, "AlternativeER")
+    representative = component(doc, "AlternativeER")
 
     def _raise(raw, parser=None):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(representative, "resolveSchemaQName", _raise)
     assert (
-        select_alternative_type(component(parser, "Element"), ET.fromstring("<t k='1'/>"), parser)
+        select_alternative_type(
+            component(doc, "Element"), ET.fromstring("<t k='1'/>"), doc.schema._host
+        )
         is None
     )
 
 
 def test_compile_alternatives_is_idempotent() -> None:
-    parser = parse_parser(
+    doc = parse_doc(
         '<xs:complexType name="B"><xs:sequence/></xs:complexType>'
         '<xs:element name="t" type="B">'
         '<xs:alternative test="@k" type="B"/></xs:element>',
         "<t/>",
     )
-    element = component(parser, "Element")
+    element = component(doc, "Element")
     assert compile_alternatives(element) is compile_alternatives(element)
 
 
@@ -562,21 +560,21 @@ def test_alternative_inline_type_governs_instance() -> None:
 
 
 def test_selected_alternative_survives_resolution_failure(monkeypatch) -> None:
-    parser = parse_parser(
+    doc = parse_doc(
         '<xs:complexType name="B"><xs:sequence/></xs:complexType>'
         '<xs:element name="t" type="B">'
         '<xs:alternative test="@k" type="B"/></xs:element>',
         "<t/>",
     )
-    element = component(parser, "Element")
+    element = component(doc, "Element")
     representative = element.alternatives[0]
     representative._compiled.type_class = None
 
-    def _raise(pyXSD):
+    def _raise(host):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(representative, "resolveTypeClass", _raise)
-    assert select_alternative_type(element, ET.fromstring("<t k='1'/>"), parser) is None
+    assert select_alternative_type(element, ET.fromstring("<t k='1'/>"), doc.schema._host) is None
 
 
 def test_check_element_alternatives_survives_broken_elements() -> None:
@@ -591,7 +589,7 @@ def test_check_element_alternatives_survives_broken_elements() -> None:
 
     check_element_alternatives(_BrokenGetType())
 
-    class _NoPyXSD:
+    class _NoHost:
         name = "e"
         compiledAlternatives = None
 
@@ -601,9 +599,9 @@ def test_check_element_alternatives_survives_broken_elements() -> None:
         def getSchema(self):
             return SimpleNamespace()
 
-    _NoPyXSD.compiledAlternatives = [object()]
+    _NoHost.compiledAlternatives = [object()]
 
-    check_element_alternatives(_NoPyXSD())
+    check_element_alternatives(_NoHost())
 
 
 def test_alternative_inline_type_not_derived_is_reported() -> None:
@@ -879,13 +877,13 @@ def test_open_content_foreign_namespace_attribute_is_allowed() -> None:
 
 
 def test_open_content_qname_resolver_survives_missing_schema(monkeypatch) -> None:
-    parser = parse_parser(
+    doc = parse_doc(
         '<xs:element name="t"><xs:complexType>'
         '<xs:openContent mode="interleave"><xs:any/></xs:openContent>'
         "<xs:sequence/></xs:complexType></xs:element>",
         "<t/>",
     )
-    representative = component(parser, "OpenContentER")
+    representative = component(doc, "OpenContentER")
 
     def _raise():
         raise AttributeError("no schema")
@@ -895,24 +893,24 @@ def test_open_content_qname_resolver_survives_missing_schema(monkeypatch) -> Non
 
 
 def test_open_content_without_holding_type_is_skipped(monkeypatch) -> None:
-    parser = parse_parser(
+    doc = parse_doc(
         '<xs:element name="t"><xs:complexType>'
         '<xs:openContent mode="interleave"><xs:any/></xs:openContent>'
         "<xs:sequence/></xs:complexType></xs:element>",
         "<t/>",
     )
-    representative = component(parser, "OpenContentER")
+    representative = component(doc, "OpenContentER")
     monkeypatch.setattr(representative, "getContainingType", lambda: None)
     representative.checkDeclarationLegality()
 
 
 def test_default_open_content_declaration_survives_missing_schema(monkeypatch) -> None:
-    parser = parse_parser(
+    doc = parse_doc(
         '<xs:defaultOpenContent mode="suffix"><xs:any/></xs:defaultOpenContent>'
         '<xs:element name="t" type="xs:string"/>',
         "<t>x</t>",
     )
-    representative = component(parser, "DefaultOpenContentER")
+    representative = component(doc, "DefaultOpenContentER")
 
     def _raise():
         raise AttributeError("no schema")

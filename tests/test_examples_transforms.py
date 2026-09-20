@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from pyxsd.parser import PyXSD, _loadModuleFromFile
+from pyxsd.cli import _load_module_from_file as _loadModuleFromFile
+from pyxsd.cli import resolve_transform_class
 from pyxsd.transforms import Displayer, Transform
 
 EXAMPLES_TRANSFORMS = Path(__file__).parent.parent / "examples" / "legacy"
@@ -83,18 +84,16 @@ class TestSiblingPathScoping:
 
 
 class TestSearchPathResolution:
-    """getTransformModuleAndLoad finds example transforms via the CWD."""
+    """resolve_transform_class finds example transforms via search paths."""
 
-    def test_resolved_from_examples_directory(self, monkeypatch):
-        monkeypatch.chdir(EXAMPLES_TRANSFORMS)
-        parser = PyXSD.__new__(PyXSD)
-        parser.xmlPath = Path.cwd()
-        module = parser.getTransformModuleAndLoad("ExpandCell")
-        assert issubclass(module.ExpandCell, Transform)
+    def test_resolved_from_examples_directory(self, tmp_path, monkeypatch):
+        """An explicit search path resolves even when it is not the cwd."""
+        monkeypatch.chdir(tmp_path)
+        transformCls = resolve_transform_class("ExpandCell", search_paths=[EXAMPLES_TRANSFORMS])
+        assert transformCls.__name__ == "ExpandCell"
+        assert issubclass(transformCls, Transform)
 
     def test_not_found_from_repo_root(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
-        parser = PyXSD.__new__(PyXSD)
-        parser.xmlPath = tmp_path
         with pytest.raises(ImportError, match="ExpandCell"):
-            parser.getTransformModuleAndLoad("ExpandCell")
+            resolve_transform_class("ExpandCell")

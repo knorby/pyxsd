@@ -16,10 +16,11 @@ Schema (XSD), reports non-fatal validation issues, runs user-defined
 - **Schema-compiled classes** — your schema becomes real Python classes;
   `xs:extension` becomes real subclassing
 - **Lax validation** — bad documents still build a tree; every issue is a
-  code-tagged entry in a `ValidationReport` (`--strict` makes it a CI
-  failure)
-- **Transform pipeline** — chain small Python classes over the tree
-  (`PrintData() > SendTreeToPyXSD() > PrintData()`)
+  code-tagged entry in a `ValidationReport` (`--strict` and
+  `require_valid()` make it a CI failure)
+- **Transform pipeline** — apply plain callables or `Transform` classes to
+  the bound tree (`document.transform(fn)`); chain them on the CLI
+  (`PrintData() > PrintData()`)
 - A niche-but-real niche: runtime XML↔Python binding *plus* a transform
   framework, without pulling in `lxml` or generating static code
 
@@ -42,15 +43,26 @@ pyxsd -i inventory.xml -k -o parsed.xml -t 'PrintData()'
 Or as a library:
 
 ```python
-from pyxsd import PyXSD
+import pyxsd
 
-parser = PyXSD(xmlFileInput="inventory.xml", xsdFile="inventory.xsd", xmlFileOutput=False)
-root = parser.schemaRootInstance
-for issue in parser.report.issues:
-    print(issue.format())
+schema = pyxsd.Schema.compile("inventory.xsd")
+schema.require_valid()
+
+document = schema.parse("inventory.xml")
+document.require_valid()
+
+
+def normalize_units(root): ...
+
+
+updated = document.transform(normalize_units)
+updated.write("normalized.xml")
 ```
 
-See the [quickstart](https://pyxsd.knorby.com/quickstart.html) and the
+`Schema.compile` builds the schema once and generates its Python classes;
+`schema.parse` binds an instance into a `Document` whose `report` holds
+every issue found. A transform is any callable taking the tree root —
+see the [quickstart](https://pyxsd.knorby.com/quickstart.html) and the
 [full documentation](https://pyxsd.knorby.com/) for more.
 
 ## What it validates

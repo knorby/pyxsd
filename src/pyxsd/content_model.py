@@ -384,7 +384,9 @@ def _base_model(type_er: Any, py_xsd: Any) -> tuple[str | None, Particle | None]
     base_class = None
     for base_name in base_names:
         resolved = type_er.resolveSchemaQName(base_name, parser=py_xsd)
-        base_class = ElementRepresentative.typeFromName(resolved, py_xsd)
+        # Silent probe: an unresolved base is reported by the class
+        # build (``unknown-type``), not here.
+        base_class = ElementRepresentative.typeFromName(resolved, py_xsd, warn=False)
         if base_class is not None:
             break
     if base_class is None:
@@ -493,7 +495,7 @@ def _wildcard_qname_resolver(item: Any, py_xsd: Any) -> Any:
     parser = py_xsd
     if parser is None:
         try:
-            parser = getattr(item.getSchema(), "pyXSD", None)
+            parser = getattr(item.getSchema(), "host", None)
         except AttributeError:
             return None
     context = getattr(parser, "namespaceContext", None)

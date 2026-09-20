@@ -6,7 +6,7 @@ no child may be silently dropped or mis-bound because a Python accessor
 key was reused, and repeated uses must bind every occurrence.
 """
 
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 BASE_ELEMENT = """<?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -41,16 +41,11 @@ def _derived_schema(body):
 def parse(schema_xml, instance_xml, tmp_path):
     (tmp_path / "instance.xml").write_text(instance_xml)
     (tmp_path / "schema.xsd").write_text(schema_xml)
-    return PyXSD(
-        str(tmp_path / "instance.xml"),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-    )
+    return Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
 
 
-def codes(parser):
-    return [issue.code for issue in parser.report]
+def codes(doc):
+    return [issue.code for issue in doc.report]
 
 
 def test_inherited_element_survives_alias_allocation(tmp_path):
@@ -62,9 +57,9 @@ def test_inherited_element_survives_alias_allocation(tmp_path):
     """
     schema = _derived_schema({"sequence": '          <xs:element name="code" type="xs:int"/>\n'})
     valid = '<r code="x"><code_element>5</code_element><code>7</code></r>'
-    parser = parse(schema, valid, tmp_path)
-    assert not parser.report.has_errors
-    root = parser.schemaRootInstance
+    doc = parse(schema, valid, tmp_path)
+    assert not doc.report.has_errors
+    root = doc.root
     assert [child._name_ for child in root._children_] == ["code_element", "code"]
     assert root.code == "x"
     assert root.code_element == 5
@@ -80,9 +75,9 @@ def test_invalid_inherited_element_is_still_validated(tmp_path):
     """
     schema = _derived_schema({"sequence": '          <xs:element name="code" type="xs:int"/>\n'})
     invalid = '<r code="x"><code_element>bad</code_element><code>7</code></r>'
-    parser = parse(schema, invalid, tmp_path)
-    assert "value" in codes(parser)
-    root = parser.schemaRootInstance
+    doc = parse(schema, invalid, tmp_path)
+    assert "value" in codes(doc)
+    root = doc.root
     assert [child._name_ for child in root._children_] == ["code"]
     assert root.code_element_2 == 7
 
@@ -91,9 +86,9 @@ def test_inherited_element_and_derived_attribute_collision(tmp_path):
     """Base element ``code`` + derived attribute ``code`` both bind."""
     schema = _derived_schema({"base_element": "code", "sequence": ""})
     instance = '<r code="a"><code>7</code></r>'
-    parser = parse(schema, instance, tmp_path)
-    assert not parser.report.has_errors
-    root = parser.schemaRootInstance
+    doc = parse(schema, instance, tmp_path)
+    assert not doc.report.has_errors
+    root = doc.root
     assert root.code == "a"
     assert root.code_element == 7
     assert root._attribs_["code"] == "a"
@@ -124,9 +119,9 @@ def test_derived_element_and_inherited_attribute_collision(tmp_path):
 </xs:schema>
 """
     instance = '<r code="a"><code>7</code></r>'
-    parser = parse(schema, instance, tmp_path)
-    assert not parser.report.has_errors
-    root = parser.schemaRootInstance
+    doc = parse(schema, instance, tmp_path)
+    assert not doc.report.has_errors
+    root = doc.root
     assert root.code == "a"
     assert root.code_element == 7
 
@@ -146,9 +141,9 @@ def test_alias_avoids_both_attributes_and_elements_named_element(tmp_path):
 </xs:schema>
 """
     instance = '<item code="x" code_element="y"><code>1</code></item>'
-    parser = parse(schema, instance, tmp_path)
-    assert not parser.report.has_errors
-    item = parser.schemaRootInstance
+    doc = parse(schema, instance, tmp_path)
+    assert not doc.report.has_errors
+    item = doc.root
     assert item.code == "x"
     assert item.code_element == "y"
     assert item.code_element_2 == 1
@@ -174,8 +169,8 @@ def test_repeated_group_use_binds_every_occurrence(tmp_path):
 </xs:schema>
 """
     instance = "<r><a>1</a><a>2</a><a>3</a></r>"
-    parser = parse(schema, instance, tmp_path)
-    assert not parser.report.has_errors
-    root = parser.schemaRootInstance
+    doc = parse(schema, instance, tmp_path)
+    assert not doc.report.has_errors
+    root = doc.root
     assert root.a == [1, 2, 3]
     assert [child._value_ for child in root._children_] == [["1"], ["2"], ["3"]]

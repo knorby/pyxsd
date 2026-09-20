@@ -6,6 +6,7 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
 )
 from pyxsd.namespaces import XSI_NS
+from pyxsd.schema_context import current_context
 from pyxsd.xsd_data_types import AnySimpleType, Boolean, NCName, QName, XsdDataType
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ class Attribute(ElementRepresentative):
 
     # The owning parser is attached during clsFor.  Annotation only:
     # the attribute is assigned dynamically.
-    pyXSD: Any
+    host: Any
 
     def __init__(self, xsdElement, parent):
         """Adds itself to the attribute dictionary in its containing
@@ -196,15 +197,15 @@ class Attribute(ElementRepresentative):
         return None
 
     def getType(self):
-        """Returns its type from the class dictionary in PyXSD.
+        """Returns its type from the compiled class dictionary.
 
         Reference sites use the referenced global declaration's type.
-        The instance of PyXSD is attached to every element and attribute
+        The compiled schema's host is attached to every element and attribute
         while the classes for the schema types are being built.
         Clearly, this function is used after the main ER run.
 
         An attribute declared inside a global ``attributeGroup`` is never
-        installed as a class descriptor, so it never receives ``pyXSD``;
+        installed as a class descriptor, so it never receives ``host``;
         fall back to the owning schema's parser (as ``Element.getType``
         does) so value-constraint validation can still resolve its type.
         """
@@ -223,7 +224,7 @@ class Attribute(ElementRepresentative):
         # Resolve the QName first so strict mode disambiguates types
         # that share a local name across namespaces; in legacy mode this
         # is the same raw-type lookup as before.
-        parser = getattr(self, "pyXSD", None) or getattr(self.getSchema(), "pyXSD", None)
+        parser = getattr(self, "host", None) or getattr(self.getSchema(), "host", None)
         resolved = self.resolvedTypeName()
         if parser is not None and resolved is not None and resolved in parser.classes:
             return parser.classes[resolved]
@@ -246,6 +247,21 @@ class Attribute(ElementRepresentative):
             return obj.__dict__[self._storageKey()]
         default = getattr(self, "default", None)
         return default
+
+    def _binding_report(self):
+        """The report an assignment-time diagnostic goes to.
+
+        The active context's binding report only: a parse installs its
+        fresh per-parse report there, so a diagnostic lands on the
+        document being bound. Outside any parse there is nothing to
+        record on — a late write has no phase to attribute and must not
+        retroactively invalidate an already-accepted schema — so the
+        caller logs the diagnostic instead.
+        """
+        context = current_context()
+        if context is not None:
+            return context.report
+        return None
 
     def __set__(self, obj, value):
         """Sets values to attributes.
@@ -271,9 +287,9 @@ class Attribute(ElementRepresentative):
                 value = constructor(value)
             except Exception as e:
                 message = f"attribute '{self.name}' has an invalid value: {e}"
-                parser = getattr(self, "pyXSD", None)
-                if parser is not None:
-                    parser.report.add_error(
+                report = self._binding_report()
+                if report is not None:
+                    report.add_error(
                         message,
                         code=getattr(e, "code", "invalid-attribute"),
                         element=getattr(obj, "_name_", None),
@@ -289,9 +305,9 @@ class Attribute(ElementRepresentative):
                 f"attribute '{self.name}' has a value that cannot be "
                 f"validated against its declared type"
             )
-            parser = getattr(self, "pyXSD", None)
-            if parser is not None:
-                parser.report.add_error(
+            report = self._binding_report()
+            if report is not None:
+                report.add_error(
                     message,
                     code="invalid-attribute",
                     element=getattr(obj, "_name_", None),

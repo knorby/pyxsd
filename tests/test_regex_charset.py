@@ -23,12 +23,12 @@ import pytest
 from elementpath.regex import translate_pattern
 
 from pyxsd.binding import ParseModes
-from pyxsd.parser import PyXSD
 from pyxsd.regex_charset import (
     _class_contents,
     reject_malformed_escapes,
     rewrite_xsd_shorthands,
 )
+from pyxsd.schema import Schema
 
 SCHEMA = """\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -40,14 +40,11 @@ SIMPLE = '<xs:simpleType><xs:restriction base="{base}">{facets}</xs:restriction>
 
 
 def parse(body, xml, mode=ParseModes.NAMESPACED):
-    parser = PyXSD(
-        io.StringIO(xml),
-        io.StringIO(SCHEMA.format(body=body)),
-        xmlFileOutput=False,
-        transformOutputName=None,
-        mode=mode,
+    return (
+        Schema.compile(io.StringIO(SCHEMA.format(body=body)), mode=mode)
+        .parse(io.StringIO(xml))
+        .report
     )
-    return parser.report
 
 
 def errors(report):

@@ -3,7 +3,10 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from pyxsd.parser import PyXSD
+# Imported eagerly (not through the lazy ``pyxsd`` __getattr__): this
+# loads the element-representative stack in its safe order for every
+# test module, mirroring what the old ``pyxsd.parser`` import did.
+from pyxsd.schema import Schema
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -66,18 +69,18 @@ def assert_xml_canonically_equal(source_a, source_b):
 
 
 def run_parser(fixture, **kwargs):
-    """Run a full PyXSD parse against a named fixture.
+    """Compile a fixture's schema and bind its instance document.
 
-    Written output is suppressed unless overridden through ``kwargs``
-    (which are passed straight through to :class:`PyXSD`). Returns the
-    parser object; call ``parser.parseXML()`` on it to build a fresh
-    instance tree.
+    Returns the :class:`pyxsd.document.Document`; call ``document.root``
+    for the bound tree and ``document.report`` for the merged report.
+    Extra keyword arguments are forwarded to ``Schema.compile``
+    (``mode``, ``namespace_schemas``, ...). Pass
+    ``xmlFileOutput=<path>`` to also write the bound tree out.
     """
     directory = fixture_dir(fixture)
-    kwargs.setdefault("xmlFileOutput", False)
-    kwargs.setdefault("transformOutputName", None)
-    return PyXSD(
-        str(directory / "instance.xml"),
-        str(directory / "schema.xsd"),
-        **kwargs,
-    )
+    output = kwargs.pop("xmlFileOutput", False)
+    schema = Schema.compile(str(directory / "schema.xsd"), **kwargs)
+    document = schema.parse(str(directory / "instance.xml"))
+    if output:
+        document.write(output)
+    return document

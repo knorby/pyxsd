@@ -9,7 +9,7 @@ import pytest
 
 from conftest import run_parser
 from pyxsd.element_representatives.element_representative import registry
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 _xs = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
@@ -17,17 +17,12 @@ _XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
 
 def _parse(schema_text, instance_text, tmp_path):
-    """Parses an inline instance against an inline schema."""
+    """Compiles an inline schema and binds an inline instance document."""
     schema_path = tmp_path / "schema.xsd"
     schema_path.write_text(schema_text)
     instance_path = tmp_path / "instance.xml"
     instance_path.write_text(instance_text)
-    return PyXSD(
-        instance_path,
-        xsdFile=schema_path,
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-    )
+    return Schema.compile(str(schema_path)).parse(str(instance_path))
 
 
 def _catalog_schema(constraints, item_content="", item_attrs=""):
@@ -127,13 +122,13 @@ class TestIdentityFixture:
     """The identity fixture: key + unique + keyref, all valid."""
 
     @pytest.fixture()
-    def parser(self):
+    def doc(self):
         return run_parser("identity")
 
-    def test_valid_document_has_clean_report(self, parser):
-        assert len(parser.report) == 0
+    def test_valid_document_has_clean_report(self, doc):
+        assert len(doc.report) == 0
 
-    def test_constraints_recorded_on_root_element(self, parser):
+    def test_constraints_recorded_on_root_element(self, doc):
         catalog_er = registry["catalog"][0]
         names = {constraint.constraintName for constraint in catalog_er.identities}
         assert names == {"itemKey", "itemCode", "orderRef"}
@@ -150,8 +145,8 @@ class TestKey:
             '  <item id="a1"><code>c-2</code></item>\n'
             "</catalog>\n"
         )
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
     def test_missing_key_field_is_reported(self, tmp_path):
@@ -180,8 +175,8 @@ class TestKey:
             '  <item id="a2"><code>c-2</code></item>\n'
             "</catalog>\n"
         )
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
 
@@ -196,8 +191,8 @@ class TestUnique:
             '  <item id="a2"><code>same</code></item>\n'
             "</catalog>\n"
         )
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-unique" in codes
 
     def test_absent_unique_field_is_allowed(self, tmp_path):
@@ -209,8 +204,8 @@ class TestUnique:
         instance = (
             '<catalog>\n  <item id="a1"><code>same</code></item>\n  <item id="a2"/>\n</catalog>\n'
         )
-        parser = _parse(schema, instance, tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(schema, instance, tmp_path)
+        assert not doc.report.has_errors
 
 
 class TestKeyref:
@@ -219,15 +214,15 @@ class TestKeyref:
     def test_unmatched_keyref_is_reported(self, tmp_path):
         schema = _link_schema(constraints=_key() + _keyref("linkRef", "itemKey", "link", "@ref"))
         instance = '<catalog>\n  <item id="a1"/>\n  <link ref="no-such-id"/>\n</catalog>\n'
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-keyref" in codes
 
     def test_matching_keyref_passes(self, tmp_path):
         schema = _link_schema(constraints=_key() + _keyref("linkRef", "itemKey", "link", "@ref"))
         instance = '<catalog>\n  <item id="a1"/>\n  <link ref="a1"/>\n</catalog>\n'
-        parser = _parse(schema, instance, tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(schema, instance, tmp_path)
+        assert not doc.report.has_errors
 
     def test_keyref_field_with_complex_content_is_reported(self, tmp_path):
         """idH006: a keyref field selecting a complex-content element is a
@@ -255,15 +250,15 @@ class TestKeyref:
             "</xs:schema>\n"
         )
         instance = '<root><kid val="1"/><uid><pid p="1"/></uid></root>'
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-keyref" in codes
 
     def test_keyref_to_unknown_refer_is_reported(self, tmp_path):
         schema = _link_schema(constraints=_keyref("linkRef", "noSuchKey", "link", "@ref"))
         instance = '<catalog>\n  <item id="a1"/>\n  <link ref="a1"/>\n</catalog>\n'
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-keyref" in codes
 
 
@@ -283,8 +278,8 @@ class TestConstraintPlacement:
             '  <xs:element name="root" type="misplacedType"/>\n'
             "</xs:schema>\n"
         )
-        parser = _parse(schema, "<root><x>1</x></root>", tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, "<root><x>1</x></root>", tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "declaration-child" in codes
         # The constraint is still dropped rather than applied.
         assert not any(code.startswith("identity-") for code in codes)
@@ -302,8 +297,8 @@ class TestXPathSubset:
             '  <item id="a1"><code>c-2</code></item>\n'
             "</catalog>\n"
         )
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
     def test_wildcard_selector(self, tmp_path):
@@ -314,8 +309,8 @@ class TestXPathSubset:
             '  <item id="a1"><code>c-2</code></item>\n'
             "</catalog>\n"
         )
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
 
@@ -342,8 +337,8 @@ class TestUnionFields:
             "</xs:schema>"
         )
         instance = '<root><a x="1" y="9"/><a y="1"/></root>'
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert any(code.startswith("identity-") for code in codes)
 
     def test_attribute_wildcard_union_collision(self, tmp_path):
@@ -364,8 +359,8 @@ class TestUnionFields:
             "  </xs:element>\n"
             "</xs:schema>"
         )
-        parser = _parse(schema, '<root><a x="1" y="2"/></root>', tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, '<root><a x="1" y="2"/></root>', tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert any(code.startswith("identity-") for code in codes)
 
     def test_union_selector_finds_all_alternatives(self, tmp_path):
@@ -383,8 +378,8 @@ class TestUnionFields:
             "</xs:schema>"
         )
         instance = "<root><a>dup</a><b>dup</b></root>"
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
 
@@ -410,8 +405,8 @@ class TestQualifiedNames:
             "</xs:schema>"
         )
         instance = f'<q:root xmlns:q="{ns}"><q:item q:id="dup"/><q:item q:id="dup"/></q:root>'
-        parser = _parse11(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse11(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
     def test_qualified_selector_does_not_match_other_namespace(self, tmp_path):
@@ -435,8 +430,8 @@ class TestQualifiedNames:
             "</xs:schema>"
         )
         instance = f'<q:root xmlns:q="{ns}"><q:item id="dup"/><q:item id="dup"/></q:root>'
-        parser = _parse11(schema, instance, tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse11(schema, instance, tmp_path)
+        assert not doc.report.has_errors
 
 
 class TestAttributeShadowing:
@@ -465,8 +460,8 @@ class TestAttributeShadowing:
             "</xs:schema>"
         )
         instance = '<root><item x="1"><x>a</x></item><item x="1"><x>b</x></item></root>'
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-unique" in codes
 
 
@@ -495,8 +490,8 @@ class TestFieldCardinality:
             "</xs:schema>"
         )
         instance = f'<root {_XSI}><item x="1"><v xsi:nil="true"/></item></root>'
-        parser = _parse11(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse11(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert any(code.startswith("identity-") for code in codes)
 
     def test_field_on_complex_content_element_is_reported(self, tmp_path):
@@ -524,8 +519,8 @@ class TestFieldCardinality:
             "  </xs:element>\n"
             "</xs:schema>"
         )
-        parser = _parse(schema, "<root><item><pid><gid>g</gid></pid></item></root>", tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, "<root><item><pid><gid>g</gid></pid></item></root>", tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert any(code.startswith("identity-") for code in codes)
 
 
@@ -556,8 +551,8 @@ class TestKeyrefReferLegality:
             '      <xs:field xpath="@val"/>\n'
             "    </xs:keyref>\n"
         )
-        parser = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "identity-refer" in codes
 
     def test_refer_naming_a_keyref_is_an_error(self, tmp_path):
@@ -571,8 +566,8 @@ class TestKeyrefReferLegality:
             '      <xs:field xpath="@val2"/>\n'
             "    </xs:keyref>\n"
         )
-        parser = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "identity-refer" in codes
 
     def test_field_count_mismatch_is_a_schema_error(self, tmp_path):
@@ -587,8 +582,8 @@ class TestKeyrefReferLegality:
             '      <xs:field xpath="@val"/>\n'
             "    </xs:key>\n"
         )
-        parser = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "identity-refer" in codes
 
     def test_matching_refer_and_field_count_is_legal(self, tmp_path):
@@ -602,8 +597,8 @@ class TestKeyrefReferLegality:
             '      <xs:field xpath="@val"/>\n'
             "    </xs:key>\n"
         )
-        parser = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<root><uid val="1" val2="2"/></root>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "identity-refer" not in codes
 
     def test_refer_to_key_in_another_namespace_is_a_schema_error(self, tmp_path):
@@ -628,8 +623,8 @@ class TestKeyrefReferLegality:
             "  </xs:element>\n"
             "</xs:schema>"
         )
-        parser = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "identity-refer" in codes
 
     def test_refer_with_undeclared_prefix_is_a_schema_error(self, tmp_path):
@@ -643,8 +638,8 @@ class TestKeyrefReferLegality:
             '      <xs:field xpath="@val"/>\n'
             "    </xs:key>\n"
         )
-        parser = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "identity-refer" in codes
 
     def test_refer_to_key_in_target_namespace_resolves(self, tmp_path):
@@ -670,8 +665,8 @@ class TestKeyrefReferLegality:
             "</xs:schema>"
         )
         instance = '<t:root xmlns:t="urn:t"><t:uid val="1"/></t:root>'
-        parser = _parse(schema, instance, tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(schema, instance, tmp_path)
+        assert not doc.report.has_errors
 
     def test_invalid_xpath_default_namespace_on_keyref_is_xpath_invalid(self, tmp_path):
         """A bogus ``##`` keyword on the keyref fails like the
@@ -687,8 +682,8 @@ class TestKeyrefReferLegality:
             '      <xs:field xpath="@val"/>\n'
             "    </xs:key>\n"
         )
-        parser = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<root><uid val="1"/></root>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "xpath-invalid" in codes
         assert "identity-refer" not in codes
 
@@ -728,8 +723,8 @@ class TestKeyrefScopeTree:
             "</xs:schema>"
         )
         instance = '<root><section><item id="i1"/><ref id="i1"/></section></root>'
-        parser = _parse(schema, instance, tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(schema, instance, tmp_path)
+        assert not doc.report.has_errors
 
     def test_keyref_ancestor_table_is_outside_subtree(self, tmp_path):
         """A keyref may not draw on a key declared only on an ancestor:
@@ -759,8 +754,8 @@ class TestKeyrefScopeTree:
             "</xs:schema>"
         )
         instance = '<root><shipper><ref id="i1"/></shipper><item id="i1"/></root>'
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-keyref" in codes
 
     def test_keyref_does_not_see_tables_outside_its_scope(self, tmp_path):
@@ -796,8 +791,8 @@ class TestKeyrefScopeTree:
             '<root><keyBranch><item id="v1"/></keyBranch>'
             '<refBranch><ref id="v1"/></refBranch></root>'
         )
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-keyref" in codes
 
     def test_keyref_matches_union_of_descendant_scopes(self, tmp_path):
@@ -835,8 +830,8 @@ class TestKeyrefScopeTree:
         instance = (
             '<root><node><item id="x"/><ref ref="y"/><node><item id="y"/></node></node></root>'
         )
-        parser = _parse(schema, instance, tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(schema, instance, tmp_path)
+        assert not doc.report.has_errors
 
     def test_keyref_ref_site_borrows_its_target(self, tmp_path):
         """An XSD 1.1 ``<xs:keyref ref="..."/>`` site acts as the named
@@ -882,13 +877,13 @@ class TestKeyrefScopeTree:
             '<root><box><item id="a"/><link ref="a"/></box>'
             '<box2><item id="b"/><link ref="b"/></box2></root>'
         )
-        parser = _parse(schema, valid, tmp_path)
-        assert not parser.report.has_errors
+        doc = _parse(schema, valid, tmp_path)
+        assert not doc.report.has_errors
         # Without the borrow the box2 keyref would be skipped silently;
         # the mismatched link must be caught by the borrowed check.
         invalid = '<root><box2><item id="b"/><link ref="zz"/></box2></root>'
-        parser = _parse(schema, invalid, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, invalid, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-keyref" in codes
 
     def test_keyref_ref_to_wrong_category_is_a_schema_error(self, tmp_path):
@@ -911,8 +906,8 @@ class TestKeyrefScopeTree:
             "  </xs:sequence></xs:complexType></xs:element>\n"
             "</xs:schema>"
         )
-        parser = _parse(schema, '<root><box><item id="1"/></box></root>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<root><box><item id="1"/></box></root>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "identity-refer" in codes
 
 
@@ -922,8 +917,8 @@ class TestUnsupportedPaths:
     def test_predicate_selector_is_schema_invalid(self, tmp_path):
         schema = _catalog_schema(constraints=_key(selector="item[@id]"))
         instance = '<catalog>\n  <item id="a1"><code>c-1</code></item>\n</catalog>\n'
-        parser = _parse(schema, instance, tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, instance, tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "xpath-invalid" in codes
 
     def test_empty_selector(self, tmp_path):
@@ -944,36 +939,36 @@ class TestUnsupportedPaths:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(schema, "<codes><code>a</code></codes>", tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, "<codes><code>a</code></codes>", tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "declaration-attribute" in codes
 
     def test_absolute_selector_xpath_invalid(self, tmp_path):
         schema = _catalog_schema(constraints=_key(selector="/item"))
-        parser = _parse(schema, '<catalog><item id="a1"><code>c</code></item></catalog>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<catalog><item id="a1"><code>c</code></item></catalog>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "xpath-invalid" in codes
 
     def test_field_predicate_is_a_schema_error(self, tmp_path):
         schema = _catalog_schema(constraints=_key(field="@id[1]"))
-        parser = _parse(schema, '<catalog><item id="a1"><code>c</code></item></catalog>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<catalog><item id="a1"><code>c</code></item></catalog>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "xpath-invalid" in codes
 
     def test_absolute_field_is_a_schema_error(self, tmp_path):
         schema = _catalog_schema(constraints=_key(field="/item/@id"))
-        parser = _parse(schema, '<catalog><item id="a1"><code>c</code></item></catalog>', tmp_path)
-        codes = {issue.code for issue in parser.report.for_phase("schema")}
+        doc = _parse(schema, '<catalog><item id="a1"><code>c</code></item></catalog>', tmp_path)
+        codes = {issue.code for issue in doc.report.for_phase("schema")}
         assert "xpath-invalid" in codes
 
     def test_dot_after_steps_field(self, tmp_path):
         """A field like ``item/.`` evaluates to the item's own value."""
         schema = _catalog_schema(item_attrs=_ID_ATTR, constraints=_key("valKey", field="item/."))
         instance = '<catalog>\n  <item id="dup"><code>c-1</code></item>\n</catalog>\n'
-        parser = _parse(schema, instance, tmp_path)
+        doc = _parse(schema, instance, tmp_path)
         # Items are complex nodes with no simple-content value; the
         # field resolves but has no value, so key presence reports.
-        codes = [issue.code for issue in parser.report.errors]
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
 
@@ -1005,8 +1000,8 @@ class TestDescendantSelectors:
             "</xs:schema>\n"
         )
         instance = '<shelf>\n  <bin><item id="a1"/></bin>\n  <bin><item id="a1"/></bin>\n</shelf>\n'
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
     def test_multi_step_field_path(self, tmp_path):
@@ -1035,8 +1030,8 @@ class TestDescendantSelectors:
             '  <item id="a2"><code>dup</code></item>\n'
             "</catalog>\n"
         )
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
     def test_dot_field_uses_the_selected_node(self, tmp_path):
@@ -1054,8 +1049,8 @@ class TestDescendantSelectors:
             "</xs:schema>\n"
         )
         instance = "<codes>\n  <code>dup</code>\n  <code>dup</code>\n</codes>\n"
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
     def test_attribute_field_with_path_steps(self, tmp_path):
@@ -1083,8 +1078,8 @@ class TestDescendantSelectors:
             "</xs:schema>\n"
         )
         instance = '<shelf>\n  <bin><item id="a1"/></bin>\n  <bin><item id="a1"/></bin>\n</shelf>\n'
-        parser = _parse(schema, instance, tmp_path)
-        codes = [issue.code for issue in parser.report.errors]
+        doc = _parse(schema, instance, tmp_path)
+        codes = [issue.code for issue in doc.report.errors]
         assert "identity-key" in codes
 
 
@@ -1131,25 +1126,25 @@ _BOX_SCHEMA = f"""<xs:schema {_xs}>
 
 class TestIdentityScoping:
     def test_sibling_occurrences_have_independent_keys(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _BOX_SCHEMA,
             '<r><box><item id="1"/></box><box><item id="1"/></box></r>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_keyref_does_not_cross_occurrence_scopes(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _BOX_SCHEMA,
             '<r><box><item id="1"/><link ref="2"/></box><box><item id="2"/></box></r>',
             tmp_path,
         )
-        assert any(issue.code == "identity-keyref" for issue in parser.report.issues)
+        assert any(issue.code == "identity-keyref" for issue in doc.report.issues)
 
 
 class TestIdentityTypedValues:
     def test_numeric_spellings_are_the_same_key(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             _catalog_schema(
                 _key(),
                 item_attrs='<xs:attribute name="id" type="xs:int" use="required"/>',
@@ -1157,7 +1152,7 @@ class TestIdentityTypedValues:
             '<catalog><item id="1"/><item id="01"/></catalog>',
             tmp_path,
         )
-        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+        assert any(issue.code == "identity-key" for issue in doc.report.issues)
 
     def test_numeric_keyref_spellings_match(self, tmp_path):
         schema = (
@@ -1182,12 +1177,12 @@ class TestIdentityTypedValues:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(
+        doc = _parse(
             schema,
             '<catalog><item id="1"/><link ref="01"/></catalog>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
 
 class TestIdentityFieldCardinality:
@@ -1213,8 +1208,8 @@ class TestIdentityFieldCardinality:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(schema, "<r><row><v>a</v><v>b</v></row></r>", tmp_path)
-        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+        doc = _parse(schema, "<r><row><v>a</v><v>b</v></row></r>", tmp_path)
+        assert any(issue.code == "identity-key" for issue in doc.report.issues)
 
     def test_nilled_field_supplies_no_key_value(self, tmp_path):
         schema = (
@@ -1232,19 +1227,19 @@ class TestIdentityFieldCardinality:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(
+        doc = _parse(
             schema,
             f'<r {_XSI}><v xsi:nil="true"/></r>',
             tmp_path,
         )
-        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+        assert any(issue.code == "identity-key" for issue in doc.report.issues)
 
 
 _SAMPLE_NS = "http://example.com/sample"
 
 
 def _parse11(schema_text, instance_text, tmp_path):
-    """Parses an inline instance against an inline schema under the
+    """Binds an inline instance against an inline schema under the
     standards (namespaced) policy, where skip wildcards are in effect."""
     from pyxsd.binding import ParseModes
 
@@ -1252,13 +1247,7 @@ def _parse11(schema_text, instance_text, tmp_path):
     schema_path.write_text(schema_text)
     instance_path = tmp_path / "instance.xml"
     instance_path.write_text(instance_text)
-    return PyXSD(
-        instance_path,
-        xsdFile=schema_path,
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-        mode=ParseModes.NAMESPACED,
-    )
+    return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(str(instance_path))
 
 
 def _skipped_content_schema(constraints: str) -> str:
@@ -1336,87 +1325,87 @@ class TestIdentityConstraintsSkipSkippedWildcardContent:
 
     def test_key_ignores_a_missing_field_in_skipped_content(self, tmp_path):
         # wild101.v2: the note inside wrapper has no id.
-        parser = _parse11(
+        doc = _parse11(
             _skipped_content_schema(_KEY),
             _DOC_OPEN + '<note id="note1"/><wrapper><note/></wrapper></doc>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_key_ignores_a_duplicate_value_in_skipped_content(self, tmp_path):
         # wild101.v3: the skipped note repeats the declared note's id.
-        parser = _parse11(
+        doc = _parse11(
             _skipped_content_schema(_KEY),
             _DOC_OPEN + '<note id="note1"/><wrapper><note id="note1"/></wrapper></doc>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_key_still_reports_a_duplicate_in_declared_content(self, tmp_path):
         # wild101.n1: both duplicates are declared content.
-        parser = _parse11(
+        doc = _parse11(
             _skipped_content_schema(_KEY),
             _DOC_OPEN + '<note id="note1"/><note id="note1"/>'
             '<wrapper><note id="note3"/></wrapper></doc>',
             tmp_path,
         )
-        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+        assert any(issue.code == "identity-key" for issue in doc.report.issues)
 
     def test_key_still_reports_a_missing_field_in_declared_content(self, tmp_path):
         # wild101.n2: the missing id is in declared content.
-        parser = _parse11(
+        doc = _parse11(
             _skipped_content_schema(_KEY),
             _DOC_OPEN + '<note id="note1"/><note/><wrapper><note id="note2"/></wrapper></doc>',
             tmp_path,
         )
-        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+        assert any(issue.code == "identity-key" for issue in doc.report.issues)
 
     def test_unique_ignores_a_duplicate_value_in_skipped_content(self, tmp_path):
         # wild102.v3 (the unique twin of wild101.v3).
-        parser = _parse11(
+        doc = _parse11(
             _skipped_content_schema(_UNIQUE),
             _DOC_OPEN + '<note id="note1"/><wrapper><note id="note1"/></wrapper></doc>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_unique_ignores_a_missing_field_in_skipped_content(self, tmp_path):
         # wild102.v2 (the unique twin of wild101.v2).
-        parser = _parse11(
+        doc = _parse11(
             _skipped_content_schema(_UNIQUE),
             _DOC_OPEN + '<note id="note1"/><wrapper><note/></wrapper></doc>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_unique_still_reports_a_duplicate_in_declared_content(self, tmp_path):
         # wild102.n1: both duplicates are declared content.
-        parser = _parse11(
+        doc = _parse11(
             _skipped_content_schema(_UNIQUE),
             _DOC_OPEN + '<note id="note1"/><note id="note1"/>'
             '<wrapper><note id="note3"/></wrapper></doc>',
             tmp_path,
         )
-        assert any(issue.code == "identity-unique" for issue in parser.report.issues)
+        assert any(issue.code == "identity-unique" for issue in doc.report.issues)
 
     def test_keyref_does_not_resolve_through_skipped_content(self, tmp_path):
         # A ref inside the skip wildcard is not part of the keyref's
         # selection, so its unmatched value is legal.
-        parser = _parse11(
+        doc = _parse11(
             _skipped_content_schema(_KEYREF),
             _DOC_OPEN + '<note id="note1"/><wrapper><ref to="missing"/></wrapper></doc>',
             tmp_path,
         )
-        assert not parser.report.has_errors
+        assert not doc.report.has_errors
 
     def test_keyref_still_resolves_declared_content(self, tmp_path):
         # Control: the same ref as declared content fails the keyref.
-        parser = _parse11(
+        doc = _parse11(
             _skipped_content_schema(_KEYREF),
             _DOC_OPEN + '<note id="note1"/><ref to="missing"/></doc>',
             tmp_path,
         )
-        assert any(issue.code == "identity-keyref" for issue in parser.report.issues)
+        assert any(issue.code == "identity-keyref" for issue in doc.report.issues)
 
     def test_declared_wrapper_element_itself_is_not_skipped(self, tmp_path):
         # wild101-104 skip only the wildcard content *inside* wrapper:
@@ -1432,12 +1421,12 @@ class TestIdentityConstraintsSkipSkippedWildcardContent:
             '<xs:complexType mixed="true">'
             '<xs:attribute name="id" type="xs:string" use="optional"/>',
         )
-        parser = _parse11(
+        doc = _parse11(
             schema,
             _DOC_OPEN + '<wrapper id="w1"/><wrapper id="w1"/></doc>',
             tmp_path,
         )
-        assert any(issue.code == "identity-key" for issue in parser.report.issues)
+        assert any(issue.code == "identity-key" for issue in doc.report.issues)
 
 
 class TestDocumentIdSpace:
@@ -1467,8 +1456,8 @@ class TestDocumentIdSpace:
         "</xs:schema>\n"
     )
 
-    def _codes(self, parser):
-        return {issue.code for issue in parser.report.errors}
+    def _codes(self, doc):
+        return {issue.code for issue in doc.report.errors}
 
     def test_idref_must_resolve(self, tmp_path):
         schema = self._ID_SCHEMA
@@ -1479,16 +1468,16 @@ class TestDocumentIdSpace:
 
     def test_idref_forward_reference_resolves(self, tmp_path):
         # IDREF may name an ID that appears later in the document.
-        parser = _parse(self._ID_SCHEMA, '<doc><item ref="a1"/><item id="a1"/></doc>', tmp_path)
-        assert self._codes(parser) == set()
+        doc = _parse(self._ID_SCHEMA, '<doc><item ref="a1"/><item id="a1"/></doc>', tmp_path)
+        assert self._codes(doc) == set()
 
     def test_id_duplicate_is_reported(self, tmp_path):
-        parser = _parse(
+        doc = _parse(
             self._ID_SCHEMA,
             '<doc><item id="d1"/><item id="d1"/></doc>',
             tmp_path,
         )
-        assert self._codes(parser) == {"id-duplicate"}
+        assert self._codes(doc) == {"id-duplicate"}
 
     def test_id_duplicate_across_attributes_and_elements(self, tmp_path):
         # An ID element value and an ID attribute value share one table.
@@ -1508,10 +1497,10 @@ class TestDocumentIdSpace:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(schema, '<doc><ident>x1</ident><item id="x1"/></doc>', tmp_path)
-        assert self._codes(parser) == {"id-duplicate"}
-        parser = _parse(schema, '<doc><ident>x1</ident><item id="x2"/></doc>', tmp_path)
-        assert self._codes(parser) == set()
+        doc = _parse(schema, '<doc><ident>x1</ident><item id="x1"/></doc>', tmp_path)
+        assert self._codes(doc) == {"id-duplicate"}
+        doc = _parse(schema, '<doc><ident>x1</ident><item id="x2"/></doc>', tmp_path)
+        assert self._codes(doc) == set()
 
     def test_idrefs_bad_token_is_reported(self, tmp_path):
         schema = (
@@ -1524,10 +1513,10 @@ class TestDocumentIdSpace:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(schema, '<doc ids="a1" refs="a1 a2"/>', tmp_path)
-        assert self._codes(parser) == {"idref-unresolved"}
-        parser = _parse(schema, '<doc ids="a1" refs="a1"/>', tmp_path)
-        assert self._codes(parser) == set()
+        doc = _parse(schema, '<doc ids="a1" refs="a1 a2"/>', tmp_path)
+        assert self._codes(doc) == {"idref-unresolved"}
+        doc = _parse(schema, '<doc ids="a1" refs="a1"/>', tmp_path)
+        assert self._codes(doc) == set()
 
     def test_id_typed_element_reference(self, tmp_path):
         # s3_3_4ii20 shape: xs:IDREF-typed elements resolve against ID
@@ -1544,10 +1533,10 @@ class TestDocumentIdSpace:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(schema, '<root id1="asd87123_"><idref>asd87123</idref></root>', tmp_path)
-        assert self._codes(parser) == {"idref-unresolved"}
-        parser = _parse(schema, '<root id1="asd87123_"><idref>asd87123_</idref></root>', tmp_path)
-        assert self._codes(parser) == set()
+        doc = _parse(schema, '<root id1="asd87123_"><idref>asd87123</idref></root>', tmp_path)
+        assert self._codes(doc) == {"idref-unresolved"}
+        doc = _parse(schema, '<root id1="asd87123_"><idref>asd87123_</idref></root>', tmp_path)
+        assert self._codes(doc) == set()
 
     def test_id_value_constraint_participates(self, tmp_path):
         # The default/fixed value of an absent ID attribute enters the
@@ -1567,12 +1556,12 @@ class TestDocumentIdSpace:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(schema, '<doc><para/><para id="para001"/></doc>', tmp_path)
-        assert self._codes(parser) == {"id-duplicate"}
-        parser = _parse(schema, "<doc><para/><para/></doc>", tmp_path)
-        assert self._codes(parser) == {"id-duplicate"}
-        parser = _parse(schema, '<doc><para/><para id="other"/></doc>', tmp_path)
-        assert self._codes(parser) == set()
+        doc = _parse(schema, '<doc><para/><para id="para001"/></doc>', tmp_path)
+        assert self._codes(doc) == {"id-duplicate"}
+        doc = _parse(schema, "<doc><para/><para/></doc>", tmp_path)
+        assert self._codes(doc) == {"id-duplicate"}
+        doc = _parse(schema, '<doc><para/><para id="other"/></doc>', tmp_path)
+        assert self._codes(doc) == set()
 
     def test_derived_id_types_participate(self, tmp_path):
         # A user type restricting xs:ID keeps the document semantics
@@ -1599,24 +1588,24 @@ class TestDocumentIdSpace:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(
+        doc = _parse(
             schema,
             '<root><person ssn="s007"/><person ssn="s007"/></root>',
             tmp_path,
         )
-        assert self._codes(parser) == {"id-duplicate"}
-        parser = _parse(
+        assert self._codes(doc) == {"id-duplicate"}
+        doc = _parse(
             schema,
             '<root><person ssn="s007" parent="s009"/></root>',
             tmp_path,
         )
-        assert self._codes(parser) == {"idref-unresolved"}
-        parser = _parse(
+        assert self._codes(doc) == {"idref-unresolved"}
+        doc = _parse(
             schema,
             '<root><person ssn="s007"/><person ssn="s008" parent="s007"/></root>',
             tmp_path,
         )
-        assert self._codes(parser) == set()
+        assert self._codes(doc) == set()
 
     def test_list_of_id_registers_each_token(self, tmp_path):
         # A list-of-ID value contributes each token; an IDREF matches a
@@ -1636,10 +1625,10 @@ class TestDocumentIdSpace:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(schema, "<root><ids>u123 u456</ids><ref>u456</ref></root>", tmp_path)
-        assert self._codes(parser) == set()
-        parser = _parse(schema, "<root><ids>u123 u456</ids><ref>u789</ref></root>", tmp_path)
-        assert self._codes(parser) == {"idref-unresolved"}
+        doc = _parse(schema, "<root><ids>u123 u456</ids><ref>u456</ref></root>", tmp_path)
+        assert self._codes(doc) == set()
+        doc = _parse(schema, "<root><ids>u123 u456</ids><ref>u789</ref></root>", tmp_path)
+        assert self._codes(doc) == {"idref-unresolved"}
 
     def test_union_of_id_and_idref_classifies_per_token(self, tmp_path):
         # id006: in a list whose item type is a union of IDREF-derived
@@ -1670,27 +1659,27 @@ class TestDocumentIdSpace:
         )
         # "123" is an integer token (outside the ID space); "A001" is an
         # IDREF token that must resolve against the collected ID.
-        parser = _parse(
+        doc = _parse(
             schema,
             '<doc><node id="B001" mixed="A001 123"/></doc>',
             tmp_path,
         )
-        assert self._codes(parser) == {"idref-unresolved"}
-        parser = _parse(
+        assert self._codes(doc) == {"idref-unresolved"}
+        doc = _parse(
             schema,
             '<doc><node id="A001" mixed="A001 123"/></doc>',
             tmp_path,
         )
-        assert self._codes(parser) == set()
+        assert self._codes(doc) == set()
 
     def test_id_value_whitespace_collapse(self, tmp_path):
         # ID values are compared after whitespace collapse.
-        parser = _parse(
+        doc = _parse(
             self._ID_SCHEMA,
             '<doc><item id=" a1 "/><item id="a1"/></doc>',
             tmp_path,
         )
-        assert self._codes(parser) == {"id-duplicate"}
+        assert self._codes(doc) == {"id-duplicate"}
 
     def test_plain_id_named_attributes_have_no_id_semantics(self, tmp_path):
         # A string-typed attribute that happens to be called "id" is
@@ -1710,8 +1699,8 @@ class TestDocumentIdSpace:
             "  </xs:element>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(schema, '<doc><item id="x"/><item id="x"/></doc>', tmp_path)
-        assert self._codes(parser) == set()
+        doc = _parse(schema, '<doc><item id="x"/><item id="x"/></doc>', tmp_path)
+        assert self._codes(doc) == set()
 
     def test_id_table_does_not_leak_between_parses(self, tmp_path):
         schema = self._ID_SCHEMA
@@ -1745,22 +1734,22 @@ class TestDocumentIdSpace:
             "  </xs:complexType>\n"
             "</xs:schema>\n"
         )
-        parser = _parse(schema, "<doc><id>aaa</id><idref>aaa</idref></doc>", tmp_path)
-        assert self._codes(parser) == set()
-        parser = _parse(schema, "<doc><id>aaa</id><idref>bbb</idref></doc>", tmp_path)
-        assert self._codes(parser) == {"idref-unresolved"}
+        doc = _parse(schema, "<doc><id>aaa</id><idref>aaa</idref></doc>", tmp_path)
+        assert self._codes(doc) == set()
+        doc = _parse(schema, "<doc><id>aaa</id><idref>bbb</idref></doc>", tmp_path)
+        assert self._codes(doc) == {"idref-unresolved"}
 
     def test_id_repeats_on_one_element_are_not_duplicates(self, tmp_path):
         # id001.v01/id003.v01: two ID-typed slots of the SAME element may
         # carry the same value -- both bind that one element. An ID-typed
         # child element binds its PARENT, so an atomic ID child and an
         # attribute of the parent may also share a value.
-        parser = _parse(
+        doc = _parse(
             self._ID_SCHEMA,
             '<doc><item id="e1" ref="e1"/></doc>',
             tmp_path,
         )
-        assert self._codes(parser) == set()
+        assert self._codes(doc) == set()
         schema = (
             f"<xs:schema {_XS}>\n"
             '  <xs:element name="doc">\n'
@@ -1780,16 +1769,16 @@ class TestDocumentIdSpace:
             "</xs:schema>\n"
         )
         # zzz is carried twice, but both slots bind the same node.
-        parser = _parse(
+        doc = _parse(
             schema,
             '<doc><node id-one="zzz"><id>zzz</id></node></doc>',
             tmp_path,
         )
-        assert self._codes(parser) == set()
+        assert self._codes(doc) == set()
         # The same value on two different nodes is a duplicate.
-        parser = _parse(
+        doc = _parse(
             schema,
             '<doc><node id-one="zzz"><id>zzz</id></node><node><id>zzz</id></node></doc>',
             tmp_path,
         )
-        assert self._codes(parser) == {"id-duplicate"}
+        assert self._codes(doc) == {"id-duplicate"}

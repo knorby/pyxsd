@@ -16,7 +16,8 @@ from pathlib import Path
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from pyxsd.parser import PyXSD
+from pyxsd.document import Document
+from pyxsd.schema import Schema
 from pyxsd.writers import XmlTreeWriter
 
 XSD = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
@@ -29,21 +30,16 @@ NAMES = st.lists(
 )
 
 
-def parse(directory: Path, schema: str, instance: str) -> PyXSD:
+def parse(directory: Path, schema: str, instance: str) -> Document:
     """Write a schema/instance pair and run the full pipeline."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "schema.xsd").write_text(schema)
     (directory / "instance.xml").write_text(instance)
-    return PyXSD(
-        str(directory / "instance.xml"),
-        str(directory / "schema.xsd"),
-        xmlFileOutput=False,
-        transformOutputName=None,
-    )
+    return Schema.compile(str(directory / "schema.xsd")).parse(str(directory / "instance.xml"))
 
 
-def codes(parser: PyXSD) -> list[str]:
-    return [issue.code for issue in parser.report]
+def codes(doc: Document) -> list[str]:
+    return [issue.code for issue in doc.report]
 
 
 def group_schema(names: list[str], optional_first: bool) -> str:
@@ -93,8 +89,8 @@ def test_group_occurrence_is_declaration_order_invariant(names):
         second_ok = parse(base / "second-ok", group_schema(names, optional_first=False), complete)
         assert codes(first_ok) == codes(second_ok) == []
 
-        def snapshot(parser):
-            root = parser.schemaRootInstance
+        def snapshot(doc):
+            root = doc.root
             children = [child._name_ for child in root._children_]
             values = [str(root.__dict__[name]) for name in names]
             return children, values
@@ -118,9 +114,9 @@ def test_unrelated_parses_do_not_disturb_an_earlier_parser(names, unrelated_coun
     )
     with tempfile.TemporaryDirectory() as temp:
         base = Path(temp)
-        parser = parse(base / "a", schema, f"<r><{child}>7</{child}></r>")
-        assert codes(parser) == []
-        before = str(parser.schemaRootInstance.__dict__[child])
+        doc = parse(base / "a", schema, f"<r><{child}>7</{child}></r>")
+        assert codes(doc) == []
+        before = str(doc.root.__dict__[child])
 
         for index in range(unrelated_count):
             # An unrelated document with an unresolvable type still runs
@@ -128,12 +124,11 @@ def test_unrelated_parses_do_not_disturb_an_earlier_parser(names, unrelated_coun
             other = f'<xs:schema {XSD}><xs:element name="x" type="nope:Type"/></xs:schema>'
             parse(base / f"other{index}", other, "<x/>")
 
-        assert codes(parser) == []
-        assert str(parser.schemaRootInstance.__dict__[child]) == before
+        assert codes(doc) == []
+        assert str(doc.root.__dict__[child]) == before
 
-        parser.parseXML()
-        assert "unknown-type" not in codes(parser)
-        assert str(parser.schemaRootInstance.__dict__[child]) == before
+        assert "unknown-type" not in codes(doc)
+        assert str(doc.root.__dict__[child]) == before
 
 
 ROUND_TRIP_SCHEMA = (
@@ -172,10 +167,10 @@ def test_parse_write_parse_preserves_values(text, note):
     instance = f'<r note="{attribute_to_xml(note)}"><text>{text_to_xml(text)}</text></r>'
     with tempfile.TemporaryDirectory() as temp:
         base = Path(temp)
-        parser = parse(base, ROUND_TRIP_SCHEMA, instance)
-        assert not parser.report.has_errors
+        doc = parse(base, ROUND_TRIP_SCHEMA, instance)
+        assert not doc.report.has_errors
 
-        root = parser.schemaRootInstance
+        root = doc.root
         assert str(root.text) == text
         assert str(root.note) == note
 
@@ -189,13 +184,8 @@ def test_parse_write_parse_preserves_values(text, note):
         assert reparsed.attrib["note"] == note
 
         # ...and a full second parse must validate and rebind them.
-        second = PyXSD(
-            io.StringIO(serialized),
-            str(base / "schema.xsd"),
-            xmlFileOutput=False,
-            transformOutputName=None,
-        )
+        second = Schema.compile(str(base / "schema.xsd")).parse(io.StringIO(serialized))
         assert not second.report.has_errors
-        second_root = second.schemaRootInstance
+        second_root = second.root
         assert str(second_root.text) == text
         assert str(second_root.note) == note

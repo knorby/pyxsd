@@ -8,7 +8,7 @@ every other reference to the same group. Each reference now works on
 per-use copies; the group's declarations stay immutable.
 """
 
-from pyxsd.parser import PyXSD
+from pyxsd.schema import Schema
 
 SCHEMA_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -59,29 +59,24 @@ NESTED_GROUPS_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
 def parse(schema_xml, instance_xml, tmp_path):
     (tmp_path / "instance.xml").write_text(instance_xml)
     (tmp_path / "schema.xsd").write_text(schema_xml)
-    return PyXSD(
-        str(tmp_path / "instance.xml"),
-        str(tmp_path / "schema.xsd"),
-        xmlFileOutput="_No_Output_",
-        transformOutputName="_No_Output_",
-    )
+    return Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
 
 
 def test_optional_reference_does_not_relax_required_reference(tmp_path):
     """A minOccurs=0 group reference must not relax a plain reference."""
-    parser = parse(OPTIONAL_FIRST, "<r/>", tmp_path)
-    codes = [issue.code for issue in parser.report]
+    doc = parse(OPTIONAL_FIRST, "<r/>", tmp_path)
+    codes = [issue.code for issue in doc.report]
     assert "occurrence-min" in codes
 
 
 def test_required_reference_still_accepts_one_child(tmp_path):
-    parser = parse(OPTIONAL_FIRST, "<r><a>1</a></r>", tmp_path)
-    assert not parser.report.has_errors
+    doc = parse(OPTIONAL_FIRST, "<r><a>1</a></r>", tmp_path)
+    assert not doc.report.has_errors
 
 
 def test_required_reference_rejects_two_children(tmp_path):
-    parser = parse(OPTIONAL_FIRST, "<r><a>1</a><a>2</a></r>", tmp_path)
-    assert parser.report.has_errors
+    doc = parse(OPTIONAL_FIRST, "<r><a>1</a><a>2</a></r>", tmp_path)
+    assert doc.report.has_errors
 
 
 def _descriptor_mins(typeClass):
@@ -96,8 +91,8 @@ def _descriptor_mins(typeClass):
 
 def test_group_element_declarations_stay_unmutated(tmp_path):
     """Each type sees its own folded limits; no cross-type leakage."""
-    parser = parse(OPTIONAL_FIRST, "<r><a>1</a></r>", tmp_path)
-    classes = parser.getClasses()
+    doc = parse(OPTIONAL_FIRST, "<r><a>1</a></r>", tmp_path)
+    classes = doc.schema.classes
     # Required's reference folds to min 1; Optional's folds to min 0.
     assert _descriptor_mins(classes["Required"]) == [1]
     assert _descriptor_mins(classes["Optional"]) == [0]
@@ -105,8 +100,8 @@ def test_group_element_declarations_stay_unmutated(tmp_path):
 
 def test_nested_group_occurrence_product(tmp_path):
     """Occurrence limits multiply through nested group references."""
-    parser = parse(NESTED_GROUPS_SCHEMA, "<r><a>1</a><a>2</a></r>", tmp_path)
-    assert not parser.report.has_errors
-    parser = parse(NESTED_GROUPS_SCHEMA, "<r><a>1</a></r>", tmp_path)
-    codes = [issue.code for issue in parser.report]
+    doc = parse(NESTED_GROUPS_SCHEMA, "<r><a>1</a><a>2</a></r>", tmp_path)
+    assert not doc.report.has_errors
+    doc = parse(NESTED_GROUPS_SCHEMA, "<r><a>1</a></r>", tmp_path)
+    codes = [issue.code for issue in doc.report]
     assert "occurrence-min" in codes

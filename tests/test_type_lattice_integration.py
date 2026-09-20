@@ -23,8 +23,8 @@ from pyxsd.xsd_data_types import (
 
 @pytest.fixture(scope="module")
 def root():
-    parser = run_parser("datatypes")
-    return parser.parseXML()
+    doc = run_parser("datatypes")
+    return doc.root
 
 
 def child_by_name(instance, name):
@@ -91,27 +91,22 @@ class TestInvalidTypedValue:
         """Bad lexical values become report errors; parsing continues."""
         self.make_instance(tmp_path, bad)
 
-        from pyxsd.parser import PyXSD
+        from pyxsd.schema import Schema
 
-        parser = PyXSD(
-            str(tmp_path / "instance.xml"),
-            str(tmp_path / "schema.xsd"),
-            xmlFileOutput=False,
-            transformOutputName=None,
-        )
-        root = parser.parseXML()
-        assert parser.report.has_errors
-        assert any(issue.code == "value" for issue in parser.report.errors), parser.report
+        doc = Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
+        root = doc.root
+        assert doc.report.has_errors
+        assert any(issue.code == "value" for issue in doc.report.errors), doc.report
         # the invalid child is skipped, the rest of the tree survives
         assert root is not None
 
     def test_invalid_value_strict_exit(self, tmp_path):
         self.make_instance(tmp_path, "abc")
 
-        from pyxsd import parser as parser_module
+        from pyxsd import cli
 
         with pytest.raises(SystemExit) as exc:
-            parser_module.main(
+            cli.main(
                 [
                     "-i",
                     str(tmp_path / "instance.xml"),
@@ -125,10 +120,10 @@ class TestInvalidTypedValue:
     def test_valid_strict_passes(self, tmp_path):
         self.make_instance(tmp_path, "5")
 
-        from pyxsd import parser as parser_module
+        from pyxsd import cli
 
         try:
-            parser_module.main(
+            cli.main(
                 [
                     "-i",
                     str(tmp_path / "instance.xml"),
