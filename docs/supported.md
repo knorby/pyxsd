@@ -1,11 +1,15 @@
 # Supported features
 
-pyxsd 1.0 implements a substantial, honest subset of XSD 1.0. This page
-summarizes what is validated, with pointers to the regression corpus that
-backing every claim (93 independently authored manifest-driven cases
-inspired by the W3C XMLSchema1TestSuite and NIST datatype feature areas —
-run
-`uv run python tests/report_conformance.py` for the live pass-rate report).
+pyxsd is an XSD 1.1 processor with an optional XSD 1.0 mode
+(`Schema.compile(xsd, xsd_version="1.0")` / `--xsd-version 1.0`; see
+{doc}`binding` and the version section below). This page summarizes what is
+validated, and what is deliberately not.
+
+Correctness is measured against the W3C XML Schema Test Suite (xsdtests):
+pyxsd passes **99.78%** of the XSD 1.1 profile and **99.61%** of the XSD 1.0
+profile. A separate manifest-driven regression corpus backs the integration
+paths (`uv run python tests/report_conformance.py` for the live report, and
+`uv run python tests/report_xsts.py` for the test suite).
 
 ## Built-in type lattice
 
@@ -151,7 +155,7 @@ happens to surface.
 * - Mixed content
   - `mixed="true"`
   - ignored
-  - Interleaved text is not preserved or validated.
+  - Interleaved text is not preserved or validated. In particular the tail text after a child element is dropped when the tree is bound and exported, so mixed-content documents (for example XHTML inside a complex type) do not round-trip their text.
 * - Remote schema hints
   - URL `schemaLocation`
   - partial
@@ -168,6 +172,18 @@ happens to surface.
   - UPA checking
   - ignored
   - Content models are matched greedily in document order.
+* - DTD entities
+  - `ENTITY` / `ENTITIES` values
+  - partial
+  - Validation considers the internal DTD subset only. An external subset is not fetched and is reported as an advisory (`dtd-external-skipped`); unparsed-entity (`NDATA`) declarations in the internal subset are not tracked, so an `ENTITY` value referring to one can be accepted when it should be rejected.
+* - XML 1.1 documents
+  - `<?xml version="1.1"?>`
+  - unsupported
+  - The stdlib expat parser behind `ElementTree` stops at XML 1.0 syntax (XML 1.1 name characters and end-of-line rules are not handled).
+* - Concurrent parses per schema
+  - parsing in parallel from one `Schema`
+  - unsupported
+  - A compiled `Schema` keeps per-parse parent/type indexes on its shared host. Parse one document at a time per schema instance; compile a separate `Schema` (or serialize calls) to parallelize.
 ```
 
 This table is maintained as machine-readable data in

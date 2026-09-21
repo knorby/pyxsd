@@ -23,6 +23,7 @@ pyxsd [options]
 | `-c FILE` | `--overlayClassesFile` | *Experimental.* Overlay class file that extends/overrides generated classes. |
 | `--mode` | | Binding mode: `strict` (default) reports invalid values and drops them; `lax` binds best-effort values (raw strings, generic subtrees) so no data is lost. See {doc}`binding`. |
 | `--namespaces` | | Namespace handling: `legacy` (default) matches by local name and ignores namespace URIs; `strict` resolves QNames and matches by expanded name. See {doc}`binding`. |
+| `--xsd-version VERSION` | | XSD version to process: `1.1` (default) or `1.0`. In `1.0` mode the XSD 1.1-only vocabulary is rejected (`xsd11-construct`) and the 1.0/1.1 semantic differences are applied. See {doc}`supported`. |
 | `-v` | `--verbose` | Verbose logging (DEBUG). |
 | `-q` | `--quiet` | Quiet logging (CRITICAL). Validation issues are still printed. `-v` and `-q` are mutually exclusive. |
 | `--strict` | | Exit with status 1 if the validation report contains errors. |
@@ -56,4 +57,11 @@ pyxsd -i inventory.xml -t 'PrintData() > PrintData()'
 
 # Transform calls from a file
 pyxsd -i inventory.xml -T transforms.txt
+
+# Validate an XSD 1.0 schema under the 1.0 processor
+pyxsd -i inventory.xml -s inventory.xsd --xsd-version 1.0 --strict
+
+# Export the bound tree as JSON (the ToDict transform; a dict result is
+# written as JSON to the transform output)
+pyxsd -i inventory.xml -t 'ToDict()'
 ```

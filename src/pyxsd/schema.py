@@ -300,12 +300,18 @@ class Schema:
             self._schema_context = context
         # XSD 1.1 attribute inheritance and conditional type assignment
         # both need to relate a bound element to its ancestors: the
-        # parent links are indexed once per parse (fresh dicts, so
-        # concurrent parses never see each other's stale ids), and the
-        # governing class of each bound element is recorded as binding
-        # proceeds. Binding code (schema_base) reads both back through
-        # the host the generated classes reach via their ``schema``
-        # stamp.
+        # parent links and governing types are indexed once per parse,
+        # and the governing class of each bound element is recorded as
+        # binding proceeds. Binding code (schema_base) reads both back
+        # through the host the generated classes reach via their
+        # ``schema`` stamp.
+        #
+        # The dicts are freshly created for every parse, but they are
+        # attached to this schema's shared host, so parses against one
+        # ``Schema`` instance must not run concurrently -- a second
+        # parse would overwrite the indexes the first is still using.
+        # Moving them into a per-parse context is the tracked post-1.0
+        # fix.
         host = self._host
         if host is not None:
             host._elementParents = {}

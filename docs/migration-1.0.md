@@ -127,6 +127,8 @@ The mapping, piece by piece:
 | `xmlFileOutput=...` | `document.write(path)` — nothing is written unless you ask |
 | `transforms=["PrintData()"]` (call strings) | `document.transform(callable)` — transforms are plain callables taking the tree root (see below) |
 | `transformOutputName=...` | write the returned document yourself: `updated.write("out.xml")` |
+| walking the tree by hand to read values | `document.xpath(expr)` / `document.find(path)` / `document.findall(path)` return the bound nodes; `document.to_dict()` / `document.to_json()` export plain Python data |
+| XSD 1.0-only schemas | `Schema.compile(xsd, xsd_version="1.0")` (the processor otherwise runs XSD 1.1) |
 
 Each parse returns a fresh `Document`, so one compiled schema can serve
 many documents (and many parses of the same document) without their
