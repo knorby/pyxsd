@@ -152,6 +152,13 @@ official schemas.
   `--xsd-version {1.0,1.1}`. This is the declared version `vc:*`
   conditional-inclusion selectors test against, so a schema compiled as
   1.0 drops a declaration carrying `vc:minVersion="1.1"` (XSD 1.1 §4.2.2).
+- XSD 1.0 mode reports XSD 1.1-only vocabulary with `xsd11-construct`
+  issues: the `assert`/`assertion`/`alternative`/`openContent`/`override`
+  elements, the 1.1-only attributes (`notNamespace`, `notQName`,
+  `defaultAttributes`, `defaultAttributesApply`, `inheritable`,
+  `xpathDefaultNamespace`), and references to 1.1 built-in types
+  (`dateTimeStamp`, `dayTimeDuration`, `yearMonthDuration`,
+  `anyAtomicType`, `precisionDecimal`).
 
 ### Changed
 

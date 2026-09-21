@@ -121,6 +121,7 @@ module = [
     "pyxsd.schema_hints",
     "pyxsd.tree",
     "pyxsd.validation",
+    "pyxsd.version_gates",
     "pyxsd.exceptions",
     "pyxsd.xsi",
     "pyxsd.compositors",

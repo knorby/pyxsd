@@ -35,6 +35,7 @@ from pyxsd.namespaces import (
 )
 from pyxsd.schema_context import SchemaContext
 from pyxsd.validation import CompileContextProtocol, ValidationReport
+from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import PROCESSOR_VERSION, apply_conditional_inclusion
 
 logger = logging.getLogger(__name__)
@@ -585,6 +586,8 @@ def parse_included_schema(
         )
         return None
     check_namespace_attribute_values(ctx, root)
+    if ctx.processor_version == decimal.Decimal("1.0"):
+        check_xsd10_vocabulary(root, ctx.report)
     return root
 
 

@@ -68,6 +68,7 @@ from pyxsd.schema_context import (
 )
 from pyxsd.schema_hints import absolute_schema_location_pairs, resolve_schema_hint
 from pyxsd.validation import ValidationReport
+from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import apply_conditional_inclusion
 
 logger = logging.getLogger(__name__)
@@ -506,6 +507,8 @@ def _compile_into_context(
         # documents are filtered as they are parsed (``parse_included_schema``).
         apply_conditional_inclusion(root, ctx.namespace_context, ctx.report, ctx.processor_version)
         check_namespace_attribute_values(ctx, root)
+        if ctx.processor_version == decimal.Decimal("1.0"):
+            check_xsd10_vocabulary(root, ctx.report)
 
         baseDir, visited = schema_composition_context(ctx, xsd_file)
         # Documents already fully composed; their components must not be
