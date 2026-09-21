@@ -188,6 +188,11 @@ official schemas.
 - GitHub Actions are pinned to the latest majors and the Pages deploy steps
   run only on `main`, so pull requests build docs without requiring Pages.
 - Local design notes under `docs/superpowers/` are no longer tracked.
+- Element assignment now coerces a plain Python value through the declared
+  datatype (as attribute assignment already did) and reports a bad lexical
+  value instead of raising `TypeError`; a datatype instance of the wrong
+  type or an arbitrary object still raises. This unifies the mutation
+  policy across elements and attributes.
 
 ### Removed
 

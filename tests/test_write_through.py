@@ -9,6 +9,7 @@ F2: element assignment demanded a typed instance while attribute
 assignment coerced plain values; the policies are unified here.
 """
 
+import logging
 import xml.etree.ElementTree as ET
 from io import StringIO
 
@@ -78,3 +79,21 @@ def test_repeated_element_assignment_does_not_corrupt(doc):
     # duplicate the child when the descriptor is assigned.
     doc.root.count = Int(5)
     assert len(_root_of(doc).findall("count")) == 1
+
+
+def test_element_assignment_coerces_plain_values(doc):
+    doc.root.count = 42  # a plain int, not Int(42)
+    assert _root_of(doc).findtext("count") == "42"
+
+
+def test_element_assignment_invalid_value_reports_not_raises(doc, caplog):
+    with caplog.at_level(logging.ERROR):
+        doc.root.count = "not-an-int"
+    assert any("count" in record.message for record in caplog.records)
+    # The invalid value does not corrupt the serialized output.
+    assert _root_of(doc).findtext("count") == "7"
+
+
+def test_element_assignment_uncoercible_type_still_raises(doc):
+    with pytest.raises(TypeError):
+        doc.root.count = object()

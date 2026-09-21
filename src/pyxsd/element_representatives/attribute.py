@@ -248,21 +248,6 @@ class Attribute(ElementRepresentative):
         default = getattr(self, "default", None)
         return default
 
-    def _binding_report(self):
-        """The report an assignment-time diagnostic goes to.
-
-        The active context's binding report only: a parse installs its
-        fresh per-parse report there, so a diagnostic lands on the
-        document being bound. Outside any parse there is nothing to
-        record on — a late write has no phase to attribute and must not
-        retroactively invalidate an already-accepted schema — so the
-        caller logs the diagnostic instead.
-        """
-        context = current_context()
-        if context is not None:
-            return context.report
-        return None
-
     def __set__(self, obj, value):
         """Sets values to attributes.
 

@@ -52,6 +52,16 @@ node, so assignment updates the instance dictionary only and the write-out
 is unchanged. Assigning a *bound node* directly (as internal binding does)
 is not a user-facing operation and does not go through this path.
 
+Elements and attributes now share one assignment policy. A plain Python
+value (a string, int, float, bool, or `decimal.Decimal`) assigned to a
+simple-typed element is coerced through the declared datatype, exactly as
+attribute assignment already coerced plain values. A value that fails the
+declared type's validation is recorded in the report during a parse and
+logged outside one, and it is stored as given without touching the
+serialized tree — assignment never raises for a bad *lexical* value.
+Assigning a datatype instance of the wrong type, or an arbitrary object,
+still raises `TypeError`.
+
 ### Name collisions: elements and attributes with the same name
 
 A complex type can legally declare an element and an attribute with the
