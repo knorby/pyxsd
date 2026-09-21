@@ -181,13 +181,16 @@ def _is_ignored(
     element: ET.Element,
     namespaces: NamespaceContext,
     report: ValidationReport,
+    processor_version: decimal.Decimal = PROCESSOR_VERSION,
 ) -> bool:
     """Whether *element* is removed by §4.2.2's conditions.
 
     Version selectors are evaluated first so an element excluded by version
     is removed before any of its attributes (including an illegal
     availability value) are examined — the pre-processed document does not
-    contain them.
+    contain them. *processor_version* is the processor's declared XSD
+    version ``V``: a schema compiled in XSD 1.0 mode excludes every
+    ``vc:minVersion`` above 1.0 and every ``vc:maxVersion`` at or below it.
     """
     version_selector_ignores = False
     if MIN_VERSION in element.attrib:
@@ -199,7 +202,7 @@ def _is_ignored(
                 element=local_name(element.tag),
                 phase="schema",
             )
-        elif minimum > PROCESSOR_VERSION:
+        elif minimum > processor_version:
             version_selector_ignores = True
     if not version_selector_ignores and MAX_VERSION in element.attrib:
         maximum = _parse_version(element.get(MAX_VERSION, ""))
@@ -210,7 +213,7 @@ def _is_ignored(
                 element=local_name(element.tag),
                 phase="schema",
             )
-        elif maximum <= PROCESSOR_VERSION:
+        elif maximum <= processor_version:
             version_selector_ignores = True
     if version_selector_ignores:
         return True
@@ -232,6 +235,7 @@ def apply_conditional_inclusion(
     root: ET.Element,
     namespaces: NamespaceContext,
     report: ValidationReport,
+    processor_version: decimal.Decimal = PROCESSOR_VERSION,
 ) -> None:
     """Removes the elements a schema document's ``vc:*`` selectors exclude.
 
@@ -240,22 +244,25 @@ def apply_conditional_inclusion(
     ``<xs:schema>`` root is special (XSD 1.1 §4.2.2): if it is ignored the
     document is reduced to an empty schema that keeps only its target
     namespace and the version selectors, rather than the root being removed.
+    *processor_version* is the declared XSD version ``V`` the selectors are
+    tested against.
     """
-    if _is_ignored(root, namespaces, report):
+    if _is_ignored(root, namespaces, report, processor_version):
         for child in list(root):
             root.remove(child)
         _keep_schema_root_attributes(root)
         return
-    _filter_children(root, namespaces, report)
+    _filter_children(root, namespaces, report, processor_version)
 
 
 def _filter_children(
     parent: ET.Element,
     namespaces: NamespaceContext,
     report: ValidationReport,
+    processor_version: decimal.Decimal = PROCESSOR_VERSION,
 ) -> None:
     for child in list(parent):
-        if _is_ignored(child, namespaces, report):
+        if _is_ignored(child, namespaces, report, processor_version):
             parent.remove(child)
         else:
-            _filter_children(child, namespaces, report)
+            _filter_children(child, namespaces, report, processor_version)

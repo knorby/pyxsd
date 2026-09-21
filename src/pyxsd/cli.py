@@ -13,7 +13,7 @@ import tokenize
 from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import IO, Any
+from typing import IO, Any, Literal
 from xml.etree import ElementTree as ET
 
 from pyxsd import __version__
@@ -339,6 +339,7 @@ def _build_document(
     *,
     mode: Any,
     overlay: str | Path | None,
+    xsd_version: Literal["1.0", "1.1"] = "1.1",
 ) -> Any:
     """Compiles the schema and binds the instance into a ``Document``.
 
@@ -379,6 +380,7 @@ def _build_document(
     schema = Schema.compile(
         xsd,
         mode=mode,
+        xsd_version=xsd_version,
         overlay=overlay,
         namespace_context=context,
         # Extra instance schemaLocation pairs are advisory composition
@@ -539,6 +541,16 @@ def main(argv: list[str] | None = None) -> None:
         "elements and attributes by expanded name, which rejects documents "
         "that only matched by local name before.",
     )
+    parser.add_argument(
+        "--xsd-version",
+        choices=["1.0", "1.1"],
+        default="1.1",
+        dest="xsdVersion",
+        help="XSD processor version to compile as. '1.1' (default) honors "
+        "all vc:* conditional-inclusion selectors against 1.1; '1.0' tests "
+        'them against 1.0, so a declaration carrying vc:minVersion="1.1" '
+        "is dropped (XSD 1.1 §4.2.2).",
+    )
 
     options = parser.parse_args(argv)
 
@@ -587,6 +599,7 @@ def main(argv: list[str] | None = None) -> None:
             options.inputXsdFile,
             mode=mode,
             overlay=options.classFile,
+            xsd_version=options.xsdVersion,
         )
 
         if options.outputParsed and document.root is not None:

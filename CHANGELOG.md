@@ -147,6 +147,11 @@ official schemas.
 - A `namespaces/` category in the conformance corpus (form defaults,
   cross-namespace type/ref, `xsi:type`, wildcards, QName identity), run in
   namespaced mode through both the gating suite and the `xmlschema` oracle.
+- `Schema.compile` accepts `xsd_version` (`"1.0"` or `"1.1"`, default
+  `"1.1"`), exposed as `Schema.xsd_version`; the CLI gains
+  `--xsd-version {1.0,1.1}`. This is the declared version `vc:*`
+  conditional-inclusion selectors test against, so a schema compiled as
+  1.0 drops a declaration carrying `vc:minVersion="1.1"` (XSD 1.1 §4.2.2).
 
 ### Changed
 
