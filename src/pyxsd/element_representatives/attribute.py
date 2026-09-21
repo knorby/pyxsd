@@ -317,6 +317,19 @@ class Attribute(ElementRepresentative):
 
         obj.__dict__[self._storageKey()] = value
 
+        # F1: write the lexical form through to the container the
+        # writer serializes, keyed as instance binding keys it. This is
+        # a post-parse mutation behavior: parse-time binding manages the
+        # containers itself (and would otherwise clobber list/nil
+        # values), so it is skipped while a parse context is active.
+        # Also skipped when the value did not validate to a datatype
+        # (nothing valid to serialize) or the instance has no container.
+        if current_context() is None and isinstance(value, XsdDataType):
+            container = getattr(obj, "_attribs_", None)
+            name = type(obj)._instance_name_of(self, is_attribute=True)
+            if container is not None and name is not None:
+                container[name] = value.lexical()
+
     def __delete__(self, obj):
         """Deletes an entry from the dictionary.
 

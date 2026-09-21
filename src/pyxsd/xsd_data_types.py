@@ -129,6 +129,16 @@ class XsdDataType:
                 return list.__new__(cls)
         return object.__new__(cls)
 
+    def lexical(self) -> str:
+        """The canonical XSD lexical form of this value.
+
+        The str-based types preserve their lexical form exactly, and the
+        integer/decimal spellings match ``str``; ``Double``/``Float``
+        override this for the ``INF``/``NaN`` spellings, which Python
+        formats differently.
+        """
+        return str(self)
+
 
 # ---------------------------------------------------------------------------
 # String and string-derived types
@@ -914,6 +924,15 @@ class Double(float, XsdDataType):
                 raise TypeError(f"Not a valid double: {val!r}")
             return super().__new__(cls, collapsed)
         return super().__new__(cls, val)
+
+    def lexical(self) -> str:
+        """XSD spellings for the non-finite values (``INF``, ``NaN``)."""
+        value = float(self)
+        if math.isnan(value):
+            return "NaN"
+        if math.isinf(value):
+            return "INF" if value > 0 else "-INF"
+        return str(value)
 
 
 class Float(Double):

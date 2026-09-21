@@ -43,6 +43,15 @@ generated classes raises an `AttributeError` listing the declared elements
 and attributes when you misspell something. Instance-level access goes
 through the descriptors, which validate types on assignment.
 
+Assignment is not validation-only: assigning a value to an element or
+attribute descriptor also writes the value's XSD lexical form through to
+the container the writer serializes, so a later `to_string()`, `write()`,
+or `revalidate()` reflects the assignment. Repeated element descriptors
+are the exception — a repeated element has no single unambiguous target
+node, so assignment updates the instance dictionary only and the write-out
+is unchanged. Assigning a *bound node* directly (as internal binding does)
+is not a user-facing operation and does not go through this path.
+
 ### Name collisions: elements and attributes with the same name
 
 A complex type can legally declare an element and an attribute with the

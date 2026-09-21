@@ -272,6 +272,10 @@ official schemas.
   referring element's namespace.
 - Numerous other latent bugs found by the test suite and conformance corpus
   (see the migration guide for the complete narrative).
+- Assignment to an element or attribute descriptor now writes the value's
+  lexical form through to the serialized tree, so `doc.root.attr = value`
+  survives `to_string()`/`write()`/`revalidate()` (previously it was
+  validated but silently dropped from the output).
 
 ## [0.1] - 2006-09-11
 
