@@ -220,6 +220,10 @@ official schemas.
   value instead of raising `TypeError`; a datatype instance of the wrong
   type or an arbitrary object still raises. This unifies the mutation
   policy across elements and attributes.
+- The W3C XML Schema Test Suite harness gained `--enforce` (exit `2` on a
+  baseline regression or a newly observed failure) and a dispatch-only
+  GitHub Actions workflow that caches the corpus and gates both the XSD 1.1
+  and XSD 1.0 profiles against their checked-in baselines.
 
 ### Removed
 

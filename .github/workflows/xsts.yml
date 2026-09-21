@@ -1,0 +1,81 @@
+name: xsts
+
+# Dispatch-only: the W3C XML Schema Test Suite takes a few minutes per
+# profile, so it is not part of the required CI path. Run it on demand when
+# schema handling changes, and read a red run as the signal to review the
+# baseline diff. Pass --engine pyxsd so each profile is compared against the
+# pyxsd entries of its own baseline (baseline-xsd11.toml also records the
+# xmlschema oracle; those keys are ignored by --enforce).
+on:
+  workflow_dispatch:
+    inputs:
+      profiles:
+        description: "Profiles to run"
+        type: choice
+        options: [xsd11, xsd10, both]
+        default: both
+      limit:
+        description: "Max cases per profile (blank = all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xsts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  xsts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Resolve the pinned xsdtests corpus commit
+        id: corpus
+        run: echo "sha=$(git rev-parse HEAD:tests/xsts/corpus)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the xsdtests corpus submodule
+        uses: actions/cache@v6
+        with:
+          path: |
+            tests/xsts/corpus
+            .git/modules/tests/xsts/corpus
+          key: xsdtests-${{ runner.os }}-${{ steps.corpus.outputs.sha }}
+
+      - name: Check out the xsdtests corpus
+        run: git submodule update --init --depth 1 tests/xsts/corpus
+
+      - name: Sync environment
+        run: uv sync --group dev --python 3.11
+
+      - name: Run XSD 1.1
+        if: inputs.profiles != 'xsd10'
+        run: >
+          uv run python tests/report_xsts.py --profile xsd11 --engine pyxsd --json
+          --baseline tests/xsts/baseline-xsd11.toml --enforce
+          ${{ inputs.limit != '' && format('--limit {0}', inputs.limit) || '' }}
+          > xsts-report-xsd11.json
+
+      - name: Run XSD 1.0
+        if: inputs.profiles != 'xsd11'
+        run: >
+          uv run python tests/report_xsts.py --profile xsd10 --engine pyxsd --json
+          --baseline tests/xsts/baseline-xsd10.toml --enforce
+          ${{ inputs.limit != '' && format('--limit {0}', inputs.limit) || '' }}
+          > xsts-report-xsd10.json
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xsts-reports
+          path: xsts-report-*.json
+          if-no-files-found: ignore
