@@ -21,6 +21,7 @@ validation
 binding
 transforms/index
 supported
+comparison-xmlschema
 api
 migration-1.0
 history/index

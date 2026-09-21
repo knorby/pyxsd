@@ -175,7 +175,7 @@ happens to surface.
 * - DTD entities
   - `ENTITY` / `ENTITIES` values
   - partial
-  - Validation considers the internal DTD subset only. An external subset is not fetched and is reported as an advisory (`dtd-external-skipped`); unparsed-entity (`NDATA`) declarations in the internal subset are not tracked, so an `ENTITY` value referring to one can be accepted when it should be rejected.
+  - Validation considers the internal DTD subset only, and only as far as expat's built-in entity expansion and default-attribute handling go. An external subset is not fetched (pyxsd makes no network requests); pyxsd does not currently detect or report a doctype declaration. Unparsed-entity (`NDATA`) declarations are not tracked, so an `ENTITY` value referring to one can be accepted when it should be rejected.
 * - XML 1.1 documents
   - `<?xml version="1.1"?>`
   - unsupported
