@@ -85,6 +85,40 @@ carries a `namespaces` field: `Schema.compile(...,
 mode=ParseModes.NAMESPACED)` or `--namespaces strict` turns on
 namespace-aware validation (the default legacy behavior is unchanged).
 
+## XSD versions (1.0 and 1.1)
+
+The processor defaults to XSD 1.1 and accepts an explicit version:
+`Schema.compile(xsd, xsd_version="1.0")`, or `--xsd-version 1.0` on the
+CLI. Version selection applies the conditional-inclusion rules
+(`vc:minVersion` / `vc:maxVersion` / `vc:typeAvailable` and friends) at
+the declared version, and in 1.0 mode it reports XSD 1.1-only vocabulary
+(`assert`, `assertion`, `alternative`, `openContent`, `override`,
+`notNamespace`, `notQName`, `defaultAttributes`, `inheritable`,
+`xpathDefaultNamespace`, `dateTimeStamp`, `dayTimeDuration`,
+`yearMonthDuration`, `anyAtomicType`) as the schema error
+`xsd11-construct`. Three 1.0/1.1 semantic differences are also enforced:
+the 1.0 `xs:all` 0..1 child-occurrence cap (`all-rule`), the 1.0
+requirement that a union declare at least one member type
+(`declaration-child`), and the 1.1 prohibition on `use="prohibited"`
+together with `fixed`.
+
+Against the W3C XML Schema Test Suite, pyxsd passes **99.78%** of the XSD
+1.1 profile and **99.61%** of the XSD 1.0 profile. A few XSD 1.0
+differences are deliberately not switched on, because they live in shared
+machinery (the built-in datatype constructors) or need case-specific
+identity-constraint and name-resolution work rather than a clean version
+switch:
+
+- the 1.0-only lexical forms around year `0000` and the `+INF`/`-INF`
+  spelling (the shared datatype constructors are version-agnostic);
+- keyref cardinality (`idconstrdefs00301m`);
+- the `st_name00401m`, `st_targetNS*`, and `targetns00101m` name-resolution
+  cases and `addB187`.
+
+These are recorded as residual XSD 1.0 test-suite deltas rather than
+missing features; they are general correctness edges that the 1.0 profile
+happens to surface.
+
 ## Known gaps
 
 ```{list-table}

@@ -57,6 +57,13 @@ class Union(ElementRepresentative):
             for child in self.processedChildren or ()
             if child is not None and child.__class__.__name__ == "SimpleType"
         ]
+        # XSD 1.1 (bug 4912) permits a union with no member types, whose
+        # value space is empty; XSD 1.0 required at least one member.
+        if self._isXsd10() and not self.memberTypes and not inline:
+            self._reportSchemaError(
+                f"{owner} must declare at least one member type",
+                code="declaration-child",
+            )
         for memberName in self.memberTypes:
             variety, memberER = self.varietyOfReference(memberName)
             if memberER is not None and self._finalBlocks(memberER, "union"):

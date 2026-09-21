@@ -159,6 +159,10 @@ official schemas.
   `xpathDefaultNamespace`), and references to 1.1 built-in types
   (`dateTimeStamp`, `dayTimeDuration`, `yearMonthDuration`,
   `anyAtomicType`, `precisionDecimal`).
+- XSD 1.0 mode enforces three 1.0/1.1 semantic differences: the 1.0
+  `xs:all` 0..1 child-occurrence cap (`all-rule`), the 1.0 requirement
+  that a union declare at least one member type (`declaration-child`), and
+  the 1.1-only prohibition on `use="prohibited"` with `fixed`.
 
 ### Changed
 

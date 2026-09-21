@@ -30,9 +30,11 @@ def parse_schema(tmp_path):
     """
     schema_path = tmp_path / "schema.xsd"
 
-    def _parse(schema_string: str):
+    def _parse(schema_string: str, xsd_version: str = "1.1"):
         schema_path.write_text(schema_string, encoding="utf-8")
-        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
+        return Schema.compile(
+            str(schema_path), mode=ParseModes.NAMESPACED, xsd_version=xsd_version
+        ).report
 
     return _parse
 
@@ -667,6 +669,17 @@ class TestAttributeDeclarationLegality:
             "</xsd:complexType></xsd:schema>"
         )
         assert "declaration-attribute" in _schema_codes(report)
+
+    def test_attribute_use_prohibited_with_fixed_valid_in_10(self, parse_schema):
+        """attKb009/attKc009: XSD 1.0 allowed a prohibited use with fixed."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:complexType name='ct'>"
+            "<xsd:attribute name='ca' use='prohibited' fixed='abc'/>"
+            "</xsd:complexType></xsd:schema>",
+            "1.0",
+        )
+        assert "declaration-attribute" not in _schema_codes(report)
 
     def test_attribute_required_with_default_reports(self, parse_schema):
         """attKb004/attKc004: use must be optional when default is present."""
@@ -2630,6 +2643,16 @@ class TestSimpleTypeRepresentationLegality:
             "</xsd:union></xsd:simpleType></xsd:schema>"
         )
         assert "declaration-child" not in _schema_codes(report)
+
+    def test_union_without_members_invalid_in_10(self, parse_schema):
+        """XSD 1.0 required a union to declare at least one member type."""
+        report = parse_schema(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema'>"
+            "<xsd:simpleType name='fooType'><xsd:union><xsd:annotation/>"
+            "</xsd:union></xsd:simpleType></xsd:schema>",
+            "1.0",
+        )
+        assert "declaration-child" in _schema_codes(report)
 
     def test_restriction_base_complex_type_is_rejected(self, parse_schema):
         """stI004: a simple-type restriction cannot derive from a complexType."""

@@ -1,11 +1,8 @@
 import copy
-import logging
 
 from pyxsd.compositors import Compositor
 from pyxsd.element_representatives.xsd_type import XsdType
 from pyxsd.wildcards import register_wildcard
-
-logger = logging.getLogger(__name__)
 
 
 def _isTrue(value: str) -> bool:
@@ -378,9 +375,10 @@ class ComplexType(XsdType):
 
         Group reference sites (direct children of the type or nested
         inside a compositor) are flattened into their named group's
-        content model first (see ``_flattenGroupRef``). For ``all``
-        compositors, an XSD 1.0 violation (an element with
-        ``maxOccurs`` greater than one) is logged.
+        content model first (see ``_flattenGroupRef``). The XSD 1.0
+        rule capping an ``all`` element particle at a single occurrence
+        is reported by ``All.checkDeclarationLegality`` (``all-rule``),
+        gated on the processor version.
         """
         elements = getattr(self, "elements_", None)
 
@@ -404,17 +402,6 @@ class ComplexType(XsdType):
                     self._resolveElementRef(element)
                 element.sOrC = itemInfo
                 self.elements_.append(element)
-            if itemInfo is Compositor.ALL:
-                for element in item.elements:
-                    if not getattr(element, "isRefSite", False) and element.getMaxOccurs() > 1:
-                        logger.warning(
-                            "element '%s' in the 'all' compositor of %s has "
-                            "maxOccurs=%r; XSD 1.0 only allows at most one "
-                            "occurrence inside 'all'",
-                            element.name,
-                            self.name,
-                            getattr(element, "maxOccurs", 1),
-                        )
         return self.elements_
 
     def _flattenGroupRef(self, refSite, visited):

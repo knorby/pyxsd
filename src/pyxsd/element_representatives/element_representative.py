@@ -71,6 +71,7 @@ collects the descriptor bookkeeping (``_elementNames_`` and
 compiled :class:`~pyxsd.schema.Schema`'s class dictionary.
 """
 
+import decimal
 import logging
 import re
 
@@ -585,6 +586,28 @@ class ElementRepresentative:
     def _reportSchemaWarning(self, message, *, code, phase=None):
         """Records a warning-severity schema problem (see _reportSchemaIssue)."""
         self._reportSchemaIssue(IssueSeverity.WARNING, message, code=code, phase=phase)
+
+    def _processorVersion(self) -> decimal.Decimal | None:
+        """The active processor version, or ``None`` when unreachable.
+
+        ``None`` means the ER tree is detached from a compiled host (for
+        example an ER built in isolation in a unit test); callers then
+        keep the default XSD 1.1 behavior.
+        """
+        host = getattr(self, "host", None)
+        if host is None:
+            schema = _schemaOf(self)
+            host = getattr(schema, "host", None) if schema is not None else None
+        return getattr(host, "processor_version", None)
+
+    def _isXsd10(self) -> bool:
+        """Whether the active processor is XSD 1.0.
+
+        A detached ER (``None`` version) counts as 1.1, so
+        version-rejected 1.0 rules stay quiet when the version cannot be
+        determined.
+        """
+        return self._processorVersion() == decimal.Decimal("1.0")
 
     def _checkWildcardDeclaration(self, *, is_attribute: bool) -> None:
         """Reports wildcard XML-attribute grammar problems.

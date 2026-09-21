@@ -403,7 +403,9 @@ def _run_batch(
     workdir = Path(temp_root) / f"w{index}"
     workdir.mkdir(parents=True, exist_ok=True)
     profile = PROFILES[profile_name]
-    driver = PyXSDDriver(timeout=timeout, synthesize_missing_schema=synthesize)
+    driver = PyXSDDriver(
+        timeout=timeout, synthesize_missing_schema=synthesize, xsd_version=profile.xsd_version
+    )
     oracle = XmlSchemaDriver(profile_name, timeout=timeout) if oracle_enabled else None
     runner = Runner(profile=profile, driver=driver, oracle=oracle, workdir=workdir)
     results: list[CaseResult] = []

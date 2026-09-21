@@ -446,7 +446,13 @@ class Attribute(ElementRepresentative):
                 f"attribute '{self.name}' with a default value must have use='optional'",
                 code="declaration-attribute",
             )
-        elif "fixed" in self.tagAttributes and use == "prohibited":
+        elif (
+            "fixed" in self.tagAttributes
+            and use == "prohibited"
+            # XSD 1.0 allowed a prohibited use to carry a fixed value;
+            # XSD 1.1 forbids it (attKb009/attKc009).
+            and not self._isXsd10()
+        ):
             self._reportSchemaError(
                 f"attribute '{self.name}' with a fixed value must not use use='prohibited'",
                 code="declaration-attribute",

@@ -2,8 +2,6 @@
 attributeGroup references, and the xs:any/xs:anyAttribute wildcards.
 """
 
-import logging
-
 from conftest import run_parser
 
 # ---------------------------------------------------------------------------
@@ -73,12 +71,15 @@ class TestAllCompositor:
         codes = [issue.code for issue in doc.report.issues]
         assert "occurrence-max" in codes
 
-    def test_maxOccurs_in_all_warns(self, caplog, tmp_path):
-        """XSD 1.0 forbids maxOccurs > 1 inside xs:all."""
+    def test_maxOccurs_in_all_is_10_schema_error(self, tmp_path):
+        """XSD 1.0 forbids maxOccurs > 1 on an element particle inside all.
+
+        XSD 1.1 relaxes this (Saxon all001/all003); the rule is gated on
+        the processor version and reported as ``all-rule``.
+        """
         from pyxsd.schema import Schema
 
         schema = tmp_path / "schema.xsd"
-        instance = tmp_path / "instance.xml"
         schema.write_text(
             '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
             '<xs:complexType name="flagSet"><xs:all>'
@@ -86,11 +87,8 @@ class TestAllCompositor:
             "</xs:all></xs:complexType>"
             '<xs:element name="flags" type="flagSet"/></xs:schema>'
         )
-        instance.write_text("<flags><red>a</red></flags>")
-        caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="pyxsd.element_representatives.complex_type"):
-            Schema.compile(str(schema)).parse(str(instance))
-        assert any("maxOccurs" in record.message for record in caplog.records)
+        report = Schema.compile(str(schema), xsd_version="1.0").report
+        assert "all-rule" in {issue.code for issue in report.issues}
 
 
 # ---------------------------------------------------------------------------

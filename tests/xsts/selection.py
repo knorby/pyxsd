@@ -32,6 +32,15 @@ class Profile:
     tokens: frozenset[str]
     description: str = ""
 
+    @property
+    def xsd_version(self) -> str:
+        """The ``Schema.compile`` processor version this profile selects.
+
+        The pyxsd driver compiles with this version, so an ``xsd10`` run
+        exercises pyxsd's XSD 1.0 mode rather than its default 1.1 one.
+        """
+        return "1.0" if "1.0" in self.tokens else "1.1"
+
     def supports(self, tokens: tuple[str, ...]) -> bool:
         """Whether this profile satisfies a disjunctive version-token list.
 
