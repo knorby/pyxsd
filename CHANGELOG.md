@@ -169,6 +169,11 @@ official schemas.
   option. The shipped `ToDict` transform exposes the codec to
   `Document.transform` and to the CLI, which renders a dict result as
   JSON.
+- `Document.xpath()` evaluates an XPath expression over the bound tree
+  and returns the original bound nodes (scalars pass through);
+  `Document.find()`/`findall()` accept ElementTree's path subset. Both
+  support caller-supplied namespace prefixes and resolve to the same
+  bound objects the object model uses.
 
 ### Changed
 

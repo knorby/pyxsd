@@ -123,6 +123,7 @@ module = [
     "pyxsd.tree",
     "pyxsd.validation",
     "pyxsd.version_gates",
+    "pyxsd.xpath_api",
     "pyxsd.exceptions",
     "pyxsd.xsi",
     "pyxsd.compositors",

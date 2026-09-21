@@ -25,6 +25,23 @@ schema once; `Schema.parse` binds one instance document and returns a
 from an argument or the instance's own schema hints, compiles, and
 binds.
 
+### Querying a document
+
+`Document.xpath(expr)` evaluates an XPath expression over the bound tree
+and returns the **original bound nodes** (scalars such as `count(...)`
+pass through). The context item is the document's root element, so an
+absolute path starts `/root`. `Document.find(path)` and
+`Document.findall(path)` accept ElementTree's path subset instead. Pass
+`namespaces={"p": uri}` for prefixed queries.
+
+Queries run over a projection of the bound tree, so they see what the
+object model holds: descriptor write-through is reflected, but
+mixed-content tails and comment nodes are absent, and a nil/no-content
+element projects `text=None`. The projection tags nodes with their
+expanded (Clark-notation) name, so prefixed queries work in both
+namespace modes. `Document.to_dict`/`to_json` provide structured export
+(see {doc}`data-model`).
+
 ## Errors
 
 ```{eval-rst}

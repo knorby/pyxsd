@@ -177,3 +177,61 @@ class Document:
     def walk(self) -> Iterator[Any]:
         """Yields every node of the bound tree, pre-order."""
         return iter_tree(self.root)
+
+    def xpath(self, expr: str, *, namespaces: dict[str, str] | None = None) -> Any:
+        """Evaluates an XPath expression over the bound tree.
+
+        Returns node results as the **original bound instances** and
+        passes scalar results (numbers, strings, booleans) through. The
+        expression is evaluated with the document's root element as the
+        context item, so an absolute path starts ``/root``. *namespaces*
+        maps query prefixes to namespace URIs.
+
+        The query runs over a projection of the bound tree, so it sees
+        exactly what the object model holds: descriptor write-through is
+        reflected, but mixed-content tails and comment nodes are absent,
+        and an element with ``_value_ is None`` projects ``text=None``.
+        See ``docs/data-model.md``.
+        """
+        if self.root is None:
+            raise PyXSDError("the document has no root to query")
+        # Deferred for the same cold-import reason as ``to_dict``.
+        from pyxsd.xpath_api import project, select
+
+        et_root, mapping = project(self.root)
+        results = select(et_root, expr, namespaces=namespaces)
+        if isinstance(results, list):
+            return [mapping.get(result, result) for result in results]
+        return results
+
+    def find(self, path: str, *, namespaces: dict[str, str] | None = None) -> Any:
+        """Finds the first node matching an ElementTree path.
+
+        Unlike :meth:`xpath`, this accepts ElementTree's path subset
+        (``{uri}name`` qualified names, ``*``, ``.``, ``..``, ``//``).
+        Returns the original bound node, or ``None``. The projection
+        contract documented on :meth:`xpath` applies here too.
+        """
+        if self.root is None:
+            raise PyXSDError("the document has no root to query")
+        from pyxsd.xpath_api import project
+
+        et_root, mapping = project(self.root)
+        found = et_root.find(path, namespaces)
+        if found is None:
+            return None
+        return mapping.get(found, found)
+
+    def findall(self, path: str, *, namespaces: dict[str, str] | None = None) -> list[Any]:
+        """Finds every node matching an ElementTree path.
+
+        Like :meth:`find`, but returns a list of the original bound
+        nodes (possibly empty). See :meth:`xpath` for the projection
+        contract.
+        """
+        if self.root is None:
+            raise PyXSDError("the document has no root to query")
+        from pyxsd.xpath_api import project
+
+        et_root, mapping = project(self.root)
+        return [mapping.get(element, element) for element in et_root.findall(path, namespaces)]
