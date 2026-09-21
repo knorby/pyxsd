@@ -11,6 +11,7 @@ The historical crystallography library (CellSizer and friends) moved to
 """
 
 from pyxsd.transforms.displayer import Displayer
+from pyxsd.transforms.to_dict import ToDict
 from pyxsd.transforms.transform import Transform, iter_tree
 
-__all__ = ["Displayer", "Transform", "iter_tree"]
+__all__ = ["Displayer", "ToDict", "Transform", "iter_tree"]

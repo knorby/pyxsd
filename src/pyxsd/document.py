@@ -11,6 +11,7 @@ inspect (``report``/``is_valid``/``require_valid``) and write out
 
 from __future__ import annotations
 
+import json
 import logging
 import os.path
 from collections.abc import Callable, Iterator
@@ -104,6 +105,31 @@ class Document:
         output = StringIO()
         write_tree(self.root, output)
         return output.getvalue()
+
+    def to_dict(self, *, typed: bool = True, always_list: bool = False) -> dict:
+        """Returns the bound tree as a plain dict.
+
+        The export convention (child element keys, ``@`` attributes, the
+        ``$`` text key, repeated children as lists) is documented in
+        ``docs/data-model.md``. Mixed-content tails are not in the bound
+        tree and are therefore not exported.
+        """
+        if self.root is None:
+            raise PyXSDError("the document has no root to export")
+        # Deferred for the same cold-import reason as ``transform``: the
+        # export module pulls in the datatype stack.
+        from pyxsd.dict_export import bound_to_dict
+
+        return bound_to_dict(self.root, typed=typed, always_list=always_list)
+
+    def to_json(self, *, indent: int | None = None, **to_dict_kwargs: Any) -> str:
+        """Returns :meth:`to_dict` encoded as JSON text.
+
+        Keyword arguments are forwarded to :meth:`to_dict`. Values the
+        JSON encoder cannot represent natively (for example a
+        ``decimal.Decimal``) are encoded as strings.
+        """
+        return json.dumps(self.to_dict(**to_dict_kwargs), indent=indent, default=str)
 
     def transform(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Document | Any:
         """Applies *fn* to the bound tree.

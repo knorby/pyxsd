@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import inspect
 import io
+import json
 import logging
 import pkgutil
 import re
@@ -612,16 +613,18 @@ def main(argv: list[str] | None = None) -> None:
 
         searchPaths = _transform_search_paths(inputXmlFile)
         lastWasDocument = False
+        lastResult: Any = None
         for spec in transforms:
             fn, args, kwargs = _materialize(spec, search_paths=searchPaths)
             result = document.transform(fn, *args, **kwargs)
+            lastResult = result
             if isinstance(result, Document):
                 document = result
                 lastWasDocument = True
             else:
                 lastWasDocument = False
 
-        if transforms and lastWasDocument:
+        if transforms and (lastWasDocument or isinstance(lastResult, dict)):
             transformOutput: str | Path = options.transformOutputFile
             if not transformOutput:
                 transformOutput = _default_transform_output(inputXmlFile)
@@ -629,7 +632,12 @@ def main(argv: list[str] | None = None) -> None:
                     "Setting the transformed xml file name to the default: %s",
                     transformOutput,
                 )
-            text = document.to_string()
+            if lastWasDocument:
+                text = document.to_string()
+            else:
+                # A dict-returning transform (for example ``ToDict``) is
+                # rendered as JSON rather than XML.
+                text = json.dumps(lastResult, indent=2, default=str)
             if transformOutput == "stdout":
                 sys.stdout.write(text)
             else:

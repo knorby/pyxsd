@@ -35,6 +35,35 @@ Transform developers commonly use `Transform.makeElemObj(name)` to mint a
 fresh node with this exact structure, and `makeCommentElem(text)` for
 comments.
 
+## Dict and JSON export
+
+`Document.to_dict()` exports the bound tree as plain Python data, and
+`Document.to_json()` encodes that with the standard `json` module. The
+shipped `ToDict` transform exposes the same codec to `Document.transform`
+and the CLI (`--transform ToDict()`), which renders a dict result as
+JSON.
+
+| Input | Dict key/value |
+| ----- | -------------- |
+| Child element | Key = the child name in Clark notation when namespace-qualified, otherwise the local name. |
+| Repeated child | A list of values (a single occurrence is the value itself). |
+| `always_list=True` | Every child value is a list, even a single occurrence. |
+| Attribute | Key = `"@"` + the document attribute name. |
+| Element text | The scalar value for a text-only element; the `"$"` key when the element also has attributes or children. |
+| Nilled element | `None`. |
+| `typed=False` | Lexical text instead of typed Python values. |
+
+```python
+doc.to_dict()  # {"@a": 1, "item": [1, 2], "note": "hi"}
+doc.to_dict(typed=False)
+doc.to_json(indent=2)
+```
+
+The export reflects post-parse descriptor assignment (the write-through
+behaviour above), because it reads the same lexical containers the writer
+serializes. The known losses match the node model: mixed-content tails are
+not in the bound tree, and a wildcard attribute has only its lexical form.
+
 ## Generated classes
 
 Class-level access to descriptors is intentional: `item_cls.name` returns

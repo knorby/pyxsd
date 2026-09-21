@@ -163,6 +163,12 @@ official schemas.
   `xs:all` 0..1 child-occurrence cap (`all-rule`), the 1.0 requirement
   that a union declare at least one member type (`declaration-child`), and
   the 1.1-only prohibition on `use="prohibited"` with `fixed`.
+- `Document.to_dict()` / `Document.to_json()` export the bound tree as
+  plain Python data (attributes under `@`, text under `$`, repeated
+  children as lists), with a lexical-text mode and an `always_list`
+  option. The shipped `ToDict` transform exposes the codec to
+  `Document.transform` and to the CLI, which renders a dict result as
+  JSON.
 
 ### Changed
 
