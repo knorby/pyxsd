@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyxsd"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Schema-guided XML-to-Python object mapping with a transform pipeline"
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -39,6 +39,11 @@ Changelog = "https://github.com/knorby/pyxsd/blob/develop/CHANGELOG.md"
 
 [project.scripts]
 pyxsd = "pyxsd.__main__:main"
+
+[tool.hatch.version]
+# Single source of truth for the package version (MAJOR.MINOR.MICRO);
+# the release tag must be "v" + this value.
+path = "src/pyxsd/__init__.py"
 
 [dependency-groups]
 dev = [
@@ -143,5 +148,5 @@ branch = true
 [tool.coverage.report]
 show_missing = true
 precision = 1
-# Ratcheted upward each phase. The 1.0.0 release gate is 90.
+# Coverage floor enforced by CI; raise it as coverage grows.
 fail_under = 92

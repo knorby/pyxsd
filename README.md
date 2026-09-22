@@ -100,7 +100,7 @@ are not directly comparable. Residual gaps are tabulated on the
 pyxsd was written at Oak Ridge National Laboratory in 2006 (see
 [history](https://pyxsd.knorby.com/history/origins.html)),
 abandoned around 2008, and revived as a Python 3 project in 2026.
-Version 1.0 is the first release of the modernized library.
+Version 1.0.0 is the first release of the modernized library.
 
 ## Documentation
 

@@ -1,12 +1,9 @@
-# pyxsd pre-commit configuration, adapted from knorby/repo-template.
-# Reference: https://pre-commit.com/hooks.html
-#
-# Setup:
-#   1. Install pre-commit:    pipx install pre-commit  (or: brew install pre-commit)
-#   2. Install gitleaks:       brew install gitleaks
-#   3. Install Go toolchain:   brew install go          (required for the trufflehog hook build)
-#   4. Install hooks:          pre-commit install
-#   5. Validate:               pre-commit run --all-files
+# pyxsd pre-commit hooks: file hygiene, ruff lint/format, secret
+# scanning, shellcheck. Install with `pre-commit install`; run against
+# everything with `pre-commit run --all-files`.
+# Notes: the gitleaks hook needs the gitleaks binary on PATH; the
+# trufflehog hook builds with the Go toolchain on first run (slow,
+# cached after). Reference: https://pre-commit.com/hooks.html
 
 default_language_version:
   python: python3

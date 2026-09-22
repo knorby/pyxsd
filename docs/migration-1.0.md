@@ -118,7 +118,7 @@ for issue in document.report.issues:
 
 The mapping, piece by piece:
 
-| 0.1 / interim | 1.0 |
+| 0.1 | 1.0 |
 | --- | --- |
 | `PyXSD(xmlFileInput=..., xsdFile=...)` | `pyxsd.Schema.compile(xsd)` then `schema.parse(xml)` — or the one-call shortcut `pyxsd.parse(xml, xsd=...)`, which reads schema hints from the instance like the CLI does |
 | `parser.schemaRootInstance` | `document.root` |

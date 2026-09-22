@@ -12,8 +12,13 @@ if str(SRC) not in sys.path:
 project = "pyxsd"
 copyright = "2026, the pyxsd contributors"
 author = "the pyxsd contributors"
-release = "1.0.0"
-version = "1.0"
+
+from pyxsd import __version__  # noqa: E402
+
+#: Full version (MAJOR.MINOR.MICRO) shown in the docs header and search.
+release = __version__
+#: Short form (MAJOR.MINOR) Sphinx uses for the version banner.
+version = ".".join(release.split(".")[:2])
 
 extensions = [
     "myst_parser",
@@ -24,6 +29,8 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
+# superpowers/ holds untracked local working notes; excluding it keeps
+# local -W builds clean when the directory is present.
 exclude_patterns = ["_build", "superpowers/**", "_templates", "_static"]
 
 # --- MyST -----------------------------------------------------------------
