@@ -43,9 +43,11 @@ def parse(tmp_path):
     """
     schema_path = tmp_path / "schema.xsd"
 
-    def _parse(schema_string: str):
+    def _parse(schema_string: str, xsd_version: str = "1.1"):
         schema_path.write_text(XSD_HEAD + schema_string + XSD_TAIL, encoding="utf-8")
-        return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).report
+        return Schema.compile(
+            str(schema_path), mode=ParseModes.NAMESPACED, xsd_version=xsd_version
+        ).report
 
     return _parse
 
@@ -77,6 +79,35 @@ class TestAllGroupLegality:
             "<xs:complexType name='t'><xs:all>"
             "<xs:element name='e' maxOccurs='2'/></xs:all>"
             "</xs:complexType>"
+        )
+        assert "all-rule" not in schema_codes(report)
+
+    def test_child_of_all_max_occurs_gt_one_invalid_in_10(self, parse):
+        # The same shape is a 1.0 violation: each element particle of an
+        # all is capped at a single occurrence.
+        report = parse(
+            "<xs:complexType name='t'><xs:all>"
+            "<xs:element name='e' maxOccurs='2'/></xs:all>"
+            "</xs:complexType>",
+            "1.0",
+        )
+        assert "all-rule" in schema_codes(report)
+
+    def test_child_of_all_min_occurs_gt_one_invalid_in_10(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:all>"
+            "<xs:element name='e' minOccurs='2'/></xs:all>"
+            "</xs:complexType>",
+            "1.0",
+        )
+        assert "all-rule" in schema_codes(report)
+
+    def test_child_of_all_unit_occurs_valid_in_10(self, parse):
+        report = parse(
+            "<xs:complexType name='t'><xs:all>"
+            "<xs:element name='e' minOccurs='0' maxOccurs='1'/></xs:all>"
+            "</xs:complexType>",
+            "1.0",
         )
         assert "all-rule" not in schema_codes(report)
 

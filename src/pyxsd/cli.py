@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import inspect
 import io
+import json
 import logging
 import pkgutil
 import re
@@ -13,7 +14,7 @@ import tokenize
 from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import IO, Any
+from typing import IO, Any, Literal
 from xml.etree import ElementTree as ET
 
 from pyxsd import __version__
@@ -339,6 +340,7 @@ def _build_document(
     *,
     mode: Any,
     overlay: str | Path | None,
+    xsd_version: Literal["1.0", "1.1"] = "1.1",
 ) -> Any:
     """Compiles the schema and binds the instance into a ``Document``.
 
@@ -379,6 +381,7 @@ def _build_document(
     schema = Schema.compile(
         xsd,
         mode=mode,
+        xsd_version=xsd_version,
         overlay=overlay,
         namespace_context=context,
         # Extra instance schemaLocation pairs are advisory composition
@@ -539,6 +542,16 @@ def main(argv: list[str] | None = None) -> None:
         "elements and attributes by expanded name, which rejects documents "
         "that only matched by local name before.",
     )
+    parser.add_argument(
+        "--xsd-version",
+        choices=["1.0", "1.1"],
+        default="1.1",
+        dest="xsdVersion",
+        help="XSD processor version to compile as. '1.1' (default) honors "
+        "all vc:* conditional-inclusion selectors against 1.1; '1.0' tests "
+        'them against 1.0, so a declaration carrying vc:minVersion="1.1" '
+        "is dropped (XSD 1.1 §4.2.2).",
+    )
 
     options = parser.parse_args(argv)
 
@@ -587,6 +600,7 @@ def main(argv: list[str] | None = None) -> None:
             options.inputXsdFile,
             mode=mode,
             overlay=options.classFile,
+            xsd_version=options.xsdVersion,
         )
 
         if options.outputParsed and document.root is not None:
@@ -599,16 +613,18 @@ def main(argv: list[str] | None = None) -> None:
 
         searchPaths = _transform_search_paths(inputXmlFile)
         lastWasDocument = False
+        lastResult: Any = None
         for spec in transforms:
             fn, args, kwargs = _materialize(spec, search_paths=searchPaths)
             result = document.transform(fn, *args, **kwargs)
+            lastResult = result
             if isinstance(result, Document):
                 document = result
                 lastWasDocument = True
             else:
                 lastWasDocument = False
 
-        if transforms and lastWasDocument:
+        if transforms and (lastWasDocument or isinstance(lastResult, dict)):
             transformOutput: str | Path = options.transformOutputFile
             if not transformOutput:
                 transformOutput = _default_transform_output(inputXmlFile)
@@ -616,7 +632,12 @@ def main(argv: list[str] | None = None) -> None:
                     "Setting the transformed xml file name to the default: %s",
                     transformOutput,
                 )
-            text = document.to_string()
+            if lastWasDocument:
+                text = document.to_string()
+            else:
+                # A dict-returning transform (for example ``ToDict``) is
+                # rendered as JSON rather than XML.
+                text = json.dumps(lastResult, indent=2, default=str)
             if transformOutput == "stdout":
                 sys.stdout.write(text)
             else:

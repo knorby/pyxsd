@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from xsts.baseline import Baseline, Change, diff, dump, load
+from xsts.baseline import Baseline, Change, diff, dump, enforce_violations, load
 from xsts.outcomes import EngineResult, Outcome, classify
 
 
@@ -55,3 +55,36 @@ def test_missing_baseline_is_empty(tmp_path) -> None:
     loaded = load(tmp_path / "nope.toml")
     assert loaded.results == {}
     assert not diff(loaded, {})
+
+
+def test_enforce_flags_regressions_and_new_failures() -> None:
+    comparison = diff(
+        Baseline(results={"a": "pass", "b": "fail", "c": "pass"}),
+        {"a": "fail", "b": "fail", "c": "pass", "d": "fail", "e": "pass", "f": "adapter-gap"},
+    )
+
+    violations = {change.key for change in enforce_violations(comparison)}
+
+    assert violations == {"a", "d", "f"}
+
+
+def test_enforce_ignores_unobserved_and_improvements() -> None:
+    # ``a`` was not observed on this run (a --limit slice would look like
+    # this); ``b`` improved. Neither should fail the gate.
+    comparison = diff(Baseline(results={"a": "pass", "b": "fail"}), {"b": "pass"})
+
+    assert enforce_violations(comparison) == ()
+
+
+def test_enforce_allows_new_non_failures() -> None:
+    comparison = diff(
+        Baseline(),
+        {
+            "a": "pass",
+            "b": "not-applicable",
+            "c": "not-checkable",
+            "d": "metadata-error",
+        },
+    )
+
+    assert enforce_violations(comparison) == ()

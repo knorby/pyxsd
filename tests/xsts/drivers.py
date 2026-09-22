@@ -363,12 +363,16 @@ def build_permissive_schema(instance_path: Path, workdir: Path) -> Path:
     return driver
 
 
-def _schema_only_call(schema_path: Path, timeout: float | None) -> EngineResult:
+def _schema_only_call(
+    schema_path: Path, timeout: float | None, xsd_version: str = "1.1"
+) -> EngineResult:
     """Compile *schema_path* without binding an instance."""
     result = EngineResult()
     try:
         with time_limit(timeout):
-            schema = Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED)
+            schema = Schema.compile(
+                str(schema_path), mode=ParseModes.NAMESPACED, xsd_version=xsd_version
+            )
         result.schema_valid = not _errors(schema.report, "schema")
     except PyXSDError as exc:
         result.schema_valid = False
@@ -389,15 +393,19 @@ class PyXSDDriver:
         timeout: float | None = DEFAULT_TIMEOUT,
         *,
         synthesize_missing_schema: bool = False,
+        xsd_version: str = "1.1",
     ) -> None:
         self.timeout = timeout
         #: Opt-in: let the runner synthesize a permissive wrapper schema for
         #: groups with no ``schemaTest`` instead of reporting adapter-gap.
         self.synthesize_missing_schema = synthesize_missing_schema
+        #: The processor version to compile with; the runner derives it from
+        #: the active profile (an ``xsd10`` run uses XSD 1.0 mode).
+        self.xsd_version = xsd_version
 
     def compile_schema(self, schema_path: Path) -> EngineResult:
         """Observe only the schema phase."""
-        return _schema_only_call(schema_path, self.timeout)
+        return _schema_only_call(schema_path, self.timeout, self.xsd_version)
 
     def validate(
         self, schema_path: Path, instance_path: Path, *, synthesized: bool = False
@@ -448,6 +456,7 @@ class PyXSDDriver:
                 schema = Schema.compile(
                     str(schema_path),
                     mode=ParseModes.NAMESPACED,
+                    xsd_version=self.xsd_version,
                     namespace_context=context,
                     schema_location_pairs=absolute_schema_location_pairs(
                         tree, instance_path.parent

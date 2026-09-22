@@ -27,6 +27,9 @@ repos:
       - id: check-case-conflict
       - id: check-symlinks
       - id: check-added-large-files
+        # The XSTS baselines are large, tracked data files (several MB) that
+        # are refreshed deliberately as conformance work lands.
+        exclude: ^tests/xsts/baseline-.*\.toml$
       - id: check-yaml
       - id: check-json
       - id: check-toml

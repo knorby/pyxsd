@@ -35,6 +35,35 @@ Transform developers commonly use `Transform.makeElemObj(name)` to mint a
 fresh node with this exact structure, and `makeCommentElem(text)` for
 comments.
 
+## Dict and JSON export
+
+`Document.to_dict()` exports the bound tree as plain Python data, and
+`Document.to_json()` encodes that with the standard `json` module. The
+shipped `ToDict` transform exposes the same codec to `Document.transform`
+and the CLI (`--transform ToDict()`), which renders a dict result as
+JSON.
+
+| Input | Dict key/value |
+| ----- | -------------- |
+| Child element | Key = the child name in Clark notation when namespace-qualified, otherwise the local name. |
+| Repeated child | A list of values (a single occurrence is the value itself). |
+| `always_list=True` | Every child value is a list, even a single occurrence. |
+| Attribute | Key = `"@"` + the document attribute name. |
+| Element text | The scalar value for a text-only element; the `"$"` key when the element also has attributes or children. |
+| Nilled element | `None`. |
+| `typed=False` | Lexical text instead of typed Python values. |
+
+```python
+doc.to_dict()  # {"@a": 1, "item": [1, 2], "note": "hi"}
+doc.to_dict(typed=False)
+doc.to_json(indent=2)
+```
+
+The export reflects post-parse descriptor assignment (the write-through
+behaviour above), because it reads the same lexical containers the writer
+serializes. The known losses match the node model: mixed-content tails are
+not in the bound tree, and a wildcard attribute has only its lexical form.
+
 ## Generated classes
 
 Class-level access to descriptors is intentional: `item_cls.name` returns
@@ -42,6 +71,25 @@ the *descriptor*, not the metadata, and the helpful `__getattr__` on
 generated classes raises an `AttributeError` listing the declared elements
 and attributes when you misspell something. Instance-level access goes
 through the descriptors, which validate types on assignment.
+
+Assignment is not validation-only: assigning a value to an element or
+attribute descriptor also writes the value's XSD lexical form through to
+the container the writer serializes, so a later `to_string()`, `write()`,
+or `revalidate()` reflects the assignment. Repeated element descriptors
+are the exception — a repeated element has no single unambiguous target
+node, so assignment updates the instance dictionary only and the write-out
+is unchanged. Assigning a *bound node* directly (as internal binding does)
+is not a user-facing operation and does not go through this path.
+
+Elements and attributes now share one assignment policy. A plain Python
+value (a string, int, float, bool, or `decimal.Decimal`) assigned to a
+simple-typed element is coerced through the declared datatype, exactly as
+attribute assignment already coerced plain values. A value that fails the
+declared type's validation is recorded in the report during a parse and
+logged outside one, and it is stored as given without touching the
+serialized tree — assignment never raises for a bad *lexical* value.
+Assigning a datatype instance of the wrong type, or an arbitrary object,
+still raises `TypeError`.
 
 ### Name collisions: elements and attributes with the same name
 

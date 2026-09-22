@@ -728,7 +728,7 @@ def test_root_matching_no_global_element_is_reported(tmp_path):
 
 
 class TestPrimitiveRootValues:
-    """Primitive-typed roots validate like primitive children (R6/R7)."""
+    """Primitive-typed roots validate like primitive children."""
 
     def _codes(self, doc):
         return [issue.code for issue in doc.report.issues]

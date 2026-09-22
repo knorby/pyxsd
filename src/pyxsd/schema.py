@@ -8,11 +8,12 @@ schema-legality problems are collected on the schema's
 :meth:`Schema.require_valid` to surface.
 """
 
+import decimal
 import logging
 import os.path
 import warnings
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, Literal
 from xml.etree import ElementTree as ET
 
 from pyxsd.binding import ParseModes
@@ -67,6 +68,7 @@ from pyxsd.schema_context import (
 )
 from pyxsd.schema_hints import absolute_schema_location_pairs, resolve_schema_hint
 from pyxsd.validation import ValidationReport
+from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import apply_conditional_inclusion
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,7 @@ class _CompileHost:
         self.report = ctx.report
         self.classes = ctx.classes
         self.mode = ctx.mode
+        self.processor_version = ctx.processor_version
         self.namespaceContext = ctx.namespace_context
         self.namespaceSchemas = ctx.namespace_schemas
         # Replaced by the pipeline once the schema representative
@@ -113,6 +116,11 @@ class Schema:
     namespace_context: Any
     #: The binding policy the compilation ran under.
     mode: Any
+    #: The XSD processor version this schema was compiled under ("1.0" or
+    #: "1.1"). It is the declared ``V`` that ``vc:*`` selectors were
+    #: tested against; the schema's own vocabulary is not restricted by it
+    #: (that is the compiler's job, see ``version_gates``).
+    xsd_version: str
     #: The main schema document's ``targetNamespace``, if it declared one.
     target_namespace: str | None
     #: Schema-phase validation issues (composition, declaration, and
@@ -152,6 +160,7 @@ class Schema:
         source: str | Path | os.PathLike[str] | IO[str],
         *,
         mode: Any = ParseModes.STRICT,
+        xsd_version: Literal["1.0", "1.1"] = "1.1",
         namespace_schemas: dict[str, str | Path] | None = None,
         overlay: str | Path | os.PathLike[str] | None = None,
         namespace_context: NamespaceContext | None = None,
@@ -168,6 +177,14 @@ class Schema:
         - ``mode`` - a :class:`~pyxsd.binding.BindingPolicy` (usually a
           :class:`~pyxsd.binding.ParseModes` preset). Defaults to
           :attr:`~pyxsd.binding.ParseModes.STRICT`.
+
+        - ``xsd_version`` - the XSD processor version the document is
+          compiled as, ``"1.0"`` or ``"1.1"`` (default ``"1.1"``). It is
+          the declared version ``vc:*`` conditional-inclusion selectors
+          test against: in ``"1.0"`` mode a declaration carrying
+          ``vc:minVersion="1.1"`` is dropped (XSD 1.1 §4.2.2). The
+          vocabulary itself is checked separately (see
+          :mod:`pyxsd.version_gates`).
 
         - ``namespace_schemas`` - an optional ``{namespace_uri: path}``
           mapping supplying schemas for namespaces referenced by
@@ -193,12 +210,15 @@ class Schema:
         Use :meth:`require_valid` to reject a schema whose report
         holds errors.
         """
+        if xsd_version not in ("1.0", "1.1"):
+            raise ValueError(f"xsd_version must be '1.0' or '1.1', not {xsd_version!r}")
         if isinstance(source, (str, os.PathLike)):
             xml_path = Path(source).resolve().parent
         else:
             xml_path = Path.cwd()
         ctx = CompositionContext(
             mode=mode,
+            processor_version=decimal.Decimal(xsd_version),
             namespace_schemas=dict(namespace_schemas or {}),
             namespace_context=(
                 namespace_context if namespace_context is not None else NamespaceContext()
@@ -280,12 +300,18 @@ class Schema:
             self._schema_context = context
         # XSD 1.1 attribute inheritance and conditional type assignment
         # both need to relate a bound element to its ancestors: the
-        # parent links are indexed once per parse (fresh dicts, so
-        # concurrent parses never see each other's stale ids), and the
-        # governing class of each bound element is recorded as binding
-        # proceeds. Binding code (schema_base) reads both back through
-        # the host the generated classes reach via their ``schema``
-        # stamp.
+        # parent links and governing types are indexed once per parse,
+        # and the governing class of each bound element is recorded as
+        # binding proceeds. Binding code (schema_base) reads both back
+        # through the host the generated classes reach via their
+        # ``schema`` stamp.
+        #
+        # The dicts are freshly created for every parse, but they are
+        # attached to this schema's shared host, so parses against one
+        # ``Schema`` instance must not run concurrently -- a second
+        # parse would overwrite the indexes the first is still using.
+        # Moving them into a per-parse context is the tracked post-1.0
+        # fix.
         host = self._host
         if host is not None:
             host._elementParents = {}
@@ -485,8 +511,10 @@ def _compile_into_context(
         # before anything else, so the element-representative walk never sees
         # a declaration a ``vc:*`` selector excludes. Included and imported
         # documents are filtered as they are parsed (``parse_included_schema``).
-        apply_conditional_inclusion(root, ctx.namespace_context, ctx.report)
+        apply_conditional_inclusion(root, ctx.namespace_context, ctx.report, ctx.processor_version)
         check_namespace_attribute_values(ctx, root)
+        if ctx.processor_version == decimal.Decimal("1.0"):
+            check_xsd10_vocabulary(root, ctx.report)
 
         baseDir, visited = schema_composition_context(ctx, xsd_file)
         # Documents already fully composed; their components must not be
@@ -630,6 +658,7 @@ def _compile_into_context(
         for cls in ctx.classes.values():
             cls.schema = schema
         schema._host = host
+        schema.xsd_version = str(host.processor_version)
         # Classes built lazily after the compile (an ``xs:alternative``'s
         # inline type selected at binding time) stamp their owner from
         # the schema ER, which outlives the compile on the component

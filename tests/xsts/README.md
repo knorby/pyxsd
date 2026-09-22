@@ -45,7 +45,8 @@ uv run python tests/report_xsts.py --profile xsd11 \
 ```
 
 Useful flags: `--jobs N` (default: one per CPU), `--engine pyxsd|xmlschema|both`,
-`--filter SUBSTRING`, `--timeout SECONDS`, `--json`, `--list-only`.
+`--filter SUBSTRING`, `--timeout SECONDS`, `--json`, `--list-only`,
+`--enforce`.
 
 A full XSD 1.1 run over 41,735 cases takes roughly three minutes on a modern
 laptop with `--jobs 8`.
@@ -99,8 +100,30 @@ Passing this suite is evidence, not certification:
 
 ## Continuous integration
 
-The suite is deliberately **not** wired into CI yet: it is slow, and pyxsd
-does not yet pass it, so a required job would be permanently red. The intended
-shape, once the pass rate makes it useful, is a nightly job sharded by
-contributor that compares against the baseline. Revisit after the engine has
-a stable, reviewed baseline.
+The suite is deliberately **not** part of the required CI path: a full profile
+takes a few minutes, so it runs from the dispatch-only
+[`.github/workflows/xsts.yml`](../../.github/workflows/xsts.yml) workflow
+instead (Actions → xsts → Run workflow). Choose one profile or both, and
+optionally cap the case count with `limit`.
+
+The workflow runs `--engine pyxsd` and `--enforce` against each checked-in
+baseline. `--enforce` exits `2` when a recorded pass no longer passes
+(a regression) or a newly observed case is a failure, and `0` otherwise. It
+ignores cases the run did not observe (a `--limit` slice, or an engine that
+was not selected), so a partial run does not fail on the thousands of
+un-run keys; the ordinary `--baseline` comparison still reports every change
+and exits `1`.
+
+The corpus submodule is cached by its pinned commit, so repeat dispatches skip
+the clone. Regenerate a baseline locally only after reviewing the diff:
+
+```bash
+uv run python tests/report_xsts.py --profile xsd11 --engine pyxsd \
+    --write-baseline tests/xsts/baseline-xsd11.toml
+uv run python tests/report_xsts.py --profile xsd10 --engine pyxsd \
+    --write-baseline tests/xsts/baseline-xsd10.toml
+```
+
+`baseline-xsd11.toml` records both engines; `baseline-xsd10.toml` records
+pyxsd only, so keep `--engine pyxsd` for the XSD 1.0 gate (or regenerate it
+with both engines first).

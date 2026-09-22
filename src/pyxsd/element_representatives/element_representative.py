@@ -71,6 +71,7 @@ collects the descriptor bookkeeping (``_elementNames_`` and
 compiled :class:`~pyxsd.schema.Schema`'s class dictionary.
 """
 
+import decimal
 import logging
 import re
 
@@ -586,6 +587,28 @@ class ElementRepresentative:
         """Records a warning-severity schema problem (see _reportSchemaIssue)."""
         self._reportSchemaIssue(IssueSeverity.WARNING, message, code=code, phase=phase)
 
+    def _processorVersion(self) -> decimal.Decimal | None:
+        """The active processor version, or ``None`` when unreachable.
+
+        ``None`` means the ER tree is detached from a compiled host (for
+        example an ER built in isolation in a unit test); callers then
+        keep the default XSD 1.1 behavior.
+        """
+        host = getattr(self, "host", None)
+        if host is None:
+            schema = _schemaOf(self)
+            host = getattr(schema, "host", None) if schema is not None else None
+        return getattr(host, "processor_version", None)
+
+    def _isXsd10(self) -> bool:
+        """Whether the active processor is XSD 1.0.
+
+        A detached ER (``None`` version) counts as 1.1, so
+        version-rejected 1.0 rules stay quiet when the version cannot be
+        determined.
+        """
+        return self._processorVersion() == decimal.Decimal("1.0")
+
     def _checkWildcardDeclaration(self, *, is_attribute: bool) -> None:
         """Reports wildcard XML-attribute grammar problems.
 
@@ -1002,6 +1025,21 @@ class ElementRepresentative:
         if qualified:
             return clark(uri, local)
         return local
+
+    def _binding_report(self):
+        """The report an assignment-time diagnostic goes to.
+
+        The active context's binding report only: a parse installs its
+        fresh per-parse report there, so a diagnostic lands on the
+        document being bound. Outside any parse there is nothing to
+        record on — a late write has no phase to attribute and must not
+        retroactively invalidate an already-accepted schema — so the
+        caller logs the diagnostic instead.
+        """
+        context = current_context()
+        if context is not None:
+            return context.report
+        return None
 
     def _localDeclarationIsQualified(self, schema, is_attribute: bool) -> bool:
         """Decides whether a local declaration's name is qualified.

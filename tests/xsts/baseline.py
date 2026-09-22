@@ -117,3 +117,34 @@ def diff(baseline: Baseline, current: dict[Key, str]) -> BaselineDiff:
         if previous != now:
             changes.append(Change(key=key, previous=previous, current=now))
     return BaselineDiff(changes=tuple(changes))
+
+
+#: Outcomes that do not fail an ``--enforce`` run when newly observed.
+_ENFORCE_ACCEPTABLE_NEW = frozenset(
+    {
+        Outcome.PASS.value,
+        Outcome.NOT_APPLICABLE.value,
+        Outcome.NOT_CHECKABLE.value,
+        Outcome.METADATA_ERROR.value,
+    }
+)
+
+
+def enforce_violations(comparison: BaselineDiff) -> tuple[Change, ...]:
+    """The changes an ``--enforce`` run treats as failures.
+
+    A recorded pass that no longer passes is a regression and always
+    counts. A case observed for the first time counts when its outcome is
+    a failure (a wrong verdict, an adapter gap, a timeout, or an error).
+    Keys absent from this run -- a ``--limit`` slice, or an engine that was
+    not selected -- are ``removed`` and are ignored, as are improvements
+    and fail-to-fail changes; the normal ``--baseline`` comparison still
+    surfaces all of them.
+    """
+    violations: list[Change] = []
+    for change in comparison.changes:
+        is_regression = change.kind == "regression"
+        is_new_failure = change.kind == "new" and change.current not in _ENFORCE_ACCEPTABLE_NEW
+        if is_regression or is_new_failure:
+            violations.append(change)
+    return tuple(violations)

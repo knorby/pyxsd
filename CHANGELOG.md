@@ -147,6 +147,33 @@ official schemas.
 - A `namespaces/` category in the conformance corpus (form defaults,
   cross-namespace type/ref, `xsi:type`, wildcards, QName identity), run in
   namespaced mode through both the gating suite and the `xmlschema` oracle.
+- `Schema.compile` accepts `xsd_version` (`"1.0"` or `"1.1"`, default
+  `"1.1"`), exposed as `Schema.xsd_version`; the CLI gains
+  `--xsd-version {1.0,1.1}`. This is the declared version `vc:*`
+  conditional-inclusion selectors test against, so a schema compiled as
+  1.0 drops a declaration carrying `vc:minVersion="1.1"` (XSD 1.1 §4.2.2).
+- XSD 1.0 mode reports XSD 1.1-only vocabulary with `xsd11-construct`
+  issues: the `assert`/`assertion`/`alternative`/`openContent`/`override`
+  elements, the 1.1-only attributes (`notNamespace`, `notQName`,
+  `defaultAttributes`, `defaultAttributesApply`, `inheritable`,
+  `xpathDefaultNamespace`), and references to 1.1 built-in types
+  (`dateTimeStamp`, `dayTimeDuration`, `yearMonthDuration`,
+  `anyAtomicType`, `precisionDecimal`).
+- XSD 1.0 mode enforces three 1.0/1.1 semantic differences: the 1.0
+  `xs:all` 0..1 child-occurrence cap (`all-rule`), the 1.0 requirement
+  that a union declare at least one member type (`declaration-child`), and
+  the 1.1-only prohibition on `use="prohibited"` with `fixed`.
+- `Document.to_dict()` / `Document.to_json()` export the bound tree as
+  plain Python data (attributes under `@`, text under `$`, repeated
+  children as lists), with a lexical-text mode and an `always_list`
+  option. The shipped `ToDict` transform exposes the codec to
+  `Document.transform` and to the CLI, which renders a dict result as
+  JSON.
+- `Document.xpath()` evaluates an XPath expression over the bound tree
+  and returns the original bound nodes (scalars pass through);
+  `Document.find()`/`findall()` accept ElementTree's path subset. Both
+  support caller-supplied namespace prefixes and resolve to the same
+  bound objects the object model uses.
 
 ### Changed
 
@@ -188,6 +215,15 @@ official schemas.
 - GitHub Actions are pinned to the latest majors and the Pages deploy steps
   run only on `main`, so pull requests build docs without requiring Pages.
 - Local design notes under `docs/superpowers/` are no longer tracked.
+- Element assignment now coerces a plain Python value through the declared
+  datatype (as attribute assignment already did) and reports a bad lexical
+  value instead of raising `TypeError`; a datatype instance of the wrong
+  type or an arbitrary object still raises. This unifies the mutation
+  policy across elements and attributes.
+- The W3C XML Schema Test Suite harness gained `--enforce` (exit `2` on a
+  baseline regression or a newly observed failure) and a dispatch-only
+  GitHub Actions workflow that caches the corpus and gates both the XSD 1.1
+  and XSD 1.0 profiles against their checked-in baselines.
 
 ### Removed
 
@@ -272,6 +308,10 @@ official schemas.
   referring element's namespace.
 - Numerous other latent bugs found by the test suite and conformance corpus
   (see the migration guide for the complete narrative).
+- Assignment to an element or attribute descriptor now writes the value's
+  lexical form through to the serialized tree, so `doc.root.attr = value`
+  survives `to_string()`/`write()`/`revalidate()` (previously it was
+  validated but silently dropped from the output).
 
 ## [0.1] - 2006-09-11
 

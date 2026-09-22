@@ -1,4 +1,4 @@
-"""Particle-level content-model tests (R2, R3, R4, R8).
+"""Particle-level content-model tests.
 
 The legacy flat order checks matched element occurrences by name and
 dropped unmatched children silently. These tests pin the compiled
@@ -165,7 +165,7 @@ class TestComplexRestriction:
 
 
 class TestDerivedSimpleTypeDispatch:
-    """Schema-derived simple types must not take the complex path (R1)."""
+    """Schema-derived simple types must not take the complex path."""
 
     SCHEMA = '<xs:simpleType name="T"><xs:restriction base="xs:int"/></xs:simpleType>' + _element(
         "r", "T"

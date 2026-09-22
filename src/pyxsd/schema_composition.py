@@ -12,6 +12,7 @@ instance inputs; the container fields are shared with the compiled
 passes.
 """
 
+import decimal
 import logging
 import os.path
 from dataclasses import dataclass, field
@@ -34,7 +35,8 @@ from pyxsd.namespaces import (
 )
 from pyxsd.schema_context import SchemaContext
 from pyxsd.validation import CompileContextProtocol, ValidationReport
-from pyxsd.versioning import apply_conditional_inclusion
+from pyxsd.version_gates import check_xsd10_vocabulary
+from pyxsd.versioning import PROCESSOR_VERSION, apply_conditional_inclusion
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +162,10 @@ class CompositionContext:
     composed_target_namespaces: set[str]
     composed_documents: set[str] = field(default_factory=set)
     additional_schemas: list[tuple[str | None, Path]] = field(default_factory=list)
+    #: The declared XSD processor version (``vc:*`` selectors test against
+    #: it). ``Schema.compile(xsd_version=...)`` sets it; the default is the
+    #: 1.1 processor.
+    processor_version: decimal.Decimal = field(default_factory=lambda: PROCESSOR_VERSION)
 
 
 def schema_composition_context(
@@ -569,7 +575,7 @@ def parse_included_schema(
             phase="schema",
         )
         return None
-    apply_conditional_inclusion(root, ctx.namespace_context, ctx.report)
+    apply_conditional_inclusion(root, ctx.namespace_context, ctx.report, ctx.processor_version)
     if root.tag != clark(XSD_NS, "schema"):
         # schB5/schE6/schE10: the reference resolves to well-formed
         # XML that is not an XML Schema document.
@@ -580,6 +586,8 @@ def parse_included_schema(
         )
         return None
     check_namespace_attribute_values(ctx, root)
+    if ctx.processor_version == decimal.Decimal("1.0"):
+        check_xsd10_vocabulary(root, ctx.report)
     return root
 
 

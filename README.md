@@ -12,12 +12,18 @@ Schema (XSD), reports non-fatal validation issues, runs user-defined
 *transforms*, and writes the tree back out as XML.
 
 - **Minimal dependencies** — one small, pure-Python package (`elementpath`)
-  for XSD regular expressions; no compiled extensions
+  for XSD regular expressions and XPath queries; no compiled extensions
 - **Schema-compiled classes** — your schema becomes real Python classes;
   `xs:extension` becomes real subclassing
+- **XSD 1.1 processor** — with an optional XSD 1.0 mode
+  (`Schema.compile(xsd, xsd_version="1.0")` / `--xsd-version 1.0`) that
+  applies the 1.0 vocabulary gate and semantic differences
 - **Lax validation** — bad documents still build a tree; every issue is a
   code-tagged entry in a `ValidationReport` (`--strict` and
   `require_valid()` make it a CI failure)
+- **Query and export** — `Document.xpath` / `find` / `findall` return the
+  original bound nodes, and `Document.to_dict` / `to_json` export plain
+  Python data (also as the `ToDict` transform)
 - **Transform pipeline** — apply plain callables or `Transform` classes to
   the bound tree (`document.transform(fn)`); chain them on the CLI
   (`PrintData() > PrintData()`)
@@ -81,9 +87,13 @@ complex types. Known
 gaps are tabulated in the
 [supported-features page](https://pyxsd.knorby.com/supported.html).
 
-Backed by a 93-case conformance corpus of independently authored,
-suite-inspired regression cases (see the
-[supported-features page](https://pyxsd.knorby.com/supported.html)).
+Backed by the W3C XML Schema Test Suite (xsdtests): pyxsd passes **99.78%**
+of the XSD 1.1 profile and **99.61%** of the XSD 1.0 profile. For context,
+the `xmlschema` library — the standard Python library in this space, and
+pyxsd's conformance oracle — passes 99.75% (1.1) and 99.77% (1.0), but
+declines (does not attempt) substantially more cases, so the percentages
+are not directly comparable. Residual gaps are tabulated on the
+[supported-features page](https://pyxsd.knorby.com/supported.html).
 
 ## Status
 

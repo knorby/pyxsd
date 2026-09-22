@@ -62,6 +62,7 @@ class All(ElementRepresentative):
         self._checkAllOccursBounds()
         self._checkAllPlacement()
         self._checkAllChildren()
+        self._checkAllParticleOccurs()
 
     def _checkAllName(self) -> None:
         """``all`` has no ``name`` attribute in its XML representation."""
@@ -138,6 +139,28 @@ class All(ElementRepresentative):
         for child in self.processedChildren:
             if child is not None and child.__class__.__name__ == "Group":
                 self._checkAllGroupRef(child)
+
+    def _checkAllParticleOccurs(self) -> None:
+        """XSD 1.0 caps each element particle inside an ``all`` at 0..1.
+
+        XSD 1.1 relaxes this (Saxon all001/all003: an element particle of
+        an ``all`` may carry a relaxed ``minOccurs``/``maxOccurs``); in
+        1.0 mode each over-occurring particle is reported ``all-rule``.
+        """
+        if not self._isXsd10():
+            return
+        for element in self.elements:
+            if getattr(element, "isRefSite", False):
+                continue
+            minimum = element.getMinOccurs()
+            maximum = element.getMaxOccurs()
+            if minimum > 1 or maximum > 1:
+                self._reportSchemaError(
+                    f"element '{element.name}' in all '{self.name}' has "
+                    f"minOccurs={minimum} maxOccurs={maximum}; "
+                    "XSD 1.0 allows only 0 or 1",
+                    code="all-rule",
+                )
 
     def _checkAllGroupRef(self, refSite) -> None:
         """A group reference inside an ``all`` must name an ``all`` group.

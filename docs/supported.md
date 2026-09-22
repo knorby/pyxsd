@@ -1,11 +1,15 @@
 # Supported features
 
-pyxsd 1.0 implements a substantial, honest subset of XSD 1.0. This page
-summarizes what is validated, with pointers to the regression corpus that
-backing every claim (93 independently authored manifest-driven cases
-inspired by the W3C XMLSchema1TestSuite and NIST datatype feature areas —
-run
-`uv run python tests/report_conformance.py` for the live pass-rate report).
+pyxsd is an XSD 1.1 processor with an optional XSD 1.0 mode
+(`Schema.compile(xsd, xsd_version="1.0")` / `--xsd-version 1.0`; see
+{doc}`binding` and the version section below). This page summarizes what is
+validated, and what is deliberately not.
+
+Correctness is measured against the W3C XML Schema Test Suite (xsdtests):
+pyxsd passes **99.78%** of the XSD 1.1 profile and **99.61%** of the XSD 1.0
+profile. A separate manifest-driven regression corpus backs the integration
+paths (`uv run python tests/report_conformance.py` for the live report, and
+`uv run python tests/report_xsts.py` for the test suite).
 
 ## Built-in type lattice
 
@@ -85,6 +89,40 @@ carries a `namespaces` field: `Schema.compile(...,
 mode=ParseModes.NAMESPACED)` or `--namespaces strict` turns on
 namespace-aware validation (the default legacy behavior is unchanged).
 
+## XSD versions (1.0 and 1.1)
+
+The processor defaults to XSD 1.1 and accepts an explicit version:
+`Schema.compile(xsd, xsd_version="1.0")`, or `--xsd-version 1.0` on the
+CLI. Version selection applies the conditional-inclusion rules
+(`vc:minVersion` / `vc:maxVersion` / `vc:typeAvailable` and friends) at
+the declared version, and in 1.0 mode it reports XSD 1.1-only vocabulary
+(`assert`, `assertion`, `alternative`, `openContent`, `override`,
+`notNamespace`, `notQName`, `defaultAttributes`, `inheritable`,
+`xpathDefaultNamespace`, `dateTimeStamp`, `dayTimeDuration`,
+`yearMonthDuration`, `anyAtomicType`) as the schema error
+`xsd11-construct`. Three 1.0/1.1 semantic differences are also enforced:
+the 1.0 `xs:all` 0..1 child-occurrence cap (`all-rule`), the 1.0
+requirement that a union declare at least one member type
+(`declaration-child`), and the 1.1 prohibition on `use="prohibited"`
+together with `fixed`.
+
+Against the W3C XML Schema Test Suite, pyxsd passes **99.78%** of the XSD
+1.1 profile and **99.61%** of the XSD 1.0 profile. A few XSD 1.0
+differences are deliberately not switched on, because they live in shared
+machinery (the built-in datatype constructors) or need case-specific
+identity-constraint and name-resolution work rather than a clean version
+switch:
+
+- the 1.0-only lexical forms around year `0000` and the `+INF`/`-INF`
+  spelling (the shared datatype constructors are version-agnostic);
+- keyref cardinality (`idconstrdefs00301m`);
+- the `st_name00401m`, `st_targetNS*`, and `targetns00101m` name-resolution
+  cases and `addB187`.
+
+These are recorded as residual XSD 1.0 test-suite deltas rather than
+missing features; they are general correctness edges that the 1.0 profile
+happens to surface.
+
 ## Known gaps
 
 ```{list-table}
@@ -117,7 +155,7 @@ namespace-aware validation (the default legacy behavior is unchanged).
 * - Mixed content
   - `mixed="true"`
   - ignored
-  - Interleaved text is not preserved or validated.
+  - Interleaved text is not preserved or validated. In particular the tail text after a child element is dropped when the tree is bound and exported, so mixed-content documents (for example XHTML inside a complex type) do not round-trip their text.
 * - Remote schema hints
   - URL `schemaLocation`
   - partial
@@ -134,6 +172,18 @@ namespace-aware validation (the default legacy behavior is unchanged).
   - UPA checking
   - ignored
   - Content models are matched greedily in document order.
+* - DTD entities
+  - `ENTITY` / `ENTITIES` values
+  - partial
+  - Validation considers the internal DTD subset only, and only as far as expat's built-in entity expansion and default-attribute handling go. An external subset is not fetched (pyxsd makes no network requests); pyxsd does not currently detect or report a doctype declaration. Unparsed-entity (`NDATA`) declarations are not tracked, so an `ENTITY` value referring to one can be accepted when it should be rejected.
+* - XML 1.1 documents
+  - `<?xml version="1.1"?>`
+  - unsupported
+  - The stdlib expat parser behind `ElementTree` stops at XML 1.0 syntax (XML 1.1 name characters and end-of-line rules are not handled).
+* - Concurrent parses per schema
+  - parsing in parallel from one `Schema`
+  - unsupported
+  - A compiled `Schema` keeps per-parse parent/type indexes on its shared host. Parse one document at a time per schema instance; compile a separate `Schema` (or serialize calls) to parallelize.
 ```
 
 This table is maintained as machine-readable data in

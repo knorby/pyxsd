@@ -1,8 +1,11 @@
+import decimal
 import logging
 from typing import Any
 
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.namespaces import local_name, namespace_of
+from pyxsd.schema_context import current_context
+from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
 
@@ -279,10 +282,73 @@ class Element(ElementRepresentative):
         than once (``maxOccurs`` greater than one), the value is
         appended to a list; otherwise it is stored directly.
 
+        As with attributes, a scalar assignment also writes the lexical
+        form through to the child node the writer serializes, so a
+        later ``to_string()`` reflects it. Only a bare value (no
+        ``_name_``) triggers this: internal binding also assigns child
+        nodes through descriptors, and a bound node must keep the
+        container the binder gave it (notably a nilled node keeps
+        ``_value_ is None``). A repeated element has no unambiguous
+        target node, so only ``__dict__`` is updated there (constructing
+        new child nodes is not supported).
+
         See the Python documentation for full documentation on
         descriptors.
         """
+        declared = self.getType()
+        if (
+            isinstance(declared, type)
+            and issubclass(declared, XsdDataType)
+            and not isinstance(value, declared)
+            and getattr(value, "_name_", None) is None
+            and not _xsd_derived(type(value), declared)
+            and isinstance(value, (str, int, float, bool, decimal.Decimal))
+            and not isinstance(value, XsdDataType)
+        ):
+            # A plain Python value for a simple-typed element is
+            # coerced through the declared datatype, matching the
+            # attribute assignment policy. A value that fails the
+            # datatype's lexical validation is reported (or logged
+            # outside a parse) and stored as given, without touching the
+            # serialized tree; a datatype instance of the wrong type, or
+            # a value of no coercible kind (an arbitrary object), keeps
+            # the TypeError below.
+            try:
+                # The base signature does not model the lexical value
+                # parameter, so the call stays dynamic (as in
+                # Attribute.__set__).
+                constructor: Any = declared
+                value = constructor(value)
+            except Exception as e:
+                message = f"element '{self.name}' has an invalid value: {e}"
+                report = self._binding_report()
+                if report is not None:
+                    report.add_error(
+                        message,
+                        code=getattr(e, "code", "invalid-element"),
+                        element=getattr(obj, "_name_", None),
+                    )
+                else:
+                    logger.error(message)
+                key = self._storageKey()
+                if self.isList():
+                    obj.__dict__.setdefault(key, []).append(value)
+                else:
+                    obj.__dict__[key] = value
+                return None
         self.bind(obj, value)
+        if (
+            current_context() is None
+            and not self.isList()
+            and getattr(value, "_name_", None) is None
+        ):
+            stored = obj.__dict__.get(self._storageKey())
+            if isinstance(stored, XsdDataType):
+                name = type(obj)._instance_name_of(self, is_attribute=False)
+                for child in getattr(obj, "_children_", []) or []:
+                    if getattr(child, "_name_", None) == name:
+                        child._value_ = stored.lexical()
+                        break
         return None
 
     def bind(self, obj, value, *, append: bool | None = None):

@@ -248,21 +248,6 @@ class Attribute(ElementRepresentative):
         default = getattr(self, "default", None)
         return default
 
-    def _binding_report(self):
-        """The report an assignment-time diagnostic goes to.
-
-        The active context's binding report only: a parse installs its
-        fresh per-parse report there, so a diagnostic lands on the
-        document being bound. Outside any parse there is nothing to
-        record on — a late write has no phase to attribute and must not
-        retroactively invalidate an already-accepted schema — so the
-        caller logs the diagnostic instead.
-        """
-        context = current_context()
-        if context is not None:
-            return context.report
-        return None
-
     def __set__(self, obj, value):
         """Sets values to attributes.
 
@@ -316,6 +301,19 @@ class Attribute(ElementRepresentative):
                 logger.error(message)
 
         obj.__dict__[self._storageKey()] = value
+
+        # Write the lexical form through to the container the
+        # writer serializes, keyed as instance binding keys it. This is
+        # a post-parse mutation behavior: parse-time binding manages the
+        # containers itself (and would otherwise clobber list/nil
+        # values), so it is skipped while a parse context is active.
+        # Also skipped when the value did not validate to a datatype
+        # (nothing valid to serialize) or the instance has no container.
+        if current_context() is None and isinstance(value, XsdDataType):
+            container = getattr(obj, "_attribs_", None)
+            name = type(obj)._instance_name_of(self, is_attribute=True)
+            if container is not None and name is not None:
+                container[name] = value.lexical()
 
     def __delete__(self, obj):
         """Deletes an entry from the dictionary.
@@ -448,7 +446,13 @@ class Attribute(ElementRepresentative):
                 f"attribute '{self.name}' with a default value must have use='optional'",
                 code="declaration-attribute",
             )
-        elif "fixed" in self.tagAttributes and use == "prohibited":
+        elif (
+            "fixed" in self.tagAttributes
+            and use == "prohibited"
+            # XSD 1.0 allowed a prohibited use to carry a fixed value;
+            # XSD 1.1 forbids it (attKb009/attKc009).
+            and not self._isXsd10()
+        ):
             self._reportSchemaError(
                 f"attribute '{self.name}' with a fixed value must not use use='prohibited'",
                 code="declaration-attribute",

@@ -435,7 +435,7 @@ class TestQualifiedNames:
 
 
 class TestAttributeShadowing:
-    """R6: an attribute step reads the attribute, not a same-named
+    """An attribute step reads the attribute, not a same-named
     child accessor."""
 
     def test_attribute_wins_over_child_accessor(self, tmp_path):
@@ -1084,7 +1084,7 @@ class TestDescendantSelectors:
 
 
 # ---------------------------------------------------------------------------
-# Scoping and typed value comparison (R9-R11)
+# Scoping and typed value comparison
 # ---------------------------------------------------------------------------
 
 _XSI = 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
