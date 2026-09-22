@@ -302,7 +302,7 @@ class Attribute(ElementRepresentative):
 
         obj.__dict__[self._storageKey()] = value
 
-        # F1: write the lexical form through to the container the
+        # Write the lexical form through to the container the
         # writer serializes, keyed as instance binding keys it. This is
         # a post-parse mutation behavior: parse-time binding manages the
         # containers itself (and would otherwise clobber list/nil

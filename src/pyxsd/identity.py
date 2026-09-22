@@ -954,7 +954,7 @@ def _nameOf(node: Any) -> str:
 def _attributeValue(node: Any, attributeName: str) -> Any | None:
     """Returns the value of one named attribute, or ``None``.
 
-    R6: presence is decided by the raw attribute table first, so an
+    Presence is decided by the raw attribute table first, so an
     attribute wins over any same-named child accessor; the lookup is
     namespace-exact (Clark key for a qualified attribute, bare local
     name for an unqualified one). The descriptor-bound typed value is

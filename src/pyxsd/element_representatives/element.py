@@ -284,7 +284,7 @@ class Element(ElementRepresentative):
 
         As with attributes, a scalar assignment also writes the lexical
         form through to the child node the writer serializes, so a
-        later ``to_string()`` reflects it (F1). Only a bare value (no
+        later ``to_string()`` reflects it. Only a bare value (no
         ``_name_``) triggers this: internal binding also assigns child
         nodes through descriptors, and a bound node must keep the
         container the binder gave it (notably a nilled node keeps
@@ -305,7 +305,7 @@ class Element(ElementRepresentative):
             and isinstance(value, (str, int, float, bool, decimal.Decimal))
             and not isinstance(value, XsdDataType)
         ):
-            # F2: a plain Python value for a simple-typed element is
+            # A plain Python value for a simple-typed element is
             # coerced through the declared datatype, matching the
             # attribute assignment policy. A value that fails the
             # datatype's lexical validation is reported (or logged

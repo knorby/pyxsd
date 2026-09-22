@@ -1,12 +1,12 @@
-"""F1/F2: descriptor assignment must reach the writer's containers.
+"""Descriptor assignment must reach the writer's containers.
 
-F1 (review finding / tracker R8): ``root.attr = value`` validated but the
-value was silently dropped by ``to_string()``/``write()``, because
-descriptors stored only in ``obj.__dict__`` while the writer serializes
-the lexical containers built at parse time.
+Regression: ``root.attr = value`` validated but the value was silently
+dropped by ``to_string()``/``write()``, because descriptors stored only in
+``obj.__dict__`` while the writer serializes the lexical containers built
+at parse time.
 
-F2: element assignment demanded a typed instance while attribute
-assignment coerced plain values; the policies are unified here.
+Element assignment demanded a typed instance while attribute assignment
+coerced plain values; the policies are unified here.
 """
 
 import logging
