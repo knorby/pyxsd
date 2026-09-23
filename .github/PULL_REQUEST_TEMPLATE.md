@@ -16,7 +16,7 @@
 - [ ] `uvx ruff@0.16.6 check .` passes
 - [ ] `uvx ruff@0.16.6 format --check .` passes
 - [ ] `uv run mypy src/pyxsd` passes
-- [ ] `uv run pre-commit run --all-files` passes (secret scanning runs here, not in CI)
+- [ ] `uv run pre-commit run --all-files` passes
 - [ ] Bug fixes include a test that failed before and passes now
 - [ ] `CHANGELOG.md` and docs updated (or N/A: no public behavior change)
 

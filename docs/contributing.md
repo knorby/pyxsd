@@ -31,12 +31,14 @@ uv run mypy src/pyxsd        # type check
 uv run python tests/report_conformance.py  # conformance report
 ```
 
-`pre-commit install` sets up the repo's lint and secret-scanning hooks:
-file hygiene, ruff, shellcheck, and gitleaks/trufflehog secret scanning.
-CI runs none of the secret scanning, so the hooks are the only local gate
-for it. The gitleaks hook needs its binary on PATH and the trufflehog
-hook builds with the Go toolchain on first run. To run every hook without
-installing the git hooks: `uv run pre-commit run --all-files`.
+`pre-commit install` runs the hooks on every commit: ruff lint and
+format, file hygiene (whitespace, line endings, TOML/YAML validity,
+large-file and merge-conflict checks), shellcheck, and secret detection.
+They catch locally what CI would catch after you push, plus a few checks
+CI does not run at all. The gitleaks hook needs its binary on PATH and
+the trufflehog hook builds with the Go toolchain on first run. To run
+every hook without installing the git hooks:
+`uv run pre-commit run --all-files`.
 Python 3.11 is the floor; CI tests 3.11–3.14.
 
 ## Pull requests
