@@ -13,6 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/pyxsd/__init__.py)"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "tag v$TAG does not match package version $PKG" >&2
+            exit 1
+          fi
+
       - name: Install uv
         uses: astral-sh/setup-uv@v10.1.0
 
@@ -60,3 +69,4 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          fail_on_unmatched_files: true

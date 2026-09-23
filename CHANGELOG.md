@@ -213,8 +213,8 @@ official schemas.
 - The crystallography transforms from 0.1 moved from `examples/transforms/`
   to `examples/legacy/` (their schemas and data are no longer distributed).
 - GitHub Actions are pinned to the latest majors and the Pages deploy steps
-  run only on `main`, so pull requests build docs without requiring Pages.
-- Local design notes under `docs/superpowers/` are no longer tracked.
+  run only on the default branch, so pull requests build docs without
+  requiring Pages.
 - Element assignment now coerces a plain Python value through the declared
   datatype (as attribute assignment already did) and reports a bad lexical
   value instead of raising `TypeError`; a datatype instance of the wrong

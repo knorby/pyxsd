@@ -51,6 +51,11 @@ Useful flags: `--jobs N` (default: one per CPU), `--engine pyxsd|xmlschema|both`
 A full XSD 1.1 run over 41,735 cases takes roughly three minutes on a modern
 laptop with `--jobs 8`.
 
+When re-running by hand, use a clean bytecode cache
+(`PYTHONPYCACHEPREFIX=$(mktemp -d)`). A same-length source edit can leave a
+header-valid but stale `.pyc` in place and silently invalidate a
+measurement.
+
 ## How a case is judged
 
 - **Applicability.** A test is `not-applicable` when no version dimension it
