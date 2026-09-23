@@ -9,7 +9,7 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-09-22
 
 pyxsd 1.0.0 is a ground-up modernization of the 2006 0.1 release. The library
 was ported from Python 2.3 to Python 3.11+, reorganized into a `src/` layout,
