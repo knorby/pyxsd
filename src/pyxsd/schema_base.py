@@ -2225,7 +2225,15 @@ class SchemaBase:
         # ``xs:string`` (or ``xml:space="preserve"``) content keeps its
         # significant leading and trailing whitespace.  Do not use
         # ``str.strip()`` here -- it would discard the preserved spaces.
-        dataTypeValInst._value_ = [str(dataTypeValInst)] if dataTypeText is not None else None
+        dataTypeValInst._value_ = (
+            [
+                dataTypeValInst.lexical()
+                if isinstance(dataTypeValInst, XsdDataType)
+                else str(dataTypeValInst)
+            ]
+            if dataTypeText is not None
+            else None
+        )
         dataTypeValInst._children_ = dataTypeChildren
 
         return dataTypeValInst

@@ -118,3 +118,19 @@ def test_unrelated_unsupported_declaration_does_not_block_supported_projection()
         RECORD_SCHEMA + '<xs:element name="other"><xs:complexType mixed="true"/></xs:element>'
     )
     assert projection(schema).name == "root"
+
+
+def test_xsd_list_lexical_form_round_trips_for_fresh_validation():
+    schema = compile_schema("""<xs:simpleType name="L"><xs:list itemType="xs:int"/></xs:simpleType>
+    <xs:element name="root" type="L"/>""")
+    document = parse(schema, "<root>1 2</root>")
+    assert document.root.lexical() == "1 2"
+    document.revalidate().require_valid()
+
+
+@pytest.mark.parametrize("type_name, lexical", [("decimal", "0.00000000001"), ("double", "INF")])
+def test_native_scalar_lexical_form_round_trips_without_python_spellings(type_name, lexical):
+    schema = compile_schema(f'<xs:element name="root" type="xs:{type_name}"/>')
+    document = parse(schema, f"<root>{lexical}</root>")
+    assert document.root.lexical() == lexical
+    document.revalidate().require_valid()

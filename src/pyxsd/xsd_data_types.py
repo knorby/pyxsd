@@ -906,6 +906,10 @@ class Decimal(decimal.Decimal, XsdDataType):
             return super().__new__(cls, collapsed)
         return super().__new__(cls, val)
 
+    def lexical(self) -> str:
+        """XSD decimal has no exponent notation, including for tiny values."""
+        return format(self, "f")
+
 
 _FLOAT_LEXICAL = re.compile(
     r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?|[-+]?INF|NaN"
@@ -1059,6 +1063,12 @@ class XsdList(TypeList):
     def __init__(self, value: Any = "", *args: Any, **kwargs: Any) -> None:
         """Values are built in ``__new__``; keep ``list.__init__`` inert."""
         pass
+
+    def lexical(self) -> str:
+        """Serialize XSD list items as tokens, not Python's list representation."""
+        return " ".join(
+            item.lexical() if isinstance(item, XsdDataType) else str(item) for item in self
+        )
 
     @property
     def tokens(self) -> list[str]:
