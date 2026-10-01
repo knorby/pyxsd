@@ -58,7 +58,14 @@ def plain_value(cls: type, value: Any) -> Any:
     return str(value)
 
 
-def lexical_value(cls: type, lexical: str, *, evidence: Any = None, declaration: Any = None) -> Any:
+def lexical_value(
+    cls: type,
+    lexical: str,
+    *,
+    evidence: Any = None,
+    declaration: Any = None,
+    bindings: dict[str, str] | None = None,
+) -> Any:
     try:
         if scalar_kind(cls) == "qname":
             if (
@@ -66,6 +73,15 @@ def lexical_value(cls: type, lexical: str, *, evidence: Any = None, declaration:
                 and str(evidence) == lexical
                 and getattr(evidence, "_resolved_", False)
             ):
+                prefix = lexical.split(":", 1)[0] if ":" in lexical else ""
+                if (
+                    bindings is not None
+                    and prefix in bindings
+                    and bindings[prefix] != evidence._uri_
+                ):
+                    raise IntegrationError(
+                        "QName namespace evidence differs from current namespace binding"
+                    )
                 return plain_value(cls, evidence)
             if declaration is not None:
                 context = declaration.getSchema().namespaceContext
@@ -78,6 +94,30 @@ def lexical_value(cls: type, lexical: str, *, evidence: Any = None, declaration:
         return plain_value(cls, cls(lexical))
     except (TypeError, ValueError) as exc:
         raise IntegrationError(f"invalid {cls.__name__} value {lexical!r}: {exc}") from exc
+
+
+def value_equal(cls: type, left: Any, right: Any) -> bool:
+    """Compare projected values using the native XSD value-space keys."""
+    kind = scalar_kind(cls)
+    if kind == "list":
+        return len(left) == len(right) and all(
+            value_equal(list_item_type(cls), a, b) for a, b in zip(left, right, strict=True)
+        )
+    if kind in ("qname", "base64", "hex"):
+        return bool(left == right)
+
+    def key(value: Any) -> Any:
+        if kind == "bool":
+            lexical = "true" if value else "false"
+        elif kind == "float":
+            lexical = xd.Double(value).lexical()
+        elif kind == "decimal":
+            lexical = format(value, "f")
+        else:
+            lexical = str(value)
+        return xd.xsd_value_key(cls(lexical))
+
+    return bool(key(left) == key(right))
 
 
 def check_counts(shape: ElementShape, counts: dict[int, int]) -> None:
@@ -101,6 +141,8 @@ def check_counts(shape: ElementShape, counts: dict[int, int]) -> None:
         if p.max_occurs == 0 and present:
             shape.fail("prohibited group contains elements")
         if p.kind == "choice":
+            if not present and any(child.min_occurs == 0 for child in p.children):
+                return
             if len(present) != 1:
                 shape.fail("choice requires exactly one present branch")
             walk(present[0])
@@ -113,10 +155,12 @@ def check_counts(shape: ElementShape, counts: dict[int, int]) -> None:
 
 def project(shape: ElementShape, node: Any, *, explicit: bool = False) -> Any:
     """Project one bound occurrence, reading lexical containers rather than accessors."""
-    return _project(shape, node, explicit, set())
+    return _project(shape, node, explicit, set(), {})
 
 
-def _project(shape: ElementShape, node: Any, explicit: bool, active: set[int]) -> Any:
+def _project(
+    shape: ElementShape, node: Any, explicit: bool, active: set[int], bindings: dict[str, str]
+) -> Any:
     if id(node) in active:
         shape.fail("cyclic bound input")
     if getattr(node, "_descriptor_", None) is not shape.declaration:
@@ -126,6 +170,12 @@ def _project(shape: ElementShape, node: Any, explicit: bool, active: set[int]) -
     children = getattr(node, "_children_", []) or []
     lexical = text_of(node)
     nil = getattr(node, "_nil_", False)
+    bindings = dict(bindings)
+    for name, uri in (getattr(node, "_attribs_", {}) or {}).items():
+        if name == "xmlns" or name.startswith("xmlns:"):
+            bindings[name.split(":", 1)[1] if ":" in name else ""] = uri
+    if nil and shape.declaration.getFixed() is not None:
+        shape.fail("nil element has a fixed value")
     if nil and (not shape.nillable or children or lexical):
         shape.fail("invalid nil state/content")
     if shape.primitive:
@@ -139,13 +189,14 @@ def _project(shape: ElementShape, node: Any, explicit: bool, active: set[int]) -
             shape.scalar,
             lexical if lexical else forced or "",
             evidence=node,
+            bindings=bindings,
             declaration=shape.declaration if not lexical else None,
         )
         if shape.declaration.getFixed() is not None:
             fixed = lexical_value(
                 shape.scalar, shape.declaration.getFixed(), declaration=shape.declaration
             )
-            if value != fixed:
+            if not value_equal(shape.scalar, value, fixed):
                 shape.fail("fixed element value violated")
         return value
     data: dict[str, Any] = {}
@@ -182,10 +233,11 @@ def _project(shape: ElementShape, node: Any, explicit: bool, active: set[int]) -
             attr.scalar,
             raw,
             evidence=evidence,
+            bindings=bindings,
             declaration=attr.declaration if not present else None,
         )
-        if attr.fixed is not None and value != lexical_value(
-            attr.scalar, attr.fixed, declaration=attr.declaration
+        if attr.fixed is not None and not value_equal(
+            attr.scalar, value, lexical_value(attr.scalar, attr.fixed, declaration=attr.declaration)
         ):
             shape.fail(f"fixed attribute {attr.name} violated")
         data[attr.alias] = value
@@ -199,10 +251,15 @@ def _project(shape: ElementShape, node: Any, explicit: bool, active: set[int]) -
             shape.scalar,
             lexical if lexical else forced or "",
             evidence=node,
+            bindings=bindings,
             declaration=shape.declaration if not lexical else None,
         )
-        if shape.declaration.getFixed() is not None and data["$"] != lexical_value(
-            shape.scalar, shape.declaration.getFixed(), declaration=shape.declaration
+        if shape.declaration.getFixed() is not None and not value_equal(
+            shape.scalar,
+            data["$"],
+            lexical_value(
+                shape.scalar, shape.declaration.getFixed(), declaration=shape.declaration
+            ),
         ):
             shape.fail("fixed simple content violated")
     elif lexical:
@@ -217,7 +274,8 @@ def _project(shape: ElementShape, node: Any, explicit: bool, active: set[int]) -
     for child_shape in shape.children:
         occurrences = grouped[id(child_shape.declaration)]
         values = [
-            _project(child_shape, child, explicit, active | {id(node)}) for child in occurrences
+            _project(child_shape, child, explicit, active | {id(node)}, bindings)
+            for child in occurrences
         ]
         if child_shape.repeated:
             if values or not explicit:

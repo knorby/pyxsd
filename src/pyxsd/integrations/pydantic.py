@@ -37,7 +37,14 @@ from pyxsd.schema import Schema
 
 from . import IntegrationError
 from ._shape import ElementShape, ShapeSet, list_item_type, scalar_kind
-from ._values import check_counts, lexical_value, plain_value, prepare_document, project
+from ._values import (
+    check_counts,
+    lexical_value,
+    plain_value,
+    prepare_document,
+    project,
+    value_equal,
+)
 
 __all__ = ["ModelSet", "models"]
 
@@ -67,6 +74,8 @@ def _scalar_input(cls: type, value: Any) -> Any:
             item_type = list_item_type(cls)
             items = [_scalar_input(item_type, item) for item in value]
             tokens = [_input_lexical(item_type, item) for item in items]
+            if any(not token or any(c in " \t\r\n" for c in token) for token in tokens):
+                raise ValueError("XSD list items must each be one nonempty lexical token")
             return plain_value(cls, cls(" ".join(tokens)))
         lexical = _input_lexical(cls, value)
         return plain_value(cls, cls(lexical))
@@ -191,15 +200,19 @@ def _before(shape: ElementShape, aliases: dict[str, str]) -> Any:
                 raise ValueError(f"conflicting alias/name inputs for {alias}")
             data[alias] = item
         nil = data.get("$nil", False)
+        if nil and shape.declaration.getFixed() is not None:
+            raise ValueError("nil element has a fixed value")
         if type(nil) is not bool:
             raise ValueError("nil state must be a boolean")
         for attr in shape.attributes:
             if attr.alias in data:
                 if attr.prohibited or data[attr.alias] is None:
                     raise ValueError(f"prohibited/null attribute {attr.name}")
-                if attr.fixed is not None and _scalar_input(
-                    attr.scalar, data[attr.alias]
-                ) != lexical_value(attr.scalar, attr.fixed, declaration=attr.declaration):
+                if attr.fixed is not None and not value_equal(
+                    attr.scalar,
+                    _scalar_input(attr.scalar, data[attr.alias]),
+                    lexical_value(attr.scalar, attr.fixed, declaration=attr.declaration),
+                ):
                     raise ValueError(f"fixed attribute {attr.name} violated")
             elif attr.required:
                 raise ValueError(f"required attribute {attr.name} is missing")
@@ -227,7 +240,9 @@ def _before(shape: ElementShape, aliases: dict[str, str]) -> Any:
                     child.scalar, child.declaration.getFixed(), declaration=child.declaration
                 )
                 for supplied in item if child.repeated else [item]:
-                    if supplied is None or _scalar_input(child.scalar, supplied) != expected:
+                    if supplied is None or not value_equal(
+                        child.scalar, _scalar_input(child.scalar, supplied), expected
+                    ):
                         raise ValueError(f"fixed child {child.name} violated")
         if "$" in data:
             assert shape.scalar is not None
@@ -235,10 +250,12 @@ def _before(shape: ElementShape, aliases: dict[str, str]) -> Any:
                 raise ValueError(
                     "nil element cannot contain simple content; non-nil content cannot be null"
                 )
-            if shape.declaration.getFixed() is not None and _scalar_input(
-                shape.scalar, data["$"]
-            ) != lexical_value(
-                shape.scalar, shape.declaration.getFixed(), declaration=shape.declaration
+            if shape.declaration.getFixed() is not None and not value_equal(
+                shape.scalar,
+                _scalar_input(shape.scalar, data["$"]),
+                lexical_value(
+                    shape.scalar, shape.declaration.getFixed(), declaration=shape.declaration
+                ),
             ):
                 raise ValueError("fixed simple content violated")
         elif shape.scalar is not None and not nil:
@@ -287,10 +304,14 @@ class ModelSet:
             def validate_root(value: Any) -> Any:
                 assert shape.scalar is not None
                 if value is None and shape.nillable:
+                    if fixed is not None:
+                        raise ValueError("nil element has a fixed value")
                     return None
                 converted = _scalar_input(shape.scalar, value)
-                if fixed is not None and converted != lexical_value(
-                    shape.scalar, fixed, declaration=shape.declaration
+                if fixed is not None and not value_equal(
+                    shape.scalar,
+                    converted,
+                    lexical_value(shape.scalar, fixed, declaration=shape.declaration),
                 ):
                     raise ValueError("fixed element value violated")
                 return converted
@@ -303,7 +324,7 @@ class ModelSet:
         else:
             fields: dict[str, Any] = {}
             aliases: dict[str, str] = {}
-            used: set[str] = set()
+            used: set[str] = {"xml_contract"}
 
             def add(
                 alias: str,
@@ -314,7 +335,9 @@ class ModelSet:
                 minimum: int | None = None,
                 maximum: int | None = None,
             ) -> None:
-                field_name = _safe_name(alias, used)
+                other_aliases = {child.name for child in shape.children if child.name != alias}
+                field_name = _safe_name(alias, used | other_aliases)
+                used.add(field_name)
                 aliases[alias] = field_name
                 info = (
                     Field(

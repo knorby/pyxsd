@@ -153,7 +153,8 @@ fields.
 
 Reachable repeated composite groups, complex choices, ambiguous same-name
 positions, mixed/wildcard/open content, heterogeneous unions, recursive
-graphs, and differing runtime polymorphic types are rejected. Unsupported
+graphs, contextual QName-valued XSD lists, and differing runtime polymorphic
+types are rejected. Unsupported
 unrelated declarations do not block a supported selection. Unknown fields,
 overflow, and invalid values are errors, never silent nulls or dropped data.
 

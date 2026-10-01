@@ -38,6 +38,7 @@ jobs:
           WHEEL=$(find dist -name '*.whl' -print -quit)
           if [ "$DEPENDENCIES" = minimum ]; then
             uv pip install "$WHEEL[pydantic,arrow]" 'pydantic==2.12.5' 'pyarrow==22.0.0' 'pytest>=8.4' 'pytest-cov>=7'
+            .venv/bin/python -c 'import importlib.metadata as m; assert (m.version("pydantic"), m.version("pyarrow")) == ("2.12.5", "22.0.0")'
           else
             uv pip install "$WHEEL[pydantic,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
           fi
@@ -46,6 +47,7 @@ jobs:
           .venv/bin/python -m pytest -q
           tests/test_integration_projection.py tests/test_pydantic_integration.py
           tests/test_arrow_integration.py tests/test_integration_imports.py
+          tests/test_integration_review.py
           --cov=pyxsd.integrations --cov-config=tests/integration.coveragerc
           --cov-report=term-missing
       - name: Run installed-package example
@@ -79,3 +81,4 @@ jobs:
           .venv/bin/python -m pytest -q
           tests/test_integration_imports.py tests/test_integration_projection.py
           tests/test_pydantic_integration.py tests/test_arrow_integration.py
+          tests/test_integration_review.py

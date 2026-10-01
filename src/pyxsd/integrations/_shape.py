@@ -58,6 +58,8 @@ def scalar_kind(cls: type) -> str:
     if getattr(cls, "_unionMembers", None):
         raise IntegrationError(f"{cls.__name__}: heterogeneous union is unsupported")
     if issubclass(cls, xd.XsdList) or issubclass(cls, (xd.IDREFS, xd.ENTITIES, xd.NMTOKENS)):
+        if issubclass(list_item_type(cls), xd.QName):
+            raise IntegrationError(f"{cls.__name__}: contextual QName lists are unsupported")
         return "list"
     for base, kind in (
         (xd.Boolean, "bool"),
