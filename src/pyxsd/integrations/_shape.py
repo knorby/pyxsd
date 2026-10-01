@@ -55,7 +55,7 @@ class ElementShape:
 
 def scalar_kind(cls: type) -> str:
     """Classify native types, with bool and list types before their scalar bases."""
-    if getattr(cls, "_unionMembers_", None) or getattr(cls, "memberTypes", None):
+    if getattr(cls, "_unionMembers", None):
         raise IntegrationError(f"{cls.__name__}: heterogeneous union is unsupported")
     if issubclass(cls, xd.XsdList) or issubclass(cls, (xd.IDREFS, xd.ENTITIES, xd.NMTOKENS)):
         return "list"

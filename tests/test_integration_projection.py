@@ -134,3 +134,99 @@ def test_native_scalar_lexical_form_round_trips_without_python_spellings(type_na
     document = parse(schema, f"<root>{lexical}</root>")
     assert document.root.lexical() == lexical
     document.revalidate().require_valid()
+
+
+@pytest.mark.parametrize(
+    "element, path", [("missing", ()), ("root", ("absent",)), ("root", ["count"])]
+)
+def test_missing_or_invalid_declaration_selection_is_rejected(element, path):
+    from pyxsd.integrations import IntegrationError
+
+    with pytest.raises(IntegrationError, match="declaration"):
+        projection(compile_schema(RECORD_SCHEMA), element, path)
+
+
+@pytest.mark.parametrize(
+    "body, reason",
+    [
+        ('<xs:complexType mixed="true"/>', "mixed"),
+        ("<xs:complexType><xs:anyAttribute/></xs:complexType>", "wildcard"),
+        (
+            '<xs:complexType><xs:choice><xs:sequence><xs:element name="a" type="xs:int"/></xs:sequence><xs:element name="b" type="xs:int"/></xs:choice></xs:complexType>',
+            "choice",
+        ),
+        ('<xs:simpleType><xs:union memberTypes="xs:int xs:string"/></xs:simpleType>', "union"),
+    ],
+)
+def test_other_unsupported_shapes_are_diagnosed(body, reason):
+    from pyxsd.integrations import IntegrationError
+
+    schema = compile_schema(f'<xs:element name="root">{body}</xs:element>')
+    with pytest.raises(IntegrationError, match=reason):
+        projection(schema)
+
+
+def test_fixed_and_prohibited_attributes_and_scalar_fixed_mutation():
+    from pyxsd.integrations import IntegrationError
+    from pyxsd.integrations._values import project
+
+    schema = compile_schema("""<xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="v" type="xs:int" fixed="2"/>
+    </xs:sequence><xs:attribute name="fixed" type="xs:int" fixed="2"/>
+    <xs:attribute name="unused" use="prohibited"/></xs:complexType></xs:element>""")
+    doc = parse(schema, '<root fixed="2"><v>2</v></root>')
+    shape = projection(schema)
+    assert project(shape, doc.root) == {"@fixed": 2, "v": 2}
+    for name, raw, reason in [
+        ("fixed", "3", "fixed"),
+        ("unused", "x", "prohibited"),
+        ("other", "x", "undeclared"),
+    ]:
+        doc.root._attribs_ = {name: raw}
+        with pytest.raises(IntegrationError, match=reason):
+            project(shape, doc.root)
+    doc.root._attribs_ = {}
+    doc.root._children_[0]._value_ = ["3"]
+    with pytest.raises(IntegrationError, match="fixed"):
+        project(shape, doc.root)
+
+
+def test_required_attributes_and_unexpected_text_or_child_mutations():
+    from pyxsd.integrations import IntegrationError
+    from pyxsd.integrations._values import project
+
+    schema = compile_schema(RECORD_SCHEMA)
+    doc = parse(schema, '<root><count>7</count><missing reason="known"/></root>')
+    shape = projection(schema)
+    doc.root._children_[1]._attribs_ = {}
+    with pytest.raises(IntegrationError, match="required attribute"):
+        project(shape, doc.root)
+    doc.root._children_.pop()
+    doc.root._value_ = ["unexpected"]
+    with pytest.raises(IntegrationError, match="unexpected text"):
+        project(shape, doc.root)
+    doc.root._value_ = None
+    doc.root._children_.append(doc.root)
+    with pytest.raises(IntegrationError, match="undeclared child"):
+        project(shape, doc.root)
+
+
+def test_qname_snapshot_expanded_identity_and_stale_context_rejection():
+    from pyxsd.integrations import IntegrationError
+    from pyxsd.integrations._values import project
+
+    schema = compile_schema('<xs:element name="root" type="xs:QName"/>')
+    doc = parse(schema, '<root xmlns:p="urn:t">p:value</root>')
+    shape = projection(schema)
+    assert project(shape, doc.root) == "{urn:t}value"
+    doc.root._value_ = ["p:other"]
+    with pytest.raises(IntegrationError, match="context"):
+        project(shape, doc.root)
+
+
+def test_builtin_token_lists_are_list_values_not_lexical_strings():
+    from pyxsd.integrations._values import project
+
+    schema = compile_schema('<xs:element name="root" type="xs:NMTOKENS"/>')
+    doc = parse(schema, "<root>a b</root>")
+    assert project(projection(schema), doc.root) == ["a", "b"]

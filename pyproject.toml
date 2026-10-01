@@ -145,9 +145,19 @@ module = [
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 
+[[tool.mypy.overrides]]
+# PyArrow does not ship typing metadata; Pydantic is absent in base-only
+# environments. This affects third-party imports, not our own module checks.
+module = ["pyarrow", "pyarrow.*", "pydantic"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 source = ["pyxsd"]
 branch = true
+
+# Base CI measures the core and dependency-free projection. Adapter CI uses
+# tests/integration.coveragerc to include both optional backends separately.
+omit = ["*/pyxsd/integrations/pydantic.py", "*/pyxsd/integrations/arrow.py"]
 
 [tool.coverage.report]
 show_missing = true
