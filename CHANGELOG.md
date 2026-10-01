@@ -9,6 +9,22 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Independent `pyxsd[pydantic]` and `pyxsd[arrow]` extras, retaining Python
+  3.11+ support and the existing base dependency set.
+- Dynamic standalone Pydantic models, schema-shaped document/node snapshots,
+  and JSON Schema for the supported projected-data contract.
+- Explicit Arrow record schemas, nested tables, typed empty selections, and
+  row-batched Parquet output with atomic local-path replacement.
+
+### Fixed
+
+- Primitive XML output uses XSD lexical forms for list values, tiny decimals,
+  and nonfinite floats instead of invalid Python spellings.
+
 ## [1.0.0] - 2026-09-22
 
 pyxsd 1.0.0 is a ground-up modernization of the 2006 0.1 release. The library

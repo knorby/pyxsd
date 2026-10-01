@@ -183,3 +183,79 @@ def test_fixed_child_values_and_required_repeated_json_schema():
     assert "many" in description["required"]
     assert description["properties"]["many"]["minItems"] == 2
     assert description["properties"]["many"]["maxItems"] == 3
+
+
+def test_qname_inputs_and_declared_default_namespace_context():
+    schema = compile_schema("""<xs:element name="r"><xs:complexType>
+    <xs:attribute name="kind" type="xs:QName" default="xs:string"/>
+    </xs:complexType></xs:element>""")
+    registry = models(schema)
+    Root = registry.model_for(element="r")
+    assert Root.model_validate({}).attr_kind == "{http://www.w3.org/2001/XMLSchema}string"
+    assert (
+        registry.from_document(parse(schema, "<r/>")).attr_kind
+        == "{http://www.w3.org/2001/XMLSchema}string"
+    )
+    assert Root.model_validate({"@kind": "{urn:test}other"}).attr_kind == "{urn:test}other"
+    for invalid in (3, "{urn:t}", "{urn:t}bad:name", "{}x", "a:b"):
+        with pytest.raises(pydantic.ValidationError):
+            Root.model_validate({"@kind": invalid})
+
+
+def test_fixed_required_attributes_simple_content_and_alias_conflicts():
+    schema = compile_schema("""<xs:element name="r" fixed="2"><xs:complexType><xs:simpleContent>
+    <xs:extension base="xs:int"><xs:attribute name="a" type="xs:int" use="required"/>
+    <xs:attribute name="f" type="xs:int" fixed="2"/></xs:extension></xs:simpleContent></xs:complexType></xs:element>""")
+    Root = models(schema).model_for(element="r")
+    assert Root.model_validate({"$": 2, "@a": 1}).xml_value == 2
+    for data in (
+        {"$": 3, "@a": 1},
+        {"$": 2},
+        {"@a": 1},
+        {"$": None, "@a": 1},
+        {"$": 2, "@a": 1, "@f": 3},
+        {"$": 2, "@a": 1, "attr_a": 2},
+        [],
+    ):
+        with pytest.raises(pydantic.ValidationError):
+            Root.model_validate(data)
+
+
+@pytest.mark.parametrize("name", ["_private", "class", "has-dash", "model_dump"])
+def test_safe_python_field_names_preserve_xml_aliases(name):
+    schema = compile_schema(
+        f'<xs:element name="r"><xs:complexType><xs:sequence><xs:element name="{name}" type="xs:int"/></xs:sequence></xs:complexType></xs:element>'
+    )
+    Root = models(schema).model_for(element="r")
+    assert Root.model_validate({name: 1}).model_dump(by_alias=True) == {name: 1}
+
+
+def test_list_binary_nonfinite_and_string_facets_standalone():
+    schema = compile_schema("""<xs:element name="r"><xs:complexType><xs:sequence>
+    <xs:element name="tokens" type="xs:NMTOKENS"/><xs:element name="binary" type="xs:base64Binary"/>
+    <xs:element name="number" type="xs:double"/><xs:element name="label"><xs:simpleType>
+    <xs:restriction base="xs:token"><xs:pattern value="[A-Z]+"/></xs:restriction></xs:simpleType></xs:element>
+    </xs:sequence></xs:complexType></xs:element>""")
+    Root = models(schema).model_for(element="r")
+    data = {"tokens": ["a", "b"], "binary": b"\xff", "number": float("inf"), "label": "  VALID  "}
+    assert Root.model_validate(data).label == "VALID"
+    for bad in (
+        {**data, "tokens": "a b"},
+        {**data, "tokens": ["bad name"]},
+        {**data, "label": "invalid"},
+    ):
+        with pytest.raises(pydantic.ValidationError):
+            Root.model_validate(bad)
+
+
+def test_json_schema_exposes_exact_numeric_and_length_constraints():
+    schema = compile_schema("""<xs:element name="r"><xs:complexType><xs:sequence>
+    <xs:element name="number" type="xs:int"/><xs:element name="label"><xs:simpleType>
+    <xs:restriction base="xs:string"><xs:minLength value="2"/><xs:maxLength value="4"/></xs:restriction>
+    </xs:simpleType></xs:element></xs:sequence></xs:complexType></xs:element>""")
+    Root = models(schema).model_for(element="r")
+    props = Root.model_json_schema()["properties"]
+    assert props["number"]["minimum"] == -(2**31)
+    assert props["number"]["maximum"] == 2**31 - 1
+    assert props["label"]["minLength"] == 2
+    assert props["label"]["maxLength"] == 4

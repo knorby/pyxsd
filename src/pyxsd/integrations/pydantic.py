@@ -7,9 +7,11 @@ whole-document XML validation remains ``Document.revalidate()``.
 from __future__ import annotations
 
 import base64
+import json
 import keyword
 import math
 import re
+from dataclasses import asdict
 from decimal import Decimal
 from types import GenericAlias
 from typing import Annotated, Any
@@ -52,6 +54,10 @@ def _scalar_input(cls: type, value: Any) -> Any:
                     raise ValueError("QName namespace must not be empty")
                 bindings, lexical = {"p": uri}, "p:" + local
             else:
+                if ":" in value:
+                    raise ValueError(
+                        "QName input requires an expanded name, not an undeclared prefix"
+                    )
                 bindings, lexical = {}, value
             with xd.qname_context(bindings):
                 return plain_value(cls, cls(lexical))
@@ -116,7 +122,29 @@ def _annotation(cls: type) -> Any:
             "qname": str,
             "str": str,
         }[kind]
-    return Annotated[annotation, BeforeValidator(lambda value: _scalar_input(cls, value))]
+    constraints: dict[str, Any] = {}
+    if kind in ("int", "decimal", "float"):
+        constraints.update(ge=getattr(cls, "_min", None), le=getattr(cls, "_max", None))
+        if facets is not None:
+            constraints.update(
+                ge=facets.min_inclusive if facets.min_inclusive is not None else constraints["ge"],
+                le=facets.max_inclusive if facets.max_inclusive is not None else constraints["le"],
+                gt=facets.min_exclusive,
+                lt=facets.max_exclusive,
+            )
+    if facets is not None and kind in ("str", "list", "base64", "hex"):
+        constraints.update(
+            min_length=facets.length if facets.length is not None else facets.min_length,
+            max_length=facets.length if facets.length is not None else facets.max_length,
+        )
+    metadata = {"x-pyxsd-type": getattr(cls, "name", cls.__name__)}
+    if facets is not None:
+        metadata["x-pyxsd-facets"] = json.loads(json.dumps(asdict(facets), default=str))
+    return Annotated[
+        annotation,
+        Field(**constraints, json_schema_extra=metadata),
+        BeforeValidator(lambda value: _scalar_input(cls, value)),
+    ]
 
 
 def _safe_name(alias: str, used: set[str]) -> str:
@@ -165,8 +193,6 @@ def _before(shape: ElementShape, aliases: dict[str, str]) -> Any:
         nil = data.get("$nil", False)
         if type(nil) is not bool:
             raise ValueError("nil state must be a boolean")
-        if nil and not shape.nillable:
-            raise ValueError("element is not nillable")
         for attr in shape.attributes:
             if attr.alias in data:
                 if attr.prohibited or data[attr.alias] is None:
@@ -294,7 +320,6 @@ class ModelSet:
                     Field(
                         default_factory=factory,
                         alias=alias,
-                        json_schema_extra=_field_schema,
                         min_length=minimum,
                         max_length=maximum,
                     )
@@ -302,7 +327,6 @@ class ModelSet:
                     else Field(
                         default=default,
                         alias=alias,
-                        json_schema_extra=_field_schema,
                         min_length=minimum,
                         max_length=maximum,
                     )
@@ -355,11 +379,20 @@ class ModelSet:
                 "x-pyxsd-declaration-path": list(shape.path),
                 "x-pyxsd-validation": "projected-data; use Document.revalidate for XML validity",
             }
+
+            def model_schema(description: dict[str, Any]) -> None:
+                description.update(metadata)
+                for property_schema in description.get("properties", {}).values():
+                    _field_schema(property_schema)
+
             validators = {"xml_contract": model_validator(mode="before")(_before(shape, aliases))}
             model = create_model(
                 name,
                 __config__=ConfigDict(
-                    extra="forbid", strict=True, validate_by_name=True, json_schema_extra=metadata
+                    extra="forbid",
+                    strict=True,
+                    validate_by_name=True,
+                    json_schema_extra=model_schema,
                 ),
                 __validators__=validators,
                 **fields,

@@ -12,7 +12,10 @@ Schema (XSD), reports non-fatal validation issues, runs user-defined
 *transforms*, and writes the tree back out as XML.
 
 - **Minimal dependencies** — one small, pure-Python package (`elementpath`)
-  for XSD regular expressions and XPath queries; no compiled extensions
+  for XSD regular expressions and XPath queries; no compiled extensions in the base install
+- **Optional integrations** — generated Pydantic models and schema-derived
+  Arrow tables/Parquet output, independently installed with
+  `pyxsd[pydantic]` and `pyxsd[arrow]`; Python 3.11+ remains supported
 - **Schema-compiled classes** — your schema becomes real Python classes;
   `xs:extension` becomes real subclassing
 - **XSD 1.1 processor** — with an optional XSD 1.0 mode
@@ -72,6 +75,11 @@ see the [quickstart](https://pyxsd.knorby.com/quickstart.html) and the
 [full documentation](https://pyxsd.knorby.com/) for more.
 
 ## What it validates
+
+For runtime model generation and Parquet output, see
+[optional integrations](docs/integrations.md) and the runnable
+[example](examples/optional_integrations.py). These adapters validate a
+documented projected-data subset, not the entire XSD contract.
 
 All 45 XSD 1.0 built-in types with lexical validation; sequence/choice/all
 content models; groups and attributeGroups (with refs); wildcards;
