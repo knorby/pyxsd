@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Kali Norby", email = "kali.norby@gmail.com" }]
 maintainers = [{ name = "Kali Norby", email = "kali.norby@gmail.com" }]
 requires-python = ">=3.11"
-# Minimal, pure-Python dependencies; no compiled packages. elementpath
+# Minimal, pure-Python base dependencies; optional extras may contain compiled packages. elementpath
 # supplies the XSD regular-expression translator used to enforce the
 # xs:pattern facet.
 dependencies = ["elementpath>=4.7,<6"]
@@ -29,6 +29,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Text Processing :: Markup :: XML",
 ]
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2.12.5,<3"]
+arrow = ["pyarrow>=22"]
 
 [project.urls]
 Homepage = "https://github.com/knorby/pyxsd"
