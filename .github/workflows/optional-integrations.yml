@@ -48,6 +48,7 @@ jobs:
           tests/test_integration_projection.py tests/test_pydantic_integration.py
           tests/test_arrow_integration.py tests/test_integration_imports.py
           tests/test_integration_review.py
+          tests/test_optional_examples.py
           --cov=pyxsd.integrations --cov-config=tests/integration.coveragerc
           --cov-report=term-missing
       - name: Run installed-package example
@@ -82,3 +83,4 @@ jobs:
           tests/test_integration_imports.py tests/test_integration_projection.py
           tests/test_pydantic_integration.py tests/test_arrow_integration.py
           tests/test_integration_review.py
+          tests/test_optional_examples.py

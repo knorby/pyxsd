@@ -77,8 +77,9 @@ see the [quickstart](https://pyxsd.knorby.com/quickstart.html) and the
 ## What it validates
 
 For runtime model generation and Parquet output, see
-[optional integrations](docs/integrations.md) and the runnable
-[example](examples/optional_integrations.py). These adapters validate a
+[optional integrations](docs/integrations.md), the
+[Pydantic purchase-order tutorial](examples/pydantic/README.md), and the
+[Arrow/Parquet observations tutorial](examples/arrow/README.md). These adapters validate a
 documented projected-data subset, not the entire XSD contract.
 
 All 45 XSD 1.0 built-in types with lexical validation; sequence/choice/all

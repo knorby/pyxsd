@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<observations xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <observation station="RIVER-UPSTREAM">
+    <sequence>1</sequence><accession>20261001001</accession><collected>2026-10-01T08:00:00-04:00</collected>
+    <location><latitude>45.42150</latitude><longitude>-75.69720</longitude></location>
+    <analyte>dissolved oxygen</analyte><reading unit="mg/L">7.125</reading>
+    <replicates>7.100 7.125 7.150</replicates><quality>true</quality><tag>baseline</tag><tag>triplicate</tag>
+  </observation>
+  <observation station="RIVER-DOWNSTREAM">
+    <sequence>2</sequence><accession>20261001002</accession><collected>2026-10-01T08:15:00-04:00</collected>
+    <location><latitude>45.43010</latitude><longitude>-75.68030</longitude></location>
+    <analyte>dissolved oxygen</analyte><reading unit="mg/L">4.875</reading>
+    <replicates>4.850 4.900</replicates><quality>false</quality><tag>recheck</tag>
+  </observation>
+  <observation station="RIVER-UPSTREAM">
+    <sequence>3</sequence><accession>20261001003</accession><collected>2026-10-01T08:30:00-04:00</collected>
+    <location><latitude>45.42150</latitude><longitude>-75.69720</longitude></location>
+    <analyte>nitrate</analyte><reading unit="mg/L" xsi:nil="true"/>
+    <quality>false</quality><tag>sensor-offline</tag>
+  </observation>
+  <observation station="COASTAL-ESTUARY" method="laboratory">
+    <sequence>4</sequence><accession>123456789012345678901234567890</accession><collected>2026-10-01T12:45:00.123456789Z</collected>
+    <location><latitude>44.64880</latitude><longitude>-63.57520</longitude></location>
+    <analyte>nitrate</analyte><reading unit="mg/L">0.015</reading>
+    <replicates>0.014 0.015 0.016</replicates><quality>true</quality>
+  </observation>
+</observations>

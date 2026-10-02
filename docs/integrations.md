@@ -178,7 +178,24 @@ with declaration/row context. Independent model validation raises Pydantic's
 `ValidationError`. Missing extras raise an actionable import error; a broken
 optional installation retains its actual missing-module cause.
 
-Run the self-contained example with both extras:
+## Runnable examples
+
+Two standalone tutorials use synthetic, substantive datasets and need only
+their own extra:
+
+- [Pydantic purchase orders](https://github.com/knorby/pyxsd/tree/develop/examples/pydantic): generate nested
+  access models from the XSD before reading XML, validate Python input, inspect
+  exact prices/defaults/presence, and snapshot three orders with line items.
+- [Arrow/Parquet environmental observations](https://github.com/knorby/pyxsd/tree/develop/examples/arrow):
+  prepare a declared nested schema, extract four observations with decimal
+  readings, coordinates, lists and nil shells, then batch-write/read Parquet.
+
+```bash
+python examples/pydantic/demo.py
+python examples/arrow/demo.py observations.parquet
+```
+
+The smaller combined smoke example is still available with both extras:
 
 ```bash
 python examples/optional_integrations.py output.parquet
