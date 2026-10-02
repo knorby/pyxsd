@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Money">
+    <xs:restriction base="xs:decimal">
+      <xs:totalDigits value="8"/>
+      <xs:fractionDigits value="2"/>
+      <xs:minInclusive value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="OrderStatus">
+    <xs:restriction base="xs:token">
+      <xs:enumeration value="pending"/>
+      <xs:enumeration value="shipped"/>
+      <xs:enumeration value="cancelled"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="Price">
+    <xs:simpleContent>
+      <xs:extension base="Money">
+        <xs:attribute name="currency" type="xs:string" default="USD"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+  <xs:complexType name="Customer">
+    <xs:sequence>
+      <xs:element name="name" type="xs:string"/>
+      <xs:element name="contact" type="xs:string"/>
+    </xs:sequence>
+    <xs:attribute name="account" type="xs:string" use="required"/>
+  </xs:complexType>
+  <xs:complexType name="Line">
+    <xs:sequence>
+      <xs:element name="description" type="xs:string"/>
+      <xs:element name="quantity" type="xs:positiveInteger"/>
+      <xs:element name="price" type="Price"/>
+    </xs:sequence>
+    <xs:attribute name="sku" type="xs:string" use="required"/>
+  </xs:complexType>
+  <xs:complexType name="Order">
+    <xs:sequence>
+      <xs:element name="placed" type="xs:dateTime"/>
+      <xs:element name="customer" type="Customer"/>
+      <xs:element name="line" type="Line" maxOccurs="unbounded"/>
+      <xs:element name="expedited" type="xs:boolean" minOccurs="0"/>
+      <xs:element name="note" type="xs:string" minOccurs="0" nillable="true"/>
+    </xs:sequence>
+    <xs:attribute name="number" type="xs:string" use="required"/>
+    <xs:attribute name="status" type="OrderStatus" default="pending"/>
+  </xs:complexType>
+  <xs:element name="orders">
+    <xs:complexType>
+      <xs:sequence><xs:element name="order" type="Order" maxOccurs="unbounded"/></xs:sequence>
+      <xs:attribute name="source" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

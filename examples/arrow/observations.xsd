@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="Reading">
+    <xs:restriction base="xs:decimal"><xs:totalDigits value="5"/><xs:fractionDigits value="3"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Coordinate">
+    <xs:restriction base="xs:decimal"><xs:totalDigits value="6"/><xs:fractionDigits value="5"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Replicates"><xs:list itemType="Reading"/></xs:simpleType>
+  <xs:complexType name="Measurement">
+    <xs:simpleContent><xs:extension base="Reading">
+      <xs:attribute name="unit" type="xs:string" use="required"/>
+    </xs:extension></xs:simpleContent>
+  </xs:complexType>
+  <xs:complexType name="Location">
+    <xs:sequence>
+      <xs:element name="latitude" type="Coordinate"/><xs:element name="longitude" type="Coordinate"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Observation">
+    <xs:sequence>
+      <xs:element name="sequence" type="xs:unsignedInt"/>
+      <xs:element name="accession" type="xs:integer"/>
+      <xs:element name="collected" type="xs:dateTime"/>
+      <xs:element name="location" type="Location"/>
+      <xs:element name="analyte" type="xs:string"/>
+      <xs:element name="reading" type="Measurement" nillable="true"/>
+      <xs:element name="replicates" type="Replicates" minOccurs="0"/>
+      <xs:element name="quality" type="xs:boolean"/>
+      <xs:element name="tag" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="station" type="xs:string" use="required"/>
+    <xs:attribute name="method" type="xs:string" default="field-probe"/>
+  </xs:complexType>
+  <xs:element name="observations"><xs:complexType><xs:sequence>
+    <xs:element name="observation" type="Observation" minOccurs="0" maxOccurs="unbounded"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>

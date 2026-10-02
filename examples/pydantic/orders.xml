@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<orders source="procurement-export" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <order number="PO-2026-1041">
+    <placed>2026-09-28T10:15:00-04:00</placed>
+    <customer account="RRL-42">
+      <name>River Research Lab</name><contact>procurement@example.invalid</contact>
+    </customer>
+    <line sku="LOGGER-USB"><description>Temperature logger</description><quantity>4</quantity><price>125.50</price></line>
+    <line sku="PROBE-EC"><description>Conductivity probe</description><quantity>2</quantity><price>89.95</price></line>
+    <note>Deliver to the field equipment store.</note>
+  </order>
+  <order number="PO-2026-1042" status="shipped">
+    <placed>2026-09-29T08:30:00Z</placed>
+    <customer account="CWO-17">
+      <name>Coastal Water Observatory</name><contact>stores@example.invalid</contact>
+    </customer>
+    <line sku="BOTTLE-1L"><description>Sampling bottle, 1 litre</description><quantity>120</quantity><price currency="EUR">3.75</price></line>
+    <expedited>true</expedited><note xsi:nil="true"/>
+  </order>
+  <order number="PO-2026-1043">
+    <placed>2026-09-30T16:45:00+02:00</placed>
+    <customer account="RRL-42">
+      <name>River Research Lab</name><contact>procurement@example.invalid</contact>
+    </customer>
+    <line sku="LABEL-WP"><description>Waterproof sample label</description><quantity>1000</quantity><price>0.10</price></line>
+    <expedited>false</expedited>
+  </order>
+</orders>

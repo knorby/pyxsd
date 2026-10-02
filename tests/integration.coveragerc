@@ -1,0 +1,9 @@
+[run]
+source = pyxsd.integrations
+branch = True
+patch = subprocess
+
+[report]
+show_missing = True
+precision = 1
+fail_under = 92

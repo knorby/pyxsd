@@ -31,6 +31,7 @@ from pyxsd.wildcards import (
 from pyxsd.xsd_data_types import (
     AnySimpleType,
     AnyType,
+    XsdDataType,
     qname_context,
     whitespace_mode,
     xsd_value_key,
@@ -535,7 +536,11 @@ def primitive_root_instance(
         # reported any character content, which is not bound here.
         instance._value_ = None
     else:
-        instance._value_ = [str(value)] if value is not None else ([text] if text else None)
+        instance._value_ = (
+            [value.lexical() if isinstance(value, XsdDataType) else str(value)]
+            if value is not None
+            else ([text] if text else None)
+        )
     instance._children_ = []
     return instance
 
