@@ -19,6 +19,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   and JSON Schema for the supported projected-data contract.
 - Explicit Arrow record schemas, nested tables, typed empty selections, and
   row-batched Parquet output with atomic local-path replacement.
+- Named Arrow scalar columns using `FieldSource` to read a selected record,
+  its ancestors or the document root, with schema-derived types and exact
+  occurrence associations. Includes an Arrow-only purchase-order-line example.
 
 ### Fixed
 

@@ -92,6 +92,54 @@ def particle_elements(particle: Any) -> list[Any]:
     return [leaf for child in particle.children for leaf in particle_elements(child)]
 
 
+@dataclass(frozen=True)
+class DeclarationRoute:
+    """Declarations and exact particle edges on one root-to-occurrence route."""
+
+    path: tuple[str, ...]
+    declarations: tuple[Any, ...]
+    edges: tuple[Any, ...]
+
+
+def resolve_route(schema: Schema, element: str, path: tuple[str, ...] = ()) -> DeclarationRoute:
+    """Resolve one route without recursively constructing sibling types."""
+    schema.require_valid()
+    if (
+        not isinstance(element, str)
+        or not element
+        or not isinstance(path, tuple)
+        or not all(isinstance(step, str) and step for step in path)
+    ):
+        raise IntegrationError("declaration path must be a tuple of nonempty expanded names")
+    candidates = {
+        id(decl): decl
+        for entries in schema.components.values()
+        for decl in entries
+        if type(decl).__name__ == "Element"
+        and decl.isGlobalDeclaration()
+        and decl.expandedName == element
+    }
+    if len(candidates) != 1:
+        raise IntegrationError(f"{element}: global element declaration is missing or ambiguous")
+    declaration = next(iter(candidates.values()))
+    declarations, edges = [declaration], []
+    for step in path:
+        matches = [
+            p
+            for p in particle_elements(getattr(declaration.getType(), "_contentModel_", None))
+            if p.kind == "element" and p.descriptor.instanceName(parser=schema._host) == step
+        ]
+        if len(matches) != 1:
+            raise IntegrationError(
+                f"{(element, *path)}: local declaration {step!r} is missing or ambiguous"
+            )
+        edge = matches[0]
+        edges.append(edge)
+        declaration = edge.descriptor
+        declarations.append(declaration)
+    return DeclarationRoute((element, *path), tuple(declarations), tuple(edges))
+
+
 class ShapeSet:
     """Resolve global/local declarations without treating local aliases as identities."""
 
@@ -106,31 +154,18 @@ class ShapeSet:
         key = (element, *path)
         if key in self._cache:
             return self._cache[key]
-        candidates = {
-            id(decl): decl
-            for entries in self.schema.components.values()
-            for decl in entries
-            if type(decl).__name__ == "Element"
-            and decl.isGlobalDeclaration()
-            and decl.expandedName == element
-        }
-        if len(candidates) != 1:
-            raise IntegrationError(f"{element}: global element declaration is missing or ambiguous")
-        declaration = next(iter(candidates.values()))
-        for step in path:
-            candidates = {
-                id(p.descriptor): p.descriptor
-                for p in particle_elements(getattr(declaration.getType(), "_contentModel_", None))
-                if p.descriptor.instanceName(parser=self.schema._host) == step
-            }
-            if len(candidates) != 1:
-                raise IntegrationError(f"{key}: local declaration {step!r} is missing or ambiguous")
-            declaration = next(iter(candidates.values()))
+        declaration = resolve_route(self.schema, element, path).declarations[-1]
         shape = self._build(declaration, key, set())
         self._cache[key] = shape
         return shape
 
-    def _build(self, declaration: Any, path: tuple[str, ...], active: set[type]) -> ElementShape:
+    def shallow(self, element: str, path: tuple[str, ...] = ()) -> ElementShape:
+        route = resolve_route(self.schema, element, path)
+        return self._build(route.declarations[-1], route.path, set(), shallow=True)
+
+    def _build(
+        self, declaration: Any, path: tuple[str, ...], active: set[type], *, shallow: bool = False
+    ) -> ElementShape:
         cls = declaration.getType()
         if not isinstance(cls, type):
             raise IntegrationError(f"{path}: unresolved declaration type")
@@ -167,7 +202,19 @@ class ShapeSet:
             if name in names:
                 shape.fail(f"ambiguous declaration positions for {name}")
             names.add(name)
-            child = self._build(p.descriptor, (*path, name), active | {cls})
+            if shallow:
+                child_cls = p.descriptor.getType()
+                child = ElementShape(
+                    self.schema,
+                    name,
+                    (*path, name),
+                    p.descriptor,
+                    child_cls,
+                    None,
+                    p.descriptor.isNillable(),
+                )
+            else:
+                child = self._build(p.descriptor, (*path, name), active | {cls})
             child.minimum, child.maximum = p.min_occurs, p.max_occurs
             shape.children.append(child)
         attributes: dict[str, Any] = {}

@@ -102,6 +102,99 @@ Nested children become structs and repeated children become lists. There is
 no implicit flattening, exploding, or Cartesian join. Primitive record
 roots use a single `value` column. Arrow does not depend on Pydantic or pandas.
 
+### Named scalar columns with row context
+
+Use `columns` to extract one analytical row per selected element, including
+values from its enclosing occurrences or the document root. For the bundled
+purchase orders, each line can carry its order number without projecting the
+entire order:
+
+```python
+from pyxsd.integrations.arrow import records
+from pyxsd.integrations.projection import FieldSource
+
+projection = records(
+    schema,
+    element="orders",
+    path=("order", "line"),
+    columns={
+        "order_number": FieldSource(scope="ancestor", levels=1, attribute="number"),
+        "customer_account": FieldSource(
+            scope="ancestor", levels=1, path=("customer",), attribute="account"
+        ),
+        "sku": FieldSource(attribute="sku"),
+        "quantity": FieldSource(path=("quantity",)),
+        "unit_price": FieldSource(path=("price",)),
+        "currency": FieldSource(path=("price",), attribute="currency"),
+    },
+)
+table = projection.table(document, selector="order/line", revalidate=True)
+```
+
+`FieldSource` is frozen and dependency-free. Its keyword-only arguments are:
+
+- `scope="record"` (default), `"ancestor"`, or `"root"` selects the starting
+  occurrence. Ancestors require a positive integer `levels`, measured in
+  element-parent edges; other scopes require `levels=0`. Climbing above the
+  configured root is an error.
+- `path=()` follows child declarations by expanded XML names, such as
+  `("{urn:orders}price",)`. It must be a tuple, not slash-delimited text or
+  Python aliases. An empty tuple addresses the starting occurrence itself.
+- `attribute=None` reads the reached element's scalar/simple-content value.
+  Otherwise it reads the expanded attribute name **without** an `@` prefix,
+  after following `path`. `$` is not a path step.
+
+`columns` is a nonempty mapping of nonempty output names to sources. Names
+and insertion order are preserved, including punctuation; the mapping is
+copied during preparation. `columns=None` retains whole-record structs/lists
+and their original metadata. Named columns use projection metadata version 2
+and `pyxsd:mode=columns`, with source/row identities and scalar facet metadata.
+
+Column schemas and nullability are compiled before XML is read. Each downward
+source step must be at-most-one; potentially repeated routes, struct/list
+endpoints (including XSD list-valued scalars), unions, and unsupported scalar
+types fail during preparation. Repetition on the root-to-row route is allowed.
+No list explosion, expressions, casts, aggregates, sibling joins, or inference
+from sample rows are performed.
+
+The configured global declaration must govern the document root. A local row
+path does **not** select rows automatically: supply an explicit selector.
+Selectors remain ElementTree occurrence filters with optional namespace maps,
+not column expressions. Every candidate must match the exact configured
+declaration route; a reused declaration on another branch is not a match.
+Rows retain document order, including identical-valued siblings.
+
+Nullability includes the entire source path's optional groups, choices and
+nillable steps. Missing optional content yields null; an activated container
+still requires its mandatory members. A nil element's value is null, but its
+ordinary attributes remain available; valid nil containers suppress descent.
+Absent defaulted elements remain absent, empty present elements use their
+declared default/fixed value, and optional attributes include effective
+defaults/fixed values. Required absent attributes are errors, even with a fixed
+value. Current `xsi:nil` must be valid and agree with an existing bound nil
+flag; revalidate after changing that state. Absence and nil collapse to the
+same scalar null, not a round-trip XML representation.
+
+Without revalidation, contextual projection checks current lexical values and
+attributes along extraction paths, plus traversed containers' immediate child
+identities/counts and group/choice rules. It does **not** freshly validate deep
+unselected sibling contents: unsupported deep sibling types need not prevent
+reading supported columns. `revalidate=True` first validates the whole document
+and uses the returned tree for both selection and ancestry. Historical report
+errors still require explicit revalidation after repairs. XML order, identity
+constraints and assertions remain parser/revalidation checks, not a guarantee
+from successful projection or metadata. Namespace evidence must match current
+bindings, including ancestor overrides. Original namespace declarations are
+not retained as bound attributes: untouched QName values use their resolved
+parse evidence, while explicit current `xmlns` overrides must agree with it.
+Removing an original declaration that was never retained cannot be inferred
+from bound attributes alone; this does not extend the native writer's QName
+namespace-preservation contract.
+
+Named columns share the existing batch-size, typed-empty and atomic local-path
+Parquet guarantees. Batching is not XML streaming, and this feature does not
+add concurrent parsing against a shared Schema.
+
 ### Type and fidelity policy
 
 | Values | Default Arrow representation |
@@ -115,7 +208,7 @@ roots use a single `value` column. Arrow does not depend on Pydantic or pandas.
 | Binary | Decoded bytes |
 | Temporal/duration values | Validated XSD strings, preserving extended years, resolution and offsets |
 | QName | Expanded identity, requiring trustworthy namespace context |
-| XSD lists | Fixed-item-type Arrow lists |
+| XSD lists (whole-record mode only) | Fixed-item-type Arrow lists |
 
 Decimal precision is conservative: `totalDigits=p`, `fractionDigits=s`
 requires capacity up to `p+s` at scale `s`. `9999` under four total digits and
@@ -193,6 +286,7 @@ their own extra:
 ```bash
 python examples/pydantic/demo.py
 python examples/arrow/demo.py observations.parquet
+python examples/arrow/project_order_lines.py order-lines.parquet
 ```
 
 The smaller combined smoke example is still available with both extras:

@@ -128,6 +128,30 @@ Both optional adapters support a documented projection subset, not the entire
 XSD validation contract. See the [integration guide](docs/integrations.md) for
 type mappings, presence semantics, supported shapes, and limitations.
 
+For scalar analytical rows with parent context, pass named `FieldSource`
+columns. For example, a line row can retain its enclosing order number:
+
+```python
+from pyxsd.integrations.projection import FieldSource
+
+projection = records(
+    schema,
+    element="orders",
+    path=("order", "line"),
+    columns={
+        "order_number": FieldSource(scope="ancestor", levels=1, attribute="number"),
+        "sku": FieldSource(attribute="sku"),
+        "quantity": FieldSource(path=("quantity",)),
+    },
+)
+table = projection.table(document, selector="order/line", revalidate=True)
+```
+
+Here `schema` and `document` use the purchase-order fixtures above. Column
+routes must be singleton and scalar; lists/structs remain whole-record outputs.
+Run `python examples/arrow/project_order_lines.py order-lines.parquet` for the
+complete Arrow-only example with prices, currency and Parquet readback.
+
 ## Quickstart
 
 ```bash
