@@ -43,6 +43,12 @@ against it, and inspect each `document.report`. Call `require_valid()` when
 invalid input should stop the workflow; use `revalidate()` to check a tree
 after edits.
 
+For an explicit sequence of local files, `Schema.iter_parse` yields structured
+per-source outcomes. It stops at the first failure by default; pass
+`errors="report"` to report invalid or unreadable inputs and continue. See
+[sequential batch parsing](docs/batch.md) and the
+[validation example](examples/batch/validate_documents.py).
+
 See [validation and issue codes](https://pyxsd.knorby.com/validation.html),
 [parse modes](https://pyxsd.knorby.com/binding.html), and the
 [supported-features coverage](https://pyxsd.knorby.com/supported.html).

@@ -88,6 +88,14 @@ jobs:
           path: .coverage
           include-hidden-files: true
 
+      - name: Smoke-test installed base-only batch API
+        run: |
+          uv build --wheel
+          uv venv --python ${{ matrix.python-version }} "$RUNNER_TEMP/pyxsd-batch"
+          WHEEL=$(find dist -name '*.whl' -print -quit)
+          uv pip install --python "$RUNNER_TEMP/pyxsd-batch/bin/python" "$WHEEL" 'pytest>=8.4'
+          "$RUNNER_TEMP/pyxsd-batch/bin/python" -m pytest -q tests/test_batch_parse.py tests/test_batch_example.py
+
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10

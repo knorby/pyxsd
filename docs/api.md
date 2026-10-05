@@ -25,6 +25,27 @@ schema once; `Schema.parse` binds one instance document and returns a
 from an argument or the instance's own schema hints, compiles, and
 binds.
 
+## Batch parsing
+
+`Schema.iter_parse` reuses the compiled schema for explicit local files.
+See {doc}`batch` for lazy stop/report behavior and resource limits.
+
+```{eval-rst}
+.. autoclass:: pyxsd.batch.DocumentSource
+   :members:
+
+.. autoclass:: pyxsd.batch.ParseOutcome
+   :members:
+
+.. autoclass:: pyxsd.batch.InputFailure
+   :members:
+
+.. autoclass:: pyxsd.batch.BatchParseError
+   :members:
+
+.. autofunction:: pyxsd.batch.iter_parse
+```
+
 ### Querying a document
 
 `Document.xpath(expr)` evaluates an XPath expression over the bound tree

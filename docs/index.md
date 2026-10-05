@@ -18,6 +18,7 @@ demo
 architecture
 data-model
 validation
+batch
 binding
 transforms/index
 supported
