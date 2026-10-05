@@ -1,5 +1,8 @@
 """Sequential, explicit-path parsing contracts."""
 
+import builtins
+import gc
+import weakref
 from dataclasses import FrozenInstanceError
 from io import StringIO
 from pathlib import Path
@@ -240,3 +243,103 @@ def test_keys_and_qname_evidence_remain_per_document(tmp_path):
         ("urn:later", "Thing"),
     )
     assert "p:Thing" in a.document.to_string()
+
+
+def test_no_prefetch_or_consumption_after_close(schema, mixed_sources):
+    pulled = []
+
+    def inputs():
+        for source in mixed_sources:
+            pulled.append(source.id)
+            yield source
+
+    iterator = schema.iter_parse(inputs(), errors="report")
+    assert pulled == []
+    assert next(iterator).status == "valid"
+    assert pulled == ["0"]
+    iterator.close()
+    assert pulled == ["0"]
+    assert list(iterator) == []
+
+
+@pytest.mark.parametrize("text", ["<record><count>1</count></record>", "<record>"])
+@pytest.mark.parametrize("policy", ["report", "raise"])
+def test_files_closed_before_yield_or_raise(schema, tmp_path, monkeypatch, text, policy):
+    sources = sources_for(tmp_path, text)
+    opened = []
+    original = builtins.open
+
+    def track(*args, **kwargs):
+        stream = original(*args, **kwargs)
+        opened.append(stream)
+        return stream
+
+    monkeypatch.setattr(builtins, "open", track)
+    iterator = schema.iter_parse(sources, errors=policy)
+    if text == "<record>" and policy == "raise":
+        with pytest.raises(BatchParseError) as caught:
+            next(iterator)
+        assert caught.value.outcome.error.kind == "malformed_xml"
+    else:
+        outcome = next(iterator)
+        if outcome.document is not None:
+            assert outcome.document.source == sources[0].path
+    assert opened and all(stream.closed for stream in opened)
+    iterator.close()
+
+
+def test_many_parses_do_not_accumulate_bound_or_input_trees(schema, tmp_path, monkeypatch):
+    inputs = sources_for(tmp_path, *(["<record><count>1</count></record>"] * 40))
+    input_refs = []
+    bound_refs = []
+    original = Schema.parse
+    original_bind = __import__("pyxsd.schema", fromlist=["bind_instance"]).bind_instance
+
+    def track_bind(owner, tree, report):
+        input_refs.append(weakref.ref(tree))
+        return original_bind(owner, tree, report)
+
+    def track_parse(owner, path):
+        document = original(owner, path)
+        bound_refs.append(weakref.ref(document.root))
+        return document
+
+    monkeypatch.setattr("pyxsd.schema.bind_instance", track_bind)
+    monkeypatch.setattr(Schema, "parse", track_parse)
+    iterator = schema.iter_parse(inputs)
+    for _ in inputs:
+        next(iterator)
+        gc.collect()
+        assert sum(ref() is not None for ref in input_refs) <= 1
+        assert sum(ref() is not None for ref in bound_refs) <= 1
+    iterator.close()
+    gc.collect()
+    assert not any(ref() is not None for ref in bound_refs)
+
+
+def test_report_failure_records_release_exception_frames(schema, tmp_path):
+    sources = sources_for(tmp_path, "<record>", "<record/>")
+    outcomes = list(schema.iter_parse(sources, errors="report"))
+    assert outcomes[0].error.kind == "malformed_xml"
+    assert all(not isinstance(value, BaseException) for value in vars(outcomes[0].error).values())
+    assert isinstance(outcomes[1].issues, tuple)
+    before = outcomes[1].issues
+    outcomes[1].document.report.add_warning("caller change", code="later")
+    assert outcomes[1].issues == before
+
+
+def test_valid_outcomes_include_warning_snapshots(schema, mixed_sources):
+    schema.report.add_warning("schema warning", code="example", phase="schema")
+    outcome = next(schema.iter_parse(mixed_sources))
+    assert outcome.status == "valid"
+    assert [(issue.code, issue.phase) for issue in outcome.issues] == [("example", "schema")]
+    schema.report.add_warning("later", code="later")
+    assert len(outcome.issues) == 1
+
+
+def test_instance_schema_hints_do_not_change_compiled_schema(schema, tmp_path):
+    inputs = sources_for(
+        tmp_path,
+        '<record xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="missing.xsd"><count>1</count></record>',
+    )
+    assert next(schema.iter_parse(inputs)).status == "valid"
