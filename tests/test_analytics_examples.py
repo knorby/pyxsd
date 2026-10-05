@@ -245,3 +245,119 @@ def test_duckdb_parquet_path_with_spaces_and_quotes(tmp_path):
     path = directory / 'it\'s "quoted".parquet'
     contextual.write_parquet(document, path, selector="observation", batch_size=2)
     assert module.summarize_parquet(path, _stations(common)) == _expected_summary()
+
+
+def _polars_observations():
+    require("polars")
+    return load_example_module("polars_observations")
+
+
+def test_polars_summary_matches_expected(tmp_path):
+    module = _polars_observations()
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    table = contextual.table(document, selector="observation", revalidate=True)
+    assert module.summarize_table(table, _stations(common)) == _expected_summary()
+    path = tmp_path / "observations.parquet"
+    contextual.write_parquet(document, path, selector="observation", batch_size=2)
+    assert module.summarize_parquet(path, _stations(common)) == _expected_summary()
+
+
+def test_polars_quality_filter_sequences():
+    module = _polars_observations()
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    table = contextual.table(document, selector="observation", revalidate=True)
+    assert module.passing_sequences(table) == [1, 4]
+
+
+def test_polars_station_join_preserves_rows():
+    module = _polars_observations()
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    table = contextual.table(document, selector="observation", revalidate=True)
+    assert module.with_regions(table, _stations(common)) == [
+        {"sequence": 1, "station": "RIVER-UPSTREAM", "region": "river"},
+        {"sequence": 2, "station": "RIVER-DOWNSTREAM", "region": "river"},
+        {"sequence": 3, "station": "RIVER-UPSTREAM", "region": "river"},
+        {"sequence": 4, "station": "COASTAL-ESTUARY", "region": "coastal"},
+    ]
+
+
+def test_polars_station_join_unknown_station():
+    module = _polars_observations()
+    common = load_common()
+    synthetic = pa.table(
+        {"sequence": pa.array([9], type=pa.uint32()), "station": pa.array(["POLAR-1"])}
+    )
+    assert module.with_regions(synthetic, _stations(common)) == [
+        {"sequence": 9, "station": "POLAR-1", "region": "unknown"}
+    ]
+
+
+def test_polars_child_expansion_counts():
+    module = _polars_observations()
+    common = load_common()
+    _, document, nested, contextual = common.prepare_observations()
+    nested_table = nested.table(document, selector="observation", revalidate=True)
+    assert module.child_row_counts(nested_table) == {"tags": 4, "replicates": 8}
+    table = contextual.table(document, selector="observation", revalidate=True)
+    assert module.summarize_table(table, _stations(common)) == _expected_summary()
+
+
+def test_polars_nested_nil_struct_retains_unit():
+    module = _polars_observations()
+    common = load_common()
+    _, document, nested, _ = common.prepare_observations()
+    nested_table = nested.table(document, selector="observation", revalidate=True)
+    rows = module.reading_units(nested_table)
+    assert [row["sequence"] for row in rows] == [1, 2, 3, 4]
+    assert rows[2] == {"sequence": 3, "unit": "mg/L", "is_nil": True}
+    assert all(row["is_nil"] is False for row in rows[:2] + rows[3:])
+
+
+def test_polars_rejects_out_of_profile_decimal():
+    module = _polars_observations()
+    common = load_common()
+    wide = pa.table({"wide": pa.array([1], type=pa.decimal256(76, 6))})
+    with pytest.raises(ValueError, match="38"):
+        module.summarize_table(wide, _stations(common))
+
+
+def test_polars_parquet_path_with_spaces_and_quotes(tmp_path):
+    module = _polars_observations()
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    directory = tmp_path / "dir with spaces"
+    directory.mkdir()
+    path = directory / 'it\'s "quoted".parquet'
+    contextual.write_parquet(document, path, selector="observation", batch_size=2)
+    assert module.summarize_parquet(path, _stations(common)) == _expected_summary()
+
+
+def test_polars_post_import_dtypes_and_values():
+    pl = require("polars")
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    frame = pl.from_arrow(contextual.table(document, selector="observation", revalidate=True))
+    assert frame.schema["accession"] == pl.String
+    assert frame.schema["collected"] == pl.String
+    assert frame.schema["sequence"] == pl.UInt32
+    assert frame.schema["quality"] == pl.Boolean
+    assert frame.schema["reading"] == pl.Decimal(precision=8, scale=3)
+    assert frame["accession"].to_list() == [
+        "20261001001",
+        "20261001002",
+        "20261001003",
+        "123456789012345678901234567890",
+    ]
+    assert frame["collected"].to_list()[3] == "2026-10-01T12:45:00.123456789Z"
+
+
+def test_polars_lazy_parquet_summary(tmp_path):
+    module = _polars_observations()
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    path = tmp_path / "observations.parquet"
+    contextual.write_parquet(document, path, selector="observation", batch_size=2)
+    assert module.summarize_parquet(path, _stations(common)) == _expected_summary()
