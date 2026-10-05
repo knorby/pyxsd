@@ -162,7 +162,7 @@ branch = true
 
 # Base CI measures the core and dependency-free projection. Adapter CI uses
 # tests/integration.coveragerc to include both optional backends separately.
-omit = ["*/pyxsd/integrations/pydantic.py", "*/pyxsd/integrations/arrow.py"]
+omit = ["*/pyxsd/integrations/pydantic.py", "*/pyxsd/integrations/arrow.py", "*/pyxsd/integrations/_dataset.py"]
 
 [tool.coverage.report]
 show_missing = true

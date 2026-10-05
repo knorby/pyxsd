@@ -8,6 +8,10 @@ bound tree (`xpath` / `find` / `to_dict` / `to_json`), runs user-defined
 *transforms*, and writes the tree back out as XML. It is an XSD 1.1
 processor with an optional XSD 1.0 mode.
 
+For explicit local input sequences, see {doc}`batch`: reuse one compiled
+schema for parsing or export a new manifested Parquet dataset with the
+optional Arrow adapter.
+
 ```{toctree}
 :maxdepth: 2
 :caption: Contents
