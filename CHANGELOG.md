@@ -13,6 +13,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ### Added
 
+- Sequential `Schema.iter_parse` with explicit local `DocumentSource` inputs,
+  independent `ParseOutcome` records, and raise/report error policies.
+  Includes a dependency-free validation example and lifecycle tests.
 - Independent `pyxsd[pydantic]` and `pyxsd[arrow]` extras, retaining Python
   3.11+ support and the existing base dependency set.
 - Dynamic standalone Pydantic models, schema-shaped document/node snapshots,

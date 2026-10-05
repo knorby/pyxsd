@@ -126,6 +126,7 @@ warn_unreachable = false
 [[tool.mypy.overrides]]
 module = [
     "pyxsd.cli",
+    "pyxsd.batch",
     "pyxsd.schema",
     "pyxsd.document",
     "pyxsd.dict_export",
