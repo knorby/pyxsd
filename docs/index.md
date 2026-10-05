@@ -24,6 +24,7 @@ supported
 comparison-xmlschema
 api
 integrations
+data-workflows
 migration-1.0
 history/index
 contributing

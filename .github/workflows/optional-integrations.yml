@@ -51,10 +51,43 @@ jobs:
           tests/test_optional_examples.py
           tests/test_projection_plan.py tests/test_arrow_context_projection.py
           tests/test_projection_example.py
+          tests/test_analytics_examples.py tests/test_order_assessment_example.py
+          tests/test_data_workflows_docs.py
           --cov=pyxsd.integrations --cov-config=tests/integration.coveragerc
           --cov-report=term-missing
       - name: Run installed-package example
         run: .venv/bin/python examples/optional_integrations.py example.parquet
+
+  data-examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+        consumer: [duckdb, polars]
+    env:
+      PYTHON_VERSION: ${{ matrix.python }}
+      CONSUMER: ${{ matrix.consumer }}
+      PYXSD_REQUIRE_EXAMPLES: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build wheel and create clean environment
+        run: |
+          uv build --wheel
+          uv venv --python "$PYTHON_VERSION"
+      - name: Install Arrow extra and the selected consumer
+        run: |
+          WHEEL=$(find dist -name '*.whl' -print -quit)
+          uv pip install "$WHEEL[arrow]" "$CONSUMER" 'pytest>=8.4'
+      - name: Run consumer workflow examples without skips
+        run: >-
+          .venv/bin/python -m pytest -q
+          tests/test_analytics_examples.py tests/test_data_workflows_docs.py
+          -k "$CONSUMER"
 
   independent-installs:
     runs-on: ubuntu-latest
@@ -88,3 +121,5 @@ jobs:
           tests/test_optional_examples.py
           tests/test_projection_plan.py tests/test_arrow_context_projection.py
           tests/test_projection_example.py
+          tests/test_analytics_examples.py tests/test_order_assessment_example.py
+          tests/test_data_workflows_docs.py

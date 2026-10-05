@@ -66,6 +66,10 @@ docs = [
     "myst-parser>=4.1",
     "furo>=2025.7",
 ]
+# Runnable consumer examples are examples-only environments; these are not
+# published extras and must never be installed by library users implicitly.
+examples-duckdb = ["duckdb>=1.4,<2"]
+examples-polars = ["polars>=1.32,<2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyxsd"]
