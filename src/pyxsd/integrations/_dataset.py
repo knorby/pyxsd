@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import json
 import os
 import shutil
+import sys
 import tempfile
 from collections.abc import Iterable
 from dataclasses import asdict
@@ -27,6 +29,41 @@ if TYPE_CHECKING:
 
 SOURCE_ID = "__pyxsd_source_id"
 ROW_INDEX = "__pyxsd_row_index"
+
+
+def publish(staging: Path, destination: Path) -> None:
+    """Use native exclusive rename where available; other POSIX hosts need one writer."""
+    if os.path.lexists(destination):
+        raise FileExistsError("destination already exists")
+    if sys.platform in ("darwin", "linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        if sys.platform == "darwin":
+            rename = libc.renamex_np
+            rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+            result = rename(os.fsencode(staging), os.fsencode(destination), 4)  # RENAME_EXCL
+        elif hasattr(libc, "renameat2"):
+            rename = libc.renameat2
+            rename.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            rename.restype = ctypes.c_int
+            result = rename(-100, os.fsencode(staging), -100, os.fsencode(destination), 1)
+        else:
+            # No exclusive primitive exposed. Stable parent/single writer remain required.
+            os.rename(staging, destination)
+            return
+        if result != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), str(destination))
+        return
+    # Windows rename rejects existing targets. Other POSIX platforms have only
+    # the absence check under v1's explicit stable-parent/single-writer contract.
+    os.rename(staging, destination)
 
 
 def augmented_schema(schema: Any) -> Any:
@@ -187,6 +224,14 @@ def write_dataset(
         raise IntegrationError("errors must be 'raise' or 'report'")
     if type(batch_size) is not int or batch_size <= 0:
         raise IntegrationError("batch_size must be a positive integer")
+    if selector is not None and not isinstance(selector, str):
+        raise IntegrationError("selector must be a string or None")
+    if namespaces is not None and (
+        not isinstance(namespaces, dict)
+        or not all(isinstance(k, str) and isinstance(v, str) for k, v in namespaces.items())
+    ):
+        raise IntegrationError("namespaces must map string prefixes to string URIs")
+    namespaces = None if namespaces is None else dict(namespaces)
     fixed = augmented_schema(projection.schema)
     schema.require_valid()
     if os.path.lexists(destination):
@@ -262,9 +307,7 @@ def write_dataset(
             )
             file.write("\n")
         stage = "publish"
-        if os.path.lexists(destination):
-            raise FileExistsError("destination already exists")
-        os.rename(staging, destination)
+        publish(staging, destination)
         staging = None
         return result
     except DatasetExportError:

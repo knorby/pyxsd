@@ -31,6 +31,316 @@ def manifest(result):
     return json.loads(result.manifest.read_text())
 
 
+def simple_projection():
+    return records(compile_schema(SIMPLE), element="r", path=("v",), columns={"value": F()})
+
+
+def assert_clean(tmp_path):
+    assert not list(tmp_path.glob(".out.pyxsd-*"))
+    assert not (tmp_path / "out").exists()
+
+
+def test_report_and_raise_parse_sequence(tmp_path):
+    from pyxsd.integrations.dataset import DatasetExportError
+
+    sources = sources_for(
+        tmp_path, "<r><v>1</v></r>", "<r><v>bad</v></r>", "<r>", "<r/>", "<r><v>2</v></r>"
+    )
+    sources[3].path.unlink()
+    result = simple_projection().write_dataset(
+        sources, tmp_path / "report", selector="v", errors="report"
+    )
+    assert (result.status, result.inputs, result.succeeded, result.failed, result.rows) == (
+        "partial",
+        5,
+        2,
+        3,
+        2,
+    )
+    entries = manifest(result)["entries"]
+    assert [e["status"] for e in entries] == [
+        "written",
+        "invalid",
+        "input_error",
+        "input_error",
+        "written",
+    ]
+    assert entries[1]["issues"][0]["severity"] == "error"
+    assert entries[2]["failure"]["kind"] == "malformed_xml"
+    assert entries[3]["failure"]["kind"] == "io"
+    assert [e["part"] for e in entries] == [
+        "parts/part-000001.parquet",
+        None,
+        None,
+        None,
+        "parts/part-000005.parquet",
+    ]
+    pulled = []
+
+    def inputs():
+        for source in sources:
+            pulled.append(source.id)
+            yield source
+
+    with pytest.raises(DatasetExportError) as caught:
+        simple_projection().write_dataset(inputs(), tmp_path / "out", selector="v")
+    assert caught.value.source_id == "source-2" and caught.value.stage == "invalid"
+    assert caught.value.__cause__ is not None
+    assert pulled == ["source-1", "source-2"]
+    assert_clean(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "xmls,status,succeeded,failed",
+    [
+        ((), "complete", 0, 0),
+        (("<r/>", "<r/>"), "complete", 2, 0),
+        (("<r><v>bad</v></r>", "<r>"), "failed", 0, 2),
+    ],
+)
+def test_empty_run_statuses(tmp_path, xmls, status, succeeded, failed):
+    result = simple_projection().write_dataset(
+        sources_for(tmp_path, *xmls), tmp_path / "out", selector="v", errors="report"
+    )
+    assert (result.status, result.succeeded, result.failed, result.rows) == (
+        status,
+        succeeded,
+        failed,
+        0,
+    )
+    table = pq.read_table(result.destination / "_schema.parquet")
+    assert table.num_rows == 0 and table.schema.field("value").type == pa.int32()
+    assert len(list((result.destination / "parts").iterdir())) == succeeded
+
+
+@pytest.mark.parametrize("errors", ["raise", "report"])
+def test_duplicate_ids_abort_but_paths_and_business_keys_can_repeat(tmp_path, errors):
+    from pyxsd.integrations.dataset import DatasetExportError
+
+    source = sources_for(tmp_path, "<r><v>7</v></r>")[0]
+    with pytest.raises(DatasetExportError) as caught:
+        simple_projection().write_dataset(
+            [source, source], tmp_path / "out", selector="v", errors=errors
+        )
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert_clean(tmp_path)
+    result = simple_projection().write_dataset(
+        [source, DocumentSource("../../danger/label", source.path)],
+        tmp_path / "out",
+        selector="v",
+        errors=errors,
+    )
+    assert result.rows == 2
+    assert [e["part"] for e in manifest(result)["entries"]] == [
+        "parts/part-000001.parquet",
+        "parts/part-000002.parquet",
+    ]
+
+
+@pytest.mark.parametrize("errors", ["raise", "report"])
+def test_wrong_selector_route_is_projection_failure(tmp_path, errors):
+    from pyxsd.integrations.dataset import DatasetExportError
+
+    projection = simple_projection()
+    sources = sources_for(tmp_path, "<r><v>1</v></r>")
+    if errors == "raise":
+        with pytest.raises(DatasetExportError) as caught:
+            projection.write_dataset(sources, tmp_path / "out", selector=".", errors=errors)
+        assert caught.value.stage == "projection"
+        assert_clean(tmp_path)
+    else:
+        result = projection.write_dataset(sources, tmp_path / "out", selector=".", errors=errors)
+        assert manifest(result)["entries"][0]["status"] == "projection_error"
+
+
+@pytest.mark.parametrize("kind", ["empty_dir", "file", "symlink", "dangling"])
+def test_existing_destination_never_changed(tmp_path, kind):
+    from pyxsd.integrations.dataset import DatasetExportError
+
+    target = tmp_path / "out"
+    marker = tmp_path / "marker"
+    marker.write_bytes(b"unchanged")
+    if kind == "empty_dir":
+        target.mkdir()
+    elif kind == "file":
+        target.write_bytes(b"unchanged")
+    else:
+        target.symlink_to(marker if kind == "symlink" else tmp_path / "missing")
+
+    def inputs():
+        pytest.fail("existing destination must reject before source pull")
+        yield
+
+    with pytest.raises(DatasetExportError):
+        simple_projection().write_dataset(inputs(), target)
+    assert marker.read_bytes() == b"unchanged"
+    assert target.is_symlink() if kind in ("symlink", "dangling") else target.exists()
+    assert not list(tmp_path.glob(".out.pyxsd-*"))
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"batch_size": 0},
+        {"batch_size": True},
+        {"errors": "ignore"},
+        {"selector": 7},
+        {"namespaces": {"p": 7}},
+    ],
+)
+def test_bad_configuration_precedes_staging(tmp_path, kwargs):
+    def inputs():
+        pytest.fail("configuration must reject first")
+        yield
+
+    with pytest.raises(IntegrationError):
+        simple_projection().write_dataset(inputs(), tmp_path / "out", **kwargs)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_missing_parent_is_not_created(tmp_path):
+    from pyxsd.integrations.dataset import DatasetExportError
+
+    with pytest.raises(DatasetExportError):
+        simple_projection().write_dataset([], tmp_path / "missing" / "out")
+    assert not (tmp_path / "missing").exists()
+
+
+@pytest.mark.parametrize("errors", ["raise", "report"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "open",
+        "write",
+        "close",
+        "schema",
+        "manifest",
+        "publish",
+        "binder",
+        "iterator",
+        "unexpected_projection",
+        "interrupt",
+    ],
+)
+def test_fatal_faults_abort_and_cleanup_only_owned_output(tmp_path, monkeypatch, errors, fault):
+    import pyxsd.integrations._dataset as impl
+    from pyxsd.integrations.dataset import DatasetExportError
+
+    sources = sources_for(tmp_path, "<r><v>1</v></r>")
+    stale = tmp_path / ".out.pyxsd-stale"
+    stale.mkdir()
+    (stale / "keep").write_bytes(b"untouched")
+    projection = simple_projection()
+    original = impl.pq.ParquetWriter
+    opened = []
+
+    class Writer:
+        def __init__(self, path, schema, **kwargs):
+            if fault == "open" or (fault == "schema" and str(path).endswith("_schema.parquet")):
+                raise OSError("disk full")
+            self.writer = original(path, schema, **kwargs)
+            self.closed = False
+            opened.append(self)
+
+        def __enter__(self):
+            return self
+
+        def write_batch(self, batch):
+            if fault == "write":
+                raise OSError("disk full")
+            self.writer.write_batch(batch)
+
+        def __exit__(self, *args):
+            self.writer.close()
+            self.closed = True
+            if fault == "close":
+                raise OSError("close failed")
+
+    monkeypatch.setattr(impl.pq, "ParquetWriter", Writer)
+
+    def explode(*args, **kwargs):
+        if fault == "interrupt":
+            raise KeyboardInterrupt()
+        raise RuntimeError("unexpected fault")
+
+    if fault == "manifest":
+        monkeypatch.setattr(impl.json, "dump", explode)
+    elif fault == "publish":
+        monkeypatch.setattr(impl, "publish", explode)
+    elif fault == "binder":
+        monkeypatch.setattr(projection._schema, "parse", explode)
+    elif fault in ("unexpected_projection", "interrupt"):
+        monkeypatch.setattr(projection, "_rows", explode)
+    elif fault == "iterator":
+        first = sources[0]
+
+        def broken():
+            yield first
+            explode()
+
+        sources = broken()
+    with pytest.raises(KeyboardInterrupt if fault == "interrupt" else DatasetExportError):
+        projection.write_dataset(sources, tmp_path / "out", selector="v", errors=errors)
+    assert all(writer.closed for writer in opened)
+    assert not (tmp_path / "out").exists()
+    assert list(tmp_path.glob(".out.pyxsd-*")) == [stale]
+    assert (stale / "keep").read_bytes() == b"untouched"
+
+
+def test_publish_native_no_replace_preserves_empty_destination(tmp_path, monkeypatch):
+    import os
+    import sys
+
+    from pyxsd.integrations._dataset import publish
+
+    staging, target = tmp_path / "staging", tmp_path / "out"
+    staging.mkdir()
+    (staging / "manifest.json").write_text("complete")
+    target.mkdir()
+    if sys.platform in ("darwin", "linux", "win32"):
+        # Model a destination appearing after the absence check; the primitive
+        # itself must refuse it, not just our Python preflight.
+        monkeypatch.setattr(os.path, "lexists", lambda path: False)
+    with pytest.raises(FileExistsError):
+        publish(staging, target)
+    assert list(target.iterdir()) == [] and (staging / "manifest.json").read_text() == "complete"
+
+
+def test_dataset_releases_previous_documents_and_report_exceptions(tmp_path, monkeypatch):
+    import gc
+    import weakref
+
+    projection = simple_projection()
+    source = sources_for(tmp_path, "<r><v>1</v></r>")[0]
+    documents, causes = [], []
+    original = projection._schema.parse
+
+    class Failure(IntegrationError):
+        pass
+
+    def observed(path):
+        gc.collect()
+        assert sum(ref() is not None for ref in documents) <= 1
+        doc = original(path)
+        documents.append(weakref.ref(doc))
+        return doc
+
+    def late(document, **kwargs):
+        yield pa.RecordBatch.from_pylist([{"value": 1}], schema=projection.schema)
+        error = Failure("late")
+        causes.append(weakref.ref(error))
+        raise error
+
+    monkeypatch.setattr(projection._schema, "parse", observed)
+    monkeypatch.setattr(projection, "batches", late)
+    result = projection.write_dataset(
+        (DocumentSource(str(i), source.path) for i in range(20)), tmp_path / "out", errors="report"
+    )
+    gc.collect()
+    assert all(ref() is None for ref in documents + causes)
+    assert result.failed == 20 and result.rows == 0
+
+
 def test_two_sources_incremental_provenance(tmp_path, monkeypatch):
     import pyxsd
     from pyxsd.integrations.arrow import RecordProjection
