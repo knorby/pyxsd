@@ -27,12 +27,15 @@ pip install 'pyxsd[pydantic]'
 ```
 
 From a repository checkout, the `examples-*` dependency groups provide the same
-consumer environments without adding DuckDB or Polars to the published package:
+consumer environments without adding DuckDB or Polars to the published package.
+Each line is an alternative: `uv sync` makes the environment match exactly the
+groups you name, so a second sync without the first group removes it.
 
 ```bash
-uv sync --extra arrow --group examples-duckdb
-uv sync --extra arrow --group examples-polars
-uv sync --extra pydantic
+uv sync --extra arrow --group examples-duckdb                    # DuckDB workflow
+uv sync --extra arrow --group examples-polars                    # Polars workflow
+uv sync --extra arrow --group examples-duckdb --group examples-polars  # both
+uv sync --extra pydantic                                         # assessment app
 ```
 
 Tested with DuckDB 1.5.6 and Polars 1.44.2 against PyArrow 25.0.1; the Arrow

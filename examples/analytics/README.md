@@ -20,9 +20,11 @@ expected outputs, and caveats.
 ## Prerequisites
 
 ```bash
-# From a repository checkout:
+# From a repository checkout (each line is an alternative — uv sync is exact):
 uv sync --extra arrow --group examples-duckdb
 uv sync --extra arrow --group examples-polars
+# or both consumers together:
+uv sync --extra arrow --group examples-duckdb --group examples-polars
 ```
 
 Or install the published extra plus a consumer:

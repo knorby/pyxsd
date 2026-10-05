@@ -11,6 +11,8 @@ import pytest
 
 from pyxsd.exceptions import PyXSDError, ValidationError
 
+pytest.importorskip("pydantic")
+
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "pydantic"
 ORDERS = EXAMPLES / "orders.xml"
 REVIEW = EXAMPLES / "orders_review.xml"

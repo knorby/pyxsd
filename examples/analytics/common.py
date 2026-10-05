@@ -52,11 +52,28 @@ def load_stations(path: Path) -> list[dict[str, str]]:
     return stations
 
 
+def _wide_decimals(path: str, data_type: pa.DataType) -> list[tuple[str, pa.DataType]]:
+    """Find decimals wider than the consumer profile, including nested fields."""
+    if pa.types.is_decimal(data_type):
+        return [(path, data_type)] if data_type.precision > 38 else []
+    findings: list[tuple[str, pa.DataType]] = []
+    if pa.types.is_struct(data_type):
+        for child in data_type:
+            findings.extend(_wide_decimals(f"{path}.{child.name}", child.type))
+    elif (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+    ):
+        findings.extend(_wide_decimals(f"{path}.item", data_type.value_type))
+    return findings
+
+
 def assert_consumer_profile(table: pa.Table) -> None:
     """Reject Arrow columns outside the exact consumer profile demonstrated here."""
     for field in table.schema:
-        if pa.types.is_decimal(field.type) and field.type.precision > 38:
+        for path, data_type in _wide_decimals(field.name, field.type):
             raise ValueError(
-                f"column {field.name!r} has {field.type} precision {field.type.precision} > 38; "
+                f"column {path!r} has {data_type} precision {data_type.precision} > 38; "
                 "choose a narrower XSD decimal or convert outside the consumer"
             )

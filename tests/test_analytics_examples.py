@@ -106,6 +106,19 @@ def test_assert_consumer_profile_rejects_wide_decimal():
         common.assert_consumer_profile(wide)
 
 
+def test_assert_consumer_profile_rejects_nested_wide_decimal():
+    common = load_common()
+    wide = pa.decimal256(76, 6)
+    struct_table = pa.table(
+        {"reading": pa.array([{"$": None}], type=pa.struct([pa.field("$", wide)]))}
+    )
+    with pytest.raises(ValueError, match=r"reading\.\$.*38"):
+        common.assert_consumer_profile(struct_table)
+    list_table = pa.table({"replicates": pa.array([None], type=pa.list_(wide))})
+    with pytest.raises(ValueError, match=r"replicates\.item.*38"):
+        common.assert_consumer_profile(list_table)
+
+
 def test_common_imports_without_consumers():
     common_path = ANALYTICS / "common.py"
     code = (
