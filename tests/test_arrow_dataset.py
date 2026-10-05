@@ -40,6 +40,53 @@ def assert_clean(tmp_path):
     assert not (tmp_path / "out").exists()
 
 
+@pytest.mark.parametrize("errors", ["raise", "report"])
+@pytest.mark.parametrize(
+    "kind", ["ArrowMemoryError", "ArrowIOError", "ArrowNotImplementedError", "ArrowCapacityError"]
+)
+def test_translated_backend_fault_is_never_skippable(tmp_path, monkeypatch, errors, kind):
+    from pyxsd.integrations.dataset import DatasetExportError
+
+    class FaultyBatch:
+        @staticmethod
+        def from_pylist(*args, **kwargs):
+            raise getattr(pa, kind)("backend failure")
+
+    # Exercise the real adapter's exception translation, not a fabricated
+    # IntegrationError: it used to hide fatal Arrow faults from the writer.
+    monkeypatch.setattr(pa, "RecordBatch", FaultyBatch)
+    with pytest.raises(DatasetExportError) as caught:
+        simple_projection().write_dataset(
+            sources_for(tmp_path, "<r><v>1</v></r>"),
+            tmp_path / "out",
+            selector="v",
+            errors=errors,
+        )
+    assert caught.value.source_id == "source-1"
+    cause = caught.value.__cause__
+    while cause.__cause__ is not None:
+        cause = cause.__cause__
+    assert isinstance(cause, getattr(pa, kind))
+    assert_clean(tmp_path)
+
+
+def test_translated_arrow_value_error_is_reportable(tmp_path, monkeypatch):
+    class FaultyBatch:
+        @staticmethod
+        def from_pylist(*args, **kwargs):
+            raise pa.ArrowInvalid("value incompatible with fixed type")
+
+    monkeypatch.setattr(pa, "RecordBatch", FaultyBatch)
+    result = simple_projection().write_dataset(
+        sources_for(tmp_path, "<r><v>1</v></r>"),
+        tmp_path / "out",
+        selector="v",
+        errors="report",
+    )
+    assert result.failed == 1 and result.rows == 0
+    assert manifest(result)["entries"][0]["status"] == "projection_error"
+
+
 def test_report_and_raise_parse_sequence(tmp_path):
     from pyxsd.integrations.dataset import DatasetExportError
 

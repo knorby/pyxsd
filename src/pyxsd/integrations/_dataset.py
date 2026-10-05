@@ -138,9 +138,17 @@ def _write_part(
                 except StopIteration:
                     break
                 except IntegrationError as exc:
-                    if errors == "raise":
+                    # The existing batch adapter wraps Arrow failures. Invalid
+                    # values/types are expected projection errors; allocation,
+                    # capacity and unsupported backend faults must still abort.
+                    backend_fault = isinstance(exc.__cause__, pa.ArrowException) and not isinstance(
+                        exc.__cause__, (pa.ArrowInvalid, pa.ArrowTypeError)
+                    )
+                    if errors == "raise" or backend_fault:
                         raise DatasetExportError(
-                            str(exc), source_id=outcome.source.id, stage="projection"
+                            str(exc),
+                            source_id=outcome.source.id,
+                            stage="projection_backend" if backend_fault else "projection",
                         ) from exc
                     failure = {"kind": "projection", "message": str(exc)}
                     break
