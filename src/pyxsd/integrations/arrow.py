@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 try:
     import pyarrow as pa
@@ -23,6 +23,7 @@ except ModuleNotFoundError as exc:
         raise
     raise ImportError("Install pyxsd[arrow] to use Arrow and Parquet projections") from exc
 
+from pyxsd.batch import DocumentSource
 from pyxsd.document import Document
 from pyxsd.schema import Schema
 
@@ -30,6 +31,7 @@ from . import IntegrationError
 from ._projection import compile_projection, iter_projected_rows
 from ._shape import ElementShape, ShapeSet, list_item_type, scalar_kind
 from ._values import prepare_document, project
+from .dataset import DatasetResult
 from .projection import FieldSource
 
 __all__ = ["RecordProjection", "records"]
@@ -324,6 +326,36 @@ class RecordProjection:
                 )
             ),
             schema=self.schema,
+        )
+
+    def write_dataset(
+        self,
+        sources: Iterable[DocumentSource],
+        destination: str | os.PathLike[str],
+        *,
+        selector: str | None = None,
+        namespaces: dict[str, str] | None = None,
+        batch_size: int = 10000,
+        errors: Literal["raise", "report"] = "raise",
+    ) -> DatasetResult:
+        """Publish a new local manifested dataset, never append or overwrite.
+
+        Parse inputs sequentially with this projection's compiled schema. Report
+        mode skips expected input/projection failures, not output/internal faults.
+        Keep sources stable; batching bounds output rows, not XML tree memory.
+        The destination parent must exist and have a single writer.
+        """
+        from ._dataset import write_dataset
+
+        return write_dataset(
+            self,
+            self._schema,
+            sources,
+            Path(destination),
+            selector=selector,
+            namespaces=namespaces,
+            batch_size=batch_size,
+            errors=errors,
         )
 
     def write_parquet(
