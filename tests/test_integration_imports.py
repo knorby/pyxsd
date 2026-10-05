@@ -24,8 +24,12 @@ def test_base_compile_parse_and_export_do_not_import_optional_backends():
         """from io import StringIO
 import pyxsd
 import pyxsd.integrations
+from pyxsd.integrations.projection import FieldSource
+from pyxsd.integrations._projection import compile_projection, iter_projected_rows
 s = pyxsd.compile(StringIO('<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="r" type="xs:int"/></xs:schema>'))
 assert s.parse(StringIO('<r>7</r>')).to_dict() == {'$': 7}
+plan = compile_projection(s, element='r', path=(), columns={'v': FieldSource()})
+assert list(iter_projected_rows(plan, s.parse(StringIO('<r>7</r>')), selector=None, namespaces=None)) == [{'v': 7}]
 assert 'pydantic' not in sys.modules and 'pyarrow' not in sys.modules
 """,
         ["pydantic", "pyarrow"],
@@ -95,6 +99,8 @@ if '{module}' == 'pydantic':
     assert adapter.models(s).from_document(d).root == 7
 else:
     assert adapter.records(s, element='r').table(d).to_pylist() == [{{'value': 7}}]
+    from pyxsd.integrations.projection import FieldSource
+    assert adapter.records(s, element='r', columns={{'v': FieldSource()}}).table(d).to_pylist() == [{{'v': 7}}]
 assert '{blocked}' not in sys.modules
 """,
         [blocked],

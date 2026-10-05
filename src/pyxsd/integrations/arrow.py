@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
@@ -27,8 +27,10 @@ from pyxsd.document import Document
 from pyxsd.schema import Schema
 
 from . import IntegrationError
+from ._projection import compile_projection, iter_projected_rows
 from ._shape import ElementShape, ShapeSet, list_item_type, scalar_kind
 from ._values import prepare_document, project
+from .projection import FieldSource
 
 __all__ = ["RecordProjection", "records"]
 
@@ -181,8 +183,48 @@ def _element_row(shape: ElementShape, data_type: Any, value: Any) -> Any:
 class RecordProjection:
     """A fixed declaration-specific schema; rows never determine column types."""
 
-    def __init__(self, schema: Schema, *, element: str, path: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        schema: Schema,
+        *,
+        element: str,
+        path: tuple[str, ...] = (),
+        columns: Mapping[str, FieldSource] | None = None,
+    ) -> None:
         self._schema = schema
+        self._plan = (
+            None
+            if columns is None
+            else compile_projection(schema, element=element, path=path, columns=columns)
+        )
+        if self._plan is not None:
+            fields = []
+            for column in self._plan.columns:
+                names = column.shapes[-1].path
+                if column.source.attribute is not None:
+                    names = (*names, "@" + column.source.attribute)
+                metadata = _metadata(column.name, names, column.scalar)
+                metadata[b"pyxsd:source"] = json.dumps(asdict(column.source)).encode()
+                metadata[b"pyxsd:row"] = json.dumps(self._plan.route.path).encode()
+                fields.append(
+                    pa.field(
+                        column.name,
+                        _scalar_type(column.scalar),
+                        nullable=column.nullable,
+                        metadata=metadata,
+                    )
+                )
+            self.schema = pa.schema(
+                fields,
+                metadata={
+                    b"pyxsd:projection": b"2",
+                    b"pyxsd:mode": b"columns",
+                    b"pyxsd:declaration": json.dumps(self._plan.route.path).encode(),
+                    b"pyxsd:presence": b"absent/nil scalar columns collapse; attributes include effective defaults",
+                    b"pyxsd:exactness": b"numerical value; temporal strings; no original lexical provenance",
+                },
+            )
+            return
         self._shape = ShapeSet(schema).resolve(element, path)
         self._type = _element_type(self._shape)
         fields = (
@@ -209,29 +251,56 @@ class RecordProjection:
         batch_size: int = 10000,
         revalidate: bool = False,
     ) -> Iterator[Any]:
-        """Yield at most batch_size projected rows at a time, not an XML stream."""
+        """Yield bounded row batches, not XML streaming; keep input stable until closed."""
         if type(batch_size) is not int or batch_size <= 0:
             raise IntegrationError("batch_size must be a positive integer")
         document = prepare_document(self._schema, document, revalidate)
+        rows = []
+        index = 0
+        for index, value in enumerate(self._rows(document, selector, namespaces), 1):
+            rows.append(value)
+            if len(rows) == batch_size:
+                yield self._batch(rows, index)
+                rows = []
+        if rows:
+            yield self._batch(rows, index)
+
+    def _rows(
+        self,
+        document: Document,
+        selector: str | None,
+        namespaces: dict[str, str] | None,
+    ) -> Iterator[dict[str, Any]]:
+        if self._plan is not None:
+            for index, row in enumerate(
+                iter_projected_rows(self._plan, document, selector=selector, namespaces=namespaces),
+                1,
+            ):
+                result = {}
+                for column in self._plan.columns:
+                    try:
+                        result[column.name] = _scalar_row(
+                            column.scalar, self.schema.field(column.name).type, row[column.name]
+                        )
+                    except (IntegrationError, TypeError, ValueError) as exc:
+                        raise IntegrationError(
+                            f"row {index} column {column.name!r} source {column.source!r}: {exc}"
+                        ) from exc
+                yield result
+            return
         nodes = (
             [document.root]
             if selector is None
             else document.findall(selector, namespaces=namespaces)
         )
-        rows = []
         for index, node in enumerate(nodes, 1):
             try:
                 value = _element_row(self._shape, self._type, project(self._shape, node))
-                rows.append({"value": value} if self._shape.primitive else value)
+                yield {"value": value} if self._shape.primitive else value
             except (IntegrationError, TypeError, ValueError) as exc:
                 raise IntegrationError(
                     f"row {index} ({'/'.join(self._shape.path)}): {exc}"
                 ) from exc
-            if len(rows) == batch_size:
-                yield self._batch(rows, index)
-                rows = []
-        if rows:
-            yield self._batch(rows, len(nodes))
 
     def _batch(self, rows: list[dict[str, Any]], last_row: int) -> Any:
         try:
@@ -295,6 +364,12 @@ class RecordProjection:
                 temporary.unlink(missing_ok=True)
 
 
-def records(schema: Schema, *, element: str, path: tuple[str, ...] = ()) -> RecordProjection:
+def records(
+    schema: Schema,
+    *,
+    element: str,
+    path: tuple[str, ...] = (),
+    columns: Mapping[str, FieldSource] | None = None,
+) -> RecordProjection:
     """Prepare an explicit global/local record projection before any rows exist."""
-    return RecordProjection(schema, element=element, path=path)
+    return RecordProjection(schema, element=element, path=path, columns=columns)

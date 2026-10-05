@@ -19,9 +19,15 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   and JSON Schema for the supported projected-data contract.
 - Explicit Arrow record schemas, nested tables, typed empty selections, and
   row-batched Parquet output with atomic local-path replacement.
+- Named Arrow scalar columns using `FieldSource` to read a selected record,
+  its ancestors or the document root, with schema-derived types and exact
+  occurrence associations. Includes an Arrow-only purchase-order-line example.
 
 ### Fixed
 
+- Contextual Arrow columns reuse active ancestor guards instead of rescanning
+  shared root/order child collections for every row and column. Guard state
+  remains extraction-local; documents must stay unchanged during iteration.
 - Primitive XML output uses XSD lexical forms for list values, tiny decimals,
   and nonfinite floats instead of invalid Python spellings.
 

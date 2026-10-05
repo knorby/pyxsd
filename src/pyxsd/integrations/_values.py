@@ -163,13 +163,72 @@ def _project(
 ) -> Any:
     if id(node) in active:
         shape.fail("cyclic bound input")
+    if shape.primitive:
+        return read_scalar(shape, node, bindings)
+    bindings, data, grouped = guard_node(shape, node, bindings, explicit=explicit)
+    if shape.nillable:
+        data["$nil"] = bool(getattr(node, "_nil_", False))
+    if getattr(node, "_nil_", False):
+        return data
+    if shape.scalar is not None:
+        data["$"] = read_scalar(shape, node, bindings)
+    for child_shape in shape.children:
+        occurrences = grouped[id(child_shape.declaration)]
+        values = [
+            _project(child_shape, child, explicit, active | {id(node)}, bindings)
+            for child in occurrences
+        ]
+        if child_shape.repeated:
+            if values or not explicit:
+                data[child_shape.name] = values
+        elif values:
+            data[child_shape.name] = values[0]
+    return data
+
+
+def nil_state(node: Any, *, current: bool = False) -> bool:
+    """Read current xsi:nil without trusting a stale flag or inventing one on the node."""
+    if not current:
+        return bool(getattr(node, "_nil_", False))
+    attributes = getattr(node, "_attribs_", {}) or {}
+    markers = [
+        attributes[key]
+        for key in ("xsi:nil", "{http://www.w3.org/2001/XMLSchema-instance}nil")
+        if key in attributes
+    ]
+    if len(markers) > 1:
+        raise IntegrationError("multiple xsi:nil attributes")
+    try:
+        nil = lexical_value(xd.Boolean, str(markers[0])) if markers else False
+    except IntegrationError as exc:
+        raise IntegrationError(f"invalid xsi:nil attribute: {exc}") from exc
+    if hasattr(node, "_nil_") and node._nil_ is not nil:
+        raise IntegrationError(
+            "current xsi:nil attribute disagrees with bound nil state; revalidate"
+        )
+    return nil
+
+
+def check_shell(
+    shape: ElementShape, node: Any, bindings: dict[str, str], *, current_nil: bool = False
+) -> dict[str, str]:
+    """Check current declaration/type/nil/text state and extend namespace bindings."""
     if getattr(node, "_descriptor_", None) is not shape.declaration:
         shape.fail("node does not match the selected declaration")
     if type(node) is not shape.cls:
         shape.fail("runtime polymorphism is unsupported")
     children = getattr(node, "_children_", []) or []
     lexical = text_of(node)
-    nil = getattr(node, "_nil_", False)
+    nil = nil_state(node, current=current_nil)
+    if (
+        current_nil
+        and not shape.nillable
+        and any(
+            key in (getattr(node, "_attribs_", {}) or {})
+            for key in ("xsi:nil", "{http://www.w3.org/2001/XMLSchema-instance}nil")
+        )
+    ):
+        shape.fail("xsi:nil requires a nillable declaration")
     bindings = dict(bindings)
     for name, uri in (getattr(node, "_attribs_", {}) or {}).items():
         if name == "xmlns" or name.startswith("xmlns:"):
@@ -178,30 +237,18 @@ def _project(
         shape.fail("nil element has a fixed value")
     if nil and (not shape.nillable or children or lexical):
         shape.fail("invalid nil state/content")
-    if shape.primitive:
-        assert shape.scalar is not None
-        if nil:
-            return None
-        if children:
-            shape.fail("scalar contains children")
-        forced = shape.declaration.getFixed() or shape.declaration.getDefault()
-        value = lexical_value(
-            shape.scalar,
-            lexical if lexical else forced or "",
-            evidence=node,
-            bindings=bindings,
-            declaration=shape.declaration if not lexical else None,
-        )
-        if shape.declaration.getFixed() is not None:
-            fixed = lexical_value(
-                shape.scalar, shape.declaration.getFixed(), declaration=shape.declaration
-            )
-            if not value_equal(shape.scalar, value, fixed):
-                shape.fail("fixed element value violated")
-        return value
+    if (shape.primitive or shape.scalar is not None) and children:
+        shape.fail("scalar/simple content contains children")
+    if not shape.primitive and shape.scalar is None and lexical:
+        shape.fail("unexpected text in element-only content")
+    return bindings
+
+
+def read_attributes(
+    shape: ElementShape, node: Any, bindings: dict[str, str], *, explicit: bool = False
+) -> dict[str, Any]:
+    """Read effective current attributes, including constraints on nil containers."""
     data: dict[str, Any] = {}
-    if shape.nillable:
-        data["$nil"] = bool(nil)
     attributes = getattr(node, "_attribs_", {}) or {}
     known = {a.name for a in shape.attributes}
     for name in attributes:
@@ -241,45 +288,52 @@ def _project(
         ):
             shape.fail(f"fixed attribute {attr.name} violated")
         data[attr.alias] = value
-    if nil:
-        return data
-    if shape.scalar is not None:
-        if children:
-            shape.fail("simple content contains children")
-        forced = shape.declaration.getFixed() or shape.declaration.getDefault()
-        data["$"] = lexical_value(
-            shape.scalar,
-            lexical if lexical else forced or "",
-            evidence=node,
-            bindings=bindings,
-            declaration=shape.declaration if not lexical else None,
-        )
-        if shape.declaration.getFixed() is not None and not value_equal(
-            shape.scalar,
-            data["$"],
-            lexical_value(
-                shape.scalar, shape.declaration.getFixed(), declaration=shape.declaration
-            ),
-        ):
-            shape.fail("fixed simple content violated")
-    elif lexical:
-        shape.fail("unexpected text in element-only content")
+    return data
+
+
+def read_scalar(
+    shape: ElementShape, node: Any, bindings: dict[str, str], *, current_nil: bool = False
+) -> Any:
+    """Read current scalar text with native lexical/facet/default/fixed policies."""
+    bindings = check_shell(shape, node, bindings, current_nil=current_nil)
+    if nil_state(node, current=current_nil):
+        return None
+    assert shape.scalar is not None
+    lexical = text_of(node)
+    forced = shape.declaration.getFixed() or shape.declaration.getDefault()
+    value = lexical_value(
+        shape.scalar,
+        lexical if lexical else forced or "",
+        evidence=node,
+        bindings=bindings,
+        declaration=shape.declaration if not lexical else None,
+    )
+    if shape.declaration.getFixed() is not None and not value_equal(
+        shape.scalar,
+        value,
+        lexical_value(shape.scalar, shape.declaration.getFixed(), declaration=shape.declaration),
+    ):
+        shape.fail("fixed element/simple content value violated")
+    return value
+
+
+def guard_node(
+    shape: ElementShape,
+    node: Any,
+    bindings: dict[str, str],
+    *,
+    explicit: bool = False,
+    current_nil: bool = False,
+) -> tuple[dict[str, str], dict[str, Any], dict[int, list[Any]]]:
+    """Check a shallow shell and immediate particle participation, not sibling subtrees."""
+    bindings = check_shell(shape, node, bindings, current_nil=current_nil)
+    data = read_attributes(shape, node, bindings, explicit=explicit)
     grouped: dict[int, list[Any]] = {id(child.declaration): [] for child in shape.children}
-    for child in children:
+    for child in getattr(node, "_children_", []) or []:
         key = id(getattr(child, "_descriptor_", None))
         if key not in grouped:
             shape.fail(f"undeclared child {getattr(child, '_name_', '?')}")
         grouped[key].append(child)
-    check_counts(shape, {key: len(values) for key, values in grouped.items()})
-    for child_shape in shape.children:
-        occurrences = grouped[id(child_shape.declaration)]
-        values = [
-            _project(child_shape, child, explicit, active | {id(node)}, bindings)
-            for child in occurrences
-        ]
-        if child_shape.repeated:
-            if values or not explicit:
-                data[child_shape.name] = values
-        elif values:
-            data[child_shape.name] = values[0]
-    return data
+    if not nil_state(node, current=current_nil):
+        check_counts(shape, {key: len(values) for key, values in grouped.items()})
+    return bindings, data, grouped
