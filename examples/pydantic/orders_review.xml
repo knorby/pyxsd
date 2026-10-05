@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<orders source="procurement-review">
+  <order number="PO-2026-2001">
+    <placed>2026-10-01T09:00:00Z</placed>
+    <customer account="NWL-99">
+      <name>Northwind Labs</name><contact>buyer@example.invalid</contact>
+    </customer>
+    <line sku="LABEL-WP"><description>Waterproof sample label</description><quantity>10</quantity><price>0.10</price></line>
+  </order>
+  <order number="PO-2026-2002">
+    <placed>2026-10-02T10:30:00Z</placed>
+    <customer account="RRL-42">
+      <name>River Research Lab</name><contact>procurement@example.invalid</contact>
+    </customer>
+    <line sku="GADGET-X"><description>Field gadget, unbranded</description><quantity>1</quantity><price>10.00</price></line>
+  </order>
+  <order number="PO-2026-2003">
+    <placed>2026-10-03T11:45:00+02:00</placed>
+    <customer account="RRL-42">
+      <name>River Research Lab</name><contact>procurement@example.invalid</contact>
+    </customer>
+    <line sku="LOGGER-USB"><description>Temperature logger</description><quantity>1</quantity><price>125.50</price></line>
+    <line sku="BOTTLE-1L"><description>Sampling bottle, 1 litre</description><quantity>1</quantity><price currency="EUR">3.75</price></line>
+  </order>
+  <order number="PO-2026-2004">
+    <placed>2026-10-04T08:15:00Z</placed>
+    <customer account="CWO-17">
+      <name>Coastal Water Observatory</name><contact>stores@example.invalid</contact>
+    </customer>
+    <line sku="LOGGER-USB"><description>Temperature logger</description><quantity>4</quantity><price>150.00</price></line>
+  </order>
+</orders>
