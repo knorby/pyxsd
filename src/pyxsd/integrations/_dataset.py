@@ -129,7 +129,9 @@ def _write_part(
         outcome.document, selector=selector, namespaces=namespaces, batch_size=batch_size
     )
     try:
-        with pq.ParquetWriter(str(path), schema, version="2.6") as writer:
+        with pq.ParquetWriter(
+            str(path), schema, version="2.6", use_compliant_nested_type=False
+        ) as writer:
             while True:
                 try:
                     batch = next(batches)
@@ -294,7 +296,12 @@ def write_dataset(
             destination / "manifest.json",
         )
         stage = "schema"
-        with pq.ParquetWriter(str(staging / "_schema.parquet"), fixed, version="2.6"):
+        with pq.ParquetWriter(
+            str(staging / "_schema.parquet"),
+            fixed,
+            version="2.6",
+            use_compliant_nested_type=False,
+        ):
             pass
         stage = "manifest"
         with (staging / "manifest.json").open("w", encoding="utf-8") as file:

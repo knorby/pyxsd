@@ -452,6 +452,14 @@ def test_namespace_exact_contextual_and_nested_readback(tmp_path):
     ]
     nested = records(schema, element="{urn:data}r")
     result = nested.write_dataset(sources, tmp_path / "nested")
+    from pyxsd.integrations._dataset import augmented_schema
+
+    assert pq.read_schema(result.destination / "_schema.parquet").equals(
+        augmented_schema(nested.schema), check_metadata=True
+    )
+    assert pq.read_schema(result.destination / manifest(result)["entries"][0]["part"]).equals(
+        augmented_schema(nested.schema), check_metadata=True
+    )
     row = pq.read_table(result.destination / manifest(result)["entries"][0]["part"]).to_pylist()[0]
     assert row["{urn:data}v"][0]["{urn:data}amount"]["$"] == Decimal("12.30")
     assert row["{urn:data}v"][1]["{urn:data}amount"]["$nil"] is True
