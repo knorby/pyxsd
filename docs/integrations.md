@@ -284,9 +284,12 @@ optional installation retains its actual missing-module cause.
 
 ## Runnable examples
 
-Two standalone tutorials use synthetic, substantive datasets and need only
+The standalone tutorials use synthetic, substantive datasets and need only
 their own extra:
 
+- [Data workflow examples](data-workflows.md): DuckDB and Polars workflows over
+  nested or contextual Arrow projections, a Parquet round trip without
+  re-reading the XML, and a schema-validated order-assessment application.
 - [Pydantic purchase orders](https://github.com/knorby/pyxsd/tree/develop/examples/pydantic): generate nested
   access models from the XSD before reading XML, validate Python input, inspect
   exact prices/defaults/presence, and snapshot three orders with line items.

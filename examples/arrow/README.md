@@ -102,3 +102,8 @@ writer. Full XML validation and projected type validation remain distinct.
 See [the integration guide](../../docs/integrations.md) for the complete policy.
 `tests/test_optional_examples.py` checks numeric types, list/struct values,
 nil attributes, two-row batches, empty selections, and actual Parquet readback.
+
+For a consumer workflow over the contextual scalar columns — DuckDB and Polars
+summaries, child expansion, a station/region join, and a Parquet round trip —
+see [`examples/analytics/`](../analytics/README.md) and the
+[data workflow guide](../../docs/data-workflows.md).

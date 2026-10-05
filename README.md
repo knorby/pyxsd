@@ -126,7 +126,10 @@ coordinates, lists, nil values, and verified Parquet readback.
 
 Both optional adapters support a documented projection subset, not the entire
 XSD validation contract. See the [integration guide](docs/integrations.md) for
-type mappings, presence semantics, supported shapes, and limitations.
+type mappings, presence semantics, supported shapes, and limitations. For
+runnable end-to-end workflows — DuckDB and Polars analysis plus an order
+assessment application — see the
+[data workflow examples](docs/data-workflows.md).
 
 For scalar analytical rows with parent context, pass named `FieldSource`
 columns. For example, a line row can retain its enclosing order number:
@@ -237,6 +240,7 @@ Full documentation is published at **<https://pyxsd.knorby.com/>**:
 - [Transforms](https://pyxsd.knorby.com/transforms/)
 - [Supported features](https://pyxsd.knorby.com/supported.html)
 - [Pydantic and Arrow integrations](docs/integrations.md)
+- [Data workflow examples](docs/data-workflows.md)
 - [API reference](https://pyxsd.knorby.com/api.html)
 - [Migrating from 0.1](https://pyxsd.knorby.com/migration-1.0.html)
 - [Project history](https://pyxsd.knorby.com/history/origins.html)

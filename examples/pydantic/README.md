@@ -91,3 +91,8 @@ Generated models are snapshots: changing them does not modify the XML.
 See [the integration guide](../../docs/integrations.md) for aliases, supported
 shapes, and limitations. `demo.py`, `orders.xsd`, and `orders.xml` are the entire
 example; its behavior is exercised by `tests/test_optional_examples.py`.
+
+The [`assess_orders.py`](assess_orders.py) companion applies synthetic approval
+policy to generated snapshots — unknown catalog entries, mixed currencies, and
+an exact approval threshold — and is run in the
+[data workflow guide](../../docs/data-workflows.md).

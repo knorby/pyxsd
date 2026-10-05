@@ -12,6 +12,14 @@
 - [`docx/`](docx/) — a real office format: a `word/document.xml` schema
   subset and a style-aware Markdown transform, parsed in lax mode to
   show how messy documents are bound without losing data.
+- [`analytics/`](analytics/) — executable DuckDB and Polars workflows over
+  schema-derived Arrow projections: nested versus contextual tables, child
+  expansion, a station/region join, and a Parquet round trip. See
+  [`docs/data-workflows.md`](../docs/data-workflows.md).
+- [`pydantic/assess_orders.py`](pydantic/assess_orders.py) — the purchase-order
+  assessment application from the same guide: schema-generated snapshots,
+  synthetic policy, and deterministic reason codes. The directory's
+  [`demo.py`](pydantic/demo.py) covers model generation itself.
 - [`legacy/`](legacy/) — the crystallography transforms from pyxsd 0.1,
   kept as reading material under `examples/legacy/` after the
   crystallography data left the project. See
