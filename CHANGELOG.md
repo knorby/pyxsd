@@ -13,6 +13,10 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ### Added
 
+- `RecordProjection.write_dataset` exports sequential local XML inputs to a new
+  manifested Parquet dataset with fixed schemas, source/row provenance, and
+  raise/report policies. Failed sources contribute no rows, including late
+  projection failures. Includes manifest-directed reading and consumer examples.
 - Sequential `Schema.iter_parse` with explicit local `DocumentSource` inputs,
   independent `ParseOutcome` records, and raise/report error policies.
   Includes a dependency-free validation example and lifecycle tests.

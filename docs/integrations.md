@@ -246,6 +246,23 @@ existing destination. Caller-owned writable sinks remain open but may contain
 partial output on failure. Schema preparation rejects unsupported Parquet
 shapes before opening an output.
 
+### Multi-document datasets
+
+`projection.write_dataset(sources, destination, selector=..., errors="report")`
+accepts explicit local `DocumentSource` inputs and publishes a **new directory**
+with one completed part per successful source, a typed schema reference, and
+`manifest.json`. This differs from `write_parquet`, which can replace a single
+file. The dataset writer has no append, overwrite, resume or schema inference.
+It reuses this projection and its compiled Schema, freshly parses each source,
+requires validity, and immediately extracts through `batches()`.
+
+Projection metadata, exact types, nested records and scalar contextual columns
+are preserved. Two reserved non-null columns are appended: `__pyxsd_source_id`
+(string) and `__pyxsd_row_index` (int64). A projection using either name is
+rejected before reading inputs or creating output. Read only manifest-admitted
+parts and explicitly order by provenance when needed. See {doc}`batch` for
+statuses, manifest version 1, failure cleanup and local publication guarantees.
+
 ## Validation, supported subset, and errors
 
 The initial profile supports element-only sequence/all content, non-repeating

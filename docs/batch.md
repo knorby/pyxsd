@@ -114,3 +114,151 @@ result and exits **0** for all valid inputs, **1** for invalid/unreadable/
 malformed inputs, or **2** for configuration, schema, or internal failures.
 Unexpected defects include a traceback. Sorting is application behavior;
 the library never discovers or sorts files.
+
+## Optional Parquet dataset export
+
+Install `pyxsd[arrow]`, prepare one projection, and give it explicit sources:
+
+```python
+from pyxsd import ParseModes, Schema
+from pyxsd.batch import DocumentSource
+from pyxsd.integrations.arrow import records
+
+schema = Schema.compile("examples/arrow/observations.xsd", mode=ParseModes.NAMESPACED)
+projection = records(schema, element="observations", path=("observation",))
+result = projection.write_dataset(
+    [DocumentSource("day-1", "examples/arrow/observations.xml")],
+    "new-observation-dataset",
+    selector="observation",
+    batch_size=10000,
+    errors="report",
+)
+print(result.status, result.rows, result.manifest)
+```
+
+`DatasetResult` is a frozen, dependency-free record from
+`pyxsd.integrations.dataset`: `destination`, `status`, `inputs`, `succeeded`,
+`failed`, `rows`, and `manifest`. A returned result is not a claim that every
+source succeeded:
+
+| Overall status | Meaning |
+| --- | --- |
+| `complete` | No failures, including zero inputs or successful empty selections |
+| `partial` | At least one successful input and at least one expected failure |
+| `failed` | Attempted inputs all failed; report mode still publishes schema and manifest |
+
+The default `errors="raise"` aborts at the first expected input/validation/
+projection failure, does not pull later inputs, removes its staging output,
+and publishes nothing. `errors="report"` records those failures and continues.
+Input I/O and malformed XML remain distinct from invalid documents and
+projection errors. A late projection failure discards **that source's entire
+part**, even after earlier batches were written; its row count is zero.
+Output write/close/publication failures, unexpected backend/binding defects,
+iterator errors and duplicate IDs abort both modes. `DatasetExportError`
+extends `IntegrationError`, carries `source_id` (possibly `None`) and `stage`,
+and chains the cause. Interrupts/cancellation propagate after cleanup.
+
+### Layout, provenance and manifest version 1
+
+```text
+new-observation-dataset/
+  manifest.json
+  _schema.parquet
+  parts/
+    part-000001.parquet
+    part-000003.parquet
+```
+
+One closed part is admitted per successful input, including a typed zero-row
+part for an empty selection. Filenames use 1-based input ordinals, never source
+IDs or source paths; failed inputs leave gaps. `_schema.parquet` is always a
+zero-row reference with the complete schema, not a source part.
+
+Original fields, nullability and metadata are preserved, followed by two
+reserved non-null columns: `__pyxsd_source_id` (string) and
+`__pyxsd_row_index` (int64). Row indexes start at 1 per source and continue
+across batches. Their pair identifies rows within this run/selection, **not a
+stable XML node key** after edits or selector changes. Storage/query order is
+not guaranteed: order by provenance explicitly. Repeated business keys across
+files are allowed; related-table joins/deduplication remain application work.
+
+Manifest JSON includes `format_version=1`, overall `status`, `versions`
+(`pyxsd`, `pyarrow`), `xsd_version`, `parse_policy`, `projection` metadata and
+`row_route`, `selector`, `namespaces`, `schema_file`, `counts` and ordered
+`entries`. Schema/field byte metadata is encoded as lists of
+`key_base64`/`value_base64` pairs. The schema reference supplies exact Arrow
+types; version/route metadata is not a transitive-XSD fingerprint.
+Dataset writers preserve prepared list-child names (typically `item`) instead
+of PyArrow's default canonical `element` rename; the Parquet list layout stays
+three-level. Consumers must support that legacy child-name convention.
+
+Each entry has `source_id`, `ordinal`, `status`, `rows`, `part`, copied
+`issues` (`severity`, `code`, `message`, `element`, `phase`), and `failure`
+(null or `kind`/`message`). Entry statuses are `written`, `empty`, `invalid`,
+`input_error` or `projection_error`. Failed entries always have `rows=0` and
+`part=null`. No Documents, live exceptions, raw XML or dedicated absolute
+source paths are serialized. **Diagnostic text can include paths and sensitive
+values**: manifests are local artifacts, not sanitized telemetry.
+
+The manifest uses O(inputs + diagnostic text) memory; the writer retains no
+list of Documents or batches. Batching bounds projected output row count,
+not XML memory: each input still becomes a tree and selection can materialize
+nodes. Keep source files unchanged throughout the run and do not share the
+Schema with concurrent/reentrant parses. Instance schema hints do not choose
+or independently fetch another schema; the prepared schema/resolver policy
+governs all inputs.
+
+### Publication and recovery limits
+
+Only a **new local destination** is supported. Its parent must already exist.
+Existing files, empty directories, and symlinks (including dangling ones) are
+rejected and never removed. There is no append, overwrite, resume, cloud
+publication, partition inference or schema merging.
+
+The writer creates an owned sibling `.DESTINATION.pyxsd-*` staging directory
+on the same filesystem, closes parts/schema/manifest, rechecks absence, then
+renames it. macOS uses `renamex_np(RENAME_EXCL)` and Linux libc with `renameat2`
+uses `RENAME_NOREPLACE`; unsupported native/filesystem operations abort rather
+than weaken that primitive. Windows `rename` rejects existing targets. Other
+POSIX hosts (or Linux libc without `renameat2`) have only checked rename.
+**One writer and a stable destination parent are required on every platform**;
+the checked fallback is not race-proof. Concurrent/adversarial filesystem
+races are outside this API's contract.
+
+Rename provides atomic local visibility, not fsync/power-loss durability or a
+distributed transaction. Handled failures remove only owned staging output.
+A process kill/crash can leave staging directories: identify a known run's
+directory manually, verify that no writer is active, and remove it or inspect
+it outside the API. Incomplete staging is not a published dataset and has no
+automatic recovery/resume; never delete arbitrary lookalike directories.
+
+### Export and consumption recipes
+
+The observation recipe compiles once and sorts explicit relative IDs. From
+a checkout, with no preexisting `observation-dataset`:
+
+```bash
+uv run --extra arrow python examples/batch/export_dataset.py examples/arrow observation-dataset observations.xml
+```
+
+It exits **0** for complete, **1** for partial/failed, **2** for fatal export
+errors (with chained traceback). `--errors raise` stops instead of reporting;
+`--batch-size` controls rows per output batch.
+
+Read only the successful `part` paths listed in a **trusted local manifest**,
+never recursively glob the dataset. If there are no parts, read
+`_schema.parquet` for a typed empty table. The recipe's `read_dataset` function
+does this and orders by source/row index. This consumer materializes the whole
+dataset; the incremental writer does not.
+
+Reuse the existing analytical observation queries, with consumer libraries
+installed only in the example environment:
+
+```bash
+uv run --extra arrow --group examples-duckdb python examples/batch/summarize_dataset.py observation-dataset --consumer duckdb
+uv run --extra arrow --group examples-polars python examples/batch/summarize_dataset.py observation-dataset --consumer polars
+```
+
+These reuse the precision-limited consumer profile in {doc}`data-workflows`;
+they add no DuckDB/Polars/pandas library dependency. Generalize the projection
+for your schema rather than inferring types from sample XML.

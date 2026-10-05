@@ -53,6 +53,7 @@ jobs:
           tests/test_projection_example.py
           tests/test_analytics_examples.py tests/test_order_assessment_example.py
           tests/test_data_workflows_docs.py
+          tests/test_dataset_records.py tests/test_arrow_dataset.py tests/test_dataset_example.py
           --cov=pyxsd.integrations --cov-config=tests/integration.coveragerc
           --cov-report=term-missing
       - name: Run installed-package example
@@ -87,6 +88,7 @@ jobs:
         run: >-
           .venv/bin/python -m pytest -q
           tests/test_analytics_examples.py tests/test_data_workflows_docs.py
+          tests/test_dataset_example.py
           -k "$CONSUMER"
 
   independent-installs:
@@ -123,3 +125,4 @@ jobs:
           tests/test_projection_example.py
           tests/test_analytics_examples.py tests/test_order_assessment_example.py
           tests/test_data_workflows_docs.py
+          tests/test_dataset_records.py tests/test_arrow_dataset.py tests/test_dataset_example.py

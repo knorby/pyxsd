@@ -130,6 +130,13 @@ projected row count; XML parsing still materializes the document. Follow the
 [Arrow/Parquet tutorial](examples/arrow/README.md) for typed measurements,
 coordinates, lists, nil values, and verified Parquet readback.
 
+For multiple XML files, `projection.write_dataset(sources, "new-dataset",
+selector="observation", errors="report")` writes one part per successful
+`DocumentSource`, a fixed schema reference and a manifest. It never appends or
+overwrites. Inspect the returned `complete`/`partial`/`failed` status and read
+only manifest-listed parts. See [multi-document export](docs/batch.md#optional-parquet-dataset-export)
+for provenance, failure behavior and the local single-writer contract.
+
 Both optional adapters support a documented projection subset, not the entire
 XSD validation contract. See the [integration guide](docs/integrations.md) for
 type mappings, presence semantics, supported shapes, and limitations. For
@@ -242,6 +249,7 @@ Full documentation is published at **<https://pyxsd.knorby.com/>**:
 - [Architecture](https://pyxsd.knorby.com/architecture.html)
 - [Data model](https://pyxsd.knorby.com/data-model.html)
 - [Validation and issue codes](https://pyxsd.knorby.com/validation.html)
+- [Sequential parsing and Parquet datasets](docs/batch.md)
 - [Parse modes](https://pyxsd.knorby.com/binding.html)
 - [Transforms](https://pyxsd.knorby.com/transforms/)
 - [Supported features](https://pyxsd.knorby.com/supported.html)

@@ -46,6 +46,24 @@ See {doc}`batch` for lazy stop/report behavior and resource limits.
 .. autofunction:: pyxsd.batch.iter_parse
 ```
 
+### Optional Parquet datasets
+
+`pyxsd.integrations.arrow.RecordProjection.write_dataset(sources, destination,
+*, selector=None, namespaces=None, batch_size=10000, errors="raise")` uses
+the projection's own compiled Schema. Install `pyxsd[arrow]` for the writer;
+the result/error records below need no optional dependencies. No `revalidate`
+argument is needed: every source is freshly parsed and required to be valid.
+See {doc}`batch` for publication and failure contracts; {doc}`integrations`
+describes preparation and supported projections.
+
+```{eval-rst}
+.. autoclass:: pyxsd.integrations.dataset.DatasetResult
+   :members:
+
+.. autoclass:: pyxsd.integrations.dataset.DatasetExportError
+   :members:
+```
+
 ### Querying a document
 
 `Document.xpath(expr)` evaluates an XPath expression over the bound tree
