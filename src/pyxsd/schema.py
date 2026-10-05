@@ -12,8 +12,9 @@ import decimal
 import logging
 import os.path
 import warnings
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import IO, Any, Literal
+from typing import IO, TYPE_CHECKING, Any, Literal
 from xml.etree import ElementTree as ET
 
 from pyxsd.binding import ParseModes
@@ -72,6 +73,9 @@ from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import apply_conditional_inclusion
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from pyxsd.batch import DocumentSource, ParseOutcome
 
 
 class _CompileHost:
@@ -262,6 +266,24 @@ class Schema:
                 "inspect ValidationError.report",
                 self.report,
             )
+
+    def iter_parse(
+        self,
+        sources: Iterable["DocumentSource"],
+        *,
+        errors: Literal["raise", "report"] = "raise",
+    ) -> Iterator["ParseOutcome"]:
+        """Lazily parse explicit local sources using this compiled schema.
+
+        On first iteration, require a valid schema before consuming inputs.
+        Default raise mode stops with :class:`pyxsd.batch.BatchParseError`;
+        report mode yields invalid documents and expected input failures.
+        Source IDs must be unique. Internal defects always propagate.
+        Do not parse concurrently or reentrantly on this schema.
+        """
+        from pyxsd.batch import iter_parse
+
+        return iter_parse(self, sources, errors=errors)
 
     def parse(self, xml: str | Path | os.PathLike[str] | IO[str] | ET.Element) -> "Document":
         """Binds *xml* against this schema and returns a :class:`Document`.
