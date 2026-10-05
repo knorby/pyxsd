@@ -1,0 +1,7 @@
+{
+  "stations": [
+    {"station": "RIVER-UPSTREAM", "region": "river"},
+    {"station": "RIVER-DOWNSTREAM", "region": "river"},
+    {"station": "COASTAL-ESTUARY", "region": "coastal"}
+  ]
+}
