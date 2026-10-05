@@ -2,8 +2,10 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -115,3 +117,131 @@ def test_common_imports_without_consumers():
         "assert not bad, bad\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def require(module: str):
+    """Consumer imports: skip by default, fail in the dedicated example jobs."""
+    if os.environ.get("PYXSD_REQUIRE_EXAMPLES"):
+        return importlib.import_module(module)
+    return pytest.importorskip(module)
+
+
+def load_example_module(name: str):
+    spec = importlib.util.spec_from_file_location(name, ANALYTICS / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _duckdb_observations():
+    require("duckdb")
+    return load_example_module("duckdb_observations")
+
+
+def _expected_summary():
+    return [
+        {
+            "analyte": "dissolved oxygen",
+            "unit": "mg/L",
+            "readings": 2,
+            "populated": 2,
+            "total": Decimal("12.000"),
+        },
+        {
+            "analyte": "nitrate",
+            "unit": "mg/L",
+            "readings": 2,
+            "populated": 1,
+            "total": Decimal("0.015"),
+        },
+    ]
+
+
+def _stations(common):
+    return common.load_stations(ANALYTICS / "stations.json")
+
+
+def test_duckdb_summary_matches_expected(tmp_path):
+    module = _duckdb_observations()
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    table = contextual.table(document, selector="observation", revalidate=True)
+    assert module.summarize_table(table, _stations(common)) == _expected_summary()
+    path = tmp_path / "observations.parquet"
+    contextual.write_parquet(document, path, selector="observation", batch_size=2)
+    assert module.summarize_parquet(path, _stations(common)) == _expected_summary()
+
+
+def test_duckdb_quality_filter_sequences():
+    module = _duckdb_observations()
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    table = contextual.table(document, selector="observation", revalidate=True)
+    assert module.passing_sequences(table) == [1, 4]
+
+
+def test_duckdb_station_join_preserves_rows():
+    module = _duckdb_observations()
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    table = contextual.table(document, selector="observation", revalidate=True)
+    assert module.with_regions(table, _stations(common)) == [
+        {"sequence": 1, "station": "RIVER-UPSTREAM", "region": "river"},
+        {"sequence": 2, "station": "RIVER-DOWNSTREAM", "region": "river"},
+        {"sequence": 3, "station": "RIVER-UPSTREAM", "region": "river"},
+        {"sequence": 4, "station": "COASTAL-ESTUARY", "region": "coastal"},
+    ]
+
+
+def test_duckdb_station_join_unknown_station():
+    module = _duckdb_observations()
+    common = load_common()
+    synthetic = pa.table(
+        {"sequence": pa.array([9], type=pa.uint32()), "station": pa.array(["POLAR-1"])}
+    )
+    assert module.with_regions(synthetic, _stations(common)) == [
+        {"sequence": 9, "station": "POLAR-1", "region": "unknown"}
+    ]
+
+
+def test_duckdb_child_expansion_counts():
+    module = _duckdb_observations()
+    common = load_common()
+    _, document, nested, contextual = common.prepare_observations()
+    nested_table = nested.table(document, selector="observation", revalidate=True)
+    assert module.child_row_counts(nested_table) == {"tags": 4, "replicates": 8}
+    # Child expansion never touches the record-level totals.
+    table = contextual.table(document, selector="observation", revalidate=True)
+    assert module.summarize_table(table, _stations(common)) == _expected_summary()
+
+
+def test_duckdb_nested_nil_struct_retains_unit():
+    module = _duckdb_observations()
+    common = load_common()
+    _, document, nested, _ = common.prepare_observations()
+    nested_table = nested.table(document, selector="observation", revalidate=True)
+    rows = module.reading_units(nested_table)
+    assert [row["sequence"] for row in rows] == [1, 2, 3, 4]
+    assert rows[2] == {"sequence": 3, "unit": "mg/L", "is_nil": True}
+    assert all(row["is_nil"] is False for row in rows[:2] + rows[3:])
+
+
+def test_duckdb_rejects_out_of_profile_decimal():
+    module = _duckdb_observations()
+    common = load_common()
+    wide = pa.table({"wide": pa.array([1], type=pa.decimal256(76, 6))})
+    with pytest.raises(ValueError, match="38"):
+        module.summarize_table(wide, _stations(common))
+
+
+def test_duckdb_parquet_path_with_spaces_and_quotes(tmp_path):
+    module = _duckdb_observations()
+    common = load_common()
+    _, document, _, contextual = common.prepare_observations()
+    directory = tmp_path / "dir with spaces"
+    directory.mkdir()
+    path = directory / 'it\'s "quoted".parquet'
+    contextual.write_parquet(document, path, selector="observation", batch_size=2)
+    assert module.summarize_parquet(path, _stations(common)) == _expected_summary()
