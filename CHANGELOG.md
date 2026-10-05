@@ -25,6 +25,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ### Fixed
 
+- Contextual Arrow columns reuse active ancestor guards instead of rescanning
+  shared root/order child collections for every row and column. Guard state
+  remains extraction-local; documents must stay unchanged during iteration.
 - Primitive XML output uses XSD lexical forms for list values, tiny decimals,
   and nonfinite floats instead of invalid Python spellings.
 

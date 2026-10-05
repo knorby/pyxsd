@@ -251,7 +251,7 @@ class RecordProjection:
         batch_size: int = 10000,
         revalidate: bool = False,
     ) -> Iterator[Any]:
-        """Yield at most batch_size projected rows at a time, not an XML stream."""
+        """Yield bounded row batches, not XML streaming; keep input stable until closed."""
         if type(batch_size) is not int or batch_size <= 0:
             raise IntegrationError("batch_size must be a positive integer")
         document = prepare_document(self._schema, document, revalidate)

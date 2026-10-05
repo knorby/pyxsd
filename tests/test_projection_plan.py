@@ -561,3 +561,227 @@ def test_unselected_recursive_type_does_not_require_recursive_projection():
     assert rows(
         schema, doc, element="r", path=(), selector=None, columns={"v": F(path=("v",))}
     ) == [{"v": 7}]
+
+
+@pytest.mark.parametrize("count", [100, 200, 400])
+def test_shared_root_guard_child_visits_are_linear(monkeypatch, count):
+    from pyxsd.integrations import _projection
+    from pyxsd.integrations.projection import FieldSource as F
+
+    schema = compile_schema("""<xs:element name="r"><xs:complexType><xs:sequence>
+    <xs:element name="v" type="xs:int" maxOccurs="unbounded"/>
+    </xs:sequence><xs:attribute name="label"/></xs:complexType></xs:element>""")
+    doc = parse(schema, '<r label="L">' + "<v>1</v>" * count + "</r>")
+    original = _projection.guard_node
+    visits = []
+
+    def measured(shape, node, bindings, **kwargs):
+        if node is doc.root:
+            visits.append(len(node._children_))
+        return original(shape, node, bindings, **kwargs)
+
+    monkeypatch.setattr(_projection, "guard_node", measured)
+    result = rows(
+        schema,
+        doc,
+        element="r",
+        path=("v",),
+        selector="v",
+        columns={"label": F(scope="root", attribute="label"), "value": F()},
+    )
+    assert result == [{"label": "L", "value": 1}] * count
+    assert visits == [count]  # One real guard, not a row-dependent rescan.
+
+
+@pytest.mark.parametrize("count", [50, 100])
+def test_shared_order_and_branch_guards_run_once_per_occurrence(monkeypatch, count):
+    from pyxsd.integrations import _projection
+    from pyxsd.integrations.projection import FieldSource as F
+
+    schema = compile_schema(ORDERS)
+    xml = (
+        "<orders>"
+        + "".join(
+            f'<order number="{number}"><customer account="{account}"/>'
+            + '<line sku="X"><quantity>2</quantity></line>' * count
+            + "</order>"
+            for number, account in [("A", "C1"), ("B", "C2")]
+        )
+        + "</orders>"
+    )
+    doc = parse(schema, xml)
+    original = _projection.guard_node
+    calls = {}
+    visits = {}
+
+    def measured(shape, node, bindings, **kwargs):
+        key = id(node)
+        calls[key] = calls.get(key, 0) + 1
+        visits[key] = visits.get(key, 0) + len(node._children_)
+        return original(shape, node, bindings, **kwargs)
+
+    monkeypatch.setattr(_projection, "guard_node", measured)
+    columns = order_columns()
+    columns.update(
+        {
+            "number_again": columns["number"],
+            "account_again": columns["account"],
+            "version": F(scope="root", attribute="version"),
+        }
+    )
+    result = rows(schema, doc, columns=columns)
+    assert [
+        (r["number"], r["account"], r["number_again"], r["account_again"], r["version"])
+        for r in result
+    ] == [("A", "C1", "A", "C1", 9)] * count + [("B", "C2", "B", "C2", 9)] * count
+    assert calls[id(doc.root)] == 1
+    for order in doc.root._children_:
+        assert calls[id(order)] == 1
+        assert visits[id(order)] == count + 1
+        assert calls[id(order._children_[0])] == 1  # Off-row customer branch.
+        for line in order._children_[1:]:
+            assert calls[id(line)] == 1
+
+
+def test_frame_state_is_independent_across_interleaved_extractions_and_mutations():
+    from pyxsd.integrations._projection import compile_projection, iter_projected_rows
+    from pyxsd.integrations.projection import FieldSource as F
+
+    schema = compile_schema(ORDERS)
+    columns = {**order_columns(), "version": F(scope="root", attribute="version")}
+    plan = compile_projection(schema, element="orders", path=("order", "line"), columns=columns)
+    first = parse(schema, ORDER_XML)
+    second = parse(
+        schema,
+        ORDER_XML.replace('number="A"', 'number="D"').replace('account="C1"', 'account="C9"'),
+    )
+    first.root._attribs_["version"] = "1"
+    second.root._attribs_["version"] = "2"
+    left = iter_projected_rows(plan, first, selector="order/line", namespaces=None)
+    right = iter_projected_rows(plan, second, selector="order/line", namespaces=None)
+    assert (next(left)["number"], next(right)["number"]) == ("A", "D")
+    assert next(left)["version"] == 1
+    assert next(right)["version"] == 2
+    assert next(left)["account"] == "C2"
+    assert next(right)["account"] == "C2"
+    assert list(left) == list(right) == []
+
+    first.root._attribs_["version"] = "3"
+    first.root._children_[0]._children_[0]._attribs_["account"] = "C3"
+    result = list(iter_projected_rows(plan, first, selector="order/line", namespaces=None))
+    assert [(r["version"], r["account"]) for r in result] == [(3, "C3"), (3, "C3"), (3, "C2")]
+    first.root._children_[0]._children_[0]._attribs_["account"] = "C4"
+    fresh = first.revalidate()
+    assert fresh.root is not first.root
+    result = list(iter_projected_rows(plan, fresh, selector="order/line", namespaces=None))
+    assert result[0]["account"] == "C4"
+    first.root._children_[0]._children_[0]._attribs_.pop("account")
+    with pytest.raises(IntegrationError, match="required attribute"):
+        list(iter_projected_rows(plan, first, selector="order/line", namespaces=None))
+
+
+def test_branch_frames_keep_occurrence_route_and_namespace_context():
+    from pyxsd.integrations.projection import FieldSource as F
+
+    schema = compile_schema("""<xs:element name="r"><xs:complexType><xs:sequence>
+    <xs:element name="order" maxOccurs="unbounded"><xs:complexType><xs:sequence>
+    <xs:element name="left" type="xs:QName"/><xs:element name="right" type="xs:QName"/>
+    <xs:element name="line" type="xs:int" maxOccurs="unbounded"/>
+    </xs:sequence></xs:complexType></xs:element></xs:sequence></xs:complexType></xs:element>""")
+    doc = parse(
+        schema,
+        '<r><order><left xmlns:p="urn:a">p:x</left><right xmlns:p="urn:b">p:x</right><line>1</line><line>2</line></order><order><left xmlns:p="urn:c">p:x</left><right xmlns:p="urn:d">p:x</right><line>3</line></order></r>',
+    )
+    for order, uris in zip(
+        doc.root._children_, [("urn:a", "urn:b"), ("urn:c", "urn:d")], strict=True
+    ):
+        order._attribs_["xmlns:p"] = "urn:outer"
+        for node, uri in zip(order._children_[:2], uris, strict=True):
+            node._attribs_["xmlns:p"] = uri
+    columns = {
+        "left": F(scope="ancestor", levels=1, path=("left",)),
+        "right": F(scope="ancestor", levels=1, path=("right",)),
+        "again": F(scope="ancestor", levels=1, path=("left",)),
+        "v": F(),
+    }
+    assert rows(
+        schema, doc, element="r", path=("order", "line"), selector="order/line", columns=columns
+    ) == [
+        {"left": "{urn:a}x", "right": "{urn:b}x", "again": "{urn:a}x", "v": 1},
+        {"left": "{urn:a}x", "right": "{urn:b}x", "again": "{urn:a}x", "v": 2},
+        {"left": "{urn:c}x", "right": "{urn:d}x", "again": "{urn:c}x", "v": 3},
+    ]
+    doc.root._children_[0]._children_[1]._attribs_["xmlns:p"] = "urn:changed"
+    with pytest.raises(IntegrationError, match="namespace"):
+        rows(
+            schema, doc, element="r", path=("order", "line"), selector="order/line", columns=columns
+        )
+
+
+def test_root_column_route_reuses_its_active_singleton_ancestor_frame(monkeypatch):
+    from pyxsd.integrations import _projection
+    from pyxsd.integrations.projection import FieldSource as F
+
+    schema = compile_schema("""<xs:element name="r"><xs:complexType><xs:sequence>
+    <xs:element name="group"><xs:complexType><xs:sequence><xs:element name="v" type="xs:int" maxOccurs="unbounded"/>
+    </xs:sequence><xs:attribute name="label"/></xs:complexType></xs:element>
+    </xs:sequence></xs:complexType></xs:element>""")
+    doc = parse(schema, '<r><group label="L">' + "<v>1</v>" * 100 + "</group></r>")
+    group = doc.root._children_[0]
+    original = _projection.guard_node
+    calls = []
+
+    def measured(shape, node, bindings, **kwargs):
+        if node is group:
+            calls.append(len(node._children_))
+        return original(shape, node, bindings, **kwargs)
+
+    monkeypatch.setattr(_projection, "guard_node", measured)
+    columns = {
+        "root_label": F(scope="root", path=("group",), attribute="label"),
+        "ancestor_label": F(scope="ancestor", levels=1, attribute="label"),
+        "v": F(),
+    }
+    assert (
+        rows(schema, doc, element="r", path=("group", "v"), selector="group/v", columns=columns)
+        == [{"root_label": "L", "ancestor_label": "L", "v": 1}] * 100
+    )
+    assert calls == [100]
+
+
+def test_repeated_row_frames_are_released_and_close_releases_ancestor_frames(monkeypatch):
+    import weakref
+
+    from pyxsd.integrations import _projection
+
+    schema = compile_schema(ORDERS)
+    doc = parse(schema, ORDER_XML)
+    plan = _projection.compile_projection(
+        schema, element="orders", path=("order", "line"), columns=order_columns()
+    )
+    original = _projection._Frame.validated
+    ancestors, row_frames = [], []
+
+    def measured(frame):
+        if frame._state is None:
+            refs = row_frames if frame.shape is plan.row_shapes[-1] else ancestors
+            refs.append(weakref.ref(frame))
+            if refs is row_frames:
+                assert sum(ref() is not None for ref in row_frames) <= 1
+        return original(frame)
+
+    monkeypatch.setattr(_projection._Frame, "validated", measured)
+    iterator = _projection.iter_projected_rows(plan, doc, selector="order/line", namespaces=None)
+    assert next(iterator)["sku"] == "X"
+    assert any(ref() is not None for ref in ancestors)
+    assert next(iterator)["sku"] == "Y"
+    iterator.close()
+    assert all(ref() is None for ref in [*ancestors, *row_frames])
+    assert list(
+        _projection.iter_projected_rows(plan, doc, selector="order/line", namespaces=None)
+    ) == [
+        {"number": "A", "account": "C1", "sku": "X", "quantity": 2},
+        {"number": "A", "account": "C1", "sku": "Y", "quantity": 3},
+        {"number": "B", "account": "C2", "sku": "Z", "quantity": 4},
+    ]
+    assert all(ref() is None for ref in [*ancestors, *row_frames])

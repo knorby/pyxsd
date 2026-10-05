@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pyxsd.document import Document
@@ -150,15 +150,39 @@ def _topology(root: Any) -> dict[int, int]:
     return counts
 
 
-def _column_value(column: ColumnBinding, frames: list[tuple[Any, dict[str, str]]]) -> Any:
-    node, bindings = frames[column.start]
+@dataclass
+class _Frame:
+    """Validated occurrence state, owned only by the active extraction traversal."""
+
+    shape: ElementShape
+    node: Any
+    inherited: dict[str, str]
+    _state: tuple[dict[str, str], dict[str, Any], dict[int, list[Any]]] | None = None
+    _branches: dict[tuple[int, int], _Frame] = field(default_factory=dict)
+
+    def validated(self) -> tuple[dict[str, str], dict[str, Any], dict[int, list[Any]]]:
+        if self._state is None:
+            self._state = guard_node(self.shape, self.node, self.inherited, current_nil=True)
+        return self._state
+
+    def branch(self, shape: ElementShape, node: Any) -> _Frame:
+        # Only statically singleton column routes enter this cache. Repeated row
+        # frames live on the traversal stack, never in their parent's cache.
+        key = (id(shape), id(node))
+        if key not in self._branches:
+            self._branches[key] = _Frame(shape, node, self.validated()[0])
+        return self._branches[key]
+
+
+def _column_value(column: ColumnBinding, frames: list[_Frame]) -> Any:
+    frame = frames[column.start]
     for index, shape in enumerate(column.shapes):
-        bindings, attributes, grouped = guard_node(shape, node, bindings, current_nil=True)
+        bindings, attributes, grouped = frame.validated()
         if index == len(column.shapes) - 1:
             if column.source.attribute is not None:
                 return attributes.get("@" + column.source.attribute)
-            return read_scalar(shape, node, bindings, current_nil=True)
-        if nil_state(node, current=True):
+            return read_scalar(shape, frame.node, bindings, current_nil=True)
+        if nil_state(frame.node, current=True):
             return None
         next_shape = column.shapes[index + 1]
         children = grouped[id(next_shape.declaration)]
@@ -167,6 +191,15 @@ def _column_value(column: ColumnBinding, frames: list[tuple[Any, dict[str, str]]
         if len(children) != 1:
             shape.fail("multiple occurrences on singleton column route")
         node = children[0]
+        position = column.start + index + 1
+        if (
+            position < len(frames)
+            and frames[position].shape is next_shape
+            and frames[position].node is node
+        ):
+            frame = frames[position]
+        else:
+            frame = frame.branch(next_shape, node)
     raise AssertionError("column must contain its starting shape")
 
 
@@ -177,7 +210,7 @@ def iter_projected_rows(
     selector: str | None,
     namespaces: dict[str, str] | None,
 ) -> Iterator[dict[str, Any]]:
-    """Extract one row per selected occurrence from an already prepared document."""
+    """Extract rows with operation-local frames; input must stay unchanged until closed."""
     if document.schema is not plan.schema:
         raise IntegrationError("document belongs to another compiled schema")
     counts = _topology(document.root)
@@ -190,35 +223,33 @@ def iter_projected_rows(
     accounted: set[int] = set()
     ordinal = 0
 
-    def walk(
-        node: Any, depth: int, frames: list[tuple[Any, dict[str, str]]]
-    ) -> Iterator[dict[str, Any]]:
+    def walk(node: Any, depth: int, frames: list[_Frame]) -> Iterator[dict[str, Any]]:
         nonlocal ordinal
         shape = plan.row_shapes[depth]
-        inherited = frames[-1][1] if frames else {}
+        inherited = frames[-1].validated()[0] if frames else {}
+        frame = _Frame(shape, node, inherited)
+        frames = [*frames, frame]
         if depth == len(plan.row_shapes) - 1 and id(node) in selected:
             ordinal += 1
             accounted.add(id(node))
-            row_frames = [*frames, (node, inherited)]
             row = {}
             for column in plan.columns:
                 try:
-                    row[column.name] = _column_value(column, row_frames)
+                    row[column.name] = _column_value(column, frames)
                 except (IntegrationError, TypeError, ValueError) as exc:
                     raise IntegrationError(
                         f"row {ordinal} column {column.name!r} source {column.source!r} "
                         f"route {column.shapes[-1].path}: {exc}"
                     ) from exc
             try:
-                guard_node(shape, node, inherited, current_nil=True)
+                frame.validated()
             except IntegrationError as exc:
                 raise IntegrationError(
                     f"row {ordinal} structural route {shape.path}: {exc}"
                 ) from exc
             yield row
             return
-        bindings, _, grouped = guard_node(shape, node, inherited, current_nil=True)
-        frames = [*frames, (node, bindings)]
+        _, _, grouped = frame.validated()
         if depth < len(plan.row_shapes) - 1 and not nil_state(node, current=True):
             child_shape = plan.row_shapes[depth + 1]
             for child in grouped[id(child_shape.declaration)]:

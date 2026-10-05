@@ -195,6 +195,17 @@ Named columns share the existing batch-size, typed-empty and atomic local-path
 Parquet guarantees. Batching is not XML streaming, and this feature does not
 add concurrent parsing against a shared Schema.
 
+Contextual extraction guards/groups each active ancestor occurrence once and
+reuses that validated state for its rows and columns. Singleton column branches
+retain their own occurrence/declaration-route and namespace context. State lives
+only in the active extraction's traversal frames, not globally or on a prepared
+projection; repeated row frames are released as traversal advances.
+
+Do not mutate the document while a table/write operation is running or while
+its `batches()` iterator is active. Exhaust or close that iterator before editing
+the tree. Separate extractions reread current values, including intervening
+mutations; `revalidate=True` builds fresh state from the returned document.
+
 ### Type and fidelity policy
 
 | Values | Default Arrow representation |
