@@ -11,6 +11,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-11
+
 ### Added
 
 - `RecordProjection.write_dataset` exports sequential local XML inputs to a new
@@ -29,6 +31,10 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 - Named Arrow scalar columns using `FieldSource` to read a selected record,
   its ancestors or the document root, with schema-derived types and exact
   occurrence associations. Includes an Arrow-only purchase-order-line example.
+- Runnable data-workflow examples: DuckDB and Polars analytics over Arrow
+  projections (`examples/analytics/`), and a Pydantic purchase-order
+  assessment with exact Decimal arithmetic (`examples/pydantic/assess_orders.py`),
+  documented in `docs/data-workflows.md` with executable command coverage.
 
 ### Fixed
 
@@ -36,7 +42,11 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   shared root/order child collections for every row and column. Guard state
   remains extraction-local; documents must stay unchanged during iteration.
 - Primitive XML output uses XSD lexical forms for list values, tiny decimals,
-  and nonfinite floats instead of invalid Python spellings.
+  and nonfinite floats instead of invalid Python spellings: list values
+  serialize space-joined rather than as Python list reprs, and tiny decimals
+  use plain notation (for example `0.00000000001`, not `1E-11`).
+- `RecordProjection.write_parquet` preserves nested Arrow list field names,
+  matching dataset part and `_schema.parquet` output for the same projection.
 
 ## [1.0.0] - 2026-09-22
 
