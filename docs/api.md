@@ -64,7 +64,7 @@ describes preparation and supported projections.
    :members:
 ```
 
-### Querying a document
+## Querying a document
 
 `Document.xpath(expr)` evaluates an XPath expression over the bound tree
 and returns the **original bound nodes** (scalars such as `count(...)`
