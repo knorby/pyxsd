@@ -112,6 +112,19 @@ def test_nil_complex_attributes_and_nullable_list_items_survive_parquet(tmp_path
     assert row["item"] == [None]
 
 
+def test_write_parquet_preserves_nested_list_field_names(tmp_path):
+    schema = compile_schema(RECORD_SCHEMA)
+    projection = records(schema)
+    doc = parse(
+        schema,
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><count>7</count>'
+        '<item xsi:nil="true"/><missing xsi:nil="true" reason="unknown"/></root>',
+    )
+    path = tmp_path / "nested.parquet"
+    projection.write_parquet(doc, path)
+    assert pq.read_schema(path).equals(projection.schema, check_metadata=True)
+
+
 def test_late_batch_failure_preserves_existing_destination(tmp_path):
     from pyxsd.integrations import IntegrationError
 

@@ -384,7 +384,9 @@ class RecordProjection:
         else:
             sink = destination
         try:
-            with pq.ParquetWriter(sink, self.schema, version="2.6") as writer:
+            with pq.ParquetWriter(
+                sink, self.schema, version="2.6", use_compliant_nested_type=False
+            ) as writer:
                 for batch in self.batches(
                     document, selector=selector, namespaces=namespaces, batch_size=batch_size
                 ):

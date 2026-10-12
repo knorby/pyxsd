@@ -37,6 +37,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   remains extraction-local; documents must stay unchanged during iteration.
 - Primitive XML output uses XSD lexical forms for list values, tiny decimals,
   and nonfinite floats instead of invalid Python spellings.
+- `RecordProjection.write_parquet` preserves nested Arrow list field names,
+  matching dataset part and `_schema.parquet` output for the same projection.
 
 ## [1.0.0] - 2026-09-22
 
