@@ -11,6 +11,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-11
+
 ### Added
 
 - `RecordProjection.write_dataset` exports sequential local XML inputs to a new
