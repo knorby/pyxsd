@@ -11,6 +11,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-14
+
 ### Added
 
 - Bound child nodes now carry an optional, parse-produced `_tail_` attribute:
