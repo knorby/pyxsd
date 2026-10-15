@@ -241,6 +241,11 @@ class SchemaBase:
     #: (skipped content; identity constraints ignore it). Only skipped
     #: instances carry the assignment; readers use ``getattr(..., False)``.
     _skipped_: bool
+    #: False when the governing content admits character data (mixed
+    #: content, the ur-type, generic wildcard pass-through), whose text
+    #: ``addValueTo`` keeps verbatim. Generated classes are stamped at
+    #: class build time; generic instances set it themselves.
+    _elementOnly_: bool
 
     def __init_subclass__(cls, **kwargs):
         """Collects the descriptor bookkeeping for a new subclass.
@@ -1944,16 +1949,26 @@ class SchemaBase:
         element instance if it does.
 
         Uses the ElementTree function ``.text`` to retrieve this
-        information from the tag.
+        information from the tag. A class whose content admits character
+        data (mixed content, the ur-type, and generic wildcard
+        pass-through) keeps the text verbatim; an element-only class
+        strips and splits lines, since its character data is
+        insignificant.
         """
         if not elementTag.text:
+            return
+        if getattr(instance, "_elementOnly_", True) is False:
+            # Mixed content keeps the text exactly as parsed, including
+            # leading, trailing, and repeated whitespace, which is
+            # significant there.
+            instance._value_ = [elementTag.text]
             return
         if elementTag.get(f"{{{XML_NS}}}space") == "preserve":
             # ``xml:space="preserve"`` asks the parser to keep the
             # character data exactly, including leading, trailing, and
             # repeated whitespace.  The default path below strips and
-            # splits lines, which is only appropriate for the untyped
-            # pass-through case.
+            # splits lines, which is only appropriate for element-only
+            # content.
             instance._value_ = [elementTag.text]
             return
         instance._value_ = []
@@ -2259,10 +2274,11 @@ class SchemaBase:
         content.
 
         Undeclared children permitted by a wildcard are stored raw:
-        attributes keep their lexical values, text is split like
-        untyped data (see ``addValueTo``), and children are recursed
-        generically. Called by ``addElementsTo()`` when the
-        instance's type declares a wildcard.
+        attributes keep their lexical values, text is kept verbatim
+        (generic content admits character data; see ``addValueTo``),
+        and children are recursed generically. Called by
+        ``addElementsTo()`` when the instance's type declares a
+        wildcard.
 
         - ``elementTag`` - the undeclared xml element to store raw.
         - ``skipped`` - mark the subtree as bound by a
@@ -2271,6 +2287,9 @@ class SchemaBase:
           ordinary generic instances are unchanged.
         """
         instance = SchemaBase()
+        # Generic pass-through content admits character data, so its
+        # text is bound verbatim rather than stripped and split.
+        instance._elementOnly_ = False
         instance._name_ = cls._node_name(elementTag)
         instance._attribs_ = dict(elementTag.attrib)
         if skipped:
