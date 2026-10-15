@@ -28,12 +28,14 @@ Notes:
 - Repeated elements (`maxOccurs` > 1) store every occurrence in
   `_children_` in document order.
 - A bound child may carry an optional, parse-produced `_tail_`: the
-  character data that followed the child within a parent whose content
-  admits character data (mixed content, `xs:anyType`, wildcard
-  pass-through). The attribute exists only when the source held such text,
-  whitespace included. It is **not** part of the `XMLNode` protocol:
-  transform-made trees and hand-built nodes need no changes — a missing
-  `_tail_` simply means no recorded following text.
+  character data that followed the child in the source, whitespace
+  included. It is recorded whenever the source had such text; the writer
+  and dict export use it only under a parent whose content admits
+  character data (mixed content, `xs:anyType`, wildcard pass-through),
+  while the XPath projection mirrors every recorded tail. It is **not**
+  part of the `XMLNode` protocol: transform-made trees and hand-built
+  nodes need no changes — a missing `_tail_` simply means no recorded
+  following text.
 
 ## Writers
 

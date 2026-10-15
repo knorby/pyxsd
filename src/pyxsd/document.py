@@ -193,10 +193,11 @@ class Document:
         maps query prefixes to namespace URIs.
 
         The query runs over a projection of the bound tree, so it sees
-        exactly what the object model holds: ``text`` mirrors ``_value_``
-        and a child's ``tail`` mirrors its recorded ``_tail_``, so mixed
-        character data is queryable in document order. Comment nodes are
-        absent, and an element with ``_value_ is None`` projects
+        exactly what the object model holds: descriptor write-through is
+        reflected, ``text`` mirrors ``_value_`` and a child's ``tail``
+        mirrors its recorded ``_tail_``, so mixed character data is
+        queryable in document order. Parsing does not preserve comment
+        nodes, and an element with ``_value_ is None`` projects
         ``text=None``. The projection is document-faithful, not
         source-XPath-exact: element-only content's recorded layout
         whitespace (the tails between block children) is part of the text

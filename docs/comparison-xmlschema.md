@@ -81,10 +81,10 @@ runs and are explained in [Supported features](supported.md).
   surprises users who expect qualified names by default.
 - **Mixed content is preserved but not a structured-export citizen.**
   Interleaved text is kept verbatim in the bound tree (leading text in
-  `_value_`, child tails in `_tail_`) and round-trips through
-  serialization and XPath, but the dict export can only concatenate the
-  character data under `$`, and the Arrow/Pydantic integrations reject
-  mixed content.
+  `_value_`, child tails in `_tail_`) and survives serialization and
+  XPath queries, but the dict export can only concatenate the character
+  data under `$`, and the Arrow/Pydantic integrations reject mixed
+  content.
 - **DTD is internal-subset only, and unobserved.** Declarations beyond what
   expat exposes (notably unparsed `NDATA` entities) are not tracked; external
   subsets are not fetched, and a doctype declaration is neither processed nor
