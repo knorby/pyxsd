@@ -111,8 +111,13 @@ class Document:
 
         The export convention (child element keys, ``@`` attributes, the
         ``$`` text key, repeated children as lists) is documented in
-        ``docs/data-model.md``. Mixed-content tails are not in the bound
-        tree and are therefore not exported.
+        ``docs/data-model.md``. For an element whose content admits
+        character data (mixed content, ``xs:anyType``, wildcard
+        pass-through), ``$`` holds all of its recorded character data in
+        document order: the leading text followed by every child's
+        ``_tail_``, concatenated. The dict shape cannot represent
+        text/element interleaving; :meth:`to_string` and :meth:`xpath`
+        are the faithful mixed-content views.
         """
         if self.root is None:
             raise PyXSDError("the document has no root to export")
@@ -188,10 +193,14 @@ class Document:
         maps query prefixes to namespace URIs.
 
         The query runs over a projection of the bound tree, so it sees
-        exactly what the object model holds: descriptor write-through is
-        reflected, but mixed-content tails and comment nodes are absent,
-        and an element with ``_value_ is None`` projects ``text=None``.
-        See ``docs/data-model.md``.
+        exactly what the object model holds: ``text`` mirrors ``_value_``
+        and a child's ``tail`` mirrors its recorded ``_tail_``, so mixed
+        character data is queryable in document order. Comment nodes are
+        absent, and an element with ``_value_ is None`` projects
+        ``text=None``. The projection is document-faithful, not
+        source-XPath-exact: element-only content's recorded layout
+        whitespace (the tails between block children) is part of the text
+        a value query returns. See ``docs/data-model.md``.
         """
         if self.root is None:
             raise PyXSDError("the document has no root to query")

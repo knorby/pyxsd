@@ -79,9 +79,12 @@ runs and are explained in [Supported features](supported.md).
 - **Legacy namespace mode is the default binding policy.** Strict namespace
   handling is a distinct opt-in mode (`ParseModes.NAMESPACED`), which
   surprises users who expect qualified names by default.
-- **Mixed-content tails are not preserved.** Text after a child element in
-  mixed content is dropped from the bound tree, so patterns such as
-  XHTML-in-complexType do not round-trip.
+- **Mixed content is preserved but not a structured-export citizen.**
+  Interleaved text is kept verbatim in the bound tree (leading text in
+  `_value_`, child tails in `_tail_`) and round-trips through
+  serialization and XPath, but the dict export can only concatenate the
+  character data under `$`, and the Arrow/Pydantic integrations reject
+  mixed content.
 - **DTD is internal-subset only, and unobserved.** Declarations beyond what
   expat exposes (notably unparsed `NDATA` entities) are not tracked; external
   subsets are not fetched, and a doctype declaration is neither processed nor

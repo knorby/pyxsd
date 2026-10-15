@@ -37,8 +37,8 @@ note = "Unions of atomic types work, including inline anonymous members; unions 
 [[feature]]
 name = "Mixed complex content"
 construct = "mixed=\"true\" complexTypes"
-status = "ignored"
-note = "Text interleaved between child elements is not preserved or validated."
+status = "partial"
+note = "Character data is preserved verbatim in the bound tree: an element's leading text is kept in _value_ and the text following each child is recorded as that child's _tail_, and mixed elements serialize inline so ordered text round-trips. Declared children and occurrence limits are still validated. Structured exports are narrower: the dict export concatenates all recorded character data under \"$\", and the Arrow/Pydantic integration projections reject mixed content."
 
 [[feature]]
 name = "Schema hints by URL"

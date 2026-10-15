@@ -11,6 +11,33 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+### Added
+
+- Bound child nodes now carry an optional, parse-produced `_tail_` attribute:
+  the character data that followed the child within a parent whose content
+  admits character data. It is not part of the `pyxsd.XMLNode` protocol, and
+  transform-made or hand-built trees need no changes — a missing `_tail_`
+  simply means no recorded following text.
+
+### Fixed
+
+- Mixed-content character data is preserved instead of lost. For mixed
+  (`mixed="true"`), `xs:anyType`, and wildcard pass-through content, an
+  element's leading text binds verbatim in `_value_` (no stripping or
+  splitting) and the text following each child is recorded as that child's
+  `_tail_`; previously the leading text was stripped/split and inter-element
+  text was dropped entirely. A mixed element now serializes inline without
+  writer-injected whitespace, so ordered text and significant whitespace
+  survive parse/serialize/parse. Element-only and simple-content output is
+  byte-for-byte unchanged.
+- `Document.xpath()`, `find()`, and `findall()` project `_value_`/`_tail_`
+  onto `text`/`tail`, so mixed character data is queryable in document order.
+- `Document.to_dict()`/`to_json()` export all recorded character data of a
+  character-data-admitting element under `$`, in document order (the leading
+  text followed by every child's `_tail_`). The dict shape cannot represent
+  text/element interleaving, so `to_string()` and `xpath()` are the faithful
+  mixed-content views.
+
 ## [1.1.0] - 2026-10-11
 
 ### Added

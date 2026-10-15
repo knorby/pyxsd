@@ -232,3 +232,30 @@ class TestMixedProjections:
         )
         doc = _parse(body, "<a>\n  <b>x</b>\n</a>", tmp_path)
         assert doc.to_dict(typed=False) == {"b": "x"}
+
+
+class TestMixedValidation:
+    """Preserving mixed text does not relax instance validation."""
+
+    def test_undeclared_child_still_rejected(self, tmp_path):
+        doc = _parse(MIXED_P, "<p>text <bogus>x</bogus></p>", tmp_path)
+        assert not doc.is_valid
+        assert any(i.code == "unexpected-element" for i in doc.report.issues)
+
+    def test_choice_occurrence_limits_enforced_in_mixed(self, tmp_path):
+        body = (
+            '<xs:element name="p"><xs:complexType mixed="true">'
+            '<xs:sequence><xs:element name="em" type="xs:string"/></xs:sequence>'
+            "</xs:complexType></xs:element>"
+        )
+        doc = _parse(body, "<p><em>a</em><em>b</em></p>", tmp_path)
+        assert not doc.is_valid
+
+    def test_element_only_character_content_still_rejected(self, tmp_path):
+        body = (
+            '<xs:element name="a"><xs:complexType><xs:sequence>'
+            '<xs:element name="b" type="xs:string"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+        )
+        doc = _parse(body, "<a>stray<b>x</b></a>", tmp_path)
+        assert any(i.code == "unexpected-character" for i in doc.report.issues)
