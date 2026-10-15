@@ -51,6 +51,19 @@ MIXED_P = (
     "</xs:choice></xs:complexType></xs:element>"
 )
 
+# A mixed root with a wildcard: the undeclared ``extra`` child binds as a
+# generic pass-through instance (``makeGenericInstance``), and the mixed
+# root keeps the serialization free of writer-generated layout whitespace.
+WILDCARD_MIXED_DOC = (
+    '<xs:element name="doc"><xs:complexType mixed="true"><xs:sequence>'
+    '<xs:any processContents="skip" minOccurs="0" maxOccurs="unbounded"/>'
+    "</xs:sequence></xs:complexType></xs:element>"
+)
+
+# The ur-type declaration binds ``AnyType``, whose class marker makes the
+# element character-data-admitting.
+ANY_TYPE_ROOT = '<xs:element name="extra" type="xs:anyType"/>'
+
 
 class TestMixedTextCapture:
     def test_leading_text_is_verbatim(self, tmp_path):
@@ -92,6 +105,7 @@ class TestMixedTailCapture:
 
     def test_missing_tail_records_nothing(self, tmp_path):
         doc = _parse(MIXED_P, "<p><em>a</em><em>b</em></p>", tmp_path)
+        assert len(doc.root._children_) == 2
         assert all(not hasattr(child, "_tail_") for child in doc.root._children_)
 
     def test_element_only_child_order_unchanged(self, tmp_path):
@@ -102,6 +116,42 @@ class TestMixedTailCapture:
         )
         doc = _parse(body, "<a><b>1</b><b>2</b></a>", tmp_path)
         assert [str(child) for child in doc.root._children_] == ["1", "2"]
+
+
+class TestAnyTypeAndWildcardBinding:
+    """Generic pass-through content keeps character data verbatim.
+
+    ``xs:anyType`` elements and undeclared children admitted by a
+    wildcard admit character data. The class marker on ``AnyType`` and
+    the instance marker ``makeGenericInstance`` sets are what the writer
+    and dict export read to tell such content apart from element-only
+    content, so these tests fail when either marker is dropped.
+    """
+
+    def test_wildcard_generic_text_binds_verbatim(self, tmp_path):
+        doc = _parse(WILDCARD_MIXED_DOC, "<doc><extra>  spaced  text  </extra></doc>", tmp_path)
+        assert doc.is_valid
+        assert doc.root._children_[0]._value_ == ["  spaced  text  "]
+
+    def test_wildcard_generic_subtree_serializes_inline(self, tmp_path):
+        doc = _parse(
+            WILDCARD_MIXED_DOC, "<doc><extra>lead <b>bold</b> tail</extra></doc>", tmp_path
+        )
+        extra = doc.root._children_[0]
+        assert extra._value_ == ["lead "]
+        assert extra._children_[0]._tail_ == " tail"
+        assert _ordered_text(doc.to_string()) == ["lead ", "bold", " tail"]
+
+    def test_anytype_text_binds_verbatim(self, tmp_path):
+        doc = _parse(ANY_TYPE_ROOT, "<extra>  spaced  text  </extra>", tmp_path)
+        assert doc.is_valid
+        assert doc.root._value_ == ["  spaced  text  "]
+
+    def test_anytype_subtree_serializes_inline(self, tmp_path):
+        doc = _parse(ANY_TYPE_ROOT, "<extra>lead <b>bold</b> tail</extra>", tmp_path)
+        assert doc.root._value_ == ["lead "]
+        assert doc.root._children_[0]._tail_ == " tail"
+        assert _ordered_text(doc.to_string()) == ["lead ", "bold", " tail"]
 
 
 class TestMixedSerialization:
@@ -198,6 +248,21 @@ class TestMixedProjections:
     def test_xpath_sees_full_text(self, tmp_path):
         doc = _parse(MIXED_P, TestMixedSerialization.MIXED_XML, tmp_path)
         assert doc.xpath("string(/p)") == "Before emphasis between [1] after."
+
+    def test_element_only_layout_whitespace_in_text_query(self, tmp_path):
+        # Documented consequence of the document-faithful projection: a
+        # pretty-printed element-only document's recorded layout tails are
+        # part of text-valued query results. The leading indentation is
+        # not bound (legacy element-only behavior), so only the child
+        # tails appear.
+        body = (
+            '<xs:element name="a"><xs:complexType><xs:sequence>'
+            '<xs:element name="b" type="xs:string" maxOccurs="2"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+        )
+        doc = _parse(body, "<a>\n  <b>x</b>\n  <b>y</b>\n</a>", tmp_path)
+        assert doc.is_valid
+        assert doc.xpath("string(/a)") == "x\n  y\n"
 
     def test_findall_returns_bound_nodes_with_tails(self, tmp_path):
         doc = _parse(MIXED_P, TestMixedSerialization.MIXED_XML, tmp_path)

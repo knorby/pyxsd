@@ -14,10 +14,12 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 ### Added
 
 - Bound child nodes now carry an optional, parse-produced `_tail_` attribute:
-  the character data that followed the child within a parent whose content
-  admits character data. It is not part of the `pyxsd.XMLNode` protocol, and
-  transform-made or hand-built trees need no changes — a missing `_tail_`
-  simply means no recorded following text.
+  the character data that followed the child in the source, recorded for
+  every bound child whose source had following text; the writer and dict
+  export use it only under a parent whose content admits character data. It
+  is not part of the `pyxsd.XMLNode` protocol, and transform-made or
+  hand-built trees need no changes — a missing `_tail_` simply means no
+  recorded following text.
 
 ### Fixed
 
@@ -31,7 +33,10 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   survive parse/serialize/parse. Element-only and simple-content output is
   byte-for-byte unchanged.
 - `Document.xpath()`, `find()`, and `findall()` project `_value_`/`_tail_`
-  onto `text`/`tail`, so mixed character data is queryable in document order.
+  onto `text`/`tail`, so mixed character data is queryable in document
+  order. Element-only content's recorded layout whitespace now appears in
+  text-valued queries too, so the projection is document-faithful rather
+  than source-XPath-exact.
 - `Document.to_dict()`/`to_json()` export all recorded character data of a
   character-data-admitting element under `$`, in document order (the leading
   text followed by every child's `_tail_`). The dict shape cannot represent
