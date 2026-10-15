@@ -548,7 +548,9 @@ class SchemaBase:
             if declared is None:
                 subElCls = cls._classForChild(None, subElement)
                 if isinstance(subElCls, type) and issubclass(subElCls, SchemaBase):
-                    instance._children_.append(subElCls.makeInstanceFromTag(subElement))
+                    subInstance = subElCls.makeInstanceFromTag(subElement)
+                    cls._bindTail(subInstance, subElement)
+                    instance._children_.append(subInstance)
                     return
         cls._bindWildcardChild(instance, subElement, spec)
 
@@ -566,13 +568,17 @@ class SchemaBase:
         parser = cls._parserHost()
         mode = getattr(parser, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
-            instance._children_.append(cls.makeGenericInstance(subElement))
+            subInstance = cls.makeGenericInstance(subElement)
+            cls._bindTail(subInstance, subElement)
+            instance._children_.append(subInstance)
             return
         if spec.process_contents == "skip":
             # Skipped content has no governing type definition and takes
             # no part in identity-constraint checking ("skipped", XSD 1.1
             # §3.3.4.2; the wild101-104 reading).
-            instance._children_.append(cls.makeGenericInstance(subElement, skipped=True))
+            subInstance = cls.makeGenericInstance(subElement, skipped=True)
+            cls._bindTail(subInstance, subElement)
+            instance._children_.append(subInstance)
             return
         local = local_name(subElement.tag)
         uri = namespace_of(subElement.tag)
@@ -598,7 +604,9 @@ class SchemaBase:
             if xsi.xsi_type_name(subElement) is not None:
                 governing = cls._classForChild(None, subElement)
             cls._checkDynamicEDC(instance, subElement, governing, descriptor, memberHeadMap)
-            instance._children_.append(cls.makeGenericInstance(subElement))
+            subInstance = cls.makeGenericInstance(subElement)
+            cls._bindTail(subInstance, subElement)
+            instance._children_.append(subInstance)
             return
         if xsi.xsi_type_name(subElement) is not None:
             # A strict wildcard admits an undeclared child whose
@@ -615,6 +623,7 @@ class SchemaBase:
                     subInstance._name_ = cls._node_name(subElement)
                     subInstance._descriptor_ = None
                     subInstance._nil_ = False
+                    cls._bindTail(subInstance, subElement)
                     instance._children_.append(subInstance)
                 # The xsi:type handled the child (an invalid lexical
                 # value was already reported); do not also demand a
@@ -625,7 +634,9 @@ class SchemaBase:
             code="wildcard-no-declaration",
             element=cls.__name__,
         )
-        instance._children_.append(cls.makeGenericInstance(subElement))
+        subInstance = cls.makeGenericInstance(subElement)
+        cls._bindTail(subInstance, subElement)
+        instance._children_.append(subInstance)
 
     @classmethod
     def _checkDynamicEDC(
@@ -1230,7 +1241,9 @@ class SchemaBase:
                         element=cls.__name__,
                     )
                     if _mode_for(cls).unresolved_type == "generic":
-                        instance._children_.append(cls.makeGenericInstance(subElement))
+                        subInstance = cls.makeGenericInstance(subElement)
+                        cls._bindTail(subInstance, subElement)
+                        instance._children_.append(subInstance)
                 else:
                     cls._addChildInstance(
                         instance,
@@ -1259,7 +1272,9 @@ class SchemaBase:
                 if wildcardSpec is not None:
                     cls._bindWildcardChild(instance, subElement, wildcardSpec, memberHeadMap)
                 elif _mode_for(cls).undeclared_content == "generic":
-                    instance._children_.append(cls.makeGenericInstance(subElement))
+                    subInstance = cls.makeGenericInstance(subElement)
+                    cls._bindTail(subInstance, subElement)
+                    instance._children_.append(subInstance)
         return instance
 
     @classmethod
@@ -1470,6 +1485,7 @@ class SchemaBase:
             subInstance = cls._nilledInstance(subElCls, subElement, subElementName)
             subInstance._descriptor_ = descriptor
             subInstance._nil_ = True
+            cls._bindTail(subInstance, subElement)
             instance._children_.append(subInstance)
             return None
         if not isComplex:
@@ -1486,6 +1502,7 @@ class SchemaBase:
                 # descriptor after the tree is fully bound.
                 subInstance._descriptor_ = descriptor
                 subInstance._nil_ = nilled
+                cls._bindTail(subInstance, subElement)
                 instance._children_.append(subInstance)
                 if descriptorBound:
                     bound = getattr(type(instance), accessor, None)
@@ -1527,6 +1544,7 @@ class SchemaBase:
         subInstance._name_ = subElementName
         subInstance._descriptor_ = descriptor
         subInstance._nil_ = nilled
+        cls._bindTail(subInstance, subElement)
         instance._children_.append(subInstance)
         if (
             not nilled
@@ -1985,6 +2003,26 @@ class SchemaBase:
         instance._value_ = instance._value_ if instance._value_ else None
 
     @classmethod
+    def _bindTail(cls, subInstance, subElement) -> None:
+        """Records the character data that follows a bound child.
+
+        An element's tail is the character data between its end tag and
+        the next sibling's start tag; it belongs to the content of the
+        parent element. Whenever the source element carries a tail the
+        bound instance keeps it verbatim as ``_tail_``, whitespace-only
+        tails included, so a mixed-content writer can reproduce the
+        document exactly. The recording is unconditional -- it happens
+        under element-only parents too, where it is inert -- and a
+        source with no tail records nothing, so hand-built transform
+        trees and pre-existing bound trees stay indistinguishable.
+
+        - ``subInstance`` - the bound instance for the child element.
+        - ``subElement`` - the xml element the instance was built from.
+        """
+        if subElement.tail is not None:
+            subInstance._tail_ = subElement.tail
+
+    @classmethod
     def checkElementOrderInChoice(cls, descriptors, subElements, memberHeadMap):
         """Checks to see that elements in a choice field follow the rules
         of such a field.
@@ -2295,9 +2333,11 @@ class SchemaBase:
         if skipped:
             instance._skipped_ = True
         cls.addValueTo(instance, elementTag)
-        instance._children_ = [
-            cls.makeGenericInstance(child, skipped=skipped) for child in elementTag
-        ]
+        instance._children_ = []
+        for child in elementTag:
+            subInstance = cls.makeGenericInstance(child, skipped=skipped)
+            cls._bindTail(subInstance, child)
+            instance._children_.append(subInstance)
         return instance
 
     # ------------------------------------------------------------------
