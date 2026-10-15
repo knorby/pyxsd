@@ -190,3 +190,45 @@ class TestMixedSerialization:
             "[1]",
             " after.",
         ]
+
+
+class TestMixedProjections:
+    """The XPath and dict projections expose the preserved character data."""
+
+    def test_xpath_sees_full_text(self, tmp_path):
+        doc = _parse(MIXED_P, TestMixedSerialization.MIXED_XML, tmp_path)
+        assert doc.xpath("string(/p)") == "Before emphasis between [1] after."
+
+    def test_findall_returns_bound_nodes_with_tails(self, tmp_path):
+        doc = _parse(MIXED_P, TestMixedSerialization.MIXED_XML, tmp_path)
+        em = doc.find("em")
+        assert em._tail_ == " between "
+
+    def test_dict_export_keeps_all_character_data(self, tmp_path):
+        doc = _parse(MIXED_P, TestMixedSerialization.MIXED_XML, tmp_path)
+        exported = doc.to_dict(typed=False)
+        assert exported["$"] == "Before  between  after."
+        assert exported["em"] == "emphasis"
+        assert exported["citation"] == "[1]"
+
+    def test_dict_export_element_only_unchanged(self, tmp_path):
+        body = (
+            '<xs:element name="a"><xs:complexType><xs:sequence>'
+            '<xs:element name="b" type="xs:string"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+        )
+        doc = _parse(body, "<a><b>x</b></a>", tmp_path)
+        assert doc.to_dict(typed=False) == {"b": "x"}
+
+    def test_dict_export_pretty_element_only_unchanged(self, tmp_path):
+        # Element-only content records whitespace tails on its children
+        # (they are inert there), and the export ignores them exactly as
+        # the writer does; only character-data-admitting content gains
+        # the ``$`` text.
+        body = (
+            '<xs:element name="a"><xs:complexType><xs:sequence>'
+            '<xs:element name="b" type="xs:string"/>'
+            "</xs:sequence></xs:complexType></xs:element>"
+        )
+        doc = _parse(body, "<a>\n  <b>x</b>\n</a>", tmp_path)
+        assert doc.to_dict(typed=False) == {"b": "x"}
