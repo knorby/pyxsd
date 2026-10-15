@@ -469,10 +469,13 @@ class AnyType(String):
     """``xs:anyType``: any content.
 
     Represented permissively as unconstrained text until wildcard
-    content models are handled; see the XSD support table.
+    content models are handled; see the XSD support table. Its content
+    is mixed character data plus element children, so it admits
+    character data.
     """
 
     name = "anyType"
+    _elementOnly_ = False
 
 
 # ---------------------------------------------------------------------------

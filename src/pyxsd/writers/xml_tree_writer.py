@@ -41,7 +41,7 @@ from typing import IO, Any
 
 from pyxsd import xsi
 from pyxsd.namespaces import XML_NS
-from pyxsd.writers.xml_tag_writer import XmlTagWriter
+from pyxsd.writers.xml_tag_writer import XmlTagWriter, _escape_text
 
 
 def _clark_uri(name: str) -> str | None:
@@ -175,6 +175,8 @@ class XmlTreeWriter:
         output: IO[str],
         prefix_map: dict[str, str] | None = None,
         root_decls: dict[str, str] | None = None,
+        *,
+        inline: bool = False,
     ) -> None:
         """Extracts element variables and initializes the tag writer for
         the element.
@@ -195,6 +197,11 @@ class XmlTreeWriter:
 
         - ``root_decls``: ``xmlns`` declarations to place on the root
           element (strict namespace mode only).
+
+        - ``inline``: write the element inside mixed content: no
+          indentation precedes it and no newline follows its end tag,
+          since that layout whitespace would become character data. A
+          mixed element writes its children this way.
         """
         name = element._name_
         if prefix_map is not None:
@@ -224,7 +231,16 @@ class XmlTreeWriter:
             hasChildren = False
 
         hasValue = value is not None
-        tagWriter = XmlTagWriter(name, attribs, value, hasChildren, hasValue, tabs, output)
+
+        if bool(children) and getattr(element, "_elementOnly_", True) is False:
+            XmlTreeWriter._writeMixedElement(
+                name, attribs, value, children, tabs, output, prefix_map, inline
+            )
+            return
+
+        tagWriter = XmlTagWriter(
+            name, attribs, value, hasChildren, hasValue, tabs, output, inline=inline
+        )
         tabs += 1
 
         for child in children:
@@ -232,6 +248,62 @@ class XmlTreeWriter:
 
         if hasChildren:
             tagWriter.writeEndTag()
+
+    @staticmethod
+    def _writeMixedElement(
+        name: str,
+        attribs: dict[str, str],
+        value: Any,
+        children: list[Any],
+        tabs: int,
+        output: IO[str],
+        prefix_map: dict[str, str] | None,
+        inline: bool,
+    ) -> None:
+        """Writes a mixed-content element without layout whitespace.
+
+        The element's character data is significant, so nothing the
+        writer generates may land inside it: the open tag is closed
+        without a newline, the bound leading text follows immediately,
+        and each child starts immediately after the preceding text with
+        no indentation or trailing newline of its own, followed by its
+        escaped ``_tail_`` when the source had one. An element-only
+        child's interior block layout is unchanged: that whitespace is
+        insignificant inside the child. The element's own end tag
+        carries no indentation either.
+
+        - ``name``: the element's display-spelled name.
+        - ``attribs``: the element's display-spelled attributes.
+        - ``value``: the bound leading text, or ``None``.
+        - ``children``: the bound child elements.
+        - ``tabs``: how many tabs precede the element in block layout.
+        - ``output``: the file object to write to.
+        - ``prefix_map``: namespace URI to prefix mapping, or ``None``.
+        - ``inline``: True when the element itself is written inside
+          mixed content, so its indentation and trailing newline belong
+          to the parent's layout.
+        """
+        tagWriter = XmlTagWriter(
+            name,
+            attribs,
+            value,
+            True,
+            value is not None,
+            tabs,
+            output,
+            inline=inline,
+            mixed=True,
+        )
+        if value is not None:
+            entries = value if isinstance(value, list) else [value]
+            for entry in entries:
+                output.write(_escape_text(entry))
+        for child in children:
+            XmlTreeWriter.passTagToTagWriter(child, tabs + 1, output, prefix_map, None, inline=True)
+            tail = getattr(child, "_tail_", None)
+            if tail is not None:
+                output.write(_escape_text(tail))
+        tagWriter.writeEndTag()
 
     def writeHeaderInfo(self) -> None:
         """Writes a comment at the top of the file with the creation

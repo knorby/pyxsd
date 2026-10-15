@@ -74,12 +74,15 @@ absolute path starts `/root`. `Document.find(path)` and
 `namespaces={"p": uri}` for prefixed queries.
 
 Queries run over a projection of the bound tree, so they see what the
-object model holds: descriptor write-through is reflected, but
-mixed-content tails and comment nodes are absent, and a nil/no-content
-element projects `text=None`. The projection tags nodes with their
-expanded (Clark-notation) name, so prefixed queries work in both
-namespace modes. `Document.to_dict`/`to_json` provide structured export
-(see {doc}`data-model`).
+object model holds: descriptor write-through is reflected, `text` mirrors
+`_value_`, and a child's `tail` mirrors the recorded `_tail_` — so mixed
+character data is queryable in document order. Parsing does not preserve
+comment nodes, and a nil/no-content element projects `text=None`. The
+projection is document-faithful, not source-XPath-exact: element-only
+content's recorded layout whitespace is part of the projected text. The
+projection tags nodes with their expanded (Clark-notation) name, so
+prefixed queries work in both namespace modes. `Document.to_dict`/
+`to_json` provide structured export (see {doc}`data-model`).
 
 ## Errors
 

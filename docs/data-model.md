@@ -27,6 +27,15 @@ Notes:
   (typed values), not in `_attribs_`, so round-trip output stays faithful.
 - Repeated elements (`maxOccurs` > 1) store every occurrence in
   `_children_` in document order.
+- A bound child may carry an optional, parse-produced `_tail_`: the
+  character data that followed the child in the source, whitespace
+  included. It is recorded whenever the source had such text; the writer
+  and dict export use it only under a parent whose content admits
+  character data (mixed content, `xs:anyType`, wildcard pass-through),
+  while the XPath projection mirrors every recorded tail. It is **not**
+  part of the `XMLNode` protocol: transform-made trees and hand-built
+  nodes need no changes — a missing `_tail_` simply means no recorded
+  following text.
 
 ## Writers
 
@@ -61,8 +70,32 @@ doc.to_json(indent=2)
 
 The export reflects post-parse descriptor assignment (the write-through
 behaviour above), because it reads the same lexical containers the writer
-serializes. The known losses match the node model: mixed-content tails are
-not in the bound tree, and a wildcard attribute has only its lexical form.
+serializes. For an element whose content admits character data (mixed
+content, `xs:anyType`, wildcard pass-through), `$` holds all of the
+element's recorded character data in document order: the verbatim leading
+text followed by every child's `_tail_`, concatenated. The dict shape
+cannot represent text/element interleaving, so `to_string()` and `xpath()`
+are the faithful mixed-content views. The remaining known loss matches the
+node model: a wildcard attribute has only its lexical form.
+
+## XPath projection
+
+`Document.xpath()`, `find()`, and `findall()` evaluate over a projection
+of the bound model: an element's `text` mirrors its `_value_` and a
+child's `tail` mirrors its `_tail_`, so mixed character data is queryable
+in document order. The projection is **document-faithful, not
+source-XPath-exact**: for element-only content, recorded layout whitespace
+(the element tails between block children) is part of the projection's
+text, so a text-valued query such as `string(/a)` includes it. Parsing
+does not preserve comment nodes, and an element with `_value_ is None`
+projects `text=None`.
+
+The Arrow/Pydantic dataset integrations are a different, value-oriented
+boundary: their row text projection (`integrations/_values.py`) reads
+`_value_` only, so it does not include child `_tail_` values for mixed
+content (mixed content is outside the integrations' supported subset).
+That is a documented boundary, not a claim of lossless mixed text — use
+`to_string()` or `xpath()` when full mixed character data is needed.
 
 ## Generated classes
 

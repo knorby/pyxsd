@@ -6,10 +6,13 @@ exists only to run XPath/ElementPath; results are mapped back to the
 original bound nodes, and scalar results pass through unchanged.
 
 The projection is deliberately lossy relative to the source XML: it holds
-what the bound tree holds. Mixed-content tails and comment nodes are not
-present, an element with ``_value_ is None`` projects ``text=None``, and
-descriptor assignment is reflected only through the write-through
-containers (see ``docs/data-model.md``).
+what the bound tree holds. An element's ``text`` mirrors its ``_value_``
+and a child's ``tail`` mirrors the ``_tail_`` the binding recorded, so
+mixed-content text is queryable in document order. Comment nodes are not
+produced by parsing; a transform-made ``_comment_`` node projects as an
+element under that name. An element with ``_value_ is None`` projects
+``text=None``, and descriptor assignment is reflected only through the
+write-through containers (see ``docs/data-model.md``).
 """
 
 from __future__ import annotations
@@ -68,8 +71,10 @@ def project(root: Any) -> tuple[ET.Element, dict[ET.Element, Any]]:
     Returns ``(et_root, mapping)`` where ``mapping`` maps each projection
     element to the original bound node. Tags use the node's instance name
     (Clark notation in strict namespace mode, local names otherwise);
-    ``attrib`` mirrors ``_attribs_`` and ``text`` mirrors ``_value_``.
-    Non-element children (comments) are skipped.
+    ``attrib`` mirrors ``_attribs_``, ``text`` mirrors ``_value_``, and a
+    child's ``tail`` mirrors its ``_tail_`` when the bound node has one.
+    A child that cannot be named is skipped; a transform-made
+    ``_comment_`` node projects as an element under that name.
     """
     mapping: dict[ET.Element, Any] = {}
 
@@ -85,6 +90,9 @@ def project(root: Any) -> tuple[ET.Element, dict[ET.Element, Any]]:
             built = build(child)
             if built is not None:
                 element.append(built)
+                tail = getattr(child, "_tail_", None)
+                if tail is not None:
+                    built.tail = tail
         return element
 
     et_root = build(root)

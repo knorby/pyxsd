@@ -153,8 +153,8 @@ happens to surface.
   - Unions of atomic types work (including inline anonymous members).
 * - Mixed content
   - `mixed="true"`
-  - ignored
-  - Interleaved text is not preserved or validated. In particular the tail text after a child element is dropped when the tree is bound and exported, so mixed-content documents (for example XHTML inside a complex type) do not round-trip their text.
+  - partial
+  - Character data is preserved verbatim in the bound tree — leading text in `_value_`, text after each child in that child's `_tail_` — and mixed elements serialize inline, so ordered text and significant whitespace round-trip. Declared children and occurrence limits are still validated; mixed content is not permission for arbitrary elements. Structured exports are narrower: dict export concatenates all recorded character data under `$` because it cannot represent text/element interleaving, and the Arrow/Pydantic integration projections reject mixed content.
 * - Remote schema hints
   - URL `schemaLocation`
   - partial

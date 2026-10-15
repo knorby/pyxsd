@@ -56,6 +56,16 @@ class XmlTagWriter:
       element is in the document
 
     - ``output``: the file object to write to
+
+    - ``inline``: a boolean that indicates the element is written
+      inside mixed content. No indentation precedes its open tag and no
+      newline follows its end tag; in mixed content that layout
+      whitespace would be character data.
+
+    - ``mixed``: a boolean that indicates the element's own content is
+      mixed. The tree writer writes that content (and the end tag), so
+      the open tag is closed without a newline and the end tag carries
+      no indentation.
     """
 
     def __init__(
@@ -67,6 +77,9 @@ class XmlTagWriter:
         hasValue: bool,
         tabs: int,
         output: IO[str],
+        *,
+        inline: bool = False,
+        mixed: bool = False,
     ):
         self.name = name
         self.attribs = attribs
@@ -76,6 +89,8 @@ class XmlTagWriter:
         self.hasChildren = hasChildren
         self.tabs = tabs
         self.output = output
+        self.inline = inline
+        self.mixed = mixed
         self.writeTag()
 
     def writeTag(self) -> None:
@@ -83,7 +98,8 @@ class XmlTagWriter:
         non-necessary formatting is standard and is not dependent upon
         specifics of the format of the data.
         """
-        self.writeTabs()
+        if not self.inline:
+            self.writeTabs()
         if self.name == "_comment_":
             self.writeComment()
             return None
@@ -107,8 +123,15 @@ class XmlTagWriter:
             self.writeTabs(spaces, 0)
             self.output.write(f'= "{_escape_attribute(value)}"')
 
+        if self.mixed:
+            # The tree writer writes the mixed content and the end tag
+            # directly after this open tag.
+            self.output.write(">")
+            return None
+
         if not self.hasChildren and not self.hasValue:
-            self.output.write("/>\n")
+            self.output.write("/>")
+            self._endElementLine()
             return None
 
         if self.hasValue and not self.hasChildren and self._isSingleTextValue():
@@ -119,7 +142,8 @@ class XmlTagWriter:
             self.output.write(">")
             single = self.value[0] if isinstance(self.value, list) else self.value
             self.output.write(_escape_text(single))
-            self.output.write(f"</{self.name}>\n")
+            self.output.write(f"</{self.name}>")
+            self._endElementLine()
             return None
 
         self.output.write(">\n")
@@ -133,6 +157,16 @@ class XmlTagWriter:
             if not self.hasChildren:
                 self.writeEndTag()
         return None
+
+    def _endElementLine(self) -> None:
+        """Ends the element's line unless it is written inline.
+
+        An element inside mixed content must not be followed by a
+        newline: the newline would become character data on the next
+        read.
+        """
+        if not self.inline:
+            self.output.write("\n")
 
     def _isSingleTextValue(self) -> bool:
         """True when the element's value is one scalar text string.
@@ -162,9 +196,15 @@ class XmlTagWriter:
         An end tag appears as follows::
 
             </TagName>
+
+        A mixed element's end tag carries no indentation (indentation
+        would be character data inside the element) and an element
+        written inside mixed content is not followed by a newline.
         """
-        self.writeTabs()
-        self.output.write(f"</{self.name}>\n")
+        if not self.inline and not self.mixed:
+            self.writeTabs()
+        self.output.write(f"</{self.name}>")
+        self._endElementLine()
 
     def writeTabs(self, tabSpec: int | None = None, tabs: int | None = None) -> None:
         """Writes out the tabs before an element.
