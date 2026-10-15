@@ -246,6 +246,10 @@ class SchemaBase:
     #: ``addValueTo`` keeps verbatim. Generated classes are stamped at
     #: class build time; generic instances set it themselves.
     _elementOnly_: bool
+    #: Character data that followed the child in the source, recorded
+    #: verbatim (significant inside mixed content). Only parse-produced
+    #: children carry the assignment; readers use ``getattr(..., None)``.
+    _tail_: str
 
     def __init_subclass__(cls, **kwargs):
         """Collects the descriptor bookkeeping for a new subclass.
