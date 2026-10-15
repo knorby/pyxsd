@@ -37,7 +37,6 @@ dictionary the following variables:
 """
 
 import time
-from io import StringIO
 from typing import IO, Any
 
 from pyxsd import xsi
@@ -266,10 +265,12 @@ class XmlTreeWriter:
         The element's character data is significant, so nothing the
         writer generates may land inside it: the open tag is closed
         without a newline, the bound leading text follows immediately,
-        and each child subtree is written inline (no indentation, no
-        trailing newline) followed by its escaped ``_tail_`` when the
-        source had one. The element's own end tag carries no
-        indentation either.
+        and each child starts immediately after the preceding text with
+        no indentation or trailing newline of its own, followed by its
+        escaped ``_tail_`` when the source had one. An element-only
+        child's interior block layout is unchanged: that whitespace is
+        insignificant inside the child. The element's own end tag
+        carries no indentation either.
 
         - ``name``: the element's display-spelled name.
         - ``attribs``: the element's display-spelled attributes.
@@ -298,9 +299,7 @@ class XmlTreeWriter:
             for entry in entries:
                 output.write(_escape_text(entry))
         for child in children:
-            buffer = StringIO()
-            XmlTreeWriter.passTagToTagWriter(child, tabs + 1, buffer, prefix_map, None, inline=True)
-            output.write(buffer.getvalue())
+            XmlTreeWriter.passTagToTagWriter(child, tabs + 1, output, prefix_map, None, inline=True)
             tail = getattr(child, "_tail_", None)
             if tail is not None:
                 output.write(_escape_text(tail))
