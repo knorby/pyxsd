@@ -64,6 +64,36 @@ WILDCARD_MIXED_DOC = (
 # element character-data-admitting.
 ANY_TYPE_ROOT = '<xs:element name="extra" type="xs:anyType"/>'
 
+MIXED_P_ATTR = (
+    '<xs:element name="p"><xs:complexType mixed="true">'
+    '<xs:choice minOccurs="0" maxOccurs="unbounded">'
+    '<xs:element name="em" type="xs:string"/>'
+    "</xs:choice>"
+    '<xs:attribute name="lang" type="xs:string"/>'
+    "</xs:complexType></xs:element>"
+)
+
+MIXED_WITH_ELEMENT_ONLY_CHILD = (
+    '<xs:element name="p"><xs:complexType mixed="true"><xs:sequence>'
+    '<xs:element name="list"><xs:complexType><xs:sequence>'
+    '<xs:element name="item" type="xs:string" maxOccurs="unbounded"/>'
+    "</xs:sequence></xs:complexType></xs:element>"
+    "</xs:sequence></xs:complexType></xs:element>"
+)
+
+NESTED_MIXED = (
+    '<xs:element name="p"><xs:complexType mixed="true">'
+    '<xs:choice minOccurs="0" maxOccurs="unbounded">'
+    '<xs:element name="note"><xs:complexType mixed="true"><xs:sequence>'
+    '<xs:element name="em" type="xs:string" minOccurs="0"/>'
+    "</xs:sequence></xs:complexType></xs:element>"
+    "</xs:choice>"
+    '<xs:attribute name="lang" type="xs:string"/>'
+    "</xs:complexType></xs:element>"
+)
+
+HANDOFF_INSTANCE = "<p>Before <em>emphasis</em> between <citation>[1]</citation> after.</p>"
+
 
 class TestMixedTextCapture:
     def test_leading_text_is_verbatim(self, tmp_path):
@@ -84,6 +114,12 @@ class TestMixedTextCapture:
         doc = _parse(body, "<a>\n  <b>x</b>\n</a>", tmp_path)
         assert doc.root._value_ is None  # legacy: insignificant whitespace not bound
 
+    # TestMixedTextCapture — <p/> is valid (choice minOccurs="0") and binds no text
+    def test_empty_mixed_element_binds_none(self, tmp_path):
+        doc = _parse(MIXED_P, "<p/>", tmp_path)
+        assert doc.is_valid
+        assert doc.root._value_ is None
+
 
 class TestMixedTailCapture:
     def test_tails_recorded_in_order(self, tmp_path):
@@ -99,12 +135,14 @@ class TestMixedTailCapture:
 
     def test_whitespace_only_tail_preserved(self, tmp_path):
         doc = _parse(MIXED_P, "<p><em>a</em> <em>b</em></p>", tmp_path)
+        assert doc.is_valid
         first, second = doc.root._children_
         assert first._tail_ == " "
         assert not hasattr(second, "_tail_")
 
     def test_missing_tail_records_nothing(self, tmp_path):
         doc = _parse(MIXED_P, "<p><em>a</em><em>b</em></p>", tmp_path)
+        assert doc.is_valid
         assert len(doc.root._children_) == 2
         assert all(not hasattr(child, "_tail_") for child in doc.root._children_)
 
@@ -115,6 +153,7 @@ class TestMixedTailCapture:
             "</xs:sequence></xs:complexType></xs:element>"
         )
         doc = _parse(body, "<a><b>1</b><b>2</b></a>", tmp_path)
+        assert doc.is_valid
         assert [str(child) for child in doc.root._children_] == ["1", "2"]
 
 
@@ -241,6 +280,36 @@ class TestMixedSerialization:
             " after.",
         ]
 
+    # TestMixedSerialization — mixed parent, element-only child with children:
+    # mixed-level text is exact; layout whitespace stays inside the element-only subtree
+    def test_element_only_child_with_children_in_mixed(self, tmp_path):
+        doc = _parse(
+            MIXED_WITH_ELEMENT_ONLY_CHILD, "<p>a <list><item>b</item></list> c</p>", tmp_path
+        )
+        assert doc.is_valid
+        assert doc.root._value_ == ["a "]
+        assert doc.root._children_[0]._tail_ == " c"
+        again = _parse(MIXED_WITH_ELEMENT_ONLY_CHILD, doc.to_string().split("\n", 1)[1], tmp_path)
+        assert again.is_valid
+        assert again.root._value_ == ["a "]
+        assert again.root._children_[0]._tail_ == " c"
+
+    # TestMixedSerialization — attributes on a mixed element round-trip
+    def test_attributes_on_mixed_element_round_trip(self, tmp_path):
+        doc = _parse(MIXED_P_ATTR, '<p lang="en">Before <em>x</em> after</p>', tmp_path)
+        assert doc.is_valid
+        assert doc.root._attribs_ == {"lang": "en"}
+        assert 'lang = "en"' in doc.to_string()
+        assert _ordered_text(doc.to_string()) == ["Before ", "x", " after"]
+
+    # TestMixedSerialization — no leading text
+    def test_no_leading_text_mixed_round_trip(self, tmp_path):
+        doc = _parse(MIXED_P, "<p><em>x</em> tail</p>", tmp_path)
+        assert doc.is_valid
+        assert doc.root._value_ is None
+        assert doc.root._children_[0]._tail_ == " tail"
+        assert _ordered_text(doc.to_string()) == ["x", " tail"]
+
 
 class TestMixedProjections:
     """The XPath and dict projections expose the preserved character data."""
@@ -298,6 +367,31 @@ class TestMixedProjections:
         doc = _parse(body, "<a>\n  <b>x</b>\n</a>", tmp_path)
         assert doc.to_dict(typed=False) == {"b": "x"}
 
+    # TestMixedProjections — nested mixed dict export
+    def test_dict_export_nested_mixed(self, tmp_path):
+        doc = _parse(NESTED_MIXED, '<p lang="en">a <note>x <em>y</em> z</note> b</p>', tmp_path)
+        assert doc.is_valid
+        assert doc.to_dict() == {"@lang": "en", "note": {"em": "y", "$": "x  z"}, "$": "a  b"}
+
+    # TestMixedProjections — dict options leave the mixed $ intact
+    def test_dict_export_mixed_typed(self, tmp_path):
+        doc = _parse(MIXED_P, HANDOFF_INSTANCE, tmp_path)
+        assert doc.is_valid
+        assert doc.to_dict(typed=True) == {
+            "em": "emphasis",
+            "citation": "[1]",
+            "$": "Before  between  after.",
+        }
+
+    def test_dict_export_mixed_always_list(self, tmp_path):
+        doc = _parse(MIXED_P, HANDOFF_INSTANCE, tmp_path)
+        assert doc.is_valid
+        assert doc.to_dict(always_list=True) == {
+            "em": ["emphasis"],
+            "citation": ["[1]"],
+            "$": "Before  between  after.",
+        }
+
 
 class TestMixedValidation:
     """Preserving mixed text does not relax instance validation."""
@@ -307,7 +401,7 @@ class TestMixedValidation:
         assert not doc.is_valid
         assert any(i.code == "unexpected-element" for i in doc.report.issues)
 
-    def test_choice_occurrence_limits_enforced_in_mixed(self, tmp_path):
+    def test_sequence_occurrence_limits_enforced_in_mixed(self, tmp_path):
         body = (
             '<xs:element name="p"><xs:complexType mixed="true">'
             '<xs:sequence><xs:element name="em" type="xs:string"/></xs:sequence>'
