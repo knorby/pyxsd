@@ -155,8 +155,11 @@ class TestMixedSerialization:
         )
         pretty = "<a>\n  <b>x</b>\n</a>"
         before = _parse(body, pretty, tmp_path).to_string()
-        # reparse the serialization and confirm output is stable (legacy block layout)
-        assert _parse(body, before, tmp_path).to_string() == before
+        # reparse the serialization and confirm output is stable (legacy block
+        # layout). The first line is the writer's timestamped header, so the
+        # comparison starts past it.
+        again = _parse(body, before, tmp_path).to_string()
+        assert again.split("\n", 1)[1] == before.split("\n", 1)[1]
 
     def test_consumer_shape_strict_namespaces(self, tmp_path):
         ns = "urn:oii:2:content"
