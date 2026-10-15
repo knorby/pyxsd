@@ -86,9 +86,9 @@ child's `tail` mirrors its `_tail_`, so mixed character data is queryable
 in document order. The projection is **document-faithful, not
 source-XPath-exact**: for element-only content, recorded layout whitespace
 (the element tails between block children) is part of the projection's
-text, so a text-valued query such as `string(/a)` includes it. Comment
-nodes are not projected, and an element with `_value_ is None` projects
-`text=None`.
+text, so a text-valued query such as `string(/a)` includes it. Parsing
+does not preserve comment nodes, and an element with `_value_ is None`
+projects `text=None`.
 
 The Arrow/Pydantic dataset integrations are a different, value-oriented
 boundary: their row text projection (`integrations/_values.py`) reads

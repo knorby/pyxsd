@@ -9,9 +9,10 @@ The projection is deliberately lossy relative to the source XML: it holds
 what the bound tree holds. An element's ``text`` mirrors its ``_value_``
 and a child's ``tail`` mirrors the ``_tail_`` the binding recorded, so
 mixed-content text is queryable in document order. Comment nodes are not
-present, an element with ``_value_ is None`` projects ``text=None``, and
-descriptor assignment is reflected only through the write-through
-containers (see ``docs/data-model.md``).
+produced by parsing; a transform-made ``_comment_`` node projects as an
+element under that name. An element with ``_value_ is None`` projects
+``text=None``, and descriptor assignment is reflected only through the
+write-through containers (see ``docs/data-model.md``).
 """
 
 from __future__ import annotations
@@ -72,7 +73,8 @@ def project(root: Any) -> tuple[ET.Element, dict[ET.Element, Any]]:
     (Clark notation in strict namespace mode, local names otherwise);
     ``attrib`` mirrors ``_attribs_``, ``text`` mirrors ``_value_``, and a
     child's ``tail`` mirrors its ``_tail_`` when the bound node has one.
-    Non-element children (comments) are skipped.
+    A child that cannot be named is skipped; a transform-made
+    ``_comment_`` node projects as an element under that name.
     """
     mapping: dict[ET.Element, Any] = {}
 
