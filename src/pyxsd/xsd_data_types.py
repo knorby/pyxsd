@@ -31,6 +31,7 @@ from those names.
 
 import base64
 import binascii
+import datetime as _datetime
 import decimal
 import math
 import re
@@ -595,6 +596,43 @@ class DateTime(_PatternString):
             )
         return instance
 
+    def to_datetime(self) -> _datetime.datetime:
+        """The value as a :class:`datetime.datetime`.
+
+        An explicit timezone offset becomes a :class:`datetime.timezone`;
+        an absent one yields a naive value.  The end-of-day spelling
+        ``24:00:00`` rolls over to midnight of the following day.  XSD's
+        year 0000, negative (BCE) years, and extended years above 9999
+        have no :mod:`datetime` representation and raise ``ValueError``
+        naming the lexical value.
+        """
+        text = str(self)
+        # The constructor validated this lexical form, so the match cannot be None.
+        match = _TEMPORAL_DATETIME.match(text)
+        assert match is not None
+        year, month, day, hour, minute, second = (int(match.group(i)) for i in range(1, 7))
+        if not 1 <= year <= 9999:
+            raise ValueError(
+                f"Cannot convert xs:dateTime {text!r} to datetime.datetime: "
+                f"year {year} is outside 1..9999"
+            )
+        rollover = _datetime.timedelta(0)
+        if hour == 24:  # 24:00:00 is the end-of-day spelling: the next midnight
+            hour, rollover = 0, _datetime.timedelta(days=1)
+        return (
+            _datetime.datetime(
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                _fraction_microseconds(match.group(7)),
+                _timezone(match.group(8)),
+            )
+            + rollover
+        )
+
 
 class DateTimeStamp(DateTime):
     """``xs:dateTimeStamp``: an ``xs:dateTime`` with a required timezone.
@@ -631,12 +669,57 @@ class Date(_PatternString):
             )
         return instance
 
+    def to_date(self) -> _datetime.date:
+        """The value as a :class:`datetime.date`, discarding any timezone.
+
+        ``datetime.date`` carries no timezone, so an explicit offset in
+        the lexical form is dropped.  XSD's year 0000, negative (BCE)
+        years, and extended years above 9999 have no :mod:`datetime`
+        representation and raise ``ValueError`` naming the lexical value.
+        """
+        text = str(self)
+        # The constructor validated this lexical form, so the match cannot be None.
+        match = _TEMPORAL_DATE.match(text)
+        assert match is not None
+        year, month, day = (int(match.group(i)) for i in range(1, 4))
+        if not 1 <= year <= 9999:
+            raise ValueError(
+                f"Cannot convert xs:date {text!r} to datetime.date: year {year} is outside 1..9999"
+            )
+        return _datetime.date(year, month, day)
+
 
 class Time(_PatternString):
     """``xs:time``: e.g. ``14:30:00`` (optional timezone)."""
 
     name = "time"
     _pattern = re.compile(rf"{_TIME_BODY}{_TIMEZONE}")
+
+    def to_time(self) -> _datetime.time:
+        """The value as a :class:`datetime.time`.
+
+        An explicit timezone offset becomes a :class:`datetime.timezone`;
+        an absent one yields a naive value.  The end-of-day spelling
+        ``24:00:00`` is legal ``xs:time`` but has no time-of-day value,
+        so it raises ``ValueError`` naming the lexical value.
+        """
+        text = str(self)
+        # The constructor validated this lexical form, so the match cannot be None.
+        match = _TEMPORAL_TIME.match(text)
+        assert match is not None
+        hour, minute, second = (int(match.group(i)) for i in range(1, 4))
+        if hour == 24:  # 24:00:00 is the end-of-day spelling, not a time of day
+            raise ValueError(
+                f"Cannot convert xs:time {text!r} to datetime.time: "
+                f"the end-of-day spelling 24:00:00 has no time-of-day value"
+            )
+        return _datetime.time(
+            hour,
+            minute,
+            second,
+            _fraction_microseconds(match.group(4)),
+            _timezone(match.group(5)),
+        )
 
 
 class GYear(_PatternString):
@@ -1108,6 +1191,13 @@ def _fraction_microseconds(digits: str | None) -> int:
     if not digits:
         return 0
     return int((digits + "000000")[:6])
+
+
+def _timezone(token: str | None) -> _datetime.timezone | None:
+    """A ``datetime.timezone`` for a lexical offset; ``None`` means naive."""
+    if token is None:
+        return None
+    return _datetime.timezone(_datetime.timedelta(seconds=_offset_seconds(token)))
 
 
 def _days_from_civil(year: int, month: int, day: int) -> int:
