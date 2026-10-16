@@ -30,10 +30,17 @@ annotation a stub renders and a comment recording what the annotation
 cannot say (defaults, nillable, prohibited uses, unresolvable types).
 
 Member annotations model *valid parsed documents* and degrade to ``Any``
-with a comment rather than naming a type the stub cannot import. The
-member model is identical in both formatters; ``compact`` records the
-requested mode, and the compact renderer rewrites annotation spellings
-through its own alias table afterwards.
+with a comment rather than naming a type the stub cannot import: a union
+member (whose value is one of the union's member classes), a recursive
+back edge (a type re-entered while its own class resolves), and an
+unresolvable declaration all become ``Any`` with the reason in the
+comment. A reference to a substitution-group head keeps the head's type
+and comments the member elements the runtime accessor can receive.
+Constructs that reach the instance but have no member to hang on —
+mixed content, wildcards, open content — become comment lines on the
+class block. The member model is identical in both formatters;
+``compact`` records the requested mode, and the compact renderer
+rewrites annotation spellings through its own alias table afterwards.
 
 :func:`emit_stub` renders the model as the full ``.pyi`` document: a
 provenance and consumption header, imports, one class block per
@@ -342,8 +349,9 @@ def _members(cls: type, names: dict[int, str], *, compact: bool) -> list[_Member
     order).
 
     Members that cannot be annotated truthfully are degraded, never
-    skipped: an unresolvable type annotates as ``Any`` with a comment,
-    a prohibited attribute use and a name with no usable Python
+    skipped: an unresolvable type, a union member's value and a
+    recursive back edge annotate as ``Any`` with a comment, a
+    prohibited attribute use and a name with no usable Python
     accessor become comment-only members, and a member accessor that
     raises is treated as absent rather than propagating. ``compact``
     records the requested formatter; the member model is identical in
@@ -370,17 +378,21 @@ def _members(cls: type, names: dict[int, str], *, compact: bool) -> list[_Member
             blocked = True
         if not renders:
             continue
+        #: The class declarations open while this class's members
+        #: resolve; a member type re-entering one is a recursive back
+        #: edge and degrades to ``Any`` (see :func:`_annotation_base`).
+        active = frozenset({id(cls), id(klass)})
         for order, key in enumerate(klass.__dict__.get("_elementNames_", ())):
             descriptor = klass.__dict__.get(key)
             if not isinstance(descriptor, Element):
                 continue  # shadowed by a later binding in the same body
-            member = _element_member(key, descriptor, names, model)
+            member = _element_member(key, descriptor, names, model, active)
             candidates.setdefault(key, (0, -depth, order, member))
         for order, key in enumerate(klass.__dict__.get("_attributeNames_", ())):
             descriptor = klass.__dict__.get(key)
             if not isinstance(descriptor, Attribute):
                 continue
-            member = _attribute_member(key, descriptor, names)
+            member = _attribute_member(key, descriptor, names, active)
             candidates.setdefault(key, (1, -depth, order, member))
     # Only the class's own body contributes overlay members: a builtin
     # data type further up the MRO declares public methods too
@@ -395,7 +407,9 @@ def _members(cls: type, names: dict[int, str], *, compact: bool) -> list[_Member
     return [member for _, _, _, member in sorted(candidates.values(), key=lambda item: item[:3])]
 
 
-def _element_member(key: str, descriptor: Any, names: dict[int, str], model: Any) -> _Member:
+def _element_member(
+    key: str, descriptor: Any, names: dict[int, str], model: Any, active: frozenset[int]
+) -> _Member:
     """Returns the ``_Member`` for one element descriptor bound as *key*.
 
     Occurs are folded through *model* (the owning class's
@@ -406,8 +420,10 @@ def _element_member(key: str, descriptor: Any, names: dict[int, str], model: Any
     what makes its absent read the raw lexical string, while a
     reference site delegates the constraint to the referred declaration
     and still reads ``None`` when absent (the site carries no fallback
-    of its own). ``nillable`` is a comment, not a union arm: the value
-    class itself is unchanged.
+    of its own). A reference to a substitution-group head keeps the
+    head's type annotation and comments the members the accessor
+    receives in its place. ``nillable`` is a comment, not a union arm:
+    the value class itself is unchanged.
     """
     xml_name = _xml_name(descriptor, key)
     if not _usable_identifier(key):
@@ -418,9 +434,12 @@ def _element_member(key: str, descriptor: Any, names: dict[int, str], model: Any
             comment=f"element {xml_name!r} has no Python accessor (bound as {key!r})",
         )
     parts: list[str] = []
-    base, problem = _annotation_base(descriptor, xml_name, names)
+    base, problem = _annotation_base(descriptor, xml_name, names, active)
     if problem is not None:
         parts.append(problem)
+    substitution = _substitution_comment(descriptor)
+    if substitution is not None:
+        parts.append(substitution)
     minimum, maximum = _effective_occurs(model, descriptor)
     union = [f"list[{base}]" if maximum is None or maximum > 1 else base]
     own_default = _lexical(descriptor, "default")
@@ -449,7 +468,9 @@ def _element_member(key: str, descriptor: Any, names: dict[int, str], model: Any
     )
 
 
-def _attribute_member(key: str, descriptor: Any, names: dict[int, str]) -> _Member:
+def _attribute_member(
+    key: str, descriptor: Any, names: dict[int, str], active: frozenset[int]
+) -> _Member:
     """Returns the ``_Member`` for one attribute descriptor bound as *key*.
 
     A prohibited use has no annotation at all: the attribute is not
@@ -476,7 +497,7 @@ def _attribute_member(key: str, descriptor: Any, names: dict[int, str]) -> _Memb
             comment=f"attribute {xml_name!r} has no Python accessor (bound as {key!r})",
         )
     parts: list[str] = []
-    base, problem = _annotation_base(descriptor, xml_name, names)
+    base, problem = _annotation_base(descriptor, xml_name, names, active)
     if problem is not None:
         parts.append(problem)
     union = [base]
@@ -719,14 +740,21 @@ def _declared_occurs(descriptor: Any) -> tuple[int, int | None]:
 
 
 def _annotation_base(
-    descriptor: Any, xml_name: str, names: dict[int, str]
+    descriptor: Any,
+    xml_name: str,
+    names: dict[int, str],
+    active: frozenset[int] = frozenset(),
 ) -> tuple[str, str | None]:
     """Returns the annotation's base type name and any degradation comment.
 
     The resolution order is the inventory's stub name, then the builtin
-    data type's own class name. Anything else — an unresolved
-    declaration, the untyped ``anyType`` fallback — annotates as
-    ``Any`` with a comment saying why, never as a guessed class name.
+    data type's own class name. A construct no single class names
+    truthfully annotates as ``Any`` with a comment saying why, never as
+    a guessed class name: an unresolved declaration, the untyped
+    ``anyType`` fallback, a union simple type (whose parsed values are
+    members' instances), and a class already open on *active* — the ids
+    of the class declarations currently being resolved — which is a
+    recursive back edge.
     """
     try:
         resolved = descriptor.getType()
@@ -736,15 +764,113 @@ def _annotation_base(
         declared = getattr(descriptor, "type", None)
         return "Any", f"type {declared!r} is unresolved; annotated Any"
     if isinstance(resolved, type):
-        stub_name = names.get(id(resolved))
-        if stub_name is not None:
-            return stub_name, None
-        builtin_name = _BUILTIN_STUB_NAMES.get(resolved)
-        if builtin_name is not None:
-            return builtin_name, None
-        if resolved is SchemaBase:
-            return "Any", "no declared type; annotated Any"
+        return _resolved_base(resolved, names, active)
     return "Any", f"type {getattr(resolved, '__name__', resolved)!r} is not stubbed; annotated Any"
+
+
+def _resolved_base(
+    cls: type, names: dict[int, str], active: frozenset[int]
+) -> tuple[str, str | None]:
+    """Returns the annotation base and degradation comment for one class.
+
+    A re-entered class (``cls``'s id is on *active*) is the back edge of
+    a recursive type graph. A union reads ``Any`` because a parsed value
+    is one of its member types' instances, not the union's bookkeeping
+    class instance; ``_unionMembers`` is read from the class's own
+    namespace, mirroring derivation: a restriction of a union inherits
+    the attribute through its MRO but is not itself a union.
+    """
+    if id(cls) in active:
+        return "Any", "recursive type; annotated Any"
+    union_members = vars(cls).get("_unionMembers")
+    if union_members is not None:
+        return "Any", f"union of: {_union_member_names(union_members, names)}; annotated Any"
+    stub_name = names.get(id(cls))
+    if stub_name is not None:
+        return stub_name, None
+    builtin_name = _BUILTIN_STUB_NAMES.get(cls)
+    if builtin_name is not None:
+        return builtin_name, None
+    if cls is SchemaBase:
+        return "Any", "no declared type; annotated Any"
+    return "Any", f"type {getattr(cls, '__name__', cls)!r} is not stubbed; annotated Any"
+
+
+def _union_member_names(members: Any, names: dict[int, str]) -> str:
+    """Returns a union's member classes as annotation-style names.
+
+    Each member resolves the way a member annotation does — the
+    inventory's stub name, then the builtin data type's own class name —
+    and falls back to the class's own ``__name__``. The walk never
+    recurses into a member that is itself a union: naming it is all the
+    comment needs, and a (malformed) circular union must not loop.
+    """
+    parts: list[str] = []
+    for member in members or ():
+        if not isinstance(member, type):
+            parts.append(str(member))
+            continue
+        name = names.get(id(member))
+        if name is None:
+            name = _BUILTIN_STUB_NAMES.get(member)
+        if name is None:
+            name = str(getattr(member, "__name__", None) or repr(member))
+        parts.append(name)
+    return " | ".join(parts) if parts else "no resolvable members"
+
+
+def _substitution_comment(descriptor: Any) -> str | None:
+    """Returns the substitution-group comment for an element reference site.
+
+    A local ``ref`` to a global element heading a substitution group
+    admits every declaration that names it as their group: the runtime
+    binds such a child's value through a member-named accessor, so the
+    head's annotation models the head's own declaration only. The
+    comment names the members the annotation cannot say. ``None`` for
+    anything that is not a resolution-proven head: a plain element, a
+    declaration whose group cannot be established (the schema's element
+    table is unreachable), or a head that blocks ``substitution``, where
+    no member is admissible at all. Never raises.
+    """
+    if not getattr(descriptor, "isElementRef", False):
+        return None
+    try:
+        schema_er = descriptor.getSchema()
+    except Exception:
+        return None
+    table = getattr(schema_er, "substitutionGroups", None) if schema_er is not None else None
+    if not table:
+        return None
+    referred = getattr(descriptor, "referredElement", None)
+    if referred is None:
+        referred = descriptor
+    head = getattr(referred, "name", None)
+    if not isinstance(head, str) or not head:
+        return None
+    members = None
+    for key in (head, getattr(referred, "expandedName", None)):
+        if isinstance(key, str) and key in table:
+            members = table[key]
+            break
+    if members is None or _blocks_substitution(referred):
+        return None
+    names = [
+        member.name
+        for member in members
+        if isinstance(getattr(member, "name", None), str) and member.name
+    ]
+    if names:
+        return f"substitution group: {head}; members: {', '.join(names)}"
+    return f"substitution group: {head}"
+
+
+def _blocks_substitution(referred: Any) -> bool:
+    """Returns True when a head's effective ``block`` forbids substitutes."""
+    block = _call(referred, "getBlock")
+    if not isinstance(block, str) or not block:
+        attributes = getattr(referred, "tagAttributes", None) or {}
+        block = str(attributes.get("block") or "")
+    return "substitution" in block.split() or "#all" in block.split()
 
 
 def _usable_identifier(name: str) -> bool:
@@ -783,6 +909,67 @@ def _call(descriptor: Any, method: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Class-level degradations
+# ---------------------------------------------------------------------------
+
+
+def _class_degradations(entry: _StubClass) -> list[str]:
+    """Returns the class-level comment lines for content a stub cannot show.
+
+    These are constructs whose effect reaches the parsed instance but
+    that have no member to hang on: mixed content's character data, a
+    wildcard's undeclared children, an attribute wildcard's undeclared
+    attributes, and XSD 1.1 open content. Both renderers print the
+    returned texts as comment lines in the class body, so the omission
+    is never silent and the text is identical in both modes.
+    """
+    cls = entry.cls
+    warnings: list[str] = []
+    if (
+        not getattr(cls, "_elementOnly_", True)
+        and getattr(cls, "_simpleContentType_", None) is None
+    ):
+        warnings.append("mixed content: text not modeled")
+    child_flags = _child_wildcard_flags(cls)
+    if "wildcard" in child_flags:
+        warnings.append("admits undeclared children (wildcard)")
+    if "open content" in child_flags:
+        warnings.append("admits undeclared children (open content)")
+    if getattr(cls, "hasWildcardAttributes_", False):
+        warnings.append("admits undeclared attributes (wildcard)")
+    return warnings
+
+
+def _child_wildcard_flags(cls: type) -> set[str]:
+    """Returns which child wildcard kinds *cls*'s content model admits.
+
+    The schema-phase particle tree (``_contentModel_``) carries the
+    declared wildcards as ``any`` particles; the instance matcher's tree
+    (``_instanceContentModel_``) additionally carries a type's effective
+    XSD 1.1 open content as an ``any`` particle flagged
+    ``open_content``. Both are walked, each model once. Never raises.
+    """
+    flags: set[str] = set()
+    seen: set[int] = set()
+    for attribute in ("_contentModel_", "_instanceContentModel_"):
+        model = getattr(cls, attribute, None)
+        if model is not None and id(model) not in seen:
+            seen.add(id(model))
+            _collect_particle_flags(model, flags)
+    return flags
+
+
+def _collect_particle_flags(particle: Any, flags: set[str]) -> None:
+    """Adds the wildcard kinds reachable in *particle* to *flags*."""
+    if particle is None:
+        return
+    if getattr(particle, "kind", None) == "any":
+        flags.add("open content" if getattr(particle, "open_content", False) else "wildcard")
+    for child in getattr(particle, "children", ()) or ():
+        _collect_particle_flags(child, flags)
+
+
+# ---------------------------------------------------------------------------
 # Full-mode rendering
 # ---------------------------------------------------------------------------
 
@@ -807,8 +994,10 @@ def emit_stub(schema: Schema, *, compact: bool = False) -> str:
     classes), one line per class and per member, facet-only simple types
     folded onto the members that use them, and a trailing comment line
     listing the root elements. The compact text is a description, not
-    importable Python; every spelling it uses is a rendered class name,
-    a pyxsd builtin's own name, or a legend alias.
+    importable Python; every annotation spelling it uses is a rendered
+    class name, a pyxsd builtin's own name, or a legend alias.
+    Degradation comments are shared through the model and render
+    verbatim in both modes (see :func:`_render_compact`).
 
     Rendering never raises on a schema that compiled: a construct a
     stub cannot type truthfully (an unresolvable type, a member with no
@@ -947,7 +1136,9 @@ def _render_class(entry: _StubClass, names: dict[int, str]) -> str:
     """Returns one class block, without a trailing newline.
 
     A note renders as a comment above the class; a documentation
-    string renders inside it. Members come in :func:`_members` order
+    string and the class-level degradations
+    (:func:`_class_degradations`: mixed content, wildcards, open
+    content) render inside it. Members come in :func:`_members` order
     (elements, attributes, overlay extensions); a class with no
     members renders ``...``. Simple types additionally carry their
     facets as comments, which is the only place a restriction's
@@ -957,6 +1148,7 @@ def _render_class(entry: _StubClass, names: dict[int, str]) -> str:
     if entry.note:
         lines.append(f"# {entry.note}")
     lines.append(f"class {entry.name}({_stub_base(entry, names)}):")
+    lines.extend(f"    # {warning}" for warning in _class_degradations(entry))
     lines.extend(_docstring_lines(entry))
     members = _members(entry.cls, names, compact=False)
     member_lines = _member_lines(members)
@@ -1310,11 +1502,15 @@ def _render_compact(schema: Schema, inventory: list[_StubClass]) -> str:
 
     The document is a description, not importable Python: a two-line
     header (provenance and alias legend), one line per class and per
-    member, and a trailing comment line listing the root elements.
-    Facet-only simple types are dropped and their facets render on each
-    member that uses them; every annotation spelling is a rendered class
-    name, a pyxsd builtin's own name, or a legend alias, so the view
-    cannot drift from the model.
+    member, plus the class-level degradation comment lines
+    (:func:`_class_degradations`), and a trailing comment line listing
+    the root elements. Facet-only simple types are dropped and their
+    facets render on each member that uses them; every annotation
+    spelling is a rendered class name, a pyxsd builtin's own name, or a
+    legend alias, so the view cannot drift from the model. Degradation
+    comments are shared text and render verbatim — the same words as
+    the full mode — so a comment may name a class the compact view
+    folded, which the aliased annotations around it cannot.
     """
     names = {id(entry.cls): entry.name for entry in inventory}
     entries_by_id = {id(entry.cls): entry for entry in inventory}
@@ -1343,8 +1539,11 @@ def _render_compact(schema: Schema, inventory: list[_StubClass]) -> str:
     for entry, members in rendered:
         member_lines = _compact_member_lines(members, pattern, spellings, facets_by_name, used)
         facets = _compact_facets(entry, entries_by_id, skipped_ids)
+        warnings = _class_degradations(entry)
         blocks.append(
-            _compact_class_block(entry, spell(_stub_base(entry, names)), member_lines, facets)
+            _compact_class_block(
+                entry, spell(_stub_base(entry, names)), member_lines, facets, warnings
+            )
         )
     roots_line = _compact_roots(aliases, spell)
     legend = ", ".join(f"{text}={'+'.join(sources)}" for text, sources in used.items())
@@ -1403,8 +1602,12 @@ def _compact_spellings(
     data type it derives (``SKU`` reads ``str``); the facet comment on
     the use site carries what the class added. Every remaining builtin
     data type's stub name maps to its alias. A schema class that
-    shadows a builtin's name (a type literally named ``Int``) keeps its
-    own name — the class wins, as in the full renderer's import scan.
+    shadows a builtin's *name* (a type literally named ``Int``) keeps
+    its own name — the class wins, as in the full renderer's import
+    scan — and a class that shadows an *alias text* (a type literally
+    named ``str``) suppresses that alias family: the builtin keeps its
+    long spelling, and a dropped simple type in the family spells as
+    that long name, so no annotation reads ``str`` for both.
     """
     spellings: dict[str, _Spelling] = {}
     class_names = {entry.name for entry in inventory}
@@ -1412,13 +1615,28 @@ def _compact_spellings(
         base = _nearest_builtin(entry.cls)
         if base is None:  # unreachable for a foldable class; never guess
             continue
-        spellings[entry.name] = _Spelling(_COMPACT_ALIASES.get(base, base.__name__), base.__name__)
+        spellings[entry.name] = _compact_spelling(entry.name, base, class_names)
     for cls, alias in _COMPACT_ALIASES.items():
         name = _BUILTIN_STUB_NAMES[cls]
-        if name in class_names:
+        if name in class_names or alias in class_names:
             continue
         spellings[name] = _Spelling(alias, name)
     return spellings
+
+
+def _compact_spelling(folded: str, base: type, class_names: set[str]) -> _Spelling:
+    """Returns the spelling for a dropped simple type, alias collisions kept out.
+
+    The alias text is the builtin's short spelling, which a class
+    literally named after it takes precedence over; the spelling then
+    falls back to the builtin's own stub name (and, when even that is
+    taken, to the folded class's name, which at least stays unique).
+    """
+    alias = _COMPACT_ALIASES.get(base, base.__name__)
+    if alias in class_names:
+        long = _BUILTIN_STUB_NAMES.get(base, base.__name__)
+        alias = long if long not in class_names else folded
+    return _Spelling(alias, base.__name__)
 
 
 def _spelling_pattern(spellings: dict[str, _Spelling]) -> re.Pattern[str] | None:
@@ -1487,13 +1705,20 @@ def _compact_facets(
 
 
 def _compact_class_block(
-    entry: _StubClass, base: str, member_lines: list[str], facets: list[str]
+    entry: _StubClass,
+    base: str,
+    member_lines: list[str],
+    facets: list[str],
+    warnings: list[str],
 ) -> str:
     """Returns one compact class block: a header line, then one line per member.
 
-    A class deriving only from ``SchemaBase`` shows no base; a simple
-    type's facets ride on the header line, and a class with no members
-    and no facets renders ``...`` so the header is not a dangling colon.
+    A class deriving only from ``SchemaBase`` shows no base; its
+    class-level degradations (:func:`_class_degradations`) follow the
+    header as comment lines, so the compact view carries the same
+    truthfulness notes as the full one. A simple type's facets ride on
+    the header line, and a class with no members, warnings and facets
+    renders ``...`` so the header is not a dangling colon.
     """
     lines: list[str] = []
     if entry.note:
@@ -1502,8 +1727,9 @@ def _compact_class_block(
     if base != "SchemaBase":
         header += f"({base})"
     facet_comment = f"  # {'; '.join(facets)}" if facets else ""
-    if member_lines:
+    if member_lines or warnings:
         lines.append(f"{header}:{facet_comment}")
+        lines.extend(f"  # {warning}" for warning in warnings)
         lines.extend(member_lines)
     elif facets:
         lines.append(f"{header}:{facet_comment}")
