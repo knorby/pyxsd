@@ -20,6 +20,7 @@ requested for it.
 
 from __future__ import annotations
 
+import keyword
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -128,7 +129,10 @@ def _base_stub_name(bookkeeping: str) -> tuple[str, list[str]]:
         facts.append(f"bookkeeping name {bookkeeping!r}; stub name synthesized")
     sanitized = _sanitize(candidate)
     if sanitized != candidate:
-        facts.append(f"sanitized from {candidate!r}")
+        if keyword.iskeyword(candidate):
+            facts.append(f"Python keyword {candidate!r}; stub name adjusted")
+        else:
+            facts.append(f"sanitized from {candidate!r}")
     if not sanitized:
         sanitized = "_"
         facts.append("no usable characters in the name")
@@ -151,10 +155,15 @@ def _sanitize(name: str) -> str:
     Every character that cannot appear in an identifier is replaced
     with ``_``; a leading digit is kept and the name prefixed with
     ``_``, so the result stays recognizable (``9lives`` → ``_9lives``).
+    A Python keyword gets a trailing ``_`` (PEP 8's convention for
+    keyword clashes, e.g. ``class`` → ``class_``): keywords are legal
+    XSD names but not usable class names.
     """
     sanitized = "".join(ch if ("_" + ch).isidentifier() else "_" for ch in name)
     if sanitized[:1].isdigit():
         sanitized = "_" + sanitized
+    if keyword.iskeyword(sanitized):
+        sanitized += "_"
     return sanitized
 
 

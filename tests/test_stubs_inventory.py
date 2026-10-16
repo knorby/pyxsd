@@ -8,6 +8,7 @@ collisions are suffixed deterministically.
 """
 
 import io
+import keyword
 import pathlib
 import tempfile
 
@@ -124,6 +125,41 @@ def test_leading_digit_is_prefixed_with_underscore():
     entries = _inventory(compile_schema(xsd))
     entry = next(e for e in entries if e.name == "_9lives")
     assert entry.note is not None and "9lives" in entry.note
+
+
+def test_python_keyword_type_name_is_adjusted():
+    # ``class`` is a legal NCName but a Python keyword, so it cannot be
+    # a class name; the stub name stays recognizable and the note says
+    # why it was adjusted.
+    xsd = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+      <xs:complexType name="class"><xs:sequence>
+        <xs:element name="x" type="xs:string"/>
+      </xs:sequence></xs:complexType>
+    </xs:schema>"""
+    entries = _inventory(compile_schema(xsd))
+    entry = next(e for e in entries if e.cls.__name__ == "class")
+    assert entry.name == "class_"
+    assert entry.name.isidentifier() and not keyword.iskeyword(entry.name)
+    assert entry.note is not None and "keyword" in entry.note
+    assert entry.er is not None
+
+
+def test_synthesized_python_keyword_name_is_adjusted():
+    # An element named ``true`` synthesizes PascalCase ``True``, which
+    # is a Python keyword; the note records both the bookkeeping name
+    # and the keyword adjustment.
+    xsd = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+      <xs:element name="true"><xs:complexType><xs:sequence>
+        <xs:element name="x" type="xs:string"/>
+      </xs:sequence></xs:complexType></xs:element>
+    </xs:schema>"""
+    entries = _inventory(compile_schema(xsd))
+    entry = next(e for e in entries if e.cls.__name__ == "true|complexType")
+    assert entry.name == "True_"
+    assert entry.name.isidentifier() and not keyword.iskeyword(entry.name)
+    assert entry.note is not None and "keyword" in entry.note
+    assert "true|complexType" in entry.note
+    assert entry.er is not None
 
 
 def test_colliding_inline_names_get_numeric_suffixes():
