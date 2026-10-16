@@ -245,3 +245,127 @@ def test_effective_occurs_folds_the_compiled_tree():
     cls = schema.classes["rep"]
     descriptor = cls.__dict__["x"]
     assert _effective_occurs(cls.__dict__["_contentModel_"], descriptor) == (0, None)
+
+
+GROUP_CHOICE = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g"><xs:sequence>
+    <xs:element name="other" type="xs:int"/></xs:sequence></xs:group>
+  <xs:complexType name="holder"><xs:choice>
+    <xs:group ref="g"/>
+    <xs:element name="z" type="xs:string"/>
+  </xs:choice></xs:complexType>
+  <xs:element name="root" type="holder"/>
+</xs:schema>"""
+
+
+def test_group_expanded_choice_branch_annotated_optional():
+    # A named group binds per-use copies of its declarations into the
+    # class body, while the particle tree carries the group's shared
+    # declarations; the fold must find the copy's particle all the
+    # same, or the choice branch is wrongly annotated as required.
+    m = members_of(GROUP_CHOICE, "holder")
+    assert m["other"].annotation == "Int | None"
+    assert m["z"].annotation == "String | None"
+
+
+def test_group_expanded_choice_branch_matches_a_parsed_document():
+    # Side by side with the annotation: taking the other choice branch
+    # leaves the group's element read as None.
+    schema = Schema.compile(io.StringIO(GROUP_CHOICE))
+    parsed = schema.parse(io.StringIO("<root><z>hi</z></root>"))
+    assert parsed.root.other is None
+    assert parsed.root.z == "hi"
+
+
+GROUP_CHOICE_INSIDE = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g"><xs:choice>
+    <xs:element name="other" type="xs:int"/>
+    <xs:element name="tail" type="xs:int"/>
+  </xs:choice></xs:group>
+  <xs:complexType name="holder"><xs:sequence><xs:group ref="g"/></xs:sequence></xs:complexType>
+  <xs:element name="root" type="holder"/>
+</xs:schema>"""
+
+
+def test_choice_inside_group_annotated_optional():
+    m = members_of(GROUP_CHOICE_INSIDE, "holder")
+    assert m["other"].annotation == "Int | None"
+    assert m["tail"].annotation == "Int | None"
+
+
+GROUP_UNBOUNDED_INSIDE = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g"><xs:sequence maxOccurs="unbounded">
+    <xs:element name="other" type="xs:int"/></xs:sequence></xs:group>
+  <xs:complexType name="holder"><xs:sequence><xs:group ref="g"/></xs:sequence></xs:complexType>
+  <xs:element name="root" type="holder"/>
+</xs:schema>"""
+
+
+def test_unbounded_compositor_inside_group_annotates_a_list():
+    m = members_of(GROUP_UNBOUNDED_INSIDE, "holder")
+    assert m["other"].annotation == "list[Int]"
+
+
+GROUP_IN_UNBOUNDED_ANCESTOR = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g"><xs:sequence>
+    <xs:element name="other" type="xs:int"/></xs:sequence></xs:group>
+  <xs:complexType name="holder"><xs:sequence maxOccurs="unbounded">
+    <xs:group ref="g"/></xs:sequence></xs:complexType>
+  <xs:element name="root" type="holder"/>
+</xs:schema>"""
+
+
+def test_group_inside_unbounded_ancestor_annotates_a_list():
+    m = members_of(GROUP_IN_UNBOUNDED_ANCESTOR, "holder")
+    assert m["other"].annotation == "list[Int]"
+
+
+NESTED_GROUPS = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="inner"><xs:sequence>
+    <xs:element name="deep" type="xs:int"/></xs:sequence></xs:group>
+  <xs:group name="outer"><xs:sequence>
+    <xs:group ref="inner"/>
+    <xs:element name="shallow" type="xs:string"/></xs:sequence></xs:group>
+  <xs:complexType name="holder"><xs:choice>
+    <xs:group ref="outer"/>
+    <xs:element name="z" type="xs:string"/>
+  </xs:choice></xs:complexType>
+  <xs:element name="root" type="holder"/>
+</xs:schema>"""
+
+
+def test_nested_group_expansion_folds_every_ancestor():
+    m = members_of(NESTED_GROUPS, "holder")
+    assert m["deep"].annotation == "Int | None"
+    assert m["shallow"].annotation == "String | None"
+
+
+def test_effective_occurs_folds_group_expanded_copies():
+    schema = Schema.compile(io.StringIO(GROUP_CHOICE))
+    cls = schema.classes["holder"]
+    model = cls.__dict__["_contentModel_"]
+    assert _effective_occurs(model, cls.__dict__["other"]) == (0, 1)
+
+
+GROUP_REF_TWICE = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:group name="g"><xs:sequence>
+    <xs:element name="other" type="xs:int"/></xs:sequence></xs:group>
+  <xs:complexType name="holder"><xs:sequence>
+    <xs:choice><xs:group ref="g" maxOccurs="unbounded"/></xs:choice>
+    <xs:group ref="g" minOccurs="0"/>
+  </xs:sequence></xs:complexType>
+  <xs:element name="root" type="holder"/>
+</xs:schema>"""
+
+
+def test_each_group_reference_copy_folds_through_its_own_particle():
+    # Two references to one group are an ambiguity error (the schema's
+    # element positions are not unique), but the copies each still fold
+    # through the particle carrying their own reference occurrence: the
+    # first copy's unbounded reference is still a choice branch, the
+    # second copy's optional reference is not.
+    schema = Schema.compile(io.StringIO(GROUP_REF_TWICE))
+    cls = schema.classes["holder"]
+    model = cls.__dict__["_contentModel_"]
+    assert _effective_occurs(model, cls.__dict__["other"]) == (0, None)
+    assert _effective_occurs(model, cls.__dict__["other|2"]) == (0, 1)

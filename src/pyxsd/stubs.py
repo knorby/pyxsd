@@ -551,29 +551,120 @@ def _leaf_particle(model: Any, descriptor: Any) -> Any | None:
     """Returns the element particle compiled for *descriptor*, or ``None``.
 
     A class-body descriptor is the declaration the class declares, but
-    an element reference site compiles to a particle carrying the
-    *referred* declaration: the site's own descriptor is then matched
-    through ``referredElement``. The site's occurrence is the particle's
-    (``_compile_element`` takes ``minOccurs``/``maxOccurs`` from the
-    site), so a candidate whose occurrence matches the site's own is
-    preferred when several reference sites share one referred
-    declaration.
+    two compilation steps produce particles that carry *different*
+    objects:
+
+    - an element reference site compiles to a particle carrying the
+      *referred* declaration, so the site is matched through
+      ``referredElement``; and
+    - a named group's expansion binds a per-use shallow copy into the
+      class body while the particle tree carries the group's shared
+      declarations, so the copy is matched through the shared
+      ``xsdElement`` source node it was made from.
+
+    When several leaves can carry the declaration (a group referenced
+    twice, a reference site beside a group expansion), the descriptor's
+    own occurrence identifies its leaf: a copy's occurrence is the
+    product of the group references that contributed it, which is
+    exactly :func:`_copy_signature`. A site's own occurrence is the
+    particle's own (``_compile_element`` takes ``minOccurs``/``maxOccurs``
+    from the site), the fallback tie-break.
     """
     leaves = [particle for particle in particle_elements(model) if particle.descriptor is not None]
     for leaf in leaves:
         if leaf.descriptor is descriptor:
             return leaf
-    if not getattr(descriptor, "isElementRef", False):
+    if getattr(descriptor, "isElementRef", False):
+        referred = getattr(descriptor, "referredElement", None)
+        if referred is None:
+            return None
+        candidates = [leaf for leaf in leaves if leaf.descriptor is referred]
+        return _preferred_leaf(model, candidates, descriptor)
+    return _preferred_leaf(model, _twin_leaves(leaves, descriptor), descriptor)
+
+
+def _twin_leaves(leaves: list[Any], descriptor: Any) -> list[Any]:
+    """Returns the leaves carrying the declaration *descriptor* was copied from.
+
+    ``ComplexType._flattenGroupRef`` binds each group reference's own
+    shallow copies of the group's declarations, so the class body and
+    the particle tree hold distinct objects for one declaration. The
+    copy shares the source ``xsdElement`` node with the shared
+    declaration the particle carries, which is the exact link
+    descriptor identity cannot see. A descriptor without a source node
+    (a hand-written declaration) has no copy twin.
+    """
+    source = getattr(descriptor, "xsdElement", None)
+    if source is None:
+        return []
+    return [leaf for leaf in leaves if getattr(leaf.descriptor, "xsdElement", None) is source]
+
+
+def _preferred_leaf(model: Any, candidates: list[Any], descriptor: Any) -> Any | None:
+    """Returns the leaf that carries *descriptor*'s occurrence, or ``None``.
+
+    One candidate is the declaration's only particle. With several, the
+    descriptor's own occurrence picks the leaf its declaration was
+    compiled for: ``_copy_signature`` reproduces a group-expanded
+    copy's occurrence exactly, and a direct (unwrapped) site's own
+    occurrence is its particle's. The first candidate is the last
+    resort, as before.
+    """
+    if not candidates:
         return None
-    referred = getattr(descriptor, "referredElement", None)
-    if referred is None:
-        return None
+    if len(candidates) == 1:
+        return candidates[0]
     minimum, maximum = _declared_occurs(descriptor)
-    candidates = [leaf for leaf in leaves if leaf.descriptor is referred]
+    for leaf in candidates:
+        if _copy_signature(model, leaf) == (minimum, maximum):
+            return leaf
     for leaf in candidates:
         if leaf.min_occurs == minimum and leaf.max_occurs == maximum:
             return leaf
-    return candidates[0] if candidates else None
+    return candidates[0]
+
+
+def _copy_signature(model: Any, edge: Any) -> tuple[int, int | None]:
+    """Returns the occurrence a group-expanded copy of *edge* carries.
+
+    ``ComplexType._foldRefOccurrences`` multiplies a group reference
+    site's occurrence into every element the reference contributes, and
+    the compiled tree keeps that occurrence on the synthetic wrapper
+    particle the reference compiles to (``_compile_group_ref``).
+    Multiplying the synthetic wrappers and the element's own occurrence
+    therefore reproduces the copy's own ``minOccurs``/``maxOccurs``
+    exactly, normalized the way :func:`_declared_occurs` normalizes
+    them.
+    """
+    return _signature(model, edge, 1, 1)
+
+
+def _signature(
+    particle: Any, edge: Any, minimum: int, maximum: int | None
+) -> tuple[int, int | None]:
+    """Multiplies the synthetic ancestors' occurrences into *edge*'s own."""
+    if particle.synthetic:
+        minimum, maximum = _multiplied(minimum, maximum, particle.min_occurs, particle.max_occurs)
+    if particle is edge:
+        minimum, maximum = _multiplied(minimum, maximum, edge.min_occurs, edge.max_occurs)
+        return minimum, None if maximum is None or maximum >= _UNBOUNDED else maximum
+    for child in particle.children:
+        if any(leaf is edge for leaf in particle_elements(child)):
+            return _signature(child, edge, minimum, maximum)
+    return minimum, maximum
+
+
+def _multiplied(
+    minimum: int, maximum: int | None, factor_min: int, factor_max: int | None
+) -> tuple[int, int | None]:
+    """Multiplies one occurrence factor in, capping like the ref fold does."""
+    minimum *= factor_min
+    if maximum is None or factor_max is None:
+        return minimum, None
+    maximum *= factor_max
+    if maximum >= _UNBOUNDED:
+        return minimum, None
+    return minimum, maximum
 
 
 def _declared_occurs(descriptor: Any) -> tuple[int, int | None]:
