@@ -25,6 +25,203 @@ schema once; `Schema.parse` binds one instance document and returns a
 from an argument or the instance's own schema hints, compiles, and
 binds.
 
+## Type stubs for generated classes
+
+The generated classes live in `schema.classes`, created at runtime, so
+mypy and IDEs cannot import them. `Schema.stub()` renders their typing
+surface as `.pyi` text, and the same renderer is importable without the
+method:
+
+```{eval-rst}
+.. autofunction:: pyxsd.stubs.emit_stub
+```
+
+`Schema.stub(*, compact=False) -> str` reads the **live** schema at call
+time — nothing is cached at compile time — so a stub regenerated after an
+overlay is loaded shows the overlay's members.
+
+### The two modes
+
+The full form (the default) is an importable-quality `.pyi` document: a
+provenance and consumption header, imports of the real pyxsd datatype
+classes (annotations name `pyxsd.xsd_data_types.Int`, not a stand-in
+`int`), one class block per generated class with inheritance mirroring
+the XSD derivation and simple types carrying their facets as comments,
+and the global elements as module-level aliases. There is no importable
+module to point at; save the text next to your code and name it under
+`TYPE_CHECKING`:
+
+```python
+if TYPE_CHECKING:
+    from schema_stubs import PurchaseOrderType
+root = cast(PurchaseOrderType, document.root)
+```
+
+The compact form (`schema.stub(compact=True)`) is the agent-oriented
+description: a two-line header (provenance and an alias legend mapping
+short spellings such as `str`, `int`, and `date` back to the pyxsd
+classes they stand for), one line per class and member, facet-only simple
+types folded onto the members that use them, and a trailing `# roots:`
+comment line. It is a description, not Python source.
+
+### Truthfulness contract
+
+Stubs describe reads from **valid parsed documents**, and every reachable
+absence is annotated:
+
+- an element with `maxOccurs > 1` reads as `list[T]`; an optional one
+  (`minOccurs="0"`, a branch of a choice, or an optional ancestor group)
+  adds `| None` — an absent repeated member reads as `None`, because the
+  list exists only after the first bind;
+- an attribute with `use="required"` reads as `T`; every other attribute
+  reads as `T | None`;
+- a member carrying a `default` or `fixed` value annotates `T | str | None`
+  with the value in a comment: a declaration-local element `default` reads
+  back the raw lexical `str` when its element is absent, a fixed element
+  reads `None`, and an attribute's `default`/`fixed` is applied typed by
+  the binder.
+
+Two asymmetries the annotations cannot encode are stated in the emitted
+preamble: an absent optional member — and a required member of an
+*invalid* document — reads as `None`, and repeated-element assignment
+appends a single item (`obj.x = item`; assigning a list raises).
+
+Where a construct cannot be typed honestly the stub degrades instead of
+lying: a member whose value is one of a union's member classes, a
+recursive back edge, an unresolvable declaration, and a schema name with
+no usable Python accessor become `Any`, a comment, or both; mixed
+content, wildcards, and open content become class-body comments.
+Rendering never raises for a schema that compiled and works on schemas
+whose report carries errors: `stub()` never calls `require_valid()`, so
+call it yourself when you want to reject a bad schema.
+
+### The overlay (extension) loop
+
+Because rendering reads the live class table, the overlay mechanism
+composes with stubs into the extension workflow:
+
+1. compile the schema and emit the stub;
+2. write overlay code against the stub — autocomplete and mypy work;
+3. load the overlay and emit the stub again — the overlay's members now
+   appear in its class block.
+
+```python
+from pathlib import Path
+
+from pyxsd.schema import Schema
+
+schema = Schema.compile("orders.xsd")
+Path("orders.pyi").write_text(schema.stub())
+
+schema = Schema.compile("orders.xsd", overlay="overlay.py")
+Path("orders.with_overlay.pyi").write_text(schema.stub())
+```
+
+An overlay class is loaded under its `name` attribute in place of the
+generated class of the same schema type (see {doc}`architecture`), so
+stub regeneration describes what the overlay's class actually provides.
+The CLI emits the same text with
+`pyxsd --emit-stubs [PATH] -s SCHEMA`; see {doc}`cli`.
+
+### Example: full mode
+
+Using the `ORDERS` schema throughout this page:
+
+```python
+import io
+
+from pyxsd.schema import Schema
+
+ORDERS = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="SKU"><xs:restriction base="xs:string">
+    <xs:pattern value="\\d{3}-[A-Z]{2}"/>
+  </xs:restriction></xs:simpleType>
+  <xs:complexType name="Item"><xs:sequence>
+    <xs:element name="sku" type="SKU"/>
+    <xs:element name="quantity" type="xs:int"/>
+    <xs:element name="note" type="xs:string" minOccurs="0"/>
+  </xs:sequence>
+  <xs:attribute name="id" type="xs:string" use="required"/>
+  </xs:complexType>
+  <xs:element name="orders"><xs:complexType><xs:sequence>
+    <xs:element name="item" type="Item" maxOccurs="unbounded"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+print(Schema.compile(io.StringIO(ORDERS)).stub())
+```
+
+```text
+# Generated by pyxsd 1.1.1 from <stream>. Do not edit by hand.
+#
+# This file is a generated typing surface for the classes a compiled
+# schema creates at runtime; there is no importable module (the classes
+# live in ``schema.classes``). Save this stub next to your code and
+# import it for type checking:
+#     if TYPE_CHECKING:
+#         from schema_stubs import Orders
+#     root = cast(Orders, document.root)
+#
+# Semantics: annotations model valid parsed documents. Absent optional
+# members read as None (including absent repeated members); required
+# members of invalid documents read as None too. Repeated assignment
+# appends one item (obj.x = item); it does not take a list. Constructs
+# a stub cannot type truthfully are Any with a comment.
+
+from typing import Any
+
+from pyxsd.schema_base import SchemaBase
+from pyxsd.xsd_data_types import Int, String
+
+class SKU(String):
+    ...
+    # pattern: \d{3}-[A-Z]{2}
+
+class Item(SchemaBase):
+    sku: SKU
+    quantity: Int
+    note: String | None
+    id: String
+
+# bookkeeping name 'orders|complexType'; stub name synthesized
+class Orders(SchemaBase):
+    item: list[Item]
+
+# Root elements:
+orders: type[Orders]
+```
+
+The inline `orders` declaration has no name of its own, so the class is
+synthesized as `Orders` with the bookkeeping name kept in a comment —
+class names are never guessed silently.
+
+### Example: compact mode
+
+```python
+print(Schema.compile(io.StringIO(ORDERS)).stub(compact=True))
+```
+
+```text
+# Generated by pyxsd 1.1.1 from <stream>; compact view, not Python source.
+# aliases: str=String, int=Int
+
+class Item:
+  sku: str  # pattern: \d{3}-[A-Z]{2}
+  quantity: int
+  note: str | None
+  id: str
+
+# bookkeeping name 'orders|complexType'; stub name synthesized
+class Orders:
+  item: list[Item]
+
+# roots: orders: Orders
+```
+
+Every annotation spelling is a class the document declares, a pyxsd
+builtin's own name, or a legend alias; a folded simple type's facets ride
+on the members that use it.
+
 ## Batch parsing
 
 `Schema.iter_parse` reuses the compiled schema for explicit local files.

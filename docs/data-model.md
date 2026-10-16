@@ -141,3 +141,69 @@ the accessors are disambiguated:
 Only the Python accessor name changes. Child order in `_children_`,
 validation, identity constraints, and round-trip output are identical to
 a non-colliding schema.
+
+## Type stubs
+
+A compiled schema's classes exist only at runtime, so `Schema.stub()`
+(`pyxsd.stubs.emit_stub`) renders their typing surface as text. The full
+form is importable-quality `.pyi` source with three parts:
+
+- a **preamble**: the provenance line (pyxsd version and schema source),
+  the consumption idiom (`if TYPE_CHECKING: from schema_stubs import
+  ...`), and the semantics policy — annotations model valid parsed
+  documents, absent optional members (including absent repeated members)
+  read as `None`, and repeated-element assignment appends a single item;
+- one **class block** per generated class. Inheritance mirrors the XSD
+  derivation; element and attribute members carry the union annotations
+  above, with everything the annotation cannot say (a `default`'s lexical
+  fallback, `nillable`, aliased `xml:` names, facets, degradations) in
+  trailing comments; simple types render as their datatype subclass with
+  facet comments; a construct that cannot be typed truthfully degrades to
+  `Any` with a comment;
+- the **root aliases**: the global elements as module-level entries
+  (`orders: type[Orders]`), the valid document roots.
+
+The compact form (`compact=True`) is a two-line header plus one line per
+class and member: the header gives the provenance and an alias legend
+mapping short spellings back to the pyxsd classes they denote
+(`str=String`, `int=Int`, `date=Date`, ...), facet-only simple types are
+folded onto the members that use them, and a trailing `# roots:` comment
+lists the global elements. It is a readable description, not Python
+source. See {doc}`api` for both modes and the truthfulness contract, and
+{doc}`cli` for `--emit-stubs` / `--stubs-compact`.
+
+## Temporal conversions
+
+`Date`, `DateTime`, and `Time` are validated `str` subclasses; each also
+converts to the standard library type it resembles:
+
+| XSD type | Method | Returns |
+| -------- | ------ | ------- |
+| `xs:date` | `Date.to_date()` | `datetime.date` |
+| `xs:dateTime` | `DateTime.to_datetime()` | `datetime.datetime` |
+| `xs:time` | `Time.to_time()` | `datetime.time` |
+
+```python
+DateTime("2006-08-30T14:30:00+05:30").to_datetime()
+# datetime.datetime(2006, 8, 30, 14, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=19800)))
+DateTime("2006-08-30T24:00:00").to_datetime()  # datetime.datetime(2006, 8, 31, 0, 0)
+Date("2006-08-30").to_date()  # datetime.date(2006, 8, 30)
+Time("14:30:00.5").to_time()  # datetime.time(14, 30, 0, 500000)
+```
+
+The conversion contract follows the lexical value's XSD semantics:
+
+- an explicit timezone offset becomes a `datetime.timezone` (the value
+  is aware); an absent offset yields a naive value; `Date.to_date()`
+  discards the offset, because `datetime.date` carries no timezone;
+- fractional seconds are preserved to microsecond precision;
+- `DateTime`'s end-of-day spelling `24:00:00` rolls over to midnight of
+  the following day, while `Time` with `24:00:00` raises `ValueError` —
+  it has no time-of-day value;
+- XSD's year `0000`, negative (BCE) years, and extended years above 9999
+  have no `datetime` representation and raise `ValueError` naming the
+  lexical value.
+
+Full-mode stubs annotate these classes (`DateTime`, not
+`datetime.datetime`), so the conversion methods are visible to mypy and
+IDEs wherever a member is typed with one of them.
