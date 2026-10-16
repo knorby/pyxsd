@@ -601,10 +601,12 @@ class DateTime(_PatternString):
 
         An explicit timezone offset becomes a :class:`datetime.timezone`;
         an absent one yields a naive value.  The end-of-day spelling
-        ``24:00:00`` rolls over to midnight of the following day.  XSD's
-        year 0000, negative (BCE) years, and extended years above 9999
-        have no :mod:`datetime` representation and raise ``ValueError``
-        naming the lexical value.
+        ``24:00:00`` rolls over to midnight of the following day; on
+        ``9999-12-31`` that rollover leaves the :mod:`datetime` range
+        and raises ``ValueError``.  XSD's year 0000, negative (BCE)
+        years, and extended years above 9999 have no :mod:`datetime`
+        representation and raise ``ValueError`` naming the lexical
+        value.
         """
         text = str(self)
         # The constructor validated this lexical form, so the match cannot be None.
@@ -619,19 +621,25 @@ class DateTime(_PatternString):
         rollover = _datetime.timedelta(0)
         if hour == 24:  # 24:00:00 is the end-of-day spelling: the next midnight
             hour, rollover = 0, _datetime.timedelta(days=1)
-        return (
-            _datetime.datetime(
-                year,
-                month,
-                day,
-                hour,
-                minute,
-                second,
-                _fraction_microseconds(match.group(7)),
-                _timezone(match.group(8)),
+        try:
+            return (
+                _datetime.datetime(
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    _fraction_microseconds(match.group(7)),
+                    _timezone(match.group(8)),
+                )
+                + rollover
             )
-            + rollover
-        )
+        except OverflowError as error:
+            raise ValueError(
+                f"Cannot convert xs:dateTime {text!r} to datetime.datetime: "
+                "the end-of-day rollover leaves the datetime range"
+            ) from error
 
 
 class DateTimeStamp(DateTime):

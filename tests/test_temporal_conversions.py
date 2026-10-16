@@ -40,6 +40,12 @@ class TestDateTimeToDatetime:
     def test_end_of_day_rolls_to_next_day(self):
         assert DateTime("2006-08-30T24:00:00").to_datetime() == datetime.datetime(2006, 8, 31)
 
+    def test_end_of_day_rollover_past_the_range_raises_value_error(self):
+        # The lexical form is in range, but the rollover from the last
+        # representable day has no datetime to land on.
+        with pytest.raises(ValueError, match="9999-12-31T24:00:00"):
+            DateTime("9999-12-31T24:00:00").to_datetime()
+
 
 class TestTimeToTime:
     def test_naive(self):
