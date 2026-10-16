@@ -36,6 +36,10 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   end-of-day `24:00:00` rolls `DateTime` to the next midnight while
   `Time` raises `ValueError`, and years outside 1..9999 raise
   `ValueError`.
+- The package ships the PEP 561 `py.typed` marker, so a generated full
+  stub's imports of pyxsd classes (`SchemaBase`, the
+  `pyxsd.xsd_data_types` classes) are statically analyzable by mypy and
+  IDEs.
 
 ## [1.1.1] - 2026-10-14
 

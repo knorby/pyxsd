@@ -57,6 +57,11 @@ if TYPE_CHECKING:
 root = cast(PurchaseOrderType, document.root)
 ```
 
+pyxsd ships the PEP 561 `py.typed` marker, so the stub's imports of
+`SchemaBase` and the `pyxsd.xsd_data_types` classes resolve statically:
+mypy checks code written against the stub with the real pyxsd types
+behind the annotations.
+
 The compact form (`schema.stub(compact=True)`) is the agent-oriented
 description: a two-line header (provenance and an alias legend mapping
 short spellings such as `str`, `int`, and `date` back to the pyxsd
@@ -86,14 +91,19 @@ preamble: an absent optional member — and a required member of an
 *invalid* document — reads as `None`, and repeated-element assignment
 appends a single item (`obj.x = item`; assigning a list raises).
 
+One more runtime divergence is stated there too: the parser binds a
+complex-typed child in the parsed tree only, so `obj.child` reads `None`
+for it, while a primitive-typed child is accessor-bound. The
+annotations describe the descriptor and construction API.
+
 Where a construct cannot be typed honestly the stub degrades instead of
-lying: a member whose value is one of a union's member classes, a
-recursive back edge, an unresolvable declaration, and a schema name with
-no usable Python accessor become `Any`, a comment, or both; mixed
-content, wildcards, and open content become class-body comments.
-Rendering never raises for a schema that compiled and works on schemas
-whose report carries errors: `stub()` never calls `require_valid()`, so
-call it yourself when you want to reject a bad schema.
+lying: a member whose value comes from a union, a recursive back edge,
+an unresolvable declaration, and a schema name that is not
+dot-accessible become `Any`, a comment, or both; mixed content,
+wildcards, and open content become class-body comments. Rendering never
+raises for a schema that compiled, even one whose report carries
+errors: `stub()` never calls `require_valid()`, so call it yourself
+when you want to reject a bad schema.
 
 ### The overlay (extension) loop
 
@@ -125,7 +135,7 @@ The CLI emits the same text with
 
 ### Example: full mode
 
-Using the `ORDERS` schema throughout this page:
+Using the `ORDERS` schema throughout this section:
 
 ```python
 import io
@@ -165,7 +175,10 @@ print(Schema.compile(io.StringIO(ORDERS)).stub())
 # Semantics: annotations model valid parsed documents. Absent optional
 # members read as None (including absent repeated members); required
 # members of invalid documents read as None too. Repeated assignment
-# appends one item (obj.x = item); it does not take a list. Constructs
+# appends one item (obj.x = item); it does not take a list. The parser
+# binds a complex-typed child in the parsed tree only (obj.child reads
+# None), while a primitive-typed child is accessor-bound; the
+# annotations describe the descriptor and construction API. Constructs
 # a stub cannot type truthfully are Any with a comment.
 
 from typing import Any

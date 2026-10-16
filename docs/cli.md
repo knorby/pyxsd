@@ -61,7 +61,8 @@ hint; leaving it out — or using `--stubs-compact` without `--emit-stubs`
 compile, or an unwritable `PATH`, exits `1` with a `pyxsd: error:` line
 on stderr. A schema whose report carries non-fatal findings still emits,
 degrading the affected members to `Any`, exactly as `Schema.stub()`
-does.
+does. `--strict` has no effect in stub mode: no instance document is
+parsed, so there is no validation report for it to exit on.
 
 The flag composes with every other compilation option — `--mode`,
 `--namespaces`, `--xsd-version`, and `-c/--overlayClassesFile` — because

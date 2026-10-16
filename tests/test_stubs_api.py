@@ -11,6 +11,7 @@ that only resolves in one order, and a caller who imports
 import io
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -48,6 +49,17 @@ def test_emit_stub_importable():
     from pyxsd.stubs import emit_stub
 
     assert callable(emit_stub)
+
+
+def test_package_ships_the_py_typed_marker():
+    """A full stub imports ``SchemaBase`` and the datatype classes.
+
+    Those imports are static only when pyxsd is a PEP 561 typed package,
+    so the marker ships next to the package modules (mypy otherwise
+    reports the imports as untyped, leaving the emitted stub only
+    half-checked).
+    """
+    assert (Path(pyxsd.__file__).parent / "py.typed").is_file()
 
 
 def test_stubs_module_imports_cold():
