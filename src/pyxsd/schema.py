@@ -267,6 +267,33 @@ class Schema:
                 self.report,
             )
 
+    def stub(self, *, compact: bool = False) -> str:
+        """Returns ``.pyi``-style source for the classes this schema compiled.
+
+        The text is a typing surface mirroring the runtime: one class
+        block per generated class, annotated with the classes a valid
+        parsed document actually reads back, and the root elements as
+        module-level class aliases. A member whose type cannot be named
+        truthfully degrades to ``Any`` with the reason in a comment,
+        never to a name the runtime does not use.
+
+        - ``compact`` - emit the agent-oriented compact description
+          instead of the full document: one line per class and member,
+          a short alias legend, and the root elements in a trailing
+          comment. The compact text is a description, not valid Python;
+          the default full form is importable-quality ``.pyi`` source::
+
+              schema.stub()              # full .pyi document
+              schema.stub(compact=True)  # compact agent-oriented view
+
+        Emitting never raises for a schema that compiled and does not
+        require a valid report; call :meth:`require_valid` separately
+        to reject a schema whose report holds errors.
+        """
+        from pyxsd.stubs import emit_stub
+
+        return emit_stub(self, compact=compact)
+
     def iter_parse(
         self,
         sources: Iterable["DocumentSource"],

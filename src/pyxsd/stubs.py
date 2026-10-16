@@ -69,11 +69,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from pyxsd import __version__, xsd_data_types
-from pyxsd.element_representatives.attribute import Attribute
-from pyxsd.element_representatives.element import Element
 from pyxsd.integrations._shape import particle_elements
 from pyxsd.namespaces import XSD_NS, clark, local_name
-from pyxsd.schema_base import SchemaBase
+
+# ``Attribute``, ``Element`` and ``SchemaBase`` are imported inside the
+# functions that use them, never at module scope: those modules sit in
+# an import cycle that resolves only when
+# ``element_representative`` is entered first (the order
+# ``pyxsd.schema``'s own imports establish), and importing this module
+# must not enter the cycle from a tag module. Every public entry point
+# here takes a compiled schema, so the cycle is already resolved by
+# call time.
 
 if TYPE_CHECKING:
     from pyxsd.schema import Schema
@@ -364,6 +370,12 @@ def _members(cls: type, names: dict[int, str], *, compact: bool) -> list[_Member
     schema still compiles classes, and a stub may still be requested
     for it.
     """
+    # Deferred so importing this module does not enter the ER tag
+    # cycle from a tag module (see the module-level comment).
+    from pyxsd.element_representatives.attribute import Attribute
+    from pyxsd.element_representatives.element import Element
+    from pyxsd.schema_base import SchemaBase
+
     model = getattr(cls, "_contentModel_", None)
     inventory = set(names)
     candidates: dict[str, tuple[int, int, int, _Member]] = {}
@@ -790,6 +802,8 @@ def _resolved_base(
     namespace, mirroring derivation: a restriction of a union inherits
     the attribute through its MRO but is not itself a union.
     """
+    from pyxsd.schema_base import SchemaBase
+
     if id(cls) in active:
         return "Any", "recursive type; annotated Any"
     union_members = vars(cls).get("_unionMembers")
@@ -1184,6 +1198,8 @@ def _stub_base(entry: _StubClass, names: dict[int, str]) -> str:
     mirrors its runtime base), and anything else renders
     ``SchemaBase``, the class every generated class is rooted in.
     """
+    from pyxsd.schema_base import SchemaBase
+
     for base in entry.cls.__mro__[1:]:
         if base is object:
             break
