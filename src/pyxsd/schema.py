@@ -286,6 +286,11 @@ class Schema:
               schema.stub()              # full .pyi document
               schema.stub(compact=True)  # compact agent-oriented view
 
+        The CLI emits the same text:
+        ``pyxsd --emit-stubs [PATH] -s SCHEMA`` writes the full
+        document to PATH (stdout when PATH is omitted), and adding
+        ``--stubs-compact`` selects the compact view.
+
         Emitting never raises for a schema that compiled and does not
         require a valid report; call :meth:`require_valid` separately
         to reject a schema whose report holds errors.
