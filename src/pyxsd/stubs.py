@@ -807,8 +807,8 @@ def emit_stub(schema: Schema, *, compact: bool = False) -> str:
     classes), one line per class and per member, facet-only simple types
     folded onto the members that use them, and a trailing comment line
     listing the root elements. The compact text is a description, not
-    importable Python; every spelling it uses is a rendered class name
-    or a legend alias.
+    importable Python; every spelling it uses is a rendered class name,
+    a pyxsd builtin's own name, or a legend alias.
 
     Rendering never raises on a schema that compiled: a construct a
     stub cannot type truthfully (an unresolvable type, a member with no
@@ -1312,8 +1312,9 @@ def _render_compact(schema: Schema, inventory: list[_StubClass]) -> str:
     header (provenance and alias legend), one line per class and per
     member, and a trailing comment line listing the root elements.
     Facet-only simple types are dropped and their facets render on each
-    member that uses them; every annotation spelling names a rendered
-    class or a legend alias, so the view cannot drift from the model.
+    member that uses them; every annotation spelling is a rendered class
+    name, a pyxsd builtin's own name, or a legend alias, so the view
+    cannot drift from the model.
     """
     names = {id(entry.cls): entry.name for entry in inventory}
     entries_by_id = {id(entry.cls): entry for entry in inventory}
