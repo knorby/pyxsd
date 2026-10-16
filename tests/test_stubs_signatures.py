@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import builtins
 import io
+import sys
 from pathlib import Path
 
 import pytest
@@ -103,9 +104,19 @@ def test_bare_typing_generic_is_kept_and_imported(tmp_path):
         ),
     )
     text = emit_stub(schema)
-    assert "from typing import Any, List, Optional" in text
+    # ``inspect.signature`` renders ``Optional[int]`` in its PEP 604
+    # spelling ``int | None`` on Python 3.14+, so the emitted signature
+    # and the scan-driven ``from typing import`` line follow the running
+    # interpreter rather than one fixed spelling.
+    if sys.version_info >= (3, 14):
+        expected_return = "int | None"
+        expected_imports = "from typing import Any, List"
+    else:
+        expected_return = "Optional[int]"
+        expected_imports = "from typing import Any, List, Optional"
+    assert expected_imports in text
     assert "    def tags(self) -> List[str]: ..." in text
-    assert "    def total(self, count: int) -> Optional[int]: ..." in text
+    assert f"    def total(self, count: int) -> {expected_return}: ..." in text
 
 
 def test_typing_qualified_spelling_is_rewritten_to_the_typing_import(tmp_path):
