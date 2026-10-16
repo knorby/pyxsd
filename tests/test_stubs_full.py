@@ -88,7 +88,18 @@ def test_overlay_members_appear_in_stub(tmp_path):
         "    @property\n"
         "    def label(self) -> str:\n"
         "        return 'x'\n"
+        "    def double(self, count: int) -> str:\n"
+        "        return 'x' * count\n"
     )
     schema = Schema.compile(io.StringIO(ORDERS), overlay=overlay)
     text = emit_stub(schema)
-    assert "def label(self) -> str" in text
+    # The decorator form is a new construct in the emitted block; it
+    # still has to be parseable Python.
+    import ast
+
+    ast.parse(text)
+    # A property reads as a value, not a call: the stub must carry the
+    # decorator and no parameter list.
+    assert "    @property\n    def label(self) -> str: ..." in text
+    # A plain overlay method stays an ordinary ``def``.
+    assert "    def double(self, count: int) -> str: ..." in text

@@ -300,12 +300,18 @@ class _Member:
       ``str`` when absent, the element is nillable, an attribute is
       prohibited, the type could not be resolved, the XML name an
       aliased member belongs to), or ``None``.
+    - ``is_property`` - True when an overlay bound the member with
+      ``@property``; a renderer emits a decorator line and a
+      parameterless ``def`` instead of a plain method. The
+      ``annotation`` still carries the getter's signature text, so the
+      discriminator only selects the spelling.
     """
 
     name: str
     annotation: str
     kind: Literal["element", "attribute", "extension"]
     comment: str | None = None
+    is_property: bool = False
 
 
 def _members(cls: type, names: dict[int, str], *, compact: bool) -> list[_Member]:
@@ -493,11 +499,14 @@ def _extension_member(key: str, value: Any) -> _Member:
 
     The annotation is the ``def`` text after the member name, read from
     ``inspect.signature`` (a property is introspected through its
-    getter; its setter's asymmetry is out of a stub's reach). An
+    getter; its setter's asymmetry is out of a stub's reach).
+    ``is_property`` records that the overlay bound the name with
+    ``@property``, so the renderer emits the decorator form. An
     unannotated return becomes ``Any``; a signature that cannot be read
     degrades to a variadic ``Any`` signature with a comment.
     """
-    target = value.fget if isinstance(value, property) else value
+    is_property = isinstance(value, property)
+    target = value.fget if is_property else value
     signature = None
     if target is not None:
         try:
@@ -510,10 +519,20 @@ def _extension_member(key: str, value: Any) -> _Member:
             annotation="(self, *args, **kwargs) -> Any",
             kind="extension",
             comment="signature unavailable; annotated Any",
+            is_property=is_property,
         )
+    comment = None
     if " -> " not in signature:
         signature += " -> Any"
-    return _Member(name=key, annotation=signature, kind="extension", comment=None)
+        if is_property:
+            comment = "getter return unannotated; annotated Any"
+    return _Member(
+        name=key,
+        annotation=signature,
+        kind="extension",
+        comment=comment,
+        is_property=is_property,
+    )
 
 
 def _effective_occurs(model: Any, descriptor: Any) -> tuple[int, int | None]:
@@ -1024,7 +1043,8 @@ def _member_lines(members: list[_Member]) -> list[str]:
     """Returns the class-body lines for *members*.
 
     A comment-only member (no usable accessor) renders as a bare
-    comment, an overlay extension as a one-line ``def``, and a
+    comment, an overlay extension as a one-line ``def`` (a property as
+    a ``@property`` line plus a parameterless ``def``), and a
     descriptor member as a class-level annotation with its comment
     trailing.
     """
@@ -1035,6 +1055,8 @@ def _member_lines(members: list[_Member]) -> list[str]:
                 lines.append(f"    # {member.comment}")
             continue
         if member.kind == "extension":
+            if member.is_property:
+                lines.append("    @property")
             lines.append(_extension_line(member))
             continue
         line = f"    {member.name}: {member.annotation}"
@@ -1050,14 +1072,19 @@ def _extension_line(member: _Member) -> str:
     ``member.annotation`` carries the signature text after the member
     name (``(self) -> str``); the leading parameter list and the rest
     are split apart so the line reads as ordinary stub source. A
-    signature that cannot be split degrades to ``(self) -> Any`` with
-    the member's comment, never a syntax-breaking line.
+    property drops its parameter list — ``obj.name`` is a value, not a
+    call — and keeps only the getter's return type. A signature that
+    cannot be split degrades to ``(self) -> Any`` with the member's
+    comment, never a syntax-breaking line.
     """
     params, returns = _split_signature(member.annotation)
     if params is None or returns is None:
         reason = member.comment or "signature could not be split; annotated Any"
         return f"    def {member.name}(self) -> Any: ...  # {reason}"
-    line = f"    def {member.name}{params} -> {returns}: ..."
+    if member.is_property:
+        line = f"    def {member.name}(self) -> {returns}: ..."
+    else:
+        line = f"    def {member.name}{params} -> {returns}: ..."
     if member.comment:
         line += f"  # {member.comment}"
     return line
