@@ -14,7 +14,7 @@ import io
 
 from conftest import fixture_dir
 from pyxsd.schema import Schema
-from pyxsd.stubs import emit_stub
+from pyxsd.stubs import _substitution_comment, emit_stub
 
 
 def render(xsd: str, **kwargs) -> tuple[str, str]:
@@ -34,7 +34,8 @@ UNION = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
 def test_union_member_degrades():
     full, compact = render(UNION)
     assert "v: Any" in full and "union" in full
-    # The comment names the members the parsed value may actually be.
+    # The comment names the member types the union's value space draws
+    # from (the parsed value itself is an instance of the union class).
     assert "union of: Int | String" in full
     assert "v: Any" in compact and "union of: Int | String" in compact
 
@@ -139,6 +140,31 @@ def test_substitution_group_fixture_names_every_member():
     # (the member names still appear as the global elements they are).
     assert "\n    dot:" not in full and "\n    peg:" not in full
     assert "substitution group" in compact
+
+
+def test_substitution_comment_survives_a_raising_expanded_name():
+    """The never-raises discipline covers the head's own attribute reads.
+
+    ``expandedName`` is a convenience read beside ``name``; a property
+    that raises must not take the whole stub request down while the
+    plain name already identifies the head in the substitution table.
+    """
+
+    class Member:
+        name = "dot"
+
+    class Head:
+        name = "marker"
+        isElementRef = True
+
+        @property
+        def expandedName(self):
+            raise RuntimeError("boom")
+
+        def getSchema(self):
+            return type("FakeSchema", (), {"substitutionGroups": {"marker": [Member()]}})()
+
+    assert _substitution_comment(Head()) == "substitution group: marker; members: dot"
 
 
 MIXED = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">

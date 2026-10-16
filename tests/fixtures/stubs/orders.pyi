@@ -11,7 +11,10 @@
 # Semantics: annotations model valid parsed documents. Absent optional
 # members read as None (including absent repeated members); required
 # members of invalid documents read as None too. Repeated assignment
-# appends one item (obj.x = item); it does not take a list. Constructs
+# appends one item (obj.x = item); it does not take a list. The parser
+# binds a complex-typed child in the parsed tree only (obj.child reads
+# None), while a primitive-typed child is accessor-bound; the
+# annotations describe the descriptor and construction API. Constructs
 # a stub cannot type truthfully are Any with a comment.
 
 from typing import Any

@@ -31,13 +31,15 @@ cannot say (defaults, nillable, prohibited uses, unresolvable types).
 
 Member annotations model *valid parsed documents* and degrade to ``Any``
 with a comment rather than naming a type the stub cannot import: a union
-member (whose value is one of the union's member classes), a recursive
-back edge (a type re-entered while its own class resolves), and an
-unresolvable declaration all become ``Any`` with the reason in the
-comment. A reference to a substitution-group head keeps the head's type,
-takes the ``None`` arm (a member occurrence satisfies the particle
-without filling the head accessor) and comments the member names the
-runtime binds instead.
+member (a policy degradation — a parsed union value is an instance of
+the union's own bookkeeping class, and the comment names the member
+types its value space draws from), a recursive back edge (a type
+re-entered while its own class resolves), and an unresolvable
+declaration all become ``Any`` with the reason in the comment. A
+reference to a substitution-group head keeps the head's type, takes the
+``None`` arm (a member occurrence satisfies the particle without
+filling the head accessor) and comments the member names the runtime
+binds instead.
 Constructs that reach the instance but have no member to hang on —
 mixed content, wildcards, open content — become comment lines on the
 class block. The member model is identical in both formatters;
@@ -60,12 +62,16 @@ comment instead of an exception.
 
 from __future__ import annotations
 
+import ast
+import builtins
+import datetime
+import decimal
 import inspect
 import keyword
 import os
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from pyxsd import __version__, xsd_data_types
@@ -109,6 +115,49 @@ _BUILTIN_STUB_NAMES: dict[type, str] = {
 #: An alphanumeric run; ``-`` and ``.`` (legal in XSD names) separate
 #: words in a synthesized name.
 _WORD = re.compile(r"[^\W_]+")
+
+#: The typing generics an overlay signature may name, bare or as a
+#: ``typing.`` spelling. They are the ones the full stub's import block
+#: can bind: a bare name is imported when the rendered body uses it, and
+#: a ``typing.X`` spelling is rewritten to the bare ``X``
+#: (:func:`_validated_signature`). Anything else -- ``typing.TypedDict``
+#: included -- is not in the contract and degrades the signature.
+_TYPING_NAMES = frozenset(
+    {
+        "Any",
+        "List",
+        "Dict",
+        "Optional",
+        "Sequence",
+        "Iterable",
+        "Iterator",
+        "Mapping",
+        "Set",
+        "FrozenSet",
+        "Tuple",
+        "Union",
+        "Callable",
+        "Literal",
+        "Type",
+    }
+)
+
+#: The standard library modules an overlay signature may qualify names
+#: with, mapped to the module the validator resolves the attribute
+#: against. The renderer emits ``import <module>`` exactly when the
+#: rendered body uses the qualifier, matching the ``datetime.``
+#: precedent.
+_QUALIFIER_MODULES: dict[str, Any] = {"datetime": datetime, "decimal": decimal}
+
+#: The names the full stub's import block can bind without the body
+#: referencing them: ``SchemaBase`` is imported unconditionally, and a
+#: datatype or typing name's own alias text counts as a body reference,
+#: so a root element named after one of these would duplicate a binding.
+#: The qualifier modules are absent: their import depends on the body,
+#: which their root alias is re-checked against after rendering.
+_IMPORTED_STUB_NAMES = (
+    frozenset({"SchemaBase"}) | frozenset(_BUILTIN_STUB_NAMES.values()) | _TYPING_NAMES
+)
 
 
 @dataclass(frozen=True)
@@ -378,6 +427,7 @@ def _members(cls: type, names: dict[int, str], *, compact: bool) -> list[_Member
 
     model = getattr(cls, "_contentModel_", None)
     inventory = set(names)
+    class_names = frozenset(names.values())
     candidates: dict[str, tuple[int, int, int, _Member]] = {}
     #: An inventory class at or below a defining class renders that
     #: class's members itself; once one is met, later (less derived)
@@ -417,7 +467,7 @@ def _members(cls: type, names: dict[int, str], *, compact: bool) -> list[_Member
             continue
         if not isinstance(value, property) and not inspect.isfunction(value):
             continue
-        candidates[key] = (2, 0, order, _extension_member(key, value))
+        candidates[key] = (2, 0, order, _extension_member(key, value, class_names))
     return [member for _, _, _, member in sorted(candidates.values(), key=lambda item: item[:3])]
 
 
@@ -447,7 +497,7 @@ def _element_member(
             name="",
             annotation="",
             kind="element",
-            comment=f"element {xml_name!r} has no Python accessor (bound as {key!r})",
+            comment=f"element {xml_name!r} is not dot-accessible (bound as {key!r})",
         )
     parts: list[str] = []
     base, problem = _annotation_base(descriptor, xml_name, names, active)
@@ -516,7 +566,7 @@ def _attribute_member(
             name="",
             annotation="",
             kind="attribute",
-            comment=f"attribute {xml_name!r} has no Python accessor (bound as {key!r})",
+            comment=f"attribute {xml_name!r} is not dot-accessible (bound as {key!r})",
         )
     parts: list[str] = []
     base, problem = _annotation_base(descriptor, xml_name, names, active)
@@ -545,7 +595,7 @@ def _attribute_member(
     )
 
 
-def _extension_member(key: str, value: Any) -> _Member:
+def _extension_member(key: str, value: Any, class_names: frozenset[str]) -> _Member:
     """Returns the ``_Member`` for an overlay's function or property.
 
     The annotation is the ``def`` text after the member name, read from
@@ -555,6 +605,13 @@ def _extension_member(key: str, value: Any) -> _Member:
     ``@property``, so the renderer emits the decorator form. An
     unannotated return becomes ``Any``; a signature that cannot be read
     degrades to a variadic ``Any`` signature with a comment.
+
+    A signature whose annotations name identifiers the emitted document
+    cannot resolve degrades to ``(self) -> Any`` with the identifier in
+    the comment (:func:`_validated_signature`): the document binds the
+    pyxsd imports, the rendered classes (*class_names*), the typing
+    generics, the qualifier modules, and the Python builtins, and
+    nothing else.
     """
     is_property = isinstance(value, property)
     target = value.fget if is_property else value
@@ -577,6 +634,15 @@ def _extension_member(key: str, value: Any) -> _Member:
         signature += " -> Any"
         if is_property:
             comment = "getter return unannotated; annotated Any"
+    signature, problem = _validated_signature(signature, class_names)
+    if problem is not None:
+        return _Member(
+            name=key,
+            annotation="(self) -> Any",
+            kind="extension",
+            comment=problem,
+            is_property=is_property,
+        )
     return _Member(
         name=key,
         annotation=signature,
@@ -584,6 +650,186 @@ def _extension_member(key: str, value: Any) -> _Member:
         comment=comment,
         is_property=is_property,
     )
+
+
+def _validated_signature(signature: str, class_names: frozenset[str]) -> tuple[str, str | None]:
+    """Returns the signature text the emitted document can resolve, or a problem.
+
+    ``inspect.signature`` formats annotations through their defining
+    modules (``decimal.Decimal``, ``List[str]``, a quoted forward
+    reference), so text copied into the document verbatim can name
+    identifiers nothing there binds (mypy's ``name is not defined``).
+    Only resolvable identifiers survive:
+
+    - a Python builtin (``str``, ``int``, ``list``, ...), ``Any``, and
+      the always-imported ``SchemaBase``;
+    - a bare typing generic and a rendered class name, both module-level
+      bindings of the emitted document;
+    - a ``typing.X`` spelling, rewritten to the bare ``X`` the emitted
+      ``from typing import`` line binds; and
+    - a ``datetime.``/``decimal.`` qualifier whose first attribute
+      exists, resolvable through the ``import`` line the renderer emits
+      for the qualifier.
+
+    Everything else -- an unknown bare name, a foreign module qualifier
+    such as ``pandas.Series``, a quoted string annotation -- is
+    unresolvable: ``(signature, problem)`` returns the problem text for
+    the caller to degrade the member to ``(self) -> Any`` with. A
+    signature that cannot even parse (a default value's repr is not
+    always an expression) degrades the same way. Never raises.
+    """
+    try:
+        module = ast.parse(f"def _f{signature}: ...")
+    except (SyntaxError, ValueError):
+        return signature, "signature could not be parsed; annotated Any"
+    function = module.body[0] if module.body else None
+    if not isinstance(function, ast.FunctionDef):
+        return signature, "signature could not be parsed; annotated Any"
+    problem: str | None = None
+    rewrites: list[tuple[int, int, str]] = []
+    for annotation in _signature_annotations(function):
+        found = _unresolvable_annotation(annotation, class_names, rewrites)
+        if found is not None and problem is None:
+            problem = found
+    if problem is not None:
+        return signature, f"unresolvable identifier {problem!r} in signature; annotated Any"
+    if not rewrites:
+        return signature, None
+    rewritten = _rewrite_typing_spellings(signature, rewrites)
+    if rewritten is None:  # pragma: no cover - inspect.signature renders one ASCII line
+        name = f"typing.{rewrites[0][2]}"
+        return signature, f"unresolvable identifier {name!r} in signature; annotated Any"
+    return rewritten, None
+
+
+def _signature_annotations(function: ast.FunctionDef) -> list[ast.expr]:
+    """Returns the annotation expressions of one parsed signature."""
+    arguments = function.args
+    annotations = [
+        argument.annotation
+        for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+        if argument.annotation is not None
+    ]
+    annotations.extend(
+        argument.annotation
+        for argument in (arguments.vararg, arguments.kwarg)
+        if argument is not None and argument.annotation is not None
+    )
+    if function.returns is not None:
+        annotations.append(function.returns)
+    return annotations
+
+
+def _resolvable_bare_name(name: str, class_names: frozenset[str]) -> bool:
+    """Returns True when the emitted document binds *name* as an annotation."""
+    return (
+        name == "SchemaBase"
+        or name in class_names
+        or name in _TYPING_NAMES
+        or hasattr(builtins, name)
+    )
+
+
+def _unresolvable_annotation(
+    node: ast.expr,
+    class_names: frozenset[str],
+    rewrites: list[tuple[int, int, str]],
+) -> str | None:
+    """Returns the first identifier *node* cannot resolve, or ``None``.
+
+    A resolvable ``typing.X`` spelling is recorded in *rewrites* (the
+    node's source span and the bare name) for
+    :func:`_rewrite_typing_spellings` to normalize once the whole
+    signature is known to be sound. ``Literal``'s arguments are values,
+    not annotations, so their string literals do not degrade the union
+    they appear in; any other quoted string is a forward reference the
+    emitted document cannot see. Shapes the walk does not model are
+    named by their unparsed source rather than passed through.
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            return node.value
+        return None
+    if isinstance(node, ast.Name):
+        if _resolvable_bare_name(node.id, class_names):
+            return None
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return _attribute_problem(node, rewrites)
+    if isinstance(node, ast.Subscript):
+        problem = _unresolvable_annotation(node.value, class_names, rewrites)
+        if problem is not None:
+            return problem
+        if _is_literal_spelling(node.value):
+            return None
+        return _unresolvable_annotation(node.slice, class_names, rewrites)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        parts: tuple[ast.expr, ...] = (node.left, node.right)
+    elif isinstance(node, (ast.Tuple, ast.List)):
+        parts = tuple(node.elts)
+    else:
+        return ast.unparse(node)
+    for part in parts:
+        problem = _unresolvable_annotation(part, class_names, rewrites)
+        if problem is not None:
+            return problem
+    return None
+
+
+def _attribute_problem(node: ast.Attribute, rewrites: list[tuple[int, int, str]]) -> str | None:
+    """Returns the problem for one dotted annotation, or ``None``.
+
+    A one-attribute chain qualified by ``typing`` is a spelling
+    (:data:`_TYPING_NAMES`) the import block can bind, and is recorded
+    in *rewrites*; one qualified by a qualifier module
+    (:data:`_QUALIFIER_MODULES`) resolves when the attribute exists on
+    the real module. Anything deeper or else qualifies -- ``pandas.
+    Series``, ``typing.TypedDict``, ``datetime.no_such_thing`` -- is
+    named by its unparsed source.
+    """
+    attributes: list[str] = []
+    root: ast.expr = node
+    while isinstance(root, ast.Attribute):
+        attributes.append(root.attr)
+        root = root.value
+    if not isinstance(root, ast.Name) or len(attributes) != 1:
+        return ast.unparse(node)
+    end = node.end_col_offset
+    if root.id == "typing" and attributes[0] in _TYPING_NAMES and end is not None:
+        rewrites.append((node.col_offset, end, attributes[0]))
+        return None
+    module = _QUALIFIER_MODULES.get(root.id)
+    if module is not None and hasattr(module, attributes[0]):
+        return None
+    return ast.unparse(node)
+
+
+def _is_literal_spelling(node: ast.expr) -> bool:
+    """Returns True when *node* spells ``Literal`` or ``typing.Literal``."""
+    if isinstance(node, ast.Name):
+        return node.id == "Literal"
+    return isinstance(node, ast.Attribute) and node.attr == "Literal"
+
+
+def _rewrite_typing_spellings(signature: str, rewrites: list[tuple[int, int, str]]) -> str | None:
+    """Returns *signature* with the recorded ``typing.X`` spans replaced.
+
+    The recorded offsets are relative to ``"def _f" + signature``; they
+    are trusted only for the single-line ASCII text ``inspect.signature``
+    renders, and every span is checked to be the spelling it claims
+    before the splice, so an offset that would cut the text is ``None``
+    for the caller to degrade instead of a mangled signature.
+    """
+    if not signature.isascii() or "\n" in signature:  # pragma: no cover - one ASCII line
+        return None
+    prefix = len("def _f")
+    text = signature
+    for start, end, name in sorted(rewrites, reverse=True):
+        low, high = start - prefix, end - prefix
+        if signature[low:high] != f"typing.{name}":
+            return None
+        text = text[:low] + name + text[high:]
+    return text
 
 
 def _effective_occurs(model: Any, descriptor: Any) -> tuple[int, int | None]:
@@ -770,13 +1016,14 @@ def _annotation_base(
     """Returns the annotation's base type name and any degradation comment.
 
     The resolution order is the inventory's stub name, then the builtin
-    data type's own class name. A construct no single class names
-    truthfully annotates as ``Any`` with a comment saying why, never as
-    a guessed class name: an unresolved declaration, the untyped
-    ``anyType`` fallback, a union simple type (whose parsed values are
-    members' instances), and a class already open on *active* — the ids
-    of the class declarations currently being resolved — which is a
-    recursive back edge.
+    data type's own class name. A construct the stub cannot present
+    directly annotates as ``Any`` with a comment saying why, never as a
+    guessed class name: an unresolved declaration, the untyped
+    ``anyType`` fallback, a union simple type (a policy degradation:
+    the parsed value is an instance of the union's own class, and the
+    comment names the member types its value space draws from), and a
+    class already open on *active* — the ids of the class declarations
+    currently being resolved — which is a recursive back edge.
     """
     try:
         resolved = descriptor.getType()
@@ -796,11 +1043,13 @@ def _resolved_base(
     """Returns the annotation base and degradation comment for one class.
 
     A re-entered class (``cls``'s id is on *active*) is the back edge of
-    a recursive type graph. A union reads ``Any`` because a parsed value
-    is one of its member types' instances, not the union's bookkeeping
-    class instance; ``_unionMembers`` is read from the class's own
-    namespace, mirroring derivation: a restriction of a union inherits
-    the attribute through its MRO but is not itself a union.
+    a recursive type graph. A union reads ``Any`` by policy: a parsed
+    union value is an instance of the union's own bookkeeping class, and
+    the stub names the member types its value space draws from in the
+    comment rather than presenting that class as the member's type;
+    ``_unionMembers`` is read from the class's own namespace, mirroring
+    derivation: a restriction of a union inherits the attribute through
+    its MRO but is not itself a union.
     """
     from pyxsd.schema_base import SchemaBase
 
@@ -874,7 +1123,7 @@ def _substitution_comment(descriptor: Any) -> str | None:
     if not isinstance(head, str) or not head:
         return None
     members = None
-    for key in (head, getattr(referred, "expandedName", None)):
+    for key in (head, _attribute(referred, "expandedName")):
         if isinstance(key, str) and key in table:
             members = table[key]
             break
@@ -930,6 +1179,19 @@ def _call(descriptor: Any, method: str) -> Any:
         return None
     try:
         return accessor()
+    except Exception:
+        return None
+
+
+def _attribute(instance: Any, name: str) -> Any:
+    """Returns ``instance.name``, or ``None`` when reading it raises.
+
+    A ``getattr`` default only covers a missing attribute; a property
+    can raise anything at all, so the read is guarded like :func:`_call`
+    guards a method call, keeping the module's never-raises discipline.
+    """
+    try:
+        return getattr(instance, name)
     except Exception:
         return None
 
@@ -1042,22 +1304,40 @@ def _render_full(schema: Schema, inventory: list[_StubClass]) -> str:
 
     Class blocks come in inventory order; the imports are derived from
     the rendered body, so only classes the document actually names are
-    imported. The result always ends in a newline.
+    imported. Root aliases are checked against the class names and the
+    import bindings, and one colliding with a qualifier module's import
+    is re-rendered as a comment once the body decides that import. The
+    result always ends in a newline.
     """
     names = {id(entry.cls): entry.name for entry in inventory}
     class_blocks = [_render_class(entry, names) for entry in inventory]
-    aliases = _root_aliases(schema, names)
+    class_names = {entry.name for entry in inventory}
+    aliases = _root_aliases(
+        schema,
+        names,
+        class_names=frozenset(class_names),
+        imported_names=_IMPORTED_STUB_NAMES,
+    )
     body_parts = list(class_blocks)
     if aliases:
         body_parts.append(_render_root_section(aliases))
     body = "\n\n".join(body_parts)
-    class_names = {entry.name for entry in inventory}
+    module_imports = _module_imports(body)
+    retracted = _retract_shadowed_module_aliases(aliases, module_imports)
+    if retracted is not None:
+        aliases = retracted
+        body_parts = list(class_blocks)
+        if aliases:
+            body_parts.append(_render_root_section(aliases))
+        body = "\n\n".join(body_parts)
+        module_imports = _module_imports(body)
     sections = [
         "\n".join(_header_lines(schema, _example_class(inventory, aliases))),
         "\n".join(
             _import_lines(
                 _used_builtin_names(body, class_names),
-                needs_datetime="datetime." in body,
+                _used_typing_names(body, class_names),
+                module_imports,
             )
         ),
     ]
@@ -1088,7 +1368,10 @@ def _header_lines(schema: Schema, example: str) -> list[str]:
         "# Semantics: annotations model valid parsed documents. Absent optional",
         "# members read as None (including absent repeated members); required",
         "# members of invalid documents read as None too. Repeated assignment",
-        "# appends one item (obj.x = item); it does not take a list. Constructs",
+        "# appends one item (obj.x = item); it does not take a list. The parser",
+        "# binds a complex-typed child in the parsed tree only (obj.child reads",
+        "# None), while a primitive-typed child is accessor-bound; the",
+        "# annotations describe the descriptor and construction API. Constructs",
         "# a stub cannot type truthfully are Any with a comment.",
     ]
 
@@ -1111,17 +1394,32 @@ def _source_label(source: Any) -> str:
     return "<stream>"
 
 
-def _import_lines(builtins: list[str], *, needs_datetime: bool) -> list[str]:
-    """Returns the import block a full stub document starts with."""
-    lines: list[str] = []
-    if needs_datetime:
-        lines.append("import datetime")
-    lines.append("from typing import Any")
+def _import_lines(
+    builtins: list[str], typing_names: list[str], module_imports: list[str]
+) -> list[str]:
+    """Returns the import block a full stub document starts with.
+
+    ``typing_names`` are the typing generics beyond ``Any`` the body
+    uses; ``module_imports`` are ready-made ``import`` lines for the
+    qualifier modules the body uses (``import datetime``, ...).
+    """
+    lines: list[str] = list(module_imports)
+    lines.append(f"from typing import {', '.join(('Any', *typing_names))}")
     lines.append("")
     lines.append("from pyxsd.schema_base import SchemaBase")
     if builtins:
         lines.append(f"from pyxsd.xsd_data_types import {', '.join(builtins)}")
     return lines
+
+
+def _module_imports(body: str) -> list[str]:
+    """Returns the ``import`` lines for the qualifier modules *body* uses.
+
+    A validated signature keeps a ``datetime.``/``decimal.`` qualifier
+    verbatim, so the module it names is imported exactly when the
+    rendered text mentions it.
+    """
+    return [f"import {name}" for name in _QUALIFIER_MODULES if f"{name}." in body]
 
 
 def _used_builtin_names(body: str, class_names: set[str]) -> list[str]:
@@ -1139,6 +1437,22 @@ def _used_builtin_names(body: str, class_names: set[str]) -> list[str]:
             for name in set(_BUILTIN_STUB_NAMES.values())
             if name not in class_names and re.search(rf"\b{re.escape(name)}\b", body)
         }
+    )
+
+
+def _used_typing_names(body: str, class_names: set[str]) -> list[str]:
+    """Returns the typing generics *body* references beyond ``Any``, sorted.
+
+    Resolvable overlay signatures keep their bare spellings
+    (:func:`_validated_signature`), so the scan over the rendered text
+    is what decides the ``from typing import`` line. A generic whose
+    name a rendered class also uses is skipped like a shadowed builtin;
+    a comment that spells one adds a harmless unused import.
+    """
+    return sorted(
+        name
+        for name in _TYPING_NAMES - {"Any"}
+        if name not in class_names and re.search(rf"\b{re.escape(name)}\b", body)
     )
 
 
@@ -1364,7 +1678,8 @@ class _RootAlias:
     - ``type_name`` - the stub name of the element's type class, or
       ``None`` when the alias cannot be typed (see ``comment``).
     - ``comment`` - why a ``name`` has no ``type_name`` (unresolvable
-      type, a name that is not a Python identifier, a repeat).
+      type, a name that is not a Python identifier, a repeat, a name
+      the emitted module already binds).
     """
 
     name: str
@@ -1372,14 +1687,24 @@ class _RootAlias:
     comment: str | None = None
 
 
-def _root_aliases(schema: Schema, names: dict[int, str]) -> list[_RootAlias]:
+def _root_aliases(
+    schema: Schema,
+    names: dict[int, str],
+    *,
+    class_names: frozenset[str] = frozenset(),
+    imported_names: frozenset[str] = frozenset(),
+) -> list[_RootAlias]:
     """Returns the aliases for *schema*'s global element declarations.
 
     Global elements are the valid document roots, so the stub lists
     them after the classes. A root whose type resolves annotates as
     ``type[TheClass]``; one that cannot be typed truthfully keeps its
     name in a comment instead. The first declaration of a name wins;
-    a repeat is commented rather than emitted twice.
+    a repeat is commented rather than emitted twice. *class_names* and
+    *imported_names* are the identifiers the full document already
+    binds; an alias duplicating one would be a duplicate definition,
+    so it is commented too (the compact renderer passes neither: its
+    root line is a comment, not a binding).
     """
     aliases: list[_RootAlias] = []
     seen_elements: set[int] = set()
@@ -1389,7 +1714,15 @@ def _root_aliases(schema: Schema, names: dict[int, str]) -> list[_RootAlias]:
             if id(er) in seen_elements or not _is_global_element(er):
                 continue
             seen_elements.add(id(er))
-            aliases.append(_root_alias(er, names, used_names))
+            aliases.append(
+                _root_alias(
+                    er,
+                    names,
+                    used_names,
+                    class_names=class_names,
+                    imported_names=imported_names,
+                )
+            )
     return aliases
 
 
@@ -1403,13 +1736,38 @@ def _is_global_element(er: Any) -> bool:
         return False
 
 
-def _root_alias(er: Any, names: dict[int, str], used_names: set[str]) -> _RootAlias:
-    """Returns the alias, or the comment explaining its absence, for *er*."""
+def _bound_name_comment(name: str, binding: str) -> str:
+    """Returns the comment for a root name the emitted module already binds."""
+    return f"root element {name!r}: name already used by {binding}"
+
+
+def _root_alias(
+    er: Any,
+    names: dict[int, str],
+    used_names: set[str],
+    *,
+    class_names: frozenset[str] = frozenset(),
+    imported_names: frozenset[str] = frozenset(),
+) -> _RootAlias:
+    """Returns the alias, or the comment explaining its absence, for *er*.
+
+    A name the emitted module already binds cannot become an alias: a
+    rendered class or an import binding would be a duplicate definition
+    (mypy: ``name already defined``), so the element keeps its name in
+    a comment instead. Qualifier-module names are not on *imported_names*:
+    their import depends on the rendered body, and
+    :func:`_retract_shadowed_module_aliases` re-checks them once the
+    body exists.
+    """
     name = getattr(er, "name", None)
     if not isinstance(name, str) or not name:
         name = _called_name(er)
     if not name or not name.isidentifier() or keyword.iskeyword(name):
         return _RootAlias(name or "?", comment=f"root element {name!r} is not a Python identifier")
+    if name in class_names:
+        return _RootAlias(name, comment=_bound_name_comment(name, f"class {name!r}"))
+    if name in imported_names:
+        return _RootAlias(name, comment=_bound_name_comment(name, "an import"))
     if name in used_names:
         return _RootAlias(name, comment=f"root element {name!r} repeats an earlier alias")
     type_name, problem = _annotation_base(er, name, names)
@@ -1437,6 +1795,32 @@ def _render_root_section(aliases: list[_RootAlias]) -> str:
         else:
             lines.append(f"# {alias.comment}")
     return "\n".join(lines)
+
+
+def _retract_shadowed_module_aliases(
+    aliases: list[_RootAlias], module_imports: list[str]
+) -> list[_RootAlias] | None:
+    """Returns *aliases* with module-shadowed names re-commented, or ``None``.
+
+    A root alias named after a qualifier module the body uses
+    (``datetime``, ``decimal``) would duplicate the ``import`` line the
+    imports derive from the body, so it becomes the comment form. The
+    check runs after the body exists because the alias line itself
+    never carries the qualifier dot, so retracting it cannot change the
+    body's import decision. ``None`` when nothing is shadowed.
+    """
+    imported = {line.removeprefix("import ") for line in module_imports}
+    shadowed = {
+        alias.name for alias in aliases if alias.type_name is not None and alias.name in imported
+    }
+    if not shadowed:
+        return None
+    return [
+        replace(alias, type_name=None, comment=_bound_name_comment(alias.name, "an import"))
+        if alias.name in shadowed
+        else alias
+        for alias in aliases
+    ]
 
 
 # ---------------------------------------------------------------------------

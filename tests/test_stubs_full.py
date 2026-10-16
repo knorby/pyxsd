@@ -60,7 +60,7 @@ def test_comment_only_members_keep_the_block_parseable():
     stub = emit_stub(Schema.compile(io.StringIO(xsd)))
     ast.parse(stub)
     rec_block = stub.split("class rec(SchemaBase):")[1]
-    assert "# element 'ship-to' has no Python accessor" in rec_block
+    assert "# element 'ship-to' is not dot-accessible" in rec_block
     assert "    ..." in rec_block
 
 
@@ -103,3 +103,60 @@ def test_overlay_members_appear_in_stub(tmp_path):
     assert "    @property\n    def label(self) -> str: ..." in text
     # A plain overlay method stays an ordinary ``def``.
     assert "    def double(self, count: int) -> str: ..." in text
+
+
+ROOT_CLASS_COLLISION = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Item"><xs:sequence>
+    <xs:element name="n" type="xs:int"/></xs:sequence></xs:complexType>
+  <xs:element name="Item" type="Item"/>
+</xs:schema>"""
+
+
+def test_root_name_colliding_with_a_class_renders_as_a_comment():
+    # ``class Item`` plus ``Item: type[Item]`` is a duplicate definition
+    # mypy rejects (``name already defined``); the root keeps its name
+    # in a comment instead.
+    import ast
+
+    text = emit_stub(Schema.compile(io.StringIO(ROOT_CLASS_COLLISION)))
+    ast.parse(text)
+    assert "class Item(SchemaBase):" in text
+    assert "Item: type[Item]" not in text
+    assert "# root element 'Item': name already used by class 'Item'" in text
+
+
+def test_root_name_colliding_with_a_datatype_import_renders_as_a_comment():
+    # ``Int: type[Int]`` beside ``from pyxsd.xsd_data_types import Int``
+    # is a duplicate definition; the alias would also read as a
+    # self-referring annotation.
+    import ast
+
+    xsd = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+      <xs:element name="Int" type="xs:int"/>
+    </xs:schema>"""
+    text = emit_stub(Schema.compile(io.StringIO(xsd)))
+    ast.parse(text)
+    assert "Int: type[Int]" not in text
+    assert "# root element 'Int': name already used by an import" in text
+
+
+def test_root_names_colliding_with_unconditional_imports_render_as_comments():
+    # ``Any`` and ``SchemaBase`` are imported by every full stub, so a
+    # root carrying either name can never alias.
+    import ast
+
+    xsd = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+      <xs:complexType name="a"><xs:sequence>
+        <xs:element name="x" type="xs:int"/></xs:sequence></xs:complexType>
+      <xs:element name="Any" type="a"/>
+      <xs:element name="SchemaBase" type="a"/>
+      <xs:element name="plain" type="a"/>
+    </xs:schema>"""
+    text = emit_stub(Schema.compile(io.StringIO(xsd)))
+    ast.parse(text)
+    assert "Any: type[a]" not in text
+    assert "SchemaBase: type[a]" not in text
+    assert "# root element 'Any': name already used by an import" in text
+    assert "# root element 'SchemaBase': name already used by an import" in text
+    # The positive control: an ordinary root name still aliases.
+    assert "plain: type[a]" in text

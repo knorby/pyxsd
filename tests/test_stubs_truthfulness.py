@@ -297,10 +297,12 @@ def _check_member_read(
     descriptor read for an attribute. When the accessor returns a value it
     must agree with the parsed value. When the accessor returns ``None``
     while a parsed child exists, that is a descriptor-channel divergence
-    that only the complex-child binding path explains (the runtime stores
-    those in ``_children_`` only; see
+    that only the complex-child binding path explains: it is excused only
+    when *every* bound child is complex-typed (the runtime stores those in
+    ``_children_`` only; see
     ``test_complex_child_values_live_in_children_only_known_divergence``);
-    any other such read is asserted loudly.
+    a simple-typed child among them, or any other such read, is asserted
+    loudly.
     """
     if member.kind == "attribute":
         check_annotation(getattr(node, member.name), member.annotation, names, context)
@@ -321,7 +323,11 @@ def _check_member_read(
         return
     accessor = getattr(node, member.name)
     if accessor is None:
-        assert not all(isinstance(child, xsd_data_types.XsdDataType) for child in children), (
+        # The divergence is excused only when every bound child is
+        # complex-typed; one simple-typed child among them would make the
+        # accessor's None read a channel inconsistency the annotation
+        # itself cannot explain.
+        assert all(not isinstance(child, xsd_data_types.XsdDataType) for child in children), (
             f"{context}: accessor read None while a simple-typed parsed child exists"
         )
         return
@@ -922,12 +928,13 @@ def test_complex_child_values_live_in_children_only_known_divergence():
     Parse-time binding stores a complex-typed child only in the parent's
     ``_children_`` list (``SchemaBase._addChildInstance`` stores through
     the accessor for primitives only), so ``root.item`` reads None even
-    though the parsed values exist. The stubs' semantics preamble reads as
-    if present members read their value; the harness therefore checks
-    complex children through ``_children_`` and records this divergence
-    instead of pretending the accessor answers. If the binding runtime
-    starts populating complex accessors, this pin fails and both the
-    divergence allowance and the concern must be revisited.
+    though the parsed values exist. The emitted preamble now states this
+    divergence, and the harness checks complex children through
+    ``_children_`` -- excusing an accessor's None read only when *every*
+    bound child is complex-typed -- instead of pretending the accessor
+    answers. If the binding runtime starts populating complex accessors,
+    this pin fails and both the divergence allowance and the concern must
+    be revisited.
     """
     document = _fixture_document("inventory")
     id_names, _ = _class_names(document.schema)
