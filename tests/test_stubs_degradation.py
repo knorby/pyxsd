@@ -99,33 +99,46 @@ SUBSTITUTION = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
 
 def test_substitution_group_head_annotation():
     full, compact = render(SUBSTITUTION)
-    assert "item: list[String]" in full
+    # A member occurrence satisfies the head's particle without filling
+    # the head accessor (members bind under their own names), so the
+    # degraded annotation carries the absence arm; the comment names the
+    # declarations that can appear instead.
+    assert "item: list[String] | None" in full
     assert "substitution group" in full
     # The comment names the declarations the accessor may receive.
     assert "members: special" in full
-    assert "item: list[str]" in compact and "substitution group" in compact
+    assert "item: list[str] | None" in compact and "substitution group" in compact
 
 
 def test_blocked_substitution_head_keeps_the_plain_annotation():
     # A head blocking ``substitution`` admits no member at all, so the
-    # plain head annotation is already the whole truth.
+    # plain head annotation is already the whole truth: no comment and no
+    # absence arm.
     xsd = SUBSTITUTION.replace(
         '<xs:element name="item" type="xs:string"/>',
         '<xs:element name="item" type="xs:string" block="substitution"/>',
     )
     full, compact = render(xsd)
-    assert "item: list[String]" in full
+    assert "item: list[String]\n" in full
+    assert "item: list[String] | None" not in full
     assert "substitution group" not in full and "substitution group" not in compact
+    assert "item: list[str]\n" in compact
+    assert "item: list[str] | None" not in compact
 
 
 def test_substitution_group_fixture_names_every_member():
     schema = Schema.compile(str(fixture_dir("substitution") / "schema.xsd"))
     full = emit_stub(schema)
+    compact = emit_stub(schema, compact=True)
     assert "substitution group" in full and "members: dot, peg" in full
+    # The head is required, yet a substitute-only document is valid and
+    # leaves the head accessor None: the annotation carries the arm.
+    assert "marker: list[AnySimpleType] | None" in full
+    assert "marker: list[AnySimpleType] | None" in compact
     # Member elements do not invent class-body accessors of their own
     # (the member names still appear as the global elements they are).
     assert "\n    dot:" not in full and "\n    peg:" not in full
-    assert "substitution group" in emit_stub(schema, compact=True)
+    assert "substitution group" in compact
 
 
 MIXED = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">

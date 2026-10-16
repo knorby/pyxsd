@@ -19,8 +19,11 @@ cross-checks every member against *actual runtime behavior*:
   claim: ``| None`` members read ``None``; a declaration-local ``default``
   reads back exactly the raw lexical ``str``; an attribute ``fixed`` value
   is supplied by the binder; an element ``fixed`` value reads ``None``
-  when absent. Members that cannot be probed are recorded with a reason
-  (never skipped silently).
+  when absent. A branch that accepts its read additionally checks that
+  read against the member's own annotation, so a probe whose read the
+  annotation does not cover fails loudly instead of passing as an
+  unexamined exemption. Members that cannot be probed are recorded with a
+  reason (never skipped silently).
 
 Runtime facts the harness is built around, each pinned by a test below:
 
@@ -30,6 +33,10 @@ Runtime facts the harness is built around, each pinned by a test below:
   child is therefore checked through ``_children_``; the accessor reading
   ``None`` for one is a known divergence, recorded as such and reported as
   a concern rather than silently excused.
+- A substitution-group member satisfies the head's particle without
+  filling the head accessor -- the member binds under its own name -- so
+  the head reads ``None`` in a valid document, and a substitution-degraded
+  annotation must carry the absence arm.
 - ``Element.__get__`` falls back to the descriptor's own raw ``default``
   string, so a declaration-local element default reads back a plain
   ``str`` when absent; a ``fixed`` declaration has no such fallback.
@@ -47,7 +54,7 @@ from __future__ import annotations
 import io
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cache
 from typing import Any
 
@@ -430,8 +437,15 @@ def _run_probe(
     member: Any,
     descriptor: Any,
     document: Any,
+    names: dict[str, type],
 ) -> _Probe:
-    """Runs one member's absence/default probe, returning its outcome."""
+    """Runs one member's absence/default probe, returning its outcome.
+
+    A branch that accepts its read shape (``None``, the lexical default,
+    the fixed value) additionally checks the read against the member's
+    own annotation: an annotation missing the arm its probe demonstrates
+    fails loudly here instead of passing as an unexamined exemption.
+    """
     expectation = _probe_expectation(member)
     cls_name = type(node).__name__
     reduced_doc, reduced_node = _reduced_document(document, path, member, descriptor)
@@ -444,8 +458,10 @@ def _run_probe(
         return _Probe(fixture, cls_name, member.name, expectation, executed=False, reason=reason)
     value = getattr(reduced_node, member.name)
     detail = f"read {value!r} ({type(value).__name__})"
+    context = f"{fixture}:{cls_name}.{member.name} probe ({expectation})"
     if expectation in ("none", "fixed-element"):
         if value is None:
+            check_annotation(value, member.annotation, names, context)
             return _Probe(fixture, cls_name, member.name, expectation, True, detail=detail)
         return _Probe(
             fixture,
@@ -463,6 +479,7 @@ def _run_probe(
         else:
             ok = isinstance(value, str) and value == lexical
         if ok:
+            check_annotation(value, member.annotation, names, context)
             return _Probe(fixture, cls_name, member.name, expectation, True, detail=detail)
         return _Probe(
             fixture,
@@ -476,6 +493,7 @@ def _run_probe(
     if expectation == "fixed-lexical":
         lexical = _FIXED.search(member.comment or "").group("value")
         if str(value) == lexical:
+            check_annotation(value, member.annotation, names, context)
             return _Probe(fixture, cls_name, member.name, expectation, True, detail=detail)
         return _Probe(
             fixture,
@@ -526,7 +544,7 @@ def _iter_member_probes(fixture: str) -> list[_Probe]:
     """
     document = _fixture_document(fixture)
     assert document.root is not None, f"{fixture}: fixture instance did not bind"
-    id_names, _ = _class_names(document.schema)
+    id_names, names = _class_names(document.schema)
     probes: list[_Probe] = []
     reached: set[int] = set()
     for node, path in _walk(document.root):
@@ -550,7 +568,7 @@ def _iter_member_probes(fixture: str) -> list[_Probe]:
                 )
                 continue
             descriptor = _member_descriptor(cls, member.name)
-            probes.append(_run_probe(fixture, node, path, member, descriptor, document))
+            probes.append(_run_probe(fixture, node, path, member, descriptor, document, names))
     for entry in _inventory(document.schema):
         if id(entry.cls) in reached:
             continue
@@ -584,13 +602,11 @@ def _probes(fixture: str) -> list[_Probe]:
 #: current (wrong) stub text, by the dedicated tests below instead of
 #: failing every fixture run. A probe for a key here is expected to
 #: *fail* its expectation; a key whose probe passes is stale and
-#: ``test_known_defects_are_still_real`` fails loudly.
-KNOWN_DEFECTS: dict[tuple[str, str, str], str] = {
-    ("substitution", "shape|complexType", "marker"): (
-        "a substitution member filling the head's particle leaves the head accessor None "
-        "in a valid document, but 'list[AnySimpleType]' has no None arm"
-    ),
-}
+#: ``test_known_defects_are_still_real`` fails loudly. Currently empty:
+#: the substitution-head gap was fixed in ``pyxsd.stubs`` (the degraded
+#: annotation now carries the absence arm its probe demonstrates), and
+#: the corpus walk enforces the corrected annotation without a pin.
+KNOWN_DEFECTS: dict[tuple[str, str, str], str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -812,13 +828,57 @@ def test_fixture_defaults_read_back_lexical_values():
     assert str(root.key) == "k-1"
 
 
+def test_probe_pass_requires_the_annotation_to_cover_the_read():
+    """A probe pass cross-checks its read against the annotation.
+
+    The probe branches accept a read *shape* alone -- a ``None`` read, the
+    lexical default, the fixed value -- so a member whose annotation
+    misses the arm its own probe demonstrates (``Integer | None`` with a
+    "default '5' reads as str when absent" comment) would otherwise pass
+    silently. The true annotations pass; the doctored ones fail loudly.
+    """
+    document = _fixture_document("defaults")
+    id_names, names = _class_names(document.schema)
+    root = document.root
+    volume = next(
+        member
+        for member in _members(type(root), id_names, compact=False)
+        if member.name == "volume"
+    )
+    volume_descriptor = _member_descriptor(type(root), "volume")
+    passing = _run_probe("defaults", root, (), volume, volume_descriptor, document, names)
+    assert passing.executed and not passing.violated
+
+    lying_default = replace(volume, annotation="Integer | None")
+    with pytest.raises(AssertionError, match="not covered"):
+        _run_probe("defaults", root, (), lying_default, volume_descriptor, document, names)
+
+    label = next(
+        member for member in _members(type(root), id_names, compact=False) if member.name == "label"
+    )
+    lying_absence = replace(label, annotation="String | str")
+    with pytest.raises(AssertionError, match="None not allowed"):
+        _run_probe(
+            "defaults",
+            root,
+            (),
+            lying_absence,
+            _member_descriptor(type(root), "label"),
+            document,
+            names,
+        )
+
+
 def test_known_defects_are_still_real():
     """Every entry in KNOWN_DEFECTS must still be a failing probe.
 
     A passing probe for a pinned key means the defect was fixed (or the
     probe stopped reaching it): this test then fails, forcing the pin --
     and the Task 7 report's concern -- to be revisited rather than quietly
-    keeping a stale stain on the suite.
+    keeping a stale stain on the suite. The registry is currently empty
+    (the substitution-head gap was fixed in the renderer);
+    ``test_known_defects_registry_still_flags_a_stale_pin`` proves the
+    guard itself still fails when a pin goes stale.
     """
     stale = []
     for key, reason in KNOWN_DEFECTS.items():
@@ -827,6 +887,19 @@ def test_known_defects_are_still_real():
         if not probe.violated:
             stale.append(f"{key}: probe no longer fails ({probe.reason}); concern says: {reason}")
     assert not stale, "\n".join(stale)
+
+
+def test_known_defects_registry_still_flags_a_stale_pin(monkeypatch):
+    """The registry's stale-pin guard works with no live entries.
+
+    ``KNOWN_DEFECTS`` is empty because the corpus is clean, not because
+    the guard stopped checking: pinning a probe that passes must make
+    ``test_known_defects_are_still_real`` fail loudly.
+    """
+    passing = next(probe for probe in _probes("defaults") if probe.executed and not probe.violated)
+    monkeypatch.setitem(KNOWN_DEFECTS, passing.key, "stale pin exercise")
+    with pytest.raises(AssertionError, match="no longer fails"):
+        test_known_defects_are_still_real()
 
 
 # ---------------------------------------------------------------------------
@@ -916,29 +989,30 @@ def test_reference_site_default_str_arm_is_unreachable_known_deferred():
     assert bag().item is None
 
 
-def test_substitution_head_accessor_none_is_pinned_as_known_defect():
-    """KNOWN DEFECT (reported): a substitution group can satisfy the head
-    particle without the head's own occurrence.
+def test_substitution_head_reads_none_and_the_annotation_has_the_absence_arm():
+    """A substitution member satisfies the head's particle without filling
+    the head accessor, so the head reads ``None`` in a valid document.
 
-    ``<shape><dot>3</dot></shape>`` is a valid document (``dot``
-    substitutes for the head ``marker``), but the head's accessor reads
-    None while the stub renders ``marker: list[AnySimpleType]`` with no
-    None arm -- code written against the stub iterates a None. The fixture
-    instance happens to include the head occurrence, so the tree walk
-    alone would miss it; the probe reproduces it. When the renderer learns
-    to add the absence arm (or the runtime exposes substitutes through the
-    head accessor), this test fails and the ``KNOWN_DEFECTS`` pin plus the
-    Task 7 concern must be removed together.
+    ``<shape><dot>3</dot></shape>`` is valid (``dot`` substitutes for the
+    head ``marker``) and binds under its own name, while ``shape.marker``
+    stays None. Task 7's Finding 2 was that the stub rendered
+    ``marker: list[AnySimpleType]`` with no absence arm; the renderer now
+    adds it, the probe for ``substitution:shape|complexType.marker``
+    enforces the read corpus-wide, and this test pins the annotation,
+    comment and read together.
     """
     document = _fixture_document("substitution")
     valid = document.schema.parse(io.StringIO("<shape><dot>3</dot></shape>"))
     assert valid.is_valid
-    id_names, _ = _class_names(document.schema)
+    id_names, names = _class_names(document.schema)
     marker = next(
         member
         for member in _members(type(valid.root), id_names, compact=False)
         if member.name == "marker"
     )
     assert valid.root.marker is None
-    assert marker.annotation == "list[AnySimpleType]"
-    assert "None" not in _split_arms(marker.annotation, "marker")
+    assert valid.root.dot == 3  # the substitute binds under its own name
+    assert marker.annotation == "list[AnySimpleType] | None"
+    assert "substitution group: marker" in (marker.comment or "")
+    assert "members: dot, peg" in (marker.comment or "")
+    check_annotation(valid.root.marker, marker.annotation, names, "substitution:marker")

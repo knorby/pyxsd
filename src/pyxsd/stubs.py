@@ -34,8 +34,10 @@ with a comment rather than naming a type the stub cannot import: a union
 member (whose value is one of the union's member classes), a recursive
 back edge (a type re-entered while its own class resolves), and an
 unresolvable declaration all become ``Any`` with the reason in the
-comment. A reference to a substitution-group head keeps the head's type
-and comments the member elements the runtime accessor can receive.
+comment. A reference to a substitution-group head keeps the head's type,
+takes the ``None`` arm (a member occurrence satisfies the particle
+without filling the head accessor) and comments the member names the
+runtime binds instead.
 Constructs that reach the instance but have no member to hang on —
 mixed content, wildcards, open content — become comment lines on the
 class block. The member model is identical in both formatters;
@@ -421,9 +423,11 @@ def _element_member(
     reference site delegates the constraint to the referred declaration
     and still reads ``None`` when absent (the site carries no fallback
     of its own). A reference to a substitution-group head keeps the
-    head's type annotation and comments the members the accessor
-    receives in its place. ``nillable`` is a comment, not a union arm:
-    the value class itself is unchanged.
+    head's type annotation, gains the ``None`` arm (a member occurrence
+    satisfies the head's particle without filling the head accessor),
+    and comments the member names the runtime binds instead.
+    ``nillable`` is a comment, not a union arm: the value class itself
+    is unchanged.
     """
     xml_name = _xml_name(descriptor, key)
     if not _usable_identifier(key):
@@ -455,6 +459,12 @@ def _element_member(
         union += ["str", "None"]
         parts.append(f"fixed {_lexical(descriptor, 'fixed', fixed)!r}")
     elif minimum == 0:
+        union.append("None")
+    if substitution is not None and "None" not in union:
+        # A substituting member occurrence satisfies the head's particle
+        # without filling the head accessor (members bind under their
+        # own names), so None is reachable even when the head itself is
+        # required.
         union.append("None")
     if _call(descriptor, "isNillable") is True:
         parts.append("nillable")
@@ -825,12 +835,14 @@ def _substitution_comment(descriptor: Any) -> str | None:
     A local ``ref`` to a global element heading a substitution group
     admits every declaration that names it as their group: the runtime
     binds such a child's value through a member-named accessor, so the
-    head's annotation models the head's own declaration only. The
-    comment names the members the annotation cannot say. ``None`` for
-    anything that is not a resolution-proven head: a plain element, a
-    declaration whose group cannot be established (the schema's element
-    table is unreachable), or a head that blocks ``substitution``, where
-    no member is admissible at all. Never raises.
+    head's annotation models the head's own declaration only. A member
+    occurrence satisfies the head's particle without filling the head
+    accessor, so the caller adds the ``None`` arm; the comment names the
+    members the annotation cannot say. ``None`` for anything that is not
+    a resolution-proven head: a plain element, a declaration whose group
+    cannot be established (the schema's element table is unreachable), or
+    a head that blocks ``substitution``, where no member is admissible
+    at all. Never raises.
     """
     if not getattr(descriptor, "isElementRef", False):
         return None
