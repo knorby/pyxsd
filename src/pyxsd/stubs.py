@@ -30,17 +30,23 @@ annotation a stub renders and a comment recording what the annotation
 cannot say (defaults, nillable, prohibited uses, unresolvable types).
 
 Member annotations model *valid parsed documents* and degrade to ``Any``
-with a comment rather than naming a type the stub cannot import.
-``compact`` selects the compact formatter's alias spellings; the member
-model itself is identical in both modes.
+with a comment rather than naming a type the stub cannot import. The
+member model is identical in both formatters; ``compact`` records the
+requested mode, and the compact renderer rewrites annotation spellings
+through its own alias table afterwards.
 
 :func:`emit_stub` renders the model as the full ``.pyi`` document: a
 provenance and consumption header, imports, one class block per
 inventory entry (mirroring the XSD derivation the runtime mirrors, with
 simple types as their datatype subclasses and facets as comments), and
-the global elements as module-level aliases. Rendering is total: a
-schema that compiled always emits, and every construct the stub cannot
-type truthfully becomes ``Any`` with a comment instead of an exception.
+the global elements as module-level aliases. ``compact=True`` renders
+the agent view instead: a two-line header (provenance and alias
+legend), one line per class and per member, facet-only simple types
+dropped with their facets inlined onto the members that use them, and a
+single trailing comment line listing the root elements. Rendering is
+total in both modes: a schema that compiled always emits, and every
+construct the stub cannot type truthfully becomes ``Any`` with a
+comment instead of an exception.
 """
 
 from __future__ import annotations
@@ -49,6 +55,7 @@ import inspect
 import keyword
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -339,8 +346,9 @@ def _members(cls: type, names: dict[int, str], *, compact: bool) -> list[_Member
     a prohibited attribute use and a name with no usable Python
     accessor become comment-only members, and a member accessor that
     raises is treated as absent rather than propagating. ``compact``
-    selects the compact formatter's alias spellings; the annotations
-    this function returns are the same in both modes.
+    records the requested formatter; the member model is identical in
+    both modes, and the compact renderer maps the annotations' spellings
+    to its alias table itself.
 
     Nothing here calls ``schema.require_valid()``: an error-bearing
     schema still compiles classes, and a stub may still be requested
@@ -793,29 +801,36 @@ def emit_stub(schema: Schema, *, compact: bool = False) -> str:
     runtime classes, so a member typed ``Int`` reads back a
     ``pyxsd.xsd_data_types.Int``.
 
+    ``compact`` selects the agent-oriented compact formatter, which
+    shares this module's member model: a two-line header (provenance and
+    an alias legend mapping the short spellings back to the pyxsd
+    classes), one line per class and per member, facet-only simple types
+    folded onto the members that use them, and a trailing comment line
+    listing the root elements. The compact text is a description, not
+    importable Python; every spelling it uses is a rendered class name
+    or a legend alias.
+
     Rendering never raises on a schema that compiled: a construct a
     stub cannot type truthfully (an unresolvable type, a member with no
     Python accessor) degrades to ``Any`` with a comment, and an
     error-bearing schema still emits. This never calls
     ``schema.require_valid()``.
-
-    ``compact`` selects the agent-oriented compact formatter, which
-    shares this module's member model; the compact view is a follow-up
-    change, so both modes currently render the full document.
     """
-    return _render_full(schema, compact=compact)
+    inventory = _inventory(schema)
+    if compact:
+        return _render_compact(schema, inventory)
+    return _render_full(schema, inventory)
 
 
-def _render_full(schema: Schema, *, compact: bool) -> str:
+def _render_full(schema: Schema, inventory: list[_StubClass]) -> str:
     """Assembles the full stub document for *schema*.
 
     Class blocks come in inventory order; the imports are derived from
     the rendered body, so only classes the document actually names are
     imported. The result always ends in a newline.
     """
-    inventory = _inventory(schema)
     names = {id(entry.cls): entry.name for entry in inventory}
-    class_blocks = [_render_class(entry, names, compact=compact) for entry in inventory]
+    class_blocks = [_render_class(entry, names) for entry in inventory]
     aliases = _root_aliases(schema, names)
     body_parts = list(class_blocks)
     if aliases:
@@ -928,7 +943,7 @@ def _example_class(inventory: list[_StubClass], aliases: list[_RootAlias]) -> st
     return "SchemaBase"
 
 
-def _render_class(entry: _StubClass, names: dict[int, str], *, compact: bool) -> str:
+def _render_class(entry: _StubClass, names: dict[int, str]) -> str:
     """Returns one class block, without a trailing newline.
 
     A note renders as a comment above the class; a documentation
@@ -943,7 +958,7 @@ def _render_class(entry: _StubClass, names: dict[int, str], *, compact: bool) ->
         lines.append(f"# {entry.note}")
     lines.append(f"class {entry.name}({_stub_base(entry, names)}):")
     lines.extend(_docstring_lines(entry))
-    members = _members(entry.cls, names, compact=compact)
+    members = _members(entry.cls, names, compact=False)
     member_lines = _member_lines(members)
     lines.extend(member_lines)
     # Comment-only members (unusable accessor names) are not
@@ -1013,30 +1028,35 @@ def _docstring_lines(entry: _StubClass) -> list[str]:
     return [f'    """{parts[0]}', *(f"    {part}" for part in parts[1:]), '    """']
 
 
-def _facet_comments(entry: _StubClass) -> list[str]:
-    """Returns the simple type's facets as comment lines.
+def _facet_items(entry: _StubClass) -> list[str]:
+    """Returns the simple type's facets as ``name: value`` text items.
 
     Facets live on the ``xs:restriction`` children of a simple type's
     declaration; every child carrying a ``value`` attribute is one, so
-    the comments show what the value space constrains (``pattern``,
+    the items show what the value space constrains (``pattern``,
     ``minLength``, ``enumeration``, ...) without a facet list to keep
     up to date. A declaration shape this does not recognize yields no
-    comments rather than an error.
+    items rather than an error.
     """
     xsd_element = getattr(entry.er, "xsdElement", None)
-    comments: list[str] = []
+    items: list[str] = []
     if xsd_element is None:
-        return comments
+        return items
     try:
         restrictions = xsd_element.findall(f".//{{{XSD_NS}}}restriction")
         for restriction in restrictions:
             for facet in restriction:
                 value = facet.get("value")
                 if value is not None:
-                    comments.append(f"# {local_name(facet.tag)}: {value}")
+                    items.append(f"{local_name(facet.tag)}: {value}")
     except Exception:
-        return comments
-    return comments
+        return items
+    return items
+
+
+def _facet_comments(entry: _StubClass) -> list[str]:
+    """Returns the simple type's facets as ``# name: value`` comment lines."""
+    return [f"# {item}" for item in _facet_items(entry)]
 
 
 def _member_lines(members: list[_Member]) -> list[str]:
@@ -1197,3 +1217,363 @@ def _render_root_section(aliases: list[_RootAlias]) -> str:
         else:
             lines.append(f"# {alias.comment}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Compact-mode rendering
+# ---------------------------------------------------------------------------
+
+#: The builtin data types that render under a short Python spelling. A
+#: type named here aliases to the family's spelling; anything else keeps
+#: its stub name (``Duration``, ``AnyType``, ...). The alias renames the
+#: spelling of the same runtime type — ``str`` is a ``String`` subclass
+#: instance, ``int`` an ``Integer`` one — so the legend stays truthful.
+_STRING_FAMILY_NAMES = (
+    "String",
+    "NormalizedString",
+    "Token",
+    "Language",
+    "Name",
+    "NCName",
+    "NMTOKEN",
+    "ID",
+    "IDREF",
+    "ENTITY",
+    "IDREFS",
+    "ENTITIES",
+    "NMTOKENS",
+    "AnyURI",
+    "QName",
+    "NOTATION",
+)
+_INTEGER_FAMILY_NAMES = (
+    "Integer",
+    "NonPositiveInteger",
+    "NegativeInteger",
+    "NonNegativeInteger",
+    "PositiveInteger",
+    "Long",
+    "Int",
+    "Short",
+    "Byte",
+    "UnsignedLong",
+    "UnsignedInt",
+    "UnsignedShort",
+    "UnsignedByte",
+)
+_TEMPORAL_ALIASES = {"Date": "date", "DateTime": "datetime", "Time": "time"}
+
+
+def _compact_alias_name(stub_name: str) -> str:
+    """Returns the compact spelling for one builtin data type's name."""
+    if stub_name in _STRING_FAMILY_NAMES:
+        return "str"
+    if stub_name in _INTEGER_FAMILY_NAMES:
+        return "int"
+    if stub_name == "Boolean":
+        return "bool"
+    if stub_name in ("Double", "Float"):
+        return "float"
+    if stub_name == "Decimal":
+        return "Decimal"
+    return _TEMPORAL_ALIASES.get(stub_name, stub_name)
+
+
+#: Every builtin data type's compact spelling, keyed by class identity:
+#: ``String`` family → ``str``, ``Integer`` family → ``int``,
+#: ``Boolean`` → ``bool``, ``Decimal`` → ``Decimal``, ``Double``/
+#: ``Float`` → ``float``, ``Date``/``DateTime``/``Time`` → ``date``/
+#: ``datetime``/``time``; every other class keeps its stub name.
+_COMPACT_ALIASES: dict[type, str] = {
+    cls: _compact_alias_name(name) for cls, name in _BUILTIN_STUB_NAMES.items()
+}
+
+
+@dataclass(frozen=True)
+class _Spelling:
+    """One compact annotation spelling and what it stands for.
+
+    - ``text`` - the short spelling a member annotation uses.
+    - ``source`` - the pyxsd class name the spelling denotes. For a
+      dropped simple type this is the builtin data type the class
+      derives from; for a builtin it is the class's own name. Only a
+      spelling that differs from its source joins the legend (an
+      unchanged name is already the pyxsd class's own spelling).
+    """
+
+    text: str
+    source: str
+
+
+def _render_compact(schema: Schema, inventory: list[_StubClass]) -> str:
+    """Assembles the compact agent view for *schema*.
+
+    The document is a description, not importable Python: a two-line
+    header (provenance and alias legend), one line per class and per
+    member, and a trailing comment line listing the root elements.
+    Facet-only simple types are dropped and their facets render on each
+    member that uses them; every annotation spelling names a rendered
+    class or a legend alias, so the view cannot drift from the model.
+    """
+    names = {id(entry.cls): entry.name for entry in inventory}
+    entries_by_id = {id(entry.cls): entry for entry in inventory}
+    aliases = _root_aliases(schema, names)
+    root_names = {alias.type_name for alias in aliases if alias.type_name is not None}
+    rendered: list[tuple[_StubClass, list[_Member]]] = []
+    skipped: list[_StubClass] = []
+    for entry in inventory:
+        members = _members(entry.cls, names, compact=True)
+        if entry.name not in root_names and not members and _foldable_simple_type(entry.cls):
+            skipped.append(entry)
+        else:
+            rendered.append((entry, members))
+    skipped_ids = {id(entry.cls) for entry in skipped}
+    spellings = _compact_spellings(inventory, skipped)
+    pattern = _spelling_pattern(spellings)
+    facets_by_name = {
+        entry.name: _compact_facets(entry, entries_by_id, skipped_ids) for entry in skipped
+    }
+    used: dict[str, list[str]] = {}
+
+    def spell(text: str) -> str:
+        return _spell_text(text, pattern, spellings, facets_by_name, used)[0]
+
+    blocks: list[str] = []
+    for entry, members in rendered:
+        member_lines = _compact_member_lines(members, pattern, spellings, facets_by_name, used)
+        facets = _compact_facets(entry, entries_by_id, skipped_ids)
+        blocks.append(
+            _compact_class_block(entry, spell(_stub_base(entry, names)), member_lines, facets)
+        )
+    roots_line = _compact_roots(aliases, spell)
+    legend = ", ".join(f"{text}={'+'.join(sources)}" for text, sources in used.items())
+    sections = [
+        "\n".join(
+            [
+                f"# Generated by pyxsd {__version__} from {_source_label(schema.source)};"
+                " compact view, not Python source.",
+                f"# aliases: {legend or 'none'}",
+            ]
+        )
+    ]
+    if blocks:
+        sections.append("\n\n".join(blocks))
+    if roots_line is not None:
+        sections.append(roots_line)
+    return "\n\n".join(sections) + "\n"
+
+
+def _foldable_simple_type(cls: type) -> bool:
+    """Returns True when the compact view folds *cls* onto its users.
+
+    A simple type whose content is only facet comments renders no line
+    of its own: its facets inline on each member that uses it, and its
+    spelling resolves to the builtin data type it derives from. A list
+    type is excluded — its content is the item type, not facets — and
+    an unknown base (an ``xs:union``, whose runtime class derives from
+    ``XsdDataType`` directly) keeps its own line so the name it renders
+    under stays resolvable.
+    """
+    if not _is_simple_type(cls) or issubclass(cls, xsd_data_types.TypeList):
+        return False
+    return _nearest_builtin(cls) is not None
+
+
+def _nearest_builtin(cls: type) -> type | None:
+    """Returns the nearest builtin data type *cls* derives from, or ``None``.
+
+    The compact alias a dropped simple type spells as is its nearest
+    builtin ancestor's: a type restricted from ``xs:string`` reads as
+    ``String``'s alias, and a restriction chain resolves the same way
+    the runtime classes do.
+    """
+    for klass in cls.__mro__:
+        if klass is not cls and klass in _BUILTIN_STUB_NAMES:
+            return klass
+    return None
+
+
+def _compact_spellings(
+    inventory: list[_StubClass], skipped: list[_StubClass]
+) -> dict[str, _Spelling]:
+    """Returns the annotation-name replacements the compact view applies.
+
+    A dropped simple type spells as the compact alias of the builtin
+    data type it derives (``SKU`` reads ``str``); the facet comment on
+    the use site carries what the class added. Every remaining builtin
+    data type's stub name maps to its alias. A schema class that
+    shadows a builtin's name (a type literally named ``Int``) keeps its
+    own name — the class wins, as in the full renderer's import scan.
+    """
+    spellings: dict[str, _Spelling] = {}
+    class_names = {entry.name for entry in inventory}
+    for entry in skipped:
+        base = _nearest_builtin(entry.cls)
+        if base is None:  # unreachable for a foldable class; never guess
+            continue
+        spellings[entry.name] = _Spelling(_COMPACT_ALIASES.get(base, base.__name__), base.__name__)
+    for cls, alias in _COMPACT_ALIASES.items():
+        name = _BUILTIN_STUB_NAMES[cls]
+        if name in class_names:
+            continue
+        spellings[name] = _Spelling(alias, name)
+    return spellings
+
+
+def _spelling_pattern(spellings: dict[str, _Spelling]) -> re.Pattern[str] | None:
+    """Returns the word-boundary pattern matching every spelled name."""
+    if not spellings:
+        return None
+    names = "|".join(re.escape(name) for name in sorted(spellings, key=len, reverse=True))
+    return re.compile(rf"\b(?:{names})\b")
+
+
+def _spell_text(
+    text: str,
+    pattern: re.Pattern[str] | None,
+    spellings: dict[str, _Spelling],
+    facets_by_name: dict[str, list[str]],
+    used: dict[str, list[str]],
+) -> tuple[str, list[str]]:
+    """Rewrites *text* into compact spellings; returns it with the facets it inlines.
+
+    Only whole identifiers are rewritten, so ``list[SKU]`` becomes
+    ``list[str]``. A spelling that differs from the pyxsd class it
+    stands for is recorded in *used*, in first-use order, for the
+    header's legend; one alias may fold several pyxsd classes, and the
+    legend names each of them. The facets of a dropped simple type
+    found in the text are returned for the member's comment.
+    """
+    if pattern is None:
+        return text, []
+    inlined: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(0)
+        spelling = spellings[name]
+        if spelling.text != spelling.source:
+            sources = used.setdefault(spelling.text, [])
+            if spelling.source not in sources:
+                sources.append(spelling.source)
+        for item in facets_by_name.get(name, ()):
+            if item not in inlined:
+                inlined.append(item)
+        return spelling.text
+
+    return pattern.sub(replace, text), inlined
+
+
+def _compact_facets(
+    entry: _StubClass, entries_by_id: dict[int, _StubClass], skipped_ids: set[int]
+) -> list[str]:
+    """Returns the facet items *entry*'s compact rendering inlines.
+
+    The class's own facets come first; a skipped simple-type ancestor (a
+    restriction chain whose parent class the compact view dropped)
+    contributes its facets too, because no line of its own renders them.
+    """
+    items = _facet_items(entry) if _is_simple_type(entry.cls) else []
+    seen = set(items)
+    for klass in entry.cls.__mro__:
+        ancestor = entries_by_id.get(id(klass))
+        if ancestor is None or ancestor is entry or id(ancestor.cls) not in skipped_ids:
+            continue
+        for item in _facet_items(ancestor):
+            if item not in seen:
+                seen.add(item)
+                items.append(item)
+    return items
+
+
+def _compact_class_block(
+    entry: _StubClass, base: str, member_lines: list[str], facets: list[str]
+) -> str:
+    """Returns one compact class block: a header line, then one line per member.
+
+    A class deriving only from ``SchemaBase`` shows no base; a simple
+    type's facets ride on the header line, and a class with no members
+    and no facets renders ``...`` so the header is not a dangling colon.
+    """
+    lines: list[str] = []
+    if entry.note:
+        lines.append(f"# {entry.note}")
+    header = f"class {entry.name}"
+    if base != "SchemaBase":
+        header += f"({base})"
+    facet_comment = f"  # {'; '.join(facets)}" if facets else ""
+    if member_lines:
+        lines.append(f"{header}:{facet_comment}")
+        lines.extend(member_lines)
+    elif facets:
+        lines.append(f"{header}:{facet_comment}")
+    else:
+        lines.append(f"{header}: ...")
+    return "\n".join(lines)
+
+
+def _compact_member_lines(
+    members: list[_Member],
+    pattern: re.Pattern[str] | None,
+    spellings: dict[str, _Spelling],
+    facets_by_name: dict[str, list[str]],
+    used: dict[str, list[str]],
+) -> list[str]:
+    """Returns one compact line per member.
+
+    A comment-only member stays a comment, an element or attribute a
+    ``name: annotation`` line, and an overlay member a one-line
+    signature (a property reads as a value). A folded simple type's
+    facets append to the member's comment; the annotation's spellings
+    are rewritten through the compact alias table.
+    """
+    lines: list[str] = []
+    for member in members:
+        if not member.name:
+            if member.comment:
+                lines.append(f"  # {member.comment}")
+            continue
+        annotation, inlined = _spell_text(
+            member.annotation, pattern, spellings, facets_by_name, used
+        )
+        parts = [member.comment] if member.comment else []
+        parts.extend(inlined)
+        comment = f"  # {'; '.join(parts)}" if parts else ""
+        if member.kind == "extension":
+            lines.append(_compact_extension_line(member, annotation, comment))
+            continue
+        lines.append(f"  {member.name}: {annotation}{comment}")
+    return lines
+
+
+def _compact_extension_line(member: _Member, annotation: str, comment: str) -> str:
+    """Returns one compact line for an overlay function or property.
+
+    A property reads as a value (``label: str``), a function as a
+    one-line signature (``def double(self, count: int) -> str: ...``);
+    a signature that cannot be split degrades to ``Any`` with the
+    member's comment, never a broken line.
+    """
+    params, returns = _split_signature(annotation)
+    if member.is_property:
+        line = f"  {member.name}: {returns if returns is not None else 'Any'}"
+    elif params is None or returns is None:
+        line = f"  def {member.name}(self) -> Any: ..."
+    else:
+        line = f"  def {member.name}{params} -> {returns}: ..."
+    return line + comment
+
+
+def _compact_roots(aliases: list[_RootAlias], spell: Callable[[str], str]) -> str | None:
+    """Returns the trailing root-element comment line, or ``None``.
+
+    Every global element is listed once as ``name: Type``; a root whose
+    type could not be resolved keeps its name with ``?`` in place of a
+    type rather than naming a class the document does not contain.
+    """
+    if not aliases:
+        return None
+    parts: list[str] = []
+    for alias in aliases:
+        type_text = spell(alias.type_name) if alias.type_name is not None else "?"
+        parts.append(f"{alias.name}: {type_text}")
+    return "# roots: " + ", ".join(parts)
