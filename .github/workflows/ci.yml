@@ -105,6 +105,9 @@ jobs:
         run: uv run pytest tests/test_xsts_suite.py -q
         env:
           PYXSD_RUN_XSTS: "1"
+          # Standard runners are 2-4x slower than a dev machine; the
+          # slowest instance cases need more than the 30 s default.
+          PYXSD_XSTS_TIMEOUT: "120"
 
       - name: Benchmark the conformance corpus
         if: github.event_name == 'pull_request'

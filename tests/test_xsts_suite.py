@@ -50,11 +50,19 @@ def test_catalog_parses_and_covers_the_expected_case_count() -> None:
 )
 def test_full_run_matches_the_baseline(tmp_path: Path) -> None:
     cases = build_cases(load_default_catalog(), XSD11)
+    # The per-case budget is a harness knob, not a verdict: 30 s covers
+    # every case with headroom on a developer machine, but GitHub's
+    # standard runners are 2-4x slower, where the slowest instance
+    # cases (particlesZ034/reZ003-class) would cross it and report
+    # bogus timeouts. CI sets PYXSD_XSTS_TIMEOUT=120 for that reason;
+    # a case that legitimately needs more than the budget on the
+    # machine it runs on should be profiled, not silently re-budgeted.
+    case_timeout = float(os.environ.get("PYXSD_XSTS_TIMEOUT", "30"))
     results = run_parallel(
         cases,
         XSD11.name,
         oracle_enabled=True,
-        timeout=30.0,
+        timeout=case_timeout,
         jobs=os.cpu_count() or 1,
         temp_root=tmp_path,
         # Must match tests/report_xsts.py, the baseline generator: it always

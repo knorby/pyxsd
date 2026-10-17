@@ -968,7 +968,7 @@ def splice_redefine(
             and name in redefinedNames
         ):
             component.set("name", f"{name}|base")
-    adoptedNS: str | None = None
+    baseAdoptedNS: str | None = None
     if includedNS is None and mainNS is not None:
         # A redefine of a no-namespace document is a chameleon
         # redefinition (XSD 1.1 §4.2.4 with Appendix F.1): the base
@@ -987,7 +987,7 @@ def splice_redefine(
         # so the base document's own nested includes and redefines
         # adopt it too.
         apply_chameleon_namespace(ctx, includedRoot, mainNS)
-        adoptedNS = mainNS
+        baseAdoptedNS = mainNS
     ctx.compose_stack.append(str(includedPath))
     try:
         splice_composed_schemas(
@@ -995,7 +995,7 @@ def splice_redefine(
             includedRoot,
             includedPath.parent,
             visited | {str(includedPath)},
-            adoptedNS=adoptedNS,
+            adoptedNS=baseAdoptedNS,
         )
     finally:
         ctx.compose_stack.pop()
