@@ -271,6 +271,7 @@ def splice_composed_schemas(
     baseDir: Path,
     visited: set[str],
     mainDocument: bool = False,
+    adoptedNS: str | None = None,
 ) -> None:
     """Merges composed schemas into ``schemaRoot`` before class building.
 
@@ -290,6 +291,13 @@ def splice_composed_schemas(
     the main document's directives are recorded so declaration ids
     can be checked against them (an included document's directives
     belong to a different XML document).
+
+    ``adoptedNS`` is the namespace an enclosing chameleon adoption put
+    this document in when its own root does not say so. A redefined
+    base document is adopted without stamping its root (see
+    :func:`splice_redefine`), so its nested includes must be told the
+    namespace explicitly or their components would stay in no namespace
+    while the base document's rewritten references name the adopted one.
     """
     for child in list(schemaRoot):
         local = child.tag.split("}")[-1]
@@ -297,7 +305,9 @@ def splice_composed_schemas(
             note_directive_id(ctx, child)
         if local == "include":
             schemaRoot.remove(child)
-            splice_included_schema(ctx, child, schemaRoot, baseDir, visited, isImport=False)
+            splice_included_schema(
+                ctx, child, schemaRoot, baseDir, visited, isImport=False, adoptedNS=adoptedNS
+            )
         elif local == "redefine":
             schemaRoot.remove(child)
             splice_redefine(ctx, child, schemaRoot, baseDir, visited)
@@ -314,7 +324,14 @@ def splice_composed_schemas(
             if child.get("namespace") == XML_NS:
                 ctx.xml_namespace_imported = True
             splice_included_schema(
-                ctx, child, schemaRoot, baseDir, visited, isImport=True, checkImportNamespace=True
+                ctx,
+                child,
+                schemaRoot,
+                baseDir,
+                visited,
+                isImport=True,
+                checkImportNamespace=True,
+                adoptedNS=adoptedNS,
             )
     return None
 
@@ -350,6 +367,7 @@ def splice_included_schema(
     missing_severity: str = "warning",
     checkImportNamespace: bool = False,
     missing_code: str | None = None,
+    adoptedNS: str | None = None,
 ) -> None:
     """Splices the named components of one included/imported schema.
 
@@ -375,6 +393,14 @@ def splice_included_schema(
     cannot absorb a no-namespace document; that is an include).
     Caller-supplied schemas are exempt because their namespace label
     is not an authoring statement in the schema.
+
+    ``adoptedNS`` is the namespace the referencing document was
+    chameleon-adopted into when its own root does not say so (a
+    redefined base document; see :func:`splice_composed_schemas`).
+    The referencing document is then treated as having that target
+    namespace, so a nested chameleon include adopts it too and the
+    base document's rewritten references reach the included
+    components.
     """
     check_directive_annotation(ctx, tag, isImport)
     location = tag.get("schemaLocation")
@@ -429,7 +455,10 @@ def splice_included_schema(
     )
     if includedRoot is None:
         return None
-    mainNS = schemaRoot.get("targetNamespace")
+    # A document a chameleon adoption put in a namespace (a redefined
+    # base document, whose root is not stamped) is judged by that
+    # namespace here: it is what a nested chameleon include adopts.
+    mainNS = schemaRoot.get("targetNamespace") or adoptedNS
     includedNS = includedRoot.get("targetNamespace")
     if isImport and checkImportNamespace and tag.get("namespace") is None and mainNS is None:
         # schF3/addB008/addB035: an import with no namespace attribute
@@ -893,6 +922,7 @@ def splice_redefine(
             and name in redefinedNames
         ):
             component.set("name", f"{name}|base")
+    adoptedNS: str | None = None
     if includedNS is None and mainNS is not None:
         # A redefine of a no-namespace document is a chameleon
         # redefinition (XSD 1.1 §4.2.4 with Appendix F.1): the base
@@ -905,12 +935,19 @@ def splice_redefine(
         # the component namespace comes from ``append_named_components``
         # (called with ``mainNS``), and stamping it would re-judge a
         # nested redefine cycle of the disputed W3C schU1 shape as a
-        # hard violation instead of the lenient repetition it is.
+        # hard violation instead of the lenient repetition it is. The
+        # adopted namespace is threaded through the recursion instead,
+        # so the base document's own nested includes adopt it too.
         apply_chameleon_namespace(ctx, includedRoot, mainNS)
+        adoptedNS = mainNS
     ctx.compose_stack.append(str(includedPath))
     try:
         splice_composed_schemas(
-            ctx, includedRoot, includedPath.parent, visited | {str(includedPath)}
+            ctx,
+            includedRoot,
+            includedPath.parent,
+            visited | {str(includedPath)},
+            adoptedNS=adoptedNS,
         )
     finally:
         ctx.compose_stack.pop()

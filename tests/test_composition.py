@@ -432,6 +432,61 @@ class TestCompositionCorrectness:
         assert not doc.report.has_errors
         assert doc.root._attribs_["{urn:redef}base-a"] == "1"
 
+    def test_chameleon_redefine_nested_include_references_resolve(self, tmp_path):
+        """A redefined document's own chameleon include adopts as well.
+
+        ``base.xsd`` (no targetNamespace) is redefined by a namespaced
+        schema and *includes* ``inner.xsd`` (also no targetNamespace),
+        which declares the group ``base.xsd``'s type references. The
+        whole include chain is absorbed into the redefining schema's
+        namespace (Appendix F.1 applies through it), so the reference
+        rewritten in ``base.xsd`` must reach the included declaration --
+        which only holds when the nested include adopts the namespace
+        too.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:group name="g3">'
+            '<xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>'
+            "</xs:group>"
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:include schemaLocation="inner.xsd"/>'
+            '<xs:group name="g1">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:group>"
+            '<xs:complexType name="baseType"><xs:group ref="g3"/></xs:complexType>'
+            '<xs:element name="base-e" type="baseType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd">'
+            '    <xs:group name="g1"><xs:sequence>'
+            '      <xs:group ref="g1"/>'
+            '      <xs:element name="b" type="xs:string"/>'
+            "    </xs:sequence></xs:group>"
+            "  </xs:redefine>"
+            '  <xs:element name="root" type="baseType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text('<base-e xmlns="urn:redef"><c>x</c></base-e>')
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "instance.xml"))
+        assert not doc.report.has_errors
+
+        # Legacy mode matches by local name; the adopted chain is not
+        # otherwise disturbed.
+        (tmp_path / "legacy.xml").write_text("<base-e><c>x</c></base-e>")
+        schema = Schema.compile(str(tmp_path / "schema.xsd"))
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "legacy.xml"))
+        assert not doc.report.has_errors
+
     def test_circular_include_chameleon_base_reference_resolves(self, tmp_path):
         """Mutually including chameleon documents resolve their base types.
 
