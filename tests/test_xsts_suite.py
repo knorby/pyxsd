@@ -3,6 +3,15 @@
 The catalogue check runs whenever the submodule is present.  The full
 baseline comparison is opt-in because it takes minutes; set
 ``PYXSD_RUN_XSTS=1`` to enable it.
+
+Baseline contract: ``baseline-xsd11.toml`` is the source of truth for
+per-case verdicts, passing and failing -- it has never been 100% passing,
+and its failing entries are expected, not bugs.  The gate's ``assert not
+diff.changes`` means no new failures (a pass becoming fail drifts) and
+anything fixed stays fixed (a fail becoming pass drifts until its entry
+is moved in the same commit as the intentional fix).  Never regenerate
+the baseline wholesale to make the gate green; move only the entries an
+intentional behavior change actually flips, in that change's commit.
 """
 
 from __future__ import annotations
