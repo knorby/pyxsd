@@ -205,10 +205,15 @@ def _contributes_no_elements(particle: Particle) -> bool:
     """Whether a base particle can match no element items at all.
 
     A model group with no particles matches only its own emptiness, and
-    a group whose ``maxOccurs`` is 0 matches nothing; XSD 1.1 §3.4.2
-    clause 2.1 counts both as empty explicit content, so such a base
-    has an empty {content type} {variety} and contributes no member to
-    a composed extension sequence.
+    a group whose ``maxOccurs`` is 0 matches nothing. Either way the
+    group's language is a subset of {ε}, so composing
+    ``sequence[base, own]`` with it is language-identical to composing
+    ``own`` alone (XSD 1.0 §3.9.6 counts such groups as pointless);
+    the extension composition in §3.4.2.3.3 clause 4.2.1 is the
+    spec-letter instance of the same idea for an empty-variety base.
+    Note the letter of clause 2.1 counts only a ``minOccurs=0`` empty
+    choice as empty explicit content; this helper deliberately covers
+    every childless group, which cannot change the composed language.
     """
     if particle.kind not in ("sequence", "choice", "all"):
         return False

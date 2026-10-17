@@ -152,10 +152,12 @@ class CompositionContext:
     composed_schema_roots: dict[int, Any]
     #: The namespace each composed document's components were spliced
     #: under, keyed by the document root's id. A chameleon include
-    #: stamps the root with the adopted namespace, but a redefined or
-    #: overridden no-namespace document is adopted without stamping
-    #: (see :func:`splice_redefine`), so the root's own attribute is
-    #: absent and this record is the only statement of the namespace its
+    #: stamps the root with the adopted namespace, and so does an
+    #: ``xs:override`` of a no-namespace document
+    #: (see :func:`splice_override`); a *redefined* no-namespace
+    #: document is adopted without stamping (see :func:`splice_redefine`),
+    #: so the root's own attribute is absent and this record is the
+    #: only statement of the namespace its
     #: components — and the namespace keywords of its
     #: ``defaultOpenContent`` — belong to.
     composed_schema_namespaces: dict[int, str | None]
@@ -554,9 +556,11 @@ def splice_included_schema(
         and getattr(ctx.mode, "namespaces", "legacy") != "strict"
     ):
         logger.warning(
-            "imported schema '%s' declares targetNamespace '%s'; pyxsd "
-            "matches names by local name, so its components are merged "
-            "regardless of the namespace difference",
+            "imported schema '%s' declares targetNamespace '%s'; legacy "
+            "mode merges components by local name, so they join the "
+            "lookup tables regardless of the namespace difference "
+            "(declaration identity still uses each document's own "
+            "namespace)",
             location,
             includedNS or "none",
         )
@@ -819,9 +823,10 @@ def append_named_components(
 
     The namespace the document's components were spliced under is
     recorded against its root too (``composed_schema_namespaces``): a
-    redefined or overridden no-namespace document is adopted without
-    stamping its root, so that record is what the document's
-    ``defaultOpenContent`` namespace keywords resolve against.
+    redefined no-namespace document is adopted without stamping its
+    root (an overridden one is stamped), so that record is what the
+    document's ``defaultOpenContent`` namespace keywords resolve
+    against.
     """
     strict = getattr(ctx.mode, "namespaces", "legacy") == "strict"
     sourceDefaults = (
