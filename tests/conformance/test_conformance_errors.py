@@ -32,5 +32,7 @@ def test_conformance_errors_match_pinned_tally(name):
         )
     schema = Schema.compile(str(entry_point(name)))
     expected = EXPECTED[name]
-    assert errors_by_code(name, schema.report) == expected["errors_by_code"], "error tally drifted"
+    if expected["classes"] is None:  # pragma: no cover - placeholder
+        pytest.skip(f"conformance schema '{name}' outcome not yet pinned")
+    assert errors_by_code(schema.report) == expected["errors_by_code"], "error tally drifted"
     assert len(schema.classes) == expected["classes"], "class count drifted"

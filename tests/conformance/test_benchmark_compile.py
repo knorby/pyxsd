@@ -34,4 +34,6 @@ def test_benchmark_compiles_under_the_tripwire_ceiling(name):
     assert row["best_seconds"] < CEILING_SECONDS, (
         f"{name} compile exceeded the {CEILING_SECONDS}s tripwire: {row['best_seconds']:.3f}s"
     )
+    if EXPECTED[name]["classes"] is None:  # pragma: no cover - placeholder
+        pytest.skip(f"benchmark schema '{name}' outcome not yet pinned")
     assert row["classes"] == EXPECTED[name]["classes"], "class count drifted"

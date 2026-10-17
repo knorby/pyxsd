@@ -5,9 +5,10 @@ Usage::
     python -m tests.conformance.run [--repeats N] [--json] [--save-baseline]
                                     [--compare]
 
-Wall-clock numbers are advisory: pytest never asserts on them (see
-``test_large_schemas.py`` and ``test_conformance_errors.py`` for the
-pinned outcomes). ``--save-baseline`` records this machine's timings to
+Wall-clock numbers are advisory: pytest asserts only a generous
+compile-time ceiling (the tripwire in ``test_benchmark_compile.py``),
+never exact timings (see ``test_large_schemas.py`` and
+``test_conformance_errors.py`` for the pinned outcomes). ``--save-baseline`` records this machine's timings to
 ``baseline.json``; ``--compare`` prints the per-schema ratio against
 that baseline.
 """
@@ -104,8 +105,8 @@ EXPECTED: dict[str, dict] = {
 }
 
 
-def errors_by_code(name: str, report: ValidationReport) -> dict[str, int]:
-    """Tally *report*'s errors by code for schema *name*.
+def errors_by_code(report: ValidationReport) -> dict[str, int]:
+    """Tally *report*'s errors by code.
 
     The manifest pins the exact tally per code, so a fix that resolves
     one error class shows up as exactly its own lines moving — not a
