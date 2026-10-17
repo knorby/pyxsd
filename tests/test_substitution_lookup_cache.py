@@ -126,3 +126,40 @@ def test_member_lookup_memoizes_member_lists():
     cache = _substitution_cache(head.getSchema())
     assert cache["members"][id(head)] is first
     assert members(head) is first
+
+
+def test_lookup_does_not_cache_wrapper_objects():
+    # The group-redefine check feeds fresh _GroupRedefineDeclaration
+    # wrappers through head_lookup; a wrapper is short-lived, so its id
+    # can be recycled by the next wrapper (the demonstrated wrong-head
+    # bug). Resolution must still work through the wrapper's delegation,
+    # but the result must never be memoized under the wrapper's id.
+    from pyxsd.schema_checks import _GroupRedefineDeclaration
+
+    _, host = _compile(SUB_SCHEMA)
+    member = _element(host, "member")
+    head = _element(host, "head")
+    lookup = substitution_head_lookup(member, host)
+    assert lookup is not None
+    wrapped = _GroupRedefineDeclaration(member)
+    assert lookup(wrapped) is head
+    cache = _substitution_cache(member.getSchema())
+    assert id(wrapped) not in cache["head"]
+
+
+def test_member_lookup_does_not_cache_wrapper_objects():
+    from pyxsd.schema_checks import _GroupRedefineDeclaration
+
+    _, host = _compile(SUB_SCHEMA)
+    head = _element(host, "head")
+    member = _element(host, "member")
+    members = substitution_member_lookup(member, host)
+    assert members is not None
+    wrapped = _GroupRedefineDeclaration(head)
+    # Identity comparisons make a wrapped head match no candidates (a
+    # pre-existing quirk the original per-call scan shared); the pinned
+    # behavior is that the wrapper resolves without crashing and its
+    # result is never memoized under a recyclable id().
+    assert members(wrapped) == []
+    cache = _substitution_cache(head.getSchema())
+    assert id(wrapped) not in cache["members"]

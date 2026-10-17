@@ -56,3 +56,31 @@ def test_entry_point_rejects_unknown_names():
 
     with pytest.raises(KeyError):
         entry_point("not-a-benchmark")
+
+
+def test_interrupted_extraction_leaves_no_trusted_cache(tmp_path, monkeypatch):
+    import zipfile
+
+    import pytest
+    from tests.benchmarks import fetch as fetch_mod
+
+    archive = tmp_path / "bench.zip"
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("bench/entry.xsd", "<xs:schema/>")
+        zipped.writestr("bench/extra.xsd", "<xs:schema/>")
+
+    def partial_then_die(self, path=None, members=None, pwd=None):
+        # Extract the first member, then simulate an interruption
+        # (disk full, Ctrl-C) partway through the archive.
+        self.extract(self.namelist()[0], path=path, pwd=pwd)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(zipfile.ZipFile, "extractall", partial_then_die)
+    target = tmp_path / "bench"
+    with pytest.raises(KeyboardInterrupt):
+        fetch_mod._extract(archive, target)
+    # The final directory must not exist: the skip-if-present logic
+    # must never trust a partially extracted corpus, and the staging
+    # directory must not linger either.
+    assert not target.exists()
+    assert not target.with_name("bench.tmp").exists()

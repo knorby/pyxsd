@@ -1872,37 +1872,49 @@ def substitution_head_lookup(er: Any, py_xsd: Any) -> Callable[[Any], Any] | Non
     heads = cache["head"]
 
     def lookup(declaration: Any) -> Any:
+        if type(declaration).__name__ != "Element":
+            # Not a tree-reachable declaration (for example a fresh
+            # _GroupRedefineDeclaration wrapper from the group-redefine
+            # check): resolve through its delegation without memoizing,
+            # because a short-lived object's id() can be recycled while
+            # the cache lives and a later caller would receive this
+            # object's answer.
+            return _resolve_head(declaration, cache, py_xsd)
         cached = heads.get(id(declaration), _CACHE_MISS)
         if cached is not _CACHE_MISS:
             return cached
-        head_name = declaration.getSubstitutionGroupHead(py_xsd)
-        resolving = declaration
-        if not head_name:
-            # XSD 1.1: a local declaration whose expanded name is
-            # also declared globally inherits that global's
-            # substitution-group membership. The expanded names are
-            # form-aware: an unqualified local is *not* the same
-            # expanded name as a same-named global (elemZ020). The
-            # first-wins index matches the original scan's order; a
-            # hit that *is* the declaration counts as no match, the
-            # same as the scan's ``continue`` (only locals reach this
-            # branch, and locals are never globals).
-            candidate = cache["by_name"].get((declaration.name, element_namespace(declaration)))
-            if candidate is not None and candidate is not declaration:
-                head_name = candidate.getSubstitutionGroupHead(py_xsd)
-                resolving = candidate
-        if not head_name:
-            heads[id(declaration)] = None
-            return None
-        resolver = getattr(resolving, "resolveReference", None)
-        if resolver is None:
-            heads[id(declaration)] = None
-            return None
-        head = resolver(head_name, cache["candidates"], parser=py_xsd)
+        head = _resolve_head(declaration, cache, py_xsd)
         heads[id(declaration)] = head
         return head
 
     return lookup
+
+
+def _resolve_head(declaration: Any, cache: dict, py_xsd: Any) -> Any:
+    """One uncached head resolution (the factories' original body)."""
+    head_name = declaration.getSubstitutionGroupHead(py_xsd)
+    resolving = declaration
+    if not head_name:
+        # XSD 1.1: a local declaration whose expanded name is also
+        # declared globally inherits that global's substitution-group
+        # membership. The expanded names are form-aware: an unqualified
+        # local is *not* the same expanded name as a same-named global
+        # (elemZ020). The first-wins index returns the same candidate
+        # the original scan took for every schema with unique global
+        # names; they diverge only when duplicate same-expanded-name
+        # globals coexist, which the original scan already tolerated
+        # arbitrarily. A hit that *is* the declaration itself counts as
+        # no match, matching the original scan's ``continue``.
+        candidate = cache["by_name"].get((declaration.name, element_namespace(declaration)))
+        if candidate is not None and candidate is not declaration:
+            head_name = candidate.getSubstitutionGroupHead(py_xsd)
+            resolving = candidate
+    if not head_name:
+        return None
+    resolver = getattr(resolving, "resolveReference", None)
+    if resolver is None:
+        return None
+    return resolver(head_name, cache["candidates"], parser=py_xsd)
 
 
 def substitution_member_lookup(er: Any, py_xsd: Any) -> Callable[[Any], list[Any]] | None:
@@ -1927,34 +1939,43 @@ def substitution_member_lookup(er: Any, py_xsd: Any) -> Callable[[Any], list[Any
     cache = _substitution_cache(schema)
 
     def members(declaration: Any) -> list[Any]:
+        if type(declaration).__name__ != "Element":
+            # See substitution_head_lookup: short-lived wrapper objects
+            # resolve without memoizing (id() recycling hazard).
+            return _resolve_members(declaration, cache, head_lookup)
         cached = cache["members"].get(id(declaration))
         if cached is not None:
             return cached
-        try:
-            block_raw = declaration.getBlock()
-        except AttributeError:
-            # An unresolved reference site has no referred declaration
-            # to read the ``block`` from.
-            block_raw = declaration.tagAttributes.get("block")
-        block_tokens = str(block_raw or "").split()
-        if "substitution" in block_tokens or "#all" in block_tokens:
-            # A head that blocks substitution has no admissible members,
-            # so the clause 2.1 head expansion contributes none
-            # (elemZ027_b). ``block`` is static per declaration, so the
-            # empty list is cacheable like any other result.
-            found: list[Any] = []
-        else:
-            found = []
-            for element in cache["candidates"]:
-                if element is declaration:
-                    continue
-                head = head_lookup(element)
-                if head is not None and head is declaration:
-                    found.append(element)
+        found = _resolve_members(declaration, cache, head_lookup)
         cache["members"][id(declaration)] = found
         return found
 
     return members
+
+
+def _resolve_members(declaration: Any, cache: dict, head_lookup: Any) -> list[Any]:
+    """One uncached member resolution (the factory's original body)."""
+    try:
+        block_raw = declaration.getBlock()
+    except AttributeError:
+        # An unresolved reference site has no referred declaration
+        # to read the ``block`` from.
+        block_raw = declaration.tagAttributes.get("block")
+    block_tokens = str(block_raw or "").split()
+    if "substitution" in block_tokens or "#all" in block_tokens:
+        # A head that blocks substitution has no admissible members,
+        # so the clause 2.1 head expansion contributes none
+        # (elemZ027_b). ``block`` is static per declaration, so the
+        # empty list is cacheable like any other result.
+        return []
+    found: list[Any] = []
+    for element in cache["candidates"]:
+        if element is declaration:
+            continue
+        head = head_lookup(element)
+        if head is not None and head is declaration:
+            found.append(element)
+    return found
 
 
 def report_pointless_particle(ctx: CompileContextProtocol, er: Any) -> None:

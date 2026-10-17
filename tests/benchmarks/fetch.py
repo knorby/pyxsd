@@ -12,6 +12,7 @@ Usage::
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 import urllib.request
@@ -95,9 +96,27 @@ def _download(url: str, dest: Path) -> None:
 
 
 def _extract(archive: Path, target: Path) -> None:
-    target.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(archive) as zipped:
-        zipped.extractall(target)
+    """Extracts *archive* into *target* atomically.
+
+    Extraction happens in a ``<target>.tmp`` staging directory that is
+    renamed into place only after the whole archive extracted cleanly,
+    so an interrupted run never leaves a partial corpus the
+    skip-if-present logic would trust.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.with_name(target.name + ".tmp")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    try:
+        with zipfile.ZipFile(archive) as zipped:
+            zipped.extractall(staging)
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(staging, target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def fetch(name: str | None = None, force: bool = False) -> list[Path]:
