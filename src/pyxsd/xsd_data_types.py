@@ -389,6 +389,28 @@ class QName(_PatternString):
         instance._local_ = local
         return instance
 
+    def to_expanded_name(self, *, strict: bool = False) -> str:
+        """The name in Clark notation, resolved against the ambient context.
+
+        Resolution depends on the :func:`qname_context` active when the value
+        was constructed: a resolved value with a namespace URI becomes
+        ``{uri}local``, and one bound without a URI (an unprefixed name with no
+        default namespace) becomes the bare local name.  The default is
+        best-effort, returning the lexical form when the value was never
+        resolved; with ``strict=True`` such a value instead raises
+        ``ValueError`` naming the lexical value.
+        """
+        if not self._resolved_:
+            if strict:
+                raise ValueError(
+                    f"Cannot convert unresolved xs:QName {str(self)!r} to an "
+                    f"expanded name: it was constructed without a qname_context"
+                )
+            return str(self)
+        if self._uri_:
+            return f"{{{self._uri_}}}{self._local_}"
+        return self._local_
+
 
 class _ListString(String):
     """Base for the list types: whitespace-separated tokens.

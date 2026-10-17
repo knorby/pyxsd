@@ -8,7 +8,9 @@ from pyxsd.xsd_data_types import (
     DayTimeDuration,
     Duration,
     HexBinary,
+    QName,
     YearMonthDuration,
+    qname_context,
 )
 
 
@@ -83,3 +85,20 @@ class TestBase64BinaryToBytes:
 
     def test_whitespace_is_ignored(self):
         assert Base64Binary("Q Q = =").to_bytes() == b"A"
+
+
+class TestQNameToExpandedName:
+    def test_resolved(self):
+        with qname_context({"p": "urn:example"}):
+            assert QName("p:local").to_expanded_name() == "{urn:example}local"
+
+    def test_resolved_without_namespace(self):
+        with qname_context({}):
+            assert QName("local").to_expanded_name() == "local"
+
+    def test_unresolved_defaults_to_lexical(self):
+        assert QName("p:local").to_expanded_name() == "p:local"
+
+    def test_unresolved_strict_raises(self):
+        with pytest.raises(ValueError, match="p:local"):
+            QName("p:local").to_expanded_name(strict=True)
