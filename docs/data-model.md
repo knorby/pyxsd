@@ -192,8 +192,8 @@ raise instead.
 | `xs:dateTime` | `DateTime.to_datetime()` | `datetime.datetime` | Sub-microsecond fraction truncated | Raises on a non-zero fraction |
 | `xs:time` | `Time.to_time()` | `datetime.time` | Sub-microsecond fraction truncated | Raises on a non-zero fraction |
 | `xs:date` | `Date.to_gregorian()` | `elementpath.datatypes.Date` | Nothing (total) | — |
-| `xs:dateTime` | `DateTime.to_gregorian()` | `elementpath.datatypes.DateTime` | Nothing (total) | — |
-| `xs:time` | `Time.to_gregorian()` | `elementpath.datatypes.Time` | Nothing (total) | — |
+| `xs:dateTime` | `DateTime.to_gregorian()` | `elementpath.datatypes.DateTime` | Sub-microsecond fraction truncated | Raises on a non-zero fraction |
+| `xs:time` | `Time.to_gregorian()` | `elementpath.datatypes.Time` | Sub-microsecond fraction truncated | Raises on a non-zero fraction |
 | `xs:gYear` | `GYear.to_gregorian()` | `elementpath.datatypes.GregorianYear` | Nothing (total) | — |
 | `xs:gYearMonth` | `GYearMonth.to_gregorian()` | `elementpath.datatypes.GregorianYearMonth` | Nothing (total) | — |
 | `xs:gMonth` | `GMonth.to_gregorian()` | `elementpath.datatypes.GregorianMonth` | Nothing (total) | — |
@@ -202,9 +202,9 @@ raise instead.
 | `xs:duration` | `Duration.to_timedelta()` | `datetime.timedelta` | Sub-microsecond fraction truncated; year/month fragments always raise | Raises on a non-zero fraction |
 | `xs:dayTimeDuration` | `DayTimeDuration.to_timedelta()` | `datetime.timedelta` | Sub-microsecond fraction truncated | Raises on a non-zero fraction |
 | `xs:yearMonthDuration` | `YearMonthDuration.to_months()` | `int` | Nothing (exact) | — |
-| `xs:duration` | `Duration.to_xsd_value()` | `elementpath.datatypes.Duration` | Nothing (full fidelity) | — |
+| `xs:duration` | `Duration.to_xsd_value()` | `elementpath.datatypes.Duration` | Sub-microsecond fraction rounded | Raises on a non-zero fraction |
 | `xs:yearMonthDuration` | `YearMonthDuration.to_xsd_value()` | `elementpath.datatypes.YearMonthDuration` | Nothing (full fidelity) | — |
-| `xs:dayTimeDuration` | `DayTimeDuration.to_xsd_value()` | `elementpath.datatypes.DayTimeDuration` | Nothing (full fidelity) | — |
+| `xs:dayTimeDuration` | `DayTimeDuration.to_xsd_value()` | `elementpath.datatypes.DayTimeDuration` | Sub-microsecond fraction rounded | Raises on a non-zero fraction |
 | `xs:hexBinary` | `HexBinary.to_bytes()` | `bytes` | Nothing (exact) | — |
 | `xs:base64Binary` | `Base64Binary.to_bytes()` | `bytes` | Nothing (exact) | — |
 | `xs:QName` | `QName.to_expanded_name()` | `str` (Clark notation) | Lexical form when unresolved; bare local name for an unbound prefix | Raises instead (unresolved or unbound prefix) |
@@ -220,8 +220,10 @@ How to read the table:
   (`DateTimeStamp` derives from `DateTime`).
 - Values the target type cannot represent at all — years outside
   1..9999 for the stdlib conversions, `Time("24:00:00")`, duration
-  year/month fragments — raise `ValueError` regardless of `strict`;
-  `strict` only turns silent loss into an error.
+  year/month fragments, and a value outside the target's numeric range
+  (an oversized duration) — raise `ValueError` naming the lexical
+  value regardless of `strict`; `strict` only turns silent loss into
+  an error.
 - Facet introspection (`XsdDataType.patterns()`,
   `XsdDataType.enumerations()`, and `pyxsd.facets.compile_pattern()`)
   is not a value conversion; it has its own subsection below.
@@ -265,13 +267,15 @@ stdlib range, use `to_gregorian()` instead.
 ### Calendar types and out-of-range years: `to_gregorian()`
 
 `to_gregorian()` converts to the value's `elementpath.datatypes`
-counterpart and is total: no value raises, and a timezone offset in the
-lexical form is preserved (the elementpath types model XSD's optional
-timezone, unlike `datetime.date`). It is the conversion for the two
-groups the standard library cannot hold:
+counterpart, preserving a timezone offset in the lexical form (the
+elementpath types model XSD's optional timezone, unlike
+`datetime.date`). It is the conversion for the two groups the standard
+library cannot hold:
 
-- `xs:date`, `xs:dateTime`, and `xs:time` values with years outside
-  1..9999 — XSD's year `0000`, BCE years, extended years above 9999;
+- `xs:date` and `xs:dateTime` values with years outside 1..9999 —
+  XSD's year `0000`, BCE years, extended years above 9999. `xs:time`
+  carries no year component, so its `to_gregorian()` simply preserves
+  the time-of-day value and any timezone offset;
 - the `g*` calendar types (`gYear`, `gYearMonth`, `gMonth`, `gMonthDay`,
   `gDay`), which are **recurring periods** — a year, the 30th of some
   month — not points on a calendar. They have no stdlib representation
@@ -280,6 +284,14 @@ groups the standard library cannot hold:
 Mind the year numbering: XSD 1.1 writes 1 BCE as lexical year `0000`,
 while elementpath numbers years with no year zero, so lexical `0000`
 maps to elementpath year `-1`.
+
+elementpath holds at most microsecond-resolution fractions, so
+`DateTime.to_gregorian()` and `Time.to_gregorian()` truncate a finer
+fraction by default and raise `ValueError` naming the lexical value
+under `strict=True`. `Date.to_gregorian()` and the `g*` conversions
+have no fractional component and take no `strict` parameter. A value
+outside the target's range raises `ValueError` naming the lexical
+value.
 
 The elementpath types are **not** `datetime` subclasses, and
 `to_gregorian()` is never a fallback inside `to_date` / `to_datetime` /
@@ -300,9 +312,11 @@ along the same line:
   never approximated — there is no 30-days-per-month assumption. A
   fractional second finer than a microsecond is truncated, a
   non-zero one raises with `strict=True`, and a leading `-` negates
-  the result. `DayTimeDuration` cannot carry year/month fragments at
-  all, so its `to_timedelta` is total apart from sub-microsecond
-  fractions. `YearMonthDuration` inherits the method but its value
+  the result. A value outside `datetime.timedelta`'s range raises
+  `ValueError` naming the lexical value. `DayTimeDuration` cannot carry
+  year/month fragments at all, so its `to_timedelta` is total apart
+  from sub-microsecond fractions and the timedelta range.
+  `YearMonthDuration` inherits the method but its value
   space is year/month-only, so the call always raises for it — use
   `to_months()`.
 - `YearMonthDuration.to_months()` returns the signed exact number of
@@ -311,11 +325,15 @@ along the same line:
   calendar arithmetic, so a `timedelta` cannot express this value at
   all.
 - `to_xsd_value()` is the full-fidelity escape hatch. elementpath's
-  `Duration` holds both the months and the seconds properties, so
-  every duration converts losslessly — including the year/month
-  values `to_timedelta` refuses. `YearMonthDuration.to_xsd_value()`
-  and `DayTimeDuration.to_xsd_value()` return the correspondingly
-  precise elementpath subclasses. These elementpath durations are
+  `Duration` holds both the months and the seconds properties, so the
+  calendar part `to_timedelta` refuses (year/month values) survives.
+  elementpath holds at most microsecond-resolution fractions, so a
+  finer second fraction is rounded by default; pass `strict=True` to
+  raise `ValueError` naming the lexical value instead. A value outside
+  the target's range raises `ValueError` naming the lexical value.
+  `YearMonthDuration.to_xsd_value()` and
+  `DayTimeDuration.to_xsd_value()` return the correspondingly precise
+  elementpath subclasses. These elementpath durations are
   **not `datetime.timedelta` subclasses** — they are a separate value
   type with XSD duration ordering.
 

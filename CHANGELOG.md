@@ -42,21 +42,26 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   of dropping the timezone offset, `to_datetime()` / `to_time()` /
   `to_timedelta()` raise instead of truncating a non-zero
   sub-microsecond fraction, and `QName.to_expanded_name()` raises
-  instead of returning the lexical form of an unresolved value;
+  instead of returning the lexical form of an unresolved value or the
+  bare local name of a prefixed value whose prefix the context did not
+  bind;
   unrepresentable values (years outside 1..9999, `Time("24:00:00")`,
   duration year/month fragments) raise `ValueError` with or without
   `strict`. `to_gregorian()` converts every temporal and `g*` calendar
-  type to its `elementpath.datatypes` counterpart, total and
-  offset-preserving, covering years outside 1..9999 (XSD 1.1 lexical
+  type to its `elementpath.datatypes` counterpart, offset-preserving,
+  covering years outside 1..9999 (XSD 1.1 lexical
   year `0000` maps to elementpath's `-1`, which numbers years with no
   year zero) and the recurring `g*` periods, which have no stdlib
-  representation; the elementpath types are not `datetime` subclasses
+  representation; the temporal ones truncate a sub-microsecond fraction
+  by default and raise under `strict`. The elementpath types are not
+  `datetime` subclasses
   and never a fallback inside the stdlib methods. Durations convert
   through `to_timedelta()` (year/month fragments always raise —
   calendar durations are never approximated as 30-day months), the
-  exact signed `YearMonthDuration.to_months()`, and the full-fidelity
-  `to_xsd_value()` (elementpath holds both the months and the seconds
-  properties) for the durations `to_timedelta()` refuses;
+  exact signed `YearMonthDuration.to_months()`, and `to_xsd_value()`
+  (elementpath holds both the months and the seconds properties) for
+  the durations `to_timedelta()` refuses, rounding a sub-microsecond
+  fraction by default and raising under `strict`;
   `HexBinary` / `Base64Binary.to_bytes()` decode exactly, and
   `AnyURI.to_parsed_uri()` best-effort parses the literal text, since
   XSD's lexical space admits characters meant to be URI-escaped.
