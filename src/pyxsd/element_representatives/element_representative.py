@@ -653,6 +653,12 @@ class ElementRepresentative:
         holds the expanded spec; calling it again is a no-op. A
         non-wildcard ER, a missing spec or a missing namespace context
         leaves the spec untouched.
+
+        The rebuilt spec keeps the declaring document's target
+        namespace (``authoredNamespace``), not the namespace a legacy
+        compile reports: ``##targetNamespace``/``##other`` must keep
+        their source meaning for the elements the wildcard is compared
+        against, which carry their authored namespaces.
         """
         old = getattr(self, "wildcardSpec", None)
         if old is None:
@@ -660,7 +666,7 @@ class ElementRepresentative:
         spec = wildcard_spec(
             self.tagAttributes,
             is_attribute=old.is_attribute,
-            target_namespace=self.getNamespace(),
+            target_namespace=self.authoredNamespace(),
             resolve_qname=self._wildcardQNameResolver(),
         )
         if spec == old:

@@ -467,9 +467,17 @@ def _compile_any(item: Any, py_xsd: Any = None) -> Particle:
     derived type inherits the wildcard). The XSD 1.1 ``notQName`` names
     are expanded through the namespace context so the binding can
     compare them against instance expanded names.
+
+    The declaring document is read through ``authoredNamespace``: a
+    legacy compile reports every composed document in the main schema's
+    namespace, and a wildcard's keywords must not silently move to that
+    namespace — the elements it is compared against carry their authored
+    namespaces too, so ``##targetNamespace`` would otherwise exclude the
+    very document that declared the wildcard.
     """
     attributes = getattr(item, "tagAttributes", {}) or {}
     minimum, maximum = _occurrence(attributes)
+    authored = getattr(item, "authoredNamespace", None)
     return Particle(
         "any",
         minimum,
@@ -479,7 +487,7 @@ def _compile_any(item: Any, py_xsd: Any = None) -> Particle:
         wildcard_spec(
             attributes,
             is_attribute=False,
-            target_namespace=item.getNamespace(),
+            target_namespace=authored() if callable(authored) else item.getNamespace(),
             resolve_qname=_wildcard_qname_resolver(item, py_xsd),
         ),
     )

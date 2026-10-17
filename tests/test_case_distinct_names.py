@@ -211,3 +211,97 @@ class TestRejectionNetStaysClosed:
         )
         schema = _compile(tmp_path, main=main, side=side)
         assert "upa" in _codes(schema)
+
+
+#: A composed document's wildcard resolving ``##targetNamespace``: the
+#: restriction's qualified local ``e`` lies in the declaring document's
+#: own namespace, which the wildcard admits.
+SIDE_WILDCARD = (
+    f'<xs:schema {XS} targetNamespace="urn:side"'
+    ' xmlns="urn:side" elementFormDefault="qualified">'
+    '  <xs:complexType name="Base">'
+    '    <xs:sequence><xs:any namespace="##targetNamespace"'
+    ' processContents="lax" minOccurs="0" maxOccurs="unbounded"/></xs:sequence>'
+    "  </xs:complexType>"
+    '  <xs:complexType name="Derived">'
+    '    <xs:complexContent><xs:restriction base="Base">'
+    '      <xs:sequence><xs:element name="e" type="xs:string"/></xs:sequence>'
+    "    </xs:restriction></xs:complexContent>"
+    "  </xs:complexType>"
+    "</xs:schema>"
+)
+
+#: The same shape with ``##other``: it excludes the declaring document's
+#: namespace, so the base wildcard does *not* admit the qualified local
+#: ``e`` — a genuine particle-restriction violation.
+SIDE_WILDCARD_OTHER = SIDE_WILDCARD.replace('namespace="##targetNamespace"', 'namespace="##other"')
+
+#: ``##other`` beside a local ``e`` whose alternative table differs from
+#: the like-named global's.  The wildcard excludes the declaring
+#: document's namespace, so the global declaration is not admitted and
+#: the tighter-EDC check must not compare the two tables.
+SIDE_OTHER_ALTERNATIVES = (
+    f'<xs:schema {XS} targetNamespace="urn:side"'
+    ' xmlns="urn:side" elementFormDefault="qualified">'
+    '  <xs:element name="e" type="xs:string"/>'
+    '  <xs:complexType name="Base">'
+    "    <xs:sequence>"
+    '      <xs:element name="e">'
+    '        <xs:alternative test="0 = 1" type="xs:integer"/>'
+    '        <xs:alternative type="xs:string"/>'
+    "      </xs:element>"
+    '      <xs:any namespace="##other" processContents="lax" minOccurs="0"/>'
+    "    </xs:sequence>"
+    "  </xs:complexType>"
+    "</xs:schema>"
+)
+
+#: The admitting twin of the above: ``##any`` admits the global, so the
+#: differing tables are a genuine element-consistent violation.
+SIDE_ANY_ALTERNATIVES = SIDE_OTHER_ALTERNATIVES.replace('namespace="##other"', 'namespace="##any"')
+
+MAIN_WILDCARD = (
+    f'<xs:schema {XS} targetNamespace="urn:main"'
+    ' xmlns="urn:main" xmlns:s="urn:side" elementFormDefault="qualified">'
+    '  <xs:import namespace="urn:side" schemaLocation="side.xsd"/>'
+    '  <xs:element name="root" type="s:Derived"/>'
+    "</xs:schema>"
+)
+
+
+class TestWildcardNamespaceAcrossDocuments:
+    """A wildcard's ``##targetNamespace``/``##other`` resolve against its
+    own document, not against the schema that composes it.
+
+    Legacy namespace mode reports every composed document in the main
+    schema's target namespace, and a wildcard's recorded target used to
+    be read back that way while the element declarations it is compared
+    against now carry their authored namespaces.  ``##targetNamespace``
+    then excluded the very document that declared the wildcard and
+    ``##other`` admitted it, in both directions: false
+    particle-restriction reports for legal restrictions, missed ones for
+    illegal restrictions, and wildcard/alternative-table comparisons the
+    spec does not require (or the skipping of ones it does).
+    """
+
+    def test_target_namespace_wildcard_admits_its_own_document(self, tmp_path):
+        """The wildcard admits the declaring document's own elements."""
+        schema = _compile(tmp_path, main=MAIN_WILDCARD, side=SIDE_WILDCARD)
+        assert _codes(schema) == []
+
+    def test_other_wildcard_excludes_its_own_document(self, tmp_path):
+        """``##other`` does not admit a global of the declaring document."""
+        main = MAIN_WILDCARD.replace("s:Derived", "s:Base")
+        schema = _compile(tmp_path, main=main, side=SIDE_OTHER_ALTERNATIVES)
+        assert _codes(schema) == []
+
+    def test_wildcard_that_excludes_the_element_still_reports(self, tmp_path):
+        """Guard: ``##other`` does not admit the qualified local ``e``."""
+        schema = _compile(tmp_path, main=MAIN_WILDCARD, side=SIDE_WILDCARD_OTHER)
+        assert "particle-restriction" in _codes(schema)
+
+    def test_wildcard_that_admits_the_name_still_compares(self, tmp_path):
+        """Guard: ``##any`` admits the global, so the tables must match."""
+        main = MAIN_WILDCARD.replace("s:Derived", "s:Base")
+        schema = _compile(tmp_path, main=main, side=SIDE_ANY_ALTERNATIVES)
+        assert "element-consistent" in _codes(schema)
