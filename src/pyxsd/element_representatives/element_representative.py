@@ -89,6 +89,10 @@ from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
 
+#: Sentinel distinguishing "not computed yet" from a computed ``None``
+#: in per-representative memo slots.
+_UNSET = object()
+
 # XSD component kinds whose declarations live in separate symbol
 # spaces: an element and a type may legally share a name, and a type
 # lookup must not resolve to the element.  ER classes not listed here
@@ -1176,15 +1180,32 @@ class ElementRepresentative:
         reads it back; a component of the main document has no record
         and falls back to its reported namespace, which is that
         document's own.
+
+        The answer is memoized on the representative: every input is
+        frozen before any child representative is built (the
+        composition snapshots ``componentNamespaces`` /
+        ``namespaceOverrides`` at ``Schema`` construction, and
+        ``parent`` is never reassigned), and the hot content-model
+        comparisons ask for the same declaration's namespace many
+        times — each recomputation walked the tree up to the schema
+        twice.
         """
+        cached = self.__dict__.get("_authoredNS", _UNSET)
+        if cached is not _UNSET:
+            return cached
         element = getattr(self, "xsdElement", None)
-        schema = self._effectiveSchema()
-        sourceNamespaces = getattr(schema, "componentNamespaces", None)
-        if element is not None and sourceNamespaces:
-            recorded = sourceNamespaces.get(id(element))
-            if recorded is not None:
-                return recorded
-        return self.getNamespace()
+        if element is None:
+            value = self.getNamespace()
+        else:
+            sourceNamespaces = getattr(self._effectiveSchema(), "componentNamespaces", None)
+            if sourceNamespaces:
+                recorded = sourceNamespaces.get(id(element))
+                if recorded is not None:
+                    self.__dict__["_authoredNS"] = recorded
+                    return recorded
+            value = self.getNamespace()
+        self.__dict__["_authoredNS"] = value
+        return value
 
     def referenceNamespace(self, reference: str) -> str | None:
         """The namespace a QName reference written here denotes, or ``None``.
