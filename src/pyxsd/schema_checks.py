@@ -1801,6 +1801,49 @@ def type_is_mixed(er: Any) -> bool:
     return bool(mixed_method()) if mixed_method is not None else False
 
 
+_CACHE_MISS = object()
+
+
+def _substitution_cache(schema: Any) -> dict:
+    """The per-compile memoization tables for the substitution lookups.
+
+    Lives on the schema declaration as ``_substitution_lookup_cache`` so
+    every ``substitution_head_lookup`` / ``substitution_member_lookup``
+    factory call on one compile shares one table (the candidate scan and
+    the per-declaration resolutions are what dominated large-schema
+    compile time). The ``id()``-keyed sub-dicts are safe for the cache's
+    lifetime: every element declaration is reachable from the schema
+    declaration's tree for the whole compile, so no declaration is
+    garbage-collected — and no ``id()`` recycled — while the cache lives,
+    and the cache itself dies with its schema declaration.
+
+    - ``candidates``: the schema's global element declarations (once)
+    - ``by_name``: first global per ``(name, namespace)`` (first-wins,
+      mirroring the original linear scan's order)
+    - ``head``: memoized ``lookup(declaration)`` results (``None`` is a
+      valid, cached "no head")
+    - ``members``: memoized ``members(declaration)`` results
+    """
+    cache = getattr(schema, "_substitution_lookup_cache", None)
+    if cache is None:
+        candidates = [
+            element
+            for element in getattr(schema, "elements", None) or []
+            if type(element).__name__ == "Element"
+        ]
+        by_name: dict[tuple[str | None, str | None], Any] = {}
+        for candidate in candidates:
+            by_name.setdefault((candidate.name, element_namespace(candidate)), candidate)
+        cache = {
+            "candidates": candidates,
+            "by_name": by_name,
+            "head": {},
+            "members": {},
+        }
+        schema._substitution_lookup_cache = cache
+    return cache
+
+
 def substitution_head_lookup(er: Any, py_xsd: Any) -> Callable[[Any], Any] | None:
     """A declaration-to-head resolver for NameAndTypeOK.
 
@@ -1814,6 +1857,10 @@ def substitution_head_lookup(er: Any, py_xsd: Any) -> Callable[[Any], Any] | Non
     giving up. ``None`` when this schema has no element table, in
     which case the predicate falls back to exact expanded-name
     equality.
+
+    Resolutions are memoized through the schema's shared substitution
+    cache (see ``_substitution_cache``), so repeated calls from the
+    UPA and particle-derivation checks are dictionary hits.
     """
     try:
         schema = er.getSchema()
@@ -1821,13 +1868,13 @@ def substitution_head_lookup(er: Any, py_xsd: Any) -> Callable[[Any], Any] | Non
         return None
     if schema is None:
         return None
-    candidates = [
-        element
-        for element in getattr(schema, "elements", None) or []
-        if type(element).__name__ == "Element"
-    ]
+    cache = _substitution_cache(schema)
+    heads = cache["head"]
 
     def lookup(declaration: Any) -> Any:
+        cached = heads.get(id(declaration), _CACHE_MISS)
+        if cached is not _CACHE_MISS:
+            return cached
         head_name = declaration.getSubstitutionGroupHead(py_xsd)
         resolving = declaration
         if not head_name:
@@ -1835,22 +1882,25 @@ def substitution_head_lookup(er: Any, py_xsd: Any) -> Callable[[Any], Any] | Non
             # also declared globally inherits that global's
             # substitution-group membership. The expanded names are
             # form-aware: an unqualified local is *not* the same
-            # expanded name as a same-named global (elemZ020).
-            for candidate in candidates:
-                if candidate is declaration:
-                    continue
-                if candidate.name == declaration.name and element_namespace(
-                    candidate
-                ) == element_namespace(declaration):
-                    head_name = candidate.getSubstitutionGroupHead(py_xsd)
-                    resolving = candidate
-                    break
+            # expanded name as a same-named global (elemZ020). The
+            # first-wins index matches the original scan's order; a
+            # hit that *is* the declaration counts as no match, the
+            # same as the scan's ``continue`` (only locals reach this
+            # branch, and locals are never globals).
+            candidate = cache["by_name"].get((declaration.name, element_namespace(declaration)))
+            if candidate is not None and candidate is not declaration:
+                head_name = candidate.getSubstitutionGroupHead(py_xsd)
+                resolving = candidate
         if not head_name:
+            heads[id(declaration)] = None
             return None
         resolver = getattr(resolving, "resolveReference", None)
         if resolver is None:
+            heads[id(declaration)] = None
             return None
-        return resolver(head_name, candidates, parser=py_xsd)
+        head = resolver(head_name, cache["candidates"], parser=py_xsd)
+        heads[id(declaration)] = head
+        return head
 
     return lookup
 
@@ -1874,13 +1924,12 @@ def substitution_member_lookup(er: Any, py_xsd: Any) -> Callable[[Any], list[Any
         return None
     if schema is None:
         return None
-    candidates = [
-        element
-        for element in getattr(schema, "elements", None) or []
-        if type(element).__name__ == "Element"
-    ]
+    cache = _substitution_cache(schema)
 
     def members(declaration: Any) -> list[Any]:
+        cached = cache["members"].get(id(declaration))
+        if cached is not None:
+            return cached
         try:
             block_raw = declaration.getBlock()
         except AttributeError:
@@ -1891,15 +1940,18 @@ def substitution_member_lookup(er: Any, py_xsd: Any) -> Callable[[Any], list[Any
         if "substitution" in block_tokens or "#all" in block_tokens:
             # A head that blocks substitution has no admissible members,
             # so the clause 2.1 head expansion contributes none
-            # (elemZ027_b).
-            return []
-        found = []
-        for element in candidates:
-            if element is declaration:
-                continue
-            head = head_lookup(element)
-            if head is not None and head is declaration:
-                found.append(element)
+            # (elemZ027_b). ``block`` is static per declaration, so the
+            # empty list is cacheable like any other result.
+            found: list[Any] = []
+        else:
+            found = []
+            for element in cache["candidates"]:
+                if element is declaration:
+                    continue
+                head = head_lookup(element)
+                if head is not None and head is declaration:
+                    found.append(element)
+        cache["members"][id(declaration)] = found
         return found
 
     return members
