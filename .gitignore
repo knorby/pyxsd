@@ -24,6 +24,9 @@ coverage.xml
 .serena/
 .superpowers/
 
+# Benchmark schema corpus (downloaded on demand)
+tests/benchmarks/.cache/
+
 # Local design notes and agent plans (not part of the published project)
 docs/superpowers/
 
