@@ -1750,16 +1750,24 @@ def report_extension_all_overlap(
     already reported by the per-compositor sweep; this compares the
     two sides.
 
-    Still keys elements by merged name (pre-existing; same class as the EDC/UPA
-    authored-namespace fix): a legal extension mixing same-local-name elements
-    from different imported namespaces can be spuriously rejected. Migrate to
-    ``element_namespace()``/``authoredNamespace()`` as a follow-up.
+    Elements compare by expanded name — the namespace of the document
+    that declared each particle (``element_namespace``, the same
+    reading the EDC/UPA sweeps use): a legacy compile reports every
+    composed document in the main schema's namespace, and a legal
+    extension may pull same-local-name elements from two different
+    imported namespaces whose expanded names are distinct. Same-name
+    declarations of one namespace (across an include, or a local and a
+    global of the same document) still collide.
     """
+
+    def expanded_name(member: Any) -> tuple[str | None, str]:
+        return (element_namespace(getattr(member, "descriptor", None)), member.name or "")
+
     base_names = {
-        member.name for member in base_members if member.kind == "element" and member.name
+        expanded_name(member) for member in base_members if member.kind == "element" and member.name
     }
     for member in own_members:
-        if member.kind == "element" and member.name and member.name in base_names:
+        if member.kind == "element" and member.name and expanded_name(member) in base_names:
             ctx.report.add_error(
                 "particle restriction (cos-nonambig): overlapping particles in "
                 f"all extension - element '{member.name}' appears in both the "
@@ -1792,7 +1800,7 @@ def report_extension_all_overlap(
         declaration = getattr(member, "descriptor", None)
         if declaration is None or type(declaration).__name__ != "Element":
             continue
-        namespace = declaration.getNamespace() or ""
+        namespace = element_namespace(declaration) or ""
         resolved.append(((namespace, declaration.name or ""), "", declaration))
     if resolved:
         check_substitution_overlap(ctx, resolved, py_xsd)
