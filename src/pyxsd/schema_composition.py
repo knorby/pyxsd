@@ -305,8 +305,8 @@ def splice_composed_schemas(
     ``adoptedNS`` is the namespace an enclosing chameleon adoption put
     this document in when its own root does not say so. A redefined
     base document is adopted without stamping its root (see
-    :func:`splice_redefine`), so its nested includes *and* nested
-    redefines must be told the namespace explicitly or their
+    :func:`splice_redefine`), so its nested includes, redefines *and*
+    overrides must be told the namespace explicitly or their
     components would stay in no namespace while the base document's
     rewritten references name the adopted one.
     """
@@ -324,7 +324,7 @@ def splice_composed_schemas(
             splice_redefine(ctx, child, schemaRoot, baseDir, visited, adoptedNS=adoptedNS)
         elif local == "override":
             schemaRoot.remove(child)
-            splice_override(ctx, child, schemaRoot, baseDir, visited)
+            splice_override(ctx, child, schemaRoot, baseDir, visited, adoptedNS=adoptedNS)
         elif local == "import":
             schemaRoot.remove(child)
             if child.get("namespace") == XSD_NS:
@@ -1016,6 +1016,7 @@ def splice_override(
     schemaRoot: Any,
     baseDir: Path,
     visited: set[str],
+    adoptedNS: str | None = None,
 ) -> None:
     """Splices an ``xs:override`` block (XSD 1.1 §4.2.5).
 
@@ -1030,6 +1031,12 @@ def splice_override(
     The target set is the composed base document (its own includes
     and overrides included), which is why the base is spliced before
     the match.
+
+    ``adoptedNS`` is the namespace an enclosing redefinition adopted
+    this document into when its own root is unstamped; like
+    ``splice_redefine``, the override judges and records components
+    by that effective namespace (XSD 1.1 §4.2.5 clause 2 with
+    Appendix F.1).
     """
     targets = collect_override_targets(ctx, overrideTag)
     check_override_target_duplicates(ctx, targets)
@@ -1056,13 +1063,14 @@ def splice_override(
                 phase="schema",
             )
         return None
-    mainNS = schemaRoot.get("targetNamespace")
+    mainNS = schemaRoot.get("targetNamespace") or adoptedNS
     includedNS = includedRoot.get("targetNamespace")
     includedPath = (baseDir / location).resolve()
     if includedNS is not None and (mainNS is None or includedNS != mainNS):
         # XSD 1.1 §4.2.5 clause 2: a namespaced base may only be
         # overridden by a document with the identical target
-        # namespace; a no-namespace base may be ported into a
+        # namespace (the adopted one, for an override nested in an
+        # adopted base); a no-namespace base may be ported into a
         # namespaced overrider (chameleon, below).
         ctx.report.add_error(
             f"the overridden schema '{location}' declares targetNamespace "

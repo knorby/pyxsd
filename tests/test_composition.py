@@ -561,6 +561,117 @@ class TestCompositionCorrectness:
         codes = [issue.code for issue in schema.report.errors]
         assert "compose-invalid" in codes
 
+    def test_nested_override_of_third_namespace_reports(self, tmp_path):
+        """A nested override may not target a third namespace.
+
+        ``base.xsd`` (no targetNamespace, adopted by the outer
+        redefinition into ``urn:redef``) overrides a document that
+        declares ``urn:other``: the override would splice the
+        components into the adopted namespace, which the composition
+        must reject (XSD 1.1 §4.2.5 clause 2 with the effective,
+        adopted namespace judging the match).
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:other">'
+            '<xs:complexType name="x"><xs:sequence/></xs:complexType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS}><xs:override schemaLocation="inner.xsd"/></xs:schema>'
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        codes = [issue.code for issue in schema.report.errors]
+        assert "compose-invalid" in codes
+
+    def test_nested_override_of_adopted_namespace_resolves(self, tmp_path):
+        """An override nested in an adopted base may target the adopted ns.
+
+        ``base.xsd`` (no targetNamespace) is redefined by a namespaced
+        schema and overrides a component of a document already
+        declaring that namespace: judged by the effective (adopted)
+        namespace the override is a same-namespace override and must
+        compose cleanly -- the pre-adoption reading saw the unstamped
+        base and rejected it as a namespace mismatch.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '<xs:element name="e" type="xs:string"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:override schemaLocation="inner.xsd">'
+            '    <xs:element name="e" type="xs:string"/>'
+            "  </xs:override>"
+            '<xs:complexType name="baseType"><xs:sequence>'
+            '<xs:element ref="e"/></xs:sequence></xs:complexType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            '  <xs:element name="root" type="baseType"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+
+    def test_chameleon_redefine_nested_override_adopts_too(self, tmp_path):
+        """A redefined document's own *override* adopts as well.
+
+        ``base.xsd`` (no targetNamespace) is redefined by a namespaced
+        schema and *overrides* a declaration from ``inner.xsd`` (also
+        no targetNamespace). The whole override chain is absorbed into
+        the redefining schema's namespace (Appendix F.1 applies through
+        it), so ``base.xsd``'s reference to the overridden element must
+        reach the overriding declaration -- which only holds when the
+        nested override adopts the namespace the outer redefinition
+        threaded through the include dispatch.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:element name="helper" type="xs:string"/>'
+            '<xs:complexType name="innerType"><xs:sequence>'
+            '<xs:element ref="helper"/></xs:sequence></xs:complexType>'
+            '<xs:element name="inner-e" type="innerType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:override schemaLocation="inner.xsd">'
+            '    <xs:element name="inner-e" type="innerType"/>'
+            "  </xs:override>"
+            '<xs:element name="base-e" type="innerType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            '  <xs:element name="root" type="innerType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text('<root xmlns="urn:redef"><helper>x</helper></root>')
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "instance.xml"))
+        assert not doc.report.has_errors
+
+        # Legacy mode matches by local name; the adopted chain is not
+        # otherwise disturbed.
+        (tmp_path / "legacy.xml").write_text("<root><helper>x</helper></root>")
+        schema = Schema.compile(str(tmp_path / "schema.xsd"))
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "legacy.xml"))
+        assert not doc.report.has_errors
+
     def test_circular_include_chameleon_base_reference_resolves(self, tmp_path):
         """Mutually including chameleon documents resolve their base types.
 
