@@ -906,21 +906,43 @@ class SchemaBase:
             for name in self.descAttributeNames():
                 descriptor = self.descAttributes()[name]
                 matchName = self._instance_name_of(descriptor, is_attribute=True)
-                if matchName in elementTag.attrib:
-                    # Bind through the declaration's own descriptor: a
-                    # subclass element sharing the name must not capture
-                    # the value (and a plain setattr would find it first
-                    # in the MRO).
-                    descriptor.__set__(self, elementTag.attrib[matchName])
-                    # An xsi-namespace declaration was already consumed by
-                    # the pass above under its display spelling; bookkeep
-                    # it under that key so the attribute is not counted
-                    # twice in ``checkAttributes``.
-                    if namespace_of(matchName) == xsi.XSI_NAMESPACE:
-                        usedAttributes.append(xsi.xsi_attr_key(matchName))
-                    else:
-                        usedAttributes.append(matchName)
-                    self._attribs_[matchName] = elementTag.attrib[matchName]
+                # Legacy mode: a namespaced instance attribute arrives
+                # as ElementTree's Clark key; it binds the declared use
+                # whose expanded name it names (a reference site takes
+                # the expanded name of the declaration it points at),
+                # so an instance ``xml:lang="en"`` reaches a declared
+                # ``xml:lang`` use instead of reporting undeclared.
+                # Attributes in no namespace keep the plain local-name
+                # match. Strict mode already matches by expanded name.
+                instanceKey = None
+                if matchName and "{" not in matchName:
+                    expander = getattr(descriptor, "expandedInstanceName", None)
+                    expanded = None
+                    if expander is not None:
+                        try:
+                            expanded = expander(is_attribute=True, parser=type(self)._parserHost())
+                        except Exception:
+                            expanded = None
+                    if expanded and "{" in expanded and expanded in elementTag.attrib:
+                        instanceKey = expanded
+                if instanceKey is None and matchName in elementTag.attrib:
+                    instanceKey = matchName
+                if instanceKey is None:
+                    continue
+                # Bind through the declaration's own descriptor: a
+                # subclass element sharing the name must not capture
+                # the value (and a plain setattr would find it first
+                # in the MRO).
+                descriptor.__set__(self, elementTag.attrib[instanceKey])
+                # An xsi-namespace declaration was already consumed by
+                # the pass above under its display spelling; bookkeep
+                # it under that key so the attribute is not counted
+                # twice in ``checkAttributes``.
+                if namespace_of(instanceKey) == xsi.XSI_NAMESPACE:
+                    usedAttributes.append(xsi.xsi_attr_key(instanceKey))
+                else:
+                    usedAttributes.append(instanceKey)
+                self._attribs_[instanceKey] = elementTag.attrib[instanceKey]
             # Attribute wildcard (xs:anyAttribute) pass-through. In legacy
             # namespace mode every undeclared attribute is accepted raw; in
             # strict mode the type's effective wildcard must admit the

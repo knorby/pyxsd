@@ -22,12 +22,19 @@ class Any(ElementRepresentative):
         """Flags the containing type with a wildcard element slot and
         records the namespace/processContents constraint. Uses the ER
         ``__init__``.  See ElementRepresentative for more documentation.
+
+        The namespace keywords resolve against the document the wildcard
+        was declared in (``authoredNamespace``): a legacy compile reports
+        every composed document in the main schema's namespace, and
+        ``##targetNamespace``/``##other`` must keep their source meaning
+        there (the content-model compiler records the same namespace for
+        the particle's own spec).
         """
         super().__init__(xsdElement, parent)
         self.wildcardSpec = wildcard_spec(
             self.tagAttributes,
             is_attribute=False,
-            target_namespace=self.getNamespace(),
+            target_namespace=self.authoredNamespace(),
         )
         register_wildcard(self.getContainingType(), self.wildcardSpec)
 

@@ -7,12 +7,15 @@ Examples::
     python tests/report_xsts.py --profile xsd11 --baseline tests/xsts/baseline-xsd11.toml
     python tests/report_xsts.py --profile xsd11 --write-baseline tests/xsts/baseline-xsd11.toml
 
-This is intentionally not wired into the required CI path: the suite is slow
-(about three minutes for a full XSD 1.1 run), so it runs from the dispatch-only
-``.github/workflows/xsts.yml`` workflow instead.  Against the checked-in
-baselines pyxsd passes 99.78% of the XSD 1.1 profile and 99.61% of XSD 1.0.
-Run it locally when changing schema handling, and regenerate a baseline only
-after reviewing the differences.
+This local runner is not the required CI gate itself (CI runs the pytest
+suite in ``tests/test_xsts_suite.py``); use it to explore slices, compare
+both engines, regenerate baselines, and drive the dispatch-only
+``.github/workflows/xsts.yml`` workflow, which covers the XSD 1.0 profile.
+Against the checked-in baselines pyxsd passes 99.78% of the XSD 1.1 profile
+and 99.61% of XSD 1.0.  Run it locally when changing schema handling.
+``--write-baseline`` rewrites the whole file: never regenerate wholesale to
+make a gate green -- move only the entries an intentional behavior change
+actually flips, in that change's commit.
 """
 
 from __future__ import annotations

@@ -346,6 +346,479 @@ class TestCompositionCorrectness:
         assert not doc.report.has_errors
         assert doc.root._attribs_ == {"a": "1", "b": "2"}
 
+    def test_chameleon_include_base_reference_resolves(self, tmp_path):
+        """A chameleon document's own type reference resolves after adoption.
+
+        The included document declares no targetNamespace, so it is
+        absorbed into the including schema's namespace and its unprefixed
+        references are rewritten into that namespace (Appendix F.1). The
+        rewritten (Clark-spelled) base reference must still resolve
+        against the composed declarations.
+        """
+        (tmp_path / "child.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '<xs:complexType name="baseType">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:complexType name="derivedType"><xs:complexContent>'
+            '<xs:extension base="baseType">'
+            '<xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>'
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cyc" xmlns:c="urn:cyc">'
+            '  <xs:include schemaLocation="child.xsd"/>'
+            '  <xs:element name="r" type="derivedType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text("<r><a>x</a><b>y</b></r>")
+        doc = Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
+        assert not doc.report.has_errors
+        assert "derivedType" in doc.schema.classes
+        base_names = [base.__name__ for base in doc.schema.classes["derivedType"].__mro__]
+        assert "baseType" in base_names
+
+    def test_chameleon_redefine_base_references_resolve(self, tmp_path):
+        """A chameleon redefine's base document resolves its own references.
+
+        The redefined document declares no targetNamespace, so it is
+        absorbed into the redefining schema's namespace exactly as a
+        chameleon include is (XSD 1.1 §4.2.4 with Appendix F.1): its
+        unprefixed QName references are rewritten into that namespace.
+        Both the group reference and the attribute reference written in
+        the *base* document must resolve against the adopted components.
+        """
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:attribute name="base-a" type="xs:string"/>'
+            '<xs:group name="g1">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:group>"
+            '<xs:complexType name="baseType">'
+            '<xs:sequence><xs:group ref="g1"/></xs:sequence>'
+            '<xs:attribute ref="base-a"/>'
+            "</xs:complexType>"
+            '<xs:element name="base-e" type="baseType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd">'
+            '    <xs:group name="g1"><xs:sequence>'
+            '      <xs:group ref="g1"/>'
+            '      <xs:element name="b" type="xs:string"/>'
+            "    </xs:sequence></xs:group>"
+            "  </xs:redefine>"
+            '  <xs:complexType name="mainType"><xs:group ref="g1"/></xs:complexType>'
+            '  <xs:element name="root" type="mainType"/>'
+            "</xs:schema>"
+        )
+        # Legacy mode matches by local name.
+        (tmp_path / "legacy.xml").write_text('<base-e base-a="1"><a>x</a><b>y</b></base-e>')
+        schema = Schema.compile(str(tmp_path / "schema.xsd"))
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "legacy.xml"))
+        assert not doc.report.has_errors
+
+        # Strict mode addresses the adopted components by expanded name.
+        (tmp_path / "strict.xml").write_text(
+            '<base-e xmlns="urn:redef" xmlns:r="urn:redef" r:base-a="1"><a>x</a><b>y</b></base-e>'
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "strict.xml"))
+        assert not doc.report.has_errors
+        assert doc.root._attribs_["{urn:redef}base-a"] == "1"
+
+    def test_chameleon_redefine_nested_include_references_resolve(self, tmp_path):
+        """A redefined document's own chameleon include adopts as well.
+
+        ``base.xsd`` (no targetNamespace) is redefined by a namespaced
+        schema and *includes* ``inner.xsd`` (also no targetNamespace),
+        which declares the group ``base.xsd``'s type references. The
+        whole include chain is absorbed into the redefining schema's
+        namespace (Appendix F.1 applies through it), so the reference
+        rewritten in ``base.xsd`` must reach the included declaration --
+        which only holds when the nested include adopts the namespace
+        too.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:group name="g3">'
+            '<xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>'
+            "</xs:group>"
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:include schemaLocation="inner.xsd"/>'
+            '<xs:group name="g1">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:group>"
+            '<xs:complexType name="baseType"><xs:group ref="g3"/></xs:complexType>'
+            '<xs:element name="base-e" type="baseType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd">'
+            '    <xs:group name="g1"><xs:sequence>'
+            '      <xs:group ref="g1"/>'
+            '      <xs:element name="b" type="xs:string"/>'
+            "    </xs:sequence></xs:group>"
+            "  </xs:redefine>"
+            '  <xs:element name="root" type="baseType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text('<base-e xmlns="urn:redef"><c>x</c></base-e>')
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "instance.xml"))
+        assert not doc.report.has_errors
+
+        # Legacy mode matches by local name; the adopted chain is not
+        # otherwise disturbed.
+        (tmp_path / "legacy.xml").write_text("<base-e><c>x</c></base-e>")
+        schema = Schema.compile(str(tmp_path / "schema.xsd"))
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "legacy.xml"))
+        assert not doc.report.has_errors
+
+    def test_chameleon_rewrite_produces_clark_literals(self, tmp_path):
+        """The adoption rewrite itself, pinned on the composed tree.
+
+        The outcome tests above would keep passing if ``base.xsd``'s
+        namespace-less references stopped being rewritten (a lexical
+        lookup would find ``inner.xsd``'s declarations anyway), so this
+        test asserts the mechanism: every namespace-less reference in
+        the adopted no-namespace documents is rewritten to the adopting
+        namespace's Clark form, while prefixed references into the XML
+        Schema namespace stay untouched.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:group name="g3">'
+            '<xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>'
+            "</xs:group>"
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:include schemaLocation="inner.xsd"/>'
+            '<xs:complexType name="baseType"><xs:group ref="g3"/></xs:complexType>'
+            '<xs:element name="base-e" type="baseType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            '  <xs:element name="root" type="baseType"/>'
+            "</xs:schema>"
+        )
+        Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        composed = registry["schema"][0].xsdElement
+        group_refs = {child.get("ref") for child in composed.iter() if child.tag.endswith("}group")}
+        # The adopted reference is the Clark literal; the bare lexical
+        # form is gone.
+        assert "{urn:redef}g3" in group_refs
+        assert "g3" not in group_refs
+        type_refs = {
+            child.get("type")
+            for child in composed.iter()
+            if child.tag.endswith("}element") and child.get("type") is not None
+        }
+        assert "{urn:redef}baseType" in type_refs
+        # Prefixed references into the XML Schema namespace are NOT
+        # rewritten by adoption.
+        assert "xs:string" in type_refs
+
+    def test_adopted_nested_circular_redefine_stays_a_warning(self, tmp_path):
+        """An adopted base's nested circular redefine keeps schU1's lenient verdict.
+
+        The corpus schU1 case (a same-namespace circular redefine pair)
+        is a warning, not an error: the re-entered document's
+        declarations are already in the composition tree, so the cycle
+        is skipped leniently. The adopted variant here -- the circular
+        pair lives in no-namespace documents that a namespaced schema
+        chameleon-adopts through its own ``xs:redefine`` -- must keep
+        that verdict: the leniency keys on the document's *own* root
+        namespace, not the adopting one, so adoption must not turn the
+        cycle into a hard error.
+        """
+        (tmp_path / "b.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="a.xsd">'
+            '    <xs:attributeGroup name="a-g1">'
+            '      <xs:attribute name="a1" type="xs:int"/>'
+            '      <xs:attribute name="a2" type="xs:int"/>'
+            "    </xs:attributeGroup>"
+            "  </xs:redefine>"
+            '  <xs:attributeGroup name="b-g1">'
+            '    <xs:attribute name="b1"/>'
+            '    <xs:attribute name="b2"/>'
+            "  </xs:attributeGroup>"
+            "</xs:schema>"
+        )
+        (tmp_path / "a.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="b.xsd">'
+            '    <xs:attributeGroup name="b-g1">'
+            '      <xs:attribute name="b1" type="xs:int"/>'
+            '      <xs:attribute name="b2" type="xs:int"/>'
+            "    </xs:attributeGroup>"
+            "  </xs:redefine>"
+            '  <xs:attributeGroup name="a-g1">'
+            '    <xs:attribute name="a1"/>'
+            '    <xs:attribute name="a2"/>'
+            "  </xs:attributeGroup>"
+            '  <xs:complexType name="a-ct">'
+            '    <xs:attributeGroup ref="b-g1"/>'
+            "  </xs:complexType>"
+            '  <xs:element name="e1" type="a-ct"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "main.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:main" xmlns="urn:main"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="a.xsd"/>'
+            '  <xs:element name="root" type="a-ct"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "main.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        warnings = [
+            issue.code for issue in schema.report.issues if issue.severity is IssueSeverity.WARNING
+        ]
+        assert warnings == ["compose-cycle"]
+        assert "a-ct" in schema.classes
+
+    def test_chameleon_redefine_nested_redefine_adopts_too(self, tmp_path):
+        """A redefined document's own *redefine* adopts as well.
+
+        ``base.xsd`` (no targetNamespace) is redefined by a namespaced
+        schema and itself redefines ``inner.xsd`` (also no
+        targetNamespace), restricting one of its groups. The whole
+        redefine chain is absorbed into the redefining schema's
+        namespace, so the inner document's declarations land there and
+        the restriction is judged against the rewritten original --
+        which only holds when the nested redefine adopts the namespace
+        the outer redefinition threaded through the include dispatch.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:group name="g3">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/>'
+            '<xs:element name="b" type="xs:string" minOccurs="0"/></xs:sequence>'
+            "</xs:group>"
+            '<xs:complexType name="innerType"><xs:sequence>'
+            '<xs:group ref="g3"/></xs:sequence></xs:complexType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="inner.xsd">'
+            '<xs:group name="g3">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "    </xs:group>"
+            "  </xs:redefine>"
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            '  <xs:element name="root" type="innerType"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        (tmp_path / "instance.xml").write_text('<root xmlns="urn:redef"><a>x</a></root>')
+        doc = schema.parse(str(tmp_path / "instance.xml"))
+        assert not doc.report.has_errors
+        # The restriction dropped the optional b: it is no longer admissible.
+        (tmp_path / "invalid.xml").write_text('<root xmlns="urn:redef"><a>x</a><b>y</b></root>')
+        doc = schema.parse(str(tmp_path / "invalid.xml"))
+        assert doc.report.has_errors
+
+    def test_nested_redefine_of_third_namespace_reports(self, tmp_path):
+        """A nested redefine may not target a third namespace.
+
+        ``base.xsd`` (no targetNamespace, adopted by the outer
+        redefinition into ``urn:redef``) redefines a document that
+        declares ``urn:other``: the rename would introduce the
+        components into the adopted namespace, which the composition
+        must reject (XSD 1.1 §4.2.4).
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:other">'
+            '<xs:complexType name="x"><xs:sequence/></xs:complexType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS}><xs:redefine schemaLocation="inner.xsd"/></xs:schema>'
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        codes = [issue.code for issue in schema.report.errors]
+        assert "compose-invalid" in codes
+
+    def test_nested_override_of_third_namespace_reports(self, tmp_path):
+        """A nested override may not target a third namespace.
+
+        ``base.xsd`` (no targetNamespace, adopted by the outer
+        redefinition into ``urn:redef``) overrides a document that
+        declares ``urn:other``: the override would splice the
+        components into the adopted namespace, which the composition
+        must reject (XSD 1.1 §4.2.5 clause 2 with the effective,
+        adopted namespace judging the match).
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:other">'
+            '<xs:complexType name="x"><xs:sequence/></xs:complexType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS}><xs:override schemaLocation="inner.xsd"/></xs:schema>'
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        codes = [issue.code for issue in schema.report.errors]
+        assert "compose-invalid" in codes
+
+    def test_nested_override_of_adopted_namespace_resolves(self, tmp_path):
+        """An override nested in an adopted base may target the adopted ns.
+
+        ``base.xsd`` (no targetNamespace) is redefined by a namespaced
+        schema and overrides a component of a document already
+        declaring that namespace: judged by the effective (adopted)
+        namespace the override is a same-namespace override and must
+        compose cleanly -- the pre-adoption reading saw the unstamped
+        base and rejected it as a namespace mismatch.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '<xs:element name="e" type="xs:string"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:override schemaLocation="inner.xsd">'
+            '    <xs:element name="e" type="xs:string"/>'
+            "  </xs:override>"
+            '<xs:complexType name="baseType"><xs:sequence>'
+            '<xs:element ref="e"/></xs:sequence></xs:complexType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            '  <xs:element name="root" type="baseType"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+
+    def test_chameleon_redefine_nested_override_adopts_too(self, tmp_path):
+        """A redefined document's own *override* adopts as well.
+
+        ``base.xsd`` (no targetNamespace) is redefined by a namespaced
+        schema and *overrides* a declaration from ``inner.xsd`` (also
+        no targetNamespace). The whole override chain is absorbed into
+        the redefining schema's namespace (Appendix F.1 applies through
+        it), so ``base.xsd``'s reference to the overridden element must
+        reach the overriding declaration -- which only holds when the
+        nested override adopts the namespace the outer redefinition
+        threaded through the include dispatch.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:element name="helper" type="xs:string"/>'
+            '<xs:complexType name="innerType"><xs:sequence>'
+            '<xs:element ref="helper"/></xs:sequence></xs:complexType>'
+            '<xs:element name="inner-e" type="innerType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:override schemaLocation="inner.xsd">'
+            '    <xs:element name="inner-e" type="innerType"/>'
+            "  </xs:override>"
+            '<xs:element name="base-e" type="innerType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            '  <xs:element name="root" type="innerType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text('<root xmlns="urn:redef"><helper>x</helper></root>')
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "instance.xml"))
+        assert not doc.report.has_errors
+
+        # Legacy mode matches by local name; the adopted chain is not
+        # otherwise disturbed.
+        (tmp_path / "legacy.xml").write_text("<root><helper>x</helper></root>")
+        schema = Schema.compile(str(tmp_path / "schema.xsd"))
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "legacy.xml"))
+        assert not doc.report.has_errors
+
+    def test_circular_include_chameleon_base_reference_resolves(self, tmp_path):
+        """Mutually including chameleon documents resolve their base types.
+
+        The two documents include each other (a legal cycle) and are
+        absorbed into the main schema's namespace, so each document's
+        rewritten base reference names the other document's declaration.
+        """
+        (tmp_path / "cyc_a.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '  <xs:include schemaLocation="cyc_b.xsd"/>'
+            '  <xs:complexType name="aType"><xs:complexContent>'
+            '<xs:extension base="bType">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            "</xs:schema>"
+        )
+        (tmp_path / "cyc_b.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '  <xs:include schemaLocation="cyc_a.xsd"/>'
+            '  <xs:complexType name="bType">'
+            '<xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>'
+            "</xs:complexType>"
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cyc" xmlns:c="urn:cyc">'
+            '  <xs:include schemaLocation="cyc_a.xsd"/>'
+            '  <xs:element name="r" type="aType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text("<r><b>y</b><a>x</a></r>")
+        doc = Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
+        assert not [issue for issue in doc.report.errors if issue.code == "unknown-type"]
+        assert not doc.report.has_errors
+        assert "aType" in doc.schema.classes
+        base_names = [base.__name__ for base in doc.schema.classes["aType"].__mro__]
+        assert "bType" in base_names
+
 
 # ---------------------------------------------------------------------------
 # Unresolved-resource severity (Task 11)
@@ -952,6 +1425,61 @@ class TestComposeInvalid:
             '<xs:element name="c22" type="xs:int"/></xs:choice></xs:group>',
         )
         assert "compose-invalid" in self._error_codes(doc)
+
+    def test_nested_redefine_self_reference_colon_adopted_uri_is_error(self, tmp_path):
+        # schR3, reached through a chameleon adoption whose namespace
+        # URI contains colons: the outer redefinition rewrites the
+        # nested redefine body's self reference into a Clark name, so
+        # the occurrence check must read its local part through the
+        # braces, not through the last colon of the URI.
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS}><xs:group name="g"><xs:choice>'
+            '<xs:element name="c21" type="xs:int"/>'
+            '<xs:element name="c22" type="xs:int"/>'
+            "</xs:choice></xs:group></xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS}><xs:redefine schemaLocation="inner.xsd">'
+            '<xs:group name="g"><xs:choice>'
+            '<xs:element name="c23" type="xs:int"/>'
+            '<xs:group ref="g" minOccurs="0"/>'
+            '<xs:element name="c24" type="xs:int"/>'
+            "</xs:choice></xs:group></xs:redefine></xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cycle:test" xmlns="urn:cycle:test">'
+            '<xs:redefine schemaLocation="base.xsd"/>'
+            '<xs:element name="root"><xs:complexType><xs:sequence>'
+            '<xs:group ref="g"/></xs:sequence></xs:complexType></xs:element>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert "compose-invalid" in [issue.code for issue in schema.report.errors]
+
+    def test_nested_redefine_self_reference_colon_adopted_uri_valid(self, tmp_path):
+        # The same adopted chain with a conforming self reference
+        # (exactly 1/1) stays clean.
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS}><xs:group name="g"><xs:sequence>'
+            '<xs:element name="c21" type="xs:int"/>'
+            "</xs:sequence></xs:group></xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS}><xs:redefine schemaLocation="inner.xsd">'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:group ref="g"/>'
+            '<xs:element name="c22" type="xs:int"/>'
+            "</xs:sequence></xs:group></xs:redefine></xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cycle:test" xmlns="urn:cycle:test">'
+            '<xs:redefine schemaLocation="base.xsd"/>'
+            '<xs:element name="root"><xs:complexType><xs:sequence>'
+            '<xs:group ref="g"/></xs:sequence></xs:complexType></xs:element>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
 
     def test_group_redefine_self_reference_one_one_is_valid(self, tmp_path):
         doc = self._redefine(

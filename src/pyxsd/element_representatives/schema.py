@@ -3,6 +3,7 @@ import copy
 from pyxsd.element_representatives.complex_type import ComplexType
 from pyxsd.element_representatives.element_representative import (
     ComponentTable,
+    get_active_component_namespaces,
     get_active_form_defaults,
     get_active_injected_builtin_ids,
     get_active_namespace_overrides,
@@ -78,6 +79,12 @@ class Schema(ComplexType):
         # map is captured once, by value, so later parsers cannot
         # rewrite this schema's component namespaces.
         self.namespaceOverrides = get_active_namespace_overrides()
+        # The source document of each spliced named component, captured
+        # with the same snapshot discipline. Legacy namespace mode
+        # reports every composed component in the main schema's
+        # namespace, so this is what tells two same-local-name
+        # declarations apart.
+        self.componentNamespaces = get_active_component_namespaces()
         # Ids of the parser-injected built-in declarations (xml/xsi/xlink
         # namespace attributes), captured with the same snapshot
         # discipline. A user schema targeting a well-known namespace is

@@ -46,6 +46,7 @@ class CompileContextProtocol(Protocol):
     namespace_context: Any
     directive_ids: dict[str, Any]
     composed_schema_roots: dict[int, Any]
+    composed_schema_namespaces: dict[int, str | None]
     composed_element_ids: set[int]
     composed_target_namespaces: set[str]
     resolved_imports: set[str]

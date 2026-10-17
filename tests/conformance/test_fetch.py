@@ -1,11 +1,11 @@
-"""Tests for the large-schema benchmark corpus fetcher.
+"""Tests for the large-schema conformance corpus fetcher.
 
 The corpus itself is downloaded on demand into a gitignored cache; these
 tests cover the manifest's shape, the in-repo (``local``) entries, and the
 cache directory's gitignore status, all without network access.
 """
 
-from tests.benchmarks.fetch import SCHEMAS, cache_dir, entry_point
+from tests.conformance.fetch import SCHEMAS, cache_dir, entry_point
 
 
 def test_manifest_entries_are_well_formed():
@@ -62,7 +62,7 @@ def test_interrupted_extraction_leaves_no_trusted_cache(tmp_path, monkeypatch):
     import zipfile
 
     import pytest
-    from tests.benchmarks import fetch as fetch_mod
+    from tests.conformance import fetch as fetch_mod
 
     archive = tmp_path / "bench.zip"
     with zipfile.ZipFile(archive, "w") as zipped:

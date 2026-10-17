@@ -64,6 +64,19 @@ def local_name(name: str) -> str:
     return name
 
 
+def local_part(name: str) -> str:
+    """Return the local part of a name in lexical QName or Clark form.
+
+    Schema-time lookups are fed both spellings: an authored reference is
+    lexical (``hl7:QTY``) while chameleon pre-processing (XSD 1.1
+    Appendix F.1) rewrites an unprefixed reference into the expanded
+    (Clark) name of the adopting namespace, whose URI may itself contain
+    colons. Stripping the namespace braces first keeps both spellings
+    resolving to the same local part.
+    """
+    return local_name(name).rpartition(":")[2]
+
+
 def namespace_of(name: str) -> str | None:
     """Return the namespace URI of a Clark name, or ``None``.
 

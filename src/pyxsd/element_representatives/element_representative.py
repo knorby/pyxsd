@@ -76,7 +76,7 @@ import logging
 import re
 
 from pyxsd import xsd_data_types
-from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, namespace_of
+from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, local_part, namespace_of
 from pyxsd.schema_context import context_or_ambient, current_context, last_components
 from pyxsd.validation import IssueSeverity, report_or_log
 from pyxsd.wildcards import (
@@ -88,6 +88,10 @@ from pyxsd.wildcards import (
 from pyxsd.xsd_data_types import XsdDataType
 
 logger = logging.getLogger(__name__)
+
+#: Sentinel distinguishing "not computed yet" from a computed ``None``
+#: in per-representative memo slots.
+_UNSET = object()
 
 # XSD component kinds whose declarations live in separate symbol
 # spaces: an element and a type may legally share a name, and a type
@@ -453,7 +457,8 @@ class ElementRepresentative:
         schema-namespace prefixes ``xs:`` and ``xsd:`` always denote
         built-ins; any other qualified name is looked up in the
         registry first (by full name, then by local name so prefixed
-        references like ``my:customType`` resolve), with a built-in
+        references like ``my:customType`` and the Clark spelling a
+        chameleon rewrite writes resolve), with a built-in
         fallback on the local name so default-namespace schemas
         (``type="string"``) still resolve. The qualified lookup and
         its local-name fallback are one resolution attempt: the pair
@@ -469,12 +474,11 @@ class ElementRepresentative:
             return cls._typeFromExpandedName(xsdTypeName, table, host, warn=warn)
         if not xsdTypeName.startswith(("xs:", "xsd:")):
             getFromNameReturned = table.getFromName(xsdTypeName, kind="type", warn=False)
+            local = local_part(xsdTypeName)
             if not getFromNameReturned:
-                local = xsdTypeName.split(":", 1)[-1]
                 getFromNameReturned = table.getFromName(local, kind="type", warn=False)
             if getFromNameReturned:
                 return getFromNameReturned.clsFor(host)
-            local = xsdTypeName.split(":", 1)[-1]
             primitive = _PRIMITIVE_TYPES.get(local)
             if primitive is not None:
                 return primitive
@@ -653,6 +657,12 @@ class ElementRepresentative:
         holds the expanded spec; calling it again is a no-op. A
         non-wildcard ER, a missing spec or a missing namespace context
         leaves the spec untouched.
+
+        The rebuilt spec keeps the declaring document's target
+        namespace (``authoredNamespace``), not the namespace a legacy
+        compile reports: ``##targetNamespace``/``##other`` must keep
+        their source meaning for the elements the wildcard is compared
+        against, which carry their authored namespaces.
         """
         old = getattr(self, "wildcardSpec", None)
         if old is None:
@@ -660,7 +670,7 @@ class ElementRepresentative:
         spec = wildcard_spec(
             self.tagAttributes,
             is_attribute=old.is_attribute,
-            target_namespace=self.getNamespace(),
+            target_namespace=self.authoredNamespace(),
             resolve_qname=self._wildcardQNameResolver(),
         )
         if spec == old:
@@ -1010,17 +1020,47 @@ class ElementRepresentative:
         local = self.name
         if local is None:
             return None
-        if parser is None:
-            parser = getattr(self, "host", None) or getattr(self.getSchema(), "host", None)
+        parser = self._effectiveParser(parser)
         mode = getattr(parser, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
             return local
-        uri = self.getNamespace()
+        return self.expandedInstanceName(is_attribute=is_attribute, parser=parser)
+
+    def expandedInstanceName(self, *, is_attribute=False, parser=None):
+        """Returns this use's namespace-aware name, in every mode.
+
+        This is the identity attribute-use collisions are compared on:
+        the use's own expanded name, a reference site taking the
+        expanded name of the QName it names -- resolved through its
+        document's prefix bindings, so the answer does not depend on
+        the mode's instance-matching rules. Unlike :meth:`instanceName`
+        it does not discard the namespace in ``legacy`` mode, where two
+        uses with one local name in different namespaces (or with
+        different forms) are still distinct (attQ019).
+        """
+        referred = getattr(self, "referredAttribute", None)
+        if referred is None:
+            referred = getattr(self, "referredElement", None)
+        if referred is not None and referred is not self:
+            return referred.expandedInstanceName(is_attribute=is_attribute, parser=parser)
+        local = self.name
+        if local is None:
+            return None
+        if getattr(self, "isAttributeRef", False) or getattr(self, "isElementRef", False):
+            # The reference's authored QName is the identity, even when
+            # the reference has not been resolved yet (legacy mode
+            # resolves against same-local-name candidates regardless of
+            # namespace, so the resolved declaration alone cannot tell
+            # ``xml:lang`` from an unqualified ``lang``).
+            authored = self._authoredQName()
+            if authored is not None:
+                return authored
+        uri = self.authoredNamespace()
         if uri is None:
             return local
         qualified = self.isGlobalDeclaration()
         if not qualified:
-            schema = self.getSchema()
+            schema = self._effectiveSchema()
             qualified = self._localDeclarationIsQualified(schema, is_attribute)
         if qualified:
             return clark(uri, local)
@@ -1071,6 +1111,188 @@ class ElementRepresentative:
         )
         return default == "qualified"
 
+    def _effectiveParser(self, parser=None):
+        """The parser this declaration resolves through.
+
+        ``parser`` overrides the attached parser, which is needed while
+        a class is being built before its descriptors own ``host``; the
+        schema's host is the fallback, because during class building
+        the parser is attached to the schema rather than to every
+        declaration.
+        """
+        if parser is not None:
+            return parser
+        parser = getattr(self, "host", None)
+        if parser is not None:
+            return parser
+        getter = getattr(self, "getSchema", None)
+        if getter is None:
+            return None
+        try:
+            schema = getter()
+        except Exception:  # pragma: no cover - defensive
+            return None
+        return getattr(schema, "host", None)
+
+    def _authoredQName(self, value=None) -> str | None:
+        """Resolves a QName value in its own document, in every mode.
+
+        Unlike :meth:`resolveSchemaQName`, the QName is resolved even
+        in legacy mode (no diagnostic is raised for an unbound
+        prefix): the prefix bindings recorded for the element give the
+        authored expanded name. Returns ``None`` when the value does
+        not name a namespace (a bare local name or an unresolvable
+        prefix).
+        """
+        value = getattr(self, "ref", None) if value is None else value
+        if not value:
+            return None
+        context = getattr(self._effectiveSchema(), "namespaceContext", None)
+        if context is None:
+            return None
+        element = getattr(self, "xsdElement", None)
+        if element is None:
+            return None
+        try:
+            resolved = context.resolve(element, value)
+        except NamespaceError:
+            return None
+        return resolved if namespace_of(resolved) is not None else None
+
+    def _effectiveSchema(self):
+        """The schema ER this declaration belongs to, if reachable."""
+        getter = getattr(self, "getSchema", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:  # pragma: no cover - defensive
+            return None
+
+    def authoredNamespace(self) -> str | None:
+        """The namespace of the schema document that wrote this declaration.
+
+        Legacy namespace mode reports every composed component in the
+        main schema's ``targetNamespace``, which hides which document
+        declared it: two composed documents may declare named types
+        that share a local name. The composition records each element
+        of a spliced named component's source namespace, and this
+        reads it back; a component of the main document has no record
+        and falls back to its reported namespace, which is that
+        document's own.
+
+        The answer is memoized on the representative: every input is
+        frozen before any child representative is built (the
+        composition snapshots ``componentNamespaces`` /
+        ``namespaceOverrides`` at ``Schema`` construction, and
+        ``parent`` is never reassigned), and the hot content-model
+        comparisons ask for the same declaration's namespace many
+        times — each recomputation walked the tree up to the schema
+        twice.
+        """
+        cached = self.__dict__.get("_authoredNS", _UNSET)
+        if cached is not _UNSET:
+            return cached
+        element = getattr(self, "xsdElement", None)
+        if element is None:
+            value = self.getNamespace()
+        else:
+            sourceNamespaces = getattr(self._effectiveSchema(), "componentNamespaces", None)
+            if sourceNamespaces:
+                recorded = sourceNamespaces.get(id(element))
+                if recorded is not None:
+                    self.__dict__["_authoredNS"] = recorded
+                    return recorded
+            value = self.getNamespace()
+        self.__dict__["_authoredNS"] = value
+        return value
+
+    def authoredNamespaceKnown(self) -> bool:
+        """Whether composition recorded this declaration's source namespace.
+
+        Every spliced named component carries a record; a legacy merge
+        winner whose document was parsed again for a second import
+        carries none, and without one it is indistinguishable from a
+        main-document declaration. Namespace-sensitive legacy
+        comparisons treat that case as *unknown* (the documented
+        local-name leniency) instead of trusting the merged namespace.
+        """
+        element = getattr(self, "xsdElement", None)
+        if element is None:
+            return False
+        sourceNamespaces = getattr(self._effectiveSchema(), "componentNamespaces", None)
+        if not sourceNamespaces:
+            return False
+        return id(element) in sourceNamespaces
+
+    def referenceNamespace(self, reference: str) -> str | None:
+        """The namespace a QName reference written here denotes, or ``None``.
+
+        Like :meth:`_authoredQName`, the reference is resolved in every
+        mode: a legacy compile still records each document's own prefix
+        bindings, and they say which document's components a
+        ``type``/``memberTypes``/``base`` reference names. ``None``
+        means the reference names no namespace (an unbound prefix, or a
+        bare local name with no default namespace in scope), so the
+        reference can only be matched by local name.
+        """
+        if not reference:
+            return None
+        context = getattr(self._effectiveSchema(), "namespaceContext", None)
+        element = getattr(self, "xsdElement", None)
+        if context is None or element is None:
+            return None
+        try:
+            resolved = context.resolve(element, reference)
+        except NamespaceError:
+            return None
+        return namespace_of(resolved)
+
+    def sameNameTypeDeclarations(self, local: str) -> list:
+        """Global type declarations in the composed tree named *local*.
+
+        The component table keeps one declaration per component kind,
+        name and namespace, and a legacy compile reports every composed
+        document's namespace as the main schema's, so a same-local-name
+        declaration that lost the merge is reachable only through the
+        composed tree. The lookup index is built once, lazily: the tree
+        is complete before class building starts, which is what asks
+        for this.
+        """
+        schema = self._effectiveSchema()
+        if schema is None:
+            return []
+        index = getattr(schema, "typeDeclarationsByLocalName", None)
+        if index is None:
+            index = {}
+            for child in getattr(schema, "processedChildren", None) or ():
+                if child is None or componentKind(child) != "type":
+                    continue
+                name = getattr(child, "name", None)
+                if isinstance(name, str):
+                    index.setdefault(name, []).append(child)
+            schema.typeDeclarationsByLocalName = index
+        return [child for child in index.get(local, ()) if child is not self]
+
+    def referenceTargetDeclaration(self, reference: str):
+        """The declaration in the composed tree that *reference* denotes.
+
+        Returns the global type declaration the reference names in the
+        schema document that wrote it, or ``None`` when the reference
+        resolves to no namespace or that document declares no such
+        type (an inline or built-in name, or a reference into a
+        namespace no schema supplied) — in which case the caller falls
+        back to the merged lookup.
+        """
+        namespace = self.referenceNamespace(reference)
+        if namespace is None:
+            return None
+        local = local_part(reference)
+        for candidate in self.sameNameTypeDeclarations(local):
+            if candidate.authoredNamespace() == namespace:
+                return candidate
+        return None
+
     def resolveSchemaQName(self, value, *, parser=None):
         """Resolves a lexical QName written in this schema element.
 
@@ -1087,13 +1309,7 @@ class ElementRepresentative:
         ``parser`` overrides the attached parser, which is needed while
         a class is being built before its descriptors own ``host``.
         """
-        if parser is None:
-            parser = getattr(self, "host", None)
-            if parser is None:
-                # During class building the parser is attached to the
-                # schema rather than to every declaration; fall back to
-                # it so schema-time references resolve in strict mode.
-                parser = getattr(self.getSchema(), "host", None)
+        parser = self._effectiveParser(parser)
         mode = getattr(parser, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
             return value
@@ -1127,15 +1343,43 @@ class ElementRepresentative:
         unprefixed name with no default namespace stays in no namespace
         (AU_attrDecl00101m1_n). In ``legacy`` mode, or when the prefix
         cannot be resolved, the reference's local name selects the first
-        same-named candidate. Returns ``None`` when nothing matches.
+        same-named candidate; the local name is the reference with any
+        lexical ``prefix:`` and Clark ``{uri}`` spelling removed, so
+        ``xml:lang`` reaches the ``lang`` declaration an import
+        composed. Returns ``None`` when nothing matches.
         """
         if value is None:
             return None
+        parser = self._effectiveParser(parser)
         resolved = self.resolveSchemaQName(value, parser=parser)
-        local = local_name(resolved)
-        uri = namespace_of(resolved)
         mode = getattr(parser, "mode", None)
         strict = getattr(mode, "namespaces", "legacy") == "strict"
+        # Strict mode expands the reference to its Clark name, whose
+        # braces ``local_name`` strips; legacy mode leaves the authored
+        # lexical form, whose ``prefix:`` must be stripped here for the
+        # local-name candidate match.
+        local = local_name(resolved) if strict else local_part(resolved)
+        uri = namespace_of(resolved)
+        lexicalNamespace = None
+        if (
+            uri is None
+            and not strict
+            and value
+            and ":" in value
+            and not str(value).lstrip().startswith("{")
+        ):
+            # A prefixed legacy reference still names the namespace its
+            # prefix denotes in the writing document, so a
+            # same-local-name declaration *known* to live in a
+            # different namespace is never its target (``xml:bogus``
+            # must not reach an unrelated ``bogus`` another import
+            # contributed). A legacy merge winner with no recorded
+            # namespace is indistinguishable from a main-document
+            # declaration, so the documented local-name leniency keeps
+            # applying to it. Unprefixed references — with or without a
+            # default namespace in scope — and unresolvable prefixes
+            # name nothing enforceable and keep the fallback entirely.
+            lexicalNamespace = self.referenceNamespace(value)
         for candidate in candidates:
             if getattr(candidate, "name", None) != local:
                 continue
@@ -1143,6 +1387,14 @@ class ElementRepresentative:
             candidate_ns = getter() if getter is not None else None
             if uri is not None:
                 if candidate_ns != uri:
+                    continue
+            elif lexicalNamespace is not None:
+                known = getattr(candidate, "authoredNamespaceKnown", None)
+                if (
+                    known is not None
+                    and known()
+                    and candidate.authoredNamespace() != lexicalNamespace
+                ):
                     continue
             elif strict and candidate_ns not in (None, ""):
                 # An unprefixed QName resolves through the in-scope
@@ -1514,6 +1766,19 @@ def set_active_namespace_overrides(overrides: dict[int, str | None]) -> None:
     afterwards cannot rewrite declarations that already captured it.
     """
     context_or_ambient().namespace_overrides = dict(overrides)
+
+
+def get_active_component_namespaces() -> dict[int, str | None]:
+    """Returns a snapshot of the spliced components' source namespaces.
+
+    Keyed by ``id(xsdElement)`` of each named component appended to the
+    composed tree. Unlike the namespace overrides this is recorded in
+    every mode: legacy mode merges the composed documents into one
+    namespace, so only this map tells a declaration which document it
+    was written in. Read once, at ``Schema`` construction time, with
+    the same snapshot discipline as the overrides.
+    """
+    return dict(context_or_ambient().component_namespaces)
 
 
 def get_active_injected_builtin_ids() -> set[int]:
