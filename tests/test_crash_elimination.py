@@ -685,7 +685,7 @@ class TestMalformedClarkAttributeType:
 class TestOversizedPatternRepetition:
     """A legal-looking XSD pattern whose repetition count exceeds what
     ``re`` can build (``a{4294967296}``) escaped
-    ``facets._compile_pattern`` as a raw ``OverflowError`` instead of
+    ``facets.compile_pattern`` as a raw ``OverflowError`` instead of
     becoming a ``facet`` schema error."""
 
     def test_reports_facet_error(self, tmp_path):

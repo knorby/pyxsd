@@ -36,10 +36,13 @@ import decimal
 import math
 import re
 import struct
+import urllib.parse
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, ClassVar, Self
+
+from elementpath import datatypes as _ep
 
 __all__ = [
     "ENTITIES",
@@ -104,6 +107,35 @@ class XsdDataType:
     # can distinguish the 46 built-ins from intermediate helper classes
     # that merely inherit a name.
     name: ClassVar[str]
+
+    @classmethod
+    def enumerations(cls) -> tuple[Any, ...]:
+        """The effective enumeration facet values for this type.
+
+        Values are instances of the restriction's base datatype, after
+        intersection across restriction steps.  A type with no enumeration
+        facets returns an empty tuple.
+        """
+        constraints = getattr(cls, "_facetConstraints_", None)
+        if constraints is None:
+            return ()
+        return constraints.enumeration_values
+
+    @classmethod
+    def patterns(cls) -> tuple[tuple[re.Pattern[str], ...], ...]:
+        """The pattern facets in effect for this type, as compiled regexes.
+
+        The outer tuple holds one entry per restriction step (all must
+        hold); each inner tuple holds that step's sibling ``xs:pattern``
+        facets (any may match).  The patterns are the same objects the
+        validator applies, translated from the XSD pattern dialect by
+        :func:`pyxsd.facets.compile_pattern`.  A type with no pattern
+        facets returns an empty tuple.
+        """
+        constraints = getattr(cls, "_facetConstraints_", None)
+        if constraints is None:
+            return ()
+        return constraints.patterns
 
     @classmethod
     def _unvalidated(cls) -> Any:
@@ -352,6 +384,20 @@ class AnyURI(Token):
 
     name = "anyURI"
 
+    def to_parsed_uri(self) -> urllib.parse.ParseResult:
+        """The lexical text run through :func:`urllib.parse.urlparse`, best-effort
+        by nature: XSD's lexical space admits characters meant to be URI-escaped
+        (e.g. spaces), so the result reflects the literal text.  A text that
+        ``urlparse`` rejects (an invalid bracketed IPv6 host, for example)
+        raises ``ValueError`` naming the lexical value.
+        """
+        try:
+            return urllib.parse.urlparse(str(self))
+        except ValueError as exc:
+            raise ValueError(
+                f"Cannot convert xs:anyURI {str(self)!r} to urllib.parse.ParseResult: {exc}"
+            ) from exc
+
 
 class QName(_PatternString):
     """``xs:QName``: optionally prefixed name (``prefix:local``).
@@ -368,6 +414,7 @@ class QName(_PatternString):
     _resolved_: bool
     _uri_: str | None
     _local_: str
+    _prefix_: str
 
     def __new__(cls, val: str) -> Self:
         instance: Self = super().__new__(cls, val)
@@ -385,7 +432,39 @@ class QName(_PatternString):
         instance._resolved_ = bindings is not None
         instance._uri_ = bindings.get(prefix) if bindings is not None else None
         instance._local_ = local
+        instance._prefix_ = prefix
         return instance
+
+    def to_expanded_name(self, *, strict: bool = False) -> str:
+        """The name in Clark notation, resolved against the ambient context.
+
+        Resolution depends on the :func:`qname_context` active when the value
+        was constructed: a resolved value whose prefix is bound to a namespace
+        URI becomes ``{uri}local``, while a resolved unprefixed name with no
+        default namespace becomes the bare local name.  The default is
+        best-effort, returning the lexical form for a value constructed without
+        a context and the bare local name for a prefixed value whose prefix the
+        active context did not bind; with ``strict=True`` both of those instead
+        raise ``ValueError`` naming the lexical value, so an inaccurate
+        conversion is refused rather than silently dropping information.  A
+        resolved unprefixed name with no default namespace is complete as its
+        bare local name and so never raises under ``strict``.
+        """
+        if not self._resolved_:
+            if strict:
+                raise ValueError(
+                    f"Cannot convert unresolved xs:QName {str(self)!r} to an "
+                    f"expanded name: it was constructed without a qname_context"
+                )
+            return str(self)
+        if self._uri_:
+            return f"{{{self._uri_}}}{self._local_}"
+        if strict and self._prefix_:
+            raise ValueError(
+                f"Cannot convert xs:QName {str(self)!r} to an expanded name: "
+                f"prefix {self._prefix_!r} was not bound in the qname_context"
+            )
+        return self._local_
 
 
 class _ListString(String):
@@ -506,12 +585,20 @@ class Base64Binary(String):
             raise TypeError(f"Not a valid base64Binary: {text!r}")
         return super().__new__(cls, text)
 
+    def to_bytes(self) -> bytes:
+        """The decoded bytes; the conversion is exact."""
+        return base64.b64decode(str(self), validate=True)
+
 
 class HexBinary(_PatternString):
     """``xs:hexBinary``: hex-encoded binary data, in pairs of digits."""
 
     name = "hexBinary"
     _pattern = re.compile(r"([0-9a-fA-F]{2})*")
+
+    def to_bytes(self) -> bytes:
+        """The decoded bytes; the conversion is exact."""
+        return bytes.fromhex(str(self))
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +683,7 @@ class DateTime(_PatternString):
             )
         return instance
 
-    def to_datetime(self) -> _datetime.datetime:
+    def to_datetime(self, *, strict: bool = False) -> _datetime.datetime:
         """The value as a :class:`datetime.datetime`.
 
         An explicit timezone offset becomes a :class:`datetime.timezone`;
@@ -606,7 +693,9 @@ class DateTime(_PatternString):
         and raises ``ValueError``.  XSD's year 0000, negative (BCE)
         years, and extended years above 9999 have no :mod:`datetime`
         representation and raise ``ValueError`` naming the lexical
-        value.
+        value.  A fractional second finer than a microsecond is
+        truncated; with ``strict=True`` a non-zero sub-microsecond
+        fraction raises ``ValueError`` naming the lexical value instead.
         """
         text = str(self)
         # The constructor validated this lexical form, so the match cannot be None.
@@ -618,6 +707,8 @@ class DateTime(_PatternString):
                 f"Cannot convert xs:dateTime {text!r} to datetime.datetime: "
                 f"year {year} is outside 1..9999"
             )
+        if strict:
+            _check_sub_microseconds(match.group(7), type(self).name, text)
         rollover = _datetime.timedelta(0)
         if hour == 24:  # 24:00:00 is the end-of-day spelling: the next midnight
             hour, rollover = 0, _datetime.timedelta(days=1)
@@ -640,6 +731,27 @@ class DateTime(_PatternString):
                 f"Cannot convert xs:dateTime {text!r} to datetime.datetime: "
                 "the end-of-day rollover leaves the datetime range"
             ) from error
+
+    def to_gregorian(self, *, strict: bool = False) -> _ep.DateTime:
+        """The value as an :class:`elementpath.datatypes.DateTime`.
+
+        This is the conversion to use for values outside the
+        :mod:`datetime` range; the result carries the XSD value
+        semantics (ordering, optional timezone, extended years), and
+        the year uses XSD 1.1 numbering, where lexical ``0000`` is
+        1 BCE and maps to ``-1``.  elementpath holds at most
+        microsecond-resolution fractions, so a fractional second finer
+        than a microsecond is truncated; with ``strict=True`` a non-zero
+        sub-microsecond fraction raises ``ValueError`` naming the lexical
+        value instead.
+        """
+        text = str(self)
+        if strict:
+            # The constructor validated this lexical form, so the match cannot be None.
+            match = _TEMPORAL_DATETIME.match(text)
+            assert match is not None
+            _check_sub_microseconds(match.group(7), type(self).name, text)
+        return _ep_fromstring(_ep.DateTime, type(self).name, text)
 
 
 class DateTimeStamp(DateTime):
@@ -677,24 +789,42 @@ class Date(_PatternString):
             )
         return instance
 
-    def to_date(self) -> _datetime.date:
-        """The value as a :class:`datetime.date`, discarding any timezone.
+    def to_date(self, *, strict: bool = False) -> _datetime.date:
+        """The value as a :class:`datetime.date`.
 
         ``datetime.date`` carries no timezone, so an explicit offset in
-        the lexical form is dropped.  XSD's year 0000, negative (BCE)
-        years, and extended years above 9999 have no :mod:`datetime`
-        representation and raise ``ValueError`` naming the lexical value.
+        the lexical form is dropped; with ``strict=True`` that dropped
+        offset raises ``ValueError`` naming the lexical value instead.
+        XSD's year 0000, negative (BCE) years, and extended years above
+        9999 have no :mod:`datetime` representation and raise
+        ``ValueError`` naming the lexical value.
         """
         text = str(self)
         # The constructor validated this lexical form, so the match cannot be None.
         match = _TEMPORAL_DATE.match(text)
         assert match is not None
+        if strict and match.group(4) is not None:
+            raise ValueError(
+                f"Cannot convert xs:date {text!r} to datetime.date without loss: "
+                f"the timezone offset would be dropped"
+            )
         year, month, day = (int(match.group(i)) for i in range(1, 4))
         if not 1 <= year <= 9999:
             raise ValueError(
                 f"Cannot convert xs:date {text!r} to datetime.date: year {year} is outside 1..9999"
             )
         return _datetime.date(year, month, day)
+
+    def to_gregorian(self) -> _ep.Date:
+        """The value as an :class:`elementpath.datatypes.Date`.
+
+        This is the conversion to use for values outside the
+        :mod:`datetime` range; the result carries the XSD value
+        semantics (ordering, optional timezone, extended years), and
+        the year uses XSD 1.1 numbering, where lexical ``0000`` is
+        1 BCE and maps to ``-1``.
+        """
+        return _ep_fromstring(_ep.Date, type(self).name, str(self))
 
 
 class Time(_PatternString):
@@ -703,13 +833,16 @@ class Time(_PatternString):
     name = "time"
     _pattern = re.compile(rf"{_TIME_BODY}{_TIMEZONE}")
 
-    def to_time(self) -> _datetime.time:
+    def to_time(self, *, strict: bool = False) -> _datetime.time:
         """The value as a :class:`datetime.time`.
 
         An explicit timezone offset becomes a :class:`datetime.timezone`;
         an absent one yields a naive value.  The end-of-day spelling
         ``24:00:00`` is legal ``xs:time`` but has no time-of-day value,
-        so it raises ``ValueError`` naming the lexical value.
+        so it raises ``ValueError`` naming the lexical value.  A
+        fractional second finer than a microsecond is truncated; with
+        ``strict=True`` a non-zero sub-microsecond fraction raises
+        ``ValueError`` naming the lexical value instead.
         """
         text = str(self)
         # The constructor validated this lexical form, so the match cannot be None.
@@ -721,6 +854,8 @@ class Time(_PatternString):
                 f"Cannot convert xs:time {text!r} to datetime.time: "
                 f"the end-of-day spelling 24:00:00 has no time-of-day value"
             )
+        if strict:
+            _check_sub_microseconds(match.group(4), type(self).name, text)
         return _datetime.time(
             hour,
             minute,
@@ -729,12 +864,40 @@ class Time(_PatternString):
             _timezone(match.group(5)),
         )
 
+    def to_gregorian(self, *, strict: bool = False) -> _ep.Time:
+        """The value as an :class:`elementpath.datatypes.Time`.
+
+        This is the conversion to use for values outside the
+        :mod:`datetime` range; the result carries the XSD value
+        semantics (ordering and optional timezone).  elementpath holds
+        at most microsecond-resolution fractions, so a fractional second
+        finer than a microsecond is truncated; with ``strict=True`` a
+        non-zero sub-microsecond fraction raises ``ValueError`` naming
+        the lexical value instead.
+        """
+        text = str(self)
+        if strict:
+            # The constructor validated this lexical form, so the match cannot be None.
+            match = _TEMPORAL_TIME.match(text)
+            assert match is not None
+            _check_sub_microseconds(match.group(4), type(self).name, text)
+        return _ep_fromstring(_ep.Time, type(self).name, text)
+
 
 class GYear(_PatternString):
     """``xs:gYear``: a calendar year, e.g. ``2006``."""
 
     name = "gYear"
     _pattern = re.compile(rf"{_YEAR}{_TIMEZONE}")
+
+    def to_gregorian(self) -> _ep.GregorianYear:
+        """The value as an :class:`elementpath.datatypes.GregorianYear`.
+
+        The result carries the XSD value semantics (ordering, optional
+        timezone, extended years); the year uses XSD 1.1 numbering,
+        where lexical ``0000`` is 1 BCE and maps to ``-1``.
+        """
+        return _ep_fromstring(_ep.GregorianYear, type(self).name, str(self))
 
 
 class GYearMonth(_PatternString):
@@ -743,12 +906,29 @@ class GYearMonth(_PatternString):
     name = "gYearMonth"
     _pattern = re.compile(rf"{_YEAR}-{_MONTH}{_TIMEZONE}")
 
+    def to_gregorian(self) -> _ep.GregorianYearMonth:
+        """The value as an :class:`elementpath.datatypes.GregorianYearMonth`.
+
+        The result carries the XSD value semantics (ordering, optional
+        timezone, extended years); the year uses XSD 1.1 numbering,
+        where lexical ``0000`` is 1 BCE and maps to ``-1``.
+        """
+        return _ep_fromstring(_ep.GregorianYearMonth, type(self).name, str(self))
+
 
 class GMonth(_PatternString):
     """``xs:gMonth``: e.g. ``--08``."""
 
     name = "gMonth"
     _pattern = re.compile(rf"--{_MONTH}{_TIMEZONE}")
+
+    def to_gregorian(self) -> _ep.GregorianMonth:
+        """The value as an :class:`elementpath.datatypes.GregorianMonth`.
+
+        The result carries the XSD value semantics (ordering and
+        optional timezone).
+        """
+        return _ep_fromstring(_ep.GregorianMonth, type(self).name, str(self))
 
 
 class GMonthDay(_PatternString):
@@ -769,12 +949,28 @@ class GMonthDay(_PatternString):
             raise TypeError(f"Not a valid {cls.name}: {instance!r}")
         return instance
 
+    def to_gregorian(self) -> _ep.GregorianMonthDay:
+        """The value as an :class:`elementpath.datatypes.GregorianMonthDay`.
+
+        The result carries the XSD value semantics (ordering and
+        optional timezone).
+        """
+        return _ep_fromstring(_ep.GregorianMonthDay, type(self).name, str(self))
+
 
 class GDay(_PatternString):
     """``xs:gDay``: e.g. ``---30``."""
 
     name = "gDay"
     _pattern = re.compile(rf"---{_DAY}{_TIMEZONE}")
+
+    def to_gregorian(self) -> _ep.GregorianDay:
+        """The value as an :class:`elementpath.datatypes.GregorianDay`.
+
+        The result carries the XSD value semantics (ordering and
+        optional timezone).
+        """
+        return _ep_fromstring(_ep.GregorianDay, type(self).name, str(self))
 
 
 _DURATION_PARTS = re.compile(
@@ -810,6 +1006,76 @@ class Duration(String):
             raise TypeError(f"Not a valid {cls.name}: {text!r}")
         return super().__new__(cls, text)
 
+    def to_timedelta(self, *, strict: bool = False) -> _datetime.timedelta:
+        """The day/time value as a :class:`datetime.timedelta`.
+
+        A duration carrying a year or month fragment is calendar-dependent
+        and has no fixed :class:`datetime.timedelta` value, so it raises
+        ``ValueError`` naming the lexical value.  A fractional second finer
+        than a microsecond is truncated; with ``strict=True`` a non-zero
+        sub-microsecond fraction raises ``ValueError`` naming the lexical
+        value instead.  A leading ``-`` negates the whole result.  A value
+        outside :class:`datetime.timedelta`'s range raises ``ValueError``
+        naming the lexical value.
+        """
+        text = str(self)
+        # The constructor validated this lexical form, so the match cannot be None.
+        match = _DURATION_PARTS.fullmatch(text)
+        assert match is not None
+        years, months, days, hours, minutes, seconds = match.groups()
+        if years is not None or months is not None:
+            raise ValueError(
+                f"Cannot convert xs:{type(self).name} {text!r} to datetime.timedelta: "
+                f"year and month fragments are calendar-dependent"
+            )
+        whole = 0
+        digits: str | None = None
+        if seconds is not None:
+            whole_str, _, fraction = seconds[:-1].partition(".")
+            whole = int(whole_str)
+            digits = fraction or None
+        if strict:
+            _check_sub_microseconds(digits, type(self).name, text)
+        try:
+            value = _datetime.timedelta(
+                days=int(days[:-1]) if days is not None else 0,
+                hours=int(hours[:-1]) if hours is not None else 0,
+                minutes=int(minutes[:-1]) if minutes is not None else 0,
+                seconds=whole,
+                microseconds=_fraction_microseconds(digits),
+            )
+        except OverflowError as exc:
+            raise ValueError(
+                f"Cannot convert xs:{type(self).name} {text!r} to datetime.timedelta: {exc}"
+            ) from exc
+        if text.startswith("-"):
+            value = -value
+        return value
+
+    def to_xsd_value(self, *, strict: bool = False) -> _ep.Duration:
+        """The value as an :class:`elementpath.datatypes.Duration`.
+
+        Unlike :meth:`to_timedelta`, this conversion keeps the calendar part:
+        the result holds both the months and the seconds properties, so year
+        and month fragments survive.  elementpath holds at most
+        microsecond-resolution fractions, so a fractional second finer than a
+        microsecond is rounded; with ``strict=True`` a non-zero sub-microsecond
+        fraction raises ``ValueError`` naming the lexical value instead.  A
+        value outside the target's range raises ``ValueError`` naming the
+        lexical value.
+        """
+        text = str(self)
+        if strict:
+            # The constructor validated this lexical form, so the match cannot be None.
+            match = _DURATION_PARTS.fullmatch(text)
+            assert match is not None
+            digits: str | None = None
+            if match.group(6) is not None:
+                _, _, digits = match.group(6)[:-1].partition(".")
+                digits = digits or None
+            _check_sub_microseconds(digits, type(self).name, text)
+        return _ep_fromstring(_ep.Duration, type(self).name, text)
+
 
 class YearMonthDuration(Duration):
     """``xs:yearMonthDuration``: a ``duration`` with only year/month fields.
@@ -824,6 +1090,25 @@ class YearMonthDuration(Duration):
     name = "yearMonthDuration"
     _pattern = _YEAR_MONTH_DURATION
 
+    def to_months(self) -> int:
+        """The value as a signed number of months (e.g. ``P1Y2M`` is ``14``).
+
+        The conversion is exact, so there is no ``strict`` mode; a leading
+        ``-`` makes the result negative.
+        """
+        sign, months, _ = _duration_key(str(self))
+        return sign * months
+
+    def to_xsd_value(self, *, strict: bool = False) -> _ep.YearMonthDuration:
+        """The value as an :class:`elementpath.datatypes.YearMonthDuration`.
+
+        The result carries the exact XSD value (whole months); a value
+        outside the target's range raises ``ValueError`` naming the lexical
+        value.  ``strict`` is accepted for signature compatibility and has no
+        effect: this conversion is exact.
+        """
+        return _ep_fromstring(_ep.YearMonthDuration, type(self).name, str(self))
+
 
 class DayTimeDuration(Duration):
     """``xs:dayTimeDuration``: a ``duration`` with only day/time fields.
@@ -837,6 +1122,28 @@ class DayTimeDuration(Duration):
 
     name = "dayTimeDuration"
     _pattern = _DAY_TIME_DURATION
+
+    def to_xsd_value(self, *, strict: bool = False) -> _ep.DayTimeDuration:
+        """The value as an :class:`elementpath.datatypes.DayTimeDuration`.
+
+        The result carries the exact XSD day/time value.  elementpath holds
+        at most microsecond-resolution fractions, so a fractional second finer
+        than a microsecond is rounded; with ``strict=True`` a non-zero
+        sub-microsecond fraction raises ``ValueError`` naming the lexical value
+        instead.  A value outside the target's range raises ``ValueError``
+        naming the lexical value.
+        """
+        text = str(self)
+        if strict:
+            # The constructor validated this lexical form, so the match cannot be None.
+            match = _DURATION_PARTS.fullmatch(text)
+            assert match is not None
+            digits: str | None = None
+            if match.group(6) is not None:
+                _, _, digits = match.group(6)[:-1].partition(".")
+                digits = digits or None
+            _check_sub_microseconds(digits, type(self).name, text)
+        return _ep_fromstring(_ep.DayTimeDuration, type(self).name, text)
 
 
 # ---------------------------------------------------------------------------
@@ -1199,6 +1506,30 @@ def _fraction_microseconds(digits: str | None) -> int:
     if not digits:
         return 0
     return int((digits + "000000")[:6])
+
+
+def _check_sub_microseconds(digits: str | None, cls_name: str, text: str) -> None:
+    """Rejects a fraction a microsecond-resolution target cannot hold."""
+    if digits and len(digits) > 6 and any(ch != "0" for ch in digits[6:]):
+        raise ValueError(
+            f"Cannot convert xs:{cls_name} {text!r} without loss: "
+            f"sub-microsecond fraction in {text!r}"
+        )
+
+
+def _ep_fromstring(cls: Any, name: str, text: str) -> Any:
+    """Build an :mod:`elementpath` value, translating overflow into ``ValueError``.
+
+    A lexical value outside the target type's representable range raises
+    ``ValueError`` naming the lexical value and the target type, instead of
+    leaking :class:`OverflowError` from elementpath.
+    """
+    try:
+        return cls.fromstring(text)
+    except OverflowError as exc:
+        raise ValueError(
+            f"Cannot convert xs:{name} {text!r} to elementpath.datatypes.{cls.__name__}: {exc}"
+        ) from exc
 
 
 def _timezone(token: str | None) -> _datetime.timezone | None:

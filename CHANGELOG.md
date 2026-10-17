@@ -36,6 +36,45 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   end-of-day `24:00:00` rolls `DateTime` to the next midnight while
   `Time` raises `ValueError`, and years outside 1..9999 raise
   `ValueError`.
+- A `strict` mode and native value conversions for the remaining value
+  types, with an elementpath complement per family. `strict=True` makes
+  the lossy conversions raise instead: `Date.to_date()` raises instead
+  of dropping the timezone offset, `to_datetime()` / `to_time()` /
+  `to_timedelta()` raise instead of truncating a non-zero
+  sub-microsecond fraction, and `QName.to_expanded_name()` raises
+  instead of returning the lexical form of an unresolved value or the
+  bare local name of a prefixed value whose prefix the context did not
+  bind;
+  unrepresentable values (years outside 1..9999, `Time("24:00:00")`,
+  duration year/month fragments) raise `ValueError` with or without
+  `strict`. `to_gregorian()` converts every temporal and `g*` calendar
+  type to its `elementpath.datatypes` counterpart, offset-preserving,
+  covering years outside 1..9999 (XSD 1.1 lexical
+  year `0000` maps to elementpath's `-1`, which numbers years with no
+  year zero) and the recurring `g*` periods, which have no stdlib
+  representation; the temporal ones truncate a sub-microsecond fraction
+  by default and raise under `strict`. The elementpath types are not
+  `datetime` subclasses
+  and never a fallback inside the stdlib methods. Durations convert
+  through `to_timedelta()` (year/month fragments always raise —
+  calendar durations are never approximated as 30-day months), the
+  exact signed `YearMonthDuration.to_months()`, and `to_xsd_value()`
+  (elementpath holds both the months and the seconds properties) for
+  the durations `to_timedelta()` refuses, rounding a sub-microsecond
+  fraction by default and raising under `strict`;
+  `HexBinary` / `Base64Binary.to_bytes()` decode exactly, and
+  `AnyURI.to_parsed_uri()` best-effort parses the literal text, since
+  XSD's lexical space admits characters meant to be URI-escaped.
+  Facet introspection: `XsdDataType.patterns()` returns the effective
+  `xs:pattern` facets as compiled `re.Pattern` objects — one AND-of-OR
+  tuple per restriction step, the same objects validation applies,
+  translated from the XSD 1.1 pattern dialect by elementpath —
+  `XsdDataType.enumerations()` returns the effective enumeration values
+  after intersection across restriction steps as instances of the
+  restriction's base datatype, and `pyxsd.facets.compile_pattern()`
+  translates and compiles one standalone XSD pattern (raising
+  `ValueError` on an illegal one). See `docs/data-model.md` for the
+  conversion reference.
 - The package ships the PEP 561 `py.typed` marker, so a generated full
   stub's imports of pyxsd classes (`SchemaBase`, the
   `pyxsd.xsd_data_types` classes) are statically analyzable by mypy and
