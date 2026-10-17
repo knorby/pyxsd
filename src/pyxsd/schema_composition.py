@@ -154,6 +154,15 @@ class CompositionContext:
     xpath_default_namespaces: dict[int, str | None]
     composed_element_ids: set[int]
     composed_schema_roots: dict[int, Any]
+    #: The namespace each composed document's components were spliced
+    #: under, keyed by the document root's id. A chameleon include
+    #: stamps the root with the adopted namespace, but a redefined or
+    #: overridden no-namespace document is adopted without stamping
+    #: (see :func:`splice_redefine`), so the root's own attribute is
+    #: absent and this record is the only statement of the namespace its
+    #: components — and the namespace keywords of its
+    #: ``defaultOpenContent`` — belong to.
+    composed_schema_namespaces: dict[int, str | None]
     directive_ids: dict[str, Any]
     compose_stack: list[str]
     redefine_origins: dict[tuple[str, str, str], tuple[str, ...]]
@@ -810,6 +819,12 @@ def append_named_components(
     records. A local declaration resolves qualification against its
     own document's ``elementFormDefault``/``attributeFormDefault``
     rather than the host's.
+
+    The namespace the document's components were spliced under is
+    recorded against its root too (``composed_schema_namespaces``): a
+    redefined or overridden no-namespace document is adopted without
+    stamping its root, so that record is what the document's
+    ``defaultOpenContent`` namespace keywords resolve against.
     """
     strict = getattr(ctx.mode, "namespaces", "legacy") == "strict"
     sourceDefaults = (
@@ -819,6 +834,8 @@ def append_named_components(
     sourceXPathDefault = includedRoot.get("xpathDefaultNamespace")
     from pyxsd.schema_checks import check_form_defaults
 
+    if namespace is not None:
+        ctx.composed_schema_namespaces.setdefault(id(includedRoot), namespace)
     check_form_defaults(ctx, includedRoot)
     for component in list(includedRoot):
         if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:

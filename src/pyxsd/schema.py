@@ -238,6 +238,7 @@ class Schema:
             xpath_default_namespaces={},
             composed_element_ids=set(),
             composed_schema_roots={},
+            composed_schema_namespaces={},
             directive_ids={},
             compose_stack=[],
             redefine_origins={},

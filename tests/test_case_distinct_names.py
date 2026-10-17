@@ -268,6 +268,169 @@ MAIN_WILDCARD = (
     "</xs:schema>"
 )
 
+#: Open content in a composed document: the base's particle wildcard and
+#: the restricting type's open-content wildcard are both declared in the
+#: imported document, so ``##targetNamespace`` denotes ``urn:side`` on
+#: both sides and the base particle covers the derived open content
+#: (Saxon ``open022``'s reading, whose shape this is with a keyword).
+SIDE_OPEN_CONTENT = (
+    f'<xs:schema {XS} targetNamespace="urn:side"'
+    ' xmlns="urn:side" elementFormDefault="qualified">'
+    '  <xs:complexType name="Base">'
+    '    <xs:sequence><xs:any namespace="##targetNamespace"'
+    ' processContents="lax" minOccurs="0" maxOccurs="unbounded"/></xs:sequence>'
+    "  </xs:complexType>"
+    '  <xs:complexType name="Derived">'
+    '    <xs:complexContent><xs:restriction base="Base">'
+    '      <xs:openContent mode="interleave">'
+    '        <xs:any namespace="##targetNamespace" processContents="lax"/>'
+    "      </xs:openContent>"
+    '      <xs:sequence><xs:element name="e" type="xs:string"/></xs:sequence>'
+    "    </xs:restriction></xs:complexContent>"
+    "  </xs:complexType>"
+    "</xs:schema>"
+)
+
+#: ``open022``'s own shape (an empty derived particle) with the keyword
+#: on both sides: the oracle judges this one.
+SIDE_OPEN_CONTENT_OPEN022 = SIDE_OPEN_CONTENT.replace(
+    '<xs:sequence><xs:element name="e" type="xs:string"/></xs:sequence>', "<xs:sequence/>"
+)
+
+#: The ``##other`` variant: both wildcards exclude the declaring
+#: document's namespace, so the base particle still covers the derived
+#: open content.  The derived particle is empty: a qualified ``e`` is
+#: genuinely not admitted by a ``##other`` base wildcard.
+SIDE_OPEN_CONTENT_OTHER = SIDE_OPEN_CONTENT.replace(
+    'namespace="##targetNamespace"', 'namespace="##other"'
+).replace('<xs:sequence><xs:element name="e" type="xs:string"/></xs:sequence>', "<xs:sequence/>")
+
+#: Guard: the base particle admits only namespaces the derived open
+#: content does not (and vice versa), so nothing covers it — the
+#: restriction accepts documents the base rejects.
+SIDE_OPEN_CONTENT_UNCOVERED = SIDE_OPEN_CONTENT.replace(
+    'namespace="##targetNamespace"', 'namespace="##other"', 1
+).replace('<xs:sequence><xs:element name="e" type="xs:string"/></xs:sequence>', "<xs:sequence/>")
+
+#: Guard: the base declares no wildcard particle at all.
+SIDE_OPEN_CONTENT_NO_PARTICLE = (
+    f'<xs:schema {XS} targetNamespace="urn:side"'
+    ' xmlns="urn:side" elementFormDefault="qualified">'
+    '  <xs:complexType name="Base">'
+    '    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+    "  </xs:complexType>"
+    '  <xs:complexType name="Derived">'
+    '    <xs:complexContent><xs:restriction base="Base">'
+    '      <xs:openContent mode="interleave">'
+    '        <xs:any namespace="##targetNamespace" processContents="lax"/>'
+    "      </xs:openContent>"
+    '      <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+    "    </xs:restriction></xs:complexContent>"
+    "  </xs:complexType>"
+    "</xs:schema>"
+)
+
+#: A no-namespace document whose default open content is keyword-spelled,
+#: redefined by a namespaced schema: the adopted namespace lives in the
+#: composition's record, not on the (unstamped) root.
+SIDE_DEFAULT_OPEN_CONTENT = (
+    f'<xs:schema {XS} elementFormDefault="qualified">'
+    '  <xs:defaultOpenContent mode="interleave">'
+    '    <xs:any namespace="##targetNamespace" processContents="lax"/>'
+    "  </xs:defaultOpenContent>"
+    '  <xs:complexType name="Base">'
+    '    <xs:sequence><xs:any namespace="##targetNamespace"'
+    ' processContents="lax" minOccurs="0" maxOccurs="unbounded"/></xs:sequence>'
+    "  </xs:complexType>"
+    '  <xs:complexType name="Derived">'
+    '    <xs:complexContent><xs:restriction base="Base">'
+    '      <xs:openContent mode="interleave">'
+    '        <xs:any namespace="##targetNamespace" processContents="lax"/>'
+    "      </xs:openContent>"
+    "      <xs:sequence/>"
+    "    </xs:restriction></xs:complexContent>"
+    "  </xs:complexType>"
+    "</xs:schema>"
+)
+
+#: The mismatch twin: the restricting type's open content excludes the
+#: adopted namespace the default admits, so it is not a subset.
+SIDE_DEFAULT_OPEN_CONTENT_MISMATCH = SIDE_DEFAULT_OPEN_CONTENT.replace(
+    '<xs:openContent mode="interleave">        <xs:any namespace="##targetNamespace"',
+    '<xs:openContent mode="interleave">        <xs:any namespace="##other"',
+)
+
+MAIN_REDEFINE = (
+    f'<xs:schema {XS} targetNamespace="urn:main"'
+    ' xmlns="urn:main" elementFormDefault="qualified">'
+    '  <xs:redefine schemaLocation="base.xsd"/>'
+    '  <xs:element name="root" type="Derived"/>'
+    "</xs:schema>"
+)
+
+
+class TestOpenContentNamespaceAcrossDocuments:
+    """An open-content wildcard's keywords resolve against its own document.
+
+    A restriction may add open content where the base type has none when
+    a base particle's wildcard already admits the same names (Saxon
+    ``open022``).  Both wildcards then live in the *same* document, so a
+    keyword constraint — ``##targetNamespace`` or ``##other`` — denotes
+    the same namespace on both sides.  Reading the derived open
+    content's keyword against the merged namespace while the base
+    particle's came from its declaring document made the two sides
+    denote different namespaces and rejected the legal restriction.
+    """
+
+    def test_target_namespace_open_content_covered_by_particle(self, tmp_path):
+        """The re-reviewer's shape: both keywords mean ``urn:side``."""
+        schema = _compile(tmp_path, main=MAIN_WILDCARD, side=SIDE_OPEN_CONTENT)
+        assert _codes(schema) == []
+
+    def test_other_open_content_covered_by_particle(self, tmp_path):
+        """The ``##other`` variant: both wildcards exclude ``urn:side``."""
+        schema = _compile(tmp_path, main=MAIN_WILDCARD, side=SIDE_OPEN_CONTENT_OTHER)
+        assert _codes(schema) == []
+
+    def test_open022_shape_with_target_namespace_keyword(self, tmp_path):
+        """``open022``'s own (empty-particle) shape, keyword-spelled.
+
+        xmlschema accepts the single-document equivalent, so the
+        composed form must compile clean as well.
+        """
+        schema = _compile(tmp_path, main=MAIN_WILDCARD, side=SIDE_OPEN_CONTENT_OPEN022)
+        assert _codes(schema) == []
+
+    def test_uncovered_open_content_still_reports(self, tmp_path):
+        """Guard: a base particle that does not admit the open content."""
+        schema = _compile(tmp_path, main=MAIN_WILDCARD, side=SIDE_OPEN_CONTENT_UNCOVERED)
+        assert "particle-restriction" in _codes(schema)
+
+    def test_base_without_wildcard_particle_still_reports(self, tmp_path):
+        """Guard: nothing in the base covers the added open content."""
+        schema = _compile(tmp_path, main=MAIN_WILDCARD, side=SIDE_OPEN_CONTENT_NO_PARTICLE)
+        assert "particle-restriction" in _codes(schema)
+
+    def test_redefined_default_open_content_uses_adopted_namespace(self, tmp_path):
+        """A redefined no-namespace document's default open content.
+
+        The document is adopted into the redefining schema's namespace
+        without stamping its root, so its ``defaultOpenContent``
+        keywords resolve against the composition's record of the
+        namespace its components were spliced under.
+        """
+        (tmp_path / "base.xsd").write_text(SIDE_DEFAULT_OPEN_CONTENT)
+        (tmp_path / "main.xsd").write_text(MAIN_REDEFINE)
+        schema = Schema.compile(str(tmp_path / "main.xsd"))
+        assert _codes(schema) == []
+
+    def test_redefined_default_open_content_mismatch_still_reports(self, tmp_path):
+        """Guard: the derived open content is not a subset of the default."""
+        (tmp_path / "base.xsd").write_text(SIDE_DEFAULT_OPEN_CONTENT_MISMATCH)
+        (tmp_path / "main.xsd").write_text(MAIN_REDEFINE)
+        schema = Schema.compile(str(tmp_path / "main.xsd"))
+        assert "particle-restriction" in _codes(schema)
+
 
 class TestWildcardNamespaceAcrossDocuments:
     """A wildcard's ``##targetNamespace``/``##other`` resolve against its

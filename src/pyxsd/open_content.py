@@ -588,13 +588,22 @@ class OpenContentER(ElementRepresentative):
         rule that the child is a wildcard component, not a particle (no
         occurrence attributes). Returns the registered shape of the spec;
         a malformed attribute is reported, never raised.
+
+        The namespace keywords resolve against the document the open
+        content was declared in (``authoredNamespace``), like the
+        particle wildcards the derived open content is compared against:
+        a legacy compile reports every composed document in the main
+        schema's namespace, and ``##targetNamespace``/``##other`` must
+        keep their source meaning there (Saxon ``open022``'s reading
+        compares the derived open content with a base particle wildcard
+        of the same document).
         """
         if element is None:
             return None
         return open_content_wildcard_spec(
             element,
             report_error=lambda message, code: self._reportSchemaError(message, code=code),
-            target_namespace=self.getNamespace(),
+            target_namespace=self.authoredNamespace(),
             resolve_qname=self._qnameResolver(element),
         )
 
@@ -666,12 +675,16 @@ class DefaultOpenContentER(ElementRepresentative):
         value is a ``declaration-attribute``. A structurally valid
         declaration is stored on the schema ER for the parser's
         inheritance pass.
+
+        The wildcard's namespace keywords resolve against the declaring
+        document (``authoredNamespace``), like the child open-content
+        declaration and the particle wildcards they are compared with.
         """
         schema = self.getSchema()
         parsed = parse_default_open_content(
             self.xsdElement,
             report_error=lambda message, code: self._reportSchemaError(message, code=code),
-            target_namespace=self.getNamespace(),
+            target_namespace=self.authoredNamespace(),
             resolve_qname=self._qnameResolver(),
         )
         if schema is not None:

@@ -472,6 +472,13 @@ def composed_default_open_content(ctx: CompileContextProtocol) -> dict[int, Any]
     is checked here through the same helper the declaration walk uses
     for the host document. Returns ``id(source schema root) ->
     DefaultOpenContent | None``.
+
+    The wildcard's namespace keywords resolve against the document that
+    declared them. A chameleon include stamps the adopted namespace on
+    the root, but a redefined or overridden no-namespace document is
+    adopted without stamping (``splice_redefine``), so the composition's
+    record of the namespace the document's components were spliced
+    under is read first; the root's own attribute is the fallback.
     """
     from pyxsd.open_content import default_open_content_element, parse_default_open_content
 
@@ -485,12 +492,15 @@ def composed_default_open_content(ctx: CompileContextProtocol) -> dict[int, Any]
         if element is None:
             result[key] = None
             continue
+        target_namespace = ctx.composed_schema_namespaces.get(key)
+        if target_namespace is None:
+            target_namespace = root.get("targetNamespace")
         result[key] = parse_default_open_content(
             element,
             report_error=lambda message, code: ctx.report.add_error(
                 message, code=code, phase="schema"
             ),
-            target_namespace=root.get("targetNamespace"),
+            target_namespace=target_namespace,
             resolve_qname=open_content_resolver(ctx, element),
         )
     return result
