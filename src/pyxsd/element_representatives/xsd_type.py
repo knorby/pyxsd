@@ -510,12 +510,28 @@ class XsdType(ElementRepresentative):
         ``r:id`` and the injected ``xml:id``) collapse onto one key. The
         parser-owned component table preserves both by expanded name, so
         gather the global attribute declarations from it instead. In
-        ``legacy`` mode the historical mapping is used unchanged.
+        ``legacy`` mode the historical mapping loses the same
+        declarations to its merge: a global that shares a local name
+        with another document's (wml's ``r:id`` against the merged
+        winner) is reachable only through the composed tree, so the
+        candidates come from there.
         """
         schema = self.getSchema()
         mode = getattr(host, "mode", ParseModes.STRICT)
         if getattr(mode, "namespaces", "legacy") != "strict":
-            return schema.attributes.values()
+            candidates = []
+            for child in getattr(schema, "processedChildren", None) or ():
+                if (
+                    child is not None
+                    and componentKind(child) == "attribute"
+                    and not getattr(child, "isAttributeRef", False)
+                    # Only global declarations are valid ref targets; a
+                    # local declaration that happens to share the name
+                    # must not satisfy the reference.
+                    and child.checkTopLevelType()
+                ):
+                    candidates.append(child)
+            return candidates or schema.attributes.values()
         table = getattr(schema, "components", None)
         if not table:
             return schema.attributes.values()

@@ -1207,6 +1207,24 @@ class ElementRepresentative:
         self.__dict__["_authoredNS"] = value
         return value
 
+    def authoredNamespaceKnown(self) -> bool:
+        """Whether composition recorded this declaration's source namespace.
+
+        Every spliced named component carries a record; a legacy merge
+        winner whose document was parsed again for a second import
+        carries none, and without one it is indistinguishable from a
+        main-document declaration. Namespace-sensitive legacy
+        comparisons treat that case as *unknown* (the documented
+        local-name leniency) instead of trusting the merged namespace.
+        """
+        element = getattr(self, "xsdElement", None)
+        if element is None:
+            return False
+        sourceNamespaces = getattr(self._effectiveSchema(), "componentNamespaces", None)
+        if not sourceNamespaces:
+            return False
+        return id(element) in sourceNamespaces
+
     def referenceNamespace(self, reference: str) -> str | None:
         """The namespace a QName reference written here denotes, or ``None``.
 
@@ -1342,6 +1360,26 @@ class ElementRepresentative:
         # local-name candidate match.
         local = local_name(resolved) if strict else local_part(resolved)
         uri = namespace_of(resolved)
+        lexicalNamespace = None
+        if (
+            uri is None
+            and not strict
+            and value
+            and ":" in value
+            and not str(value).lstrip().startswith("{")
+        ):
+            # A prefixed legacy reference still names the namespace its
+            # prefix denotes in the writing document, so a
+            # same-local-name declaration *known* to live in a
+            # different namespace is never its target (``xml:bogus``
+            # must not reach an unrelated ``bogus`` another import
+            # contributed). A legacy merge winner with no recorded
+            # namespace is indistinguishable from a main-document
+            # declaration, so the documented local-name leniency keeps
+            # applying to it. Unprefixed references — with or without a
+            # default namespace in scope — and unresolvable prefixes
+            # name nothing enforceable and keep the fallback entirely.
+            lexicalNamespace = self.referenceNamespace(value)
         for candidate in candidates:
             if getattr(candidate, "name", None) != local:
                 continue
@@ -1349,6 +1387,14 @@ class ElementRepresentative:
             candidate_ns = getter() if getter is not None else None
             if uri is not None:
                 if candidate_ns != uri:
+                    continue
+            elif lexicalNamespace is not None:
+                known = getattr(candidate, "authoredNamespaceKnown", None)
+                if (
+                    known is not None
+                    and known()
+                    and candidate.authoredNamespace() != lexicalNamespace
+                ):
                     continue
             elif strict and candidate_ns not in (None, ""):
                 # An unprefixed QName resolves through the in-scope
