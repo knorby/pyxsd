@@ -30,7 +30,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 20 min: the XSD Test Suite step adds several minutes on top of the
+    # coverage run (~3 min); slower runners need headroom beyond 15.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -98,6 +100,11 @@ jobs:
           name: coverage-${{ matrix.python-version }}
           path: .coverage
           include-hidden-files: true
+
+      - name: Run the XSD Test Suite
+        run: uv run pytest tests/test_xsts_suite.py -q
+        env:
+          PYXSD_RUN_XSTS: "1"
 
       - name: Benchmark the conformance corpus
         run: uv run python -m tests.conformance.run --json > conformance-benchmarks.json

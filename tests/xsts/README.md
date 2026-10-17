@@ -105,10 +105,13 @@ Passing this suite is evidence, not certification:
 
 ## Continuous integration
 
-The suite is deliberately **not** part of the required CI path: a full profile
-takes a few minutes, so it runs from the dispatch-only
+The XSD 1.1 gate runs on every PR: the `test` job in
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) executes
+`tests/test_xsts_suite.py` with `PYXSD_RUN_XSTS=1` after the coverage run
+(about three minutes locally; no coverage instrumentation, to keep it fast).
+The XSD 1.0 profile and ad-hoc slices stay on the dispatch-only
 [`.github/workflows/xsts.yml`](../../.github/workflows/xsts.yml) workflow
-instead (Actions → xsts → Run workflow). Choose one profile or both, and
+(Actions → xsts → Run workflow). Choose one profile or both, and
 optionally cap the case count with `limit`.
 
 The workflow runs `--engine pyxsd` and `--enforce` against each checked-in
