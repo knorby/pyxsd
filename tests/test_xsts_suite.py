@@ -48,6 +48,11 @@ def test_full_run_matches_the_baseline(tmp_path: Path) -> None:
         timeout=30.0,
         jobs=os.cpu_count() or 1,
         temp_root=tmp_path,
+        # Must match tests/report_xsts.py, the baseline generator: it always
+        # synthesizes permissive schemas for groups with no schemaTest. With
+        # synthesis off, every such group flips to adapter-gap and the ~50
+        # affected keys drift away from their recorded verdicts.
+        synthesize_missing_schema=True,
     )
     diff = baseline.diff(baseline.load(BASELINE), results_to_keys(results))
 
