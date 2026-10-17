@@ -78,6 +78,17 @@ jobs:
           uv run python examples/gpx/download_schemas.py
           uv run python examples/docx/download_schemas.py
 
+      - name: Cache the conformance corpus
+        id: conformance
+        uses: actions/cache@v6
+        with:
+          path: tests/conformance/.cache
+          key: conformance-schemas-${{ runner.os }}-${{ hashFiles('tests/conformance/fetch.py') }}
+
+      - name: Fetch the conformance corpus
+        if: steps.conformance.outputs.cache-hit != 'true'
+        run: uv run python -m tests.conformance.fetch
+
       - name: Run tests with coverage
         run: uv run pytest --cov=pyxsd --cov-report=term-missing
 
@@ -87,6 +98,15 @@ jobs:
           name: coverage-${{ matrix.python-version }}
           path: .coverage
           include-hidden-files: true
+
+      - name: Benchmark the conformance corpus
+        run: uv run python -m tests.conformance.run --json > conformance-benchmarks.json
+
+      - name: Upload conformance benchmarks artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: conformance-benchmarks-${{ matrix.python-version }}
+          path: conformance-benchmarks.json
 
       - name: Smoke-test installed base-only batch API
         run: |
