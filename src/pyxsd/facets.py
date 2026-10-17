@@ -766,11 +766,14 @@ def _base_explicit_timezone(base: type | None, parent: FacetConstraints | None) 
     return None
 
 
-def _compile_pattern(text: str) -> re.Pattern[str]:
+def compile_pattern(text: str) -> re.Pattern[str]:
     """Translate and compile one XSD pattern.
 
-    Raises :class:`ValueError` when the pattern is not legal XSD, so the
-    caller can report it as a schema problem.
+    Public entry point for XSD pattern translation: the returned
+    :class:`re.Pattern` is the same compiled pattern the validator
+    applies, translated from the XSD pattern dialect (XSD 1.1 profile,
+    via elementpath).  Raises :class:`ValueError` when the pattern is
+    not legal XSD, so the caller can report it as a schema problem.
     """
     prepared = _xml11_name_classes(text)
     # ``\p{Is}`` is not a legal category/block escape; reject it before
@@ -915,7 +918,7 @@ def build_constraints(
     own_level: list[re.Pattern[str]] = []
     for pattern_text in raw_patterns:
         try:
-            own_level.append(_compile_pattern(str(pattern_text)))
+            own_level.append(compile_pattern(str(pattern_text)))
         except ValueError as exc:
             errors.append(str(exc))
     # Sibling patterns in this restriction step are alternatives

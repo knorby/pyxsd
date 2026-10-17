@@ -122,6 +122,22 @@ class XsdDataType:
         return constraints.enumeration_values
 
     @classmethod
+    def patterns(cls) -> tuple[tuple[re.Pattern[str], ...], ...]:
+        """The pattern facets in effect for this type, as compiled regexes.
+
+        The outer tuple holds one entry per restriction step (all must
+        hold); each inner tuple holds that step's sibling ``xs:pattern``
+        facets (any may match).  The patterns are the same objects the
+        validator applies, translated from the XSD pattern dialect by
+        :func:`pyxsd.facets.compile_pattern`.  A type with no pattern
+        facets returns an empty tuple.
+        """
+        constraints = getattr(cls, "_facetConstraints_", None)
+        if constraints is None:
+            return ()
+        return constraints.patterns
+
+    @classmethod
     def _unvalidated(cls) -> Any:
         """Returns a bare instance of the type without lexical validation.
 
