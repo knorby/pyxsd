@@ -34,9 +34,16 @@ if TYPE_CHECKING:
 # ``classes`` value means "measured but not yet pinned" and the smoke
 # test skips for that schema.
 EXPECTED: dict[str, dict] = {
+    # FHIR release 5. The XHTML content types' ``xml:lang``/``xml:space``
+    # attribute references resolve (unknown-attributeRef 53 -> 0) and so
+    # does the ``xhtml:div`` element reference (unknown-elementRef 1 -> 0):
+    # legacy-mode reference lookup now reduces a prefixed lexical name to
+    # its local part, and a namespace that is not supplied by a document
+    # (the XML namespace) contributes its built-in attribute declarations.
+    # Clean compile; xmlschema agrees (0 errors).
     "fhir-single": {
         "classes": 2941,
-        "errors_by_code": {"unknown-attributeRef": 53, "unknown-elementRef": 1},
+        "errors_by_code": {},
     },
     # CDA R2 normative. The composition tree is complete (the legal
     # datatypes.xsd <-> voc.xsd include cycle is deduplicated), and the
@@ -53,31 +60,39 @@ EXPECTED: dict[str, dict] = {
         "classes": 987,
         "errors_by_code": {"particle-restriction": 5},
     },
+    # ECMA-376 WordprocessingML. Its prefixed references into the
+    # imported namespaces (``r:*`` relationships, ``a:*`` drawing) now
+    # resolve in legacy mode: unknown-elementRef 57 -> 0,
+    # unknown-attributeRef 26 -> 0, unknown-group 6 -> 0. The remaining
+    # findings are pre-existing rule-algebra/lexical issues the oracle
+    # does not share: percentage defaults (``0%``) rejected by the
+    # datatype's lexical space, self-referential union member types, and
+    # two content-model ambiguity/consistency findings. Pinned as-is;
+    # follow-ups of their own.
     "ooxml-wml": {
         "classes": 2359,
         "errors_by_code": {
-            "unknown-elementRef": 57,
-            "unknown-attributeRef": 26,
             "declaration-attribute": 26,
-            "unknown-group": 6,
             "circular-derivation": 4,
             "unknown-type": 4,
             "upa": 2,
             "all-rule": 1,
         },
     },
+    # ECMA-376 SpreadsheetML: the same prefixed-reference resolution
+    # (unknown-attributeRef 37 -> 0, unknown-elementRef 4 -> 0,
+    # unknown-group 1 -> 0); one pre-existing percentage-default
+    # finding remains.
     "ooxml-sml": {
         "classes": 2289,
-        "errors_by_code": {
-            "unknown-attributeRef": 37,
-            "unknown-elementRef": 4,
-            "unknown-group": 1,
-            "declaration-attribute": 1,
-        },
+        "errors_by_code": {"declaration-attribute": 1},
     },
+    # MusicXML 4.0. The imported XML- and XLink-namespace declarations
+    # now satisfy every reference (unknown-attributeRef 27 -> 0); clean
+    # compile, matching xmlschema's verdict (0 errors).
     "musicxml": {
         "classes": 385,
-        "errors_by_code": {"unknown-attributeRef": 27},
+        "errors_by_code": {},
     },
 }
 

@@ -27,7 +27,7 @@ from pyxsd.element_representatives.element_representative import (
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError
 from pyxsd.instance_binding import bind_instance
-from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
+from pyxsd.namespaces import XML_NS, NamespaceContext, parse_with_namespaces
 from pyxsd.schema_base import SchemaBase
 from pyxsd.schema_checks import (
     apply_default_attributes,
@@ -588,6 +588,14 @@ def _compile_into_context(
             inject_xml_namespace_attributes(ctx, root)
             inject_xsi_namespace_attributes(ctx, root)
             inject_xlink_namespace_attributes(ctx, root)
+        elif ctx.xml_namespace_imported and XML_NS not in ctx.resolved_imports:
+            # A namespace-only ``xs:import`` of the XML namespace (the
+            # W3C schema-for-schemas' own spelling, XSD 1.1 §4.2.3):
+            # no document was composed for it, so its built-in
+            # attribute declarations are what references resolve
+            # against. When a document *was* composed, its own
+            # declarations are used instead and nothing is injected.
+            inject_xml_namespace_attributes(ctx, root)
 
         # XSD 1.1 allows a local element or attribute declaration to state
         # its own target namespace, but only inside an xs:restriction

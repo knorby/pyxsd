@@ -420,13 +420,17 @@ class XsdType(ElementRepresentative):
         """The expanded instance name an attribute use matches under.
 
         Two attribute uses collide only when their qualified names match;
-        two local declarations with one local name in different
-        namespaces (or with different forms) are distinct (attQ019).
-        A reference site that is not resolved yet contributes its
-        bookkeeping name, so an unresolved ref never collides with a
-        local declaration here.
+        two declarations with one local name in different namespaces (or
+        with different forms) are distinct (attQ019). The identity is
+        namespace-aware in every mode: legacy instance matching discards
+        namespaces, so comparing the declared expanded names is what
+        keeps a resolved ``xml:lang`` reference from colliding with an
+        unqualified same-local-name declaration. A reference site
+        contributes the expanded name its own QName names, so an
+        unresolved reference never collides with a local declaration of
+        the same local name.
         """
-        name = attr.instanceName(is_attribute=True, parser=host)
+        name = attr.expandedInstanceName(is_attribute=True, parser=host)
         return name if name is not None else getattr(attr, "name", None)
 
     def _attributeCollides(self, existing, candidate, host) -> bool:

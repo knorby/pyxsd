@@ -1010,17 +1010,47 @@ class ElementRepresentative:
         local = self.name
         if local is None:
             return None
-        if parser is None:
-            parser = getattr(self, "host", None) or getattr(self.getSchema(), "host", None)
+        parser = self._effectiveParser(parser)
         mode = getattr(parser, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
             return local
+        return self.expandedInstanceName(is_attribute=is_attribute, parser=parser)
+
+    def expandedInstanceName(self, *, is_attribute=False, parser=None):
+        """Returns this use's namespace-aware name, in every mode.
+
+        This is the identity attribute-use collisions are compared on:
+        the use's own expanded name, a reference site taking the
+        expanded name of the QName it names -- resolved through its
+        document's prefix bindings, so the answer does not depend on
+        the mode's instance-matching rules. Unlike :meth:`instanceName`
+        it does not discard the namespace in ``legacy`` mode, where two
+        uses with one local name in different namespaces (or with
+        different forms) are still distinct (attQ019).
+        """
+        referred = getattr(self, "referredAttribute", None)
+        if referred is None:
+            referred = getattr(self, "referredElement", None)
+        if referred is not None and referred is not self:
+            return referred.expandedInstanceName(is_attribute=is_attribute, parser=parser)
+        local = self.name
+        if local is None:
+            return None
+        if getattr(self, "isAttributeRef", False) or getattr(self, "isElementRef", False):
+            # The reference's authored QName is the identity, even when
+            # the reference has not been resolved yet (legacy mode
+            # resolves against same-local-name candidates regardless of
+            # namespace, so the resolved declaration alone cannot tell
+            # ``xml:lang`` from an unqualified ``lang``).
+            authored = self._authoredQName()
+            if authored is not None:
+                return authored
         uri = self.getNamespace()
         if uri is None:
             return local
         qualified = self.isGlobalDeclaration()
         if not qualified:
-            schema = self.getSchema()
+            schema = self._effectiveSchema()
             qualified = self._localDeclarationIsQualified(schema, is_attribute)
         if qualified:
             return clark(uri, local)
@@ -1071,6 +1101,64 @@ class ElementRepresentative:
         )
         return default == "qualified"
 
+    def _effectiveParser(self, parser=None):
+        """The parser this declaration resolves through.
+
+        ``parser`` overrides the attached parser, which is needed while
+        a class is being built before its descriptors own ``host``; the
+        schema's host is the fallback, because during class building
+        the parser is attached to the schema rather than to every
+        declaration.
+        """
+        if parser is not None:
+            return parser
+        parser = getattr(self, "host", None)
+        if parser is not None:
+            return parser
+        getter = getattr(self, "getSchema", None)
+        if getter is None:
+            return None
+        try:
+            schema = getter()
+        except Exception:  # pragma: no cover - defensive
+            return None
+        return getattr(schema, "host", None)
+
+    def _authoredQName(self, value=None) -> str | None:
+        """Resolves a QName value in its own document, in every mode.
+
+        Unlike :meth:`resolveSchemaQName`, the QName is resolved even
+        in legacy mode (no diagnostic is raised for an unbound
+        prefix): the prefix bindings recorded for the element give the
+        authored expanded name. Returns ``None`` when the value does
+        not name a namespace (a bare local name or an unresolvable
+        prefix).
+        """
+        value = getattr(self, "ref", None) if value is None else value
+        if not value:
+            return None
+        context = getattr(self._effectiveSchema(), "namespaceContext", None)
+        if context is None:
+            return None
+        element = getattr(self, "xsdElement", None)
+        if element is None:
+            return None
+        try:
+            resolved = context.resolve(element, value)
+        except NamespaceError:
+            return None
+        return resolved if namespace_of(resolved) is not None else None
+
+    def _effectiveSchema(self):
+        """The schema ER this declaration belongs to, if reachable."""
+        getter = getattr(self, "getSchema", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:  # pragma: no cover - defensive
+            return None
+
     def resolveSchemaQName(self, value, *, parser=None):
         """Resolves a lexical QName written in this schema element.
 
@@ -1087,13 +1175,7 @@ class ElementRepresentative:
         ``parser`` overrides the attached parser, which is needed while
         a class is being built before its descriptors own ``host``.
         """
-        if parser is None:
-            parser = getattr(self, "host", None)
-            if parser is None:
-                # During class building the parser is attached to the
-                # schema rather than to every declaration; fall back to
-                # it so schema-time references resolve in strict mode.
-                parser = getattr(self.getSchema(), "host", None)
+        parser = self._effectiveParser(parser)
         mode = getattr(parser, "mode", None)
         if getattr(mode, "namespaces", "legacy") != "strict":
             return value
@@ -1127,15 +1209,23 @@ class ElementRepresentative:
         unprefixed name with no default namespace stays in no namespace
         (AU_attrDecl00101m1_n). In ``legacy`` mode, or when the prefix
         cannot be resolved, the reference's local name selects the first
-        same-named candidate. Returns ``None`` when nothing matches.
+        same-named candidate; the local name is the reference with any
+        lexical ``prefix:`` and Clark ``{uri}`` spelling removed, so
+        ``xml:lang`` reaches the ``lang`` declaration an import
+        composed. Returns ``None`` when nothing matches.
         """
         if value is None:
             return None
+        parser = self._effectiveParser(parser)
         resolved = self.resolveSchemaQName(value, parser=parser)
-        local = local_name(resolved)
-        uri = namespace_of(resolved)
         mode = getattr(parser, "mode", None)
         strict = getattr(mode, "namespaces", "legacy") == "strict"
+        # Strict mode expands the reference to its Clark name, whose
+        # braces ``local_name`` strips; legacy mode leaves the authored
+        # lexical form, whose ``prefix:`` must be stripped here for the
+        # local-name candidate match.
+        local = local_name(resolved) if strict else local_part(resolved)
+        uri = namespace_of(resolved)
         for candidate in candidates:
             if getattr(candidate, "name", None) != local:
                 continue

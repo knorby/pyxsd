@@ -160,6 +160,12 @@ class CompositionContext:
     resolved_imports: set[str]
     hint_schema_paths: set[str]
     composed_target_namespaces: set[str]
+    #: A composed document names the XML namespace in an ``xs:import``
+    #: (with or without a ``schemaLocation``). The namespace has no
+    #: schema document: its attribute declarations are built-in, and
+    #: in legacy mode they are registered when this flag is set and no
+    #: document satisfied the import.
+    xml_namespace_imported: bool = False
     composed_documents: set[str] = field(default_factory=set)
     additional_schemas: list[tuple[str | None, Path]] = field(default_factory=list)
     #: The declared XSD processor version (``vc:*`` selectors test against
@@ -305,6 +311,8 @@ def splice_composed_schemas(
                 # conventional spelling; the built-in types are
                 # always available here.
                 continue
+            if child.get("namespace") == XML_NS:
+                ctx.xml_namespace_imported = True
             splice_included_schema(
                 ctx, child, schemaRoot, baseDir, visited, isImport=True, checkImportNamespace=True
             )
@@ -885,6 +893,20 @@ def splice_redefine(
             and name in redefinedNames
         ):
             component.set("name", f"{name}|base")
+    if includedNS is None and mainNS is not None:
+        # A redefine of a no-namespace document is a chameleon
+        # redefinition (XSD 1.1 §4.2.4 with Appendix F.1): the base
+        # document adopts the redefining namespace exactly as a
+        # chameleon include does, so its unprefixed QName references
+        # are rewritten into that namespace and resolve against the
+        # redefined components. The rename above happens first so the
+        # original declarations keep their ``Name|base`` spelling. The
+        # root's own ``targetNamespace`` is deliberately not stamped:
+        # the component namespace comes from ``append_named_components``
+        # (called with ``mainNS``), and stamping it would re-judge a
+        # nested redefine cycle of the disputed W3C schU1 shape as a
+        # hard violation instead of the lenient repetition it is.
+        apply_chameleon_namespace(ctx, includedRoot, mainNS)
     ctx.compose_stack.append(str(includedPath))
     try:
         splice_composed_schemas(
@@ -1538,6 +1560,12 @@ def inject_xml_namespace_attributes(ctx: CompositionContext, schemaRoot: Any) ->
     element. Registering them as global attributes (typed as
     strings) lets attribute references into the XML namespace
     resolve without a vendored XML-namespace schema.
+
+    ``strict`` mode registers them unconditionally (references are
+    namespace-matched there); ``legacy`` mode registers them only
+    when a namespace-only ``xs:import`` of the XML namespace named
+    the built-in vocabulary, so a schema that supplies its own
+    document for the namespace keeps that document's declarations.
     """
     for local in ("space", "lang", "base", "id"):
         attributeElement = ET.Element(

@@ -379,6 +379,59 @@ class TestCompositionCorrectness:
         base_names = [base.__name__ for base in doc.schema.classes["derivedType"].__mro__]
         assert "baseType" in base_names
 
+    def test_chameleon_redefine_base_references_resolve(self, tmp_path):
+        """A chameleon redefine's base document resolves its own references.
+
+        The redefined document declares no targetNamespace, so it is
+        absorbed into the redefining schema's namespace exactly as a
+        chameleon include is (XSD 1.1 §4.2.4 with Appendix F.1): its
+        unprefixed QName references are rewritten into that namespace.
+        Both the group reference and the attribute reference written in
+        the *base* document must resolve against the adopted components.
+        """
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:attribute name="base-a" type="xs:string"/>'
+            '<xs:group name="g1">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:group>"
+            '<xs:complexType name="baseType">'
+            '<xs:sequence><xs:group ref="g1"/></xs:sequence>'
+            '<xs:attribute ref="base-a"/>'
+            "</xs:complexType>"
+            '<xs:element name="base-e" type="baseType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd">'
+            '    <xs:group name="g1"><xs:sequence>'
+            '      <xs:group ref="g1"/>'
+            '      <xs:element name="b" type="xs:string"/>'
+            "    </xs:sequence></xs:group>"
+            "  </xs:redefine>"
+            '  <xs:complexType name="mainType"><xs:group ref="g1"/></xs:complexType>'
+            '  <xs:element name="root" type="mainType"/>'
+            "</xs:schema>"
+        )
+        # Legacy mode matches by local name.
+        (tmp_path / "legacy.xml").write_text('<base-e base-a="1"><a>x</a><b>y</b></base-e>')
+        schema = Schema.compile(str(tmp_path / "schema.xsd"))
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "legacy.xml"))
+        assert not doc.report.has_errors
+
+        # Strict mode addresses the adopted components by expanded name.
+        (tmp_path / "strict.xml").write_text(
+            '<base-e xmlns="urn:redef" xmlns:r="urn:redef" r:base-a="1"><a>x</a><b>y</b></base-e>'
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        doc = schema.parse(str(tmp_path / "strict.xml"))
+        assert not doc.report.has_errors
+        assert doc.root._attribs_["{urn:redef}base-a"] == "1"
+
     def test_circular_include_chameleon_base_reference_resolves(self, tmp_path):
         """Mutually including chameleon documents resolve their base types.
 
