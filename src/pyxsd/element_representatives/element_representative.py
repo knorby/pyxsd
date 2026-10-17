@@ -1055,7 +1055,7 @@ class ElementRepresentative:
             authored = self._authoredQName()
             if authored is not None:
                 return authored
-        uri = self.getNamespace()
+        uri = self.authoredNamespace()
         if uri is None:
             return local
         qualified = self.isGlobalDeclaration()

@@ -391,7 +391,7 @@ def resolve_default_attribute_group(ctx: CompileContextProtocol, root: Any) -> A
                 continue
             if entry.name != local:
                 continue
-            if uri is None or entry.getNamespace() == uri:
+            if uri is None or entry.authoredNamespace() == uri:
                 return entry
     ctx.report.add_error(
         f"the defaultAttributes attribute group '{value}' could not be "

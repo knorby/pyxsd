@@ -1671,6 +1671,60 @@ def test_default_attributes_form_distinct_locals_are_distinct_uses(tmp_path) -> 
     assert [issue.code for issue in schema.report.errors] == []
 
 
+def test_default_attributes_resolves_across_namespaces(tmp_path) -> None:
+    # ``defaultAttributes`` may name a group in an imported namespace
+    # (the QName resolves like any other reference); xmlschema accepts
+    # the shape.  The resolver must compare the group's *declaring*
+    # document namespace, not the merged host namespace.
+    (tmp_path / "side.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' targetNamespace="urn:side" xmlns:s="urn:side">'
+        '<xs:attribute name="lang" type="xs:string"/>'
+        '<xs:attributeGroup name="G"><xs:attribute ref="s:lang"/></xs:attributeGroup>'
+        "</xs:schema>"
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' targetNamespace="urn:main" xmlns="urn:main" xmlns:s="urn:side"'
+        ' defaultAttributes="s:G">'
+        '<xs:import namespace="urn:side" schemaLocation="side.xsd"/>'
+        '<xs:complexType name="T"><xs:sequence/></xs:complexType>'
+        '<xs:element name="root" type="T"/></xs:schema>'
+    )
+    schema = Schema.compile(str(tmp_path / "main.xsd"))
+    assert [issue.code for issue in schema.report.errors] == []
+    doc = schema.parse(io.StringIO('<root xmlns="urn:main" xmlns:s="urn:side" s:lang="x"/>'))
+    assert [issue.code for issue in doc.report.errors] == []
+
+
+def test_default_attributes_namespace_distinct_locals_are_distinct_uses(tmp_path) -> None:
+    # Same local name, two distinct non-null namespaces: the default
+    # group (imported from ``urn:side``) contributes ``{urn:side}lang``
+    # while the type declares ``{urn:main}lang``.  Two expanded names,
+    # two uses -- not a duplicate (attQ019); the guard must compare
+    # expanded names, not local ones, through the default-group path.
+    # xmlschema accepts the shape.
+    (tmp_path / "side.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' targetNamespace="urn:side" xmlns:s="urn:side">'
+        '<xs:attribute name="lang" type="xs:string"/>'
+        '<xs:attributeGroup name="G"><xs:attribute ref="s:lang"/></xs:attributeGroup>'
+        "</xs:schema>"
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' targetNamespace="urn:main" xmlns="urn:main" xmlns:s="urn:side"'
+        ' defaultAttributes="s:G">'
+        '<xs:import namespace="urn:side" schemaLocation="side.xsd"/>'
+        '<xs:complexType name="T">'
+        '<xs:attribute name="lang" type="xs:string" form="qualified"/>'
+        "</xs:complexType>"
+        '<xs:element name="root" type="T"/></xs:schema>'
+    )
+    schema = Schema.compile(str(tmp_path / "main.xsd"))
+    assert [issue.code for issue in schema.report.errors] == []
+
+
 def test_default_attributes_unresolved_ref_pair_is_a_duplicate(tmp_path) -> None:
     # Both the type and the default group name ``{urn:one}lang`` through
     # a bound prefix whose namespace supplies no global: the uses share
