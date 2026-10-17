@@ -346,6 +346,77 @@ class TestCompositionCorrectness:
         assert not doc.report.has_errors
         assert doc.root._attribs_ == {"a": "1", "b": "2"}
 
+    def test_chameleon_include_base_reference_resolves(self, tmp_path):
+        """A chameleon document's own type reference resolves after adoption.
+
+        The included document declares no targetNamespace, so it is
+        absorbed into the including schema's namespace and its unprefixed
+        references are rewritten into that namespace (Appendix F.1). The
+        rewritten (Clark-spelled) base reference must still resolve
+        against the composed declarations.
+        """
+        (tmp_path / "child.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '<xs:complexType name="baseType">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:complexType>"
+            '<xs:complexType name="derivedType"><xs:complexContent>'
+            '<xs:extension base="baseType">'
+            '<xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>'
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cyc" xmlns:c="urn:cyc">'
+            '  <xs:include schemaLocation="child.xsd"/>'
+            '  <xs:element name="r" type="derivedType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text("<r><a>x</a><b>y</b></r>")
+        doc = Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
+        assert not doc.report.has_errors
+        assert "derivedType" in doc.schema.classes
+        base_names = [base.__name__ for base in doc.schema.classes["derivedType"].__mro__]
+        assert "baseType" in base_names
+
+    def test_circular_include_chameleon_base_reference_resolves(self, tmp_path):
+        """Mutually including chameleon documents resolve their base types.
+
+        The two documents include each other (a legal cycle) and are
+        absorbed into the main schema's namespace, so each document's
+        rewritten base reference names the other document's declaration.
+        """
+        (tmp_path / "cyc_a.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '  <xs:include schemaLocation="cyc_b.xsd"/>'
+            '  <xs:complexType name="aType"><xs:complexContent>'
+            '<xs:extension base="bType">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "</xs:extension></xs:complexContent></xs:complexType>"
+            "</xs:schema>"
+        )
+        (tmp_path / "cyc_b.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '  <xs:include schemaLocation="cyc_a.xsd"/>'
+            '  <xs:complexType name="bType">'
+            '<xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>'
+            "</xs:complexType>"
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cyc" xmlns:c="urn:cyc">'
+            '  <xs:include schemaLocation="cyc_a.xsd"/>'
+            '  <xs:element name="r" type="aType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text("<r><b>y</b><a>x</a></r>")
+        doc = Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
+        assert not [issue for issue in doc.report.errors if issue.code == "unknown-type"]
+        assert not doc.report.has_errors
+        assert "aType" in doc.schema.classes
+        base_names = [base.__name__ for base in doc.schema.classes["aType"].__mro__]
+        assert "bType" in base_names
+
 
 # ---------------------------------------------------------------------------
 # Unresolved-resource severity (Task 11)

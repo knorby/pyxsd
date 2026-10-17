@@ -76,7 +76,7 @@ import logging
 import re
 
 from pyxsd import xsd_data_types
-from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, namespace_of
+from pyxsd.namespaces import XSD_NS, NamespaceError, clark, local_name, local_part, namespace_of
 from pyxsd.schema_context import context_or_ambient, current_context, last_components
 from pyxsd.validation import IssueSeverity, report_or_log
 from pyxsd.wildcards import (
@@ -453,7 +453,8 @@ class ElementRepresentative:
         schema-namespace prefixes ``xs:`` and ``xsd:`` always denote
         built-ins; any other qualified name is looked up in the
         registry first (by full name, then by local name so prefixed
-        references like ``my:customType`` resolve), with a built-in
+        references like ``my:customType`` and the Clark spelling a
+        chameleon rewrite writes resolve), with a built-in
         fallback on the local name so default-namespace schemas
         (``type="string"``) still resolve. The qualified lookup and
         its local-name fallback are one resolution attempt: the pair
@@ -469,12 +470,11 @@ class ElementRepresentative:
             return cls._typeFromExpandedName(xsdTypeName, table, host, warn=warn)
         if not xsdTypeName.startswith(("xs:", "xsd:")):
             getFromNameReturned = table.getFromName(xsdTypeName, kind="type", warn=False)
+            local = local_part(xsdTypeName)
             if not getFromNameReturned:
-                local = xsdTypeName.split(":", 1)[-1]
                 getFromNameReturned = table.getFromName(local, kind="type", warn=False)
             if getFromNameReturned:
                 return getFromNameReturned.clsFor(host)
-            local = xsdTypeName.split(":", 1)[-1]
             primitive = _PRIMITIVE_TYPES.get(local)
             if primitive is not None:
                 return primitive

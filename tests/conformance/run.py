@@ -38,12 +38,20 @@ EXPECTED: dict[str, dict] = {
         "classes": 2941,
         "errors_by_code": {"unknown-attributeRef": 53, "unknown-elementRef": 1},
     },
-    # CDA R2 normative: its datatypes.xsd circular include is skipped
-    # (compose-cycle), cascading into unresolved HL7 datatypes — a known,
-    # deterministic pre-existing outcome, pinned as-is.
+    # CDA R2 normative. The composition tree is complete (the legal
+    # datatypes.xsd <-> voc.xsd include cycle is deduplicated), and the
+    # chameleon coreschemas' rewritten (expanded-name) references now
+    # resolve: unknown-type 452 -> 0, and the declaration-attribute 46
+    # that cascaded from them -> 0. The 5 remaining findings are
+    # pre-existing rule-algebra false positives that the
+    # strict-namespace path already reported and that are out of scope
+    # here: three mixed extensions over an empty-content base (spec-valid
+    # per XSD 1.1 §3.4.6.2 clause 1.4.3.2.1) and two restriction
+    # alignments broken by an extension's nested single-item sequences.
+    # Pinned as-is; follow-up: fix the particle/mixed rule algebra.
     "cda-r2": {
         "classes": 987,
-        "errors_by_code": {"unknown-type": 452, "declaration-attribute": 46},
+        "errors_by_code": {"particle-restriction": 5},
     },
     "ooxml-wml": {
         "classes": 2359,

@@ -47,6 +47,7 @@ from pyxsd.namespaces import (
     NamespaceError,
     clark,
     local_name,
+    local_part,
     namespace_of,
 )
 from pyxsd.particle_derivation import (
@@ -1587,7 +1588,7 @@ def base_type_er(ctx: CompileContextProtocol, er: Any, py_xsd: Any) -> Any | Non
         else:
             found = table.getFromName(resolved, kind="type", warn=False)
             if found is None:
-                found = table.getFromName(str(resolved).split(":")[-1], kind="type", warn=False)
+                found = table.getFromName(local_part(resolved), kind="type", warn=False)
         if found is not None:
             return found
     return None

@@ -19,6 +19,7 @@ from pyxsd.namespaces import (
     NamespaceError,
     clark,
     local_name,
+    local_part,
     namespace_of,
     parse_with_namespaces,
 )
@@ -45,6 +46,14 @@ class TestNameHelpers:
     def test_bare_name_has_no_namespace(self):
         assert local_name("x") == "x"
         assert namespace_of("x") is None
+
+    def test_local_part_accepts_both_spellings(self):
+        # A chameleon rewrite stores a Clark name; an authored reference
+        # is a lexical QName. Both must yield the same local part, even
+        # when the namespace URI itself contains colons.
+        assert local_part("{urn:hl7-org:v3}QTY") == "QTY"
+        assert local_part("hl7:QTY") == "QTY"
+        assert local_part("QTY") == "QTY"
 
 
 class TestCapture:
