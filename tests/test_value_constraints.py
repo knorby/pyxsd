@@ -105,6 +105,43 @@ HOST_WITH_SHADOW = f"""<xs:schema {XS} targetNamespace="urn:host" xmlns:h="urn:h
   <xs:element name="root" type="d:CT_Direction"/>
 </xs:schema>"""
 
+#: The ref-form shape: two documents each declare a global attribute
+#: ``code`` whose (uniquely named) type accepts disjoint values, and
+#: the host's complex type references ``a:code`` with a default only
+#: the ``a`` declaration's type accepts. The legacy merge keeps one
+#: ``code`` — with this import order the winner is ``b``'s declaration,
+#: so the merged resolution rejects a value the referenced
+#: declaration's type accepts (and accepts values it rejects).
+REF_A = f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:simpleType name="T_A">
+    <xs:restriction base="xs:token">
+      <xs:enumeration value="norm"/>
+      <xs:enumeration value="rev"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:attribute name="code" type="a:T_A"/>
+</xs:schema>"""
+
+REF_B = f"""<xs:schema {XS} targetNamespace="urn:b" xmlns:b="urn:b">
+  <xs:simpleType name="T_B">
+    <xs:restriction base="xs:token">
+      <xs:enumeration value="ltr"/>
+      <xs:enumeration value="rtl"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:attribute name="code" type="b:T_B"/>
+</xs:schema>"""
+
+REF_HOST = f"""<xs:schema {XS} targetNamespace="urn:host" xmlns:h="urn:host"
+    xmlns:a="urn:a" xmlns:b="urn:b">
+  <xs:import namespace="urn:a" schemaLocation="a.xsd"/>
+  <xs:import namespace="urn:b" schemaLocation="b.xsd"/>
+  <xs:complexType name="CT_Ref">
+    <xs:attribute ref="a:code" default="{{default}}"/>
+  </xs:complexType>
+  <xs:element name="root" type="h:CT_Ref"/>
+</xs:schema>"""
+
 
 def _compile(tmp_path, host_xml, files):
     """Writes *files* beside ``host.xsd`` and compiles the host schema."""
@@ -149,6 +186,23 @@ def test_percentage_default_through_nested_union_is_accepted(tmp_path):
     substitute the wrong member set)."""
     schema = _percent_schema(tmp_path, lspc="0%")
     assert _declaration_errors(schema, "lnSpcReduction") == []
+
+
+def _ref_schema(tmp_path, default):
+    return _compile(
+        tmp_path,
+        REF_HOST.format(default=default),
+        {"a.xsd": REF_A, "b.xsd": REF_B},
+    )
+
+
+def test_ref_form_default_validates_against_the_referenced_declaration(tmp_path):
+    """A ref-form use's default is validated against the declaration the
+    ``ref`` names in the writing document — here the ``a`` document's
+    ``code``, whose type accepts ``norm`` — not the same-local-name
+    declaration that won the legacy merge (``b``'s, which rejects it)."""
+    schema = _ref_schema(tmp_path, "norm")
+    assert _declaration_errors(schema, "code") == []
 
 
 @pytest.mark.parametrize(
@@ -215,6 +269,20 @@ def test_invalid_enumeration_default_is_rejected(tmp_path, value):
         },
     )
     assert _declaration_errors(schema)
+
+
+def test_ref_form_rejects_a_value_only_the_merge_winner_accepts(tmp_path):
+    """The authored resolution — not the merged winner — drives the
+    check: ``ltr`` is valid for ``b``'s ``code`` (the merge winner) but
+    the use references ``a:code``, whose type rejects it."""
+    schema = _ref_schema(tmp_path, "ltr")
+    assert _declaration_errors(schema, "code")
+
+
+def test_ref_form_invalid_default_is_rejected(tmp_path):
+    """A value the referenced declaration's type rejects stays an error."""
+    schema = _ref_schema(tmp_path, "bogus")
+    assert _declaration_errors(schema, "code")
 
 
 def test_shadowed_type_does_not_accept_the_other_declarations_values(tmp_path):

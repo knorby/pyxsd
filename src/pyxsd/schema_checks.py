@@ -3636,28 +3636,98 @@ def _authoredValueClass(er: Any, primary: Any) -> Any:
     the merged winner's constraints must not be applied to a value the
     declaring document's own type accepts or rejects.
 
+    An attribute *use* written as a reference (``ref=``) carries no
+    ``type`` of its own; its value is validated against the referenced
+    global declaration's type, with the reference resolved in the
+    writing document the same way — the declaration the reference
+    denotes may itself be one that lost the merge — and that
+    declaration's own ``type`` reference resolved in its document in
+    turn.
+
     Returns *primary* — the merged resolution — when the declaration
-    carries no plain ``type`` reference (an inline type, one inherited
-    from a ``ref``, or none), when the reference names no declaration
-    the composed tree holds (a built-in, or a namespace no schema
-    supplied), or when that declaration is the one already resolved.
-    Only a distinct declaration is built, on demand.
+    carries no plain ``type`` reference (an inline type or none) and
+    is not an attribute reference site, when the reference names no
+    declaration the composed tree holds (a built-in, or a namespace no
+    schema supplied), or when that declaration is the one already
+    resolved. Only a distinct declaration is built, on demand.
     """
     getter = getattr(er, "referenceTargetDeclaration", None)
+    if getter is None:
+        return primary
     raw = er.tagAttributes.get("type")
-    if getter is None or not raw or "|" in raw:
+    if raw and "|" not in raw:
+        declared = getter(raw)
+        if declared is None:
+            return primary
+        try:
+            cls = declared.clsFor(er._effectiveParser())
+        except Exception:  # pragma: no cover - defensive
+            return primary
+        simple = _simpleValueSpace(cls)
+        if simple is None or simple is primary:
+            return primary
+        return simple
+    if raw:
         return primary
-    declared = getter(raw)
-    if declared is None:
+    ref = er.tagAttributes.get("ref")
+    if not ref or type(er).__name__ != "Attribute":
         return primary
-    try:
-        cls = declared.clsFor(er._effectiveParser())
-    except Exception:  # pragma: no cover - defensive
+    referred = _authoredAttributeDeclaration(er, ref)
+    if referred is None:
         return primary
-    simple = _simpleValueSpace(cls)
-    if simple is None or simple is primary:
+    referredPrimary = value_constraint_factory(referred)
+    if referredPrimary is None:
         return primary
-    return simple
+    return _authoredValueClass(referred, referredPrimary)
+
+
+def _authoredAttributeDeclaration(er: Any, ref: str) -> Any:
+    """The global attribute declaration a use site's ``ref`` denotes.
+
+    Mirrors ``referenceTargetDeclaration`` for attribute references:
+    the namespace the reference names in the writing document selects
+    among the same-local-name global attribute declarations of the
+    composed tree, so a declaration that lost the legacy merge is
+    still the one the reference denotes. Returns ``None`` when the
+    reference resolves to no namespace or no declaration of that
+    document holds the name — the caller keeps the merged resolution.
+    """
+    namespace = er.referenceNamespace(ref)
+    if namespace is None:
+        return None
+    local = local_part(ref)
+    for candidate in _sameNameAttributeDeclarations(er, local):
+        if candidate.authoredNamespace() == namespace:
+            return candidate
+    return None
+
+
+def _sameNameAttributeDeclarations(er: Any, local: str) -> list:
+    """Global attribute declarations in the composed tree named *local*.
+
+    Mirrors ``ElementRepresentative.sameNameTypeDeclarations`` for
+    attributes: a legacy compile reports every composed document's
+    namespace as the main schema's, so the component table keeps one
+    declaration per local name and a declaration that lost the merge
+    is reachable only through the composed tree. The lookup index is
+    built once, lazily, on the schema ER.
+    """
+    schema = er._effectiveSchema()
+    if schema is None:
+        return []
+    index = getattr(schema, "attributeDeclarationsByLocalName", None)
+    if index is None:
+        index = {}
+        for child in getattr(schema, "processedChildren", None) or ():
+            if child is None or componentKind(child) != "attribute":
+                continue
+            if getattr(child, "isAttributeRef", False):
+                continue
+            name = getattr(child, "name", None)
+            if isinstance(name, str):
+                index.setdefault(name, []).append(child)
+        schema.attributeDeclarationsByLocalName = index
+    return index.get(local, [])
 
 
 def _simpleValueSpace(cls: Any) -> Any | None:
