@@ -552,13 +552,68 @@ def main(argv: list[str] | None = None) -> None:
         'them against 1.0, so a declaration carrying vc:minVersion="1.1" '
         "is dropped (XSD 1.1 §4.2.2).",
     )
+    parser.add_argument(
+        "--emit-stubs",
+        dest="emitStubs",
+        nargs="?",
+        const="stdout",
+        default=None,
+        metavar="PATH",
+        help="compile the schema and write a .pyi type stub for its "
+        "generated classes to PATH, or to stdout when PATH is omitted, "
+        "then exit without reading any xml input. Requires -s/--inputXsd.",
+    )
+    parser.add_argument(
+        "--stubs-compact",
+        action="store_true",
+        dest="stubsCompact",
+        default=False,
+        help="emit the compact, agent-oriented stub description instead of "
+        "the full .pyi document. Requires --emit-stubs.",
+    )
 
     options = parser.parse_args(argv)
 
     if options.quiet and options.verbose:
         parser.error("Both verbose mode and quiet mode cannot be on at the same time")
 
+    if options.stubsCompact and options.emitStubs is None:
+        parser.error("--stubs-compact requires --emit-stubs")
+
     _configure_logging(options.verbose, options.quiet)
+
+    mode = (ParseModes.LAX if options.mode == "lax" else ParseModes.STRICT).replace(
+        namespaces=options.namespaces
+    )
+
+    if options.emitStubs is not None:
+        # Stub emission compiles the schema alone: no xml input is read
+        # and no binding report is produced, so a schema has to be named
+        # outright (there is no instance document to hint one).
+        if options.inputXsdFile is None:
+            parser.error("--emit-stubs requires a schema file (-s/--inputXsd)")
+
+        # Imported here rather than at module level: pyxsd.schema imports
+        # this module, so a module-level import would be circular.
+        from pyxsd.schema import Schema
+
+        try:
+            schema = Schema.compile(
+                options.inputXsdFile,
+                mode=mode,
+                overlay=options.classFile,
+                xsd_version=options.xsdVersion,
+            )
+            stubText = schema.stub(compact=options.stubsCompact)
+            if options.emitStubs == "stdout":
+                sys.stdout.write(stubText)
+            else:
+                with open(options.emitStubs, "w") as output:
+                    output.write(stubText)
+        except (PyXSDError, ValueError, OSError) as e:
+            print(f"pyxsd: error: {e}", file=sys.stderr)
+            raise SystemExit(1) from e
+        return
 
     if options.transformDefaultOutput and options.transformOutputFile == "stdout":
         options.transformOutputFile = None
@@ -592,9 +647,6 @@ def main(argv: list[str] | None = None) -> None:
         if options.transformFile:
             with open(options.transformFile) as fd:
                 transforms = [call for line in fd for call in split_transform_chain(line)]
-        mode = (ParseModes.LAX if options.mode == "lax" else ParseModes.STRICT).replace(
-            namespaces=options.namespaces
-        )
         document = _build_document(
             inputXmlFile,
             options.inputXsdFile,

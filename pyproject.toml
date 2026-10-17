@@ -107,6 +107,13 @@ ignore = [
     "E501", # line length is enforced by the formatter where it can split
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Stub goldens are generated fixture text the renderer output is
+# compared against byte-for-byte; their imports are part of the emitted
+# surface (``from typing import Any`` is always emitted), not code for
+# ruff to rewrite or prune.
+"tests/fixtures/stubs/*.pyi" = ["F401"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

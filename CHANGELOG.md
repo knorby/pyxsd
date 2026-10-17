@@ -11,6 +11,36 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+### Added
+
+- `Schema.stub()` emits a truthful type-stub surface for the classes a
+  compiled schema creates at runtime: the full `.pyi` document with the
+  consumption preamble, class blocks that mirror the XSD derivation, and
+  root-element aliases, or the agent-oriented compact description
+  (`Schema.stub(compact=True)`) with short alias spellings and a legend.
+  Annotations model valid parsed documents, and a construct a stub
+  cannot type truthfully (a union-typed member, a recursive back edge, an
+  unresolvable declaration) degrades to `Any` with a comment. Rendering
+  reads the live class table, so regenerating after an overlay is loaded
+  shows its members, and it never requires a valid report. Also available
+  as `pyxsd.stubs.emit_stub(schema, *, compact=False)`.
+- CLI `--emit-stubs [PATH]` compiles the schema alone (no XML input is
+  read) and writes its type stub to `PATH`, or to stdout when `PATH` is
+  omitted; `--stubs-compact` selects the compact form. Both compose with
+  `--mode`, `--namespaces`, `--xsd-version`, and
+  `-c/--overlayClassesFile`.
+- Temporal conversion methods on the XSD date/time types:
+  `Date.to_date()`, `DateTime.to_datetime()`, and `Time.to_time()`. An
+  explicit timezone offset yields an aware value and an absent one a
+  naive value, fractional seconds keep microsecond precision, XSD's
+  end-of-day `24:00:00` rolls `DateTime` to the next midnight while
+  `Time` raises `ValueError`, and years outside 1..9999 raise
+  `ValueError`.
+- The package ships the PEP 561 `py.typed` marker, so a generated full
+  stub's imports of pyxsd classes (`SchemaBase`, the
+  `pyxsd.xsd_data_types` classes) are statically analyzable by mypy and
+  IDEs.
+
 ## [1.1.1] - 2026-10-14
 
 ### Added
