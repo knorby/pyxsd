@@ -100,3 +100,21 @@ class TestPatternsAccessor:
         patterns = root_class(body, "<r>abc</r>").patterns()
         assert len(patterns) == 2
         assert all(len(level) == 1 for level in patterns)
+
+    def test_unconstrained_derived_type_returns_empty(self):
+        body = (
+            '<xs:simpleType name="D"><xs:restriction base="xs:string"/></xs:simpleType>'
+            '<xs:element name="r" type="D"/>'
+        )
+        assert root_class(body, "<r>x</r>").patterns() == ()
+
+    def test_derived_no_facets_exposes_base_pattern_once(self):
+        body = (
+            '<xs:simpleType name="A"><xs:restriction base="xs:string">'
+            '<xs:pattern value="[a-z]+"/></xs:restriction></xs:simpleType>'
+            '<xs:simpleType name="D"><xs:restriction base="A"/></xs:simpleType>'
+            '<xs:element name="r" type="D"/>'
+        )
+        patterns = root_class(body, "<r>ab</r>").patterns()
+        assert len(patterns) == 1
+        assert len(patterns[0]) == 1

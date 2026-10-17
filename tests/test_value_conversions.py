@@ -82,6 +82,30 @@ class TestDurationToXsdValue:
         assert isinstance(value, ep.DayTimeDuration)
         assert str(value) == "P2DT3H"
 
+    def test_strict_rejects_sub_microsecond_fraction(self):
+        with pytest.raises(ValueError, match="sub-microsecond"):
+            Duration("PT0.123456789S").to_xsd_value(strict=True)
+
+    def test_strict_accepts_microsecond_resolution(self):
+        assert Duration("PT0.5S").to_xsd_value(strict=True).seconds == 0.5
+
+    def test_day_time_strict_rejects_sub_microsecond_fraction(self):
+        with pytest.raises(ValueError, match="sub-microsecond"):
+            DayTimeDuration("PT0.1234567S").to_xsd_value(strict=True)
+
+
+class TestDurationOverflow:
+    def test_to_timedelta_overflow_raises_valueerror(self):
+        with pytest.raises(ValueError, match="P9999999999D"):
+            Duration("P9999999999D").to_timedelta()
+
+    def test_to_xsd_value_overflow_raises_valueerror(self):
+        with pytest.raises(ValueError, match="P9999999999Y"):
+            Duration("P9999999999Y").to_xsd_value()
+
+    def test_boundary_below_still_converts(self):
+        assert Duration("P999999999D").to_timedelta() == datetime.timedelta(days=999999999)
+
 
 class TestHexBinaryToBytes:
     def test_bytes(self):
@@ -168,6 +192,23 @@ class TestTemporalToGregorian:
         assert Time("14:30:00").to_gregorian() == ep.Time.fromstring("14:30:00")
 
 
+class TestGregorianStrictFractions:
+    def test_default_truncates_sub_microseconds(self):
+        assert DateTime("2006-08-30T14:30:00.123456789").to_gregorian().microsecond == 123456
+        assert Time("12:00:00.123456789").to_gregorian().microsecond == 123456
+
+    def test_strict_rejects_sub_microsecond_fraction(self):
+        with pytest.raises(ValueError, match="sub-microsecond"):
+            DateTime("2006-08-30T14:30:00.1234567").to_gregorian(strict=True)
+        with pytest.raises(ValueError, match="sub-microsecond"):
+            Time("12:00:00.123456789").to_gregorian(strict=True)
+
+    def test_strict_accepts_zero_padded_fraction(self):
+        assert (
+            DateTime("2006-08-30T14:30:00.5000000").to_gregorian(strict=True).microsecond == 500000
+        )
+
+
 class TestAnyURIToParsedUri:
     def test_components(self):
         result = AnyURI("https://example.com/a/b?c=d#e").to_parsed_uri()
@@ -176,3 +217,7 @@ class TestAnyURIToParsedUri:
 
     def test_relative_reference(self):
         assert AnyURI("../other.xml").to_parsed_uri().path == "../other.xml"
+
+    def test_invalid_ipv6_raises_valueerror_naming_value(self):
+        with pytest.raises(ValueError, match=r"http://\[bad"):
+            AnyURI("http://[bad").to_parsed_uri()
