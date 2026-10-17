@@ -57,3 +57,32 @@ class TestTimeToTime:
     def test_end_of_day_raises(self):
         with pytest.raises(ValueError, match="24:00:00"):
             Time("24:00:00").to_time()
+
+
+class TestDateToDateStrict:
+    def test_default_drops_timezone(self):
+        assert Date("2006-08-30+05:30").to_date() == datetime.date(2006, 8, 30)
+
+    def test_strict_rejects_timezone(self):
+        with pytest.raises(ValueError, match="2006-08-30"):
+            Date("2006-08-30+05:30").to_date(strict=True)
+
+    def test_strict_accepts_naive(self):
+        assert Date("2006-08-30").to_date(strict=True) == datetime.date(2006, 8, 30)
+
+
+class TestStrictFractions:
+    def test_default_truncates_sub_microseconds(self):
+        assert DateTime("2006-08-30T14:30:00.1234567").to_datetime().microsecond == 123456
+
+    def test_strict_rejects_sub_microsecond_fraction(self):
+        with pytest.raises(ValueError, match="sub-microsecond"):
+            DateTime("2006-08-30T14:30:00.1234567").to_datetime(strict=True)
+
+    def test_strict_allows_zero_padded_fraction(self):
+        value = DateTime("2006-08-30T14:30:00.5000000").to_datetime(strict=True)
+        assert value.microsecond == 500000
+
+    def test_strict_time_rejects_sub_microsecond_fraction(self):
+        with pytest.raises(ValueError, match="sub-microsecond"):
+            Time("14:30:00.1234567").to_time(strict=True)

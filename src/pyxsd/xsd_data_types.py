@@ -596,7 +596,7 @@ class DateTime(_PatternString):
             )
         return instance
 
-    def to_datetime(self) -> _datetime.datetime:
+    def to_datetime(self, *, strict: bool = False) -> _datetime.datetime:
         """The value as a :class:`datetime.datetime`.
 
         An explicit timezone offset becomes a :class:`datetime.timezone`;
@@ -606,7 +606,9 @@ class DateTime(_PatternString):
         and raises ``ValueError``.  XSD's year 0000, negative (BCE)
         years, and extended years above 9999 have no :mod:`datetime`
         representation and raise ``ValueError`` naming the lexical
-        value.
+        value.  A fractional second finer than a microsecond is
+        truncated; with ``strict=True`` a non-zero sub-microsecond
+        fraction raises ``ValueError`` naming the lexical value instead.
         """
         text = str(self)
         # The constructor validated this lexical form, so the match cannot be None.
@@ -618,6 +620,8 @@ class DateTime(_PatternString):
                 f"Cannot convert xs:dateTime {text!r} to datetime.datetime: "
                 f"year {year} is outside 1..9999"
             )
+        if strict:
+            _check_sub_microseconds(match.group(7), type(self).name, text)
         rollover = _datetime.timedelta(0)
         if hour == 24:  # 24:00:00 is the end-of-day spelling: the next midnight
             hour, rollover = 0, _datetime.timedelta(days=1)
@@ -677,18 +681,25 @@ class Date(_PatternString):
             )
         return instance
 
-    def to_date(self) -> _datetime.date:
-        """The value as a :class:`datetime.date`, discarding any timezone.
+    def to_date(self, *, strict: bool = False) -> _datetime.date:
+        """The value as a :class:`datetime.date`.
 
         ``datetime.date`` carries no timezone, so an explicit offset in
-        the lexical form is dropped.  XSD's year 0000, negative (BCE)
-        years, and extended years above 9999 have no :mod:`datetime`
-        representation and raise ``ValueError`` naming the lexical value.
+        the lexical form is dropped; with ``strict=True`` that dropped
+        offset raises ``ValueError`` naming the lexical value instead.
+        XSD's year 0000, negative (BCE) years, and extended years above
+        9999 have no :mod:`datetime` representation and raise
+        ``ValueError`` naming the lexical value.
         """
         text = str(self)
         # The constructor validated this lexical form, so the match cannot be None.
         match = _TEMPORAL_DATE.match(text)
         assert match is not None
+        if strict and match.group(4) is not None:
+            raise ValueError(
+                f"Cannot convert xs:date {text!r} to datetime.date without loss: "
+                f"the timezone offset would be dropped"
+            )
         year, month, day = (int(match.group(i)) for i in range(1, 4))
         if not 1 <= year <= 9999:
             raise ValueError(
@@ -703,13 +714,16 @@ class Time(_PatternString):
     name = "time"
     _pattern = re.compile(rf"{_TIME_BODY}{_TIMEZONE}")
 
-    def to_time(self) -> _datetime.time:
+    def to_time(self, *, strict: bool = False) -> _datetime.time:
         """The value as a :class:`datetime.time`.
 
         An explicit timezone offset becomes a :class:`datetime.timezone`;
         an absent one yields a naive value.  The end-of-day spelling
         ``24:00:00`` is legal ``xs:time`` but has no time-of-day value,
-        so it raises ``ValueError`` naming the lexical value.
+        so it raises ``ValueError`` naming the lexical value.  A
+        fractional second finer than a microsecond is truncated; with
+        ``strict=True`` a non-zero sub-microsecond fraction raises
+        ``ValueError`` naming the lexical value instead.
         """
         text = str(self)
         # The constructor validated this lexical form, so the match cannot be None.
@@ -721,6 +735,8 @@ class Time(_PatternString):
                 f"Cannot convert xs:time {text!r} to datetime.time: "
                 f"the end-of-day spelling 24:00:00 has no time-of-day value"
             )
+        if strict:
+            _check_sub_microseconds(match.group(4), type(self).name, text)
         return _datetime.time(
             hour,
             minute,
@@ -1199,6 +1215,15 @@ def _fraction_microseconds(digits: str | None) -> int:
     if not digits:
         return 0
     return int((digits + "000000")[:6])
+
+
+def _check_sub_microseconds(digits: str | None, cls_name: str, text: str) -> None:
+    """Rejects a fraction a microsecond-resolution target cannot hold."""
+    if digits and len(digits) > 6 and any(ch != "0" for ch in digits[6:]):
+        raise ValueError(
+            f"Cannot convert xs:{cls_name} {text!r} without loss: "
+            f"sub-microsecond fraction in {text!r}"
+        )
 
 
 def _timezone(token: str | None) -> _datetime.timezone | None:
