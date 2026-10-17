@@ -3656,6 +3656,12 @@ def _authoredValueClass(er: Any, primary: Any) -> Any:
         return primary
     raw = er.tagAttributes.get("type")
     if raw and "|" not in raw:
+        if er.referenceNamespace(raw) == XSD_NS:
+            # Built-ins stay authoritative: ``typeFromName``
+            # short-circuits a reference into the XML Schema namespace
+            # to the built-in, so a (pathological) document targeting
+            # that namespace cannot shadow it here either.
+            return primary
         declared = getter(raw)
         if declared is None:
             return primary

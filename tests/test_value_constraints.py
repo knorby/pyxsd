@@ -142,6 +142,36 @@ REF_HOST = f"""<xs:schema {XS} targetNamespace="urn:host" xmlns:h="urn:host"
   <xs:element name="root" type="h:CT_Ref"/>
 </xs:schema>"""
 
+#: A pathological document targeting the XML Schema namespace and
+#: declaring a type whose local name equals a built-in's: references
+#: into that namespace must still resolve to the built-in (the legacy
+#: lookup short-circuits them), never to the user declaration.
+XSD_NAMESPACED = f"""<xs:schema {XS} targetNamespace="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="string">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="zzz"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="CT">
+    <xs:attribute name="val" type="xs:string" default="{{default}}"/>
+  </xs:complexType>
+  <xs:element name="root" type="xs:CT"/>
+</xs:schema>"""
+
+#: The same shadowing declaration in an ordinary namespace: the
+#: document's own type is the reference's target and its facets bind.
+ORDINARY_NAMESPACED = f"""<xs:schema {XS} targetNamespace="urn:ordinary" xmlns:o="urn:ordinary">
+  <xs:simpleType name="string">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="zzz"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="CT">
+    <xs:attribute name="val" type="o:string" default="{{default}}"/>
+  </xs:complexType>
+  <xs:element name="root" type="o:CT"/>
+</xs:schema>"""
+
 
 def _compile(tmp_path, host_xml, files):
     """Writes *files* beside ``host.xsd`` and compiles the host schema."""
@@ -283,6 +313,24 @@ def test_ref_form_invalid_default_is_rejected(tmp_path):
     """A value the referenced declaration's type rejects stays an error."""
     schema = _ref_schema(tmp_path, "bogus")
     assert _declaration_errors(schema, "code")
+
+
+def test_builtin_wins_over_a_declaration_in_the_xsd_namespace(tmp_path):
+    """A document targeting the XML Schema namespace cannot shadow a
+    built-in in this check: ``hello`` is rejected by the user
+    declaration's enumeration but is valid for ``xs:string``, and the
+    value constraint must see the built-in (the user type does not
+    leak)."""
+    schema = _compile(tmp_path, XSD_NAMESPACED.format(default="hello"), {})
+    assert _declaration_errors(schema, "val") == []
+
+
+def test_user_type_in_an_ordinary_namespace_still_validates_its_facets(tmp_path):
+    """The built-in exclusion reaches only the XML Schema namespace: the
+    same shadowing declaration in an ordinary namespace is the
+    reference's target and rejects what its facets reject."""
+    schema = _compile(tmp_path, ORDINARY_NAMESPACED.format(default="hello"), {})
+    assert _declaration_errors(schema, "val")
 
 
 def test_shadowed_type_does_not_accept_the_other_declarations_values(tmp_path):
