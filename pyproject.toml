@@ -117,9 +117,10 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-# Repo root on sys.path so tests.benchmarks (a namespace package under the
-# gitignored-downloads test area) is importable by test modules and by
-# ``python -m``; the benchmark scripts share one import path with the suite.
+# Repo root on sys.path so tests.conformance (the real-schema conformance
+# suite with its gitignored-downloads cache) is importable by test modules
+# and by ``python -m``; the conformance scripts share one import path with
+# the suite.
 pythonpath = ["."]
 
 [tool.mypy]

@@ -1,14 +1,15 @@
-"""Times schema compilation across the large-schema benchmark corpus.
+"""Times schema compilation across the large-schema conformance corpus.
 
 Usage::
 
-    python -m tests.benchmarks.run [--repeats N] [--json] [--save-baseline]
-                                   [--compare]
+    python -m tests.conformance.run [--repeats N] [--json] [--save-baseline]
+                                    [--compare]
 
 Wall-clock numbers are advisory: pytest never asserts on them (see
-``test_large_schemas.py`` for the pinned outcomes). ``--save-baseline``
-records this machine's timings to ``baseline.json``; ``--compare`` prints
-the per-schema ratio against that baseline.
+``test_large_schemas.py`` and ``test_conformance_errors.py`` for the
+pinned outcomes). ``--save-baseline`` records this machine's timings to
+``baseline.json``; ``--compare`` prints the per-schema ratio against
+that baseline.
 """
 
 from __future__ import annotations
@@ -18,23 +19,70 @@ import logging
 import statistics
 import sys
 import time
+from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from tests.benchmarks.fetch import SCHEMAS, entry_point
+from tests.conformance.fetch import SCHEMAS, entry_point
 
-# Machine-independent compile outcomes, pinned by the smoke tests. A
-# ``None`` value means "measured but not yet pinned" and the smoke test
-# skips for that schema.
+if TYPE_CHECKING:
+    from pyxsd.validation import ValidationReport
+
+# Machine-independent compile outcomes, pinned by the conformance and
+# smoke tests. Each schema carries its full per-error-code tally, so a
+# parse-correctness fix moves exactly its own lines. A ``None``
+# ``classes`` value means "measured but not yet pinned" and the smoke
+# test skips for that schema.
 EXPECTED: dict[str, dict] = {
-    "fhir-single": {"classes": 2941, "errors": 54},
+    "fhir-single": {
+        "classes": 2941,
+        "errors_by_code": {"unknown-attributeRef": 53, "unknown-elementRef": 1},
+    },
     # CDA R2 normative: its datatypes.xsd circular include is skipped
     # (compose-cycle), cascading into unresolved HL7 datatypes — a known,
     # deterministic pre-existing outcome, pinned as-is.
-    "cda-r2": {"classes": 987, "errors": 498},
-    "ooxml-wml": {"classes": 2359, "errors": 126},
-    "ooxml-sml": {"classes": 2289, "errors": 43},
-    "musicxml": {"classes": 385, "errors": 27},
+    "cda-r2": {
+        "classes": 987,
+        "errors_by_code": {"unknown-type": 452, "declaration-attribute": 46},
+    },
+    "ooxml-wml": {
+        "classes": 2359,
+        "errors_by_code": {
+            "unknown-elementRef": 57,
+            "unknown-attributeRef": 26,
+            "declaration-attribute": 26,
+            "unknown-group": 6,
+            "circular-derivation": 4,
+            "unknown-type": 4,
+            "upa": 2,
+            "all-rule": 1,
+        },
+    },
+    "ooxml-sml": {
+        "classes": 2289,
+        "errors_by_code": {
+            "unknown-attributeRef": 37,
+            "unknown-elementRef": 4,
+            "unknown-group": 1,
+            "declaration-attribute": 1,
+        },
+    },
+    "musicxml": {
+        "classes": 385,
+        "errors_by_code": {"unknown-attributeRef": 27},
+    },
 }
+
+
+def errors_by_code(name: str, report: ValidationReport) -> dict[str, int]:
+    """Tally *report*'s errors by code for schema *name*.
+
+    The manifest pins the exact tally per code, so a fix that resolves
+    one error class shows up as exactly its own lines moving — not a
+    total that hides which class changed.
+    """
+    return dict(Counter(error.code for error in report.errors))
+
 
 BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"
 

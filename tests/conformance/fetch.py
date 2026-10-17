@@ -1,12 +1,12 @@
-"""Fetches the large-schema benchmark corpus on demand.
+"""Fetches the large-schema conformance corpus on demand.
 
-The corpus is downloaded into a gitignored cache (``tests/benchmarks/
+The corpus is downloaded into a gitignored cache (``tests/conformance/
 .cache/``) and never committed: rerunning this module is cheap because
 already-extracted corpora are skipped, and ``--force`` re-downloads.
 
 Usage::
 
-    python -m tests.benchmarks.fetch [name] [--force]
+    python -m tests.conformance.fetch [name] [--force]
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def cache_dir() -> Path:
-    """The gitignored download cache: ``tests/benchmarks/.cache``."""
+    """The gitignored download cache: ``tests/conformance/.cache``."""
     return Path(__file__).resolve().parent / ".cache"
 
 
