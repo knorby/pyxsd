@@ -30,6 +30,7 @@ from pyxsd.namespaces import (
     NamespaceError,
     clark,
     local_name,
+    local_part,
     namespace_of,
     parse_with_namespaces,
 )
@@ -51,11 +52,6 @@ _COMPOSABLE_TAGS = {
     "attribute",
     "notation",
 }
-
-
-def _qnameLocal(value: str) -> str:
-    """Returns the local part of a lexical QName or Clark name."""
-    return local_name(value.rpartition(":")[2])
 
 
 def _redefined_qname(value: str) -> str:
@@ -1380,7 +1376,7 @@ def check_group_redefine_self_reference(
         if not isinstance(element.tag, str) or element.tag.split("}")[-1] != "group":
             continue
         ref = element.get("ref")
-        if not ref or _qnameLocal(ref) != name:
+        if not ref or local_part(ref) != name:
             continue
         minimum = element.get("minOccurs")
         maximum = element.get("maxOccurs")
@@ -1405,7 +1401,7 @@ def redefine_type_derives_from_self(declaration: Any, name: str) -> bool:
         if not isinstance(element.tag, str):
             continue
         base = element.get("base")
-        if base and _qnameLocal(base) == name:
+        if base and local_part(base) == name:
             return True
     return False
 
@@ -1459,7 +1455,7 @@ def check_redefine_restrictions(
                     declared.append((childName, child))
             elif local == "attributeGroup":
                 ref = child.get("ref")
-                if ref is not None and _qnameLocal(ref) == name:
+                if ref is not None and local_part(ref) == name:
                     hasSelfReference = True
                     selfRefCount += 1
                 else:
@@ -1604,24 +1600,24 @@ def rebind_redefine_references(
                 continue
             tagLocal = element.tag.split("}")[-1]
             base = element.get("base")
-            if base and base.split(":")[-1] in redefinedNames:
+            if base and local_part(base) in redefinedNames:
                 element.set("base", _redefined_qname(base))
             localRef = element.get("ref")
             if (
                 tagLocal in ("group", "attributeGroup")
                 and localRef
-                and localRef.split(":")[-1] in redefinedNames
+                and local_part(localRef) in redefinedNames
             ):
                 element.set("ref", _redefined_qname(localRef))
             if includedNS is not None or mainNS is None:
                 continue
             candidates = []
-            if base and _qnameLocal(base) in redefinedNames:
+            if base and local_part(base) in redefinedNames:
                 candidates.append(base)
             if (
                 tagLocal in ("group", "attributeGroup")
                 and localRef
-                and _qnameLocal(localRef) in redefinedNames
+                and local_part(localRef) in redefinedNames
             ):
                 candidates.append(localRef)
             for value in candidates:

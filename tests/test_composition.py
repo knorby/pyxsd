@@ -1317,6 +1317,61 @@ class TestComposeInvalid:
         )
         assert "compose-invalid" in self._error_codes(doc)
 
+    def test_nested_redefine_self_reference_colon_adopted_uri_is_error(self, tmp_path):
+        # schR3, reached through a chameleon adoption whose namespace
+        # URI contains colons: the outer redefinition rewrites the
+        # nested redefine body's self reference into a Clark name, so
+        # the occurrence check must read its local part through the
+        # braces, not through the last colon of the URI.
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS}><xs:group name="g"><xs:choice>'
+            '<xs:element name="c21" type="xs:int"/>'
+            '<xs:element name="c22" type="xs:int"/>'
+            "</xs:choice></xs:group></xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS}><xs:redefine schemaLocation="inner.xsd">'
+            '<xs:group name="g"><xs:choice>'
+            '<xs:element name="c23" type="xs:int"/>'
+            '<xs:group ref="g" minOccurs="0"/>'
+            '<xs:element name="c24" type="xs:int"/>'
+            "</xs:choice></xs:group></xs:redefine></xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cycle:test" xmlns="urn:cycle:test">'
+            '<xs:redefine schemaLocation="base.xsd"/>'
+            '<xs:element name="root"><xs:complexType><xs:sequence>'
+            '<xs:group ref="g"/></xs:sequence></xs:complexType></xs:element>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert "compose-invalid" in [issue.code for issue in schema.report.errors]
+
+    def test_nested_redefine_self_reference_colon_adopted_uri_valid(self, tmp_path):
+        # The same adopted chain with a conforming self reference
+        # (exactly 1/1) stays clean.
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS}><xs:group name="g"><xs:sequence>'
+            '<xs:element name="c21" type="xs:int"/>'
+            "</xs:sequence></xs:group></xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS}><xs:redefine schemaLocation="inner.xsd">'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:group ref="g"/>'
+            '<xs:element name="c22" type="xs:int"/>'
+            "</xs:sequence></xs:group></xs:redefine></xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cycle:test" xmlns="urn:cycle:test">'
+            '<xs:redefine schemaLocation="base.xsd"/>'
+            '<xs:element name="root"><xs:complexType><xs:sequence>'
+            '<xs:group ref="g"/></xs:sequence></xs:complexType></xs:element>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+
     def test_group_redefine_self_reference_one_one_is_valid(self, tmp_path):
         doc = self._redefine(
             tmp_path,

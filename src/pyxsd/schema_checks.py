@@ -57,7 +57,6 @@ from pyxsd.particle_derivation import (
     wildcard_subset,
 )
 from pyxsd.schema_base import SchemaBase
-from pyxsd.schema_composition import _qnameLocal
 from pyxsd.upa import upa_violations
 from pyxsd.validation import CompileContextProtocol
 from pyxsd.versioning import VC_NS
@@ -226,7 +225,7 @@ def group_redefine_has_self_reference(declaration: Any, name: str) -> bool:
         if element.tag.split("}")[-1] != "group":
             continue
         ref = element.get("ref")
-        if ref and _qnameLocal(ref) in candidates:
+        if ref and local_part(ref) in candidates:
             return True
     return False
 
@@ -3213,7 +3212,7 @@ def report_unqualified_type_candidate(ctx: CompileContextProtocol, er: Any, reso
     the real error of writing a type declared in the target namespace
     without its prefix.
     """
-    local = _qnameLocal(resolved)
+    local = local_part(resolved)
     if not local:
         return
     loaded = loaded_namespaces(ctx)
