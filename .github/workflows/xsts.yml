@@ -1,8 +1,8 @@
 name: xsts
 
-# Dispatch-only: the W3C XML Schema Test Suite takes a few minutes per
-# profile, so it is not part of the required CI path. Run it on demand when
-# schema handling changes, and read a red run as the signal to review the
+# Dispatch-only: XSD 1.1 runs on every PR from ci.yml; this workflow covers
+# the XSD 1.0 profile and ad-hoc slices on demand. Run it when schema
+# handling changes, and read a red run as the signal to review the
 # baseline diff. Pass --engine pyxsd so each profile is compared against the
 # pyxsd entries of its own baseline (baseline-xsd11.toml also records the
 # xmlschema oracle; those keys are ignored by --enforce).

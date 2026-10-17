@@ -31,6 +31,20 @@ _CLASS_IN_PROGRESS = object()
 _SELF_CONTENT = object()
 
 
+def _attribute_use_label(attr: Any, attrName: str | None) -> str:
+    """The local name a duplicate-use diagnostic displays for *attr*.
+
+    ``attrName`` is a bookkeeping key: a reference site's key is
+    ``Type|attributeRef|ref``, so displaying it raw would leak the
+    bookkeeping spelling into the message. The ref as written (its
+    local part) reads like the declaration names beside it.
+    """
+    if getattr(attr, "isAttributeRef", False):
+        ref = getattr(attr, "ref", None) or attrName
+        return str(ref).split(":")[-1]
+    return attrName or getattr(attr, "name", None) or "?"
+
+
 def _isInlineTypeName(value: Any) -> bool:
     """Whether *value* is an unprefixed inline-type bookkeeping name.
 
@@ -392,6 +406,14 @@ class XsdType(ElementRepresentative):
         attribute name already contributed by the type's own declaration or
         by an explicitly referenced group is a duplicate attribute use
         (si02), reported rather than silently shadowed.
+
+        Duplicates compare by expanded name (``_attributeCollides``),
+        like the explicit attribute-group references: a use the group
+        contributes by reference and a direct declaration of the same
+        local name collide when their QNames name one expanded name,
+        while a same-local-name pair of distinct namespaces (or forms)
+        stays two distinct uses (attQ019) -- the bookkeeping keys alone
+        say neither.
         """
         group = getattr(self, "defaultAttributeGroup", None)
         if group is None:
@@ -405,11 +427,11 @@ class XsdType(ElementRepresentative):
         for attrName, attr in self._collectAttributeGroup(
             group, frozenset({groupKey}), host
         ).items():
-            if attrName in self.attributes:
+            if self._attributeCollides(self.attributes.values(), attr, host):
                 self._report_ref_error(
-                    f"attribute '{attrName}' is contributed both by the "
-                    f"schema's default attribute group '{groupName}' and by "
-                    f"type '{self.name}'",
+                    f"attribute '{_attribute_use_label(attr, attrName)}' is contributed "
+                    f"both by the schema's default attribute group '{groupName}' "
+                    f"and by type '{self.name}'",
                     code="duplicate-attribute",
                 )
                 continue
@@ -420,13 +442,17 @@ class XsdType(ElementRepresentative):
         """The expanded instance name an attribute use matches under.
 
         Two attribute uses collide only when their qualified names match;
-        two local declarations with one local name in different
-        namespaces (or with different forms) are distinct (attQ019).
-        A reference site that is not resolved yet contributes its
-        bookkeeping name, so an unresolved ref never collides with a
-        local declaration here.
+        two declarations with one local name in different namespaces (or
+        with different forms) are distinct (attQ019). The identity is
+        namespace-aware in every mode: legacy instance matching discards
+        namespaces, so comparing the declared expanded names is what
+        keeps a resolved ``xml:lang`` reference from colliding with an
+        unqualified same-local-name declaration. A reference site
+        contributes the expanded name its own QName names, so an
+        unresolved reference never collides with a local declaration of
+        the same local name.
         """
-        name = attr.instanceName(is_attribute=True, parser=host)
+        name = attr.expandedInstanceName(is_attribute=True, parser=host)
         return name if name is not None else getattr(attr, "name", None)
 
     def _attributeCollides(self, existing, candidate, host) -> bool:
@@ -484,12 +510,28 @@ class XsdType(ElementRepresentative):
         ``r:id`` and the injected ``xml:id``) collapse onto one key. The
         parser-owned component table preserves both by expanded name, so
         gather the global attribute declarations from it instead. In
-        ``legacy`` mode the historical mapping is used unchanged.
+        ``legacy`` mode the historical mapping loses the same
+        declarations to its merge: a global that shares a local name
+        with another document's (wml's ``r:id`` against the merged
+        winner) is reachable only through the composed tree, so the
+        candidates come from there.
         """
         schema = self.getSchema()
         mode = getattr(host, "mode", ParseModes.STRICT)
         if getattr(mode, "namespaces", "legacy") != "strict":
-            return schema.attributes.values()
+            candidates = []
+            for child in getattr(schema, "processedChildren", None) or ():
+                if (
+                    child is not None
+                    and componentKind(child) == "attribute"
+                    and not getattr(child, "isAttributeRef", False)
+                    # Only global declarations are valid ref targets; a
+                    # local declaration that happens to share the name
+                    # must not satisfy the reference.
+                    and child.checkTopLevelType()
+                ):
+                    candidates.append(child)
+            return candidates or schema.attributes.values()
         table = getattr(schema, "components", None)
         if not table:
             return schema.attributes.values()
@@ -636,6 +678,35 @@ class XsdType(ElementRepresentative):
         """
         self._reportSchemaError(message, code=code)
 
+    def _mergedLookup(self, name, host):
+        """The class a (resolved) member name finds on the merged path."""
+        if name in host.classes:
+            return host.classes[name]
+        return ElementRepresentative.typeFromName(name, host, warn=False)
+
+    def _declaredMemberClass(self, reference, memberName, host):
+        """The member class a ``memberTypes`` reference denotes.
+
+        The reference is resolved against the schema document that
+        wrote it first: when that document declares a type with the
+        reference's local name, that declaration is the member — even
+        where the legacy merged lookup would land on a same-local-name
+        declaration from another composed document. DrawingML's
+        ``ST_Percentage`` union takes the shared-types string
+        restriction as its second member this way, rather than
+        resolving to itself and shedding the member.
+
+        References that name no namespace, or whose document declares
+        no such type (a built-in, or a namespace no schema supplied),
+        keep the merged lookup.
+        """
+        declared = self.referenceTargetDeclaration(reference)
+        if declared is not None:
+            member = declared.clsFor(host)
+            if member is not None:
+                return member
+        return self._mergedLookup(memberName, host)
+
     def makeUnionClass(self, host):
         """Produces the class for a union simple type.
 
@@ -654,18 +725,15 @@ class XsdType(ElementRepresentative):
         ``__init__``), because schema-derived member classes also
         inherit ``SchemaBase.__init__``, which takes no value.
         """
-        namedMembers = [
-            memberName
-            if _isInlineTypeName(memberName)
-            else self.resolveSchemaQName(memberName, parser=host)
-            for memberName in self.unionSpec
-        ]
         members = []
-        for memberName in namedMembers:
-            if memberName in host.classes:
-                resolved = host.classes[memberName]
+        for reference in self.unionSpec:
+            memberName = reference
+            if _isInlineTypeName(reference):
+                # An inline-type bookkeeping name is not a reference.
+                resolved = self._mergedLookup(reference, host)
             else:
-                resolved = ElementRepresentative.typeFromName(memberName, host, warn=False)
+                memberName = self.resolveSchemaQName(reference, parser=host)
+                resolved = self._declaredMemberClass(reference, memberName, host)
             if resolved is None:
                 # A ``memberTypes`` name that resolves to no type is a
                 # schema error; report it rather than silently

@@ -1933,6 +1933,11 @@ def _wildcard_contained_in(unit: Particle, member: Particle) -> bool:
     return wildcard_subset(spec, other, target)
 
 
+#: Sentinel distinguishing "not computed yet" from a computed ``None``
+#: in the per-declaration expanded-namespace memo.
+_UNSET_NAMESPACE = object()
+
+
 def element_namespace(declaration: Any) -> str | None:
     """The {target namespace} an element declaration is checked against.
 
@@ -1947,12 +1952,42 @@ def element_namespace(declaration: Any) -> str | None:
     ``targetNamespace`` attribute on the declaration wins (the TargetNS
     corpus cases). Declarations without scope information (test
     stand-ins) keep the historical form-blind reading.
+
+    The namespace is the one of the document that *declared* the
+    declaration (``authoredNamespace``), not the namespace a legacy
+    compile reports: legacy merges every composed document into the
+    main schema's target namespace, and reading that back would
+    conflate two same-local-name declarations of different documents
+    (the WordprocessingML ``rPr``/``r`` particles of ``CT_R`` and
+    ``CT_RunTrackChange``, whose DrawingML/WordprocessingML
+    declarations differ).
+
+    The answer is memoized on the declaration for the checks' many
+    repeated comparisons: every input is frozen for the compile's
+    lifetime once the representative tree is built (attributes are not
+    rewritten after composition, the namespace/form-default maps are
+    captured at ``Schema`` construction, and representatives are never
+    re-parented). Declarations without the representative machinery
+    (test stand-ins) are answered without caching, so a stand-in whose
+    fields change between calls keeps its historical behavior.
     """
     if declaration is None:
         return None
     referred = getattr(declaration, "referredElement", None)
     if referred is not None and referred is not declaration:
         return element_namespace(referred)
+    cacheable = callable(getattr(declaration, "authoredNamespace", None))
+    if cacheable:
+        cached = declaration.__dict__.get("_elementNamespace", _UNSET_NAMESPACE)
+        if cached is not _UNSET_NAMESPACE:
+            return cached
+    namespace = _computed_element_namespace(declaration)
+    if cacheable:
+        declaration.__dict__["_elementNamespace"] = namespace
+    return namespace
+
+
+def _computed_element_namespace(declaration: Any) -> str | None:
     explicit = getattr(getattr(declaration, "xsdElement", None), "get", None)
     if callable(explicit):
         target = explicit("targetNamespace")
@@ -1963,6 +1998,9 @@ def element_namespace(declaration: Any) -> str | None:
         return None
     if not _local_declaration_is_qualified(declaration):
         return None
+    authored = getattr(declaration, "authoredNamespace", None)
+    if callable(authored):
+        return authored()
     return getter()
 
 

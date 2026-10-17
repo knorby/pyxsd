@@ -47,6 +47,7 @@ from pyxsd.namespaces import (
     NamespaceError,
     clark,
     local_name,
+    local_part,
     namespace_of,
 )
 from pyxsd.particle_derivation import (
@@ -56,7 +57,6 @@ from pyxsd.particle_derivation import (
     wildcard_subset,
 )
 from pyxsd.schema_base import SchemaBase
-from pyxsd.schema_composition import _qnameLocal
 from pyxsd.upa import upa_violations
 from pyxsd.validation import CompileContextProtocol
 from pyxsd.versioning import VC_NS
@@ -225,7 +225,7 @@ def group_redefine_has_self_reference(declaration: Any, name: str) -> bool:
         if element.tag.split("}")[-1] != "group":
             continue
         ref = element.get("ref")
-        if ref and _qnameLocal(ref) in candidates:
+        if ref and local_part(ref) in candidates:
             return True
     return False
 
@@ -391,7 +391,7 @@ def resolve_default_attribute_group(ctx: CompileContextProtocol, root: Any) -> A
                 continue
             if entry.name != local:
                 continue
-            if uri is None or entry.getNamespace() == uri:
+            if uri is None or entry.authoredNamespace() == uri:
                 return entry
     ctx.report.add_error(
         f"the defaultAttributes attribute group '{value}' could not be "
@@ -471,6 +471,13 @@ def composed_default_open_content(ctx: CompileContextProtocol) -> dict[int, Any]
     is checked here through the same helper the declaration walk uses
     for the host document. Returns ``id(source schema root) ->
     DefaultOpenContent | None``.
+
+    The wildcard's namespace keywords resolve against the document that
+    declared them. A chameleon include stamps the adopted namespace on
+    the root, but a redefined or overridden no-namespace document is
+    adopted without stamping (``splice_redefine``), so the composition's
+    record of the namespace the document's components were spliced
+    under is read first; the root's own attribute is the fallback.
     """
     from pyxsd.open_content import default_open_content_element, parse_default_open_content
 
@@ -484,12 +491,15 @@ def composed_default_open_content(ctx: CompileContextProtocol) -> dict[int, Any]
         if element is None:
             result[key] = None
             continue
+        target_namespace = ctx.composed_schema_namespaces.get(key)
+        if target_namespace is None:
+            target_namespace = root.get("targetNamespace")
         result[key] = parse_default_open_content(
             element,
             report_error=lambda message, code: ctx.report.add_error(
                 message, code=code, phase="schema"
             ),
-            target_namespace=root.get("targetNamespace"),
+            target_namespace=target_namespace,
             resolve_qname=open_content_resolver(ctx, element),
         )
     return result
@@ -878,7 +888,7 @@ def check_substitution_edc(ctx: CompileContextProtocol, resolved: list[Any], py_
                 namespace, _, local = head[1:].partition("}")
                 names.add((namespace, local))
             else:
-                names.add((holder.getNamespace() or "", head.split(":")[-1]))
+                names.add((element_namespace(holder) or "", head.split(":")[-1]))
         return names
 
     memberDecls: dict[tuple[str, str], Any] = {}
@@ -1095,7 +1105,7 @@ def report_mixed_conflict(ctx: CompileContextProtocol, er: Any) -> None:
 def report_mixed_extension(ctx: CompileContextProtocol, er: Any, py_xsd: Any) -> None:
     """Reports an extension whose mixed content diverges from its base.
 
-    Derivation Valid (Extension) clause 1.4.3.2.2 requires the
+    Derivation Valid (Extension) clause 1.4.3.2 requires the
     {content type} of the derived type to match the base's: a mixed
     type may only extend a mixed base and an element-only type may
     only extend an element-only base. An explicit mixed content over
@@ -1103,9 +1113,14 @@ def report_mixed_extension(ctx: CompileContextProtocol, er: Any, py_xsd: Any) ->
     that adds particles to a mixed base (complex026) are both errors.
     A bare or attribute-only extension of a mixed base legitimately
     inherits the base content type (§3.4.2.3.3 clause 4.2.2), so it
-    is exempt. Hides a simple-content base and an ``xs:anyType``
-    base; never errors when the base cannot be resolved or is not a
-    complex type definition.
+    is exempt. So is any extension of a base whose {content type}
+    {variety} is empty (clause 1.4.3.2.1): the clause is satisfied
+    outright, and the mixed-match requirement of 1.4.3.2.2.1 reaches
+    only element-only/mixed bases (CDA's ``ANY`` is an abstract
+    particle-less element-only type that ``EN``/``AD``/``BIN``
+    extend with mixed content). Hides a simple-content base and an
+    ``xs:anyType`` base; never errors when the base cannot be
+    resolved or is not a complex type definition.
     """
     if er.getDerivation() != "extension":
         return
@@ -1126,6 +1141,8 @@ def report_mixed_extension(ctx: CompileContextProtocol, er: Any, py_xsd: Any) ->
     if own == base:
         return
     if not own and base and er._explicitContentEmpty():
+        return
+    if base_er._effectiveContentVariety() == "empty":
         return
     ctx.report.add_error(
         "particle restriction (Derivation Valid (Extension) clause "
@@ -1414,7 +1431,12 @@ def global_element_lookup(er: Any) -> Any:
     Feeds the XSD 1.1 static tighter EDC check (the binding the
     derived type's wildcard resolves to). Names that name no global
     declaration return ``None``, which the check reads as "nothing
-    to compare".
+    to compare". The names are the declaring documents' expanded
+    names (``element_namespace``), matching the names the checks
+    build from the content models: a legacy compile reports every
+    composed document in the main schema's namespace, and comparing
+    a recorded (authored) name against the reported one would skip
+    the comparison for a declaration of a composed document.
     """
     try:
         schema = er.getSchema()
@@ -1432,11 +1454,7 @@ def global_element_lookup(er: Any) -> Any:
         for element in elements:
             if getattr(element, "name", None) != local:
                 continue
-            try:
-                element_uri = element.getNamespace()
-            except AttributeError:
-                element_uri = None
-            if element_uri == uri:
+            if element_namespace(element) == uri:
                 return element
         return None
 
@@ -1587,7 +1605,7 @@ def base_type_er(ctx: CompileContextProtocol, er: Any, py_xsd: Any) -> Any | Non
         else:
             found = table.getFromName(resolved, kind="type", warn=False)
             if found is None:
-                found = table.getFromName(str(resolved).split(":")[-1], kind="type", warn=False)
+                found = table.getFromName(local_part(resolved), kind="type", warn=False)
         if found is not None:
             return found
     return None
@@ -1730,12 +1748,25 @@ def report_extension_all_overlap(
     base's internal and the extension's internal duplicates are
     already reported by the per-compositor sweep; this compares the
     two sides.
+
+    Elements compare by expanded name — the namespace of the document
+    that declared each particle (``element_namespace``, the same
+    reading the EDC/UPA sweeps use): a legacy compile reports every
+    composed document in the main schema's namespace, and a legal
+    extension may pull same-local-name elements from two different
+    imported namespaces whose expanded names are distinct. Same-name
+    declarations of one namespace (across an include, or a local and a
+    global of the same document) still collide.
     """
+
+    def expanded_name(member: Any) -> tuple[str | None, str]:
+        return (element_namespace(getattr(member, "descriptor", None)), member.name or "")
+
     base_names = {
-        member.name for member in base_members if member.kind == "element" and member.name
+        expanded_name(member) for member in base_members if member.kind == "element" and member.name
     }
     for member in own_members:
-        if member.kind == "element" and member.name and member.name in base_names:
+        if member.kind == "element" and member.name and expanded_name(member) in base_names:
             ctx.report.add_error(
                 "particle restriction (cos-nonambig): overlapping particles in "
                 f"all extension - element '{member.name}' appears in both the "
@@ -1768,7 +1799,7 @@ def report_extension_all_overlap(
         declaration = getattr(member, "descriptor", None)
         if declaration is None or type(declaration).__name__ != "Element":
             continue
-        namespace = declaration.getNamespace() or ""
+        namespace = element_namespace(declaration) or ""
         resolved.append(((namespace, declaration.name or ""), "", declaration))
     if resolved:
         check_substitution_overlap(ctx, resolved, py_xsd)
@@ -2089,6 +2120,12 @@ def resolve_particles(particles: list[Any]) -> list[tuple[tuple[str, str], str, 
     resolve against this document's globals is dropped (its type is
     unknown). A name site keeps its declared name and the raw (or
     inline-generated) ``type`` attribute as its key.
+
+    The expanded name is the one the declaring document gives the
+    declaration (``element_namespace``): a legacy compile reports
+    every composed document in the main schema's namespace, and two
+    same-local-name declarations of different documents are distinct
+    declarations, not a name collision.
     """
     globals_ = global_elements(particles[0] if particles else None)
     resolved: list[tuple[tuple[str, str], str, Any]] = []
@@ -2104,18 +2141,11 @@ def resolve_particles(particles: list[Any]) -> list[tuple[tuple[str, str], str, 
                 )
             if referred is None:
                 continue
-            try:
-                namespace = referred.getNamespace() or ""
-            except AttributeError:
-                namespace = ""
+            namespace = element_namespace(referred) or ""
             name = (namespace, referred.name or "")
             resolved.append((name, f"decl:{referred.expandedName}", particle))
             continue
-        try:
-            namespace = particle.getNamespace() or ""
-        except AttributeError:
-            namespace = ""
-        name = (namespace, getattr(particle, "name", None) or "")
+        name = (element_namespace(particle) or "", getattr(particle, "name", None) or "")
         typeKey = particle.tagAttributes.get("type") or ""
         resolved.append((name, typeKey, particle))
     return resolved
@@ -3182,7 +3212,7 @@ def report_unqualified_type_candidate(ctx: CompileContextProtocol, er: Any, reso
     the real error of writing a type declared in the target namespace
     without its prefix.
     """
-    local = _qnameLocal(resolved)
+    local = local_part(resolved)
     if not local:
         return
     loaded = loaded_namespaces(ctx)
@@ -3557,27 +3587,164 @@ def check_declaration_value_constraint(ctx: CompileContextProtocol, er: Any) -> 
                 phase="schema",
             )
             return
-    factory = value_constraint_factory(er)
-    if factory is None:
+    primary = value_constraint_factory(er)
+    values = [
+        (attr, er.tagAttributes[attr])
+        for attr in ("default", "fixed")
+        if er.tagAttributes.get(attr) is not None
+    ]
+    if primary is None or not values:
         return
+    factory = _authoredValueClass(er, primary)
     label = type(er).__name__.lower()
-    for attr in ("default", "fixed"):
-        value = er.tagAttributes.get(attr)
-        if value is None:
-            continue
+    for attr, value in values:
         try:
-            factory(value)
-        except (TypeError, ValueError):
-            ctx.report.add_error(
-                f"{label} '{er.name}' {attr} value '{value}' is not valid for its type",
-                code="declaration-attribute",
-                element=er.name,
-                phase="schema",
-            )
+            if _accepts_value(factory, value):
+                continue
         except Exception:  # pragma: no cover - defensive
             # A constructor raising anything else is a pyxsd bug, not
             # a schema error; do not turn it into a false rejection.
             logger.debug("could not validate %s value %r of %r", attr, value, er.name)
+            continue
+        ctx.report.add_error(
+            f"{label} '{er.name}' {attr} value '{value}' is not valid for its type",
+            code="declaration-attribute",
+            element=er.name,
+            phase="schema",
+        )
+
+
+def _accepts_value(factory: Any, value: Any) -> bool:
+    """Whether *factory* validates *value* as a lexical form."""
+    try:
+        factory(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _authoredValueClass(er: Any, primary: Any) -> Any:
+    """The class that validates a declaration's value, as authored.
+
+    The declaration's ``type`` reference is resolved in the schema
+    document that wrote it: where the composed tree declares a
+    same-local-name type in that document's namespace, that
+    declaration — not the one the legacy merged lookup lands on — is
+    the declaration's type. OOXML composes documents that reuse local
+    type names across namespaces (a shadowed ``ST_Orientation``), so
+    the merged winner's constraints must not be applied to a value the
+    declaring document's own type accepts or rejects.
+
+    An attribute *use* written as a reference (``ref=``) carries no
+    ``type`` of its own; its value is validated against the referenced
+    global declaration's type, with the reference resolved in the
+    writing document the same way — the declaration the reference
+    denotes may itself be one that lost the merge — and that
+    declaration's own ``type`` reference resolved in its document in
+    turn.
+
+    Returns *primary* — the merged resolution — when the declaration
+    carries no plain ``type`` reference (an inline type or none) and
+    is not an attribute reference site, when the reference names no
+    declaration the composed tree holds (a built-in, or a namespace no
+    schema supplied), or when that declaration is the one already
+    resolved. Only a distinct declaration is built, on demand.
+    """
+    getter = getattr(er, "referenceTargetDeclaration", None)
+    if getter is None:
+        return primary
+    raw = er.tagAttributes.get("type")
+    if raw and "|" not in raw:
+        if er.referenceNamespace(raw) == XSD_NS:
+            # Built-ins stay authoritative: ``typeFromName``
+            # short-circuits a reference into the XML Schema namespace
+            # to the built-in, so a (pathological) document targeting
+            # that namespace cannot shadow it here either.
+            return primary
+        declared = getter(raw)
+        if declared is None:
+            return primary
+        try:
+            cls = declared.clsFor(er._effectiveParser())
+        except Exception:  # pragma: no cover - defensive
+            return primary
+        simple = _simpleValueSpace(cls)
+        if simple is None or simple is primary:
+            return primary
+        return simple
+    if raw:
+        return primary
+    ref = er.tagAttributes.get("ref")
+    if not ref or type(er).__name__ != "Attribute":
+        return primary
+    referred = _authoredAttributeDeclaration(er, ref)
+    if referred is None:
+        return primary
+    referredPrimary = value_constraint_factory(referred)
+    if referredPrimary is None:
+        return primary
+    return _authoredValueClass(referred, referredPrimary)
+
+
+def _authoredAttributeDeclaration(er: Any, ref: str) -> Any:
+    """The global attribute declaration a use site's ``ref`` denotes.
+
+    Mirrors ``referenceTargetDeclaration`` for attribute references:
+    the namespace the reference names in the writing document selects
+    among the same-local-name global attribute declarations of the
+    composed tree, so a declaration that lost the legacy merge is
+    still the one the reference denotes. Returns ``None`` when the
+    reference resolves to no namespace or no declaration of that
+    document holds the name — the caller keeps the merged resolution.
+    """
+    namespace = er.referenceNamespace(ref)
+    if namespace is None:
+        return None
+    local = local_part(ref)
+    for candidate in _sameNameAttributeDeclarations(er, local):
+        if candidate.authoredNamespace() == namespace:
+            return candidate
+    return None
+
+
+def _sameNameAttributeDeclarations(er: Any, local: str) -> list:
+    """Global attribute declarations in the composed tree named *local*.
+
+    Mirrors ``ElementRepresentative.sameNameTypeDeclarations`` for
+    attributes: a legacy compile reports every composed document's
+    namespace as the main schema's, so the component table keeps one
+    declaration per local name and a declaration that lost the merge
+    is reachable only through the composed tree. The lookup index is
+    built once, lazily, on the schema ER.
+    """
+    schema = er._effectiveSchema()
+    if schema is None:
+        return []
+    index = getattr(schema, "attributeDeclarationsByLocalName", None)
+    if index is None:
+        index = {}
+        for child in getattr(schema, "processedChildren", None) or ():
+            if child is None or componentKind(child) != "attribute":
+                continue
+            if getattr(child, "isAttributeRef", False):
+                continue
+            name = getattr(child, "name", None)
+            if isinstance(name, str):
+                index.setdefault(name, []).append(child)
+        schema.attributeDeclarationsByLocalName = index
+    return index.get(local, [])
+
+
+def _simpleValueSpace(cls: Any) -> Any | None:
+    """The simple-value class of *cls*, or ``None`` when it has none."""
+    if not isinstance(cls, type):
+        return None
+    content = getattr(cls, "_simpleContentType_", None)
+    if isinstance(content, type):
+        cls = content
+    if not issubclass(cls, XsdDataType):
+        return None
+    return cls
 
 
 def value_constraint_factory(er: Any) -> Any:
@@ -3591,11 +3758,4 @@ def value_constraint_factory(er: Any) -> Any:
         cls = er.getType()
     except (AttributeError, TypeError):
         return None
-    if not isinstance(cls, type):
-        return None
-    content = getattr(cls, "_simpleContentType_", None)
-    if isinstance(content, type):
-        cls = content
-    if not issubclass(cls, XsdDataType):
-        return None
-    return cls
+    return _simpleValueSpace(cls)

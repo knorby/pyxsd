@@ -30,7 +30,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 20 min: the XSD Test Suite step adds several minutes on top of the
+    # coverage run (~3 min); slower runners need headroom beyond 15.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -78,6 +80,17 @@ jobs:
           uv run python examples/gpx/download_schemas.py
           uv run python examples/docx/download_schemas.py
 
+      - name: Cache the conformance corpus
+        id: conformance
+        uses: actions/cache@v6
+        with:
+          path: tests/conformance/.cache
+          key: conformance-schemas-${{ runner.os }}-${{ hashFiles('tests/conformance/fetch.py') }}
+
+      - name: Fetch the conformance corpus
+        if: steps.conformance.outputs.cache-hit != 'true'
+        run: uv run python -m tests.conformance.fetch
+
       - name: Run tests with coverage
         run: uv run pytest --cov=pyxsd --cov-report=term-missing
 
@@ -87,6 +100,25 @@ jobs:
           name: coverage-${{ matrix.python-version }}
           path: .coverage
           include-hidden-files: true
+
+      - name: Run the XSD Test Suite
+        run: uv run pytest tests/test_xsts_suite.py -q
+        env:
+          PYXSD_RUN_XSTS: "1"
+          # Standard runners are 2-4x slower than a dev machine; the
+          # slowest instance cases need more than the 30 s default.
+          PYXSD_XSTS_TIMEOUT: "120"
+
+      - name: Benchmark the conformance corpus
+        if: github.event_name == 'pull_request'
+        run: uv run python -m tests.conformance.run --json > conformance-benchmarks.json
+
+      - name: Upload conformance benchmarks artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: conformance-benchmarks-${{ matrix.python-version }}
+          path: conformance-benchmarks.json
 
       - name: Smoke-test installed base-only batch API
         run: |

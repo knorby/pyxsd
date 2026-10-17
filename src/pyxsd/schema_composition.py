@@ -30,6 +30,7 @@ from pyxsd.namespaces import (
     NamespaceError,
     clark,
     local_name,
+    local_part,
     namespace_of,
     parse_with_namespaces,
 )
@@ -51,11 +52,6 @@ _COMPOSABLE_TAGS = {
     "attribute",
     "notation",
 }
-
-
-def _qnameLocal(value: str) -> str:
-    """Returns the local part of a lexical QName or Clark name."""
-    return local_name(value.rpartition(":")[2])
 
 
 def _redefined_qname(value: str) -> str:
@@ -148,11 +144,23 @@ class CompositionContext:
     xml_path: Path
     schema_context: SchemaContext
     namespace_overrides: dict[int, str | None]
+    component_namespaces: dict[int, str | None]
     injected_builtin_ids: set[int]
     form_defaults: dict[int, tuple[str | None, str | None]]
     xpath_default_namespaces: dict[int, str | None]
     composed_element_ids: set[int]
     composed_schema_roots: dict[int, Any]
+    #: The namespace each composed document's components were spliced
+    #: under, keyed by the document root's id. A chameleon include
+    #: stamps the root with the adopted namespace, and so does an
+    #: ``xs:override`` of a no-namespace document
+    #: (see :func:`splice_override`); a *redefined* no-namespace
+    #: document is adopted without stamping (see :func:`splice_redefine`),
+    #: so the root's own attribute is absent and this record is the
+    #: only statement of the namespace its
+    #: components — and the namespace keywords of its
+    #: ``defaultOpenContent`` — belong to.
+    composed_schema_namespaces: dict[int, str | None]
     directive_ids: dict[str, Any]
     compose_stack: list[str]
     redefine_origins: dict[tuple[str, str, str], tuple[str, ...]]
@@ -160,6 +168,12 @@ class CompositionContext:
     resolved_imports: set[str]
     hint_schema_paths: set[str]
     composed_target_namespaces: set[str]
+    #: A composed document names the XML namespace in an ``xs:import``
+    #: (with or without a ``schemaLocation``). The namespace has no
+    #: schema document: its attribute declarations are built-in, and
+    #: in legacy mode they are registered when this flag is set and no
+    #: document satisfied the import.
+    xml_namespace_imported: bool = False
     composed_documents: set[str] = field(default_factory=set)
     additional_schemas: list[tuple[str | None, Path]] = field(default_factory=list)
     #: The declared XSD processor version (``vc:*`` selectors test against
@@ -265,6 +279,7 @@ def splice_composed_schemas(
     baseDir: Path,
     visited: set[str],
     mainDocument: bool = False,
+    adoptedNS: str | None = None,
 ) -> None:
     """Merges composed schemas into ``schemaRoot`` before class building.
 
@@ -284,6 +299,14 @@ def splice_composed_schemas(
     the main document's directives are recorded so declaration ids
     can be checked against them (an included document's directives
     belong to a different XML document).
+
+    ``adoptedNS`` is the namespace an enclosing chameleon adoption put
+    this document in when its own root does not say so. A redefined
+    base document is adopted without stamping its root (see
+    :func:`splice_redefine`), so its nested includes, redefines *and*
+    overrides must be told the namespace explicitly or their
+    components would stay in no namespace while the base document's
+    rewritten references name the adopted one.
     """
     for child in list(schemaRoot):
         local = child.tag.split("}")[-1]
@@ -291,13 +314,15 @@ def splice_composed_schemas(
             note_directive_id(ctx, child)
         if local == "include":
             schemaRoot.remove(child)
-            splice_included_schema(ctx, child, schemaRoot, baseDir, visited, isImport=False)
+            splice_included_schema(
+                ctx, child, schemaRoot, baseDir, visited, isImport=False, adoptedNS=adoptedNS
+            )
         elif local == "redefine":
             schemaRoot.remove(child)
-            splice_redefine(ctx, child, schemaRoot, baseDir, visited)
+            splice_redefine(ctx, child, schemaRoot, baseDir, visited, adoptedNS=adoptedNS)
         elif local == "override":
             schemaRoot.remove(child)
-            splice_override(ctx, child, schemaRoot, baseDir, visited)
+            splice_override(ctx, child, schemaRoot, baseDir, visited, adoptedNS=adoptedNS)
         elif local == "import":
             schemaRoot.remove(child)
             if child.get("namespace") == XSD_NS:
@@ -305,8 +330,17 @@ def splice_composed_schemas(
                 # conventional spelling; the built-in types are
                 # always available here.
                 continue
+            if child.get("namespace") == XML_NS:
+                ctx.xml_namespace_imported = True
             splice_included_schema(
-                ctx, child, schemaRoot, baseDir, visited, isImport=True, checkImportNamespace=True
+                ctx,
+                child,
+                schemaRoot,
+                baseDir,
+                visited,
+                isImport=True,
+                checkImportNamespace=True,
+                adoptedNS=adoptedNS,
             )
     return None
 
@@ -342,6 +376,7 @@ def splice_included_schema(
     missing_severity: str = "warning",
     checkImportNamespace: bool = False,
     missing_code: str | None = None,
+    adoptedNS: str | None = None,
 ) -> None:
     """Splices the named components of one included/imported schema.
 
@@ -367,6 +402,14 @@ def splice_included_schema(
     cannot absorb a no-namespace document; that is an include).
     Caller-supplied schemas are exempt because their namespace label
     is not an authoring statement in the schema.
+
+    ``adoptedNS`` is the namespace the referencing document was
+    chameleon-adopted into when its own root does not say so (a
+    redefined base document; see :func:`splice_composed_schemas`).
+    The referencing document is then treated as having that target
+    namespace, so a nested chameleon include adopts it too and the
+    base document's rewritten references reach the included
+    components.
     """
     check_directive_annotation(ctx, tag, isImport)
     location = tag.get("schemaLocation")
@@ -421,7 +464,10 @@ def splice_included_schema(
     )
     if includedRoot is None:
         return None
-    mainNS = schemaRoot.get("targetNamespace")
+    # A document a chameleon adoption put in a namespace (a redefined
+    # base document, whose root is not stamped) is judged by that
+    # namespace here: it is what a nested chameleon include adopts.
+    mainNS = schemaRoot.get("targetNamespace") or adoptedNS
     includedNS = includedRoot.get("targetNamespace")
     if isImport and checkImportNamespace and tag.get("namespace") is None and mainNS is None:
         # schF3/addB008/addB035: an import with no namespace attribute
@@ -510,9 +556,11 @@ def splice_included_schema(
         and getattr(ctx.mode, "namespaces", "legacy") != "strict"
     ):
         logger.warning(
-            "imported schema '%s' declares targetNamespace '%s'; pyxsd "
-            "matches names by local name, so its components are merged "
-            "regardless of the namespace difference",
+            "imported schema '%s' declares targetNamespace '%s'; legacy "
+            "mode merges components by local name, so they join the "
+            "lookup tables regardless of the namespace difference "
+            "(declaration identity still uses each document's own "
+            "namespace)",
             location,
             includedNS or "none",
         )
@@ -760,9 +808,25 @@ def append_named_components(
 
     In strict mode the namespace each component was declared in is
     recorded so its expanded name reflects the source document
-    rather than the main schema's target namespace. That document's
-    form defaults are recorded too, so local declarations resolve
-    qualification against their own schema instead of the host.
+    rather than the main schema's target namespace.
+
+    Every mode records which document each element of a named
+    component came from (``component_namespaces``) and that
+    document's form defaults (``form_defaults``), because a legacy
+    compile merges every composed document into one namespace: two
+    documents may declare types (or elements) that share a local
+    name, and the declaration a QName reference denotes — or that a
+    content-model sweep compares — is only recoverable from these
+    records. A local declaration resolves qualification against its
+    own document's ``elementFormDefault``/``attributeFormDefault``
+    rather than the host's.
+
+    The namespace the document's components were spliced under is
+    recorded against its root too (``composed_schema_namespaces``): a
+    redefined no-namespace document is adopted without stamping its
+    root (an overridden one is stamped), so that record is what the
+    document's ``defaultOpenContent`` namespace keywords resolve
+    against.
     """
     strict = getattr(ctx.mode, "namespaces", "legacy") == "strict"
     sourceDefaults = (
@@ -772,15 +836,19 @@ def append_named_components(
     sourceXPathDefault = includedRoot.get("xpathDefaultNamespace")
     from pyxsd.schema_checks import check_form_defaults
 
+    if namespace is not None:
+        ctx.composed_schema_namespaces.setdefault(id(includedRoot), namespace)
     check_form_defaults(ctx, includedRoot)
     for component in list(includedRoot):
         if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
-            if strict:
-                for element in component.iter():
+            for element in component.iter():
+                if strict:
                     ctx.namespace_overrides.setdefault(id(element), namespace)
-                    ctx.form_defaults.setdefault(id(element), sourceDefaults)
                     if sourceXPathDefault is not None:
                         ctx.xpath_default_namespaces.setdefault(id(element), sourceXPathDefault)
+                ctx.form_defaults.setdefault(id(element), sourceDefaults)
+                if namespace is not None:
+                    ctx.component_namespaces.setdefault(id(element), namespace)
             schemaRoot.append(component)
     return None
 
@@ -791,6 +859,7 @@ def splice_redefine(
     schemaRoot: Any,
     baseDir: Path,
     visited: set[str],
+    adoptedNS: str | None = None,
 ) -> None:
     """Splices an ``xs:redefine`` block.
 
@@ -800,6 +869,14 @@ def splice_redefine(
     from the original (the standard internal-name trick). ``base``
     attributes inside the block that name the redefined component
     are rewritten to the renamed original.
+
+    ``adoptedNS`` is the namespace an enclosing chameleon adoption put
+    the *redefining* document in when its own root does not say so (a
+    no-namespace base document redefined by a namespaced schema). The
+    redefine is then judged by that effective namespace: a nested
+    no-namespace target is chameleon-adopted into it and its
+    components (and ``composed_schema_namespaces`` record) land there,
+    exactly as the top-level chameleon redefine does.
     """
     check_redefine_structure(ctx, redefineTag)
     location = redefineTag.get("schemaLocation")
@@ -827,17 +904,19 @@ def splice_redefine(
                 phase="schema",
             )
         return None
-    mainNS = schemaRoot.get("targetNamespace")
+    mainNS = schemaRoot.get("targetNamespace") or adoptedNS
+    ownNS = schemaRoot.get("targetNamespace")
     includedNS = includedRoot.get("targetNamespace")
     if includedNS:
         ctx.composed_target_namespaces.add(includedNS)
     includedPath = (baseDir / location).resolve()
     if includedNS is not None and mainNS is not None and includedNS != mainNS:
         # A redefine may target a document in the redefining schema's
-        # namespace or a no-namespace (chameleon) document; redefining
-        # a third namespace would introduce the renamed components
-        # into the wrong namespace. A no-namespace redefiner is the
-        # disputed circular case (W3C schU1), left unresolved.
+        # namespace (the adopted one, for a chameleon-adopted base) or a
+        # no-namespace (chameleon) document; redefining a third
+        # namespace would introduce the renamed components into the
+        # wrong namespace. A no-namespace redefiner is the disputed
+        # circular case (W3C schU1), left unresolved.
         ctx.report.add_error(
             f"the redefined schema '{location}' declares targetNamespace "
             f"'{includedNS}', which does not match the redefining schema's "
@@ -846,10 +925,14 @@ def splice_redefine(
             phase="schema",
         )
     if str(includedPath) in visited:
-        if mainNS is None:
+        if ownNS is None:
             # A no-namespace (chameleon) redefiner caught in a cycle
             # is the disputed W3C schU1 case; it stays a skipped
-            # repetition rather than a rule violation.
+            # repetition rather than a rule violation. The verdict
+            # keys on the document's *own* root namespace: a base that
+            # a chameleon adoption put in a namespace without stamping
+            # its root is still the no-namespace document that wrote
+            # this directive.
             ctx.report.add_warning(
                 f"the schema '{location}' is already being composed; "
                 "the circular redefine is skipped",
@@ -885,10 +968,34 @@ def splice_redefine(
             and name in redefinedNames
         ):
             component.set("name", f"{name}|base")
+    baseAdoptedNS: str | None = None
+    if includedNS is None and mainNS is not None:
+        # A redefine of a no-namespace document is a chameleon
+        # redefinition (XSD 1.1 §4.2.4 with Appendix F.1): the base
+        # document adopts the redefining namespace (the effective one,
+        # for a redefine nested in an adopted base) exactly as a
+        # chameleon include does, so its unprefixed QName references
+        # are rewritten into that namespace and resolve against the
+        # redefined components. The rename above happens first so the
+        # original declarations keep their ``Name|base`` spelling. The
+        # root's own ``targetNamespace`` is deliberately not stamped:
+        # the component namespace comes from ``append_named_components``
+        # (called with ``mainNS``), and stamping it would re-judge a
+        # nested redefine cycle of the disputed W3C schU1 shape as a
+        # hard violation instead of the lenient repetition it is. The
+        # adopted namespace is threaded through the recursion instead,
+        # so the base document's own nested includes and redefines
+        # adopt it too.
+        apply_chameleon_namespace(ctx, includedRoot, mainNS)
+        baseAdoptedNS = mainNS
     ctx.compose_stack.append(str(includedPath))
     try:
         splice_composed_schemas(
-            ctx, includedRoot, includedPath.parent, visited | {str(includedPath)}
+            ctx,
+            includedRoot,
+            includedPath.parent,
+            visited | {str(includedPath)},
+            adoptedNS=baseAdoptedNS,
         )
     finally:
         ctx.compose_stack.pop()
@@ -910,6 +1017,7 @@ def splice_override(
     schemaRoot: Any,
     baseDir: Path,
     visited: set[str],
+    adoptedNS: str | None = None,
 ) -> None:
     """Splices an ``xs:override`` block (XSD 1.1 §4.2.5).
 
@@ -924,6 +1032,12 @@ def splice_override(
     The target set is the composed base document (its own includes
     and overrides included), which is why the base is spliced before
     the match.
+
+    ``adoptedNS`` is the namespace an enclosing redefinition adopted
+    this document into when its own root is unstamped; like
+    ``splice_redefine``, the override judges and records components
+    by that effective namespace (XSD 1.1 §4.2.5 clause 2 with
+    Appendix F.1).
     """
     targets = collect_override_targets(ctx, overrideTag)
     check_override_target_duplicates(ctx, targets)
@@ -950,13 +1064,14 @@ def splice_override(
                 phase="schema",
             )
         return None
-    mainNS = schemaRoot.get("targetNamespace")
+    mainNS = schemaRoot.get("targetNamespace") or adoptedNS
     includedNS = includedRoot.get("targetNamespace")
     includedPath = (baseDir / location).resolve()
     if includedNS is not None and (mainNS is None or includedNS != mainNS):
         # XSD 1.1 §4.2.5 clause 2: a namespaced base may only be
         # overridden by a document with the identical target
-        # namespace; a no-namespace base may be ported into a
+        # namespace (the adopted one, for an override nested in an
+        # adopted base); a no-namespace base may be ported into a
         # namespaced overrider (chameleon, below).
         ctx.report.add_error(
             f"the overridden schema '{location}' declares targetNamespace "
@@ -1266,7 +1381,7 @@ def check_group_redefine_self_reference(
         if not isinstance(element.tag, str) or element.tag.split("}")[-1] != "group":
             continue
         ref = element.get("ref")
-        if not ref or _qnameLocal(ref) != name:
+        if not ref or local_part(ref) != name:
             continue
         minimum = element.get("minOccurs")
         maximum = element.get("maxOccurs")
@@ -1291,7 +1406,7 @@ def redefine_type_derives_from_self(declaration: Any, name: str) -> bool:
         if not isinstance(element.tag, str):
             continue
         base = element.get("base")
-        if base and _qnameLocal(base) == name:
+        if base and local_part(base) == name:
             return True
     return False
 
@@ -1345,7 +1460,7 @@ def check_redefine_restrictions(
                     declared.append((childName, child))
             elif local == "attributeGroup":
                 ref = child.get("ref")
-                if ref is not None and _qnameLocal(ref) == name:
+                if ref is not None and local_part(ref) == name:
                     hasSelfReference = True
                     selfRefCount += 1
                 else:
@@ -1490,24 +1605,24 @@ def rebind_redefine_references(
                 continue
             tagLocal = element.tag.split("}")[-1]
             base = element.get("base")
-            if base and base.split(":")[-1] in redefinedNames:
+            if base and local_part(base) in redefinedNames:
                 element.set("base", _redefined_qname(base))
             localRef = element.get("ref")
             if (
                 tagLocal in ("group", "attributeGroup")
                 and localRef
-                and localRef.split(":")[-1] in redefinedNames
+                and local_part(localRef) in redefinedNames
             ):
                 element.set("ref", _redefined_qname(localRef))
             if includedNS is not None or mainNS is None:
                 continue
             candidates = []
-            if base and _qnameLocal(base) in redefinedNames:
+            if base and local_part(base) in redefinedNames:
                 candidates.append(base)
             if (
                 tagLocal in ("group", "attributeGroup")
                 and localRef
-                and _qnameLocal(localRef) in redefinedNames
+                and local_part(localRef) in redefinedNames
             ):
                 candidates.append(localRef)
             for value in candidates:
@@ -1538,6 +1653,12 @@ def inject_xml_namespace_attributes(ctx: CompositionContext, schemaRoot: Any) ->
     element. Registering them as global attributes (typed as
     strings) lets attribute references into the XML namespace
     resolve without a vendored XML-namespace schema.
+
+    ``strict`` mode registers them unconditionally (references are
+    namespace-matched there); ``legacy`` mode registers them only
+    when a namespace-only ``xs:import`` of the XML namespace named
+    the built-in vocabulary, so a schema that supplies its own
+    document for the namespace keeps that document's declarations.
     """
     for local in ("space", "lang", "base", "id"):
         attributeElement = ET.Element(
