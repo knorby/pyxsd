@@ -1742,6 +1742,11 @@ def report_extension_all_overlap(
     base's internal and the extension's internal duplicates are
     already reported by the per-compositor sweep; this compares the
     two sides.
+
+    Still keys elements by merged name (pre-existing; same class as the EDC/UPA
+    authored-namespace fix): a legal extension mixing same-local-name elements
+    from different imported namespaces can be spuriously rejected. Migrate to
+    ``element_namespace()``/``authoredNamespace()`` as a follow-up.
     """
     base_names = {
         member.name for member in base_members if member.kind == "element" and member.name
