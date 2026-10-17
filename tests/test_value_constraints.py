@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import pytest
 
+from pyxsd.binding import ParseModes
 from pyxsd.schema import Schema
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
@@ -100,7 +101,7 @@ HOST_WITH_SHADOW = f"""<xs:schema {XS} targetNamespace="urn:host" xmlns:h="urn:h
     </xs:restriction>
   </xs:simpleType>
   <xs:complexType name="CT_Host">
-    <xs:attribute name="val" type="ST_Direction" default="ltr"/>
+    <xs:attribute name="hostVal" type="ST_Direction" default="ltr"/>
   </xs:complexType>
   <xs:element name="root" type="d:CT_Direction"/>
 </xs:schema>"""
@@ -173,12 +174,13 @@ ORDINARY_NAMESPACED = f"""<xs:schema {XS} targetNamespace="urn:ordinary" xmlns:o
 </xs:schema>"""
 
 
-def _compile(tmp_path, host_xml, files):
+def _compile(tmp_path, host_xml, files, *, mode=None):
     """Writes *files* beside ``host.xsd`` and compiles the host schema."""
     (tmp_path / "host.xsd").write_text(host_xml, encoding="utf-8")
     for name, content in files.items():
         (tmp_path / name).write_text(content, encoding="utf-8")
-    return Schema.compile(str(tmp_path / "host.xsd"))
+    kwargs = {} if mode is None else {"mode": mode}
+    return Schema.compile(str(tmp_path / "host.xsd"), **kwargs)
 
 
 def _declaration_errors(schema, element=None):
@@ -190,11 +192,12 @@ def _declaration_errors(schema, element=None):
     ]
 
 
-def _percent_schema(tmp_path, *, font="100%", lspc="0%"):
+def _percent_schema(tmp_path, *, font="100%", lspc="0%", mode=None):
     return _compile(
         tmp_path,
         HOST_TEMPLATE,
         {"main.xsd": MAIN_TEMPLATE.format(font=font, lspc=lspc), "shared.xsd": SHARED},
+        mode=mode,
     )
 
 
@@ -216,6 +219,25 @@ def test_percentage_default_through_nested_union_is_accepted(tmp_path):
     substitute the wrong member set)."""
     schema = _percent_schema(tmp_path, lspc="0%")
     assert _declaration_errors(schema, "lnSpcReduction") == []
+
+
+def test_percentage_defaults_are_accepted_in_namespaced_mode(tmp_path):
+    """The main repro under strict namespaces (``ParseModes.NAMESPACED``).
+
+    The mechanism runs in every mode: with namespace-aware resolution
+    there is no merge collision at all — each reference resolves by
+    expanded name — and the same corpus values validate.
+    """
+    schema = _percent_schema(tmp_path, font="100%", lspc="0%", mode=ParseModes.NAMESPACED)
+    assert _declaration_errors(schema, "fontScale") == []
+    assert _declaration_errors(schema, "lnSpcReduction") == []
+
+
+def test_invalid_percentage_default_is_rejected_in_namespaced_mode(tmp_path):
+    """The rejection net stays closed under strict namespaces too."""
+    schema = _percent_schema(tmp_path, font="abc", lspc="abc", mode=ParseModes.NAMESPACED)
+    assert _declaration_errors(schema, "fontScale")
+    assert _declaration_errors(schema, "lnSpcReduction")
 
 
 def _ref_schema(tmp_path, default):
@@ -336,7 +358,13 @@ def test_user_type_in_an_ordinary_namespace_still_validates_its_facets(tmp_path)
 def test_shadowed_type_does_not_accept_the_other_declarations_values(tmp_path):
     """The check validates against the reference's document, not any
     same-local-name declaration: ``ltr`` is valid only for the host's
-    own ``ST_Direction``, so the shadowed declaration rejects it."""
+    own ``ST_Direction``, so the shadowed declaration rejects it.
+
+    The imported document's attribute (``val``) is the one that must
+    error — exactly once — while the host's own attribute (``hostVal``,
+    carrying the same default against the host's own enumeration)
+    stays clean.
+    """
     schema = _compile(
         tmp_path,
         HOST_WITH_SHADOW,
@@ -346,4 +374,7 @@ def test_shadowed_type_does_not_accept_the_other_declarations_values(tmp_path):
             )
         },
     )
-    assert _declaration_errors(schema, "val")
+    errors = _declaration_errors(schema, "val")
+    assert len(errors) == 1
+    assert "default value 'ltr' is not valid for its type" in errors[0].message
+    assert _declaration_errors(schema, "hostVal") == []
