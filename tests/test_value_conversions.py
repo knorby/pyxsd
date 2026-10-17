@@ -4,6 +4,7 @@ import pytest
 from elementpath import datatypes as ep
 
 from pyxsd.xsd_data_types import (
+    AnyURI,
     Base64Binary,
     Date,
     DateTime,
@@ -153,3 +154,13 @@ class TestTemporalToGregorian:
 
     def test_time(self):
         assert Time("14:30:00").to_gregorian() == ep.Time.fromstring("14:30:00")
+
+
+class TestAnyURIToParsedUri:
+    def test_components(self):
+        result = AnyURI("https://example.com/a/b?c=d#e").to_parsed_uri()
+        assert (result.scheme, result.netloc, result.path) == ("https", "example.com", "/a/b")
+        assert (result.query, result.fragment) == ("c=d", "e")
+
+    def test_relative_reference(self):
+        assert AnyURI("../other.xml").to_parsed_uri().path == "../other.xml"

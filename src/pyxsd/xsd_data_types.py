@@ -36,6 +36,7 @@ import decimal
 import math
 import re
 import struct
+import urllib.parse
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -353,6 +354,13 @@ class AnyURI(Token):
     """
 
     name = "anyURI"
+
+    def to_parsed_uri(self) -> urllib.parse.ParseResult:
+        """The lexical text run through :func:`urllib.parse.urlparse`, best-effort
+        by nature: XSD's lexical space admits characters meant to be URI-escaped
+        (e.g. spaces), so the result reflects the literal text.
+        """
+        return urllib.parse.urlparse(str(self))
 
 
 class QName(_PatternString):
