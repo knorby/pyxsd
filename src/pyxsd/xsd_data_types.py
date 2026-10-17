@@ -41,6 +41,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, ClassVar, Self
 
+from elementpath import datatypes as _ep
+
 __all__ = [
     "ENTITIES",
     "ENTITY",
@@ -826,6 +828,54 @@ class Duration(String):
             raise TypeError(f"Not a valid {cls.name}: {text!r}")
         return super().__new__(cls, text)
 
+    def to_timedelta(self, *, strict: bool = False) -> _datetime.timedelta:
+        """The day/time value as a :class:`datetime.timedelta`.
+
+        A duration carrying a year or month fragment is calendar-dependent
+        and has no fixed :class:`datetime.timedelta` value, so it raises
+        ``ValueError`` naming the lexical value.  A fractional second finer
+        than a microsecond is truncated; with ``strict=True`` a non-zero
+        sub-microsecond fraction raises ``ValueError`` naming the lexical
+        value instead.  A leading ``-`` negates the whole result.
+        """
+        text = str(self)
+        # The constructor validated this lexical form, so the match cannot be None.
+        match = _DURATION_PARTS.fullmatch(text)
+        assert match is not None
+        years, months, days, hours, minutes, seconds = match.groups()
+        if years is not None or months is not None:
+            raise ValueError(
+                f"Cannot convert xs:{type(self).name} {text!r} to datetime.timedelta: "
+                f"year and month fragments are calendar-dependent"
+            )
+        whole = 0
+        digits: str | None = None
+        if seconds is not None:
+            whole_str, _, fraction = seconds[:-1].partition(".")
+            whole = int(whole_str)
+            digits = fraction or None
+        if strict:
+            _check_sub_microseconds(digits, type(self).name, text)
+        value = _datetime.timedelta(
+            days=int(days[:-1]) if days is not None else 0,
+            hours=int(hours[:-1]) if hours is not None else 0,
+            minutes=int(minutes[:-1]) if minutes is not None else 0,
+            seconds=whole,
+            microseconds=_fraction_microseconds(digits),
+        )
+        if text.startswith("-"):
+            value = -value
+        return value
+
+    def to_xsd_value(self) -> _ep.Duration:
+        """The value as an :class:`elementpath.datatypes.Duration`.
+
+        Unlike :meth:`to_timedelta`, this is a total conversion: the result
+        carries the exact XSD value, holding both the months and the seconds
+        properties, so year and month fragments survive losslessly.
+        """
+        return _ep.Duration.fromstring(str(self))
+
 
 class YearMonthDuration(Duration):
     """``xs:yearMonthDuration``: a ``duration`` with only year/month fields.
@@ -840,6 +890,23 @@ class YearMonthDuration(Duration):
     name = "yearMonthDuration"
     _pattern = _YEAR_MONTH_DURATION
 
+    def to_months(self) -> int:
+        """The value as a signed number of months (e.g. ``P1Y2M`` is ``14``).
+
+        The conversion is exact, so there is no ``strict`` mode; a leading
+        ``-`` makes the result negative.
+        """
+        sign, months, _ = _duration_key(str(self))
+        return sign * months
+
+    def to_xsd_value(self) -> _ep.YearMonthDuration:
+        """The value as an :class:`elementpath.datatypes.YearMonthDuration`.
+
+        This is a total conversion carrying the exact XSD value (months and
+        seconds).
+        """
+        return _ep.YearMonthDuration.fromstring(str(self))
+
 
 class DayTimeDuration(Duration):
     """``xs:dayTimeDuration``: a ``duration`` with only day/time fields.
@@ -853,6 +920,14 @@ class DayTimeDuration(Duration):
 
     name = "dayTimeDuration"
     _pattern = _DAY_TIME_DURATION
+
+    def to_xsd_value(self) -> _ep.DayTimeDuration:
+        """The value as an :class:`elementpath.datatypes.DayTimeDuration`.
+
+        This is a total conversion carrying the exact XSD value (months and
+        seconds).
+        """
+        return _ep.DayTimeDuration.fromstring(str(self))
 
 
 # ---------------------------------------------------------------------------
