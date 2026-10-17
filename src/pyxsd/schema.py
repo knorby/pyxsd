@@ -232,6 +232,7 @@ class Schema:
             xml_path=xml_path,
             schema_context=SchemaContext(components=ComponentTable()),
             namespace_overrides={},
+            component_namespaces={},
             injected_builtin_ids=set(),
             form_defaults={},
             xpath_default_namespaces={},
@@ -609,6 +610,7 @@ def _compile_into_context(
         # run so imported declarations report their own target namespace
         # and form defaults.
         ctx.schema_context.namespace_overrides = dict(ctx.namespace_overrides)
+        ctx.schema_context.component_namespaces = dict(ctx.component_namespaces)
         ctx.schema_context.injected_builtin_ids = set(ctx.injected_builtin_ids)
         ctx.schema_context.form_defaults = dict(ctx.form_defaults)
         ctx.schema_context.xpath_default_namespaces = dict(ctx.xpath_default_namespaces)

@@ -1159,6 +1159,94 @@ class ElementRepresentative:
         except Exception:  # pragma: no cover - defensive
             return None
 
+    def authoredNamespace(self) -> str | None:
+        """The namespace of the schema document that wrote this declaration.
+
+        Legacy namespace mode reports every composed component in the
+        main schema's ``targetNamespace``, which hides which document
+        declared it: two composed documents may declare named types
+        that share a local name. The composition records each spliced
+        named component's source namespace, and this reads it back; a
+        component of the main document has no record and falls back to
+        its reported namespace, which is that document's own.
+        """
+        element = getattr(self, "xsdElement", None)
+        schema = self._effectiveSchema()
+        sourceNamespaces = getattr(schema, "componentNamespaces", None)
+        if element is not None and sourceNamespaces:
+            recorded = sourceNamespaces.get(id(element))
+            if recorded is not None:
+                return recorded
+        return self.getNamespace()
+
+    def referenceNamespace(self, reference: str) -> str | None:
+        """The namespace a QName reference written here denotes, or ``None``.
+
+        Like :meth:`_authoredQName`, the reference is resolved in every
+        mode: a legacy compile still records each document's own prefix
+        bindings, and they say which document's components a
+        ``type``/``memberTypes``/``base`` reference names. ``None``
+        means the reference names no namespace (an unbound prefix, or a
+        bare local name with no default namespace in scope), so the
+        reference can only be matched by local name.
+        """
+        if not reference:
+            return None
+        context = getattr(self._effectiveSchema(), "namespaceContext", None)
+        element = getattr(self, "xsdElement", None)
+        if context is None or element is None:
+            return None
+        try:
+            resolved = context.resolve(element, reference)
+        except NamespaceError:
+            return None
+        return namespace_of(resolved)
+
+    def sameNameTypeDeclarations(self, local: str) -> list:
+        """Global type declarations in the composed tree named *local*.
+
+        The component table keeps one declaration per component kind,
+        name and namespace, and a legacy compile reports every composed
+        document's namespace as the main schema's, so a same-local-name
+        declaration that lost the merge is reachable only through the
+        composed tree. The lookup index is built once, lazily: the tree
+        is complete before class building starts, which is what asks
+        for this.
+        """
+        schema = self._effectiveSchema()
+        if schema is None:
+            return []
+        index = getattr(schema, "typeDeclarationsByLocalName", None)
+        if index is None:
+            index = {}
+            for child in getattr(schema, "processedChildren", None) or ():
+                if child is None or componentKind(child) != "type":
+                    continue
+                name = getattr(child, "name", None)
+                if isinstance(name, str):
+                    index.setdefault(name, []).append(child)
+            schema.typeDeclarationsByLocalName = index
+        return [child for child in index.get(local, ()) if child is not self]
+
+    def referenceTargetDeclaration(self, reference: str):
+        """The declaration in the composed tree that *reference* denotes.
+
+        Returns the global type declaration the reference names in the
+        schema document that wrote it, or ``None`` when the reference
+        resolves to no namespace or that document declares no such
+        type (an inline or built-in name, or a reference into a
+        namespace no schema supplied) — in which case the caller falls
+        back to the merged lookup.
+        """
+        namespace = self.referenceNamespace(reference)
+        if namespace is None:
+            return None
+        local = local_part(reference)
+        for candidate in self.sameNameTypeDeclarations(local):
+            if candidate.authoredNamespace() == namespace:
+                return candidate
+        return None
+
     def resolveSchemaQName(self, value, *, parser=None):
         """Resolves a lexical QName written in this schema element.
 
@@ -1604,6 +1692,19 @@ def set_active_namespace_overrides(overrides: dict[int, str | None]) -> None:
     afterwards cannot rewrite declarations that already captured it.
     """
     context_or_ambient().namespace_overrides = dict(overrides)
+
+
+def get_active_component_namespaces() -> dict[int, str | None]:
+    """Returns a snapshot of the spliced components' source namespaces.
+
+    Keyed by ``id(xsdElement)`` of each named component appended to the
+    composed tree. Unlike the namespace overrides this is recorded in
+    every mode: legacy mode merges the composed documents into one
+    namespace, so only this map tells a declaration which document it
+    was written in. Read once, at ``Schema`` construction time, with
+    the same snapshot discipline as the overrides.
+    """
+    return dict(context_or_ambient().component_namespaces)
 
 
 def get_active_injected_builtin_ids() -> set[int]:

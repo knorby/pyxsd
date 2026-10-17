@@ -640,6 +640,35 @@ class XsdType(ElementRepresentative):
         """
         self._reportSchemaError(message, code=code)
 
+    def _mergedLookup(self, name, host):
+        """The class a (resolved) member name finds on the merged path."""
+        if name in host.classes:
+            return host.classes[name]
+        return ElementRepresentative.typeFromName(name, host, warn=False)
+
+    def _declaredMemberClass(self, reference, memberName, host):
+        """The member class a ``memberTypes`` reference denotes.
+
+        The reference is resolved against the schema document that
+        wrote it first: when that document declares a type with the
+        reference's local name, that declaration is the member — even
+        where the legacy merged lookup would land on a same-local-name
+        declaration from another composed document. DrawingML's
+        ``ST_Percentage`` union takes the shared-types string
+        restriction as its second member this way, rather than
+        resolving to itself and shedding the member.
+
+        References that name no namespace, or whose document declares
+        no such type (a built-in, or a namespace no schema supplied),
+        keep the merged lookup.
+        """
+        declared = self.referenceTargetDeclaration(reference)
+        if declared is not None:
+            member = declared.clsFor(host)
+            if member is not None:
+                return member
+        return self._mergedLookup(memberName, host)
+
     def makeUnionClass(self, host):
         """Produces the class for a union simple type.
 
@@ -658,18 +687,15 @@ class XsdType(ElementRepresentative):
         ``__init__``), because schema-derived member classes also
         inherit ``SchemaBase.__init__``, which takes no value.
         """
-        namedMembers = [
-            memberName
-            if _isInlineTypeName(memberName)
-            else self.resolveSchemaQName(memberName, parser=host)
-            for memberName in self.unionSpec
-        ]
         members = []
-        for memberName in namedMembers:
-            if memberName in host.classes:
-                resolved = host.classes[memberName]
+        for reference in self.unionSpec:
+            memberName = reference
+            if _isInlineTypeName(reference):
+                # An inline-type bookkeeping name is not a reference.
+                resolved = self._mergedLookup(reference, host)
             else:
-                resolved = ElementRepresentative.typeFromName(memberName, host, warn=False)
+                memberName = self.resolveSchemaQName(reference, parser=host)
+                resolved = self._declaredMemberClass(reference, memberName, host)
             if resolved is None:
                 # A ``memberTypes`` name that resolves to no type is a
                 # schema error; report it rather than silently

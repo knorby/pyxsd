@@ -3558,27 +3558,88 @@ def check_declaration_value_constraint(ctx: CompileContextProtocol, er: Any) -> 
                 phase="schema",
             )
             return
-    factory = value_constraint_factory(er)
-    if factory is None:
+    primary = value_constraint_factory(er)
+    values = [
+        (attr, er.tagAttributes[attr])
+        for attr in ("default", "fixed")
+        if er.tagAttributes.get(attr) is not None
+    ]
+    if primary is None or not values:
         return
+    factory = _authoredValueClass(er, primary)
     label = type(er).__name__.lower()
-    for attr in ("default", "fixed"):
-        value = er.tagAttributes.get(attr)
-        if value is None:
-            continue
+    for attr, value in values:
         try:
-            factory(value)
-        except (TypeError, ValueError):
-            ctx.report.add_error(
-                f"{label} '{er.name}' {attr} value '{value}' is not valid for its type",
-                code="declaration-attribute",
-                element=er.name,
-                phase="schema",
-            )
+            if _accepts_value(factory, value):
+                continue
         except Exception:  # pragma: no cover - defensive
             # A constructor raising anything else is a pyxsd bug, not
             # a schema error; do not turn it into a false rejection.
             logger.debug("could not validate %s value %r of %r", attr, value, er.name)
+            continue
+        ctx.report.add_error(
+            f"{label} '{er.name}' {attr} value '{value}' is not valid for its type",
+            code="declaration-attribute",
+            element=er.name,
+            phase="schema",
+        )
+
+
+def _accepts_value(factory: Any, value: Any) -> bool:
+    """Whether *factory* validates *value* as a lexical form."""
+    try:
+        factory(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _authoredValueClass(er: Any, primary: Any) -> Any:
+    """The class that validates a declaration's value, as authored.
+
+    The declaration's ``type`` reference is resolved in the schema
+    document that wrote it: where the composed tree declares a
+    same-local-name type in that document's namespace, that
+    declaration — not the one the legacy merged lookup lands on — is
+    the declaration's type. OOXML composes documents that reuse local
+    type names across namespaces (a shadowed ``ST_Orientation``), so
+    the merged winner's constraints must not be applied to a value the
+    declaring document's own type accepts or rejects.
+
+    Returns *primary* — the merged resolution — when the declaration
+    carries no plain ``type`` reference (an inline type, one inherited
+    from a ``ref``, or none), when the reference names no declaration
+    the composed tree holds (a built-in, or a namespace no schema
+    supplied), or when that declaration is the one already resolved.
+    Only a distinct declaration is built, on demand.
+    """
+    getter = getattr(er, "referenceTargetDeclaration", None)
+    raw = er.tagAttributes.get("type")
+    if getter is None or not raw or "|" in raw:
+        return primary
+    declared = getter(raw)
+    if declared is None:
+        return primary
+    try:
+        cls = declared.clsFor(er._effectiveParser())
+    except Exception:  # pragma: no cover - defensive
+        return primary
+    simple = _simpleValueSpace(cls)
+    if simple is None or simple is primary:
+        return primary
+    return simple
+
+
+def _simpleValueSpace(cls: Any) -> Any | None:
+    """The simple-value class of *cls*, or ``None`` when it has none."""
+    if not isinstance(cls, type):
+        return None
+    content = getattr(cls, "_simpleContentType_", None)
+    if isinstance(content, type):
+        cls = content
+    if not issubclass(cls, XsdDataType):
+        return None
+    return cls
 
 
 def value_constraint_factory(er: Any) -> Any:
@@ -3592,11 +3653,4 @@ def value_constraint_factory(er: Any) -> Any:
         cls = er.getType()
     except (AttributeError, TypeError):
         return None
-    if not isinstance(cls, type):
-        return None
-    content = getattr(cls, "_simpleContentType_", None)
-    if isinstance(content, type):
-        cls = content
-    if not issubclass(cls, XsdDataType):
-        return None
-    return cls
+    return _simpleValueSpace(cls)

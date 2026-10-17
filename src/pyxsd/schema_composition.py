@@ -148,6 +148,7 @@ class CompositionContext:
     xml_path: Path
     schema_context: SchemaContext
     namespace_overrides: dict[int, str | None]
+    component_namespaces: dict[int, str | None]
     injected_builtin_ids: set[int]
     form_defaults: dict[int, tuple[str | None, str | None]]
     xpath_default_namespaces: dict[int, str | None]
@@ -800,6 +801,12 @@ def append_named_components(
     rather than the main schema's target namespace. That document's
     form defaults are recorded too, so local declarations resolve
     qualification against their own schema instead of the host.
+
+    Every mode records which document each named component came
+    from (``component_namespaces``), because a legacy compile merges
+    every composed document into one namespace: two documents may
+    declare types that share a local name, and the declaration a
+    QName reference denotes is only recoverable from this record.
     """
     strict = getattr(ctx.mode, "namespaces", "legacy") == "strict"
     sourceDefaults = (
@@ -818,6 +825,8 @@ def append_named_components(
                     ctx.form_defaults.setdefault(id(element), sourceDefaults)
                     if sourceXPathDefault is not None:
                         ctx.xpath_default_namespaces.setdefault(id(element), sourceXPathDefault)
+            if namespace is not None:
+                ctx.component_namespaces.setdefault(id(component), namespace)
             schemaRoot.append(component)
     return None
 

@@ -63,29 +63,34 @@ EXPECTED: dict[str, dict] = {
     # ECMA-376 WordprocessingML. Its prefixed references into the
     # imported namespaces (``r:*`` relationships, ``a:*`` drawing) now
     # resolve in legacy mode: unknown-elementRef 57 -> 0,
-    # unknown-attributeRef 26 -> 0, unknown-group 6 -> 0. The remaining
-    # findings are pre-existing rule-algebra/lexical issues the oracle
-    # does not share: percentage defaults (``0%``) rejected by the
-    # datatype's lexical space, self-referential union member types, and
-    # two content-model ambiguity/consistency findings. Pinned as-is;
-    # follow-ups of their own.
+    # unknown-attributeRef 26 -> 0, unknown-group 6 -> 0. The composed
+    # DrawingML/WordprocessingML documents also reuse local type names
+    # across namespaces, and a legacy compile matches by local name:
+    # union member references (``s:ST_Percentage``) now resolve to the
+    # shared-types declaration the writing document names rather than to
+    # the union itself (circular-derivation 4 -> 0, unknown-type 4 -> 0),
+    # and value constraints validate against the type the declaration's
+    # own document declares (declaration-attribute 26 -> 0: the
+    # percentage defaults and the shadowed ``dml-diagram``
+    # ``ST_Direction``'s ``norm``). The last three findings are the
+    # pre-existing content-model issues the oracle does not share (two
+    # ambiguity checks and one all-rule consistency check over
+    # duplicated ``rPr``/``r`` declarations from the merged documents).
+    # Pinned as-is; follow-up of its own.
     "ooxml-wml": {
         "classes": 2359,
-        "errors_by_code": {
-            "declaration-attribute": 26,
-            "circular-derivation": 4,
-            "unknown-type": 4,
-            "upa": 2,
-            "all-rule": 1,
-        },
+        "errors_by_code": {"upa": 2, "all-rule": 1},
     },
     # ECMA-376 SpreadsheetML: the same prefixed-reference resolution
     # (unknown-attributeRef 37 -> 0, unknown-elementRef 4 -> 0,
-    # unknown-group 1 -> 0); one pre-existing percentage-default
-    # finding remains.
+    # unknown-group 1 -> 0) and the same value-constraint fix
+    # (declaration-attribute 1 -> 0: the ``dml-chart`` type's ``minMax``
+    # default, its type shadowed by the spreadsheet document's
+    # same-local-name ``ST_Orientation``). Clean compile; xmlschema
+    # agrees (0 errors).
     "ooxml-sml": {
         "classes": 2289,
-        "errors_by_code": {"declaration-attribute": 1},
+        "errors_by_code": {},
     },
     # MusicXML 4.0. The imported XML- and XLink-namespace declarations
     # now satisfy every reference (unknown-attributeRef 27 -> 0); clean

@@ -33,6 +33,12 @@ class SchemaContext:
       representative exists (``None`` while it is being constructed).
     - ``namespace_overrides``: per-component namespace overrides for
       declarations spliced in from imported/included documents.
+    - ``component_namespaces``: the target namespace of the document
+      each spliced named component came from, whether or not the mode
+      records it as a namespace override. Legacy mode merges every
+      composed document into the main schema's namespace, so this is
+      the only record of which document declared a component that
+      shares a local name with another.
     - ``form_defaults``: the source document's
       ``(elementFormDefault, attributeFormDefault)`` per spliced
       component.
@@ -52,6 +58,7 @@ class SchemaContext:
 
     components: Any = None
     namespace_overrides: dict[int, str | None] = field(default_factory=dict)
+    component_namespaces: dict[int, str | None] = field(default_factory=dict)
     form_defaults: dict[int, tuple[str | None, str | None]] = field(default_factory=dict)
     xpath_default_namespaces: dict[int, str | None] = field(default_factory=dict)
     injected_builtin_ids: set[int] = field(default_factory=set)
