@@ -487,6 +487,115 @@ class TestCompositionCorrectness:
         doc = schema.parse(str(tmp_path / "legacy.xml"))
         assert not doc.report.has_errors
 
+    def test_chameleon_rewrite_produces_clark_literals(self, tmp_path):
+        """The adoption rewrite itself, pinned on the composed tree.
+
+        The outcome tests above would keep passing if ``base.xsd``'s
+        namespace-less references stopped being rewritten (a lexical
+        lookup would find ``inner.xsd``'s declarations anyway), so this
+        test asserts the mechanism: every namespace-less reference in
+        the adopted no-namespace documents is rewritten to the adopting
+        namespace's Clark form, while prefixed references into the XML
+        Schema namespace stay untouched.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:group name="g3">'
+            '<xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>'
+            "</xs:group>"
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:include schemaLocation="inner.xsd"/>'
+            '<xs:complexType name="baseType"><xs:group ref="g3"/></xs:complexType>'
+            '<xs:element name="base-e" type="baseType"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            '  <xs:element name="root" type="baseType"/>'
+            "</xs:schema>"
+        )
+        Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        composed = registry["schema"][0].xsdElement
+        group_refs = {child.get("ref") for child in composed.iter() if child.tag.endswith("}group")}
+        # The adopted reference is the Clark literal; the bare lexical
+        # form is gone.
+        assert "{urn:redef}g3" in group_refs
+        assert "g3" not in group_refs
+        type_refs = {
+            child.get("type")
+            for child in composed.iter()
+            if child.tag.endswith("}element") and child.get("type") is not None
+        }
+        assert "{urn:redef}baseType" in type_refs
+        # Prefixed references into the XML Schema namespace are NOT
+        # rewritten by adoption.
+        assert "xs:string" in type_refs
+
+    def test_adopted_nested_circular_redefine_stays_a_warning(self, tmp_path):
+        """An adopted base's nested circular redefine keeps schU1's lenient verdict.
+
+        The corpus schU1 case (a same-namespace circular redefine pair)
+        is a warning, not an error: the re-entered document's
+        declarations are already in the composition tree, so the cycle
+        is skipped leniently. The adopted variant here -- the circular
+        pair lives in no-namespace documents that a namespaced schema
+        chameleon-adopts through its own ``xs:redefine`` -- must keep
+        that verdict: the leniency keys on the document's *own* root
+        namespace, not the adopting one, so adoption must not turn the
+        cycle into a hard error.
+        """
+        (tmp_path / "b.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="a.xsd">'
+            '    <xs:attributeGroup name="a-g1">'
+            '      <xs:attribute name="a1" type="xs:int"/>'
+            '      <xs:attribute name="a2" type="xs:int"/>'
+            "    </xs:attributeGroup>"
+            "  </xs:redefine>"
+            '  <xs:attributeGroup name="b-g1">'
+            '    <xs:attribute name="b1"/>'
+            '    <xs:attribute name="b2"/>'
+            "  </xs:attributeGroup>"
+            "</xs:schema>"
+        )
+        (tmp_path / "a.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="b.xsd">'
+            '    <xs:attributeGroup name="b-g1">'
+            '      <xs:attribute name="b1" type="xs:int"/>'
+            '      <xs:attribute name="b2" type="xs:int"/>'
+            "    </xs:attributeGroup>"
+            "  </xs:redefine>"
+            '  <xs:attributeGroup name="a-g1">'
+            '    <xs:attribute name="a1"/>'
+            '    <xs:attribute name="a2"/>'
+            "  </xs:attributeGroup>"
+            '  <xs:complexType name="a-ct">'
+            '    <xs:attributeGroup ref="b-g1"/>'
+            "  </xs:complexType>"
+            '  <xs:element name="e1" type="a-ct"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "main.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:main" xmlns="urn:main"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="a.xsd"/>'
+            '  <xs:element name="root" type="a-ct"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "main.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        warnings = [
+            issue.code for issue in schema.report.issues if issue.severity is IssueSeverity.WARNING
+        ]
+        assert warnings == ["compose-cycle"]
+        assert "a-ct" in schema.classes
+
     def test_chameleon_redefine_nested_redefine_adopts_too(self, tmp_path):
         """A redefined document's own *redefine* adopts as well.
 
