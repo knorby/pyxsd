@@ -77,6 +77,11 @@ class TestDurationToXsdValue:
         assert isinstance(value, ep.YearMonthDuration)
         assert str(value) == "P1Y2M"
 
+    def test_year_month_duration_strict(self):
+        value = YearMonthDuration("P1Y2M").to_xsd_value(strict=True)
+        assert isinstance(value, ep.YearMonthDuration)
+        assert str(value) == "P1Y2M"
+
     def test_day_time_duration(self):
         value = DayTimeDuration("P2DT3H").to_xsd_value()
         assert isinstance(value, ep.DayTimeDuration)

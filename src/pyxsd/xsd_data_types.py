@@ -1099,12 +1099,13 @@ class YearMonthDuration(Duration):
         sign, months, _ = _duration_key(str(self))
         return sign * months
 
-    def to_xsd_value(self) -> _ep.YearMonthDuration:
+    def to_xsd_value(self, *, strict: bool = False) -> _ep.YearMonthDuration:
         """The value as an :class:`elementpath.datatypes.YearMonthDuration`.
 
         The result carries the exact XSD value (whole months); a value
         outside the target's range raises ``ValueError`` naming the lexical
-        value.
+        value.  ``strict`` is accepted for signature compatibility and has no
+        effect: this conversion is exact.
         """
         return _ep_fromstring(_ep.YearMonthDuration, type(self).name, str(self))
 
