@@ -105,6 +105,18 @@ class TestQNameToExpandedName:
         with qname_context({}):
             assert QName("local").to_expanded_name() == "local"
 
+    def test_resolved_without_namespace_strict_returns_local(self):
+        with qname_context({}):
+            assert QName("local").to_expanded_name(strict=True) == "local"
+
+    def test_prefixed_but_unbound_defaults_to_local(self):
+        with qname_context({}):
+            assert QName("p:local").to_expanded_name() == "local"
+
+    def test_prefixed_but_unbound_strict_raises(self):
+        with qname_context({}), pytest.raises(ValueError, match="p:local"):
+            QName("p:local").to_expanded_name(strict=True)
+
     def test_unresolved_defaults_to_lexical(self):
         assert QName("p:local").to_expanded_name() == "p:local"
 

@@ -207,7 +207,7 @@ raise instead.
 | `xs:dayTimeDuration` | `DayTimeDuration.to_xsd_value()` | `elementpath.datatypes.DayTimeDuration` | Nothing (full fidelity) | — |
 | `xs:hexBinary` | `HexBinary.to_bytes()` | `bytes` | Nothing (exact) | — |
 | `xs:base64Binary` | `Base64Binary.to_bytes()` | `bytes` | Nothing (exact) | — |
-| `xs:QName` | `QName.to_expanded_name()` | `str` (Clark notation) | Lexical form when unresolved | Raises instead |
+| `xs:QName` | `QName.to_expanded_name()` | `str` (Clark notation) | Lexical form when unresolved; bare local name for an unbound prefix | Raises instead (unresolved or unbound prefix) |
 | `xs:anyURI` | `AnyURI.to_parsed_uri()` | `urllib.parse.ParseResult` | Nothing; best-effort over the literal text | — |
 
 How to read the table:
@@ -342,19 +342,22 @@ URI bindings) around instance binding, and the value records the URI
 its prefix was bound to then — the conversion takes no context
 argument, so a value's expansion is fixed by how it was built:
 
-- a resolved value with a namespace URI becomes `{uri}local`; a
-  resolved unprefixed name with no default namespace becomes the bare
-  local name — and so does a prefixed name whose prefix is missing
-  from the context, whose prefix is silently dropped (even with
-  `strict=True`, because the value counts as resolved);
+- a resolved value whose prefix is bound to a namespace URI becomes
+  `{uri}local`; a resolved unprefixed name with no default namespace
+  becomes the bare local name;
 - the default is best-effort: a value constructed without a
-  `qname_context` returns its lexical form, because that is all it
-  has. **This includes every value bound in the default (legacy)
-  namespace mode** — only strict namespace mode resolves `xs:QName`
-  values, so `--namespaces strict` / `ParseModes.NAMESPACED` is what
-  makes expanded names available from parsed documents;
-- with `strict=True`, an unresolved value raises `ValueError` naming
-  the lexical value instead.
+  `qname_context` returns its lexical form, and a prefixed name whose
+  prefix is missing from the context returns the bare local name, its
+  prefix dropped. **This includes every value bound in the default
+  (legacy) namespace mode** — only strict namespace mode resolves
+  `xs:QName` values, so `--namespaces strict` /
+  `ParseModes.NAMESPACED` is what makes expanded names available from
+  parsed documents;
+- with `strict=True`, either inaccurate case raises `ValueError`
+  naming the lexical value instead: an unresolved value (one built
+  without a `qname_context`), or a prefixed value whose prefix the
+  active context did not bind. A resolved unprefixed name with no
+  default namespace never raises — its bare local name is complete.
 
 Hand-built values resolve too, by constructing inside the context
 manager (`with qname_context({"xsd": ...}): QName("xsd:schema")`).

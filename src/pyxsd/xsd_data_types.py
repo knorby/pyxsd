@@ -407,6 +407,7 @@ class QName(_PatternString):
     _resolved_: bool
     _uri_: str | None
     _local_: str
+    _prefix_: str
 
     def __new__(cls, val: str) -> Self:
         instance: Self = super().__new__(cls, val)
@@ -424,18 +425,23 @@ class QName(_PatternString):
         instance._resolved_ = bindings is not None
         instance._uri_ = bindings.get(prefix) if bindings is not None else None
         instance._local_ = local
+        instance._prefix_ = prefix
         return instance
 
     def to_expanded_name(self, *, strict: bool = False) -> str:
         """The name in Clark notation, resolved against the ambient context.
 
         Resolution depends on the :func:`qname_context` active when the value
-        was constructed: a resolved value with a namespace URI becomes
-        ``{uri}local``, and one bound without a URI (an unprefixed name with no
-        default namespace) becomes the bare local name.  The default is
-        best-effort, returning the lexical form when the value was never
-        resolved; with ``strict=True`` such a value instead raises
-        ``ValueError`` naming the lexical value.
+        was constructed: a resolved value whose prefix is bound to a namespace
+        URI becomes ``{uri}local``, while a resolved unprefixed name with no
+        default namespace becomes the bare local name.  The default is
+        best-effort, returning the lexical form for a value constructed without
+        a context and the bare local name for a prefixed value whose prefix the
+        active context did not bind; with ``strict=True`` both of those instead
+        raise ``ValueError`` naming the lexical value, so an inaccurate
+        conversion is refused rather than silently dropping information.  A
+        resolved unprefixed name with no default namespace is complete as its
+        bare local name and so never raises under ``strict``.
         """
         if not self._resolved_:
             if strict:
@@ -446,6 +452,11 @@ class QName(_PatternString):
             return str(self)
         if self._uri_:
             return f"{{{self._uri_}}}{self._local_}"
+        if strict and self._prefix_:
+            raise ValueError(
+                f"Cannot convert xs:QName {str(self)!r} to an expanded name: "
+                f"prefix {self._prefix_!r} was not bound in the qname_context"
+            )
         return self._local_
 
 
