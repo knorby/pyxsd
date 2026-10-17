@@ -1,0 +1,37 @@
+[
+  {
+    "name": "fhir-single",
+    "best_seconds": 2.1069104170892388,
+    "mean_seconds": 2.310286916404342,
+    "classes": 2941,
+    "errors": 54
+  },
+  {
+    "name": "cda-r2",
+    "best_seconds": 0.08399066608399153,
+    "mean_seconds": 0.2221717080877473,
+    "classes": 987,
+    "errors": 498
+  },
+  {
+    "name": "ooxml-wml",
+    "best_seconds": 0.27163300011307,
+    "mean_seconds": 0.2988193057632695,
+    "classes": 2359,
+    "errors": 126
+  },
+  {
+    "name": "ooxml-sml",
+    "best_seconds": 0.20924724987708032,
+    "mean_seconds": 0.24553536088205874,
+    "classes": 2289,
+    "errors": 43
+  },
+  {
+    "name": "musicxml",
+    "best_seconds": 0.15624258294701576,
+    "mean_seconds": 0.17663290274019042,
+    "classes": 385,
+    "errors": 27
+  }
+]
