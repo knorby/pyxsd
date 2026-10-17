@@ -508,12 +508,20 @@ class Base64Binary(String):
             raise TypeError(f"Not a valid base64Binary: {text!r}")
         return super().__new__(cls, text)
 
+    def to_bytes(self) -> bytes:
+        """The decoded bytes; the conversion is exact."""
+        return base64.b64decode(str(self), validate=True)
+
 
 class HexBinary(_PatternString):
     """``xs:hexBinary``: hex-encoded binary data, in pairs of digits."""
 
     name = "hexBinary"
     _pattern = re.compile(r"([0-9a-fA-F]{2})*")
+
+    def to_bytes(self) -> bytes:
+        """The decoded bytes; the conversion is exact."""
+        return bytes.fromhex(str(self))
 
 
 # ---------------------------------------------------------------------------

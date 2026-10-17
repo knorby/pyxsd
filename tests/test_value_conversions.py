@@ -3,7 +3,13 @@ import datetime
 import pytest
 from elementpath import datatypes as ep
 
-from pyxsd.xsd_data_types import DayTimeDuration, Duration, YearMonthDuration
+from pyxsd.xsd_data_types import (
+    Base64Binary,
+    DayTimeDuration,
+    Duration,
+    HexBinary,
+    YearMonthDuration,
+)
 
 
 class TestDurationToTimedelta:
@@ -64,3 +70,16 @@ class TestDurationToXsdValue:
         value = DayTimeDuration("P2DT3H").to_xsd_value()
         assert isinstance(value, ep.DayTimeDuration)
         assert str(value) == "P2DT3H"
+
+
+class TestHexBinaryToBytes:
+    def test_bytes(self):
+        assert HexBinary("FF00ab").to_bytes() == b"\xff\x00\xab"
+
+
+class TestBase64BinaryToBytes:
+    def test_bytes(self):
+        assert Base64Binary("QQ==").to_bytes() == b"A"
+
+    def test_whitespace_is_ignored(self):
+        assert Base64Binary("Q Q = =").to_bytes() == b"A"
