@@ -5,10 +5,18 @@ from elementpath import datatypes as ep
 
 from pyxsd.xsd_data_types import (
     Base64Binary,
+    Date,
+    DateTime,
     DayTimeDuration,
     Duration,
+    GDay,
+    GMonth,
+    GMonthDay,
+    GYear,
+    GYearMonth,
     HexBinary,
     QName,
+    Time,
     YearMonthDuration,
     qname_context,
 )
@@ -102,3 +110,46 @@ class TestQNameToExpandedName:
     def test_unresolved_strict_raises(self):
         with pytest.raises(ValueError, match="p:local"):
             QName("p:local").to_expanded_name(strict=True)
+
+
+class TestGTypesToGregorian:
+    def test_gyear(self):
+        assert GYear("2006").to_gregorian() == ep.GregorianYear(2006)
+
+    def test_gyearmonth(self):
+        assert GYearMonth("2006-08").to_gregorian() == ep.GregorianYearMonth(2006, 8)
+
+    def test_gmonth(self):
+        assert GMonth("--08").to_gregorian() == ep.GregorianMonth(8)
+
+    def test_gmonthday(self):
+        assert GMonthDay("--08-30").to_gregorian() == ep.GregorianMonthDay(8, 30)
+
+    def test_gday(self):
+        assert GDay("---30").to_gregorian() == ep.GregorianDay(30)
+
+    def test_timezone_is_preserved(self):
+        value = GMonthDay("--08-30+05:30").to_gregorian()
+        assert value.tzinfo.utcoffset(None) == datetime.timedelta(hours=5, minutes=30)
+
+    def test_year_zero_maps_to_elementpath_numbering(self):
+        # XSD 1.1 lexical year 0000 is 1 BCE; elementpath numbers it -1.
+        assert GYear("0000").to_gregorian() == ep.GregorianYear(-1)
+
+    def test_extended_year(self):
+        assert GYear("12006").to_gregorian() == ep.GregorianYear(12006)
+
+
+class TestTemporalToGregorian:
+    def test_date_extended_year(self):
+        assert Date("12006-08-30").to_gregorian() == ep.Date(12006, 8, 30)
+
+    def test_date_year_zero(self):
+        # Same no-year-zero numbering as the g* types.
+        assert Date("0000-01-01").to_gregorian() == ep.Date(-1, 1, 1)
+
+    def test_datetime_bce(self):
+        assert DateTime("-0005-03-01T00:00:00").to_gregorian() == ep.DateTime(-6, 3, 1, 0, 0, 0)
+
+    def test_time(self):
+        assert Time("14:30:00").to_gregorian() == ep.Time.fromstring("14:30:00")

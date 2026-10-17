@@ -677,6 +677,17 @@ class DateTime(_PatternString):
                 "the end-of-day rollover leaves the datetime range"
             ) from error
 
+    def to_gregorian(self) -> _ep.DateTime:
+        """The value as an :class:`elementpath.datatypes.DateTime`.
+
+        This is the conversion to use for values outside the
+        :mod:`datetime` range; the result carries the XSD value
+        semantics (ordering, optional timezone, extended years), and
+        the year uses XSD 1.1 numbering, where lexical ``0000`` is
+        1 BCE and maps to ``-1``.
+        """
+        return _ep.DateTime.fromstring(str(self))
+
 
 class DateTimeStamp(DateTime):
     """``xs:dateTimeStamp``: an ``xs:dateTime`` with a required timezone.
@@ -739,6 +750,17 @@ class Date(_PatternString):
             )
         return _datetime.date(year, month, day)
 
+    def to_gregorian(self) -> _ep.Date:
+        """The value as an :class:`elementpath.datatypes.Date`.
+
+        This is the conversion to use for values outside the
+        :mod:`datetime` range; the result carries the XSD value
+        semantics (ordering, optional timezone, extended years), and
+        the year uses XSD 1.1 numbering, where lexical ``0000`` is
+        1 BCE and maps to ``-1``.
+        """
+        return _ep.Date.fromstring(str(self))
+
 
 class Time(_PatternString):
     """``xs:time``: e.g. ``14:30:00`` (optional timezone)."""
@@ -777,12 +799,30 @@ class Time(_PatternString):
             _timezone(match.group(5)),
         )
 
+    def to_gregorian(self) -> _ep.Time:
+        """The value as an :class:`elementpath.datatypes.Time`.
+
+        This is the conversion to use for values outside the
+        :mod:`datetime` range; the result carries the XSD value
+        semantics (ordering, optional timezone, extended years).
+        """
+        return _ep.Time.fromstring(str(self))
+
 
 class GYear(_PatternString):
     """``xs:gYear``: a calendar year, e.g. ``2006``."""
 
     name = "gYear"
     _pattern = re.compile(rf"{_YEAR}{_TIMEZONE}")
+
+    def to_gregorian(self) -> _ep.GregorianYear:
+        """The value as an :class:`elementpath.datatypes.GregorianYear`.
+
+        The result carries the XSD value semantics (ordering, optional
+        timezone, extended years); the year uses XSD 1.1 numbering,
+        where lexical ``0000`` is 1 BCE and maps to ``-1``.
+        """
+        return _ep.GregorianYear.fromstring(str(self))
 
 
 class GYearMonth(_PatternString):
@@ -791,12 +831,29 @@ class GYearMonth(_PatternString):
     name = "gYearMonth"
     _pattern = re.compile(rf"{_YEAR}-{_MONTH}{_TIMEZONE}")
 
+    def to_gregorian(self) -> _ep.GregorianYearMonth:
+        """The value as an :class:`elementpath.datatypes.GregorianYearMonth`.
+
+        The result carries the XSD value semantics (ordering, optional
+        timezone, extended years); the year uses XSD 1.1 numbering,
+        where lexical ``0000`` is 1 BCE and maps to ``-1``.
+        """
+        return _ep.GregorianYearMonth.fromstring(str(self))
+
 
 class GMonth(_PatternString):
     """``xs:gMonth``: e.g. ``--08``."""
 
     name = "gMonth"
     _pattern = re.compile(rf"--{_MONTH}{_TIMEZONE}")
+
+    def to_gregorian(self) -> _ep.GregorianMonth:
+        """The value as an :class:`elementpath.datatypes.GregorianMonth`.
+
+        The result carries the XSD value semantics (ordering and
+        optional timezone).
+        """
+        return _ep.GregorianMonth.fromstring(str(self))
 
 
 class GMonthDay(_PatternString):
@@ -817,12 +874,28 @@ class GMonthDay(_PatternString):
             raise TypeError(f"Not a valid {cls.name}: {instance!r}")
         return instance
 
+    def to_gregorian(self) -> _ep.GregorianMonthDay:
+        """The value as an :class:`elementpath.datatypes.GregorianMonthDay`.
+
+        The result carries the XSD value semantics (ordering and
+        optional timezone).
+        """
+        return _ep.GregorianMonthDay.fromstring(str(self))
+
 
 class GDay(_PatternString):
     """``xs:gDay``: e.g. ``---30``."""
 
     name = "gDay"
     _pattern = re.compile(rf"---{_DAY}{_TIMEZONE}")
+
+    def to_gregorian(self) -> _ep.GregorianDay:
+        """The value as an :class:`elementpath.datatypes.GregorianDay`.
+
+        The result carries the XSD value semantics (ordering and
+        optional timezone).
+        """
+        return _ep.GregorianDay.fromstring(str(self))
 
 
 _DURATION_PARTS = re.compile(
