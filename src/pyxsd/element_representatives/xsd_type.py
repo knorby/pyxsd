@@ -31,6 +31,20 @@ _CLASS_IN_PROGRESS = object()
 _SELF_CONTENT = object()
 
 
+def _attribute_use_label(attr: Any, attrName: str | None) -> str:
+    """The local name a duplicate-use diagnostic displays for *attr*.
+
+    ``attrName`` is a bookkeeping key: a reference site's key is
+    ``Type|attributeRef|ref``, so displaying it raw would leak the
+    bookkeeping spelling into the message. The ref as written (its
+    local part) reads like the declaration names beside it.
+    """
+    if getattr(attr, "isAttributeRef", False):
+        ref = getattr(attr, "ref", None) or attrName
+        return str(ref).split(":")[-1]
+    return attrName or getattr(attr, "name", None) or "?"
+
+
 def _isInlineTypeName(value: Any) -> bool:
     """Whether *value* is an unprefixed inline-type bookkeeping name.
 
@@ -392,6 +406,14 @@ class XsdType(ElementRepresentative):
         attribute name already contributed by the type's own declaration or
         by an explicitly referenced group is a duplicate attribute use
         (si02), reported rather than silently shadowed.
+
+        Duplicates compare by expanded name (``_attributeCollides``),
+        like the explicit attribute-group references: a use the group
+        contributes by reference and a direct declaration of the same
+        local name collide when their QNames name one expanded name,
+        while a same-local-name pair of distinct namespaces (or forms)
+        stays two distinct uses (attQ019) -- the bookkeeping keys alone
+        say neither.
         """
         group = getattr(self, "defaultAttributeGroup", None)
         if group is None:
@@ -405,11 +427,11 @@ class XsdType(ElementRepresentative):
         for attrName, attr in self._collectAttributeGroup(
             group, frozenset({groupKey}), host
         ).items():
-            if attrName in self.attributes:
+            if self._attributeCollides(self.attributes.values(), attr, host):
                 self._report_ref_error(
-                    f"attribute '{attrName}' is contributed both by the "
-                    f"schema's default attribute group '{groupName}' and by "
-                    f"type '{self.name}'",
+                    f"attribute '{_attribute_use_label(attr, attrName)}' is contributed "
+                    f"both by the schema's default attribute group '{groupName}' "
+                    f"and by type '{self.name}'",
                     code="duplicate-attribute",
                 )
                 continue

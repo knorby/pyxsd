@@ -1617,6 +1617,103 @@ def test_default_attributes_scoped_to_the_declaring_document(tmp_path) -> None:
     assert errors(doc.report) == []
 
 
+def test_default_attributes_ref_collides_with_direct_declaration(tmp_path) -> None:
+    # The group contributes the global ``lang`` by reference; the type
+    # declares a form-qualified local ``lang`` of the same namespace.
+    # One expanded name, two uses -- the bookkeeping keys differ (the
+    # ref site's is ``G|attributeRef|lang``), so only the expanded-name
+    # comparison sees the duplicate.  xmlschema rejects the shape with
+    # "default attribute '{urn:main}lang' is already declared".
+    (tmp_path / "side.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' targetNamespace="urn:main" xmlns="urn:main" attributeFormDefault="qualified">'
+        '<xs:attribute name="lang" type="xs:string"/>'
+        '<xs:attributeGroup name="G"><xs:attribute ref="lang"/></xs:attributeGroup>'
+        "</xs:schema>"
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' targetNamespace="urn:main" xmlns="urn:main" defaultAttributes="G">'
+        '<xs:include schemaLocation="side.xsd"/>'
+        '<xs:complexType name="T">'
+        '<xs:attribute name="lang" type="xs:string" form="qualified"/>'
+        "</xs:complexType>"
+        '<xs:element name="root" type="T"/></xs:schema>'
+    )
+    schema = Schema.compile(str(tmp_path / "main.xsd"))
+    codes = [issue.code for issue in schema.report.errors]
+    assert "duplicate-attribute" in codes
+
+
+def test_default_attributes_form_distinct_locals_are_distinct_uses(tmp_path) -> None:
+    # The group's plain ``lang`` is qualified by its document's
+    # attributeFormDefault; the type's own ``lang`` is unqualified in the
+    # host.  Distinct expanded names ({urn:main}lang vs bare ``lang``) are
+    # two distinct attribute uses (attQ019), not a duplicate -- the
+    # bookkeeping keys alone say otherwise.  xmlschema accepts the shape.
+    (tmp_path / "side.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' attributeFormDefault="qualified">'
+        '<xs:attributeGroup name="G">'
+        '<xs:attribute name="lang" type="xs:string"/></xs:attributeGroup>'
+        "</xs:schema>"
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' targetNamespace="urn:main" defaultAttributes="G">'
+        '<xs:include schemaLocation="side.xsd"/>'
+        '<xs:complexType name="T">'
+        '<xs:attribute name="lang" type="xs:string"/>'
+        "</xs:complexType>"
+        '<xs:element name="root" type="T"/></xs:schema>'
+    )
+    schema = Schema.compile(str(tmp_path / "main.xsd"))
+    assert [issue.code for issue in schema.report.errors] == []
+
+
+def test_default_attributes_unresolved_ref_pair_is_a_duplicate(tmp_path) -> None:
+    # Both the type and the default group name ``{urn:one}lang`` through
+    # a bound prefix whose namespace supplies no global: the uses share
+    # one expanded name even though neither reference resolves (the
+    # authored QName is the identity), and the reference-resolution
+    # sweep skips unresolved sites -- only the default-group comparison
+    # sees the pair.
+    (tmp_path / "one.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' targetNamespace="urn:one">'
+        '<xs:complexType name="Nothing"><xs:sequence/></xs:complexType>'
+        "</xs:schema>"
+    )
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        ' targetNamespace="urn:main" xmlns:o="urn:one" defaultAttributes="G">'
+        '<xs:import namespace="urn:one" schemaLocation="one.xsd"/>'
+        '<xs:attributeGroup name="G"><xs:attribute ref="o:lang"/></xs:attributeGroup>'
+        '<xs:complexType name="T"><xs:attribute ref="o:lang"/></xs:complexType>'
+        '<xs:element name="root" type="T"/></xs:schema>'
+    )
+    schema = Schema.compile(str(tmp_path / "main.xsd"))
+    codes = [issue.code for issue in schema.report.errors]
+    assert "unknown-attributeRef" in codes
+    assert "duplicate-attribute" in codes
+
+
+def test_default_attributes_same_name_pair_still_reports(tmp_path) -> None:
+    # Guard: two plainly declared uses of one name -- the bookkeeping
+    # keys already collide -- keep reporting (siD2-style duplicate).
+    (tmp_path / "main.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" defaultAttributes="G">'
+        '<xs:attributeGroup name="G">'
+        '<xs:attribute name="lang" type="xs:string"/></xs:attributeGroup>'
+        '<xs:complexType name="T">'
+        '<xs:attribute name="lang" type="xs:string"/>'
+        "</xs:complexType>"
+        '<xs:element name="root" type="T"/></xs:schema>'
+    )
+    schema = Schema.compile(str(tmp_path / "main.xsd"))
+    assert "duplicate-attribute" in [issue.code for issue in schema.report.errors]
+
+
 # --- multi-head substitution (XSD 1.1 §3.3.6) -------------------------------
 
 
