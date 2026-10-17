@@ -51,13 +51,14 @@ EXPECTED: dict[str, dict] = {
     # resolve: unknown-type 452 -> 0, and the declaration-attribute 46
     # that cascaded from them -> 0. The mixed extensions of the
     # particle-less ``ANY`` (EN/AD/BIN) are legal per XSD 1.1 §3.4.6.2
-    # clause 1.4.3.2.1. The 2 remaining findings are restriction
-    # alignments through content composed over the empty base (ON over
-    # EN, CE over CD); follow-up: fix the extension composition's
-    # empty-base case (§3.4.2.3.3 clause 4.2.1).
+    # clause 1.4.3.2.1, and the extension composition now follows
+    # §3.4.2.3.3 clause 4.2.1 (XSD 1.0 §3.4.2 clause 3.2.2): content
+    # extended over the empty base takes the extension's own particle,
+    # so the member-wise restrictions of ON over EN and CE over CD
+    # align. Clean compile; xmlschema agrees (0 errors).
     "cda-r2": {
         "classes": 987,
-        "errors_by_code": {"particle-restriction": 2},
+        "errors_by_code": {},
     },
     # ECMA-376 WordprocessingML. Its prefixed references into the
     # imported namespaces (``r:*`` relationships, ``a:*`` drawing) now

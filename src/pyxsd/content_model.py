@@ -201,6 +201,20 @@ def _annotate_defined_siblings(model: Particle | None, py_xsd: Any) -> None:
         particle.siblings = siblings
 
 
+def _contributes_no_elements(particle: Particle) -> bool:
+    """Whether a base particle can match no element items at all.
+
+    A model group with no particles matches only its own emptiness, and
+    a group whose ``maxOccurs`` is 0 matches nothing; XSD 1.1 §3.4.2
+    clause 2.1 counts both as empty explicit content, so such a base
+    has an empty {content type} {variety} and contributes no member to
+    a composed extension sequence.
+    """
+    if particle.kind not in ("sequence", "choice", "all"):
+        return False
+    return particle.max_occurs == 0 or not particle.children
+
+
 def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
     """Compiles a complex type's own particle tree, composed with its base.
 
@@ -209,11 +223,16 @@ def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
     empty model that accepts no child elements, so stray children are
     reported.
 
-    An extension whose suffix is an ``all`` and whose base's effective
-    model is also an ``all`` composes into a single ``all`` (XSD 1.1
-    §3.4.2.3.3 clause 4.2.3.2): the base's particles lead and the
-    suffix supplies the occurrence. Every other extension is
-    ``sequence[base, own]``.
+    An extension whose base's content is empty (the base has no particle
+    to contribute) takes its own effective content as the particle,
+    without a composed wrapper (XSD 1.1 §3.4.2.3.3 clause 4.2.1, XSD 1.0
+    §3.4.2 clause 3.2.2 — CDA's ``ANY`` is such a base for ``EN``/``CD``;
+    keeping a vacuous leading member there would derail the member-wise
+    restriction alignments of ``ON``/``CE``). An extension whose suffix
+    is an ``all`` and whose base's effective model is also an ``all``
+    composes into a single ``all`` (XSD 1.1 §3.4.2.3.3 clause 4.2.3.2):
+    the base's particles lead and the suffix supplies the occurrence.
+    Every other extension is ``sequence[base, own]`` (clause 4.2.3.3).
     """
     own = compile_own_content(type_er, py_xsd)
     if own is None and _content_children(type_er):
@@ -226,6 +245,8 @@ def compile_content_model(type_er: Any, py_xsd: Any = None) -> Particle | None:
     if derivation == "extension" and base_model is not None:
         if own is None:
             return base_model
+        if _contributes_no_elements(base_model):
+            return own
         composition = all_extension_composition(base_model, own)
         if composition is not None:
             return composition

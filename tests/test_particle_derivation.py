@@ -2853,3 +2853,104 @@ class TestMixedExtensionOverEmptyBase:
         )
         issues = particle_restriction_issues(report)
         assert issues and "1.4.3.2.2" in issues[0].message
+
+
+class TestExtensionOverEmptyBaseComposition:
+    """Restrictions of content composed over an empty base.
+
+    XSD 1.1 §3.4.2.3.3 clause 4.2.1 (XSD 1.0 §3.4.2 clause 3.2.2): an
+    extension whose base has empty {content type} takes the extension's
+    own effective content as its particle — there is no composed
+    ``sequence[base particle, extension content]`` wrapper, because the
+    base has no particle to contribute. CDA R2 reaches this through
+    ``ANY``: ``EN``/``CD`` extend it, and ``ON``/``CE`` restrict those
+    extensions member-wise.
+    """
+
+    def test_choice_restriction_through_empty_base_extension(self, parse):
+        # CDA's ANY/EN/ON: EN extends empty ANY with
+        # sequence(choice[0..*](delimiter|family|prefix|suffix),
+        # validTime[0,1]); ON restricts EN to a three-branch choice
+        report = parse(
+            "<xs:complexType name='ANY' abstract='true'/>"
+            "<xs:complexType name='EN'><xs:complexContent>"
+            "<xs:extension base='ANY'><xs:sequence>"
+            "<xs:choice minOccurs='0' maxOccurs='unbounded'>"
+            "<xs:element name='delimiter'/><xs:element name='family'/>"
+            "<xs:element name='prefix'/><xs:element name='suffix'/>"
+            "</xs:choice>"
+            "<xs:element name='validTime' minOccurs='0'/>"
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+            "<xs:complexType name='ON'><xs:complexContent>"
+            "<xs:restriction base='EN'><xs:sequence>"
+            "<xs:choice minOccurs='0' maxOccurs='unbounded'>"
+            "<xs:element name='delimiter'/><xs:element name='prefix'/>"
+            "<xs:element name='suffix'/>"
+            "</xs:choice>"
+            "<xs:element name='validTime' minOccurs='0'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_sequence_restriction_through_empty_base_extension(self, parse):
+        # CDA's ANY/CD/CE: CE restricts CD's extension sequence
+        # member-wise, closing one member with maxOccurs='0'
+        report = parse(
+            "<xs:complexType name='ANY' abstract='true'/>"
+            "<xs:complexType name='CD'><xs:complexContent>"
+            "<xs:extension base='ANY'><xs:sequence>"
+            "<xs:element name='originalText' minOccurs='0'/>"
+            "<xs:element name='qualifier' minOccurs='0' maxOccurs='unbounded'/>"
+            "<xs:element name='translation' minOccurs='0' maxOccurs='unbounded'/>"
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+            "<xs:complexType name='CE'><xs:complexContent>"
+            "<xs:restriction base='CD'><xs:sequence>"
+            "<xs:element name='originalText' minOccurs='0'/>"
+            "<xs:element name='qualifier' minOccurs='0' maxOccurs='0'/>"
+            "<xs:element name='translation' minOccurs='0' maxOccurs='unbounded'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_foreign_choice_branch_still_rejected(self, parse):
+        # Guard: a derived branch the base choice never declares stays a
+        # restriction error through the empty-base composition
+        report = parse(
+            "<xs:complexType name='ANY' abstract='true'/>"
+            "<xs:complexType name='EN'><xs:complexContent>"
+            "<xs:extension base='ANY'><xs:sequence>"
+            "<xs:choice minOccurs='0' maxOccurs='unbounded'>"
+            "<xs:element name='delimiter'/><xs:element name='family'/>"
+            "</xs:choice>"
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+            "<xs:complexType name='ON'><xs:complexContent>"
+            "<xs:restriction base='EN'><xs:sequence>"
+            "<xs:choice minOccurs='0' maxOccurs='unbounded'>"
+            "<xs:element name='delimiter'/><xs:element name='foreign'/>"
+            "</xs:choice>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        # With the empty base composed away, the derived choice faces the
+        # base choice directly (Recurse) and the unmappable branch is the
+        # rejection: the dead-end detail names the unmatched base member.
+        assert issues and "Recurse" in issues[0].message and "family" in issues[0].message
+
+    def test_foreign_sequence_member_still_rejected(self, parse):
+        # Guard: a derived sequence member the base order cannot place
+        # stays a restriction error through the empty-base composition
+        report = parse(
+            "<xs:complexType name='ANY' abstract='true'/>"
+            "<xs:complexType name='CD'><xs:complexContent>"
+            "<xs:extension base='ANY'><xs:sequence>"
+            "<xs:element name='originalText' minOccurs='0'/>"
+            "<xs:element name='translation' minOccurs='0' maxOccurs='unbounded'/>"
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+            "<xs:complexType name='CE'><xs:complexContent>"
+            "<xs:restriction base='CD'><xs:sequence>"
+            "<xs:element name='foreign' minOccurs='0'/>"
+            "<xs:element name='translation' minOccurs='0' maxOccurs='unbounded'/>"
+            "</xs:sequence></xs:restriction></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "Recurse" in issues[0].message
