@@ -879,7 +879,7 @@ def check_substitution_edc(ctx: CompileContextProtocol, resolved: list[Any], py_
                 namespace, _, local = head[1:].partition("}")
                 names.add((namespace, local))
             else:
-                names.add((holder.getNamespace() or "", head.split(":")[-1]))
+                names.add((element_namespace(holder) or "", head.split(":")[-1]))
         return names
 
     memberDecls: dict[tuple[str, str], Any] = {}
@@ -1415,7 +1415,12 @@ def global_element_lookup(er: Any) -> Any:
     Feeds the XSD 1.1 static tighter EDC check (the binding the
     derived type's wildcard resolves to). Names that name no global
     declaration return ``None``, which the check reads as "nothing
-    to compare".
+    to compare". The names are the declaring documents' expanded
+    names (``element_namespace``), matching the names the checks
+    build from the content models: a legacy compile reports every
+    composed document in the main schema's namespace, and comparing
+    a recorded (authored) name against the reported one would skip
+    the comparison for a declaration of a composed document.
     """
     try:
         schema = er.getSchema()
@@ -1433,11 +1438,7 @@ def global_element_lookup(er: Any) -> Any:
         for element in elements:
             if getattr(element, "name", None) != local:
                 continue
-            try:
-                element_uri = element.getNamespace()
-            except AttributeError:
-                element_uri = None
-            if element_uri == uri:
+            if element_namespace(element) == uri:
                 return element
         return None
 
@@ -2090,6 +2091,12 @@ def resolve_particles(particles: list[Any]) -> list[tuple[tuple[str, str], str, 
     resolve against this document's globals is dropped (its type is
     unknown). A name site keeps its declared name and the raw (or
     inline-generated) ``type`` attribute as its key.
+
+    The expanded name is the one the declaring document gives the
+    declaration (``element_namespace``): a legacy compile reports
+    every composed document in the main schema's namespace, and two
+    same-local-name declarations of different documents are distinct
+    declarations, not a name collision.
     """
     globals_ = global_elements(particles[0] if particles else None)
     resolved: list[tuple[tuple[str, str], str, Any]] = []
@@ -2105,18 +2112,11 @@ def resolve_particles(particles: list[Any]) -> list[tuple[tuple[str, str], str, 
                 )
             if referred is None:
                 continue
-            try:
-                namespace = referred.getNamespace() or ""
-            except AttributeError:
-                namespace = ""
+            namespace = element_namespace(referred) or ""
             name = (namespace, referred.name or "")
             resolved.append((name, f"decl:{referred.expandedName}", particle))
             continue
-        try:
-            namespace = particle.getNamespace() or ""
-        except AttributeError:
-            namespace = ""
-        name = (namespace, getattr(particle, "name", None) or "")
+        name = (element_namespace(particle) or "", getattr(particle, "name", None) or "")
         typeKey = particle.tagAttributes.get("type") or ""
         resolved.append((name, typeKey, particle))
     return resolved

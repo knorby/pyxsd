@@ -1947,6 +1947,15 @@ def element_namespace(declaration: Any) -> str | None:
     ``targetNamespace`` attribute on the declaration wins (the TargetNS
     corpus cases). Declarations without scope information (test
     stand-ins) keep the historical form-blind reading.
+
+    The namespace is the one of the document that *declared* the
+    declaration (``authoredNamespace``), not the namespace a legacy
+    compile reports: legacy merges every composed document into the
+    main schema's target namespace, and reading that back would
+    conflate two same-local-name declarations of different documents
+    (the WordprocessingML ``rPr``/``r`` particles of ``CT_R`` and
+    ``CT_RunTrackChange``, whose DrawingML/WordprocessingML
+    declarations differ).
     """
     if declaration is None:
         return None
@@ -1963,6 +1972,9 @@ def element_namespace(declaration: Any) -> str | None:
         return None
     if not _local_declaration_is_qualified(declaration):
         return None
+    authored = getattr(declaration, "authoredNamespace", None)
+    if callable(authored):
+        return authored()
     return getter()
 
 

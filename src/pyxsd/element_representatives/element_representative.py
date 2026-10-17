@@ -1165,10 +1165,11 @@ class ElementRepresentative:
         Legacy namespace mode reports every composed component in the
         main schema's ``targetNamespace``, which hides which document
         declared it: two composed documents may declare named types
-        that share a local name. The composition records each spliced
-        named component's source namespace, and this reads it back; a
-        component of the main document has no record and falls back to
-        its reported namespace, which is that document's own.
+        that share a local name. The composition records each element
+        of a spliced named component's source namespace, and this
+        reads it back; a component of the main document has no record
+        and falls back to its reported namespace, which is that
+        document's own.
         """
         element = getattr(self, "xsdElement", None)
         schema = self._effectiveSchema()

@@ -798,15 +798,18 @@ def append_named_components(
 
     In strict mode the namespace each component was declared in is
     recorded so its expanded name reflects the source document
-    rather than the main schema's target namespace. That document's
-    form defaults are recorded too, so local declarations resolve
-    qualification against their own schema instead of the host.
+    rather than the main schema's target namespace.
 
-    Every mode records which document each named component came
-    from (``component_namespaces``), because a legacy compile merges
-    every composed document into one namespace: two documents may
-    declare types that share a local name, and the declaration a
-    QName reference denotes is only recoverable from this record.
+    Every mode records which document each element of a named
+    component came from (``component_namespaces``) and that
+    document's form defaults (``form_defaults``), because a legacy
+    compile merges every composed document into one namespace: two
+    documents may declare types (or elements) that share a local
+    name, and the declaration a QName reference denotes — or that a
+    content-model sweep compares — is only recoverable from these
+    records. A local declaration resolves qualification against its
+    own document's ``elementFormDefault``/``attributeFormDefault``
+    rather than the host's.
     """
     strict = getattr(ctx.mode, "namespaces", "legacy") == "strict"
     sourceDefaults = (
@@ -819,14 +822,14 @@ def append_named_components(
     check_form_defaults(ctx, includedRoot)
     for component in list(includedRoot):
         if component.tag.split("}")[-1] in _COMPOSABLE_TAGS:
-            if strict:
-                for element in component.iter():
+            for element in component.iter():
+                if strict:
                     ctx.namespace_overrides.setdefault(id(element), namespace)
-                    ctx.form_defaults.setdefault(id(element), sourceDefaults)
                     if sourceXPathDefault is not None:
                         ctx.xpath_default_namespaces.setdefault(id(element), sourceXPathDefault)
-            if namespace is not None:
-                ctx.component_namespaces.setdefault(id(component), namespace)
+                ctx.form_defaults.setdefault(id(element), sourceDefaults)
+                if namespace is not None:
+                    ctx.component_namespaces.setdefault(id(element), namespace)
             schemaRoot.append(component)
     return None
 

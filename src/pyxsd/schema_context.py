@@ -34,14 +34,15 @@ class SchemaContext:
     - ``namespace_overrides``: per-component namespace overrides for
       declarations spliced in from imported/included documents.
     - ``component_namespaces``: the target namespace of the document
-      each spliced named component came from, whether or not the mode
-      records it as a namespace override. Legacy mode merges every
-      composed document into the main schema's namespace, so this is
-      the only record of which document declared a component that
-      shares a local name with another.
+      each element of a spliced named component came from, whether or
+      not the mode records it as a namespace override. Legacy mode
+      merges every composed document into the main schema's namespace,
+      so this is the only record of which document declared a
+      component — or a local declaration inside one — that shares a
+      local name with another.
     - ``form_defaults``: the source document's
-      ``(elementFormDefault, attributeFormDefault)`` per spliced
-      component.
+      ``(elementFormDefault, attributeFormDefault)`` per element of a
+      spliced component.
     - ``injected_builtin_ids``: ``id(xsdElement)`` of the built-in
       components the parser itself injected (the implicit ``xml``,
       ``xsi`` and ``xlink`` namespace attribute declarations). Kept apart from

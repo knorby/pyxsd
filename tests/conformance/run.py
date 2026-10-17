@@ -72,14 +72,16 @@ EXPECTED: dict[str, dict] = {
     # and value constraints validate against the type the declaration's
     # own document declares (declaration-attribute 26 -> 0: the
     # percentage defaults and the shadowed ``dml-diagram``
-    # ``ST_Direction``'s ``norm``). The last three findings are the
-    # pre-existing content-model issues the oracle does not share (two
-    # ambiguity checks and one all-rule consistency check over
-    # duplicated ``rPr``/``r`` declarations from the merged documents).
-    # Pinned as-is; follow-up of its own.
+    # ``ST_Direction``'s ``norm``). The content-model sweeps compare
+    # expanded names through the declaring document
+    # (``element_namespace`` reads the composition's source-namespace
+    # record), so the imported ``shared-math`` ``rPr``/``r``
+    # declarations of ``CT_R``/``CT_RunTrackChange`` are no longer
+    # conflated with the main document's same-local-name ones: upa 2 -> 0
+    # and all-rule 1 -> 0. Clean compile; xmlschema agrees (0 errors).
     "ooxml-wml": {
         "classes": 2359,
-        "errors_by_code": {"upa": 2, "all-rule": 1},
+        "errors_by_code": {},
     },
     # ECMA-376 SpreadsheetML: the same prefixed-reference resolution
     # (unknown-attributeRef 37 -> 0, unknown-elementRef 4 -> 0,
