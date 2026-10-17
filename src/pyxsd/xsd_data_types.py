@@ -109,6 +109,19 @@ class XsdDataType:
     name: ClassVar[str]
 
     @classmethod
+    def enumerations(cls) -> tuple[Any, ...]:
+        """The effective enumeration facet values for this type.
+
+        Values are instances of the restriction's base datatype, after
+        intersection across restriction steps.  A type with no enumeration
+        facets returns an empty tuple.
+        """
+        constraints = getattr(cls, "_facetConstraints_", None)
+        if constraints is None:
+            return ()
+        return constraints.enumeration_values
+
+    @classmethod
     def _unvalidated(cls) -> Any:
         """Returns a bare instance of the type without lexical validation.
 

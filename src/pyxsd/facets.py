@@ -189,13 +189,17 @@ def _parse_bound(base: Callable[[str], Any], text: str) -> Any:
     return order_key(base(text))
 
 
-def _parse_enumeration(base: Callable[[str], Any], text: str) -> Any:
-    """Parse an enumeration literal with the base type and key it for equality.
+def _parse_enumeration_pair(base: Callable[[str], Any], text: str) -> tuple[Any, Any]:
+    """Parse an enumeration literal with the base type.
 
-    The type tag is dropped because the instance value is a generated
-    subclass, not the base datatype; membership is a value-space question.
+    Returns the value-space key used for equality and the parsed value
+    itself, so the effective enumeration can enforce *and* report its
+    members from a single parse.  The type tag is dropped from the key
+    because the instance value is a generated subclass, not the base
+    datatype; membership is a value-space question.
     """
-    return xsd_comparable_key(base(text))
+    value = base(text)
+    return xsd_comparable_key(value), value
 
 
 @dataclass(frozen=True)
@@ -215,6 +219,11 @@ class FacetConstraints:
     #: steps themselves are a conjunction.
     patterns: tuple[tuple[re.Pattern[str], ...], ...] = ()
     enumerations: tuple[tuple[Any, ...], ...] = ()
+    #: The effective enumeration *values* (typed with the restriction's
+    #: base type, post-intersection), parallel to ``enumerations``.  The
+    #: keys in ``enumerations`` drive enforcement; this field only feeds
+    #: introspection.
+    enumeration_values: tuple[Any, ...] = ()
     white_space: str | None = None
     min_inclusive: Any | None = None
     min_exclusive: Any | None = None
@@ -946,23 +955,23 @@ def build_constraints(
         white_space = parent.white_space
 
     enumerations: tuple[tuple[Any, ...], ...] = parent.enumerations
+    enumeration_values: tuple[Any, ...] = parent.enumeration_values
     raw_enumerations = tuple(getattr(source, "enumerations", ()) or ())
     if raw_enumerations:
-        parsed: list[tuple[Any, ...]] = []
+        parsed: list[tuple[Any, Any]] = []
         for raw_value in raw_enumerations:
             try:
-                parsed.append(_parse_enumeration(base_factory, str(raw_value)))
+                parsed.append(_parse_enumeration_pair(base_factory, str(raw_value)))
             except (TypeError, ValueError) as exc:
                 errors.append(
                     f"enumeration value {raw_value!r} is not valid for its base type: {exc}"
                 )
         if parsed:
             own = tuple(parsed)
-            enumerations = (
-                tuple(value for value in own if value in enumerations)
-                if parent.enumerations
-                else own
-            )
+            if parent.enumerations:
+                own = tuple(pair for pair in own if pair[0] in parent.enumerations)
+            enumerations = tuple(key for key, _ in own)
+            enumeration_values = tuple(value for _, value in own)
 
     #: The inherited-constraints attribute a restatable exclusive bound maps to.
     restatable_bounds = {"maxExclusive": "max_exclusive", "minExclusive": "min_exclusive"}
@@ -1184,6 +1193,7 @@ def build_constraints(
         max_length=effective_max,
         patterns=pattern_levels,
         enumerations=enumerations,
+        enumeration_values=enumeration_values,
         white_space=white_space,
         min_inclusive=min_inclusive,
         min_exclusive=min_exclusive,
