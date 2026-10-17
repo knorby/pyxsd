@@ -112,3 +112,50 @@ class TestPrefixedLegacyReferences:
         _write(tmp_path, "A.xsd", schema_doc)
         schema = Schema.compile(str(tmp_path / "A.xsd"))
         assert not schema.report.has_errors
+
+
+class TestNamespacedInstanceAttributes:
+    def test_declared_xml_lang_use_binds_the_instance_attribute(self, tmp_path):
+        _write(tmp_path, "B.xsd", XML_LANG_SCHEMA)
+        _write(
+            tmp_path,
+            "doc.xml",
+            '<m:doc xmlns:m="urn:m" xml:lang="en"><m:body>x</m:body></m:doc>',
+        )
+        schema = Schema.compile(str(tmp_path / "B.xsd"))
+        assert not schema.report.has_errors
+        document = schema.parse(str(tmp_path / "doc.xml"))
+        assert not document.report.has_errors
+        assert document.root.lang == "en"
+
+    def test_undeclared_namespaced_attribute_is_still_rejected(self, tmp_path):
+        _write(tmp_path, "B.xsd", XML_LANG_SCHEMA)
+        _write(
+            tmp_path,
+            "doc.xml",
+            '<m:doc xmlns:m="urn:m" xml:bogus="x"><m:body>x</m:body></m:doc>',
+        )
+        schema = Schema.compile(str(tmp_path / "B.xsd"))
+        document = schema.parse(str(tmp_path / "doc.xml"))
+        codes = {error.code for error in document.report.errors}
+        assert "unexpected-attribute" in codes
+
+    def test_no_namespace_instance_attribute_still_binds(self, tmp_path):
+        schema_doc = """<?xml version="1.0"?>
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+          <xs:element name="doc">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:element name="body" type="xs:string"/>
+              </xs:sequence>
+              <xs:attribute name="plain" type="xs:string"/>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>
+        """
+        _write(tmp_path, "C.xsd", schema_doc)
+        _write(tmp_path, "doc.xml", '<doc plain="v"><body>x</body></doc>')
+        schema = Schema.compile(str(tmp_path / "C.xsd"))
+        document = schema.parse(str(tmp_path / "doc.xml"))
+        assert not document.report.has_errors
+        assert document.root.plain == "v"
