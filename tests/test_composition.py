@@ -487,6 +487,80 @@ class TestCompositionCorrectness:
         doc = schema.parse(str(tmp_path / "legacy.xml"))
         assert not doc.report.has_errors
 
+    def test_chameleon_redefine_nested_redefine_adopts_too(self, tmp_path):
+        """A redefined document's own *redefine* adopts as well.
+
+        ``base.xsd`` (no targetNamespace) is redefined by a namespaced
+        schema and itself redefines ``inner.xsd`` (also no
+        targetNamespace), restricting one of its groups. The whole
+        redefine chain is absorbed into the redefining schema's
+        namespace, so the inner document's declarations land there and
+        the restriction is judged against the rewritten original --
+        which only holds when the nested redefine adopts the namespace
+        the outer redefinition threaded through the include dispatch.
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:group name="g3">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/>'
+            '<xs:element name="b" type="xs:string" minOccurs="0"/></xs:sequence>'
+            "</xs:group>"
+            '<xs:complexType name="innerType"><xs:sequence>'
+            '<xs:group ref="g3"/></xs:sequence></xs:complexType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="inner.xsd">'
+            '<xs:group name="g3">'
+            '<xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>'
+            "    </xs:group>"
+            "  </xs:redefine>"
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef" xmlns="urn:redef"'
+            ' elementFormDefault="qualified">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            '  <xs:element name="root" type="innerType"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+        (tmp_path / "instance.xml").write_text('<root xmlns="urn:redef"><a>x</a></root>')
+        doc = schema.parse(str(tmp_path / "instance.xml"))
+        assert not doc.report.has_errors
+        # The restriction dropped the optional b: it is no longer admissible.
+        (tmp_path / "invalid.xml").write_text('<root xmlns="urn:redef"><a>x</a><b>y</b></root>')
+        doc = schema.parse(str(tmp_path / "invalid.xml"))
+        assert doc.report.has_errors
+
+    def test_nested_redefine_of_third_namespace_reports(self, tmp_path):
+        """A nested redefine may not target a third namespace.
+
+        ``base.xsd`` (no targetNamespace, adopted by the outer
+        redefinition into ``urn:redef``) redefines a document that
+        declares ``urn:other``: the rename would introduce the
+        components into the adopted namespace, which the composition
+        must reject (XSD 1.1 §4.2.4).
+        """
+        (tmp_path / "inner.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:other">'
+            '<xs:complexType name="x"><xs:sequence/></xs:complexType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "base.xsd").write_text(
+            f'<xs:schema {XS}><xs:redefine schemaLocation="inner.xsd"/></xs:schema>'
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:redef">'
+            '  <xs:redefine schemaLocation="base.xsd"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        codes = [issue.code for issue in schema.report.errors]
+        assert "compose-invalid" in codes
+
     def test_circular_include_chameleon_base_reference_resolves(self, tmp_path):
         """Mutually including chameleon documents resolve their base types.
 

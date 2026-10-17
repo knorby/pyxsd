@@ -305,9 +305,10 @@ def splice_composed_schemas(
     ``adoptedNS`` is the namespace an enclosing chameleon adoption put
     this document in when its own root does not say so. A redefined
     base document is adopted without stamping its root (see
-    :func:`splice_redefine`), so its nested includes must be told the
-    namespace explicitly or their components would stay in no namespace
-    while the base document's rewritten references name the adopted one.
+    :func:`splice_redefine`), so its nested includes *and* nested
+    redefines must be told the namespace explicitly or their
+    components would stay in no namespace while the base document's
+    rewritten references name the adopted one.
     """
     for child in list(schemaRoot):
         local = child.tag.split("}")[-1]
@@ -320,7 +321,7 @@ def splice_composed_schemas(
             )
         elif local == "redefine":
             schemaRoot.remove(child)
-            splice_redefine(ctx, child, schemaRoot, baseDir, visited)
+            splice_redefine(ctx, child, schemaRoot, baseDir, visited, adoptedNS=adoptedNS)
         elif local == "override":
             schemaRoot.remove(child)
             splice_override(ctx, child, schemaRoot, baseDir, visited)
@@ -857,6 +858,7 @@ def splice_redefine(
     schemaRoot: Any,
     baseDir: Path,
     visited: set[str],
+    adoptedNS: str | None = None,
 ) -> None:
     """Splices an ``xs:redefine`` block.
 
@@ -866,6 +868,14 @@ def splice_redefine(
     from the original (the standard internal-name trick). ``base``
     attributes inside the block that name the redefined component
     are rewritten to the renamed original.
+
+    ``adoptedNS`` is the namespace an enclosing chameleon adoption put
+    the *redefining* document in when its own root does not say so (a
+    no-namespace base document redefined by a namespaced schema). The
+    redefine is then judged by that effective namespace: a nested
+    no-namespace target is chameleon-adopted into it and its
+    components (and ``composed_schema_namespaces`` record) land there,
+    exactly as the top-level chameleon redefine does.
     """
     check_redefine_structure(ctx, redefineTag)
     location = redefineTag.get("schemaLocation")
@@ -893,17 +903,19 @@ def splice_redefine(
                 phase="schema",
             )
         return None
-    mainNS = schemaRoot.get("targetNamespace")
+    mainNS = schemaRoot.get("targetNamespace") or adoptedNS
+    ownNS = schemaRoot.get("targetNamespace")
     includedNS = includedRoot.get("targetNamespace")
     if includedNS:
         ctx.composed_target_namespaces.add(includedNS)
     includedPath = (baseDir / location).resolve()
     if includedNS is not None and mainNS is not None and includedNS != mainNS:
         # A redefine may target a document in the redefining schema's
-        # namespace or a no-namespace (chameleon) document; redefining
-        # a third namespace would introduce the renamed components
-        # into the wrong namespace. A no-namespace redefiner is the
-        # disputed circular case (W3C schU1), left unresolved.
+        # namespace (the adopted one, for a chameleon-adopted base) or a
+        # no-namespace (chameleon) document; redefining a third
+        # namespace would introduce the renamed components into the
+        # wrong namespace. A no-namespace redefiner is the disputed
+        # circular case (W3C schU1), left unresolved.
         ctx.report.add_error(
             f"the redefined schema '{location}' declares targetNamespace "
             f"'{includedNS}', which does not match the redefining schema's "
@@ -912,10 +924,14 @@ def splice_redefine(
             phase="schema",
         )
     if str(includedPath) in visited:
-        if mainNS is None:
+        if ownNS is None:
             # A no-namespace (chameleon) redefiner caught in a cycle
             # is the disputed W3C schU1 case; it stays a skipped
-            # repetition rather than a rule violation.
+            # repetition rather than a rule violation. The verdict
+            # keys on the document's *own* root namespace: a base that
+            # a chameleon adoption put in a namespace without stamping
+            # its root is still the no-namespace document that wrote
+            # this directive.
             ctx.report.add_warning(
                 f"the schema '{location}' is already being composed; "
                 "the circular redefine is skipped",
@@ -955,7 +971,8 @@ def splice_redefine(
     if includedNS is None and mainNS is not None:
         # A redefine of a no-namespace document is a chameleon
         # redefinition (XSD 1.1 §4.2.4 with Appendix F.1): the base
-        # document adopts the redefining namespace exactly as a
+        # document adopts the redefining namespace (the effective one,
+        # for a redefine nested in an adopted base) exactly as a
         # chameleon include does, so its unprefixed QName references
         # are rewritten into that namespace and resolve against the
         # redefined components. The rename above happens first so the
@@ -966,7 +983,8 @@ def splice_redefine(
         # nested redefine cycle of the disputed W3C schU1 shape as a
         # hard violation instead of the lenient repetition it is. The
         # adopted namespace is threaded through the recursion instead,
-        # so the base document's own nested includes adopt it too.
+        # so the base document's own nested includes and redefines
+        # adopt it too.
         apply_chameleon_namespace(ctx, includedRoot, mainNS)
         adoptedNS = mainNS
     ctx.compose_stack.append(str(includedPath))

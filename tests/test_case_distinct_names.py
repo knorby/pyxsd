@@ -360,6 +360,16 @@ SIDE_DEFAULT_OPEN_CONTENT_MISMATCH = SIDE_DEFAULT_OPEN_CONTENT.replace(
     '<xs:openContent mode="interleave">        <xs:any namespace="##other"',
 )
 
+#: The nested twin: the no-namespace document ``main`` redefines is
+#: itself a redefinition of another no-namespace document carrying the
+#: keyword default open content. The middle document's root is left
+#: unstamped by the outer redefinition, so the inner document's
+#: adoption hangs on the adopted namespace being threaded through the
+#: nested redefine dispatch too.
+INNER_DEFAULT_OPEN_CONTENT = SIDE_DEFAULT_OPEN_CONTENT
+
+BASE_REDEFINE_INNER = f'<xs:schema {XS}><xs:redefine schemaLocation="inner.xsd"/></xs:schema>'
+
 MAIN_REDEFINE = (
     f'<xs:schema {XS} targetNamespace="urn:main"'
     ' xmlns="urn:main" elementFormDefault="qualified">'
@@ -427,6 +437,29 @@ class TestOpenContentNamespaceAcrossDocuments:
     def test_redefined_default_open_content_mismatch_still_reports(self, tmp_path):
         """Guard: the derived open content is not a subset of the default."""
         (tmp_path / "base.xsd").write_text(SIDE_DEFAULT_OPEN_CONTENT_MISMATCH)
+        (tmp_path / "main.xsd").write_text(MAIN_REDEFINE)
+        schema = Schema.compile(str(tmp_path / "main.xsd"))
+        assert "particle-restriction" in _codes(schema)
+
+    def test_nested_redefined_default_open_content_uses_adopted_namespace(self, tmp_path):
+        """A redefined base that itself redefines its inner document.
+
+        The middle document's root stays unstamped by the outer
+        chameleon redefinition, so the inner document's keyword
+        default open content resolves against the adopted namespace
+        only when the redefine dispatch threads it down like the
+        include dispatch does.
+        """
+        (tmp_path / "inner.xsd").write_text(INNER_DEFAULT_OPEN_CONTENT)
+        (tmp_path / "base.xsd").write_text(BASE_REDEFINE_INNER)
+        (tmp_path / "main.xsd").write_text(MAIN_REDEFINE)
+        schema = Schema.compile(str(tmp_path / "main.xsd"))
+        assert _codes(schema) == []
+
+    def test_nested_redefined_default_open_content_mismatch_still_reports(self, tmp_path):
+        """Guard: the nested twin of the mismatch still reports."""
+        (tmp_path / "inner.xsd").write_text(SIDE_DEFAULT_OPEN_CONTENT_MISMATCH)
+        (tmp_path / "base.xsd").write_text(BASE_REDEFINE_INNER)
         (tmp_path / "main.xsd").write_text(MAIN_REDEFINE)
         schema = Schema.compile(str(tmp_path / "main.xsd"))
         assert "particle-restriction" in _codes(schema)
