@@ -49,16 +49,15 @@ EXPECTED: dict[str, dict] = {
     # datatypes.xsd <-> voc.xsd include cycle is deduplicated), and the
     # chameleon coreschemas' rewritten (expanded-name) references now
     # resolve: unknown-type 452 -> 0, and the declaration-attribute 46
-    # that cascaded from them -> 0. The 5 remaining findings are
-    # pre-existing rule-algebra false positives that the
-    # strict-namespace path already reported and that are out of scope
-    # here: three mixed extensions over an empty-content base (spec-valid
-    # per XSD 1.1 §3.4.6.2 clause 1.4.3.2.1) and two restriction
-    # alignments broken by an extension's nested single-item sequences.
-    # Pinned as-is; follow-up: fix the particle/mixed rule algebra.
+    # that cascaded from them -> 0. The mixed extensions of the
+    # particle-less ``ANY`` (EN/AD/BIN) are legal per XSD 1.1 §3.4.6.2
+    # clause 1.4.3.2.1. The 2 remaining findings are restriction
+    # alignments through content composed over the empty base (ON over
+    # EN, CE over CD); follow-up: fix the extension composition's
+    # empty-base case (§3.4.2.3.3 clause 4.2.1).
     "cda-r2": {
         "classes": 987,
-        "errors_by_code": {"particle-restriction": 5},
+        "errors_by_code": {"particle-restriction": 2},
     },
     # ECMA-376 WordprocessingML. Its prefixed references into the
     # imported namespaces (``r:*`` relationships, ``a:*`` drawing) now

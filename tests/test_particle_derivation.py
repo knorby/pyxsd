@@ -2790,3 +2790,66 @@ class TestLargeModelBudget:
             "</xs:restriction></xs:complexContent></xs:complexType>"
         )
         assert not particle_restriction_issues(report)
+
+
+class TestMixedExtensionOverEmptyBase:
+    """Mixed extension of an empty-content base (XSD 1.1 §3.4.6.2).
+
+    Clause 1.4.3.2 is satisfied outright when the base's {content type}
+    {variety} is empty (1.4.3.2.1); the requirement that a mixed
+    (element-only) type extend a mixed (element-only) base is clause
+    1.4.3.2.2.1 and reaches only element-only/mixed bases. CDA R2's HL7
+    datatypes pin the shape: ``ANY`` is an abstract element-only type
+    with no particle, and ``EN``/``AD``/``BIN`` extend it with mixed
+    content.
+    """
+
+    def test_mixed_extension_of_particle_less_base_is_valid(self, parse):
+        # CDA's ANY/EN shape: an abstract type with no content at all,
+        # extended with a mixed content model
+        report = parse(
+            "<xs:complexType name='ANY' abstract='true'/>"
+            "<xs:complexType name='EN' mixed='true'><xs:complexContent>"
+            "<xs:extension base='ANY'><xs:sequence>"
+            "<xs:element name='part' minOccurs='0' maxOccurs='unbounded'/>"
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_bare_mixed_extension_of_particle_less_base_is_valid(self, parse):
+        # CDA's ANY/BIN shape: a mixed extension adding no particle
+        report = parse(
+            "<xs:complexType name='ANY' abstract='true'/>"
+            "<xs:complexType name='BIN' mixed='true'><xs:complexContent>"
+            "<xs:extension base='ANY'>"
+            "<xs:attribute name='representation' type='xs:string'/>"
+            "</xs:extension></xs:complexContent></xs:complexType>"
+        )
+        assert not particle_restriction_issues(report)
+
+    def test_mixed_extension_of_element_only_base_is_invalid(self, parse):
+        # 1.4.3.2.2.1 still bites when the base carries a particle: a
+        # base with element-only content has a non-empty variety
+        report = parse(
+            "<xs:complexType name='base'><xs:sequence>"
+            "<xs:element name='e'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='T' mixed='true'><xs:complexContent>"
+            "<xs:extension base='base'><xs:sequence>"
+            "<xs:element name='p' minOccurs='0' maxOccurs='unbounded'/>"
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "1.4.3.2.2" in issues[0].message
+
+    def test_particle_adding_extension_of_mixed_base_is_invalid(self, parse):
+        # complex026 posture: element-only content over a mixed base
+        report = parse(
+            "<xs:complexType name='base' mixed='true'><xs:sequence>"
+            "<xs:element name='e'/></xs:sequence></xs:complexType>"
+            "<xs:complexType name='T'><xs:complexContent>"
+            "<xs:extension base='base'><xs:sequence>"
+            "<xs:element name='p' minOccurs='0' maxOccurs='unbounded'/>"
+            "</xs:sequence></xs:extension></xs:complexContent></xs:complexType>"
+        )
+        issues = particle_restriction_issues(report)
+        assert issues and "1.4.3.2.2" in issues[0].message

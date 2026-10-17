@@ -1106,7 +1106,7 @@ def report_mixed_conflict(ctx: CompileContextProtocol, er: Any) -> None:
 def report_mixed_extension(ctx: CompileContextProtocol, er: Any, py_xsd: Any) -> None:
     """Reports an extension whose mixed content diverges from its base.
 
-    Derivation Valid (Extension) clause 1.4.3.2.2 requires the
+    Derivation Valid (Extension) clause 1.4.3.2 requires the
     {content type} of the derived type to match the base's: a mixed
     type may only extend a mixed base and an element-only type may
     only extend an element-only base. An explicit mixed content over
@@ -1114,9 +1114,14 @@ def report_mixed_extension(ctx: CompileContextProtocol, er: Any, py_xsd: Any) ->
     that adds particles to a mixed base (complex026) are both errors.
     A bare or attribute-only extension of a mixed base legitimately
     inherits the base content type (§3.4.2.3.3 clause 4.2.2), so it
-    is exempt. Hides a simple-content base and an ``xs:anyType``
-    base; never errors when the base cannot be resolved or is not a
-    complex type definition.
+    is exempt. So is any extension of a base whose {content type}
+    {variety} is empty (clause 1.4.3.2.1): the clause is satisfied
+    outright, and the mixed-match requirement of 1.4.3.2.2.1 reaches
+    only element-only/mixed bases (CDA's ``ANY`` is an abstract
+    particle-less element-only type that ``EN``/``AD``/``BIN``
+    extend with mixed content). Hides a simple-content base and an
+    ``xs:anyType`` base; never errors when the base cannot be
+    resolved or is not a complex type definition.
     """
     if er.getDerivation() != "extension":
         return
@@ -1137,6 +1142,8 @@ def report_mixed_extension(ctx: CompileContextProtocol, er: Any, py_xsd: Any) ->
     if own == base:
         return
     if not own and base and er._explicitContentEmpty():
+        return
+    if base_er._effectiveContentVariety() == "empty":
         return
     ctx.report.add_error(
         "particle restriction (Derivation Valid (Extension) clause "
