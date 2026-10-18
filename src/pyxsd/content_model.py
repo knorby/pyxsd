@@ -824,6 +824,7 @@ def _ends_one(
     ctx: _MatchContext,
     memo: dict[Any, frozenset[int]],
     depth: int,
+    inside_repeat: bool = False,
 ) -> frozenset[int]:
     """End positions after matching exactly one occurrence of *particle*."""
     if depth > 32:
@@ -845,7 +846,7 @@ def _ends_one(
         for child in particle.children:
             advanced: set[int] = set()
             for start in current:
-                advanced |= _ends_repeated(child, nodes, start, ctx, memo, depth + 1)
+                advanced |= _ends_repeated(child, nodes, start, ctx, memo, depth + 1, inside_repeat)
             current = advanced
             if not current:
                 break
@@ -853,7 +854,7 @@ def _ends_one(
     elif particle.kind == "choice":
         ends: set[int] = set()
         for branch in particle.children:
-            ends |= _ends_repeated(branch, nodes, position, ctx, memo, depth + 1)
+            ends |= _ends_repeated(branch, nodes, position, ctx, memo, depth + 1, inside_repeat)
         result = frozenset(ends)
     elif particle.kind == "all":
         end, _ = _match_all(particle, nodes, position, ctx)
@@ -865,6 +866,42 @@ def _ends_one(
     return result
 
 
+def _ends_repeated_single_node(
+    particle: Particle,
+    nodes: list[Any],
+    position: int,
+    ctx: _MatchContext,
+    memo: dict[Any, frozenset[int]],
+) -> frozenset[int]:
+    """End sets for a repeated element/any particle, in linear time.
+
+    A single-node occurrence consumes exactly one accepted node, so the
+    end positions from *position* are the contiguous accepted run:
+    ``position + k`` for ``min_occurs <= k <= min(max_occurs, run)``.
+    The run is walked once, and the memo entries the generic frontier
+    walk would have written for every position in it are backfilled:
+    the trace phase reuses those entries to reconstruct matches, and
+    without them an unbounded element inside a repeated compositor
+    (Z034) doubles the trace cost.
+    """
+    run_end = position
+    total = len(nodes)
+    while run_end < total and _accepts(ctx.name_of(nodes[run_end]), particle, ctx, run_end):
+        run_end += 1
+    minimum = particle.min_occurs
+    maximum = particle.max_occurs
+    for start in range(run_end, position - 1, -1):
+        length = run_end - start
+        highest = length if maximum is None else min(maximum, length)
+        ends: set[int] = set()
+        if minimum == 0:
+            ends.add(start)
+        ends.update(range(start + minimum, start + highest + 1))
+        memo[(id(particle), start)] = frozenset({start + 1}) if start < run_end else frozenset()
+        memo[("rep", id(particle), start)] = frozenset(ends)
+    return memo[("rep", id(particle), position)]
+
+
 def _ends_repeated(
     particle: Particle,
     nodes: list[Any],
@@ -872,12 +909,24 @@ def _ends_repeated(
     ctx: _MatchContext,
     memo: dict[Any, frozenset[int]],
     depth: int,
+    inside_repeat: bool = False,
 ) -> frozenset[int]:
     """End positions for a particle repeated between its occurrence bounds."""
     key = ("rep", id(particle), position)
     cached = memo.get(key)
     if cached is not None:
         return cached
+
+    if (
+        (particle.is_element() or particle.kind == "any")
+        and particle.max_occurs != 1
+        # An optional-or-single unbounded run inside a repeated compositor
+        # (Z034's ``a{1,unbounded}`` in ``sequence{0,100}``) keeps the
+        # generic walk: the trace phase's step-2 unions reuse the walk's
+        # intermediate state, and the arithmetic path doubles that cost.
+        and not (inside_repeat and particle.min_occurs <= 1)
+    ):
+        return _ends_repeated_single_node(particle, nodes, position, ctx, memo)
 
     results: set[int] = set()
     if particle.min_occurs == 0:
@@ -891,7 +940,15 @@ def _ends_repeated(
         count += 1
         advanced: set[int] = set()
         for start in frontier:
-            advanced |= _ends_one(particle, nodes, start, ctx, memo, depth)
+            advanced |= _ends_one(
+                particle,
+                nodes,
+                start,
+                ctx,
+                memo,
+                depth,
+                inside_repeat or particle.max_occurs != 1,
+            )
         if count >= particle.min_occurs:
             if advanced <= results:
                 # A repetition step that reaches only positions already

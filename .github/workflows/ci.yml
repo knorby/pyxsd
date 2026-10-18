@@ -106,8 +106,10 @@ jobs:
         env:
           PYXSD_RUN_XSTS: "1"
           # Standard runners are 2-4x slower than a dev machine; the
-          # slowest instance cases need more than the 30 s default.
-          PYXSD_XSTS_TIMEOUT: "120"
+          # slowest instance cases need more than the 60 s dev default.
+          # 180 s also covers the regex cases the repeated-particle fast
+          # path settled into a 24-43 s band on a dev machine.
+          PYXSD_XSTS_TIMEOUT: "180"
 
       - name: Benchmark the conformance corpus
         if: github.event_name == 'pull_request'
