@@ -544,6 +544,24 @@ class TestCorpusScaleRepeatedSearch:
             "00198d72f0932470fd786850c98b5be5118495273b4d965ccfdb13459269b1f0"
         )
 
+    def test_rep_memo_entries_stay_compact(self):
+        """A long run must not materialize a set per position (3.4 GiB at n=10k)."""
+        from pyxsd import content_model
+
+        model = Particle("element", 1, None, [], "value")
+        nodes = [ET.Element("value") for _ in range(self.REZ003V_NODES)]
+        ctx = content_model._MatchContext({}, content_model._name_of, None, False, None)
+        memo: dict = {}
+        ends = content_model._ends_repeated(model, nodes, 0, ctx, memo, 0)
+        assert list(ends) == list(range(1, self.REZ003V_NODES + 1))
+        assert 5000 in ends
+        assert len(ends) == self.REZ003V_NODES
+        rep_entries = [value for key, value in memo.items() if key[0] == "rep"]
+        assert len(rep_entries) == self.REZ003V_NODES + 1
+        # One-entry memo values stay frozensets; the per-position run sets are lazy.
+        materialized = sum(len(value) for value in rep_entries if isinstance(value, frozenset))
+        assert materialized <= len(rep_entries)
+
     def test_rez003v_walk_is_linear_in_document_length(self, monkeypatch):
         from pyxsd import content_model
 

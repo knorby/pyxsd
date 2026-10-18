@@ -822,10 +822,10 @@ def _ends_one(
     nodes: list[Any],
     position: int,
     ctx: _MatchContext,
-    memo: dict[Any, frozenset[int]],
+    memo: dict[Any, EndSet],
     depth: int,
     inside_repeat: bool = False,
-) -> frozenset[int]:
+) -> EndSet:
     """End positions after matching exactly one occurrence of *particle*."""
     if depth > 32:
         return frozenset()
@@ -846,7 +846,9 @@ def _ends_one(
         for child in particle.children:
             advanced: set[int] = set()
             for start in current:
-                advanced |= _ends_repeated(child, nodes, start, ctx, memo, depth + 1, inside_repeat)
+                advanced.update(
+                    _ends_repeated(child, nodes, start, ctx, memo, depth + 1, inside_repeat)
+                )
             current = advanced
             if not current:
                 break
@@ -854,7 +856,9 @@ def _ends_one(
     elif particle.kind == "choice":
         ends: set[int] = set()
         for branch in particle.children:
-            ends |= _ends_repeated(branch, nodes, position, ctx, memo, depth + 1, inside_repeat)
+            ends.update(
+                _ends_repeated(branch, nodes, position, ctx, memo, depth + 1, inside_repeat)
+            )
         result = frozenset(ends)
     elif particle.kind == "all":
         end, _ = _match_all(particle, nodes, position, ctx)
@@ -866,23 +870,71 @@ def _ends_one(
     return result
 
 
+class _RunEnds:
+    """Compact contiguous end set for a single-node repeated particle.
+
+    A single-node occurrence consumes exactly one accepted node, so the
+    end positions from one position are always a contiguous interval.
+    The generic memo stores a ``frozenset`` per position, which for a
+    document-length run retains O(n^2) integers (reZ003v: 3.4 GiB at
+    n=10,000). Storing the interval keeps that memo O(n) while behaving
+    like a set for the matcher's membership, iteration, ordering and
+    intersection uses.
+    """
+
+    __slots__ = ("_range",)
+
+    def __init__(self, start: int, stop: int) -> None:
+        self._range = range(start, stop)
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._range
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(self._range)
+
+    def __len__(self) -> int:
+        return len(self._range)
+
+    def __and__(self, other: Any) -> frozenset[int]:
+        if isinstance(other, (set, frozenset, range, _RunEnds)):
+            return frozenset(value for value in other if value in self._range)
+        return NotImplemented
+
+    __rand__ = __and__
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _RunEnds):
+            return self._range == other._range
+        if isinstance(other, (set, frozenset, range)):
+            return len(self) == len(other) and all(value in other for value in self._range)
+        return NotImplemented
+
+    def __repr__(self) -> str:
+        return f"_RunEnds({self._range.start}, {self._range.stop})"
+
+
+EndSet = frozenset[int] | _RunEnds
+
+
 def _ends_repeated_single_node(
     particle: Particle,
     nodes: list[Any],
     position: int,
     ctx: _MatchContext,
-    memo: dict[Any, frozenset[int]],
-) -> frozenset[int]:
+    memo: dict[Any, EndSet],
+) -> EndSet:
     """End sets for a repeated element/any particle, in linear time.
 
     A single-node occurrence consumes exactly one accepted node, so the
     end positions from *position* are the contiguous accepted run:
     ``position + k`` for ``min_occurs <= k <= min(max_occurs, run)``.
     The run is walked once, and the memo entries the generic frontier
-    walk would have written for every position in it are backfilled:
-    the trace phase reuses those entries to reconstruct matches, and
-    without them an unbounded element inside a repeated compositor
-    (Z034) doubles the trace cost.
+    walk would have written for every position in it are backfilled as
+    compact intervals: the trace phase reuses those entries to
+    reconstruct matches, and without them an unbounded element inside a
+    repeated compositor (Z034) doubles the trace cost. Materializing a
+    set per position would instead cost O(n^2) memory.
     """
     run_end = position
     total = len(nodes)
@@ -893,12 +945,8 @@ def _ends_repeated_single_node(
     for start in range(run_end, position - 1, -1):
         length = run_end - start
         highest = length if maximum is None else min(maximum, length)
-        ends: set[int] = set()
-        if minimum == 0:
-            ends.add(start)
-        ends.update(range(start + minimum, start + highest + 1))
         memo[(id(particle), start)] = frozenset({start + 1}) if start < run_end else frozenset()
-        memo[("rep", id(particle), start)] = frozenset(ends)
+        memo[("rep", id(particle), start)] = _RunEnds(start + minimum, start + highest + 1)
     return memo[("rep", id(particle), position)]
 
 
@@ -907,10 +955,10 @@ def _ends_repeated(
     nodes: list[Any],
     position: int,
     ctx: _MatchContext,
-    memo: dict[Any, frozenset[int]],
+    memo: dict[Any, EndSet],
     depth: int,
     inside_repeat: bool = False,
-) -> frozenset[int]:
+) -> EndSet:
     """End positions for a particle repeated between its occurrence bounds."""
     key = ("rep", id(particle), position)
     cached = memo.get(key)
@@ -940,14 +988,16 @@ def _ends_repeated(
         count += 1
         advanced: set[int] = set()
         for start in frontier:
-            advanced |= _ends_one(
-                particle,
-                nodes,
-                start,
-                ctx,
-                memo,
-                depth,
-                inside_repeat or particle.max_occurs != 1,
+            advanced.update(
+                _ends_one(
+                    particle,
+                    nodes,
+                    start,
+                    ctx,
+                    memo,
+                    depth,
+                    inside_repeat or particle.max_occurs != 1,
+                )
             )
         if count >= particle.min_occurs:
             if advanced <= results:
@@ -977,7 +1027,7 @@ def _trace_one(
     start: int,
     target: int,
     ctx: _MatchContext,
-    memo: dict[Any, frozenset[int]],
+    memo: dict[Any, EndSet],
     out: list[ChildMatch],
 ) -> None:
     """Records associations for one occurrence of ``particle``.
@@ -1038,7 +1088,7 @@ def _trace_repeated(
     start: int,
     target: int,
     ctx: _MatchContext,
-    memo: dict[Any, frozenset[int]],
+    memo: dict[Any, EndSet],
     out: list[ChildMatch],
 ) -> None:
     """Records associations for a bounded repetition of ``particle``.
@@ -1128,7 +1178,7 @@ def match_content_associations(
         open_blocked,
         member_heads,
     )
-    memo: dict[Any, frozenset[int]] = {}
+    memo: dict[Any, EndSet] = {}
     ends = _ends_repeated(model, nodes, 0, ctx, memo, 0)
     complete = len(nodes) in ends
     target = len(nodes) if complete else max(ends, default=0)
