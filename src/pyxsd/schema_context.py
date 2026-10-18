@@ -102,6 +102,23 @@ def context_or_ambient() -> SchemaContext:
     return current_context() or ambient_context()
 
 
+def active_report() -> ValidationReport | None:
+    """The active context's binding report, or ``None``.
+
+    The accessor the mixin validation hook runner
+    (:func:`pyxsd.extensions.run_validation_hooks`) appends its findings
+    through: a parse installs its fresh per-parse report on the active
+    context, so hook findings land on the document being bound. Outside
+    any parse there is no instance report to record on — a late hook has
+    no phase to attribute and must not retroactively invalidate an
+    already-accepted schema — so the caller logs its findings instead
+    (the same rule the ER layer's ``_binding_report`` applies to
+    assignment-time diagnostics).
+    """
+    context = current_context()
+    return context.report if context is not None else None
+
+
 def remember_components(components: Any) -> None:
     """Records the most recently completed parser's component table.
 

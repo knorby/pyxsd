@@ -10,8 +10,10 @@ from typing import Any
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import local_name, local_part, namespace_of
+from pyxsd.schema_context import active_report
+from pyxsd.validation import IssueSeverity, ValidationIssue, report_or_log
 
-__all__ = ["Extensions"]
+__all__ = ["Extensions", "run_validation_hooks"]
 
 #: A compiled selector: a predicate over a type ER, or a raw path string
 #: (an unresolved ``for_path`` entry, resolved by :meth:`_resolve_paths`).
@@ -288,3 +290,100 @@ class Extensions:
     def _append(self, selector: _Selector, mixin: type) -> None:
         self._counter += 1
         self._entries.append((selector, mixin, self._counter))
+
+
+#: The convention method a mixin may define: ``__pyxsd_validate__(self)``
+#: returning an iterable of :class:`~pyxsd.validation.ValidationIssue`
+#: findings or plain message strings.
+_HOOK_NAME = "__pyxsd_validate__"
+
+
+def run_validation_hooks(instance: Any, *, element: str | None = None) -> None:
+    """Runs the mixin validation hook of *instance*, if its type has one.
+
+    The binding machinery calls this after base XSD validation has
+    accepted a successfully constructed value — element instances at the
+    end of ``SchemaBase.makeInstanceFromTag``, and attribute values in
+    ``Attribute.__set__`` after their conversion succeeded — so a hook
+    adds findings on top of base validation instead of replacing it. An
+    instance whose type defines no ``__pyxsd_validate__`` costs one
+    ``getattr`` and nothing else.
+
+    Each finding is normalized and appended to the active instance
+    report (the one the running parse installed, via
+    :func:`pyxsd.schema_context.active_report`; outside any parse the
+    finding is logged, like every other assignment-time diagnostic):
+
+    - a plain ``str`` becomes an error with code ``"extension-validation"``;
+
+    - a :class:`~pyxsd.validation.ValidationIssue` keeps its own
+      severity, code and message, with ``phase`` forced to
+      ``"instance"`` and ``element`` filled from the declaring name when
+      the issue carries none;
+
+    - any other finding is recorded as one error with code
+      ``"extension-error"`` naming the unsupported type, and the rest of
+      the findings are still processed.
+
+    An exception from the hook — raised or raised while its findings are
+    consumed — is caught and recorded as one ``extension-error`` issue;
+    binding continues.
+
+    - ``instance`` - the successfully constructed value (the element
+      instance, or the converted attribute value).
+
+    - ``element`` - the declaring name to fill a finding's ``element``
+      with when the finding carries none: the attribute name at the
+      attribute call site; ``None`` at the element call site, where the
+      instance's bound ``_name_`` (or the class name) is used.
+    """
+    hook = getattr(type(instance), _HOOK_NAME, None)
+    if hook is None:
+        return
+    report = active_report()
+    fallback = element or getattr(instance, "_name_", None) or type(instance).__name__
+    try:
+        findings = hook(instance) or ()
+        for finding in findings:
+            if isinstance(finding, str):
+                _record(report, IssueSeverity.ERROR, "extension-validation", finding, fallback)
+            elif isinstance(finding, ValidationIssue):
+                _record(
+                    report,
+                    finding.severity,
+                    finding.code,
+                    finding.message,
+                    finding.element if finding.element is not None else fallback,
+                )
+            else:
+                _record(
+                    report,
+                    IssueSeverity.ERROR,
+                    "extension-error",
+                    f"the {_HOOK_NAME} hook returned an unsupported finding "
+                    f"of type {type(finding).__name__}",
+                    fallback,
+                )
+    except Exception as exc:
+        _record(
+            report,
+            IssueSeverity.ERROR,
+            "extension-error",
+            f"the {_HOOK_NAME} hook raised {type(exc).__name__}: {exc}",
+            fallback,
+        )
+
+
+def _record(
+    report: Any,
+    severity: IssueSeverity,
+    code: str,
+    message: str,
+    element: str | None,
+) -> None:
+    """Appends one normalized hook finding, forcing the instance phase.
+
+    ``phase="instance"`` is passed explicitly so a finding is never
+    attributed to the schema phase, whatever report it lands on.
+    """
+    report_or_log(report, severity, code=code, message=message, element=element, phase="instance")

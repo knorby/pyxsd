@@ -5,6 +5,7 @@ from pyxsd.element_representatives.element_representative import (
     _PRIMITIVE_TYPES,
     ElementRepresentative,
 )
+from pyxsd.extensions import run_validation_hooks
 from pyxsd.namespaces import XSI_NS
 from pyxsd.schema_context import current_context
 from pyxsd.xsd_data_types import AnySimpleType, Boolean, NCName, QName, XsdDataType
@@ -258,6 +259,7 @@ class Attribute(ElementRepresentative):
         descriptors.
         """
         declared_type = self.getType()
+        converted = False
         if isinstance(declared_type, type) and issubclass(declared_type, XsdDataType):
             if declared_type is Boolean and isinstance(value, str):
                 if value in ("true", "True"):
@@ -270,6 +272,7 @@ class Attribute(ElementRepresentative):
                 # value parameter, so the call stays dynamic.
                 constructor: Any = declared_type
                 value = constructor(value)
+                converted = True
             except Exception as e:
                 message = f"attribute '{self.name}' has an invalid value: {e}"
                 report = self._binding_report()
@@ -301,6 +304,13 @@ class Attribute(ElementRepresentative):
                 logger.error(message)
 
         obj.__dict__[self._storageKey()] = value
+
+        # Mixin validation hook: after the conversion succeeded, on the
+        # converted value. A failed conversion (or a value that could
+        # not be validated against its declared type) is the raw
+        # fallback and never reaches the hook.
+        if converted:
+            run_validation_hooks(value, element=self.name)
 
         # Write the lexical form through to the container the
         # writer serializes, keyed as instance binding keys it. This is
