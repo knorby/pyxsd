@@ -100,6 +100,19 @@ def _uri_mixin():
     return UriMixin
 
 
+# The union finding-fix case: element ``thing`` declared directly with
+# a union simple type. The union class is built through ``makeUnionClass``;
+# the mixin selected for it must ride the union class's MRO so the hook
+# fires on the union-validated instance value.
+UNION_SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" xmlns:m="{NS}"
+    targetNamespace="{NS}" elementFormDefault="qualified">
+  <xs:simpleType name="IntOrStr">
+    <xs:union memberTypes="xs:int xs:string"/>
+  </xs:simpleType>
+  <xs:element name="thing" type="m:IntOrStr"/>
+</xs:schema>"""
+
+
 def _compiled(mixin, **compile_kwargs):
     ext = Extensions()
     ext.for_type("ServiceUri", mixin=mixin)
@@ -338,6 +351,57 @@ class TestHookExceptionIsolated:
         # Binding continued: the root is present and its content bound.
         assert doc.root is not None
         assert str(doc.root) == "https://host/x"
+
+
+class TestUnionTypeHook:
+    """The hook fires on a union simple type's validated instance value.
+
+    The union class wraps the first successfully validated member value
+    in ``memberValue``; the mixin rides the union class's MRO, so the
+    hook runs on the union wrapper (``str(self)`` delegates) after the
+    union accepted the value.
+    """
+
+    def test_hook_fires_on_union_value(self):
+        calls = []
+
+        class IntOrStrMixin:
+            def __pyxsd_validate__(self):
+                calls.append(str(self))
+                if not str(self).isdigit():
+                    return f"union value {str(self)!r} is not all digits"
+                return ()
+
+        ext = Extensions()
+        ext.for_type("IntOrStr", mixin=IntOrStrMixin)
+        schema = Schema.compile(StringIO(UNION_SCHEMA), extensions=ext)
+        doc = schema.parse(StringIO('<m:thing xmlns:m="%s">abc</m:thing>'))
+        hook_issues = [i for i in doc.report.issues if i.code == "extension-validation"]
+        assert len(hook_issues) == 1
+        assert hook_issues[0].severity is IssueSeverity.ERROR
+        assert hook_issues[0].phase == "instance"
+        assert hook_issues[0].element == "thing"
+        assert hook_issues[0].message == "union value 'abc' is not all digits"
+        # The union itself accepted 'abc' through the string member: no
+        # base ``value`` error, and the value bound.
+        assert not [i for i in doc.report.issues if i.code == "value"]
+        assert str(doc.root) == "abc"
+        assert calls == ["abc"]
+
+    def test_clean_union_value_runs_hook_with_no_finding(self):
+        calls = []
+
+        class IntOrStrMixin:
+            def __pyxsd_validate__(self):
+                calls.append(str(self))
+                return ()
+
+        ext = Extensions()
+        ext.for_type("IntOrStr", mixin=IntOrStrMixin)
+        schema = Schema.compile(StringIO(UNION_SCHEMA), extensions=ext)
+        doc = schema.parse(StringIO('<m:thing xmlns:m="%s">42</m:thing>'))
+        assert not doc.report.issues
+        assert calls == ["42"]
 
 
 class TestPlainMethodAlongsideHook:

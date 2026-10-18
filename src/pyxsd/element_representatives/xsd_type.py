@@ -786,6 +786,13 @@ class XsdType(ElementRepresentative):
         so ``isinstance`` checks against the union class succeed and
         ``str``/``repr``/``==``/``hash`` delegate to the wrapped value.
 
+        Registry-selected mixins fold into the union class the same way
+        :meth:`getBaseList` folds them into a restriction or list
+        class: leading the base tuple, ahead of ``XsdDataType``, so a
+        mixin's methods are callable on bound values and its
+        ``__pyxsd_validate__`` hook fires on the union-validated
+        instance.
+
         Note: members are validated through ``__new__`` (skipping
         ``__init__``), because schema-derived member classes also
         inherit ``SchemaBase.__init__``, which takes no value.
@@ -871,9 +878,15 @@ class XsdType(ElementRepresentative):
         def __hash__(self):
             return hash(self.memberValue)
 
+        # Mixins lead the base tuple (same placement as in
+        # ``getBaseList``): C3 puts them in front of ``XsdDataType``,
+        # whose members are class-level helpers only, so mixin members
+        # and the hook win while the union namespace (``__new__`` and
+        # friends) still overrides everything inherited.
+        mixinBases = self._mixinBases(host)
         union = types.new_class(
             self.name,
-            (XsdDataType,),
+            (*mixinBases, XsdDataType),
             {},
             lambda ns: ns.update(
                 {
@@ -1093,7 +1106,9 @@ class XsdType(ElementRepresentative):
 
         Union simple types take a different route: ``makeUnionClass``
         builds a validating class that tries each member type in
-        order.
+        order. The registry-selected mixins fold into that class too,
+        so a union simple type carries its mixins like every other
+        declaration.
 
         AttributeGroup reference sites are resolved (and their
         descriptors merged) before the namespace is assembled.

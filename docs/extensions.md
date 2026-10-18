@@ -46,7 +46,11 @@ Registration is **compile-time only**: the registry is read while the
 classes are built. Mutating the registry after a compile leaves that
 compile's classes untouched, and pyxsd never patches classes at runtime.
 Recompiling with the same registry rebuilds the classes with the mixins
-folded in (every compile produces fresh classes anyway).
+folded in (every compile produces fresh classes anyway). That includes
+path selectors: their resolution cache is per compile — keyed by the
+compile's schema, weakly, so a reused registry re-resolves each path
+against the new declaration tree instead of answering with a stale
+predicate from the previous one.
 
 ## Registering a mixin
 
@@ -109,10 +113,11 @@ type. Matching is by declaration identity, not by name — two same-named
 local elements (`/Root/a/shared` and `/Root/b/shared`) select different
 mixins even though their anonymous types collide in name.
 
-Paths resolve at class-building time, once per registry, against the
+Paths resolve at class-building time, once per compile, against the
 composed declaration tree — so the registry can hold paths before the
-schema is compiled. A path that cannot resolve fails the **compile**
-with `PyXSDError`, naming the offending path:
+schema is compiled, and a registry reused for another compile resolves
+its paths again against that compile's tree. A path that cannot resolve
+fails the **compile** with `PyXSDError`, naming the offending path:
 
 - a segment that matches no element declaration in the traversal so
   far (a typo dangles loudly);
@@ -161,6 +166,12 @@ deliberate:
 
 Derived types see their bases' mixins through the MRO: a mixin
 registered for `Patient` is a base of the generated `Inpatient` too.
+
+A **union** simple type's class carries its mixins the same way: the
+mixins sit between the union class and the union machinery
+(`XsdDataType`), so a mixin's methods are callable on the union's
+validated values and its hook runs on them, while the union's own
+member-trying construction stays in charge.
 
 ## The `__pyxsd_validate__` hook
 

@@ -15,6 +15,7 @@ import pytest
 from pyxsd.exceptions import PyXSDError
 from pyxsd.extensions import Extensions
 from pyxsd.schema import Schema
+from pyxsd.xsd_data_types import XsdDataType
 
 XSD = "http://www.w3.org/2001/XMLSchema"
 NS_A = "http://example.com/a"
@@ -606,10 +607,85 @@ class TestPathSelection:
         ext = Extensions()
         ext.for_path("/ClinicalDocument/recordTarget/patient", mixin=PatientMixin)
         Schema.compile(StringIO(PATH_SCHEMA), extensions=ext)
-        # Resolved once per compile: the predicate is cached by raw path
-        # and every entry has been rewritten to a callable.
-        assert list(ext._resolved_paths) == ["/ClinicalDocument/recordTarget/patient"]
-        assert not any(isinstance(selector, str) for selector, _, _ in ext._entries)
+        # Resolved once per compile: the predicate is cached under the
+        # compile's owning schema ER and the raw path entries stay raw
+        # on the registry (a reused registry re-resolves per compile).
+        assert len(ext._resolved_paths) == 1
+        per_schema = next(iter(ext._resolved_paths.values()))
+        assert list(per_schema) == ["/ClinicalDocument/recordTarget/patient"]
+        assert all(isinstance(selector, str) for selector, _, _ in ext._entries)
+
+    def test_registry_reuse_re_resolves_paths_per_compile(self):
+        class PatientMixin:
+            def stamp(self):
+                return "patient"
+
+        ext = Extensions()
+        ext.for_path("/ClinicalDocument/recordTarget/patient", mixin=PatientMixin)
+        schema_one = Schema.compile(StringIO(PATH_SCHEMA), extensions=ext)
+        doc_one = schema_one.parse(StringIO(PATH_INSTANCE))
+        patient_one = _child(_child(doc_one.root, "recordTarget"), "patient")
+        assert patient_one.stamp() == "patient"
+        # A second compile with the same registry builds fresh classes
+        # from a fresh declaration tree; the path selector must resolve
+        # against the NEW tree and fold the mixin in again.
+        schema_two = Schema.compile(StringIO(PATH_SCHEMA), extensions=ext)
+        assert (
+            schema_two.classes["patient|complexType"]
+            is not schema_one.classes["patient|complexType"]
+        )
+        doc_two = schema_two.parse(StringIO(PATH_INSTANCE))
+        patient_two = _child(_child(doc_two.root, "recordTarget"), "patient")
+        assert patient_two.stamp() == "patient"
+
+
+# -- union simple types (final-review finding 1) ------------------------
+
+UNION_SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" xmlns:m="{NS_M}"
+    targetNamespace="{NS_M}" elementFormDefault="qualified">
+  <xs:simpleType name="IntOrStr">
+    <xs:union memberTypes="xs:int xs:string"/>
+  </xs:simpleType>
+  <xs:element name="thing" type="m:IntOrStr"/>
+</xs:schema>"""
+
+
+class TestUnionTypeSelection:
+    """A mixin selected for a union simple type folds into the union class.
+
+    ``clsFor`` routes union types through ``makeUnionClass``, which must
+    consult the registry like ``getBaseList`` does: the mixin rides in
+    the union class's MRO ahead of ``XsdDataType``, its methods are
+    callable, and the union's own member-trying ``__new__`` stays
+    intact.
+    """
+
+    def test_mixin_folds_into_union_class(self):
+        class IntOrStrMixin:
+            def tag(self):
+                return f"tagged:{self}"
+
+        ext = Extensions()
+        ext.for_type("IntOrStr", mixin=IntOrStrMixin)
+        schema = Schema.compile(StringIO(UNION_SCHEMA), extensions=ext)
+        union_cls = schema.classes["IntOrStr"]
+        assert issubclass(union_cls, IntOrStrMixin)
+        assert union_cls.tag is IntOrStrMixin.tag
+        # The mixin sits ahead of the union's value machinery, and the
+        # union class is still a data type.
+        assert union_cls.__mro__.index(IntOrStrMixin) < union_cls.__mro__.index(XsdDataType)
+        doc = schema.parse(StringIO(f'<m:thing xmlns:m="{NS_M}">42</m:thing>'))
+        assert doc.root.tag() == "tagged:42"
+        # Union behavior intact: the value validated through the int
+        # member and the wrapper delegates.
+        assert doc.root.memberValue == 42
+        assert not doc.report.issues
+
+    def test_union_without_mixin_unchanged(self):
+        ext = Extensions()
+        schema = Schema.compile(StringIO(UNION_SCHEMA), extensions=ext)
+        doc = schema.parse(StringIO(f'<m:thing xmlns:m="{NS_M}">42</m:thing>'))
+        assert doc.root.memberValue == 42
 
 
 # -- public export (Task 5) --------------------------------------------

@@ -7,6 +7,7 @@ which type declarations.
 
 from collections.abc import Callable
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import local_name, local_part, namespace_of
@@ -57,10 +58,17 @@ class Extensions:
     def __init__(self) -> None:
         self._entries: list[_Entry] = []
         self._counter = 0
-        #: Path predicates by raw path: each path is resolved against the
-        #: composed declaration tree once per registry (a registry is
-        #: per-compile anyway).
-        self._resolved_paths: dict[str, Callable[[Any], bool]] = {}
+        #: Compiled path predicates by owning schema ER, then raw path:
+        #: each path is resolved against the composed declaration tree
+        #: once per *compile* (a registry may be reused across compiles,
+        #: and each compile's tree yields its own predicate holding that
+        #: tree's type ER by identity). Raw path entries stay raw in
+        #: ``_entries`` so the path is always available to re-resolve;
+        #: keys are held weakly, so a schema's resolutions die with the
+        #: schema.
+        self._resolved_paths: WeakKeyDictionary[Any, dict[str, Callable[[Any], bool]]] = (
+            WeakKeyDictionary()
+        )
 
     # -- registration -------------------------------------------------
 
@@ -147,19 +155,30 @@ class Extensions:
         registered) match; a mixin registered by several matching
         selectors appears once, at its highest-precedence position.
 
-        Raw path entries resolve on the first call that carries the
-        owning *schema* ER — class building happens after schema
-        composition, so the declaration tree is complete then — and the
-        resolutions are cached; without *schema* (an ER-tree-only
-        caller) unresolved path entries stay skipped and silent.
+        Raw path entries resolve against the owning *schema* ER's
+        composed declaration tree — class building happens after schema
+        composition, so the tree is complete then — once per compile
+        (the resolutions are cached per schema, and a registry reused
+        across compiles resolves the same path again against each new
+        tree). Without *schema* (an ER-tree-only caller) path entries
+        stay skipped and silent.
         """
+        resolved = None
         if schema is not None and any(
             isinstance(selector, str) for selector, _, _ in self._entries
         ):
-            self._resolve_paths(schema)
+            resolved = self._resolve_paths(schema)
         matched: list[tuple[int, type]] = []
         for selector, mixin, order in self._entries:
-            if not callable(selector) or not selector(er):
+            if isinstance(selector, str):
+                # No owning schema to resolve against: the path entry
+                # is skipped and silent (an ER-tree-only caller).
+                if resolved is None:
+                    continue
+                predicate = resolved[selector]
+            else:
+                predicate = selector
+            if not predicate(er):
                 continue
             matched.append((order, mixin))
         matched.sort(key=lambda entry: entry[0], reverse=True)
@@ -171,29 +190,23 @@ class Extensions:
 
     # -- internals ------------------------------------------------------
 
-    def _resolve_paths(self, schema: Any) -> None:
-        """Resolves every raw path entry against the composed tree.
+    def _resolve_paths(self, schema: Any) -> dict[str, Callable[[Any], bool]]:
+        """Resolves every raw path entry against *schema*'s composed tree.
 
-        Each path compiles once to a predicate holding the final
-        segment's type ER by identity; the entries are rewritten in
-        place, so a registry walks its paths a single time. Paths
+        Each path compiles once per schema to a predicate holding the
+        final segment's type ER by identity; the resolutions are cached
+        under *schema* (weakly, so they die with the schema) and paths
         compile in registration order, so a failing path is reported
-        deterministically.
+        deterministically. Because the cache is per schema, a registry
+        reused for a second ``Schema.compile`` resolves each path again
+        against the new declaration tree instead of answering with a
+        stale predicate from the previous one.
         """
-        raw = list(
-            dict.fromkeys(selector for selector, _, _ in self._entries if isinstance(selector, str))
-        )
-        for path in raw:
-            if path not in self._resolved_paths:
-                self._resolved_paths[path] = self._compile_path(path, schema)
-        self._entries = [
-            (
-                self._resolved_paths[selector] if isinstance(selector, str) else selector,
-                mixin,
-                order,
-            )
-            for selector, mixin, order in self._entries
-        ]
+        per_schema = self._resolved_paths.setdefault(schema, {})
+        for selector, _, _ in self._entries:
+            if isinstance(selector, str) and selector not in per_schema:
+                per_schema[selector] = self._compile_path(selector, schema)
+        return per_schema
 
     def _compile_path(self, path: str, schema: Any) -> Callable[[Any], bool]:
         """Resolves *path* to a predicate over the final segment's type ER.
