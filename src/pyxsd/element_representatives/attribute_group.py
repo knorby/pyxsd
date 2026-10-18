@@ -2,7 +2,54 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
+from pyxsd.namespaces import local_part
 from pyxsd.xsd_data_types import NCName
+
+
+def _attribute_group_index(schema) -> dict:
+    """The per-compile attributeGroup candidate index.
+
+    Lives on the schema declaration as ``_attribute_group_index`` so
+    every ``_resolves_to_group`` call on one compile shares one table
+    (scanning the whole component table per reference is what made
+    group-heavy schemas pay references times components per compile). The
+    schema representative is a stable per-compile object, the component
+    table it indexes is frozen once the ER run finishes (ahead of the
+    declaration checks that consult this index), and the cache dies
+    with the schema, so nothing leaks between compiles.
+
+    - ``candidates``: the global attributeGroup declarations, in the
+      component table's scan order (the order the per-call scan used;
+      the historical ``attributeGroups`` dict is the source when no
+      component table was built)
+    - ``by_name``: each name's candidates as a list, preserving that
+      order, so a reference consults only same-name declarations
+
+    There is deliberately no memo keyed by the lexical ``ref`` string:
+    two reference sites spelling the same QName in different composed
+    documents may bind its prefix differently, so one shared lexical
+    answer could be wrong — and each site resolves exactly once per
+    compile anyway, so the index is the entire win. Reference sites
+    never enter the index: they fail ``checkTopLevelType`` exactly as
+    they failed the scan's filter.
+    """
+    cache = getattr(schema, "_attribute_group_index", None)
+    if cache is None:
+        table = getattr(schema, "components", None)
+        candidates = []
+        if table:
+            for entries in table.values():
+                for entry in entries:
+                    if componentKind(entry) == "attributeGroup" and entry.checkTopLevelType():
+                        candidates.append(entry)
+        else:
+            candidates = list(getattr(schema, "attributeGroups", {}).values())
+        by_name: dict = {}
+        for candidate in candidates:
+            by_name.setdefault(candidate.name, []).append(candidate)
+        cache = {"candidates": candidates, "by_name": by_name}
+        schema._attribute_group_index = cache
+    return cache
 
 
 class AttributeGroup(ElementRepresentative):
@@ -143,16 +190,21 @@ class AttributeGroup(ElementRepresentative):
             )
 
     def _resolves_to_group(self) -> bool:
-        """Whether ``self.ref`` names a global attributeGroup component."""
+        """Whether ``self.ref`` names a global attributeGroup component.
+
+        Consults the per-compile index (see
+        ``_attribute_group_index``) instead of rescanning the whole
+        component table. The reference's local part selects the
+        same-name bucket, whose order is the scan order, so the first
+        namespace-admissible hit is the one the full scan returned; an
+        empty bucket resolves through ``resolveReference`` as before,
+        keeping its namespace-prefix reporting.
+        """
         schema = self.getSchema()
         parser = getattr(schema, "host", None)
-        candidates = []
-        table = getattr(schema, "components", None)
-        if table:
-            for entries in table.values():
-                for entry in entries:
-                    if componentKind(entry) == "attributeGroup" and entry.checkTopLevelType():
-                        candidates.append(entry)
-        else:
-            candidates = list(getattr(schema, "attributeGroups", {}).values())
-        return self.resolveReference(self.ref, candidates, parser=parser) is not None
+        index = _attribute_group_index(schema)
+        local = local_part(str(self.ref).strip())
+        return (
+            self.resolveReference(self.ref, index["by_name"].get(local, ()), parser=parser)
+            is not None
+        )
