@@ -20,6 +20,7 @@ from pyxsd.derivation import (
     is_valid_xsi_type,
 )
 from pyxsd.element_representatives.element_representative import ElementRepresentative
+from pyxsd.extensions import run_validation_hooks
 from pyxsd.namespaces import NamespaceError
 from pyxsd.schema_base import SchemaBase, nil_content_kind
 from pyxsd.schema_hints import schema_location_info
@@ -542,6 +543,14 @@ def primitive_root_instance(
             else ([text] if text else None)
         )
     instance._children_ = []
+    # Mixin validation hook on the bare simple-typed root element's
+    # successfully constructed value, after base validation (lexical
+    # and fixed). Fires only when the constructed value is of the
+    # declared (mixin-carrying) type class: an invalid value (dropped
+    # or bound raw), a nilled root, and a builtin class that carries no
+    # hook cost one comparison and one ``getattr``.
+    if isinstance(value, dataTypeClass):
+        run_validation_hooks(instance)
     return instance
 
 

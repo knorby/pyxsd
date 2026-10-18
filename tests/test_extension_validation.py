@@ -50,6 +50,27 @@ SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" xmlns:m="{NS}"
   <xs:element name="resource" type="m:Resource"/>
 </xs:schema>"""
 
+# The bare simple-typed flagship case: element ``endpoint`` typed by the
+# extended simple type DIRECTLY (no simpleContent wrapper), both as a
+# root element and as a child of a complex type. ``loose`` is typed
+# ``xs:anySimpleType``, whose builtin class carries no mixin.
+BARE_SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" xmlns:m="{NS}"
+    targetNamespace="{NS}" elementFormDefault="qualified">
+  <xs:simpleType name="ServiceUri">
+    <xs:restriction base="xs:anyURI">
+      <xs:pattern value="\\S*"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="Doc">
+    <xs:sequence>
+      <xs:element name="endpoint" type="m:ServiceUri"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="endpoint" type="m:ServiceUri"/>
+  <xs:element name="doc" type="m:Doc"/>
+  <xs:element name="loose" type="xs:anySimpleType"/>
+</xs:schema>"""
+
 
 def _uri_mixin():
     """A fresh mixin: plain method plus the validation hook."""
@@ -87,6 +108,75 @@ def _compiled(mixin, **compile_kwargs):
 
 def _parse(mixin, xml, **compile_kwargs):
     return _compiled(mixin, **compile_kwargs).parse(StringIO(xml % NS))
+
+
+def _parse_bare(mixin, xml, **compile_kwargs):
+    ext = Extensions()
+    ext.for_type("ServiceUri", mixin=mixin)
+    schema = Schema.compile(StringIO(BARE_SCHEMA), extensions=ext, **compile_kwargs)
+    return schema.parse(StringIO(xml % NS))
+
+
+class TestBareSimpleTypeElement:
+    """The flagship case: the extended simple type IS the element type.
+
+    A bare simple-typed element's value is constructed through the
+    primitive path (``primitive_root_instance`` for a root,
+    ``primitiveValueFor`` through ``_addChildInstance`` for a child),
+    which never reaches ``makeInstanceFromTag``; the hook fires at those
+    construction sites instead, after base validation, once per value.
+    """
+
+    def test_bare_simple_typed_root_hook(self):
+        mixin = _uri_mixin()
+        doc = _parse_bare(mixin, '<m:endpoint xmlns:m="%s">relative/path</m:endpoint>')
+        hook_issues = [i for i in doc.report.issues if i.code == "extension-validation"]
+        assert len(hook_issues) == 1
+        issue = hook_issues[0]
+        assert issue.severity is IssueSeverity.ERROR
+        assert issue.phase == "instance"
+        assert issue.element == "endpoint"
+        assert issue.message == "the service URI 'relative/path' has no host"
+        # Base anyURI validation ran intact: no base ``value`` issue.
+        assert not [i for i in doc.report.issues if i.code == "value"]
+        assert doc.root is not None
+        # The hook that fired is the mixin's, exactly once.
+        assert mixin.calls == 1
+
+    def test_bare_simple_typed_child_hook(self):
+        mixin = _uri_mixin()
+        doc = _parse_bare(
+            mixin, '<m:doc xmlns:m="%s"><m:endpoint>relative/path</m:endpoint></m:doc>'
+        )
+        hook_issues = [i for i in doc.report.issues if i.code == "extension-validation"]
+        assert len(hook_issues) == 1
+        assert hook_issues[0].element == "endpoint"
+        assert hook_issues[0].phase == "instance"
+        assert mixin.calls == 1
+
+    def test_bare_simple_typed_base_failure_skips_hook(self):
+        """A bare simple-typed value violating the XSD type itself (the
+        ``\\S*`` pattern) reports the base ``value`` error and binds no
+        hook finding — under both the drop and the raw fallback."""
+        mixin = _uri_mixin()
+        for mode_kwargs in ({}, {"mode": ParseModes.LAX}):
+            mixin.calls = 0
+            doc = _parse_bare(mixin, '<m:endpoint xmlns:m="%s">bad uri</m:endpoint>', **mode_kwargs)
+            assert len([i for i in doc.report.issues if i.code == "value"]) == 1
+            assert [i for i in doc.report.issues if i.code.startswith("extension")] == []
+            assert mixin.calls == 0
+
+    def test_any_simple_type_element_attempts_no_hook(self):
+        """An ``xs:anySimpleType``-typed element's builtin class carries
+        no mixin: the hook lookup finds nothing, the document binds with
+        no extension issue and no error."""
+        mixin = _uri_mixin()
+        doc = _parse_bare(mixin, '<m:loose xmlns:m="%s">whatever text</m:loose>')
+        assert doc.root is not None
+        assert doc.root._value_ == ["whatever text"]
+        assert not [i for i in doc.report.issues if i.code.startswith("extension")]
+        assert not [i for i in doc.report.issues if i.code == "value"]
+        assert mixin.calls == 0
 
 
 class TestElementValueHook:

@@ -1573,6 +1573,16 @@ class SchemaBase:
                     instance.__dict__[accessor] = subInstance
                 if not nilled:
                     cls._checkFixedElement(descriptor, subElCls, subInstance, subElementName)
+                    # Mixin validation hook on the bare simple-typed
+                    # element's successfully constructed value, after
+                    # base validation (lexical and fixed). Fires only
+                    # when the bound instance is of the declared
+                    # (mixin-carrying) type class, so a raw
+                    # invalid-value fallback — bound as a plain
+                    # ``AnySimpleType`` — is skipped; a builtin class
+                    # carries no hook and costs one ``getattr``.
+                    if isinstance(subInstance, subElCls):
+                        run_validation_hooks(subInstance)
             return None
 
         forcedText = None
