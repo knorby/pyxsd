@@ -82,8 +82,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ### Changed
 
-- CI reports test coverage to Codecov from every Python version in the
-  test matrix, and the README carries a Codecov coverage badge.
+- CI reports test coverage to Codecov from the unit-test matrix, the
+  xmlschema oracle, and the optional-integration adapters, and the README
+  carries a Codecov coverage badge.
 
 ## [1.1.1] - 2026-10-14
 

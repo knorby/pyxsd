@@ -1,0 +1,8 @@
+# Codecov configuration.
+#
+# The optional-integration adapter jobs measure the built wheel inside an
+# isolated .venv, so their coverage paths point into
+# .venv/lib/*/site-packages; map them back onto the checkout so Codecov
+# merges them with the reports taken from the repository source.
+fixes:
+  - ".venv/lib/*/site-packages/pyxsd/::src/pyxsd/"
