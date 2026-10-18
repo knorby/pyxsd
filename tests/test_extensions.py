@@ -496,6 +496,49 @@ SAME_NAME_INSTANCE = f"""<m:Root xmlns:m="{NS_M}">
   <m:b><m:shared kind="b"/></m:b>
 </m:Root>"""
 
+# ``Derived`` extends ``Base`` declaring ``fromBase``: the extension's own
+# ``own`` child resolves, but the base-declared child is not in the
+# derived type's own content model.
+EXTENSION_SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" xmlns:m="{NS_M}"
+    targetNamespace="{NS_M}" elementFormDefault="qualified">
+  <xs:complexType name="Base">
+    <xs:sequence>
+      <xs:element name="fromBase">
+        <xs:complexType>
+          <xs:attribute name="k" type="xs:string"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Derived">
+    <xs:complexContent>
+      <xs:extension base="m:Base">
+        <xs:sequence>
+          <xs:element name="own">
+            <xs:complexType>
+              <xs:attribute name="k" type="xs:string"/>
+            </xs:complexType>
+          </xs:element>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="doc" type="m:Derived"/>
+</xs:schema>"""
+
+# The final segment is typed by a builtin: no schema-declared type ER
+# exists to carry the mixin.
+BUILTIN_SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" targetNamespace="{NS_M}"
+    elementFormDefault="qualified">
+  <xs:element name="doc">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="thing" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
 
 def _child(instance, name):
     """The one child instance bound under *name*."""
@@ -567,3 +610,34 @@ class TestPathSelection:
         # and every entry has been rewritten to a callable.
         assert list(ext._resolved_paths) == ["/ClinicalDocument/recordTarget/patient"]
         assert not any(isinstance(selector, str) for selector, _, _ in ext._entries)
+
+
+class TestPathLoudFailures:
+    """The two controller-ruled loud-failure boundaries, pinned.
+
+    Both raises live in ``Extensions._compile_path`` and both name the
+    offending path in the message.
+    """
+
+    def test_path_into_base_declared_child_dangles(self):
+        # Traversal stays within the type's OWN content model: the base
+        # chain of an extension-typed element is not followed, so the
+        # base-declared ``fromBase`` child is unmatched.
+        class MissedMixin:
+            pass
+
+        ext = Extensions()
+        ext.for_path("/doc/fromBase", mixin=MissedMixin)
+        with pytest.raises(PyXSDError, match="/doc/fromBase"):
+            Schema.compile(StringIO(EXTENSION_SCHEMA), extensions=ext)
+
+    def test_path_to_builtin_typed_final_segment_fails_loudly(self):
+        # ``thing`` has ``type="xs:string"``: a builtin supplies no
+        # schema-declared type ER, so no type can carry the mixin.
+        class MissedMixin:
+            pass
+
+        ext = Extensions()
+        ext.for_path("/doc/thing", mixin=MissedMixin)
+        with pytest.raises(PyXSDError, match="no schema-declared type"):
+            Schema.compile(StringIO(BUILTIN_SCHEMA), extensions=ext)

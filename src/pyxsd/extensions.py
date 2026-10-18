@@ -125,7 +125,10 @@ class Extensions:
         later by ER identity, never by the anonymous type's synthesized
         (and collidable) name. Resolution happens at class-building
         time against the composed declaration tree; a segment matching
-        no declaration fails the compile loudly.
+        no declaration fails the compile loudly. Traversal stays within
+        each element's own content model — the base chain of an
+        extension-typed element is not followed, so a segment naming a
+        base-declared child dangles loudly too.
         """
         return self._register(path, mixin)
 
@@ -171,9 +174,13 @@ class Extensions:
 
         Each path compiles once to a predicate holding the final
         segment's type ER by identity; the entries are rewritten in
-        place, so a registry walks its paths a single time.
+        place, so a registry walks its paths a single time. Paths
+        compile in registration order, so a failing path is reported
+        deterministically.
         """
-        raw = {selector for selector, _, _ in self._entries if isinstance(selector, str)}
+        raw = list(
+            dict.fromkeys(selector for selector, _, _ in self._entries if isinstance(selector, str))
+        )
         for path in raw:
             if path not in self._resolved_paths:
                 self._resolved_paths[path] = self._compile_path(path, schema)
