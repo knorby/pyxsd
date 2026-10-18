@@ -8,11 +8,17 @@ which type declarations.
 from collections.abc import Callable
 from typing import Any
 
+from pyxsd.exceptions import PyXSDError
+from pyxsd.namespaces import local_name, local_part, namespace_of
+
 __all__ = ["Extensions"]
 
 #: A compiled selector: a predicate over a type ER, or a raw path string
-#: (an unresolved ``for_path`` entry, resolved by a later task).
+#: (an unresolved ``for_path`` entry, resolved by :meth:`_resolve_paths`).
 _Selector = Callable[[Any], bool] | str
+
+#: The ER class names that are type declarations, inline or global.
+_TYPE_NAMES = ("SimpleType", "ComplexType")
 
 #: One registry entry: ``(selector, mixin, registration order)``.
 _Entry = tuple[_Selector, type, int]
@@ -49,6 +55,10 @@ class Extensions:
     def __init__(self) -> None:
         self._entries: list[_Entry] = []
         self._counter = 0
+        #: Path predicates by raw path: each path is resolved against the
+        #: composed declaration tree once per registry (a registry is
+        #: per-compile anyway).
+        self._resolved_paths: dict[str, Callable[[Any], bool]] = {}
 
     # -- registration -------------------------------------------------
 
@@ -105,10 +115,17 @@ class Extensions:
         return self._register(matches, mixin)
 
     def for_path(self, path: str, mixin: type | None = None) -> Any:
-        """Registers *mixin* for declarations at an instance *path*.
+        """Registers *mixin* for the type of the element at an instance *path*.
 
-        The path is stored raw; resolution happens at instance-binding
-        time, so this entry never matches a type ER lookup.
+        *path* names element declarations from the document root down
+        (``"/ClinicalDocument/recordTarget/patient"``); every segment is
+        a local element name. The final segment's declaration
+        contributes the selected type — its inline anonymous type when
+        one is declared, else the referenced global type — matched
+        later by ER identity, never by the anonymous type's synthesized
+        (and collidable) name. Resolution happens at class-building
+        time against the composed declaration tree; a segment matching
+        no declaration fails the compile loudly.
         """
         return self._register(path, mixin)
 
@@ -118,14 +135,23 @@ class Extensions:
 
     # -- lookup ---------------------------------------------------------
 
-    def mixins_for(self, er: Any) -> tuple[type, ...]:
+    def mixins_for(self, er: Any, schema: Any = None) -> tuple[type, ...]:
         """The mixins matching the type ER *er*, in precedence order.
 
         The first element is the highest-precedence (most recently
         registered) match; a mixin registered by several matching
         selectors appears once, at its highest-precedence position.
-        Unresolved path entries are skipped.
+
+        Raw path entries resolve on the first call that carries the
+        owning *schema* ER — class building happens after schema
+        composition, so the declaration tree is complete then — and the
+        resolutions are cached; without *schema* (an ER-tree-only
+        caller) unresolved path entries stay skipped and silent.
         """
+        if schema is not None and any(
+            isinstance(selector, str) for selector, _, _ in self._entries
+        ):
+            self._resolve_paths(schema)
         matched: list[tuple[int, type]] = []
         for selector, mixin, order in self._entries:
             if not callable(selector) or not selector(er):
@@ -139,6 +165,106 @@ class Extensions:
         return tuple(seen)
 
     # -- internals ------------------------------------------------------
+
+    def _resolve_paths(self, schema: Any) -> None:
+        """Resolves every raw path entry against the composed tree.
+
+        Each path compiles once to a predicate holding the final
+        segment's type ER by identity; the entries are rewritten in
+        place, so a registry walks its paths a single time.
+        """
+        raw = {selector for selector, _, _ in self._entries if isinstance(selector, str)}
+        for path in raw:
+            if path not in self._resolved_paths:
+                self._resolved_paths[path] = self._compile_path(path, schema)
+        self._entries = [
+            (
+                self._resolved_paths[selector] if isinstance(selector, str) else selector,
+                mixin,
+                order,
+            )
+            for selector, mixin, order in self._entries
+        ]
+
+    def _compile_path(self, path: str, schema: Any) -> Callable[[Any], bool]:
+        """Resolves *path* to a predicate over the final segment's type ER.
+
+        The root segment matches a global element declaration of the
+        composed schema; each next segment matches a child element
+        declaration inside the current element's type ER. The final
+        segment's element contributes the selected type ER. Any
+        unresolved segment is a programming error in the registry's
+        user: loud, naming the path.
+        """
+        segments = [segment for segment in path.split("/") if segment]
+        if not segments:
+            raise PyXSDError(f"extension path {path!r} names no element declarations")
+        element = self._match(segments[0], list(getattr(schema, "elements", None) or ()), path)
+        for segment in segments[1:]:
+            children = self._child_elements(self._declaration_type_er(element))
+            element = self._match(segment, children, path)
+        type_er = self._declaration_type_er(element)
+        if type_er is None:
+            raise PyXSDError(
+                f"extension path {path!r} reaches a declaration of no schema-declared type "
+                "(anyType or anySimpleType); no type ER can carry the mixin"
+            )
+        selected = type_er
+        return lambda er: er is selected
+
+    @staticmethod
+    def _match(segment: str, candidates: list, path: str) -> Any:
+        """The one element declaration named *segment*, or a loud failure."""
+        matches = [er for er in candidates if er is not None and er.name == segment]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise PyXSDError(
+                f"extension path {path!r} has no element declaration named '{segment}'"
+            )
+        raise PyXSDError(
+            f"extension path {path!r} is ambiguous: '{segment}' matches several "
+            "element declarations in the same content model"
+        )
+
+    @staticmethod
+    def _child_elements(type_er: Any) -> list:
+        """The element declarations inside *type_er*'s content model."""
+        getter = getattr(type_er, "getElements", None)
+        if not callable(getter):
+            return []
+        return list(getter() or ())
+
+    @staticmethod
+    def _declaration_type_er(element: Any) -> Any:
+        """The type ER *element* declares, or ``None`` for a built-in.
+
+        An inline type child wins: the anonymous ER itself, whose
+        synthesized name is bookkeeping and can collide. Otherwise the
+        ``type`` attribute names a global declaration, looked up in the
+        composed component table by ER (full spelling first, then local
+        part, as ``typeFromName`` looks classes up). Element reference
+        sites contribute the referred declaration.
+        """
+        if getattr(element, "isElementRef", False):
+            return Extensions._declaration_type_er(element.referredElement)
+        for child in getattr(element, "processedChildren", None) or ():
+            if child is not None and type(child).__name__ in _TYPE_NAMES:
+                return child
+        reference = element.resolvedTypeName()
+        if reference is None:
+            return None
+        table = getattr(element.getSchema(), "components", None)
+        if table is None:
+            return None
+        if reference.startswith("{"):
+            return table.getFromName(
+                local_name(reference), kind="type", namespace=namespace_of(reference), warn=False
+            )
+        found = table.getFromName(reference, kind="type", warn=False)
+        if found is None and local_part(reference) != reference:
+            found = table.getFromName(local_part(reference), kind="type", warn=False)
+        return found
 
     def _register(self, selector: _Selector, mixin: type | None) -> Any:
         """Appends one entry; without *mixin*, returns a decorator."""

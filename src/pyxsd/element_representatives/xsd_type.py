@@ -245,7 +245,10 @@ class XsdType(ElementRepresentative):
         registry = getattr(host, "extensions", None)
         if registry is None:
             return ()
-        return registry.mixins_for(self)
+        # The owning schema ER lets the registry resolve raw path
+        # entries against the composed declaration tree (complete by
+        # class-building time), once per compile.
+        return registry.mixins_for(self, self.getSchema())
 
     def _primaryBase(self, host, bases):
         """The first non-mixin base of the class being built.

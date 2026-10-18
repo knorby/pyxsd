@@ -10,6 +10,9 @@ belongs to later mixin-extension tasks.
 
 from io import StringIO
 
+import pytest
+
+from pyxsd.exceptions import PyXSDError
 from pyxsd.extensions import Extensions
 from pyxsd.schema import Schema
 
@@ -272,8 +275,8 @@ class TestPathEntries:
 
         ext = Extensions()
         ext.for_path("patient/contact", mixin=PathMixin)
-        # Task 3 resolves path entries; until then they never match and
-        # must not crash.
+        # Without the owning schema ER there is nothing to resolve
+        # against: raw path entries stay skipped and must not crash.
         assert ext.mixins_for(_code()) == ()
         assert ext.mixins_for(_patient()) == ()
 
@@ -422,3 +425,145 @@ class TestCompilePlumbing:
         extended = Schema.compile(StringIO(COMPILE_SCHEMA), extensions=ext)
         assert plain.classes["Patient"] is not extended.classes["Patient"]
         assert not issubclass(plain.classes["Patient"], PatientMixin)
+
+
+# -- element-path selection (Task 3) -----------------------------------
+
+PATH_SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" targetNamespace="{NS_M}"
+    elementFormDefault="qualified">
+  <xs:element name="ClinicalDocument">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="recordTarget">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="patient">
+                <xs:complexType>
+                  <xs:attribute name="code" type="xs:string"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
+PATH_INSTANCE = f"""<m:ClinicalDocument xmlns:m="{NS_M}">
+  <m:recordTarget>
+    <m:patient code="AB"/>
+  </m:recordTarget>
+</m:ClinicalDocument>"""
+
+# Two same-named local elements, each carrying its own anonymous type:
+# the synthesized names collide by shape ("shared|complexType"), so only
+# declaration identity can tell the two "shared" particles apart.
+SAME_NAME_SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" targetNamespace="{NS_M}"
+    elementFormDefault="qualified">
+  <xs:element name="Root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="a">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="shared">
+                <xs:complexType>
+                  <xs:attribute name="kind" type="xs:string"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="b">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="shared">
+                <xs:complexType>
+                  <xs:attribute name="kind" type="xs:string"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
+SAME_NAME_INSTANCE = f"""<m:Root xmlns:m="{NS_M}">
+  <m:a><m:shared kind="a"/></m:a>
+  <m:b><m:shared kind="b"/></m:b>
+</m:Root>"""
+
+
+def _child(instance, name):
+    """The one child instance bound under *name*."""
+    return next(child for child in instance._children_ if child._name_ == name)
+
+
+class TestPathSelection:
+    def test_path_reaches_anonymous_inline_type(self):
+        class PatientMixin:
+            def stamp(self):
+                return "patient"
+
+        ext = Extensions()
+        ext.for_path("/ClinicalDocument/recordTarget/patient", mixin=PatientMixin)
+        schema = Schema.compile(StringIO(PATH_SCHEMA), extensions=ext)
+        doc = schema.parse(StringIO(PATH_INSTANCE))
+        # Complex-typed children are reached through ``_children_``; the
+        # selected instance is the ``patient`` element bound inside
+        # ``recordTarget``.
+        patient = _child(_child(doc.root, "recordTarget"), "patient")
+        assert patient.stamp() == "patient"
+        # Only the final segment's type carries the mixin: the
+        # intermediate anonymous type is untouched.
+        assert not hasattr(_child(doc.root, "recordTarget"), "stamp")
+
+    def test_same_named_local_elements_select_by_path(self):
+        class AMixin:
+            def stamp(self):
+                return "a"
+
+        class BMixin:
+            def stamp(self):
+                return "b"
+
+        ext = Extensions()
+        ext.for_path("/Root/a/shared", mixin=AMixin)
+        ext.for_path("/Root/b/shared", mixin=BMixin)
+        schema = Schema.compile(StringIO(SAME_NAME_SCHEMA), extensions=ext)
+        doc = schema.parse(StringIO(SAME_NAME_INSTANCE))
+        assert _child(_child(doc.root, "a"), "shared").stamp() == "a"
+        assert _child(_child(doc.root, "b"), "shared").stamp() == "b"
+
+    def test_dangling_path_fails_loudly(self):
+        class MissedMixin:
+            pass
+
+        ext = Extensions()
+        ext.for_path("/ClinicalDocument/nope", mixin=MissedMixin)
+        with pytest.raises(PyXSDError, match="/ClinicalDocument/nope"):
+            Schema.compile(StringIO(PATH_SCHEMA), extensions=ext)
+
+    def test_name_selector_silent_when_unmatched(self):
+        class MissedMixin:
+            pass
+
+        ext = Extensions()
+        ext.for_type("DoesNotExist", mixin=MissedMixin)
+        schema = Schema.compile(StringIO(PATH_SCHEMA), extensions=ext)
+        assert "DoesNotExist" not in schema.classes
+
+    def test_path_resolution_is_cached_on_the_registry(self):
+        class PatientMixin:
+            pass
+
+        ext = Extensions()
+        ext.for_path("/ClinicalDocument/recordTarget/patient", mixin=PatientMixin)
+        Schema.compile(StringIO(PATH_SCHEMA), extensions=ext)
+        # Resolved once per compile: the predicate is cached by raw path
+        # and every entry has been rewritten to a callable.
+        assert list(ext._resolved_paths) == ["/ClinicalDocument/recordTarget/patient"]
+        assert not any(isinstance(selector, str) for selector, _, _ in ext._entries)
