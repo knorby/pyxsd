@@ -1,6 +1,7 @@
 import logging
 import xml.etree.ElementTree as ElementTree
 from typing import Any, ClassVar
+from weakref import WeakKeyDictionary
 
 from pyxsd import xsi
 from pyxsd.binding import BindingPolicy, ParseModes
@@ -110,6 +111,10 @@ def _global_declaration(components, local: str, kind: str, uri: str | None):
     return None
 
 
+_INHERITABLE_ATTRIBUTE_NAMES_CACHE: "WeakKeyDictionary[Any, frozenset[str]]" = WeakKeyDictionary()
+_GET_ELEMENTS_CACHE: "WeakKeyDictionary[Any, tuple[Any, ...]]" = WeakKeyDictionary()
+
+
 def _inheritable_attribute_names(type_class: Any) -> frozenset[str]:
     """Attribute names a governing type flags ``inheritable``.
 
@@ -117,9 +122,15 @@ def _inheritable_attribute_names(type_class: Any) -> frozenset[str]:
     wins over an inherited one, and reads each attribute descriptor's
     effective ``inheritable`` use (XSD 1.1 §3.4.2.5). Returns the names
     whose use is inheritable.
+
+    The result depends only on the class, so it is cached weakly per
+    class: the entry lives as long as the generated class does.
     """
     if type_class is None:
         return frozenset()
+    cached = _INHERITABLE_ATTRIBUTE_NAMES_CACHE.get(type_class)
+    if cached is not None:
+        return cached
     seen: dict[str, bool] = {}
     for klass in getattr(type_class, "__mro__", ()):
         for value in klass.__dict__.values():
@@ -133,7 +144,9 @@ def _inheritable_attribute_names(type_class: Any) -> frozenset[str]:
                 xsd_element = getattr(value, "xsdElement", None)
                 raw = xsd_element.get("inheritable") if xsd_element is not None else None
             seen[name] = raw is not None and str(raw).strip().lower() in ("true", "1")
-    return frozenset(name for name, inheritable in seen.items() if inheritable)
+    result = frozenset(name for name, inheritable in seen.items() if inheritable)
+    _INHERITABLE_ATTRIBUTE_NAMES_CACHE[type_class] = result
+    return result
 
 
 def _defined_declaration_names(parser: Any, kind: str) -> frozenset[str]:
@@ -2413,9 +2426,17 @@ class SchemaBase:
         name (including an inherited declaration that a derived
         attribute forced onto an alias key), while several distinct
         declarations of one name inside one class body are all kept.
+
+        The result depends only on the class, so it is cached weakly per
+        class; the cached tuple is copied on return so a caller can
+        mutate its list without corrupting later reads.
         """
+        cls = type(self)
+        cached = _GET_ELEMENTS_CACHE.get(cls)
+        if cached is not None:
+            return list(cached)
         ordered: dict[str, list] = {}
-        for klass in reversed(type(self).__mro__):
+        for klass in reversed(cls.__mro__):
             own = [klass.__dict__[key] for key in klass.__dict__.get("_elementNames_", ())]
             if not own:
                 continue
@@ -2424,7 +2445,9 @@ class SchemaBase:
                 del ordered[name]
             for descriptor in own:
                 ordered.setdefault(descriptor.name, []).append(descriptor)
-        return [descriptor for entries in ordered.values() for descriptor in entries]
+        result = [descriptor for entries in ordered.values() for descriptor in entries]
+        _GET_ELEMENTS_CACHE[cls] = tuple(result)
+        return result
 
     def descAttributes(self):
         """Returns a dictionary of the attribute descriptors.
