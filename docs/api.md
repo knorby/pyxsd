@@ -25,6 +25,22 @@ schema once; `Schema.parse` binds one instance document and returns a
 from an argument or the instance's own schema hints, compiles, and
 binds.
 
+## Mixin extensions
+
+```{eval-rst}
+.. autoclass:: pyxsd.extensions.Extensions
+   :members:
+```
+
+{class}`~pyxsd.extensions.Extensions` (also exported as
+`pyxsd.Extensions`) is a per-compile registry: register mixins with its
+`for_type` / `for_namespace` / `for_kind` / `for_path` / `where`
+selectors — each usable as a decorator or called directly with
+`mixin=` — and pass the registry to
+`Schema.compile(..., extensions=...)`. Registration is compile-time
+only; the registry's `mixins_for` and the `__pyxsd_validate__` hook
+contract are documented in {doc}`extensions`.
+
 ## Type stubs for generated classes
 
 The generated classes live in `schema.classes`, created at runtime, so

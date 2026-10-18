@@ -26,6 +26,7 @@ from pyxsd.element_representatives.element_representative import (
     componentKind,
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError
+from pyxsd.extensions import Extensions
 from pyxsd.instance_binding import bind_instance
 from pyxsd.namespaces import XML_NS, NamespaceContext, parse_with_namespaces
 from pyxsd.schema_base import SchemaBase
@@ -100,6 +101,7 @@ class _CompileHost:
         self.classes = ctx.classes
         self.mode = ctx.mode
         self.processor_version = ctx.processor_version
+        self.extensions = ctx.extensions
         self.namespaceContext = ctx.namespace_context
         self.namespaceSchemas = ctx.namespace_schemas
         # Replaced by the pipeline once the schema representative
@@ -169,6 +171,7 @@ class Schema:
         overlay: str | Path | os.PathLike[str] | None = None,
         namespace_context: NamespaceContext | None = None,
         schema_location_pairs: list[tuple[str | None, str]] | None = None,
+        extensions: Extensions | None = None,
     ) -> "Schema":
         """Compiles *source* into a :class:`Schema`.
 
@@ -211,6 +214,11 @@ class Schema:
           ``schema-hint`` warning (:func:`parse` passes the instance's
           pairs; a schema-only compile has none).
 
+        - ``extensions`` - an optional :class:`~pyxsd.extensions.
+          Extensions` registry selecting mixins to fold into the
+          generated classes' bases at build time (``XsdType.
+          getBaseList``). Without one, class generation is unchanged.
+
         Use :meth:`require_valid` to reject a schema whose report
         holds errors.
         """
@@ -246,6 +254,7 @@ class Schema:
             resolved_imports=set(),
             hint_schema_paths=set(),
             composed_target_namespaces=set(),
+            extensions=extensions,
         )
         # Without an instance document there are no schemaLocation
         # hints of our own; the caller (:func:`parse`) may forward the

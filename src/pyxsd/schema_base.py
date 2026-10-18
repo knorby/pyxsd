@@ -17,6 +17,7 @@ from pyxsd.derivation import (
     is_valid_xsi_type,
     is_validly_derived,
 )
+from pyxsd.extensions import run_validation_hooks
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
 from pyxsd.schema_context import current_context
 from pyxsd.validation import IssueSeverity, report_or_log
@@ -783,6 +784,15 @@ class SchemaBase:
                 code="abstract-type",
                 element=instance._name_,
             )
+        if not isinstance(instance, SchemaBase):
+            # The ``raw`` invalid-value policy bound a failed simple
+            # content as a plain datatype value (see
+            # ``_rawPrimitiveValue``), which carries no SchemaBase
+            # binding methods. It keeps the name and the raw containers
+            # it was built with; nothing here can check it further, and
+            # no mixin validation hook runs on it — the value never
+            # validated.
+            return instance
         cls.addAttributesTo(instance, elementTag)
         cls.addElementsTo(instance, elementTag)
         if content_cls is None:
@@ -792,6 +802,17 @@ class SchemaBase:
             from pyxsd.assertions import check_element_assertions
 
             check_element_assertions(cls, elementTag)
+
+        # Mixin validation hook: after base XSD validation, with the
+        # attributes and children bound, so a hook sees the whole bound
+        # node. ``makeInstanceFromTag`` builds exactly one element
+        # instance, and the simple-content value it constructed through
+        # ``_simpleContentInstance`` is hooked here and nowhere else, so
+        # one construction is one hook call. A simple-content element
+        # whose value failed validation is the unvalidated shell (its
+        # ``_value_`` stays ``None``) and is skipped.
+        if content_cls is None or getattr(instance, "_value_", None) is not None:
+            run_validation_hooks(instance)
 
         return instance
 
@@ -1552,6 +1573,16 @@ class SchemaBase:
                     instance.__dict__[accessor] = subInstance
                 if not nilled:
                     cls._checkFixedElement(descriptor, subElCls, subInstance, subElementName)
+                    # Mixin validation hook on the bare simple-typed
+                    # element's successfully constructed value, after
+                    # base validation (lexical and fixed). Fires only
+                    # when the bound instance is of the declared
+                    # (mixin-carrying) type class, so a raw
+                    # invalid-value fallback — bound as a plain
+                    # ``AnySimpleType`` — is skipped; a builtin class
+                    # carries no hook and costs one ``getattr``.
+                    if isinstance(subInstance, subElCls):
+                        run_validation_hooks(subInstance)
             return None
 
         forcedText = None
