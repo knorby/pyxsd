@@ -10,7 +10,9 @@ processor with an optional XSD 1.0 mode.
 
 For explicit local input sequences, see {doc}`batch`: reuse one compiled
 schema for parsing or export a new manifested Parquet dataset with the
-optional Arrow adapter.
+optional Arrow adapter. To attach your own methods and validation checks
+to the generated classes, see {doc}`extensions`: mixins registered on an
+`Extensions` registry fold into the classes at compile time.
 
 ```{toctree}
 :maxdepth: 2
@@ -24,6 +26,7 @@ data-model
 validation
 batch
 binding
+extensions
 transforms/index
 supported
 comparison-xmlschema

@@ -612,6 +612,15 @@ class TestPathSelection:
         assert not any(isinstance(selector, str) for selector, _, _ in ext._entries)
 
 
+# -- public export (Task 5) --------------------------------------------
+
+
+def test_extensions_is_exported_from_the_package_root():
+    from pyxsd import Extensions as PublicExtensions
+
+    assert PublicExtensions is Extensions
+
+
 class TestPathLoudFailures:
     """The two controller-ruled loud-failure boundaries, pinned.
 

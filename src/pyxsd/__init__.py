@@ -7,6 +7,7 @@ __version__ = "1.1.1"
 __all__ = [
     "BindingPolicy",
     "Document",
+    "Extensions",
     "NamespaceError",
     "ParseModes",
     "PyXSDError",
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
         ValidationError,
         XPathError,
     )
+    from pyxsd.extensions import Extensions
     from pyxsd.nodes import XMLNode
     from pyxsd.schema import Schema, compile, parse
 
@@ -55,6 +57,10 @@ def __getattr__(name: str):
         from pyxsd import exceptions
 
         return getattr(exceptions, name)
+    if name == "Extensions":
+        from pyxsd.extensions import Extensions
+
+        return Extensions
     if name == "Schema":
         from pyxsd.schema import Schema
 
