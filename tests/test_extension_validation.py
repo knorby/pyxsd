@@ -203,6 +203,33 @@ class TestWarningSeverityPassthrough:
 
 
 class TestHookExceptionIsolated:
+    def test_bare_string_return_is_one_finding(self):
+        """A hook returning a bare ``str`` (not a list of findings) is
+        recorded as ONE ``extension-validation`` error — a string is not
+        iterated per character."""
+
+        class StringReturnMixin:
+            def __pyxsd_validate__(self):
+                return "the service URI has no host"
+
+        doc = _parse(StringReturnMixin, '<m:endpoint xmlns:m="%s">relative/path</m:endpoint>')
+        hook_issues = [i for i in doc.report.issues if i.code == "extension-validation"]
+        assert len(hook_issues) == 1
+        assert hook_issues[0].message == "the service URI has no host"
+
+    def test_bare_issue_return_is_one_finding(self):
+        """A hook returning a bare ``ValidationIssue`` (not a list) is
+        recorded once, with its severity and code kept."""
+
+        class IssueReturnMixin:
+            def __pyxsd_validate__(self):
+                return ValidationIssue(IssueSeverity.WARNING, "insecure-scheme", "plain http")
+
+        doc = _parse(IssueReturnMixin, '<m:endpoint xmlns:m="%s">http://example.com/x</m:endpoint>')
+        kept = [i for i in doc.report.issues if i.code == "insecure-scheme"]
+        assert len(kept) == 1
+        assert kept[0].severity is IssueSeverity.WARNING
+
     def test_raising_hook_becomes_one_extension_error(self):
         """A hook that raises is recorded as one ``extension-error``
         issue and the document still binds."""

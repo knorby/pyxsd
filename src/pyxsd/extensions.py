@@ -343,8 +343,14 @@ def run_validation_hooks(instance: Any, *, element: str | None = None) -> None:
     report = active_report()
     fallback = element or getattr(instance, "_name_", None) or type(instance).__name__
     try:
-        findings = hook(instance) or ()
-        for finding in findings:
+        findings = hook(instance)
+        # A hook that returns a bare finding instead of an iterable of
+        # findings is recorded as that one finding, not iterated: a
+        # plain ``str`` would otherwise come out one error per
+        # character.
+        if isinstance(findings, (str, ValidationIssue)):
+            findings = (findings,)
+        for finding in findings or ():
             if isinstance(finding, str):
                 _record(report, IssueSeverity.ERROR, "extension-validation", finding, fallback)
             elif isinstance(finding, ValidationIssue):
