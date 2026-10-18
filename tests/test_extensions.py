@@ -11,10 +11,12 @@ belongs to later mixin-extension tasks.
 from io import StringIO
 
 from pyxsd.extensions import Extensions
+from pyxsd.schema import Schema
 
 XSD = "http://www.w3.org/2001/XMLSchema"
 NS_A = "http://example.com/a"
 NS_B = "http://example.com/b"
+NS_M = "http://example.com/mixin"
 
 SCHEMA_A = f"""<xs:schema xmlns:xs="{XSD}" xmlns:a="{NS_A}"
     targetNamespace="{NS_A}" elementFormDefault="qualified">
@@ -290,3 +292,133 @@ class TestRegistryIsolation:
         ext_two.for_type("Code", mixin=Two)
         assert ext_one.mixins_for(_code()) == (One,)
         assert ext_two.mixins_for(_code()) == (Two,)
+
+
+# -- compile plumbing (Task 2) ----------------------------------------
+
+COMPILE_SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" xmlns:m="{NS_M}"
+    targetNamespace="{NS_M}" elementFormDefault="qualified">
+  <xs:simpleType name="Code">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[A-Z]{{2}}"/>
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="Base">
+    <xs:sequence>
+      <xs:element name="name" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="Patient">
+    <xs:complexContent>
+      <xs:extension base="m:Base">
+        <xs:sequence>
+          <xs:element name="diagnosis" type="xs:string"/>
+        </xs:sequence>
+        <xs:attribute name="id" type="m:Code"/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="Inpatient">
+    <xs:complexContent>
+      <xs:extension base="m:Patient">
+        <xs:sequence>
+          <xs:element name="ward" type="xs:string"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="patient" type="m:Patient"/>
+</xs:schema>"""
+
+COMPILE_INSTANCE = f"""<m:patient xmlns:m="{NS_M}" id="AB">
+  <m:name>John</m:name>
+  <m:diagnosis>OK</m:diagnosis>
+</m:patient>"""
+
+
+class TestCompilePlumbing:
+    def test_mixin_method_on_generated_class(self):
+        ext = Extensions()
+
+        @ext.for_type("Patient")
+        class PatientMixin:
+            def label(self):
+                return "patient"
+
+        schema = Schema.compile(StringIO(COMPILE_SCHEMA), extensions=ext)
+        patient_cls = schema.classes["Patient"]
+        assert patient_cls.label is PatientMixin.label
+        doc = schema.parse(StringIO(COMPILE_INSTANCE))
+        assert doc.root.label() == "patient"
+
+    def test_super_reaches_xsd_base(self):
+        ext = Extensions()
+
+        @ext.for_type("Base")
+        class BaseMixin:
+            def kind(self):
+                return "base"
+
+        @ext.for_type("Patient")
+        class PatientMixin:
+            def kind(self):
+                return "derived:" + super().kind()
+
+        schema = Schema.compile(StringIO(COMPILE_SCHEMA), extensions=ext)
+        doc = schema.parse(StringIO(COMPILE_INSTANCE))
+        assert doc.root.kind() == "derived:base"
+
+    def test_mixin_cannot_shadow_generated_descriptor(self):
+        ext = Extensions()
+
+        @ext.for_type("Patient")
+        class PatientMixin:
+            id = "MIXIN"
+
+        schema = Schema.compile(StringIO(COMPILE_SCHEMA), extensions=ext)
+        patient_cls = schema.classes["Patient"]
+        # The generated class's namespace carries the attribute
+        # descriptor under ``id``; the mixin's member stays buried in
+        # the base it belongs to.
+        assert "id" in patient_cls.__dict__
+        assert patient_cls.__dict__["id"] is not PatientMixin.id
+        # The descriptor still functions: parse binds and reads it.
+        doc = schema.parse(StringIO(COMPILE_INSTANCE))
+        assert doc.root.id == "AB"
+
+    def test_duplicate_match_appears_once(self):
+        class SharedMixin:
+            pass
+
+        ext = Extensions()
+        ext.for_type("Patient", mixin=SharedMixin)
+        ext.for_namespace(NS_M, mixin=SharedMixin)
+        schema = Schema.compile(StringIO(COMPILE_SCHEMA), extensions=ext)
+        patient_cls = schema.classes["Patient"]
+        assert sum(1 for klass in patient_cls.__mro__ if klass is SharedMixin) == 1
+
+    def test_one_class_identity(self):
+        ext = Extensions()
+
+        @ext.for_type("Patient")
+        class PatientMixin:
+            pass
+
+        schema = Schema.compile(StringIO(COMPILE_SCHEMA), extensions=ext)
+        patient_cls = schema.classes["Patient"]
+        doc = schema.parse(StringIO(COMPILE_INSTANCE))
+        assert type(doc.root) is patient_cls
+        # A type derived from Patient sees the mixin through its base's
+        # MRO.
+        assert issubclass(schema.classes["Inpatient"], PatientMixin)
+
+    def test_compile_without_extensions_unchanged(self):
+        class PatientMixin:
+            pass
+
+        ext = Extensions()
+        ext.for_type("Patient", mixin=PatientMixin)
+        plain = Schema.compile(StringIO(COMPILE_SCHEMA))
+        extended = Schema.compile(StringIO(COMPILE_SCHEMA), extensions=ext)
+        assert plain.classes["Patient"] is not extended.classes["Patient"]
+        assert not issubclass(plain.classes["Patient"], PatientMixin)

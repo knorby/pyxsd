@@ -147,6 +147,14 @@ class XsdType(ElementRepresentative):
         ``final="#all"`` (or the specific derivation method used
         here), the derivation is recorded as a validation error and
         the base is still used so parsing can continue.
+
+        The compile host's ``extensions`` registry (when one was
+        given to ``Schema.compile``) contributes its mixins for this
+        type ahead of the XSD base classes, so mixin members override
+        the inherited classes' members while generated-class members
+        win over every mixin; ``SchemaBase`` is still rooted last. A
+        mixin the XSD base classes already carry is skipped — it is
+        inherited through them.
         """
         baseList = []
         rawNames = list(self.superClassNames)
@@ -197,9 +205,63 @@ class XsdType(ElementRepresentative):
             # a scalar derived from a base; the item declaration
             # converts each token (see XsdList and the class's itemType).
             baseList.append(XsdList)
+        # Registry-selected mixins lead the base tuple: C3 merges the
+        # first direct base's MRO earliest, so a mixin appended after
+        # the XSD base classes would linearize behind their
+        # ``SchemaBase`` and never override an inherited member. From
+        # the leading position a mixin's members override everything
+        # inherited (XSD base classes and their own mixins) while the
+        # generated class's namespace still wins over every mixin, and
+        # ``SchemaBase`` stays rooted last.
+        #
+        # A mixin the XSD base classes already carry — the registry
+        # matched the base type too — is skipped: the base's MRO
+        # requires the mixin to follow the base while a direct
+        # leading entry would require the opposite, which no
+        # linearization satisfies. Inherited through the base, the
+        # mixin still overrides the base's own members and still
+        # appears (once) in the derived class's MRO.
+        mixinBases = self._mixinBases(host)
+        if mixinBases:
+            inherited = {klass for base in baseList for klass in getattr(base, "__mro__", ())}
+            mixinBases = [mixin for mixin in mixinBases if mixin not in inherited]
+            if mixinBases:
+                baseList = [*mixinBases, *baseList]
         if not self.containsSchemaBase(baseList):
             baseList.append(SchemaBase)
         return tuple(baseList)
+
+    def _mixinBases(self, host):
+        """The registry-selected mixins for this type, precedence-ordered.
+
+        The compile host carries the ``Extensions`` registry given to
+        ``Schema.compile`` (``extensions``); a host without one — a
+        live parser resolving a lazily built class, say — selects
+        nothing, keeping class generation unchanged.
+
+        Returned as a tuple so :meth:`_primaryBase` can filter the
+        mixin entries out of a base list by identity.
+        """
+        registry = getattr(host, "extensions", None)
+        if registry is None:
+            return ()
+        return registry.mixins_for(self)
+
+    def _primaryBase(self, host, bases):
+        """The first non-mixin base of the class being built.
+
+        :meth:`getBaseList` puts the registry-selected mixins ahead of
+        the XSD base classes; the facet and simple-content machinery
+        reads the XSD base specifically, so mixin entries are skipped
+        here. Without mixins this is ``bases[0]``, exactly as before.
+        """
+        mixins = self._mixinBases(host)
+        if not mixins:
+            return bases[0] if bases else None
+        for base in bases:
+            if base not in mixins:
+                return base
+        return None
 
     def _listItemClass(self, host):
         """Resolves the ``itemType`` of a schema-declared list simple type.
@@ -834,7 +896,7 @@ class XsdType(ElementRepresentative):
         """
         if self.__class__.__name__ != "SimpleType":
             return {}
-        base = bases[0] if bases else None
+        base = self._primaryBase(host, bases)
         parent = getattr(base, "_facetConstraints_", None) if isinstance(base, type) else None
         return self._constraintNamespace(host, self, base, parent)
 
@@ -973,7 +1035,7 @@ class XsdType(ElementRepresentative):
                 break
         if derivation is None:
             return {}
-        base = bases[0] if bases else None
+        base = self._primaryBase(host, bases)
         if derivation.__class__.__name__ == "Restriction":
             inline = self._firstProcessedChild(derivation, "SimpleType")
             if inline is not None:
@@ -1074,7 +1136,7 @@ class XsdType(ElementRepresentative):
 
         bases = self.getBaseList(host)
         if self.__class__.__name__ == "SimpleType":
-            self._checkNotationRestriction(bases[0] if bases else None)
+            self._checkNotationRestriction(self._primaryBase(host, bases))
         namespace = {
             "name": self.name,
             "__doc__": self.__doc__,

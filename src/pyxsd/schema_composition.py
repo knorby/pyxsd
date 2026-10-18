@@ -180,6 +180,10 @@ class CompositionContext:
     #: it). ``Schema.compile(xsd_version=...)`` sets it; the default is the
     #: 1.1 processor.
     processor_version: decimal.Decimal = field(default_factory=lambda: PROCESSOR_VERSION)
+    #: The per-compile mixin-extensions registry (``Schema.compile(
+    #: extensions=...)``), or ``None``. ``XsdType.getBaseList`` folds the
+    #: mixins it selects into each generated class's bases.
+    extensions: Any = None
 
 
 def schema_composition_context(
