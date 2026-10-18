@@ -1,0 +1,168 @@
+"""Per-compile attributeGroup reference resolution and its index.
+
+``AttributeGroupRef._resolves_to_group`` consults a per-compile index of
+the schema's global attributeGroup declarations (built once per schema
+representative) instead of scanning the whole component table on every
+reference. These tests pin resolution behavior (a clean reference, a
+dangling one, prefixed and forward forms), the index's lifetime (one
+cache per compile, shared by every reference on that schema, never
+leaked into a later compile), and the kind filter the scan applied (a
+same-named element or type never satisfies an attributeGroup ref).
+"""
+
+import io
+
+from pyxsd.binding import ParseModes
+from pyxsd.element_representatives.attribute_group import _attribute_group_index
+from pyxsd.schema import Schema
+
+XSD_NS_DECL = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+
+GOOD = f"""<xs:schema {XSD_NS_DECL}>
+  <xs:attributeGroup name="G">
+    <xs:attribute name="a" type="xs:int"/>
+  </xs:attributeGroup>
+  <xs:complexType name="T">
+    <xs:attributeGroup ref="G"/>
+  </xs:complexType>
+  <xs:element name="root" type="T"/>
+</xs:schema>"""
+
+DANGLING = f"""<xs:schema {XSD_NS_DECL}>
+  <xs:complexType name="T">
+    <xs:attributeGroup ref="G"/>
+  </xs:complexType>
+  <xs:element name="root" type="T"/>
+</xs:schema>"""
+
+TNS_GOOD = f"""<xs:schema {XSD_NS_DECL} targetNamespace="urn:t" xmlns:t="urn:t">
+  <xs:attributeGroup name="ag">
+    <xs:attribute name="x" type="xs:int"/>
+  </xs:attributeGroup>
+  <xs:complexType name="T">
+    <xs:attributeGroup ref="t:ag"/>
+  </xs:complexType>
+  <xs:element name="root" type="t:T"/>
+</xs:schema>"""
+
+TNS_DANGLING = f"""<xs:schema {XSD_NS_DECL} targetNamespace="urn:t" xmlns:t="urn:t">
+  <xs:complexType name="T">
+    <xs:attributeGroup ref="t:missing"/>
+  </xs:complexType>
+  <xs:element name="root" type="t:T"/>
+</xs:schema>"""
+
+
+def _compile(xsd: str):
+    return Schema.compile(io.StringIO(xsd), mode=ParseModes.NAMESPACED)
+
+
+def _schema_codes(report) -> set[str]:
+    return {issue.code for issue in report.for_phase("schema")}
+
+
+def _ref_site(compiled):
+    """The ``T`` type's attributeGroup reference site."""
+    t = compiled._host.components.getFromName("T", kind="type")
+    (ref,) = t.attributeGroupRefs
+    return ref
+
+
+def _group(compiled, name="G"):
+    return compiled._host.components.getFromName(name, kind="attributeGroup")
+
+
+# ---------------------------------------------------------------------------
+# resolution behavior (must hold before and after the index)
+# ---------------------------------------------------------------------------
+
+
+def test_clean_reference_compiles():
+    report = _compile(GOOD).report
+    assert "unknown-attributeGroup" not in _schema_codes(report)
+
+
+def test_dangling_reference_reports_unknown_attribute_group():
+    report = _compile(DANGLING).report
+    assert "unknown-attributeGroup" in _schema_codes(report)
+
+
+def test_prefixed_reference_in_target_namespace_resolves():
+    report = _compile(TNS_GOOD).report
+    assert "unknown-attributeGroup" not in _schema_codes(report)
+
+
+def test_dangling_prefixed_reference_reports():
+    report = _compile(TNS_DANGLING).report
+    assert "unknown-attributeGroup" in _schema_codes(report)
+
+
+def test_forward_reference_resolves():
+    # The definition may follow the reference in document order; the
+    # index is built from the finished component table, not the walk.
+    xsd = f"""<xs:schema {XSD_NS_DECL}>
+  <xs:complexType name="T">
+    <xs:attributeGroup ref="G"/>
+  </xs:complexType>
+  <xs:attributeGroup name="G">
+    <xs:attribute name="a" type="xs:int"/>
+  </xs:attributeGroup>
+  <xs:element name="root" type="T"/>
+</xs:schema>"""
+    report = _compile(xsd).report
+    assert "unknown-attributeGroup" not in _schema_codes(report)
+
+
+def test_same_named_element_is_not_a_group():
+    # Only attributeGroup-kind components are candidates: a global
+    # element named ``G`` must not satisfy ``ref="G"``.
+    xsd = f"""<xs:schema {XSD_NS_DECL}>
+  <xs:element name="G" type="xs:int"/>
+  <xs:complexType name="T">
+    <xs:attributeGroup ref="G"/>
+  </xs:complexType>
+  <xs:element name="root" type="T"/>
+</xs:schema>"""
+    report = _compile(xsd).report
+    assert "unknown-attributeGroup" in _schema_codes(report)
+
+
+# ---------------------------------------------------------------------------
+# the per-compile index
+# ---------------------------------------------------------------------------
+
+
+def test_index_is_shared_within_a_compile():
+    compiled = _compile(GOOD)
+    ref = _ref_site(compiled)
+    schema_er = _group(compiled).getSchema()
+    assert ref._resolves_to_group() is True
+    index = _attribute_group_index(schema_er)
+    # Repeated resolution reuses the same cache object and never
+    # rebuilds the candidate list.
+    assert ref._resolves_to_group() is True
+    assert _attribute_group_index(schema_er) is index
+    assert index["candidates"] == [_group(compiled)]
+
+
+def test_index_buckets_candidates_by_name():
+    compiled = _compile(GOOD)
+    schema_er = _group(compiled).getSchema()
+    index = _attribute_group_index(schema_er)
+    assert index["by_name"] == {"G": [_group(compiled)]}
+
+
+def test_index_does_not_leak_between_compiles():
+    good = _compile(GOOD)
+    dangling = _compile(DANGLING)
+    # The second compile must report the dangling reference even though
+    # an identical reference resolved cleanly moments before: no index
+    # (and no resolution) leaked across the compile boundary.
+    assert "unknown-attributeGroup" not in _schema_codes(good.report)
+    assert "unknown-attributeGroup" in _schema_codes(dangling.report)
+    good_index = _attribute_group_index(_group(good).getSchema())
+    dangling_t = dangling._host.components.getFromName("T", kind="type")
+    dangling_index = _attribute_group_index(dangling_t.getSchema())
+    assert dangling_index is not good_index
+    assert dangling_index["candidates"] == []
+    assert _ref_site(dangling)._resolves_to_group() is False

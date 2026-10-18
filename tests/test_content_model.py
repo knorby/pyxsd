@@ -7,6 +7,7 @@ per-particle (not per-leaf) occurrence semantics, and restriction
 replacing the base particle tree.
 """
 
+import hashlib
 import xml.etree.ElementTree as ET
 
 from pyxsd.content_model import Particle
@@ -461,3 +462,119 @@ class TestRepeatedParticleSearchCost:
         monkeypatch.setattr(content_model, "_ends_one", counting)
         assert content_model.match_content(self._model(), self._nodes()) == (True, [])
         assert calls <= 5 * self.NODES**2, calls
+
+
+class TestCorpusScaleRepeatedSearch:
+    """Corpus-scale behavior pins for the repeated-single-node fast path.
+
+    Fixtures were captured from the pre-fast-path implementation (see
+    ``task3-fixtures-before.txt`` in the perf-followups ledger):
+
+    - reZ003v shape: ``sequence[value{1,unbounded}]`` over 10,000 nodes.
+    - particlesZ034 shape: the Z034 model at n=2,000.
+
+    The fast path computes a repeated element/any run arithmetically and
+    backfills the per-position memo entries the generic walk would have
+    written, so every observable must stay identical.
+    """
+
+    REZ003V_NODES = 10_000
+    Z034_NODES = 2_000
+
+    @staticmethod
+    def _digest(complete, leftover, associations):
+        payload = (
+            complete,
+            list(leftover),
+            [(match.position, match.particle.kind, match.particle.name) for match in associations],
+        )
+        return hashlib.sha256(repr(payload).encode()).hexdigest()
+
+    @staticmethod
+    def _rez003v_model():
+        return Particle("sequence", 1, 1, [Particle("element", 1, None, [], "value")])
+
+    @staticmethod
+    def _z034_model():
+        return Particle(
+            "sequence",
+            1,
+            1,
+            [
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+            ],
+        )
+
+    @staticmethod
+    def _z034_nodes(n=Z034_NODES):
+        # The fixture's split: 1,000 leading ``a`` nodes, one ``b``, 999 trailing.
+        return (
+            [ET.Element("a") for _ in range(1000)]
+            + [ET.Element("b")]
+            + [ET.Element("a") for _ in range(n - 1001)]
+        )
+
+    def test_z034_end_positions_and_associations_are_preserved(self):
+        from pyxsd import content_model
+
+        nodes = self._z034_nodes()
+        ctx = content_model._MatchContext({}, content_model._name_of, None, False, None)
+        ends = content_model._ends_repeated(self._z034_model(), nodes, 0, ctx, {}, 0)
+        assert ends == frozenset(range(1002, self.Z034_NODES + 1))
+        complete, leftover, associations = content_model.match_content_associations(
+            self._z034_model(), nodes
+        )
+        assert complete is True and list(leftover) == []
+        assert self._digest(complete, leftover, associations) == (
+            "fa9fd6f373748d73a76ecdbe410ce07d5e35b7818d1c36a788741d037050236b"
+        )
+
+    def test_rez003v_associations_are_preserved(self):
+        from pyxsd import content_model
+
+        nodes = [ET.Element("value") for _ in range(self.REZ003V_NODES)]
+        complete, leftover, associations = content_model.match_content_associations(
+            self._rez003v_model(), nodes
+        )
+        assert complete is True and list(leftover) == []
+        assert len(associations) == self.REZ003V_NODES
+        assert self._digest(complete, leftover, associations) == (
+            "00198d72f0932470fd786850c98b5be5118495273b4d965ccfdb13459269b1f0"
+        )
+
+    def test_rep_memo_entries_stay_compact(self):
+        """A long run must not materialize a set per position (3.4 GiB at n=10k)."""
+        from pyxsd import content_model
+
+        model = Particle("element", 1, None, [], "value")
+        nodes = [ET.Element("value") for _ in range(self.REZ003V_NODES)]
+        ctx = content_model._MatchContext({}, content_model._name_of, None, False, None)
+        memo: dict = {}
+        ends = content_model._ends_repeated(model, nodes, 0, ctx, memo, 0)
+        assert list(ends) == list(range(1, self.REZ003V_NODES + 1))
+        assert 5000 in ends
+        assert len(ends) == self.REZ003V_NODES
+        rep_entries = [value for key, value in memo.items() if key[0] == "rep"]
+        assert len(rep_entries) == self.REZ003V_NODES + 1
+        # One-entry memo values stay frozensets; the per-position run sets are lazy.
+        materialized = sum(len(value) for value in rep_entries if isinstance(value, frozenset))
+        assert materialized <= len(rep_entries)
+
+    def test_rez003v_walk_is_linear_in_document_length(self, monkeypatch):
+        from pyxsd import content_model
+
+        calls = 0
+        original = content_model._ends_one
+
+        def counting(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(content_model, "_ends_one", counting)
+        nodes = [ET.Element("value") for _ in range(self.REZ003V_NODES)]
+        assert content_model.match_content(self._rez003v_model(), nodes) == (True, [])
+        # Pre-fast-path this shape made 50,025,003 calls (~n^2/2).
+        assert calls <= 5 * self.REZ003V_NODES, calls
