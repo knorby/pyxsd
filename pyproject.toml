@@ -179,5 +179,7 @@ omit = ["*/pyxsd/integrations/pydantic.py", "*/pyxsd/integrations/arrow.py", "*/
 [tool.coverage.report]
 show_missing = true
 precision = 1
-# Coverage floor enforced by CI; raise it as coverage grows.
-fail_under = 92
+# Coverage floor enforced by CI; raise it as coverage grows. The base
+# suite (core + dependency-free projection) measured 99.3% after the
+# coverage burndown; 98 leaves headroom for interpreter-version drift.
+fail_under = 98
