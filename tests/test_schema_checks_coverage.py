@@ -277,6 +277,12 @@ def test_group_ref_definition_falls_back_to_the_group_table():
     assert group_ref_definition(ref_site) is sentinel
 
 
+def test_group_ref_definition_without_a_resolver_uses_the_group_table():
+    sentinel = object()
+    ref_site = SimpleNamespace(ref="g", getSchema=lambda: SimpleNamespace(groups={"g": sentinel}))
+    assert group_ref_definition(ref_site) is sentinel
+
+
 def test_group_ref_sites_without_a_schema():
     assert group_ref_sites(SimpleNamespace(getSchema=_raising("detached"))) == []
 
@@ -864,6 +870,16 @@ def test_attribute_use_restriction_with_a_new_attribute(schema_report):
     assert not any("attribute-use restriction" in issue.message for issue in report.errors)
 
 
+def test_attribute_use_restriction_reports_a_weakened_required_use(schema_report):
+    report = schema_report(
+        "<xs:complexType name='b'>"
+        "<xs:attribute name='a' type='xs:string' use='required'/></xs:complexType>"
+        "<xs:complexType name='d'><xs:complexContent><xs:restriction base='b'>"
+        "<xs:attribute name='a' type='xs:string'/></xs:restriction></xs:complexContent></xs:complexType>"
+    )
+    assert any("redeclares the required attribute 'a'" in issue.message for issue in report.errors)
+
+
 def test_restricted_attribute_uses_skip_redeclared_uses(schema_report):
     report = schema_report(
         "<xs:complexType name='b'><xs:sequence/>"
@@ -878,6 +894,18 @@ def test_restricted_attribute_uses_skip_redeclared_uses(schema_report):
     assert not any(
         "is not admitted by the attribute wildcard" in issue.message for issue in report.errors
     )
+
+
+def test_attribute_wildcard_restriction_reports_a_widened_constraint(schema_report):
+    report = schema_report(
+        "<xs:complexType name='b'><xs:sequence/>"
+        "<xs:anyAttribute namespace='urn:a'/>"
+        "</xs:complexType>"
+        "<xs:complexType name='d'><xs:complexContent><xs:restriction base='b'>"
+        "<xs:sequence/><xs:anyAttribute namespace='##any'/>"
+        "</xs:restriction></xs:complexContent></xs:complexType>"
+    )
+    assert any("widens the base attribute" in issue.message for issue in report.errors)
 
 
 def test_conditional_type_substitution_compiles_an_inline_derived_model(schema_report):
@@ -991,22 +1019,43 @@ def test_wildcard_particle_overlap_skips_a_malformed_second_constraint(schema_re
 
 
 def test_check_type_references_skips_composed_unqualified_refs(tmp_path):
+    # A same-namespace include: the composed document's unprefixed ``type``
+    # reference resolves into no namespace and is exempt, while the same
+    # spelling in the main document is reported (positive control).
     _write(
         tmp_path,
         "side.xsd",
-        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' targetNamespace='urn:a'>"
+        "<xs:complexType name='ct'><xs:sequence/></xs:complexType>"
         "<xs:element name='e' type='Ghost'/>"
         "</xs:schema>",
     )
     _write(
         tmp_path,
         "main.xsd",
-        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' targetNamespace='urn:a'>"
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' targetNamespace='urn:a' "
+        "xmlns:a='urn:a'>"
         "<xs:include schemaLocation='side.xsd'/>"
-        "<xs:element name='r' type='xs:string'/>"
+        "<xs:element name='r' type='a:ct'/>"
+        "<xs:element name='localGhost' type='ct'/>"
         "</xs:schema>",
     )
-    assert "unknown-type" not in error_codes(_compile(tmp_path).report)
+    unresolved = [
+        issue for issue in _compile(tmp_path).report.errors if issue.code == "unknown-type"
+    ]
+    assert len(unresolved) == 1
+    assert "'localGhost'" in unresolved[0].message
+
+
+def test_simple_content_restriction_with_an_unresolved_base_is_skipped(schema_report):
+    report = schema_report(
+        "<xs:complexType name='t'><xs:simpleContent>"
+        "<xs:restriction base='NoSuchBase'><xs:maxLength value='3'/></xs:restriction>"
+        "</xs:simpleContent></xs:complexType>"
+    )
+    codes = error_codes(report)
+    assert "unknown-type" in codes
+    assert "invalid-base" not in codes
 
 
 def test_check_declaration_id_scopes_uniqueness_to_the_main_document(tmp_path):
