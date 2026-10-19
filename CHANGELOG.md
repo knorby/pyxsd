@@ -9,10 +9,28 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-10-18
 
 ### Added
 
+- Mixin extensions attach your own classes to the classes a schema
+  generates. An `Extensions` registry
+  (`Schema.compile(..., extensions=ext)`) selects mixins by type name (a
+  plain local name or a Clark name), namespace, kind (optionally
+  `derived_from` an XSD base), instance path, or an arbitrary predicate,
+  each usable as a decorator or a direct call; a later registration
+  outranks an earlier one and a mixin matched by several selectors folds
+  in once. Path selectors reach anonymous inline types and resolve per
+  compile against the composed declaration tree. Mixins sit between the
+  generated class and the XSD derivation bases in the MRO, so their
+  methods override inherited members while the generated descriptors keep
+  working. A mixin may define `__pyxsd_validate__(self)`, whose findings
+  join the instance report: a plain string becomes an
+  `extension-validation` error, a `ValidationIssue` keeps its own
+  severity and code, and a raising hook is isolated to one
+  `extension-error`. Registries are standalone — read at compile time
+  with no global state and no runtime class patching. See
+  `docs/extensions.md`.
 - `Schema.stub()` emits a truthful type-stub surface for the classes a
   compiled schema creates at runtime: the full `.pyi` document with the
   consumption preamble, class blocks that mirror the XSD derivation, and
@@ -57,7 +75,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   `datetime` subclasses
   and never a fallback inside the stdlib methods. Durations convert
   through `to_timedelta()` (year/month fragments always raise —
-  calendar durations are never approximated as 30-day months), the
+  calendar durations are never approximated as 30-day months; a value
+  outside `datetime.timedelta`'s range raises `ValueError`), the
   exact signed `YearMonthDuration.to_months()`, and `to_xsd_value()`
   (elementpath holds both the months and the seconds properties) for
   the durations `to_timedelta()` refuses, rounding a sub-microsecond
@@ -82,9 +101,49 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ### Changed
 
+- Compile and bind performance on large real-world schemas: repeated
+  substitution-group head/member lookups are memoized per compile (FHIR's
+  `fhir-single.xsd` compiles in about half the time), `attributeGroup`
+  references resolve through a per-compile index, two per-class bind-time
+  scans (`_inheritable_attribute_names` and `_getElements`) are cached,
+  and a repeated single-node particle's end set is computed
+  arithmetically instead of by an O(n²) frontier walk. Each change is
+  behavior-preserving: no validation outcome, report, or pinned count
+  moves.
+- The test suite gained a real-world conformance corpus and a W3C XML
+  Schema Test Suite gate on every pull request. `tests/conformance/`
+  compiles five published schemas (FHIR R5, HL7 CDA R2, ECMA-376
+  WordprocessingML and SpreadsheetML, MusicXML 4.0), fetched on demand
+  and cached, pins each one's class and report-error counts per error
+  code, and runs a 30 s compile tripwire with a benchmark artifact; the
+  XSTS suite now runs on every PR against its checked-in baseline with a
+  configurable per-case timeout (`PYXSD_XSTS_TIMEOUT`). See
+  `tests/conformance/` and `tests/xsts/README.md`.
 - CI reports test coverage to Codecov from the unit-test matrix, the
   xmlschema oracle, and the optional-integration adapters, and the README
   carries a Codecov coverage badge.
+
+### Fixed
+
+- Real-world schema compilation no longer reports spurious errors. On the
+  five published schemas now exercised by the conformance corpus, pyxsd
+  reported 748 findings where the `xmlschema` oracle reports none; every
+  one was a pyxsd gap. Closed: a circular `xs:include` is no longer
+  skipped wholesale; the `xml:` namespace (for `xml:lang`, `xml:space`,
+  and `xml:base`) is known without a `schemaLocation`; cross-namespace
+  `element`, `attribute`, and `group` references resolve through imports;
+  a local name shared across namespaces no longer conflates types; and
+  case-distinct type names are kept apart. Value-constraint checks keep
+  built-in types authoritative while validating `ref`-form attribute-use
+  defaults by the writing document. Identity comparisons for
+  content-model particles, wildcard admission, open-content wildcards,
+  `xs:all` extension overlap, default attribute-group uses, and
+  attribute-use expanded names now use authored namespaces. Namespace
+  adoption threads through nested `xs:redefine`/`xs:override` bases and
+  chameleon includes, colon-containing (Clark) reference locals rebind
+  correctly, and legacy mode binds prefixed references and namespaced
+  instance attributes by their denoted namespace. With the fixes, all
+  five corpus schemas compile with zero findings.
 
 ## [1.1.1] - 2026-10-14
 

@@ -89,6 +89,23 @@ carries a `namespaces` field: `Schema.compile(...,
 mode=ParseModes.NAMESPACED)` or `--namespaces strict` turns on
 namespace-aware validation (the default legacy behavior is unchanged).
 
+## Extending and typing generated classes
+
+- **Mixin extensions** attach user classes to the schema's generated
+  types at compile time (`Schema.compile(..., extensions=...)`), selected
+  by type name, namespace, kind, instance path, or predicate, with an
+  optional `__pyxsd_validate__` hook whose findings join the instance
+  report (see {doc}`extensions`). There is no post-compile class patching
+  and no builtin-type extension.
+- **Type-stub emission** (`Schema.stub()` / `pyxsd --emit-stubs`) renders
+  a `.pyi` typing surface, or a compact agent-oriented view, for the
+  classes a compiled schema creates at runtime; a construct that cannot be
+  typed truthfully degrades to `Any` (see {doc}`api`).
+- **Native value conversions and facet introspection** on the XSD value
+  types — temporal (`to_date` / `to_datetime` / `to_time`, `to_gregorian`),
+  duration, binary, QName, and URI conversions, plus
+  `XsdDataType.patterns()` / `enumerations()` — see {doc}`data-model`.
+
 ## XSD versions (1.0 and 1.1)
 
 The processor defaults to XSD 1.1 and accepts an explicit version:

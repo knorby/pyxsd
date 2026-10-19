@@ -28,7 +28,9 @@ uv run pytest --cov          # full suite with coverage
 uvx ruff@0.16.6 check .      # lint
 uvx ruff@0.16.6 format --check .
 uv run mypy src/pyxsd        # type check
-uv run python tests/report_conformance.py  # conformance report
+uv run python tests/report_conformance.py  # suite-inspired conformance report
+uv run python -m tests.conformance.run     # real-schema conformance + benchmarks
+PYXSD_RUN_XSTS=1 uv run pytest tests/test_xsts_suite.py  # W3C XML Schema Test Suite
 ```
 
 `pre-commit install` runs the hooks on every commit: ruff lint and
@@ -40,6 +42,19 @@ the trufflehog hook builds with the Go toolchain on first run. To run
 every hook without installing the git hooks:
 `uv run pre-commit run --all-files`.
 Python 3.11 is the floor; CI tests 3.11–3.14.
+
+Two of the gates above are env-gated because their corpora are large.
+`tests/conformance/` compiles five published schemas (FHIR R5, HL7 CDA R2,
+ECMA-376 WordprocessingML and SpreadsheetML, and MusicXML 4.0): fetch the
+corpus once with `uv run python -m tests.conformance.fetch`, then
+`uv run python -m tests.conformance.run` prints the pinned per-error-code
+counts and a benchmark table. A 30 s compile tripwire runs inside the
+normal suite (it skips cleanly without the corpus). Set `PYXSD_RUN_XSTS=1`
+to run the W3C XML Schema Test Suite against its checked-in baseline (its
+contract and baseline notes are in `tests/xsts/README.md`); the
+`PYXSD_XSTS_TIMEOUT` environment variable raises the per-case budget, which
+the slower CI runners need. The `xmlschema` oracle is gated the same way by
+`PYXSD_RUN_ORACLE=1`.
 
 ## Pull requests
 

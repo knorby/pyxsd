@@ -19,6 +19,14 @@ Schema (XSD), reports non-fatal validation issues, runs user-defined
   `pyxsd[pydantic]` and `pyxsd[arrow]`; Python 3.11+ remains supported
 - **Schema-compiled classes** — your schema becomes real Python classes;
   `xs:extension` becomes real subclassing
+- **Extend the generated classes** — fold your own mixin classes into the
+  schema's generated types at compile time (an `Extensions` registry,
+  `Schema.compile(..., extensions=ext)`), with an optional
+  `__pyxsd_validate__` hook that adds findings to the validation report
+- **Type-stub emission** — `Schema.stub()` or `pyxsd --emit-stubs` renders
+  a `.pyi` typing surface (or a compact, agent-oriented view) for the
+  classes a compiled schema creates at runtime, so mypy and IDEs can
+  check code written against the bound tree
 - **XSD 1.1 processor** — with an optional XSD 1.0 mode
   (`Schema.compile(xsd, xsd_version="1.0")` / `--xsd-version 1.0`) that
   applies the 1.0 vocabulary gate and semantic differences
@@ -68,7 +76,8 @@ For schema-declared tabular types and nested records, use the Arrow adapter
 below instead of inferring columns from dictionary exports.
 
 See the [data model](https://pyxsd.knorby.com/data-model.html),
-[API reference](https://pyxsd.knorby.com/api.html), and
+[API reference](https://pyxsd.knorby.com/api.html),
+[mixin extensions](https://pyxsd.knorby.com/extensions.html), and
 [transform guide](https://pyxsd.knorby.com/transforms/).
 
 ### Create dynamic Pydantic access models
@@ -249,6 +258,7 @@ Full documentation is published at **<https://pyxsd.knorby.com/>**:
 - [CLI reference](https://pyxsd.knorby.com/cli.html)
 - [Architecture](https://pyxsd.knorby.com/architecture.html)
 - [Data model](https://pyxsd.knorby.com/data-model.html)
+- [Mixin extensions](https://pyxsd.knorby.com/extensions.html)
 - [Validation and issue codes](https://pyxsd.knorby.com/validation.html)
 - [Sequential parsing and Parquet datasets](docs/batch.md)
 - [Parse modes](https://pyxsd.knorby.com/binding.html)

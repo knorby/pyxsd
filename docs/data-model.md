@@ -324,9 +324,9 @@ along the same line:
   exact, so it takes no `strict`; and the standard library has no
   calendar arithmetic, so a `timedelta` cannot express this value at
   all.
-- `to_xsd_value()` is the full-fidelity escape hatch. elementpath's
-  `Duration` holds both the months and the seconds properties, so the
-  calendar part `to_timedelta` refuses (year/month values) survives.
+- `to_xsd_value()` returns the value as an elementpath `Duration`, the
+  representation that keeps both the months and the seconds properties, so
+  the calendar part `to_timedelta` refuses (year/month values) survives.
   elementpath holds at most microsecond-resolution fractions, so a
   finer second fraction is rounded by default; pass `strict=True` to
   raise `ValueError` naming the lexical value instead. A value outside
@@ -339,9 +339,9 @@ along the same line:
 
 Use `to_timedelta` for arithmetic against `datetime` values (day/time
 durations only), `to_months` for interval math on year/month
-durations, and `to_xsd_value` when the value must survive exactly
-(comparison under XSD duration ordering, further elementpath
-processing).
+durations, and `to_xsd_value` when the value needs the calendar part or
+XSD duration ordering (comparison, further elementpath processing) —
+noting that it rounds a sub-microsecond fraction unless `strict=True`.
 
 ### Binary data
 

@@ -1044,12 +1044,15 @@ class Duration(String):
                 seconds=whole,
                 microseconds=_fraction_microseconds(digits),
             )
+            # The sign is applied inside the guard: a negative value one unit
+            # past the positive bound (``-P999999999DT1S``) overflows only on
+            # negation, and must still raise ``ValueError``.
+            if text.startswith("-"):
+                value = -value
         except OverflowError as exc:
             raise ValueError(
                 f"Cannot convert xs:{type(self).name} {text!r} to datetime.timedelta: {exc}"
             ) from exc
-        if text.startswith("-"):
-            value = -value
         return value
 
     def to_xsd_value(self, *, strict: bool = False) -> _ep.Duration:
