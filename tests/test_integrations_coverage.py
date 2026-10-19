@@ -178,9 +178,10 @@ def test_shape_set_rejects_ambiguous_declaration_positions():
         ShapeSet(schema).resolve("r")
 
 
-def test_anytype_extension_reports_unrepresentable_content_model(pa):
+def test_anytype_extension_reports_unrepresentable_content_model():
     # ``xs:anyType`` has no compiled content model, so an extension that adds
-    # none of its own reaches the unrepresentable-content-model guard.
+    # none of its own reaches the unrepresentable-content-model guard. This
+    # test needs no optional extra so the base coverage job measures it.
     schema = compile_schema(
         '<xs:complexType name="T"><xs:complexContent>'
         '<xs:extension base="xs:anyType"/></xs:complexContent></xs:complexType>'
@@ -189,6 +190,16 @@ def test_anytype_extension_reports_unrepresentable_content_model(pa):
     assert not schema.report.has_errors
     with pytest.raises(IntegrationError, match="unrepresentable content model"):
         ShapeSet(schema).resolve("r")
+
+
+def test_anytype_extension_reports_unrepresentable_content_model_via_arrow(pa):
+    # Same guard reached through the public Arrow adapter entry point.
+    schema = compile_schema(
+        '<xs:complexType name="T"><xs:complexContent>'
+        '<xs:extension base="xs:anyType"/></xs:complexContent></xs:complexType>'
+        '<xs:element name="r" type="T"/>'
+    )
+    assert not schema.report.has_errors
     with pytest.raises(IntegrationError, match="unrepresentable content model"):
         records(schema, element="r")
 
