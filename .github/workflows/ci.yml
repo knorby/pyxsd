@@ -92,14 +92,23 @@ jobs:
         run: uv run python -m tests.conformance.fetch
 
       - name: Run tests with coverage
-        run: uv run pytest --cov=pyxsd --cov-report=term-missing
+        run: uv run pytest --cov --cov-branch --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.python-version }}
-          path: .coverage
+          path: |
+            .coverage
+            coverage.xml
           include-hidden-files: true
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: python-${{ matrix.python-version }}
 
       - name: Run the XSD Test Suite
         run: uv run pytest tests/test_xsts_suite.py -q
@@ -158,6 +167,19 @@ jobs:
         run: uv sync --group dev --python 3.12
 
       - name: Compare against the xmlschema oracle
-        run: uv run pytest tests/test_oracle.py -q
+        # This job runs one test module, so the whole-suite floor does not
+        # apply; the report is uploaded to Codecov and merged with the
+        # coverage job's report instead.
+        run: >-
+          uv run pytest tests/test_oracle.py -q
+          --cov --cov-branch --cov-report=xml --cov-report=term-missing
+          --cov-fail-under=0
         env:
           PYXSD_RUN_ORACLE: "1"
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: oracle
