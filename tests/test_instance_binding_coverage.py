@@ -203,12 +203,13 @@ def test_a_member_of_an_untyped_head_binds_as_the_ur_type(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_generate_correct_schema_tags_rewrites_a_schema_location_hint():
-    """The hint is regenerated as an XSI attribute on the root.
+def test_single_hint_rewrite_is_current_behavior_with_a_known_defect():
+    """Pins today's single-hint rewrite (KNOWN DEFECT, not a contract).
 
-    The namespace is re-read after the ``schemaLocation`` attribute is
-    removed, so the rewritten hint is always the no-namespace form; the
-    ``xsi`` namespace declaration is added either way.
+    The namespace is re-read only after the ``schemaLocation`` attribute
+    has been deleted, so a namespaced hint is rewritten to the
+    ``noNamespaceSchemaLocation`` form instead of ``schemaLocation``. This
+    test documents the current behaviour; see the task report.
     """
     root = ET.fromstring(
         '<t:root xmlns:t="urn:x"'
@@ -222,4 +223,53 @@ def test_generate_correct_schema_tags_rewrites_a_schema_location_hint():
     assert root.attrib["xmlns:xsi"] == "http://www.w3.org/2001/XMLSchema-instance"
     assert root.attrib["xsi:noNamespaceSchemaLocation"] == "urn:x schema.xsd"
     assert "{http://www.w3.org/2001/XMLSchema-instance}schemaLocation" not in root.attrib
+    assert report.errors == []
+
+
+def test_a_document_with_both_schema_location_hints_binds_its_root(tmp_path):
+    """Both hints present: the namespace branch of the rewrite runs.
+
+    ``schema_location_info`` prefers the no-namespace tag for the tag
+    name, so only that attribute is deleted and the re-read at the
+    namespace step still sees ``xsi:schemaLocation`` — the namespace
+    branch executes and the root still binds.
+    """
+    schema_body = XSD_HEAD + "><xs:element name='root' type='xs:string'/>" + XSD_TAIL
+    xml = (
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+        ' xsi:schemaLocation="urn:x schema.xsd"'
+        ' xsi:noNamespaceSchemaLocation="schema.xsd">hi</root>'
+    )
+    _schema, document = _compile(tmp_path, schema_body, xml)
+
+    assert document.root is not None
+    assert type(document.root).__name__ == "String"
+    assert document.report.errors == []
+
+
+def test_both_hint_rewrite_is_current_behavior_with_a_known_defect():
+    """Pins today's both-hint rewrite (KNOWN DEFECT, not a contract).
+
+    With both hints present the rewrite keeps the original
+    ``xsi:schemaLocation`` Clark key, adds a *literal* ``xsi:schemaLocation``
+    key carrying the other value, and emits ``xmlns:urn:x`` — a namespace
+    declaration whose prefix contains a colon, which is invalid XML. This
+    test documents the current behaviour; see the task report.
+    """
+    root = ET.fromstring(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+        ' xsi:schemaLocation="urn:x schema.xsd"'
+        ' xsi:noNamespaceSchemaLocation="schema.xsd"/>'
+    )
+    report = ValidationReport()
+
+    assert generate_correct_schema_tags(None, root, report) is None
+
+    assert (
+        root.attrib["{http://www.w3.org/2001/XMLSchema-instance}schemaLocation"]
+        == "urn:x schema.xsd"
+    )
+    assert root.attrib["xsi:schemaLocation"] == "schema.xsd"
+    assert root.attrib["xmlns"] == "urn:x"
+    assert root.attrib["xmlns:urn:x"] == "urn:x"
     assert report.errors == []

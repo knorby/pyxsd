@@ -90,11 +90,21 @@ def test_list_inline_item_type_final_for_list_is_reported(schema_report):
 
 
 def test_list_builtin_item_type_needs_no_final_check(schema_report):
-    """A built-in item type has no ``effectiveFinal``; the check is skipped."""
+    """A built-in item type has no representative, so the final check is skipped."""
     report = schema_report(
         "<xs:simpleType name='L'><xs:list itemType='xs:string'/></xs:simpleType>"
     )
     assert report.errors == []
+
+    # A non-atomic item type is still reported, showing the item check runs.
+    rejected = schema_report(
+        "<xs:complexType name='CT'><xs:sequence><xs:element name='a' type='xs:string'/>"
+        "</xs:sequence></xs:complexType>"
+        "<xs:simpleType name='L'><xs:list itemType='CT'/></xs:simpleType>"
+    )
+    atomic = [issue for issue in rejected.errors if issue.code == "atomic-required"]
+    assert len(atomic) == 1
+    assert "not an atomic simple type" in atomic[0].message
 
 
 def test_list_unresolved_item_type_is_left_to_the_unknown_type_check(schema_report):
@@ -131,6 +141,16 @@ def test_union_builtin_member_type_needs_no_final_check(schema_report):
         "<xs:simpleType name='U'><xs:union memberTypes='xs:string'/></xs:simpleType>"
     )
     assert report.errors == []
+
+    # A complex member type is still reported, showing the member check runs.
+    rejected = schema_report(
+        "<xs:complexType name='CT'><xs:sequence><xs:element name='a' type='xs:string'/>"
+        "</xs:sequence></xs:complexType>"
+        "<xs:simpleType name='U'><xs:union memberTypes='CT'/></xs:simpleType>"
+    )
+    atomic = [issue for issue in rejected.errors if issue.code == "atomic-required"]
+    assert len(atomic) == 1
+    assert "is not a simple type" in atomic[0].message
 
 
 def test_union_final_check_treats_a_missing_getter_as_unblocked():
@@ -176,6 +196,34 @@ def test_sequence_inside_a_simple_type_is_misplaced(schema_report):
     misplaced = [issue for issue in report.errors if issue.code == "misplaced-declaration"]
     assert len(misplaced) == 1
     assert "sequence cannot appear inside SimpleType" in misplaced[0].message
+
+
+def test_all_particle_occurrence_cap_skips_group_references(schema_report):
+    """XSD 1.0 caps an ``all``'s element particles; group references are skipped.
+
+    A group reference nested in an ``all`` is appended to ``All.elements``
+    with ``isRefSite`` set, so the 1.0 occurrence cap skips it; an element
+    particle above ``maxOccurs=1`` is still reported. (pyxsd emits no
+    diagnostic for a group reference inside a 1.0 ``all`` at all — a
+    pre-existing gap, noted in the task report.)
+    """
+    group_ref = schema_report(
+        "<xs:group name='g'><xs:all><xs:element name='a'/></xs:all></xs:group>"
+        "<xs:complexType name='t'><xs:all><xs:group ref='g'/></xs:all></xs:complexType>",
+        version="1.0",
+    )
+    assert group_ref.errors == []
+
+    element_particle = schema_report(
+        "<xs:complexType name='t'><xs:all>"
+        "<xs:element name='e' type='xs:string' maxOccurs='2'/></xs:all></xs:complexType>",
+        version="1.0",
+    )
+    capped = [
+        issue for issue in element_particle.errors if "XSD 1.0 allows only 0 or 1" in issue.message
+    ]
+    assert len(capped) == 1
+    assert capped[0].code == "all-rule"
 
 
 def test_all_emptiability_follows_its_children():
@@ -231,8 +279,13 @@ def test_attribute_group_index_falls_back_without_a_component_table():
 
 
 def test_notation_ignores_namespaced_attributes(schema_report):
-    report = schema_report("<xs:notation name='n' public='p' xmlns:foo='urn:foo' foo:bar='baz'/>")
-    assert report.errors == []
+    """A foreign-namespaced attribute is skipped; an unqualified one is not."""
+    report = schema_report(
+        "<xs:notation name='n' public='p' xmlns:foo='urn:foo' foo:bar='baz' bogus='x'/>"
+    )
+    messages = [issue.message for issue in report.errors]
+    assert any("'bogus'" in message for message in messages)
+    assert not any("bar" in message for message in messages)
 
 
 def test_get_elements_is_cached():

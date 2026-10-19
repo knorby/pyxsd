@@ -19,6 +19,7 @@ from pyxsd.cli import (
     _load_transform_module_by_normalized_name,
     main,
     resolve_transform_class,
+    split_transform_chain,
 )
 
 INVENTORY_SCHEMA = Path(__file__).parent / "fixtures" / "inventory" / "schema.xsd"
@@ -68,6 +69,40 @@ def test_normalized_module_lookup_finds_the_shipped_transform():
     module = _load_transform_module_by_normalized_name("PrintData")
     assert module is importlib.import_module("pyxsd.transforms.print_data")
     assert module.PrintData is not None
+
+
+def test_normalized_module_fallback_loads_a_package_relative_module(tmp_path, monkeypatch):
+    """The underscore-insensitive fallback imports a normalized-name module.
+
+    ``ParseHTMLTree`` has no exact ``parseHTMLTree``/``parse_html_tree``
+    module, so resolution reaches the normalized-name fallback; a module
+    named ``parse_htmltree`` on the transforms package path matches.
+    """
+    (tmp_path / "parse_htmltree.py").write_text(
+        "class ParseHTMLTree:\n    pass\n", encoding="utf-8"
+    )
+    import pyxsd.transforms as transforms
+
+    monkeypatch.setattr(transforms, "__path__", [*transforms.__path__, str(tmp_path)])
+    try:
+        transform_cls = resolve_transform_class("ParseHTMLTree")
+    finally:
+        sys.modules.pop("pyxsd.transforms.parse_htmltree", None)
+
+    assert transform_cls.__name__ == "ParseHTMLTree"
+    assert transform_cls.__module__ == "pyxsd.transforms.parse_htmltree"
+
+
+def test_invalid_token_in_a_transform_chain_raises_value_error():
+    """An invalid-character chain is rejected on every interpreter.
+
+    CPython 3.11 reports the character as an ``ERRORTOKEN`` (the
+    ``cli.py`` raise guarded by that branch); 3.12+ raises ``TokenError``.
+    Either way the chain is not valid Python syntax and surfaces as the
+    same ``ValueError``.
+    """
+    with pytest.raises(ValueError, match="not valid Python syntax"):
+        split_transform_chain('A() > "unterminated')
 
 
 def test_resolve_transform_class_accepts_a_string_search_path(tmp_path, monkeypatch):
