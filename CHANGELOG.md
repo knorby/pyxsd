@@ -75,7 +75,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   `datetime` subclasses
   and never a fallback inside the stdlib methods. Durations convert
   through `to_timedelta()` (year/month fragments always raise —
-  calendar durations are never approximated as 30-day months), the
+  calendar durations are never approximated as 30-day months; a value
+  outside `datetime.timedelta`'s range raises `ValueError`), the
   exact signed `YearMonthDuration.to_months()`, and `to_xsd_value()`
   (elementpath holds both the months and the seconds properties) for
   the durations `to_timedelta()` refuses, rounding a sub-microsecond
@@ -143,10 +144,6 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   correctly, and legacy mode binds prefixed references and namespaced
   instance attributes by their denoted namespace. With the fixes, all
   five corpus schemas compile with zero findings.
-- `Duration.to_timedelta()` raised `OverflowError` instead of the
-  documented `ValueError` for a negative duration just past
-  `datetime.timedelta`'s range (for example `-P999999999DT1S`), because
-  the sign was applied outside the overflow guard.
 
 ## [1.1.1] - 2026-10-14
 
