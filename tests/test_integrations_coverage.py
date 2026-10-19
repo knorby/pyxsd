@@ -7,6 +7,7 @@ optional extra skip per-test where that extra is absent.
 """
 
 from decimal import Decimal
+from io import StringIO
 
 import pytest
 
@@ -17,12 +18,12 @@ from pyxsd.integrations._projection import compile_projection, iter_projected_ro
 from pyxsd.integrations._shape import ShapeSet, resolve_route, scalar_kind
 from pyxsd.integrations._values import (
     _project,
-    check_counts,
     check_shell,
     lexical_value,
     nil_state,
     plain_value,
     prepare_document,
+    project,
     read_attributes,
     value_equal,
 )
@@ -88,19 +89,18 @@ def test_value_equal_uses_native_value_space_keys():
 
 
 def test_check_counts_reports_prohibited_group_with_members():
-    from pyxsd.content_model import Particle
-
+    # ``minOccurs="0" maxOccurs="0"`` on a nested model group is accepted by
+    # pyxsd and compiles to a particle with ``max_occurs == 0``; a document
+    # that supplies a member then drives the prohibited-group guard.
     schema = compile_schema(
         '<xs:element name="r"><xs:complexType><xs:sequence>'
-        '<xs:element name="a" type="xs:int"/></xs:sequence></xs:complexType></xs:element>'
+        '<xs:sequence minOccurs="0" maxOccurs="0"><xs:element name="a" type="xs:int"/>'
+        "</xs:sequence></xs:sequence></xs:complexType></xs:element>"
     )
-    shape = ShapeSet(schema).shallow("r")
-    element = shape.particle.children[0]
-    # Schema legality forbids authoring a maxOccurs="0" model group directly,
-    # so exercise the compiled representation the guard sees.
-    shape.particle = Particle("sequence", 0, 0, [element])
+    document = schema.parse(StringIO("<r><a>1</a></r>"))
+    assert document.report.has_errors
     with pytest.raises(IntegrationError, match="prohibited group contains elements"):
-        check_counts(shape, {id(element.descriptor): 1})
+        project(ShapeSet(schema).resolve("r"), document.root)
 
 
 def test_project_rejects_node_that_is_already_active():
@@ -176,6 +176,21 @@ def test_shape_set_rejects_ambiguous_declaration_positions():
     )
     with pytest.raises(IntegrationError, match="ambiguous declaration positions for v"):
         ShapeSet(schema).resolve("r")
+
+
+def test_anytype_extension_reports_unrepresentable_content_model(pa):
+    # ``xs:anyType`` has no compiled content model, so an extension that adds
+    # none of its own reaches the unrepresentable-content-model guard.
+    schema = compile_schema(
+        '<xs:complexType name="T"><xs:complexContent>'
+        '<xs:extension base="xs:anyType"/></xs:complexContent></xs:complexType>'
+        '<xs:element name="r" type="T"/>'
+    )
+    assert not schema.report.has_errors
+    with pytest.raises(IntegrationError, match="unrepresentable content model"):
+        ShapeSet(schema).resolve("r")
+    with pytest.raises(IntegrationError, match="unrepresentable content model"):
+        records(schema, element="r")
 
 
 # --- integrations/_projection.py ---------------------------------------------
