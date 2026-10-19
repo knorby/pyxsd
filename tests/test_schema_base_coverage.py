@@ -713,6 +713,55 @@ def test_child_accessor_without_a_namespace_context_uses_a_suffix():
     assert isinstance(instance.__dict__["a_1"], AnySimpleType)
 
 
+def test_child_accessor_disambiguates_a_real_strict_namespace_collision(tmp_path):
+    """Two same-local-name global declarations, both admitted on one parent.
+
+    The strict ``##any`` wildcard binds each child through its resolved
+    global declaration, so the two ``foo`` declarations reach
+    ``_childAccessor`` with equal ``name`` but different
+    ``getNamespace()`` -- the real-pipeline shape the collision branch
+    handles (rather than a hand-built namespace-context stub). The second
+    declaration must not overwrite the first's plain accessor.
+    """
+    (tmp_path / "other.xsd").write_text(
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' "
+        "targetNamespace='urn:other' xmlns:o='urn:other' "
+        "elementFormDefault='qualified'>"
+        "<xs:element name='foo' type='xs:string'/>"
+        "</xs:schema>",
+        encoding="utf-8",
+    )
+    schema_path = tmp_path / "schema.xsd"
+    schema_path.write_text(
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' "
+        "targetNamespace='urn:main' xmlns:m='urn:main' xmlns:o='urn:other' "
+        "elementFormDefault='qualified'>"
+        "<xs:import namespace='urn:other' schemaLocation='other.xsd'/>"
+        "<xs:element name='foo' type='xs:string'/>"
+        "<xs:element name='root'><xs:complexType><xs:sequence>"
+        "<xs:any namespace='##any' processContents='strict' maxOccurs='unbounded'/>"
+        "</xs:sequence></xs:complexType></xs:element>"
+        "</xs:schema>",
+        encoding="utf-8",
+    )
+    instance_path = tmp_path / "instance.xml"
+    instance_path.write_text(
+        '<m:root xmlns:m="urn:main" xmlns:o="urn:other">'
+        "<m:foo>local</m:foo><o:foo>foreign</o:foo></m:root>",
+        encoding="utf-8",
+    )
+    doc = Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(str(instance_path))
+    assert doc.report.errors == []
+    assert [child._name_ for child in doc.root._children_] == [
+        "{urn:main}foo",
+        "{urn:other}foo",
+    ]
+    # The imported declaration is exposed under its in-scope instance prefix.
+    assert doc.root.foo == "local"
+    assert doc.root.foo_o == "foreign"
+    assert doc.root.__dict__["_childAccessors_"] == {"foo": "urn:main", "foo_o": "urn:other"}
+
+
 def test_inheritable_attributes_feed_a_conditional_type_test(tmp_path):
     body = (
         '<xs:complexType name="Doc"><xs:sequence>'
