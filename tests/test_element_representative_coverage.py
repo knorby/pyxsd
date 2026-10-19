@@ -17,12 +17,10 @@ from pyxsd.binding import ParseModes
 from pyxsd.element_representatives import element_representative as er_module
 from pyxsd.element_representatives.element import Element
 from pyxsd.element_representatives.element_representative import (
-    ANY_NAMESPACE,
     ComponentTable,
     ElementRepresentative,
     _RegistryProxy,
 )
-from pyxsd.namespaces import NamespaceError
 from pyxsd.schema import Schema
 
 XSD_HEAD = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
@@ -431,7 +429,7 @@ def test_factory_reports_an_unknown_tag(caplog):
     assert "is not defined" in caplog.text
 
 
-def test_component_kind_and_any_namespace_sentinel():
+def test_component_kind_and_lookup_from_a_component_table():
     from pyxsd.element_representatives.element_representative import componentKind
 
     tree = schema_tree("<xs:element name='a'/>")
@@ -440,7 +438,6 @@ def test_component_kind_and_any_namespace_sentinel():
     table = ComponentTable()
     table.setdefault("a", []).append(element)
     assert table.getFromName("a", warn=False) is element
-    assert ANY_NAMESPACE is not None
 
 
 def test_registry_proxy_forwards_get_from_name(monkeypatch):
@@ -462,7 +459,3 @@ def test_invalid_boolean_accepts_truthy_spellings(value):
 def test_invalid_ncname_detects_a_colon():
     assert ElementRepresentative._invalidNCName("a:b") is True
     assert ElementRepresentative._invalidNCName("name") is False
-
-
-def test_namespace_error_is_the_raised_type():
-    assert issubclass(NamespaceError, Exception)

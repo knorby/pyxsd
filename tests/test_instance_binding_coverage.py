@@ -8,6 +8,8 @@ lookup, and the namespaced schema-location rewrite.
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 from pyxsd.binding import ParseModes
 from pyxsd.instance_binding import generate_correct_schema_tags
 from pyxsd.schema import Schema
@@ -203,14 +205,18 @@ def test_a_member_of_an_untyped_head_binds_as_the_ur_type(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_single_hint_rewrite_is_current_behavior_with_a_known_defect():
-    """Pins today's single-hint rewrite (KNOWN DEFECT, not a contract).
+def test_known_defect_single_schema_location_hint_is_rewritten_to_the_no_namespace_form():
+    """Pins today's single-hint rewrite (KNOWN DEFECTIVE behaviour, not a contract).
 
     The namespace is re-read only after the ``schemaLocation`` attribute
     has been deleted, so a namespaced hint is rewritten to the
-    ``noNamespaceSchemaLocation`` form instead of ``schemaLocation``. This
-    test documents the current behaviour; see the task report.
+    ``noNamespaceSchemaLocation`` form instead of ``schemaLocation``. This is
+    a pyxsd bug; the test exists only to pin today's output so a fix is
+    visible. See
+    ``docs/superpowers/ledgers/2026-10-18-coverage-burndown/task-6-report.md``.
     """
+    # Pins current (wrong) behaviour; a namespaced hint must not decay to the
+    # no-namespace form. See the task report for the tracked defect.
     root = ET.fromstring(
         '<t:root xmlns:t="urn:x"'
         ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
@@ -224,6 +230,11 @@ def test_single_hint_rewrite_is_current_behavior_with_a_known_defect():
     assert root.attrib["xsi:noNamespaceSchemaLocation"] == "urn:x schema.xsd"
     assert "{http://www.w3.org/2001/XMLSchema-instance}schemaLocation" not in root.attrib
     assert report.errors == []
+
+    # Positive invariant: the rewrite is confined to the hint attributes, so
+    # the rewritten document is still well-formed XML with its root intact.
+    rewritten = ET.fromstring(ET.tostring(root))
+    assert rewritten.tag == "{urn:x}root"
 
 
 def test_a_document_with_both_schema_location_hints_binds_its_root(tmp_path):
@@ -247,15 +258,19 @@ def test_a_document_with_both_schema_location_hints_binds_its_root(tmp_path):
     assert document.report.errors == []
 
 
-def test_both_hint_rewrite_is_current_behavior_with_a_known_defect():
-    """Pins today's both-hint rewrite (KNOWN DEFECT, not a contract).
+def test_known_defect_both_schema_location_hints_emit_an_invalid_namespace_declaration():
+    """Pins today's both-hint rewrite (KNOWN DEFECTIVE behaviour, not a contract).
 
     With both hints present the rewrite keeps the original
     ``xsi:schemaLocation`` Clark key, adds a *literal* ``xsi:schemaLocation``
     key carrying the other value, and emits ``xmlns:urn:x`` — a namespace
-    declaration whose prefix contains a colon, which is invalid XML. This
-    test documents the current behaviour; see the task report.
+    declaration whose prefix contains a colon, which is invalid XML. This is
+    a pyxsd bug; the test exists only to pin today's output so a fix is
+    visible. See
+    ``docs/superpowers/ledgers/2026-10-18-coverage-burndown/task-6-report.md``.
     """
+    # Pins current (wrong) behaviour; the emitted namespace declaration cannot
+    # be serialized back to well-formed XML. See the task report.
     root = ET.fromstring(
         '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
         ' xsi:schemaLocation="urn:x schema.xsd"'
@@ -273,3 +288,11 @@ def test_both_hint_rewrite_is_current_behavior_with_a_known_defect():
     assert root.attrib["xmlns"] == "urn:x"
     assert root.attrib["xmlns:urn:x"] == "urn:x"
     assert report.errors == []
+
+    # Positive invariant: the rewrite only adds attributes, so the element's
+    # own name survives. The document still binds via the companion test
+    # ``test_a_document_with_both_schema_location_hints_binds_its_root``.
+    assert root.tag == "root"
+    # Defect consequence: the rewritten tree cannot be re-parsed as XML.
+    with pytest.raises(ET.ParseError):
+        ET.fromstring(ET.tostring(root))

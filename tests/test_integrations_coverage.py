@@ -104,6 +104,8 @@ def test_check_counts_reports_prohibited_group_with_members():
 
 
 def test_project_rejects_node_that_is_already_active():
+    # Synthetic input: the active set is normally built by the walker, not the
+    # adapter API, which rejects such documents first.
     schema = compile_schema('<xs:element name="r" type="xs:int"/>')
     document = parse(schema, "<r>1</r>")
     shape = ShapeSet(schema).shallow("r")
@@ -112,6 +114,8 @@ def test_project_rejects_node_that_is_already_active():
 
 
 def test_nil_state_rejects_duplicate_current_markers():
+    # Synthetic input: the adapter API rejects a document carrying two
+    # ``xsi:nil`` markers first.
     schema = compile_schema('<xs:element name="r" type="xs:int"/>')
     document = parse(schema, "<r>1</r>")
     document.root._attribs_ = {
@@ -139,6 +143,8 @@ def test_check_shell_rejects_runtime_polymorphism():
 
 
 def test_check_shell_rejects_children_on_simple_content():
+    # Synthetic input: the adapter API rejects a simple-content document with
+    # children first, so the tree is mutated to reach the shell check.
     schema = compile_schema(
         '<xs:element name="r"><xs:complexType><xs:simpleContent>'
         '<xs:extension base="xs:int"/></xs:simpleContent></xs:complexType></xs:element>'

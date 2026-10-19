@@ -198,15 +198,21 @@ def test_sequence_inside_a_simple_type_is_misplaced(schema_report):
     assert "sequence cannot appear inside SimpleType" in misplaced[0].message
 
 
-def test_all_particle_occurrence_cap_skips_group_references(schema_report):
+def test_all_particle_cap_and_group_ref_inside_a_1_0_all_currently_emits_no_diagnostic(
+    schema_report,
+):
     """XSD 1.0 caps an ``all``'s element particles; group references are skipped.
 
     A group reference nested in an ``all`` is appended to ``All.elements``
     with ``isRefSite`` set, so the 1.0 occurrence cap skips it; an element
-    particle above ``maxOccurs=1`` is still reported. (pyxsd emits no
+    particle above ``maxOccurs=1`` is still reported. pyxsd emits no
     diagnostic for a group reference inside a 1.0 ``all`` at all — a
-    pre-existing gap, noted in the task report.)
+    pre-existing conformance gap, not intent; this test documents that
+    current silence (see
+    ``docs/superpowers/ledgers/2026-10-18-coverage-burndown/task-6-report.md``).
     """
+    # Known gap: a group reference inside a 1.0 ``xs:all`` should be rejected,
+    # but today it compiles with no diagnostic.
     group_ref = schema_report(
         "<xs:group name='g'><xs:all><xs:element name='a'/></xs:all></xs:group>"
         "<xs:complexType name='t'><xs:all><xs:group ref='g'/></xs:all></xs:complexType>",
