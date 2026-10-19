@@ -1,6 +1,6 @@
 # pyxsd documentation
 
-Documentation for **pyxsd** 1.0.0 — a Python library and CLI with one small,
+Documentation for **pyxsd** 1.2.0 — a Python library and CLI with one small,
 pure-Python dependency (`elementpath`, for XSD regular expressions and
 XPath) that maps XML documents into Python object trees according to an XML
 Schema (XSD), reports non-fatal validation issues, queries and exports the

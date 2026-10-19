@@ -104,6 +104,15 @@ class TestDurationOverflow:
         with pytest.raises(ValueError, match="P9999999999D"):
             Duration("P9999999999D").to_timedelta()
 
+    def test_negative_overflow_raises_valueerror(self):
+        # The negation of a value just inside the positive bound overflows
+        # only after the sign is applied (regression: it raised OverflowError).
+        with pytest.raises(ValueError, match="P999999999DT1S"):
+            Duration("-P999999999DT1S").to_timedelta()
+
+    def test_boundary_negative_still_converts(self):
+        assert Duration("-P999999999D").to_timedelta() == datetime.timedelta(days=-999999999)
+
     def test_to_xsd_value_overflow_raises_valueerror(self):
         with pytest.raises(ValueError, match="P9999999999Y"):
             Duration("P9999999999Y").to_xsd_value()
