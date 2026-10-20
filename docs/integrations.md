@@ -9,7 +9,7 @@ pip install 'pyxsd[arrow]'           # PyArrow >=22, including Parquet
 pip install 'pyxsd[pydantic,arrow]'  # Both, independently usable
 ```
 
-These library minimum versions support Python 3.14; they do not require it.
+These library minimum versions support Python 3.15; they do not require it.
 Base pyxsd still depends only on `elementpath`. Extras may install compiled
 packages. Importing or using one integration does not require the other.
 

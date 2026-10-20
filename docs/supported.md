@@ -205,3 +205,14 @@ happens to surface.
 This table is maintained as machine-readable data in
 `tests/conformance/unsupported.toml`, which also feeds the conformance
 report.
+
+```{note}
+**Free-threaded builds.** pyxsd is pure Python and runs on free-threaded
+Python (the `3.15t` / `3.14t` builds) without changes. The
+concurrent-parses-per-schema rule above is a hard requirement there:
+the GIL hid many violations on regular builds, while a free-threaded build
+runs them for real. Concurrent compiles and concurrent parses on *separate*
+`Schema` objects remain supported. Compiled extras (`pydantic`, `pyarrow`)
+may re-enable the GIL when imported if their wheels do not yet support
+free-threading; that is a performance note, not a failure.
+```

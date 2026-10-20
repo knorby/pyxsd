@@ -9,6 +9,16 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Python 3.15 support: 3.15 joins the tested range (3.11–3.15). Text-mode
+  file I/O (CLI stub/transform output, transform-file loading, document and
+  display writers) is now explicitly UTF-8 on every Python version, matching
+  3.15's PEP 686 default — on Windows this changes decode behavior for
+  transform files previously read in the locale encoding.
+
 ## [1.2.0] - 2026-10-18
 
 ### Added
