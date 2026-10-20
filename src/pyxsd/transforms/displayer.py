@@ -21,7 +21,7 @@ class Displayer(Transform):
     def openFile(self, fileName: str | None = None) -> IO[str]:  # uses stdout if filename is None
         if fileName is None or fileName == "stdout":
             return sys.stdout
-        return open(fileName, "w")
+        return open(fileName, "w", encoding="utf-8")
 
     def writeTree(self, file: IO[str]) -> None:
         XmlTreeWriter(self.root, file)

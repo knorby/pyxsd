@@ -42,7 +42,7 @@ def write_tree(root: Any, output: str | Path | os.PathLike[str] | IO[str]) -> No
       caller are flushed but left open.
     """
     if isinstance(output, (str, os.PathLike)):
-        with open(output, "w") as outputFile:
+        with open(output, "w", encoding="utf-8") as outputFile:
             XmlTreeWriter(root, outputFile)
     else:
         XmlTreeWriter(root, output)

@@ -608,7 +608,7 @@ def main(argv: list[str] | None = None) -> None:
             if options.emitStubs == "stdout":
                 sys.stdout.write(stubText)
             else:
-                with open(options.emitStubs, "w") as output:
+                with open(options.emitStubs, "w", encoding="utf-8") as output:
                     output.write(stubText)
         except (PyXSDError, ValueError, OSError) as e:
             print(f"pyxsd: error: {e}", file=sys.stderr)
@@ -645,7 +645,7 @@ def main(argv: list[str] | None = None) -> None:
         if options.transformCall:
             transforms = split_transform_chain(options.transformCall)
         if options.transformFile:
-            with open(options.transformFile) as fd:
+            with open(options.transformFile, encoding="utf-8") as fd:
                 transforms = [call for line in fd for call in split_transform_chain(line)]
         document = _build_document(
             inputXmlFile,
@@ -693,7 +693,7 @@ def main(argv: list[str] | None = None) -> None:
             if transformOutput == "stdout":
                 sys.stdout.write(text)
             else:
-                with open(transformOutput, "w") as output:
+                with open(transformOutput, "w", encoding="utf-8") as output:
                     output.write(text)
     except (PyXSDError, ValueError, OSError) as e:
         print(f"pyxsd: error: {e}", file=sys.stderr)

@@ -1,6 +1,9 @@
 """End-to-end tests for the command line interface and its helpers."""
 
+import os
 import shutil
+import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -615,3 +618,70 @@ class TestSchemaInfo:
         root = _unparsed_root("<inventory/>", tmp_path)
         assert schema_location_info(root, "l") is None
         assert schema_location_info(root, "n") is None
+
+
+def _run_cli_ascii_locale(args, cwd):
+    """Run the CLI under an ASCII locale, as on a non-UTF-8 machine."""
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0"}
+    return subprocess.run(
+        [sys.executable, "-m", "pyxsd", *args],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def _stage_non_ascii_instance(tmp_path):
+    """Stage the inventory fixture with non-ASCII text in a string field."""
+    stage_fixture(tmp_path, "inventory")
+    instance = tmp_path / "instance.xml"
+    text = instance.read_text(encoding="utf-8").replace("wrench", "wrenché—✓")
+    instance.write_bytes(text.encode("utf-8"))
+
+
+def test_cli_transform_file_and_display_output_are_utf8(tmp_path):
+    """PEP 686 regression: the transform chain file decodes as UTF-8 and the
+    display writer encodes as UTF-8, whatever the locale default."""
+    stage_fixture(tmp_path, "inventory")
+    (tmp_path / "chain.txt").write_bytes('PrintData("héllo—✓.xml")\n'.encode())
+    result = _run_cli_ascii_locale(["-i", "instance.xml", "-T", "chain.txt"], tmp_path)
+    assert result.returncode == 0, result.stderr
+    written = tmp_path / "héllo—✓.xml"
+    assert "<inventory" in written.read_bytes().decode("utf-8")
+
+
+def test_cli_transform_output_is_utf8(tmp_path):
+    """PEP 686 regression: a document-returning transform writes UTF-8 output."""
+    _stage_non_ascii_instance(tmp_path)
+    (tmp_path / "echo.py").write_text("def Echo(root):\n    return root\n", encoding="utf-8")
+    result = _run_cli_ascii_locale(
+        ["-i", "instance.xml", "-t", "Echo()", "-o", "out.xml"], tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert "wrenché—✓" in (tmp_path / "out.xml").read_bytes().decode("utf-8")
+
+
+def test_cli_parsed_output_is_utf8(tmp_path):
+    """PEP 686 regression: the parsed-output writer (document.write_tree) is UTF-8."""
+    _stage_non_ascii_instance(tmp_path)
+    result = _run_cli_ascii_locale(
+        ["-i", "instance.xml", "-k", "-p", "out.xml", "-o", "stdout"], tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert "wrenché—✓" in (tmp_path / "out.xml").read_bytes().decode("utf-8")
+
+
+def test_cli_emit_stubs_is_utf8(tmp_path):
+    """PEP 686 regression: stubs for non-ASCII schema names are UTF-8."""
+    (tmp_path / "s.xsd").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">\n'
+        '  <xs:element name="café" type="xs:string"/>\n'
+        "</xs:schema>\n",
+        encoding="utf-8",
+    )
+    result = _run_cli_ascii_locale(["--emit-stubs", "out.pyi", "-s", "s.xsd"], tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "café" in (tmp_path / "out.pyi").read_bytes().decode("utf-8")
