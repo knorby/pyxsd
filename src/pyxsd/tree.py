@@ -6,7 +6,7 @@ pre-order; it backs :meth:`pyxsd.document.Document.walk`,
 iteration.
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 
@@ -28,7 +28,7 @@ def iter_tree(instance: Any) -> Iterator[Any]:
     if isinstance(instance, (list, tuple)):
         for item in instance:
             yield from iter_tree(item)
-    elif isinstance(instance, dict):
+    elif isinstance(instance, Mapping):
         for item in instance.values():
             yield from iter_tree(item)
     elif hasattr(instance, "_children_") and hasattr(instance, "_attribs_"):

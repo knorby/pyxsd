@@ -66,6 +66,12 @@ def test_cli_configuration_failures_exit_two(tmp_path):
     assert missing_schema.returncode == 2
 
 
+@pytest.mark.filterwarnings(
+    # `runpy.run_path` executes the example script in a synthetic module
+    # whose globals have no `__spec__.loader`; Python 3.15's linecache
+    # deprecates that shape. It is a property of the harness, not pyxsd.
+    "ignore:Module globals is missing a __spec__.loader:DeprecationWarning"
+)
 @pytest.mark.parametrize("error", [RuntimeError, TypeError, ValueError, PyXSDError])
 def test_cli_internal_defects_exit_two_with_traceback(tmp_path, monkeypatch, capsys, error):
     schema, root = setup_files(tmp_path)

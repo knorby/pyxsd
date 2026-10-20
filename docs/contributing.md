@@ -41,7 +41,7 @@ CI does not run at all. The gitleaks hook needs its binary on PATH and
 the trufflehog hook builds with the Go toolchain on first run. To run
 every hook without installing the git hooks:
 `uv run pre-commit run --all-files`.
-Python 3.11 is the floor; CI tests 3.11–3.14.
+Python 3.11 is the floor; CI tests 3.11–3.15.
 
 Two of the gates above are env-gated because their corpora are large.
 `tests/conformance/` compiles five published schemas (FHIR R5, HL7 CDA R2,

@@ -9,6 +9,25 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Python 3.15 support: 3.15 joins the tested range (3.11–3.15). Text-mode
+  file I/O (CLI stub/transform output, transform-file loading, document and
+  display writers) is now explicitly UTF-8 on every Python version, matching
+  3.15's PEP 686 default — on Windows this changes decode behavior for
+  transform files previously read in the locale encoding.
+- Mapping results from transforms (including the 3.15 builtin `frozendict`)
+  are written as JSON by the CLI and traversed by `pyxsd.tree.iter_tree`;
+  previously only exact `dict` instances were recognized.
+
+### Fixed
+
+- Generated classes for declarations without a usable name no longer put a
+  `None` key in the class namespace; Python 3.15 warns about non-string keys
+  in a class `__dict__`.
+
 ## [1.2.0] - 2026-10-18
 
 ### Added

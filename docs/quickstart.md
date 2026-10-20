@@ -8,7 +8,7 @@ compiled extensions.
 
 ## Requirements
 
-- Python 3.11 or newer (3.11–3.14 tested)
+- Python 3.11 or newer (3.11–3.15 tested)
 - One pure-Python dependency (`elementpath`, for XSD regular expressions)
 
 ## Installation

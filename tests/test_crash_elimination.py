@@ -7,6 +7,8 @@ crash. A former crash must become either a structured validation report
 issue or a correct verdict -- never an uncaught non-``pyxsd`` exception.
 """
 
+import logging
+import warnings
 from pathlib import Path
 
 import pytest
@@ -309,6 +311,75 @@ class TestUnnamedDeclarations:
         )
         codes = [issue.code for issue in schema.report.issues]
         assert "declaration-name" in codes
+
+    def test_unnamed_declaration_does_not_enter_the_class_dict(self, tmp_path):
+        """An unnamed element must not become a ``None`` key in the generated
+        class namespace (Python 3.15 warns about non-string keys)."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            schema = _parse_schema(
+                tmp_path,
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                "<xs:attribute/></xs:schema>",
+            )
+        codes = [issue.code for issue in schema.report.issues]
+        assert "declaration-name" in codes
+
+    def test_unnamed_element_does_not_enter_the_class_dict(self, tmp_path):
+        """An unnamed global element must not become a ``None`` key either."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            schema = _parse_schema(
+                tmp_path,
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element/></xs:schema>',
+            )
+        codes = [issue.code for issue in schema.report.issues]
+        assert "declaration-name" in codes
+
+    def test_two_unnamed_attributes_get_distinct_synthetic_keys(self, tmp_path):
+        """Every unnamed attribute use keeps its own descriptor slot."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            schema = _parse_schema(
+                tmp_path,
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                "<xs:attribute/><xs:attribute/></xs:schema>",
+            )
+        codes = [issue.code for issue in schema.report.issues]
+        assert codes.count("declaration-name") == 2
+
+    def test_two_unnamed_elements_get_distinct_synthetic_keys(self, tmp_path):
+        """A second unnamed element must not overwrite the first's slot."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            schema = _parse_schema(
+                tmp_path,
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                "<xs:element/><xs:element/></xs:schema>",
+            )
+        assert [issue.code for issue in schema.report.issues].count("declaration-name") == 2
+
+    def test_synthetic_attribute_key_does_not_collide_with_a_real_name(self, tmp_path):
+        """A real ``_unnamed_attribute`` declaration must not be shadowed."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            schema = _parse_schema(
+                tmp_path,
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                '<xs:attribute name="_unnamed_attribute"/>'
+                "<xs:attribute/></xs:schema>",
+            )
+        assert [issue.code for issue in schema.report.issues].count("declaration-name") == 1
+
+    def test_unnamed_declarations_bind_without_warning_noise(self, tmp_path, caplog):
+        """Synthetic re-keying is an intentional binding, not a suspect one."""
+        with caplog.at_level(logging.WARNING):
+            _parse_schema(
+                tmp_path,
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                "<xs:attribute/><xs:element/></xs:schema>",
+            )
+        assert [r for r in caplog.records if "was bound as" in r.getMessage()] == []
 
     def test_local_attribute_with_empty_name(self, tmp_path):
         schema = _parse_schema(

@@ -21,14 +21,14 @@ class Displayer(Transform):
     def openFile(self, fileName: str | None = None) -> IO[str]:  # uses stdout if filename is None
         if fileName is None or fileName == "stdout":
             return sys.stdout
-        return open(fileName, "w")
+        return open(fileName, "w", encoding="utf-8")
 
     def writeTree(self, file: IO[str]) -> None:
         XmlTreeWriter(self.root, file)
         file.flush()
 
     def makeTempFileOfTree(self) -> IO[str]:
-        newTree = tempfile.TemporaryFile(mode="w+")  # noqa: SIM115 - returned to caller
+        newTree = tempfile.TemporaryFile(mode="w+", encoding="utf-8")  # noqa: SIM115 - returned to caller
         try:
             self.writeTree(newTree)
         except BaseException:
