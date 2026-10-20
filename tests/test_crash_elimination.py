@@ -348,6 +348,29 @@ class TestUnnamedDeclarations:
         codes = [issue.code for issue in schema.report.issues]
         assert codes.count("declaration-name") == 2
 
+    def test_two_unnamed_elements_get_distinct_synthetic_keys(self, tmp_path):
+        """A second unnamed element must not overwrite the first's slot."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            schema = _parse_schema(
+                tmp_path,
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                "<xs:element/><xs:element/></xs:schema>",
+            )
+        assert [issue.code for issue in schema.report.issues].count("declaration-name") == 2
+
+    def test_synthetic_attribute_key_does_not_collide_with_a_real_name(self, tmp_path):
+        """A real ``_unnamed_attribute`` declaration must not be shadowed."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            schema = _parse_schema(
+                tmp_path,
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                '<xs:attribute name="_unnamed_attribute"/>'
+                "<xs:attribute/></xs:schema>",
+            )
+        assert [issue.code for issue in schema.report.issues].count("declaration-name") == 1
+
     def test_unnamed_declarations_bind_without_warning_noise(self, tmp_path, caplog):
         """Synthetic re-keying is an intentional binding, not a suspect one."""
         with caplog.at_level(logging.WARNING):

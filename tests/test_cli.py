@@ -622,10 +622,12 @@ class TestSchemaInfo:
 
 
 def _run_cli_ascii_locale(args, cwd):
-    """Run the CLI under an ASCII file-system locale, as on a non-UTF-8 machine.
+    """Run the CLI under an ASCII locale, as on a non-UTF-8 machine.
 
     Standard streams stay UTF-8 (``PYTHONIOENCODING``) so only file opens are
-    subject to the locale default; ``open()`` ignores that variable.
+    subject to the locale default; ``open()`` ignores that variable. The
+    *filesystem* encoding is also ASCII on Linux under ``LC_ALL=C``, so these
+    tests use ASCII file names and put non-ASCII text in file contents.
     """
     env = {
         **os.environ,
@@ -652,15 +654,26 @@ def _stage_non_ascii_instance(tmp_path):
     instance.write_bytes(text.encode("utf-8"))
 
 
-def test_cli_transform_file_and_display_output_are_utf8(tmp_path):
-    """PEP 686 regression: the transform chain file decodes as UTF-8 and the
-    display writer encodes as UTF-8, whatever the locale default."""
-    _stage_non_ascii_instance(tmp_path)
-    (tmp_path / "chain.txt").write_bytes('PrintData("héllo—✓.xml")\n'.encode())
-    result = _run_cli_ascii_locale(["-i", "instance.xml", "-T", "chain.txt"], tmp_path)
+def test_cli_transform_file_is_read_as_utf8(tmp_path):
+    """PEP 686 regression: the transform chain file decodes as UTF-8."""
+    stage_fixture(tmp_path, "inventory")
+    (tmp_path / "tag.py").write_text(
+        "def Tag(root, label=None):\n    return root\n", encoding="utf-8"
+    )
+    (tmp_path / "chain.txt").write_bytes('Tag("héllo—✓")\n'.encode())
+    result = _run_cli_ascii_locale(
+        ["-i", "instance.xml", "-T", "chain.txt", "-o", "out.xml"], tmp_path
+    )
     assert result.returncode == 0, result.stderr
-    written = tmp_path / "héllo—✓.xml"
-    assert "<inventory" in written.read_bytes().decode("utf-8")
+    assert "<inventory" in (tmp_path / "out.xml").read_bytes().decode("utf-8")
+
+
+def test_cli_display_output_is_utf8(tmp_path):
+    """PEP 686 regression: the display writer encodes output as UTF-8."""
+    _stage_non_ascii_instance(tmp_path)
+    result = _run_cli_ascii_locale(["-i", "instance.xml", "-t", 'PrintData("out.xml")'], tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "wrenché—✓" in (tmp_path / "out.xml").read_bytes().decode("utf-8")
 
 
 def test_cli_transform_output_is_utf8(tmp_path):
