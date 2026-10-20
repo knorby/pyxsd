@@ -1325,6 +1325,10 @@ class XsdType(ElementRepresentative):
                     while key in namespace:
                         key = f"_unnamed_element_{counter}"
                         counter += 1
+                    # The synthetic key is an intentional binding (the
+                    # declaration is already in error); mark it so the
+                    # descriptor logs at debug instead of warning.
+                    element._aliased_ = True
                 namespace[key] = element
 
         # An inherited element shadowed by a derived attribute needs a
@@ -1355,6 +1359,8 @@ class XsdType(ElementRepresentative):
                 while key in namespace:
                     key = f"_unnamed_attribute_{counter}"
                     counter += 1
+                # Intentional binding (see the unnamed-element branch).
+                attr._aliased_ = True
             if key in namespace:
                 # Two attribute uses share a local name but differ in
                 # namespace (attQ019): bind the later one under a unique
