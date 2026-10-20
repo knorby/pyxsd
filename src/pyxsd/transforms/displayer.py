@@ -28,7 +28,7 @@ class Displayer(Transform):
         file.flush()
 
     def makeTempFileOfTree(self) -> IO[str]:
-        newTree = tempfile.TemporaryFile(mode="w+")  # noqa: SIM115 - returned to caller
+        newTree = tempfile.TemporaryFile(mode="w+", encoding="utf-8")  # noqa: SIM115 - returned to caller
         try:
             self.writeTree(newTree)
         except BaseException:

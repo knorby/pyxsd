@@ -1,5 +1,8 @@
 """Tests for the transform framework and the shipped standard transforms."""
 
+import builtins
+import os
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -101,6 +104,18 @@ class TestTransformBase:
         root = make_tree()
         names = [node._name_ for node in walker.iter_tree({"k": [root, root]})]
         assert names == ["root", "alpha", "beta", "alpha"] * 2
+
+    @pytest.mark.skipif(sys.version_info < (3, 15), reason="frozendict is a 3.15 builtin")
+    def test_iter_tree_descends_into_frozendict(self, walker):
+        root = make_tree()
+        # Looked up dynamically so ruff's py311 target does not see the name.
+        frozen = builtins.frozendict({"k": [root, root]})  # type: ignore[attr-defined]
+        assert [node._name_ for node in walker.iter_tree(frozen)] == [
+            "root",
+            "alpha",
+            "beta",
+            "alpha",
+        ] * 2
 
     def test_iter_tree_skips_non_tree_objects(self, walker):
         assert list(walker.iter_tree([1, "two", None])) == []
@@ -244,3 +259,44 @@ class TestTransformsAsPlainCallables:
         parsed = ET.parse(target)
         assert canonicalize(parsed.getroot())[0] == "inventory"
         assert result.to_string() == document.to_string()
+
+
+def test_make_temp_file_of_tree_is_utf8_under_ascii_locale(tmp_path):
+    """PEP 686 regression: the displayer's temp stream is explicitly UTF-8."""
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "from pyxsd.transforms.displayer import Displayer\n"
+        "\n"
+        "\n"
+        "class Probe(Displayer):\n"
+        "    def __init__(self):\n"
+        "        pass\n"
+        "\n"
+        "    def __call__(self):\n"
+        "        return None\n"
+        "\n"
+        "\n"
+        "probe = Probe()\n"
+        "element = probe.makeElemObj('r')\n"
+        "element._value_ = 'é—✓'\n"
+        "probe.root = element\n"
+        "print(probe.makeTempFileOfTree().read())\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "LC_ALL": "C",
+        "LANG": "C",
+        "PYTHONUTF8": "0",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "é—✓" in result.stdout

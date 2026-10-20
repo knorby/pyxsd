@@ -18,6 +18,15 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   display writers) is now explicitly UTF-8 on every Python version, matching
   3.15's PEP 686 default — on Windows this changes decode behavior for
   transform files previously read in the locale encoding.
+- Mapping results from transforms (including the 3.15 builtin `frozendict`)
+  are written as JSON by the CLI and traversed by `pyxsd.tree.iter_tree`;
+  previously only exact `dict` instances were recognized.
+
+### Fixed
+
+- Generated classes for declarations without a usable name no longer put a
+  `None` key in the class namespace; Python 3.15 warns about non-string keys
+  in a class `__dict__`.
 
 ## [1.2.0] - 2026-10-18
 

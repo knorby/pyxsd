@@ -11,7 +11,7 @@ import pkgutil
 import re
 import sys
 import tokenize
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import IO, Any, Literal
@@ -676,7 +676,7 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 lastWasDocument = False
 
-        if transforms and (lastWasDocument or isinstance(lastResult, dict)):
+        if transforms and (lastWasDocument or isinstance(lastResult, Mapping)):
             transformOutput: str | Path = options.transformOutputFile
             if not transformOutput:
                 transformOutput = _default_transform_output(inputXmlFile)
@@ -687,9 +687,11 @@ def main(argv: list[str] | None = None) -> None:
             if lastWasDocument:
                 text = document.to_string()
             else:
-                # A dict-returning transform (for example ``ToDict``) is
-                # rendered as JSON rather than XML.
-                text = json.dumps(lastResult, indent=2, default=str)
+                # A mapping-returning transform (for example ``ToDict``, or
+                # the 3.15 builtin ``frozendict``) is rendered as JSON rather
+                # than XML. Convert to a plain dict first: ``json`` only
+                # learned to serialize arbitrary mappings in 3.15.
+                text = json.dumps(dict(lastResult), indent=2, default=str)
             if transformOutput == "stdout":
                 sys.stdout.write(text)
             else:

@@ -1,5 +1,6 @@
 """End-to-end tests for the command line interface and its helpers."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -621,8 +622,18 @@ class TestSchemaInfo:
 
 
 def _run_cli_ascii_locale(args, cwd):
-    """Run the CLI under an ASCII locale, as on a non-UTF-8 machine."""
-    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0"}
+    """Run the CLI under an ASCII file-system locale, as on a non-UTF-8 machine.
+
+    Standard streams stay UTF-8 (``PYTHONIOENCODING``) so only file opens are
+    subject to the locale default; ``open()`` ignores that variable.
+    """
+    env = {
+        **os.environ,
+        "LC_ALL": "C",
+        "LANG": "C",
+        "PYTHONUTF8": "0",
+        "PYTHONIOENCODING": "utf-8",
+    }
     return subprocess.run(
         [sys.executable, "-m", "pyxsd", *args],
         cwd=cwd,
@@ -644,7 +655,7 @@ def _stage_non_ascii_instance(tmp_path):
 def test_cli_transform_file_and_display_output_are_utf8(tmp_path):
     """PEP 686 regression: the transform chain file decodes as UTF-8 and the
     display writer encodes as UTF-8, whatever the locale default."""
-    stage_fixture(tmp_path, "inventory")
+    _stage_non_ascii_instance(tmp_path)
     (tmp_path / "chain.txt").write_bytes('PrintData("héllo—✓.xml")\n'.encode())
     result = _run_cli_ascii_locale(["-i", "instance.xml", "-T", "chain.txt"], tmp_path)
     assert result.returncode == 0, result.stderr
@@ -685,3 +696,18 @@ def test_cli_emit_stubs_is_utf8(tmp_path):
     result = _run_cli_ascii_locale(["--emit-stubs", "out.pyi", "-s", "s.xsd"], tmp_path)
     assert result.returncode == 0, result.stderr
     assert "café" in (tmp_path / "out.pyi").read_bytes().decode("utf-8")
+
+
+def test_frozendict_transform_output_is_written(tmp_path):
+    """A transform returning the 3.15 frozendict must not vanish silently."""
+    if sys.version_info < (3, 15):
+        pytest.skip("frozendict is a 3.15 builtin")
+    stage_fixture(tmp_path, "inventory")
+    (tmp_path / "froz_probe.py").write_text(
+        "def FrozProbe(root):\n    return frozendict({'a': 1})\n", encoding="utf-8"
+    )
+    result = _run_cli_ascii_locale(
+        ["-i", "instance.xml", "-t", "FrozProbe()", "-o", "out.json"], tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "out.json").read_text(encoding="utf-8")) == {"a": 1}
