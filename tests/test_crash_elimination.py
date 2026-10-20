@@ -7,6 +7,7 @@ crash. A former crash must become either a structured validation report
 issue or a correct verdict -- never an uncaught non-``pyxsd`` exception.
 """
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -307,6 +308,19 @@ class TestUnnamedDeclarations:
             tmp_path,
             '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:attribute/></xs:schema>',
         )
+        codes = [issue.code for issue in schema.report.issues]
+        assert "declaration-name" in codes
+
+    def test_unnamed_declaration_does_not_enter_the_class_dict(self, tmp_path):
+        """An unnamed element must not become a ``None`` key in the generated
+        class namespace (Python 3.15 warns about non-string keys)."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            schema = _parse_schema(
+                tmp_path,
+                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                "<xs:attribute/></xs:schema>",
+            )
         codes = [issue.code for issue in schema.report.issues]
         assert "declaration-name" in codes
 

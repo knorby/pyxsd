@@ -1314,7 +1314,18 @@ class XsdType(ElementRepresentative):
             else:
                 # The plain-string case is the historical quirk where
                 # an element named 'name' replaces the name metadata.
-                namespace[element.name] = element
+                # An unnamed declaration (already reported as
+                # ``declaration-name``) cannot be reached by name;
+                # give it a synthetic key so the class ``__dict__``
+                # keeps only string keys (Python 3.15 warns about
+                # non-string keys).
+                key = element.name if isinstance(element.name, str) else "_unnamed_element"
+                if not isinstance(element.name, str):
+                    counter = 2
+                    while key in namespace:
+                        key = f"_unnamed_element_{counter}"
+                        counter += 1
+                namespace[key] = element
 
         # An inherited element shadowed by a derived attribute needs a
         # per-derived-class alias: the base descriptor cannot be
@@ -1335,6 +1346,15 @@ class XsdType(ElementRepresentative):
         for attr in attributes:
             attr.host = host
             key = attr.name
+            if not isinstance(key, str):
+                # An unnamed attribute use (already reported as
+                # ``declaration-name``) cannot be reached by name; a
+                # synthetic key keeps the class ``__dict__`` string-only.
+                key = "_unnamed_attribute"
+                counter = 2
+                while key in namespace:
+                    key = f"_unnamed_attribute_{counter}"
+                    counter += 1
             if key in namespace:
                 # Two attribute uses share a local name but differ in
                 # namespace (attQ019): bind the later one under a unique
