@@ -41,15 +41,17 @@ def test_parallel_compiles_of_different_schemas():
 
 def test_parallel_parses_on_separate_schemas():
     directory = fixture_dir("inventory")
+    # ``to_dict`` is timestamp-free; ``to_string`` embeds a generation time
+    # in its leading comment and would flake across a second boundary.
     expected = (
         Schema.compile(str(directory / "schema.xsd"))
         .parse(str(directory / "instance.xml"))
-        .to_string()
+        .to_dict()
     )
 
     def compile_and_parse(i, barrier):
         schema = Schema.compile(str(directory / "schema.xsd"))
         barrier.wait()
-        assert schema.parse(str(directory / "instance.xml")).to_string() == expected
+        assert schema.parse(str(directory / "instance.xml")).to_dict() == expected
 
     run_threaded(compile_and_parse, pass_count=True)
