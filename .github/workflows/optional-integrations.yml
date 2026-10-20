@@ -37,8 +37,18 @@ jobs:
         run: |
           WHEEL=$(find dist -name '*.whl' -print -quit)
           if [ "$DEPENDENCIES" = minimum ]; then
-            uv pip install "$WHEEL[pydantic,arrow]" 'pydantic==2.12.5' 'pyarrow==22.0.0' 'pytest>=8.4' 'pytest-cov>=7'
-            .venv/bin/python -c 'import importlib.metadata as m; assert (m.version("pydantic"), m.version("pyarrow")) == ("2.12.5", "22.0.0")'
+            # The 3.11–3.14 floors predate Python 3.15 and publish no cp315
+            # wheels (their sdists compile Arrow C++ / Rust). On 3.15 the
+            # floor is the first release with wheels for the compiled parts.
+            if [ "$PYTHON_VERSION" = "3.15" ]; then
+              PYARROW=26.0.0
+              PYDANTIC=2.14.1
+            else
+              PYARROW=22.0.0
+              PYDANTIC=2.12.5
+            fi
+            uv pip install "$WHEEL[pydantic,arrow]" "pyarrow==$PYARROW" "pydantic==$PYDANTIC" 'pytest>=8.4' 'pytest-cov>=7'
+            .venv/bin/python -c "import importlib.metadata as m; assert (m.version('pydantic'), m.version('pyarrow')) == ('$PYDANTIC', '$PYARROW')"
           else
             uv pip install "$WHEEL[pydantic,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
           fi
@@ -73,6 +83,12 @@ jobs:
       matrix:
         python: ["3.11", "3.14", "3.15"]
         consumer: [duckdb, polars]
+        # duckdb publishes no cp315 wheels yet (1.5.6 tops out at cp314), so
+        # the 3.15 job would compile DuckDB C++ inside a 15-minute timeout.
+        # Revisit when a 3.15 wheel ships.
+        exclude:
+          - python: "3.15"
+            consumer: duckdb
     env:
       PYTHON_VERSION: ${{ matrix.python }}
       CONSUMER: ${{ matrix.consumer }}
