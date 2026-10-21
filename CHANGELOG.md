@@ -9,7 +9,7 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
-## [Unreleased]
+## [1.2.1] - 2026-10-20
 
 ### Added
 
@@ -26,7 +26,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 - Generated classes for declarations without a usable name no longer put a
   `None` key in the class namespace; Python 3.15 warns about non-string keys
-  in a class `__dict__`.
+  in a class `__dict__`. Such declarations bind under synthetic
+  `_unnamed_element` / `_unnamed_attribute` keys (numbered on collision),
+  marked as intentional so they log at debug rather than warning.
 
 ## [1.2.0] - 2026-10-18
 
