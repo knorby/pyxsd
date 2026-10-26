@@ -26,6 +26,11 @@ class FileRef(WireModel):
     revision: Nonempty | None = None
 
 
+class InlineFile(WireModel):
+    path: Nonempty
+    text: str
+
+
 class CompileOptions(WireModel):
     binding: Literal["lax", "strict"] = "lax"
     namespaces: Literal["strict", "legacy"] = "strict"

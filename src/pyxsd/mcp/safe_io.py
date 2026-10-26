@@ -2,12 +2,15 @@
 
 import hashlib
 import os
+import re
 import stat
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import Limits
+from .contracts import InlineFile
 from .errors import ToolError
 
 
@@ -43,6 +46,46 @@ def validate_paths(paths: Sequence[str]) -> tuple[str, ...]:
             spellings[key] = prefix
         files.add(key)
     return tuple(paths)
+
+
+@dataclass(frozen=True)
+class AdmittedFile:
+    path: str
+    content: bytes
+
+
+def admit_inline(files: Sequence[InlineFile], limits: Limits) -> tuple[AdmittedFile, ...]:
+    """Encode a small UTF-8 bundle without parsing XML on the coordinator.
+
+    Only complete leading XML declarations are inspected for conflicting encoding
+    labels. Well-formedness and hostile XML checks belong to constrained workers;
+    other files, such as transformation source, need not contain XML at all.
+    """
+    validate_paths([item.path for item in files])
+    admitted: list[AdmittedFile] = []
+    total = 0
+    for item in files:
+        try:
+            content = item.text.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ToolError("invalid_encoding", "Inline text must be valid UTF-8") from exc
+        total += len(content)
+        if total > limits.inline_bytes or len(content) > limits.xml_file_bytes:
+            raise ToolError("quota_exceeded", "Inline file byte budget exceeded")
+        start = re.match(r"\ufeff?<\?xml(?=\s)", item.text)
+        if start is not None:
+            end = item.text.find("?>", start.end())
+            if end >= 0:
+                encoding = re.search(
+                    r"\bencoding\s*=\s*(['\"])([^'\"]*)\1", item.text[start.end() : end]
+                )
+                if encoding is not None and encoding[2].lower() not in ("utf-8", "utf8"):
+                    raise ToolError(
+                        "invalid_encoding",
+                        "Inline XML must declare UTF-8; upload original bytes otherwise",
+                    )
+        admitted.append(AdmittedFile(item.path, content))
+    return tuple(admitted)
 
 
 @dataclass(frozen=True)
