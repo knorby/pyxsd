@@ -38,6 +38,38 @@ class RecordingPolicy:
         return root
 
 
+def test_optional_report_factory_bounds_schema_instance_and_merged_reports(tmp_path):
+    from pyxsd.validation import ValidationReport
+
+    class BoundedPolicy(RecordingPolicy):
+        def __init__(self, root):
+            super().__init__(root)
+            self.reports = []
+
+        def new_report(self):
+            report = ValidationReport(max_issues=0, max_message_bytes=16)
+            self.reports.append(report)
+            return report
+
+    source = (
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="r" type="xs:string"/>'
+        '<xs:element name="r" type="xs:int"/></xs:schema>'
+    )
+    policy = BoundedPolicy(tmp_path)
+    schema = pyxsd.compile(io.StringIO(source), resource_policy=policy)
+    document = schema.parse(io.StringIO("<r>bad</r>"))
+    assert [report.error_count for report in policy.reports] == [1, 1, 2]
+    assert all(len(report) == 0 for report in policy.reports)
+    assert schema.report is policy.reports[0]
+    assert document.report is policy.reports[2]
+
+    unlimited = RecordingPolicy(tmp_path)
+    schema = pyxsd.compile(io.StringIO(source), resource_policy=unlimited)
+    document = schema.parse(io.StringIO("<r>bad</r>"))
+    assert len(schema.report) == 1
+    assert len(document.report) == 2
+
+
 @pytest.mark.parametrize("directive", ["include", "import", "redefine", "override"])
 def test_composition_reads_and_parses_have_the_including_source_base(tmp_path, directive):
     (tmp_path / "parts").mkdir()

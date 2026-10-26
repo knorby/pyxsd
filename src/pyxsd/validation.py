@@ -17,7 +17,7 @@ import json
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -106,6 +106,22 @@ class ValidationIssue:
         return f"{prefix} {self.message}"
 
 
+def _bounded_message(message: str, max_bytes: int | None) -> str:
+    if max_bytes is None or len(message.encode("utf-8")) <= max_bytes:
+        return message
+    if max_bytes <= 3:
+        return "." * max_bytes
+    prefix = []
+    size = 0
+    for character in message:
+        width = len(character.encode("utf-8"))
+        if size + width > max_bytes - 3:
+            break
+        prefix.append(character)
+        size += width
+    return "".join(prefix) + "..."
+
+
 class ValidationReport:
     """An ordered collection of validation issues.
 
@@ -115,10 +131,17 @@ class ValidationReport:
     the reports in as it walks the schema and instance documents.
     """
 
-    def __init__(self, *, max_issues: int | None = None) -> None:
+    def __init__(
+        self, *, max_issues: int | None = None, max_message_bytes: int | None = None
+    ) -> None:
         if max_issues is not None and (type(max_issues) is not int or max_issues < 0):
             raise ValueError("max_issues must be a non-negative integer or None")
+        if max_message_bytes is not None and (
+            type(max_message_bytes) is not int or max_message_bytes < 0
+        ):
+            raise ValueError("max_message_bytes must be a non-negative integer or None")
         self._max_issues = max_issues
+        self._max_message_bytes = max_message_bytes
         self._issues: list[ValidationIssue] = []
         self._error_count = 0
         self._warning_count = 0
@@ -195,7 +218,10 @@ class ValidationReport:
 
     def _retain(self, issue: ValidationIssue) -> None:
         if self._max_issues is None or len(self._issues) < self._max_issues:
-            self._issues.append(issue)
+            message = _bounded_message(issue.message, self._max_message_bytes)
+            self._issues.append(
+                issue if message == issue.message else replace(issue, message=message)
+            )
 
     @contextmanager
     def _at(

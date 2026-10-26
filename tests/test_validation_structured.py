@@ -43,6 +43,37 @@ def test_zero_detail_budget_does_not_hide_findings():
 def test_invalid_report_budgets_rejected(budget):
     with pytest.raises(ValueError, match="max_issues"):
         ValidationReport(max_issues=budget)
+    with pytest.raises(ValueError, match="max_message_bytes"):
+        ValidationReport(max_message_bytes=budget)
+
+
+@pytest.mark.parametrize(
+    "budget,message,expected",
+    [
+        (8, "abcdefghi", "abcde..."),
+        (8, "ééééé", "éé..."),
+        (1, "abc", "."),
+        (2, "abc", ".."),
+        (3, "abcd", "..."),
+        (8, "short", "short"),
+    ],
+)
+def test_message_budget_truncates_visibly_on_utf8_boundaries(budget, message, expected):
+    report = ValidationReport(max_message_bytes=budget)
+    report.add_error(message, code="value")
+    assert report.issues[0].message == expected
+    assert len(expected.encode("utf-8")) <= budget
+    assert report.error_count == 1
+
+
+def test_merged_report_applies_its_own_message_budget_without_changing_counts():
+    source = ValidationReport()
+    source.add_error("abcdefghi", code="value")
+    target = ValidationReport(max_message_bytes=8)
+    target.extend(source)
+    assert target.issues[0].message == "abcde..."
+    assert (target.error_count, target.suppressed_count) == (1, 0)
+    assert source.issues[0].message == "abcdefghi"
 
 
 def test_extending_bounded_reports_counts_each_finding_once():

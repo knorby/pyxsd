@@ -221,6 +221,12 @@ details. A report can therefore be truthy with zero retained details; `len(repor
 still counts retained details. Merging a report preserves its aggregate counts
 even when the receiving report has a different detail budget.
 
+`ValidationReport(max_message_bytes=N)` visibly truncates retained messages to at
+most `N` UTF-8 bytes without splitting a character. Truncation does not change
+issue counts or suppressed-detail accounting. The default is unlimited. Resource
+policies may optionally provide `new_report()` to apply these budgets consistently
+to schema, instance, and merged reports; policies without it retain core defaults.
+
 Location and constraint fields are optional: an absent location does not imply
 that an issue refers to the first element with that name. Facet violations expose
 typed constraint evidence at their source. Existing issue formatting and
