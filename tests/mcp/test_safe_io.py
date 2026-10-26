@@ -247,3 +247,15 @@ def test_inconsistent_regular_file_size_is_rejected(tmp_path, monkeypatch):
         monkeypatch.setattr(os, "fstat", reported_size)
         with pytest.raises(ToolError, match="source_changed"):
             directory.read("input", max_bytes=10)
+
+
+def test_filesystem_encoding_errors_are_typed_denials(tmp_path, monkeypatch):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    def ascii_only_open(*args, **kwargs):
+        raise UnicodeEncodeError("ascii", "\u00e9", 0, 1, "not encodable")
+
+    with SafeDirectory(tmp_path) as directory:
+        monkeypatch.setattr(os, "open", ascii_only_open)
+        with pytest.raises(ToolError, match="unsafe_path"):
+            directory.read("input", max_bytes=10)

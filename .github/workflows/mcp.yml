@@ -45,9 +45,9 @@ jobs:
             if [ "$PYTHON_VERSION" = "3.15" ]; then
               PYDANTIC=2.14.1
             fi
-            uv pip install "$WHEEL[mcp]" 'mcp==2.3.0' "pydantic==$PYDANTIC" 'defusedxml==0.7.1' "anyio==$ANYIO" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18'
+            uv pip install "$WHEEL[mcp]" 'mcp==2.3.0' "pydantic==$PYDANTIC" 'defusedxml==0.7.1' "anyio==$ANYIO" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18' 'types-defusedxml>=0.7.0.20260504'
           else
-            uv pip install "$WHEEL[mcp]" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18'
+            uv pip install "$WHEEL[mcp]" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18' 'types-defusedxml>=0.7.0.20260504'
           fi
       - name: Type-check MCP modules with the real optional dependencies
         run: .venv/bin/python -m mypy src/pyxsd/mcp

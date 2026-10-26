@@ -111,7 +111,7 @@ class SafeDirectory:
         except FileNotFoundError:
             # Composition distinguishes a missing import from an access denial.
             raise
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             raise ToolError("unsafe_path", "Input path cannot be admitted") from exc
         finally:
             os.close(current)

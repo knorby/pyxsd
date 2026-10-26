@@ -62,6 +62,7 @@ dev = [
     # Independent XSD oracle. The CI workflow runs it as a required
     # job (PYXSD_RUN_ORACLE=1); locally it is env-gated.
     "xmlschema>=4",
+    "types-defusedxml>=0.7.0.20260504",
 ]
 docs = [
     "sphinx>=8.2",
