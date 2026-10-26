@@ -88,7 +88,8 @@ class WorkspaceStore:
         # cleanup must never make a partially removed workspace leasable again.
         await self.state.run(
             lambda db: db.execute(
-                "UPDATE workspaces SET status='closing' WHERE status='open' AND expires<=?",
+                "UPDATE workspaces SET status='closing' "
+                "WHERE status='open' AND leases=0 AND expires<=?",
                 (self.clock(),),
             ).close()
         )
@@ -169,7 +170,8 @@ class WorkspaceStore:
 
         def acquire(db: sqlite3.Connection) -> Workspace | None:
             row = db.execute(
-                "SELECT * FROM workspaces WHERE id=? AND owner=? AND status='open' AND expires>?",
+                "SELECT * FROM workspaces WHERE id=? AND owner=? AND status='open' "
+                "AND (expires>? OR leases>0)",
                 (workspace_id, principal.owner_id, self.clock()),
             ).fetchone()
             if row is None:
@@ -189,7 +191,11 @@ class WorkspaceStore:
         finally:
 
             def relinquish(db: sqlite3.Connection) -> None:
-                db.execute("UPDATE workspaces SET leases=leases-1 WHERE id=?", (workspace_id,))
+                db.execute(
+                    "UPDATE workspaces SET leases=leases-1, "
+                    "expires=CASE WHEN status='open' THEN ? ELSE expires END WHERE id=?",
+                    (self.clock() + self.limits.workspace_idle_seconds, workspace_id),
+                )
 
             with anyio.CancelScope(shield=True):
                 await self.state.run(relinquish)
