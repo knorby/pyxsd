@@ -34,6 +34,7 @@ classifiers = [
 [project.optional-dependencies]
 pydantic = ["pydantic>=2.12.5,<3"]
 arrow = ["pyarrow>=22"]
+mcp = ["mcp>=2.3,<3", "pydantic>=2.12.5,<3", "defusedxml>=0.7.1,<1"]
 
 [project.urls]
 Homepage = "https://github.com/knorby/pyxsd"

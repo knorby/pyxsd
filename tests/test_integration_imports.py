@@ -30,9 +30,9 @@ s = pyxsd.compile(StringIO('<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchem
 assert s.parse(StringIO('<r>7</r>')).to_dict() == {'$': 7}
 plan = compile_projection(s, element='r', path=(), columns={'v': FieldSource()})
 assert list(iter_projected_rows(plan, s.parse(StringIO('<r>7</r>')), selector=None, namespaces=None)) == [{'v': 7}]
-assert 'pydantic' not in sys.modules and 'pyarrow' not in sys.modules
+assert not {'pydantic', 'pyarrow', 'mcp', 'defusedxml'} & sys.modules.keys()
 """,
-        ["pydantic", "pyarrow"],
+        ["pydantic", "pyarrow", "mcp", "defusedxml"],
     )
 
 
