@@ -100,6 +100,13 @@ def test_merged_report_applies_its_own_message_budget_without_changing_counts():
     assert source.issues[0].message == "abcdefghi"
 
 
+def test_unlimited_message_budget_preserves_legacy_surrogate_text():
+    report = ValidationReport()
+    report.add_error("\ud800", code="value")
+    assert report.issues[0].message == "\ud800"
+    assert json.loads(report.to_json())["issues"][0]["message"] == "\ud800"
+
+
 def test_extending_bounded_reports_counts_each_finding_once():
     source = ValidationReport(max_issues=1)
     source.add_warning("hint", code="hint", phase="schema")
