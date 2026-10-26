@@ -375,8 +375,9 @@ class Schema:
         # attached to this schema's shared host, so parses against one
         # ``Schema`` instance must not run concurrently -- a second
         # parse would overwrite the indexes the first is still using.
-        # Moving them into a per-parse context is the tracked post-1.0
-        # fix.
+        # They are transient binding indexes, not document storage. Clear
+        # them even when binding raises so a cached Schema never retains
+        # the most recently parsed source tree through these parent links.
         host = self._host
         if host is not None:
             host._elementParents = {}
@@ -391,8 +392,13 @@ class Schema:
         # so this parse's fresh report is installed (and restored) around
         # the binding run; generated classes keep their ``cls.schema``
         # stamp, whose report is the frozen compilation report.
-        with active_context(context), context_report(context, instance_report):
-            root = bind_instance(self, tree, instance_report)
+        try:
+            with active_context(context), context_report(context, instance_report):
+                root = bind_instance(self, tree, instance_report)
+        finally:
+            if host is not None:
+                host._elementParents.clear()
+                host._elementTypes.clear()
 
         # One merged report per document: the schema phase's issues
         # followed by this parse's instance issues. Issue objects are
