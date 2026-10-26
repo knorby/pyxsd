@@ -211,7 +211,14 @@ class _Index:
             for key, er in all_representatives.items()
             if componentKind(er) not in (None, "schema")
         }
-        self.ids = {key: _component_id(schema, er) for key, er in representatives.items()}
+        collisions: dict[str, list[tuple[int, Any]]] = {}
+        for key, er in representatives.items():
+            collisions.setdefault(_component_id(schema, er), []).append((key, er))
+        self.ids: dict[int, str] = {}
+        for base_id, declarations in collisions.items():
+            declarations.sort(key=lambda item: _declaration_order(schema, item[1]))
+            for occurrence, (key, _) in enumerate(declarations, start=1):
+                self.ids[key] = base_id if occurrence == 1 else f"{base_id}#{occurrence}"
         self.node_ids = {id(er.xsdElement): self.ids[key] for key, er in representatives.items()}
         self.type_ers = {
             id(er._generatedClass): er
@@ -221,7 +228,7 @@ class _Index:
         }
         self.type_ids = {key: self.ids[id(er)] for key, er in self.type_ers.items()}
         self.classes: dict[str, type] = {}
-        self.elements: dict[str, int] = {}
+        self.elements: dict[str, Any] = {}
         self.components = {}
         for key, er in representatives.items():
             component_id = self.ids[key]
@@ -229,7 +236,7 @@ class _Index:
             if cls is not None:
                 self.classes[component_id] = cls
             if componentKind(er) == "element" and er.isGlobalDeclaration():
-                self.elements[component_id] = key
+                self.elements[component_id] = er
             self.components[component_id] = self._describe(schema, er, cls)
         self.edges: dict[str, tuple[str, ...]] = {}
         reverse: dict[str, list[str]] = {key: [] for key in self.components}
@@ -448,6 +455,13 @@ def _index(schema: Schema) -> _Index:
     return index
 
 
+def _declaration_order(schema: Schema, er: Any) -> tuple[str, tuple[tuple[str, int], ...]]:
+    location = schema.declaration_origins.get(er.xsdElement)
+    if location is None:
+        return "", ()
+    return location.source or "", tuple((step.name, step.index) for step in location.path)
+
+
 def _component_id(schema: Schema, er: Any) -> str:
     from pyxsd.element_representatives.element_representative import componentKind
 
@@ -544,5 +558,5 @@ def _stub_selection(
         )
     return (
         frozenset(id(index.classes[key]) for key in selected if key in index.classes),
-        frozenset(index.elements[key] for key in selected if key in index.elements),
+        frozenset(id(index.elements[key]) for key in selected if key in index.elements),
     )

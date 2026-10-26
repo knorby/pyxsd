@@ -397,3 +397,42 @@ def test_mcp_introspection_encodes_nonfinite_xsd_double_facets():
     )
     encoded = encode_value(describe_schema(schema))
     assert "NaN" in json.dumps(encoded, allow_nan=False)
+
+
+def test_duplicate_global_declarations_remain_individually_addressable():
+    from pyxsd.introspection import describe_component, describe_schema, related_components
+
+    schema = compile_schema(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:element name="r" type="xs:string"/>'
+        '<xs:element name="r" type="xs:int"/>'
+        '<xs:element name="r" type="xs:string"/></xs:schema>'
+    )
+    assert schema.report.has_errors
+    description = describe_schema(schema)
+    elements = {
+        item.location.path[-1].index: item
+        for item in description.components
+        if item.kind == "element"
+    }
+    assert set(elements) == {1, 2, 3}
+    assert [elements[index].id for index in (1, 2, 3)] == [
+        "element:r",
+        "element:r#2",
+        "element:r#3",
+    ]
+    assert [elements[index].python_type for index in (1, 2, 3)] == ["String", "Int", "String"]
+    assert set(description.roots) == {item.id for item in elements.values()}
+    for item in elements.values():
+        assert describe_component(schema, item.id) == item
+        assert related_components(schema, item.id, direction="uses", depth=1) == ()
+
+
+def test_unique_global_declaration_keeps_its_unsuffixed_id():
+    from pyxsd.introspection import describe_schema
+
+    schema = compile_schema(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:element name="r" type="xs:string"/></xs:schema>'
+    )
+    assert describe_schema(schema).roots == ("element:r",)
