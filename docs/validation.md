@@ -1,19 +1,34 @@
 # Validation
 
-pyxsd is a **lax validator**: it never aborts on bad data. Every problem it
-finds is recorded as a `ValidationIssue` in a
-{class}`~pyxsd.validation.ValidationReport`. A compiled schema reports its
-own findings at `Schema.report`; a bound document reports the merged run —
+pyxsd reports recoverable schema and instance findings in a
+{class}`~pyxsd.validation.ValidationReport` rather than raising on the first
+one. Each finding is a `ValidationIssue`. A compiled schema reports its own
+findings at `Schema.report`; a bound document reports the merged run —
 schema-phase issues followed by instance-phase issues — at
-`Document.report`. A run can produce a complete object tree and a full
-error report at the same time.
+`Document.report`. A run can produce a bound object tree and multiple
+validation findings at the same time.
+
+Reporting is non-fatal only when parsing can proceed. An unreadable or
+malformed input, or a document whose root is not `xs:schema`, raises
+{class}`~pyxsd.exceptions.PyXSDError` instead of returning a partial report.
+An undeclared instance root is recoverable: it produces an `unknown-root`
+issue and a `Document` whose `root` is `None`.
 
 ```{note}
-"Lax validator" here means *reporting is non-fatal*. It is separate from
-the **parse mode** (`Schema.compile(..., mode=...)`, `--mode`), which
-controls what is bound into the tree when a document is invalid. The
-report is always strict regardless of mode — see {doc}`binding`.
+Recoverable reporting is separate from the **parse mode**
+(`Schema.compile(..., mode=...)`, `--mode`), which controls whether invalid
+values and unrecognized content are dropped or retained in a best-effort
+bound tree. A bound tree is not necessarily complete or lossless, even in
+lax mode. See {doc}`binding`.
 ```
+
+The report collects the checks the processor supports; it is not a promise
+that every possible violation or a complete, source-faithful tree is
+returned. With facet enforcement enabled (the default), a parse mode does
+not relax facet validation merely to retain an invalid value. Setting
+`facets="off"` skips those checks, so the resulting report is not a full
+validity verdict for facet-constrained values. The known schema-legality
+limitations below also apply.
 
 ```python
 import pyxsd
@@ -136,6 +151,17 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 
 `pyxsd --strict` exits with status 1 when the report contains any
 `ERROR`-severity issue. Warnings never affect the exit code.
+
+## Reports and transformed documents
+
+A `Document`'s report describes the tree as it was bound, not subsequent
+mutations. `Document.transform()` may return a bound root, `None` after an
+in-place mutation, or an arbitrary result. When it returns a `Document`,
+that document shares the historical report; `require_valid()` therefore
+checks the old report rather than proving that the changed tree is valid.
+Call `revalidate()` to serialize and parse the tree again, and check the
+fresh document's report. An unreadable or malformed serialized result still
+raises `PyXSDError`; it does not become an ordinary validation finding.
 
 ## Known limitations (schema legality)
 
