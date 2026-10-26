@@ -34,6 +34,7 @@ from pyxsd.namespaces import XML_NS, NamespaceContext, parse_with_namespaces
 from pyxsd.resource_policy import (
     ResourcePolicy,
     ResourcePolicyError,
+    new_validation_report,
     read_resource,
     record_declarations,
     source_identifier,
@@ -268,7 +269,7 @@ class Schema:
             namespace_context=(
                 namespace_context if namespace_context is not None else NamespaceContext()
             ),
-            report=ValidationReport(),
+            report=new_validation_report(resource_policy),
             classes={},
             xml_path=xml_path,
             schema_context=SchemaContext(components=ComponentTable()),
@@ -419,7 +420,7 @@ class Schema:
     def _bind_tree(self, tree: ET.Element, source: Any, *, source_id: str | None) -> "Document":
         """Bind an already verified tree; public policy inputs cannot use this path."""
 
-        instance_report = ValidationReport()
+        instance_report = new_validation_report(self.resource_policy)
         from pyxsd.locations import ParseProvenance
 
         provenance = ParseProvenance(tree, source_id)
@@ -475,7 +476,7 @@ class Schema:
         # shared, so the phase tags recorded when each was found ride
         # along, and the cached object's identity is stable for
         # require_valid.
-        merged = ValidationReport()
+        merged = new_validation_report(self.resource_policy)
         merged.extend(self.report)
         merged.extend(instance_report)
         return Document(schema=self, root=root, source=source, report=merged, provenance=provenance)

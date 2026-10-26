@@ -16,6 +16,7 @@ from defusedxml.common import DefusedXmlException
 
 from pyxsd.namespaces import NamespaceContext
 from pyxsd.resource_policy import ResourceData, ResourcePolicyError
+from pyxsd.validation import ValidationReport
 
 from .config import Limits
 from .errors import ToolError
@@ -75,6 +76,12 @@ class WorkspaceResourcePolicy:
         self._files = {item.path: item for item in snapshot.files}
         self._dependencies: dict[str, Dependency] = {}
         self._schema_bytes = 0
+
+    def new_report(self) -> ValidationReport:
+        return ValidationReport(
+            max_issues=self.limits.collected_issues,
+            max_message_bytes=self.limits.message_bytes,
+        )
 
     @property
     def dependencies(self) -> tuple[Dependency, ...]:

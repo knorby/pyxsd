@@ -16,6 +16,7 @@ from xml.etree import ElementTree as ET
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext
+from pyxsd.validation import ValidationReport
 
 
 class ResourcePolicyError(PyXSDError):
@@ -46,6 +47,12 @@ class ResourcePolicy(Protocol):
     def parse(self, data: ResourceData, context: NamespaceContext) -> ET.Element:
         """Parse admitted bytes and record namespace evidence."""
         ...
+
+
+def new_validation_report(policy: ResourcePolicy | None) -> ValidationReport:
+    """Use a policy's optional report budget, preserving unlimited core defaults."""
+    factory = getattr(policy, "new_report", None)
+    return ValidationReport() if factory is None else factory()
 
 
 def source_identifier(source: object) -> str | None:

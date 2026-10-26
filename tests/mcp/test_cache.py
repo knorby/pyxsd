@@ -69,6 +69,29 @@ def test_reuses_one_compile_and_restores_legacy_components(tmp_path, monkeypatch
     cache.close()
 
 
+def test_cache_applies_collection_and_message_budgets(tmp_path):
+    from pyxsd.mcp.cache import SchemaCache
+
+    schema = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+      <xs:element name="r"><xs:complexType><xs:sequence>
+        <xs:element name="i" type="xs:int" maxOccurs="unbounded"/>
+      </xs:sequence></xs:complexType></xs:element></xs:schema>"""
+    req = request(
+        tmp_path,
+        files={"root.xsd": schema, "d.xml": "<r><i>bad</i><i>bad</i><i>bad</i></r>"},
+    )
+    cache = SchemaCache(Limits(collected_issues=1, message_bytes=16))
+    try:
+        with cache.acquire(req) as compiled:
+            report = compiled.parse("/workspace/d.xml").report
+        assert len(report.issues) == 1
+        assert report.error_count == 3
+        assert report.suppressed_count == 2
+        assert 0 < len(report.issues[0].message.encode("utf-8")) <= 16
+    finally:
+        cache.close()
+
+
 @pytest.mark.parametrize(
     "field", ["owner", "version", "binding", "namespaces", "xsd", "hints", "mapping"]
 )
