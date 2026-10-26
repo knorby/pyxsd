@@ -87,6 +87,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pyxsd.batch import DocumentSource, ParseOutcome
+    from pyxsd.introspection import _Index
 
 
 class _CompileHost:
@@ -170,6 +171,7 @@ class Schema:
         self._schema_context = schema_context
         self._host = None
         self.resource_policy: ResourcePolicy | None = None
+        self._introspection_index: _Index | None = None
         self.declaration_origins: weakref.WeakKeyDictionary[ET.Element, IssueLocation] = (
             weakref.WeakKeyDictionary()
         )
@@ -312,7 +314,13 @@ class Schema:
                 self.report,
             )
 
-    def stub(self, *, compact: bool = False) -> str:
+    def stub(
+        self,
+        *,
+        compact: bool = False,
+        component_ids: tuple[str, ...] | None = None,
+        depth: int | None = None,
+    ) -> str:
         """Returns ``.pyi``-style source for the classes this schema compiled.
 
         The text is a typing surface mirroring the runtime: one class
@@ -336,13 +344,18 @@ class Schema:
         document to PATH (stdout when PATH is omitted), and adding
         ``--stubs-compact`` selects the compact view.
 
-        Emitting never raises for a schema that compiled and does not
+        ``component_ids`` optionally selects native declaration IDs, with
+        ``depth`` bounding their outgoing dependencies (None follows all).
+        Unknown IDs raise KeyError and negative depths raise ValueError.
+        See :mod:`pyxsd.introspection` for IDs and declaration metadata.
+
+        Unfiltered emitting never raises for a schema that compiled and does not
         require a valid report; call :meth:`require_valid` separately
         to reject a schema whose report holds errors.
         """
         from pyxsd.stubs import emit_stub
 
-        return emit_stub(self, compact=compact)
+        return emit_stub(self, compact=compact, component_ids=component_ids, depth=depth)
 
     def iter_parse(
         self,

@@ -320,6 +320,10 @@ class ValidationReport:
 
 def _diagnostic_value(value: object) -> object:
     """Encode only explicitly supported evidence, never arbitrary dataclasses."""
+    from pyxsd.xsd_data_types import Boolean
+
+    if isinstance(value, Boolean):
+        return bool(value)
     if value is None or isinstance(value, (str, bool)):
         return value
     if isinstance(value, int):

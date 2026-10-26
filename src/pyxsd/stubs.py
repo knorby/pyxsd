@@ -1262,7 +1262,13 @@ def _collect_particle_flags(particle: Any, flags: set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def emit_stub(schema: Schema, *, compact: bool = False) -> str:
+def emit_stub(
+    schema: Schema,
+    *,
+    compact: bool = False,
+    component_ids: tuple[str, ...] | None = None,
+    depth: int | None = None,
+) -> str:
     """Returns the stub text for the classes *schema* compiled.
 
     The text is generated from the live schema at call time (the class
@@ -1287,19 +1293,36 @@ def emit_stub(schema: Schema, *, compact: bool = False) -> str:
     Degradation comments are shared through the model and render
     verbatim in both modes (see :func:`_render_compact`).
 
-    Rendering never raises on a schema that compiled: a construct a
+    ``component_ids`` selects native declaration IDs; ``depth`` bounds
+    outgoing declaration dependencies (None follows all reachable ones).
+    An empty selection emits no classes or root aliases. Explicitly selected
+    simple types are not folded away in compact mode. Unknown IDs raise
+    KeyError; negative depths raise ValueError. Selection does not modify
+    the schema's class table.
+
+    Unfiltered rendering never raises on a schema that compiled: a construct a
     stub cannot type truthfully (an unresolvable type, a member with no
     Python accessor) degrades to ``Any`` with a comment, and an
     error-bearing schema still emits. This never calls
     ``schema.require_valid()``.
     """
     inventory = _inventory(schema)
+    root_elements = None
+    if depth is not None and depth < 0:
+        raise ValueError("depth must be non-negative")
+    if component_ids is not None:
+        from pyxsd.introspection import _stub_selection
+
+        class_ids, root_elements = _stub_selection(schema, component_ids, depth)
+        inventory = [entry for entry in inventory if id(entry.cls) in class_ids]
     if compact:
-        return _render_compact(schema, inventory)
-    return _render_full(schema, inventory)
+        return _render_compact(schema, inventory, root_elements=root_elements)
+    return _render_full(schema, inventory, root_elements=root_elements)
 
 
-def _render_full(schema: Schema, inventory: list[_StubClass]) -> str:
+def _render_full(
+    schema: Schema, inventory: list[_StubClass], *, root_elements: frozenset[int] | None = None
+) -> str:
     """Assembles the full stub document for *schema*.
 
     Class blocks come in inventory order; the imports are derived from
@@ -1317,6 +1340,7 @@ def _render_full(schema: Schema, inventory: list[_StubClass]) -> str:
         names,
         class_names=frozenset(class_names),
         imported_names=_IMPORTED_STUB_NAMES,
+        element_ids=root_elements,
     )
     body_parts = list(class_blocks)
     if aliases:
@@ -1693,6 +1717,7 @@ def _root_aliases(
     *,
     class_names: frozenset[str] = frozenset(),
     imported_names: frozenset[str] = frozenset(),
+    element_ids: frozenset[int] | None = None,
 ) -> list[_RootAlias]:
     """Returns the aliases for *schema*'s global element declarations.
 
@@ -1712,6 +1737,8 @@ def _root_aliases(
     for representatives in schema.components.values():
         for er in representatives:
             if id(er) in seen_elements or not _is_global_element(er):
+                continue
+            if element_ids is not None and id(er) not in element_ids:
                 continue
             seen_elements.add(id(er))
             aliases.append(
@@ -1909,7 +1936,9 @@ class _Spelling:
     source: str
 
 
-def _render_compact(schema: Schema, inventory: list[_StubClass]) -> str:
+def _render_compact(
+    schema: Schema, inventory: list[_StubClass], *, root_elements: frozenset[int] | None = None
+) -> str:
     """Assembles the compact agent view for *schema*.
 
     The document is a description, not importable Python: a two-line
@@ -1926,13 +1955,18 @@ def _render_compact(schema: Schema, inventory: list[_StubClass]) -> str:
     """
     names = {id(entry.cls): entry.name for entry in inventory}
     entries_by_id = {id(entry.cls): entry for entry in inventory}
-    aliases = _root_aliases(schema, names)
+    aliases = _root_aliases(schema, names, element_ids=root_elements)
     root_names = {alias.type_name for alias in aliases if alias.type_name is not None}
     rendered: list[tuple[_StubClass, list[_Member]]] = []
     skipped: list[_StubClass] = []
     for entry in inventory:
         members = _members(entry.cls, names, compact=True)
-        if entry.name not in root_names and not members and _foldable_simple_type(entry.cls):
+        if (
+            root_elements is None
+            and entry.name not in root_names
+            and not members
+            and _foldable_simple_type(entry.cls)
+        ):
             skipped.append(entry)
         else:
             rendered.append((entry, members))
