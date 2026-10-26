@@ -163,6 +163,27 @@ Call `revalidate()` to serialize and parse the tree again, and check the
 fresh document's report. An unreadable or malformed serialized result still
 raises `PyXSDError`; it does not become an ordinary validation finding.
 
+## Structured and bounded reports
+
+`report.to_dict()` and `report.to_json()` expose issue severity, code, message,
+phase and optional location/constraint details. Decimal evidence is encoded as
+strings; integers outside JavaScript's exact range are strings too. Unsupported
+detail objects raise `TypeError` instead of silently becoming arbitrary text.
+
+`ValidationReport(max_issues=N)` retains at most the first `N` issue details.
+The default is unlimited. `error_count`, `warning_count` and `has_errors` include
+suppressed findings, and `suppressed_count` reports how many details are absent.
+`issues`, `errors`, `warnings`, iteration and `for_phase()` expose only retained
+details. A report can therefore be truthy with zero retained details; `len(report)`
+still counts retained details. Merging a report preserves its aggregate counts
+even when the receiving report has a different detail budget.
+
+Location and constraint fields are optional: an absent location does not imply
+that an issue refers to the first element with that name. Facet violations expose
+typed constraint evidence at their source; precise parse-to-node attachment is a
+separate addition. Existing issue formatting and positional constructors remain
+unchanged.
+
 ## Known limitations (schema legality)
 
 A few schema-phase checks are intentionally shallow, so some invalid
