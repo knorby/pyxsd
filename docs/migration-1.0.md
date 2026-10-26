@@ -79,7 +79,7 @@ The eight application transforms (`CellSizer`, `SphereCutter`,
 `examples/legacy/`. Importing `pyxsd.transforms.cellSizer` (or any
 snake_case variant) now raises `ImportError`. The installed package keeps
 the framework (`Transform`, `Displayer`, `iter_tree`) and the generic
-built-ins (`PrintData`). See
+built-ins (`PrintData` and `ToDict`). See
 `examples/legacy/README.md` for how to run them.
 
 ### The `PyXSD` pipeline → `Schema` and `Document`
@@ -151,12 +151,13 @@ updated.write("normalized.xml")
 ```
 
 A transform that returns a tree root comes back as a new `Document`
-against the same schema; returning anything else returns that value
-unchanged; returning `None` leaves the document as it was. A returned
-document shares the pre-transform report — after a structural change,
-call `updated.revalidate()` for a report that reflects the new shape
-(that is also the replacement for 0.1's `SendTreeToPyXSD` transform,
-which re-fed the written tree back through the pipeline).
+against the same schema; any other return value, including `None`, is
+returned unchanged. The original document remains available when a
+callable mutates it in place. A returned document shares the pre-transform
+report — after a structural change, call `updated.revalidate()` for a
+report that reflects the new shape (that is also the replacement for 0.1's
+`SendTreeToPyXSD` transform, which re-fed the written tree back through
+the pipeline).
 
 The shipped `Transform` classes still work — `__init__` takes the root,
 `__call__` does the work — they are just invoked through a one-line
@@ -169,8 +170,8 @@ were; the CLI resolves the strings to callables for you.
 ### CLI
 
 - Same flag set (`-i`, `-s`, `-p`, `-k`, `-o`, `-d`, `-t`, `-T`, `-c`,
-  `-v`, `-q`), plus `--strict`, `--mode strict|lax`, and
-  `--namespaces strict|legacy`.
+  `-v`, `-q`), plus `--strict`, `--mode strict|lax`,
+  `--namespaces strict|legacy`, and `--xsd-version 1.0|1.1`.
 - Transform calls must be **calls with parentheses**
   (`-t 'PrintData()'`); a bare class name is now a usage error. Calls are
   parsed with `ast.literal_eval` — only literal arguments are accepted
@@ -329,9 +330,9 @@ Your schemas keep working, with more of them validating correctly:
   groups, element refs, `xsi:type`, nil/default/fixed, abstract/final —
   all new or fixed in 1.0.
 - Facet declarations on user simpleTypes are enforced where values bind
-  through the simple type (pattern uses the XSD 1.1 dialect via the
-  `elementpath` dependency); the remaining exception is `simpleContent` —
-  see the gaps table in {doc}`supported`.
+  through the simple type, including values bound through `simpleContent`
+  complex types (pattern uses the XSD 1.1 dialect via the `elementpath`
+  dependency). See the gaps table in {doc}`supported` for remaining limits.
 - Schemas must be well-formed XML; composition errors (missing include,
   cycles, namespace mismatch) are reported with dedicated codes.
 

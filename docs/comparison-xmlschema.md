@@ -22,10 +22,10 @@ runs and are explained in [Supported features](supported.md).
 | Transform framework | callable transforms over the bound tree, addressable by class name from the CLI | converters plus code generation (no general transform hook) |
 | Validation output | `ValidationReport` with stable short codes and phases | exception hierarchy plus `iter_errors()` |
 | Lazy / incremental | no | `XMLResource` lazy modes (`lazy`, `thin_lazy`) |
-| Resource hardening | no network access to schemas; entity expansion handled by expat | entity-forbidding parser, `allow`/`defuse` resource policy, timeouts, processing limits |
-| Remote schema download | no (local paths and caller-supplied mappings only) | yes, with an offline cache |
+| Resource hardening | no network fetches by default; stdlib expat parsing and optional resource-policy hooks, not a sandbox | entity-forbidding parser, `allow`/`defuse` resource policy, timeouts, processing limits |
+| Remote schema download | no built-in downloader; local paths by default, with custom resource policies for other sources | yes, with an offline cache |
 | WSDL | no | yes (WSDL 1.1) |
-| Maturity | first 1.0 release; new object model | mature, widely deployed, large user base |
+| Maturity | modern 1.x line; smaller user base | mature, widely deployed, large user base |
 
 ## Where pyxsd is a good fit
 
@@ -39,10 +39,11 @@ runs and are explained in [Supported features](supported.md).
 - **Callable transforms.** A transform is any callable over the bound tree,
   and the CLI can address a transform by class name (`-t 'ToDict()'`). This
   suits pipeline code that post-processes a validated document.
-- **A small, predictable dependency and attack surface.** The only runtime
-  dependency is `elementpath`; the library does not fetch remote schemas and
-  relies on the stdlib parser's entity handling. There is nothing to compile
-  and no network behavior to audit.
+- **A small base dependency.** The base install depends only on
+  `elementpath`, has no compiled extensions, and does not fetch remote
+  schemas itself. Optional extras add their own dependencies. A custom
+  resource policy is trusted application code; audit any network or file
+  access you implement there.
 - **Direct query and export.** `xpath` / `find` / `findall` and
   `to_dict` / `to_json` cover the "validate, then pull values out" pattern
   without a converter configuration step.
@@ -58,22 +59,22 @@ runs and are explained in [Supported features](supported.md).
   `thin_lazy` supports large documents and streaming, which pyxsd does not.
 - **Resource controls and hardening.** `xmlschema` exposes resource policy
   (`allow` / `defuse`), timeouts, processing limits, remote download with an
-  offline cache, and a parser that forbids entities. If a deployment must
-  fetch schemas over the network or defend against hostile schema input with
-  explicit knobs, xmlschema has those knobs already.
+  offline cache, and a parser that forbids entities. pyxsd's resource-policy
+  hook is an extension point, not a built-in security policy or network
+  downloader.
 - **Static code generation and WSDL.** Generators and WSDL 1.1 processing
   have no pyxsd equivalent.
 - **Schema-component inspection.** `xmlschema`'s XPath-based component API
   and global maps are deeper for tooling that interrogates the schema itself.
 - **Maturity.** `xmlschema` has years of production use, a large body of
-  documentation, and a broad user base. pyxsd 1.0 is a new object model on a
-  long-dormant codebase; its main con is maturity, and the known limitations
-  below are listed for that reason.
+  documentation, and a broad user base. pyxsd's modern 1.x object model is
+  younger and has a smaller user base; the known limitations below matter
+  when choosing between them.
 
 ## Honest limitations of pyxsd
 
-- **Maturity.** Version 1.0 is the first modern release. The API is stable
-  for this release but has less field hardening than `xmlschema`.
+- **Maturity.** The modern 1.x API has less field hardening than
+  `xmlschema`.
 - **No encode.** There is no Python/JSON→XML serializer beyond writing a
   parsed `Document` back out.
 - **Legacy namespace mode is the default binding policy.** Strict namespace

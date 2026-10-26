@@ -30,17 +30,18 @@ Schema (XSD), reports non-fatal validation issues, runs user-defined
 - **XSD 1.1 processor** — with an optional XSD 1.0 mode
   (`Schema.compile(xsd, xsd_version="1.0")` / `--xsd-version 1.0`) that
   applies the 1.0 vocabulary gate and semantic differences
-- **Lax validation** — bad documents still build a tree; every issue is a
-  code-tagged entry in a `ValidationReport` (`--strict` and
-  `require_valid()` make it a CI failure)
+- **Lax validation** — recoverable document errors still build a tree; every
+  issue is a code-tagged entry in a `ValidationReport` (`--strict` and
+  `require_valid()` make errors fatal)
 - **Query and export** — `Document.xpath` / `find` / `findall` return the
   original bound nodes, and `Document.to_dict` / `to_json` export plain
   Python data (also as the `ToDict` transform)
+- **Schema tooling** — inspect declarations and dependencies with
+  `pyxsd.introspection`, filter generated type stubs, and optionally scope
+  schema and instance reads with a `ResourcePolicy`
 - **Transform pipeline** — apply plain callables or `Transform` classes to
   the bound tree (`document.transform(fn)`); chain them on the CLI
   (`PrintData() > PrintData()`)
-- A niche-but-real niche: runtime XML↔Python binding *plus* a transform
-  framework, without pulling in `lxml` or generating static code
 
 ## Uses
 
@@ -248,7 +249,8 @@ are not directly comparable. Residual gaps are tabulated on the
 pyxsd was written at Oak Ridge National Laboratory in 2006 (see
 [history](https://pyxsd.knorby.com/history/origins.html)),
 abandoned around 2008, and revived as a Python 3 project in 2026.
-Version 1.0.0 is the first release of the modernized library.
+Version 1.0.0 was the first release of the modernized library. See
+[CHANGELOG.md](CHANGELOG.md) for subsequent releases.
 
 ## Documentation
 
@@ -272,7 +274,7 @@ Full documentation is published at **<https://pyxsd.knorby.com/>**:
 - [Contributing](https://pyxsd.knorby.com/contributing.html)
 
 The Sphinx sources live in `docs/`; build them locally with
-`uv run sphinx-build -b html docs docs/_build/html`.
+`uv run --group docs sphinx-build -W --keep-going -b html docs docs/_build/html`.
 
 ## License
 
