@@ -107,19 +107,13 @@ class ValidationIssue:
 
 
 def _bounded_message(message: str, max_bytes: int | None) -> str:
-    if max_bytes is None or len(message.encode("utf-8")) <= max_bytes:
+    encoded = message.encode("utf-8")
+    if max_bytes is None or len(encoded) <= max_bytes:
         return message
     if max_bytes <= 3:
         return "." * max_bytes
-    prefix = []
-    size = 0
-    for character in message:
-        width = len(character.encode("utf-8"))
-        if size + width > max_bytes - 3:
-            break
-        prefix.append(character)
-        size += width
-    return "".join(prefix) + "..."
+    prefix = encoded[: max_bytes - 3].decode("utf-8", errors="ignore")
+    return prefix + "..."
 
 
 class ValidationReport:
