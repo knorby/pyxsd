@@ -499,6 +499,7 @@ def primitive_root_instance(
                         f"the root element '{rootName}' has an invalid default value: {exc}",
                         code=getattr(exc, "code", "default"),
                         element=rootName,
+                        constraint=getattr(exc, "constraint", None),
                     )
             else:
                 try:
@@ -510,6 +511,7 @@ def primitive_root_instance(
                         f"value: {exc}",
                         code=getattr(exc, "code", "value"),
                         element=rootName,
+                        constraint=getattr(exc, "constraint", None),
                     )
                     if schema.mode.invalid_value == "raw":
                         value = AnySimpleType(text)

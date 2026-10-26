@@ -180,9 +180,36 @@ even when the receiving report has a different detail budget.
 
 Location and constraint fields are optional: an absent location does not imply
 that an issue refers to the first element with that name. Facet violations expose
-typed constraint evidence at their source; precise parse-to-node attachment is a
-separate addition. Existing issue formatting and positional constructors remain
-unchanged.
+typed constraint evidence at their source. Existing issue formatting and
+positional constructors remain unchanged.
+
+### Finding the offending occurrence
+
+Instance diagnostics carry an `IssueLocation` when the parser can identify the
+source occurrence. Its `path` is a tuple of `PathStep(name, index)` records:
+expanded XML names and one-based sibling indexes among elements with that exact
+name. Namespace URIs can contain slashes; do not split expanded names on `/`.
+Attribute findings can additionally name an expanded `attribute`.
+
+`issue.location_precision` distinguishes `exact`, `container`, `component` and
+`unknown` evidence. A missing required child points to its existing container,
+not an invented child. Schema findings and diagnostics outside parsing may have
+unknown locations. No source line or column is fabricated.
+
+`document.locate(issue.location)` returns a `NodeLookup` with a `status`:
+
+- `bound`: `bound` is the original bound object for that occurrence.
+- `unbound`: the source element existed, but binding discarded it.
+- `attribute`: `bound` is the original lexical attribute value.
+- `missing`: the address or attribute did not exist in this parse.
+
+Guard against `issue.location is None` before calling `locate`. These are
+parse-specific addresses, not durable identifiers: modifying the tree does not
+update them. `revalidate()` returns a freshly parsed Document with fresh
+locations. Another parse on the same Schema does not retarget the first
+Document's lookups. A manually constructed or transformed Document has no
+provenance until freshly parsed. Duplicate identity findings can include
+`details["related_locations"]` for the earlier occurrences.
 
 ## Known limitations (schema legality)
 

@@ -17,6 +17,7 @@ import json
 import logging
 import math
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
@@ -121,6 +122,8 @@ class ValidationReport:
         self._issues: list[ValidationIssue] = []
         self._error_count = 0
         self._warning_count = 0
+        self._location: IssueLocation | None = None
+        self._location_precision: LocationPrecision = "unknown"
         #: The phase new issues are attributed to unless one is passed
         #: explicitly. The parser flips this between schema compilation
         #: and instance binding.
@@ -139,6 +142,10 @@ class ValidationReport:
         location_precision: LocationPrecision = "unknown",
     ) -> None:
         """Record a fatal-severity issue."""
+        if location is None:
+            location = self._location
+            if location_precision == "unknown":
+                location_precision = self._location_precision
         self._error_count += 1
         self._retain(
             ValidationIssue(
@@ -150,7 +157,7 @@ class ValidationReport:
                 location=location,
                 constraint=constraint,
                 details=details,
-                location_precision=location_precision,
+                location_precision=location_precision if location is not None else "unknown",
             )
         )
 
@@ -167,6 +174,10 @@ class ValidationReport:
         location_precision: LocationPrecision = "unknown",
     ) -> None:
         """Record a recoverable-severity issue."""
+        if location is None:
+            location = self._location
+            if location_precision == "unknown":
+                location_precision = self._location_precision
         self._warning_count += 1
         self._retain(
             ValidationIssue(
@@ -178,13 +189,25 @@ class ValidationReport:
                 location=location,
                 constraint=constraint,
                 details=details,
-                location_precision=location_precision,
+                location_precision=location_precision if location is not None else "unknown",
             )
         )
 
     def _retain(self, issue: ValidationIssue) -> None:
         if self._max_issues is None or len(self._issues) < self._max_issues:
             self._issues.append(issue)
+
+    @contextmanager
+    def _at(
+        self, location: IssueLocation | None, precision: LocationPrecision = "exact"
+    ) -> Iterator[None]:
+        previous = self._location, self._location_precision
+        self._location = location
+        self._location_precision = precision if location is not None else "unknown"
+        try:
+            yield
+        finally:
+            self._location, self._location_precision = previous
 
     def for_phase(self, phase: str) -> list[ValidationIssue]:
         """Only the issues attributed to *phase* (``"schema"``/``"instance"``)."""
@@ -334,6 +357,10 @@ def report_or_log(
     message: str,
     element: str | None = None,
     phase: str | None = None,
+    constraint: ConstraintInfo | None = None,
+    location: IssueLocation | None = None,
+    location_precision: LocationPrecision = "unknown",
+    details: dict[str, object] | None = None,
 ) -> None:
     """Records an issue on *report*, or logs it when *report* is ``None``.
 
@@ -362,6 +389,24 @@ def report_or_log(
         )
         return
     if severity is IssueSeverity.ERROR:
-        report.add_error(message, code=code, element=element, phase=phase)
+        report.add_error(
+            message,
+            code=code,
+            element=element,
+            phase=phase,
+            constraint=constraint,
+            location=location,
+            location_precision=location_precision,
+            details=details,
+        )
     else:
-        report.add_warning(message, code=code, element=element, phase=phase)
+        report.add_warning(
+            message,
+            code=code,
+            element=element,
+            phase=phase,
+            constraint=constraint,
+            location=location,
+            location_precision=location_precision,
+            details=details,
+        )

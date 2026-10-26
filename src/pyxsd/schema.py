@@ -65,6 +65,7 @@ from pyxsd.schema_composition import (
 from pyxsd.schema_context import (
     SchemaContext,
     active_context,
+    context_provenance,
     context_report,
     remember_components,
 )
@@ -359,6 +360,12 @@ class Schema:
             logger.debug("XML file parsed by the ElementTree library successfully...")
 
         instance_report = ValidationReport()
+        from pyxsd.locations import ParseProvenance
+
+        source_id = (
+            os.fspath(xml) if isinstance(xml, (str, os.PathLike)) else getattr(xml, "name", None)
+        )
+        provenance = ParseProvenance(tree, source_id if isinstance(source_id, str) else None)
         context = self._schema_context
         if context is None:
             context = SchemaContext(components=self.components)
@@ -393,8 +400,14 @@ class Schema:
         # the binding run; generated classes keep their ``cls.schema``
         # stamp, whose report is the frozen compilation report.
         try:
-            with active_context(context), context_report(context, instance_report):
+            with (
+                active_context(context),
+                context_report(context, instance_report),
+                context_provenance(context, provenance),
+                instance_report._at(provenance.source_location(tree)),
+            ):
                 root = bind_instance(self, tree, instance_report)
+                provenance.bind(tree, root)
         finally:
             if host is not None:
                 host._elementParents.clear()
@@ -408,7 +421,7 @@ class Schema:
         merged = ValidationReport()
         merged.extend(self.report)
         merged.extend(instance_report)
-        return Document(schema=self, root=root, source=xml, report=merged)
+        return Document(schema=self, root=root, source=xml, report=merged, provenance=provenance)
 
 
 #: :meth:`Schema.compile` exposed as a module-level function.

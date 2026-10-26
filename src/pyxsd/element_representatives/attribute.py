@@ -281,6 +281,7 @@ class Attribute(ElementRepresentative):
                         message,
                         code=getattr(e, "code", "invalid-attribute"),
                         element=getattr(obj, "_name_", None),
+                        constraint=getattr(e, "constraint", None),
                     )
                 else:
                     logger.error(message)

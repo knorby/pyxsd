@@ -38,6 +38,7 @@ lexically different spellings of one value match.
 import logging
 from typing import Any, NamedTuple
 
+from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import local_name, namespace_of
 from pyxsd.schema_base import (
     SchemaBase,
@@ -158,8 +159,8 @@ def _checkDocumentIdSpace(rootInstance: Any, report: ValidationReport) -> None:
     resolve; comparison is exact value equality after whitespace
     collapse.
     """
-    bound: dict[str, dict[int, str]] = {}
-    refs: list[tuple[str, str]] = []
+    bound: dict[str, dict[int, _IdSite]] = {}
+    refs: list[tuple[str, _IdSite]] = []
     unbound: set[str] = set()
     for node in _descendantOrSelfNodes(rootInstance):
         if getattr(node, "_skipped_", False):
@@ -168,13 +169,15 @@ def _checkDocumentIdSpace(rootInstance: Any, report: ValidationReport) -> None:
     # The validation root's own ID-typed element value binds nothing:
     # its parent lies outside the scope of validation (§3.3.4.5).
     _collectChildIdValue(rootInstance, None, bound, refs, unbound, report)
-    for value, where in refs:
+    for value, site in refs:
         if value not in bound and value not in unbound:
             report.add_error(
-                f"IDREF '{value}' on the '{where or 'document'}' element does not "
+                f"IDREF '{value}' on the '{site.name or 'document'}' element does not "
                 "match any ID value in the document",
                 code="idref-unresolved",
-                element=where,
+                element=site.name,
+                location=site.location,
+                location_precision="exact" if site.location is not None else "unknown",
             )
     for value in unbound:
         if value not in bound:
@@ -184,17 +187,26 @@ def _checkDocumentIdSpace(rootInstance: Any, report: ValidationReport) -> None:
             )
     for value, bindings in bound.items():
         if len(bindings) > 1:
+            sites = list(bindings.values())
             report.add_error(
                 f"ID value '{value}' is bound by {len(bindings)} distinct elements",
                 code="id-duplicate",
-                element=next(iter(bindings.values())),
+                element=sites[0].name,
+                location=sites[-1].location,
+                location_precision="exact" if sites[-1].location is not None else "unknown",
+                details={"related_locations": [site.location for site in sites[:-1]]},
             )
+
+
+class _IdSite(NamedTuple):
+    name: str
+    location: IssueLocation | None
 
 
 def _collectNodeIdSpace(
     node: Any,
-    bound: dict[str, dict[int, str]],
-    refs: list[tuple[str, str]],
+    bound: dict[str, dict[int, _IdSite]],
+    refs: list[tuple[str, _IdSite]],
     unbound: set[str],
     report: ValidationReport,
 ) -> None:
@@ -216,8 +228,8 @@ def _collectNodeIdSpace(
 def _collectChildIdValue(
     child: Any,
     parent: Any,
-    bound: dict[str, dict[int, str]],
-    refs: list[tuple[str, str]],
+    bound: dict[str, dict[int, _IdSite]],
+    refs: list[tuple[str, _IdSite]],
     unbound: set[str],
     report: ValidationReport,
 ) -> None:
@@ -251,13 +263,17 @@ def _collectChildIdValue(
             cls = contentCls
             value = _nodeValue(child)
     if value is not None and cls is not None:
-        _contributeIdSpace(cls, value, parent, bound, refs, unbound, report)
+        from pyxsd.schema_context import bound_location
+
+        _contributeIdSpace(
+            cls, value, parent, bound, refs, unbound, report, location=bound_location(child)
+        )
 
 
 def _collectNodeIdAttributes(
     node: Any,
-    bound: dict[str, dict[int, str]],
-    refs: list[tuple[str, str]],
+    bound: dict[str, dict[int, _IdSite]],
+    refs: list[tuple[str, _IdSite]],
     unbound: set[str],
     report: ValidationReport,
 ) -> None:
@@ -296,13 +312,32 @@ def _collectNodeIdAttributes(
             refs,
             unbound,
             report,
+            location=_boundAttributeLocation(node, instanceName),
         )
     for attrName in visible:
         if attrName in described or attrName in skipped:
             continue
         affinityCls = _wildcardResolvedType(node, attrName)
         if affinityCls is not None:
-            _contributeIdSpace(affinityCls, visible[attrName], node, bound, refs, unbound, report)
+            _contributeIdSpace(
+                affinityCls,
+                visible[attrName],
+                node,
+                bound,
+                refs,
+                unbound,
+                report,
+                location=_boundAttributeLocation(node, attrName),
+            )
+
+
+def _boundAttributeLocation(node: Any, name: str) -> IssueLocation | None:
+    from dataclasses import replace
+
+    from pyxsd.schema_context import bound_location
+
+    location = bound_location(node)
+    return replace(location, attribute=name) if location is not None else None
 
 
 def _wildcardResolvedType(node: Any, attrName: str) -> Any:
@@ -347,10 +382,12 @@ def _contributeIdSpace(
     cls: Any,
     value: Any,
     binder: Any,
-    bound: dict[str, dict[int, str]],
-    refs: list[tuple[str, str]],
+    bound: dict[str, dict[int, _IdSite]],
+    refs: list[tuple[str, _IdSite]],
     unbound: set[str],
     report: ValidationReport,
+    *,
+    location: IssueLocation | None = None,
 ) -> None:
     """Classifies one slot value and records its ID/IDREF contributions.
 
@@ -371,9 +408,9 @@ def _contributeIdSpace(
             if binder is None:
                 unbound.add(token)
             else:
-                bound.setdefault(token, {}).setdefault(id(binder), where)
+                bound.setdefault(token, {}).setdefault(id(binder), _IdSite(where, location))
         elif affinity == "idref":
-            refs.append((token, where))
+            refs.append((token, _IdSite(where, location)))
 
 
 def _idContributions(cls: Any, value: Any) -> list[tuple[str, str]]:
@@ -576,7 +613,10 @@ def _collectKeyValues(
     selected = _selectNodes(node, constraint, report)
     if selected is None:
         return None
+    from pyxsd.schema_context import bound_location
+
     seen: set[tuple[Any, ...]] = set()
+    first_locations: dict[tuple[Any, ...], IssueLocation | None] = {}
     for selectedNode in selected:
         resolved = _fieldValues(selectedNode, constraint, report)
         if resolved is _UNSUPPORTED:
@@ -587,6 +627,10 @@ def _collectKeyValues(
                 f"element with complex content on the '{_nameOf(selectedNode)}' element",
                 code="identity-key",
                 element=_nameOf(node),
+                location=bound_location(selectedNode),
+                location_precision="exact"
+                if bound_location(selectedNode) is not None
+                else "unknown",
             )
             continue
         if resolved is _MISSING:
@@ -596,6 +640,10 @@ def _collectKeyValues(
                     f"'{_nameOf(selectedNode)}' element has no value for one of its fields",
                     code="identity-key",
                     element=_nameOf(node),
+                    location=bound_location(selectedNode),
+                    location_precision="exact"
+                    if bound_location(selectedNode) is not None
+                    else "unknown",
                 )
             # unique ignores nodes where a field is absent.
             continue
@@ -609,9 +657,15 @@ def _collectKeyValues(
                 f"'{_nameOf(selectedNode)}' element",
                 code="identity-key" if kind == "Key" else "identity-unique",
                 element=_nameOf(node),
+                location=bound_location(selectedNode),
+                location_precision="exact"
+                if bound_location(selectedNode) is not None
+                else "unknown",
+                details={"related_locations": [first_locations[resolved]]},
             )
             continue
         seen.add(resolved)
+        first_locations[resolved] = bound_location(selectedNode)
     return seen
 
 
@@ -645,6 +699,8 @@ def _checkKeyref(
     selected = _selectNodes(node, constraint, report)
     if selected is None:
         return None
+    from pyxsd.schema_context import bound_location
+
     for selectedNode in selected:
         resolved = _fieldValues(selectedNode, constraint, report)
         if resolved is _UNSUPPORTED:
@@ -658,6 +714,10 @@ def _checkKeyref(
                 f"element with complex content on the '{_nameOf(selectedNode)}' element",
                 code="identity-keyref",
                 element=constraint.constraintName,
+                location=bound_location(selectedNode),
+                location_precision="exact"
+                if bound_location(selectedNode) is not None
+                else "unknown",
             )
             continue
         if resolved in (_MISSING, _AMBIGUOUS):
@@ -669,6 +729,10 @@ def _checkKeyref(
                 f"does not match any value of the '{constraint.refer}' constraint",
                 code="identity-keyref",
                 element=constraint.constraintName,
+                location=bound_location(selectedNode),
+                location_precision="exact"
+                if bound_location(selectedNode) is not None
+                else "unknown",
             )
     return None
 
