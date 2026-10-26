@@ -1,10 +1,12 @@
 """Private, versioned SQLite state for a single coordinator process."""
 
 import os
+import shutil
 import sqlite3
 import stat
 import threading
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import TypeVar
 
@@ -30,6 +32,23 @@ CREATE TABLE reservations (
     kind TEXT NOT NULL, reserved INTEGER NOT NULL, committed INTEGER
 );
 PRAGMA user_version = 1;
+COMMIT;
+"""
+
+_SNAPSHOTS = """
+BEGIN IMMEDIATE;
+CREATE TABLE snapshots (
+    workspace TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    revision TEXT NOT NULL, manifest TEXT NOT NULL, status TEXT NOT NULL,
+    reservation TEXT REFERENCES reservations(id) ON DELETE SET NULL,
+    PRIMARY KEY(workspace, revision)
+);
+CREATE TABLE snapshot_heads (
+    workspace TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+    revision TEXT NOT NULL,
+    FOREIGN KEY(workspace, revision) REFERENCES snapshots(workspace, revision) ON DELETE CASCADE
+);
+PRAGMA user_version = 2;
 COMMIT;
 """
 
@@ -73,9 +92,22 @@ class State:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
                 connection.executescript(_SCHEMA)
-            elif version != 1:
+                version = 1
+            if version == 1:
+                connection.executescript(_SNAPSHOTS)
+            elif version != 2:
                 raise ToolError("state_version", "Unsupported state database version")
+            # Staging intents precede filesystem writes. Only ready revisions
+            # were charged as committed usage; interrupted staging is discarded
+            # before clearing the corresponding transient quota reservations.
+            for row in connection.execute(
+                "SELECT workspace,revision FROM snapshots WHERE status='staging'"
+            ).fetchall():
+                path = root / "workspaces" / row["workspace"] / "snapshots" / row["revision"]
+                with suppress(FileNotFoundError):
+                    shutil.rmtree(path)
             connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM snapshots WHERE status='staging'")
             connection.execute("DELETE FROM reservations")
             connection.execute(
                 "UPDATE workspaces SET leases=0, reserved_files=0, reserved_artifacts=0"

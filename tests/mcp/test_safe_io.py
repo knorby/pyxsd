@@ -5,6 +5,8 @@ import os
 
 import pytest
 
+pytest.importorskip("pydantic")
+
 from pyxsd.mcp.errors import ToolError
 
 
@@ -259,3 +261,13 @@ def test_filesystem_encoding_errors_are_typed_denials(tmp_path, monkeypatch):
         monkeypatch.setattr(os, "open", ascii_only_open)
         with pytest.raises(ToolError, match="unsafe_path"):
             directory.read("input", max_bytes=10)
+
+
+def test_admitted_path_depth_is_bounded_before_recursive_storage_operations():
+    from pyxsd.mcp.errors import ToolError
+    from pyxsd.mcp.safe_io import validate_paths
+
+    accepted = "/".join(["a"] * 128)
+    assert validate_paths([accepted]) == (accepted,)
+    with pytest.raises(ToolError, match="invalid_path"):
+        validate_paths([accepted + "/a"])

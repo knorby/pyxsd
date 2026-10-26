@@ -2,6 +2,8 @@
 
 import pytest
 
+pytest.importorskip("pydantic")
+
 from pyxsd.mcp import contracts, safe_io
 from pyxsd.mcp.config import Limits
 from pyxsd.mcp.errors import ToolError

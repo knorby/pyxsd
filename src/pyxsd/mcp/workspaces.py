@@ -70,8 +70,11 @@ class WorkspaceStore:
             path = self.state.root / "workspaces" / row["id"]
             if path.exists():
                 shutil.rmtree(path)
+            db.execute("DELETE FROM snapshots WHERE workspace=?", (row["id"],))
+            db.execute("DELETE FROM reservations WHERE workspace=?", (row["id"],))
             db.execute(
-                "UPDATE workspaces SET status='closed', closed=?, files=0, artifacts=0 WHERE id=?",
+                "UPDATE workspaces SET status='closed', closed=?, files=0, artifacts=0, "
+                "reserved_files=0, reserved_artifacts=0 WHERE id=?",
                 (now, row["id"]),
             )
         db.execute(
@@ -250,6 +253,16 @@ class WorkspaceStore:
                         "SELECT * FROM reservations WHERE id=?", (identifier,)
                     ).fetchone()
                     if row["committed"] is None:
+                        if (
+                            db.execute(
+                                "SELECT 1 FROM snapshots WHERE reservation=? AND status='staging'",
+                                (identifier,),
+                            ).fetchone()
+                            is not None
+                        ):
+                            # Failed staging cleanup still occupies disk. Keep
+                            # the reservation until recovery removes the files.
+                            return
                         db.execute(
                             f"UPDATE workspaces SET reserved_{kind}=reserved_{kind}-? WHERE id=?",
                             (size, workspace_id),
@@ -264,7 +277,25 @@ class Reservation:
     def __init__(self, state: State, identifier: str) -> None:
         self._state, self._id = state, identifier
 
-    async def commit(self, *, size: int | None = None) -> None:
+    @property
+    def id(self) -> str:
+        """Internal durable-operation linkage, never a caller authorization token."""
+        return self._id
+
+    async def commit(
+        self,
+        *,
+        size: int | None = None,
+        on_commit: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> None:
+        """Commit usage and optional SQL-only publication metadata atomically.
+
+        The callback runs once, in the state transaction's worker thread. It
+        must not perform filesystem publication or start a nested transaction.
+        A callback failure rolls back both its metadata and the usage charge.
+        Repeating a successful commit does not invoke the callback again.
+        """
+
         def commit(db: sqlite3.Connection) -> None:
             row = db.execute("SELECT * FROM reservations WHERE id=?", (self._id,)).fetchone()
             if row is None:
@@ -278,6 +309,8 @@ class Reservation:
                         "idempotency_conflict", "Reservation already committed a different size"
                     )
                 return
+            if on_commit is not None:
+                on_commit(db)
             kind = row["kind"]
             db.execute(
                 f"UPDATE workspaces SET reserved_{kind}=reserved_{kind}-?, {kind}={kind}+? WHERE id=?",

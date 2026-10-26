@@ -24,6 +24,7 @@ def validate_paths(paths: Sequence[str]) -> tuple[str, ...]:
                 isinstance(path, str)
                 and bool(path)
                 and len(path.encode("utf-8")) <= 4096
+                and len(path.split("/")) <= 128
                 and not any(ord(char) < 32 or ord(char) == 127 for char in path)
                 and not any(char in path for char in ("\\", ":"))
                 and all(

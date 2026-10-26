@@ -22,6 +22,8 @@ DEFAULTS = {
     "workspace_bytes": 512 * 2**20,
     "artifact_bytes_per_workspace": 512 * 2**20,
     "workspaces": 32,
+    "snapshot_entries": 4096,
+    "snapshot_revisions": 32,
     "managed_bytes": 4 * 2**30,
     "cache_entries": 8,
     "worker_memory_bytes": 512 * 2**20,

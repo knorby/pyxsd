@@ -6,6 +6,9 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+pytest.importorskip("pydantic")
+pytest.importorskip("defusedxml")
+
 from pyxsd import Schema
 from pyxsd.mcp.config import Limits
 from pyxsd.namespaces import NamespaceContext

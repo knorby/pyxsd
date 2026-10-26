@@ -20,6 +20,8 @@ class Limits(WireModel):
     workspace_bytes: PositiveBudget = 512 * 2**20
     artifact_bytes_per_workspace: PositiveBudget = 512 * 2**20
     workspaces: PositiveBudget = 32
+    snapshot_entries: PositiveBudget = 4096
+    snapshot_revisions: PositiveBudget = 32
     managed_bytes: PositiveBudget = 4 * 2**30
     cache_entries: PositiveBudget = 8
     worker_memory_bytes: PositiveBudget = 512 * 2**20

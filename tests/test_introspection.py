@@ -144,11 +144,15 @@ def test_native_exploration_does_not_require_a_projectable_shape():
 
     schema = compile_schema()
     assert describe_component(schema, "type:{urn:demo}Node").mixed
-    integration = pytest.importorskip("pyxsd.integrations.pydantic")
+
+
+def test_projected_models_reject_native_mixed_content():
+    pytest.importorskip("pydantic")
     from pyxsd.integrations import IntegrationError
+    from pyxsd.integrations import pydantic as integration
 
     with pytest.raises(IntegrationError, match="mixed"):
-        integration.models(schema).model_for(element="{urn:demo}root")
+        integration.models(compile_schema()).model_for(element="{urn:demo}root")
 
 
 def test_effective_assertions_and_named_group_graphs():
