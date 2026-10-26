@@ -381,3 +381,19 @@ def test_boolean_enumerations_remain_booleans_in_descriptions_and_report_json(
     report = schema.parse(StringIO(f"<root>{invalid}</root>")).report
     evidence = json.loads(report.to_json())["issues"][0]["constraint"]["expected"]
     assert evidence[0] is expected
+
+
+def test_mcp_introspection_encodes_nonfinite_xsd_double_facets():
+    import json
+
+    pytest.importorskip("pydantic")
+    from pyxsd.introspection import describe_schema
+    from pyxsd.mcp.encoding import encode_value
+
+    schema = compile_schema(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:simpleType name="D"><xs:restriction base="xs:double">'
+        '<xs:enumeration value="NaN"/></xs:restriction></xs:simpleType></xs:schema>'
+    )
+    encoded = encode_value(describe_schema(schema))
+    assert "NaN" in json.dumps(encoded, allow_nan=False)

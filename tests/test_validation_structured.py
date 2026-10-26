@@ -3,9 +3,11 @@
 import json
 import re
 from decimal import Decimal
+from io import StringIO
 
 import pytest
 
+import pyxsd
 from pyxsd.facets import FacetConstraints
 from pyxsd.validation import IssueSeverity, ValidationIssue, ValidationReport
 
@@ -124,12 +126,43 @@ def test_structured_details_keep_decimal_and_occurrence_identity():
     assert row["details"]["enabled"] is True
 
 
-@pytest.mark.parametrize("value", [object(), float("nan"), float("inf"), {1: "not a JSON key"}])
+@pytest.mark.parametrize("value", [object(), {1: "not a JSON key"}])
 def test_serialization_refuses_lossy_or_unknown_details(value):
     report = ValidationReport()
     report.add_warning("diagnostic", code="hint", details={"value": value})
     with pytest.raises(TypeError):
         report.to_json()
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(float("nan"), "NaN"), (float("inf"), "INF"), (float("-inf"), "-INF")],
+)
+def test_nonfinite_numeric_evidence_uses_canonical_xsd_strings(value, expected):
+    report = ValidationReport()
+    report.add_error("nonfinite", code="value", details={"value": value})
+    assert json.loads(report.to_json())["issues"][0]["details"]["value"] == expected
+
+
+def test_nonfinite_facet_evidence_has_deterministic_json():
+    schema = pyxsd.compile(
+        StringIO(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+            '<xs:element name="r"><xs:simpleType><xs:restriction base="xs:double">'
+            '<xs:enumeration value="1"/></xs:restriction></xs:simpleType>'
+            "</xs:element></xs:schema>"
+        )
+    )
+    document = schema.parse(StringIO("<r>NaN</r>"))
+    issue = json.loads(document.report.to_json())["issues"][0]
+    assert issue["constraint"]["actual"] == "NaN"
+
+
+def test_arbitrarily_large_integer_evidence_does_not_hit_interpreter_digit_limit():
+    report = ValidationReport()
+    report.add_error("large", code="value", details={"n": 10**5000})
+    value = json.loads(report.to_json())["issues"][0]["details"]["n"]
+    assert value == "1" + "0" * 5000
 
 
 def test_serialized_details_preserve_safe_numbers_and_large_integer_precision():

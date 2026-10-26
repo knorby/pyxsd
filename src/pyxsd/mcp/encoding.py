@@ -2,12 +2,12 @@
 
 import base64
 import datetime as dt
-import math
 from dataclasses import fields
 from decimal import Decimal
 from xml.etree.ElementTree import QName
 
 from pydantic import JsonValue
+from pyxsd._diagnostic_encoding import encode_number
 from pyxsd.introspection import (
     ComponentDescription,
     FacetDescription,
@@ -59,15 +59,8 @@ def _encode(value: object, depth: int, active: set[int]) -> JsonValue:
         return bool(value)
     if isinstance(value, str):
         return str(value)
-    if isinstance(value, int):
-        return int(value) if abs(value) <= 2**53 - 1 else str(Decimal(value))
-    if isinstance(value, (float, Decimal)):
-        if isinstance(value, Decimal):
-            if value.is_finite():
-                return str(value)
-        elif math.isfinite(value):
-            return float(value)
-        raise ToolError("unsupported_value", "Nonfinite numeric value")
+    if isinstance(value, (int, float, Decimal)):
+        return encode_number(value)
     if isinstance(value, bytes):
         return {"encoding": "base64", "data": base64.b64encode(value).decode("ascii")}
     if isinstance(value, (dt.datetime, dt.date, dt.time)):
