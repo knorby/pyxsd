@@ -15,13 +15,13 @@ from __future__ import annotations
 import enum
 import json
 import logging
-import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
+from pyxsd._diagnostic_encoding import encode_number
 from pyxsd.locations import ConstraintInfo, IssueLocation, LocationPrecision, PathStep
 
 if TYPE_CHECKING:
@@ -326,12 +326,8 @@ def _diagnostic_value(value: object) -> object:
         return bool(value)
     if value is None or isinstance(value, (str, bool)):
         return value
-    if isinstance(value, int):
-        return str(value) if abs(value) > 2**53 - 1 else value
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, float) and math.isfinite(value):
-        return value
+    if isinstance(value, (int, float, Decimal)):
+        return encode_number(value)
     if isinstance(value, PathStep):
         return {"name": value.name, "index": value.index}
     if isinstance(value, IssueLocation):

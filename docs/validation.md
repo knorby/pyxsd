@@ -209,8 +209,9 @@ raises `PyXSDError`; it does not become an ordinary validation finding.
 
 `report.to_dict()` and `report.to_json()` expose issue severity, code, message,
 phase and optional location/constraint details. Decimal evidence is encoded as
-strings; integers outside JavaScript's exact range are strings too. Unsupported
-detail objects raise `TypeError` instead of silently becoming arbitrary text.
+strings; integers outside JavaScript's exact range are strings too. Nonfinite
+floating-point evidence uses the canonical XSD strings `NaN`, `INF`, and `-INF`.
+Unsupported detail objects raise `TypeError` instead of silently becoming arbitrary text.
 
 `ValidationReport(max_issues=N)` retains at most the first `N` issue details.
 The default is unlimited. `error_count`, `warning_count` and `has_errors` include

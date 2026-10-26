@@ -117,7 +117,12 @@ def test_configuration_and_wire_models_reject_unknown_or_coerced_fields(tmp_path
         (2**53, str(2**53)),
         (-(2**53), str(-(2**53))),
         (1.25, 1.25),
+        (float("nan"), "NaN"),
+        (float("inf"), "INF"),
+        (float("-inf"), "-INF"),
         (Decimal("0.10"), "0.10"),
+        (Decimal("NaN"), "NaN"),
+        (Decimal("Infinity"), "Infinity"),
         ("text", "text"),
         (b"\x00\xff", {"encoding": "base64", "data": "AP8="}),
         (dt.datetime(2026, 10, 26, 12, 30, tzinfo=dt.UTC), "2026-10-26T12:30:00+00:00"),
@@ -158,7 +163,7 @@ def test_core_descriptions_and_xsd_values_have_explicit_encodings():
 
 @pytest.mark.parametrize(
     "value",
-    [float("nan"), float("inf"), Decimal("NaN"), Decimal("Infinity"), object(), {1: "x"}, {"x"}],
+    [object(), {1: "x"}, {"x"}],
 )
 def test_unsupported_values_fail_with_typed_fault_not_repr(value):
     from pyxsd.mcp.encoding import encode_value
