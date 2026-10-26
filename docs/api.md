@@ -114,8 +114,10 @@ including prohibited uses. Never treat independent member summaries as a substit
 for the particle tree or full document validation.
 
 Global component IDs combine kind and expanded name; local and anonymous IDs use
-source/declaration addresses, not Python object identities. Origins refer to the
-original schema before composition rewrites; line numbers are not fabricated.
+source/declaration addresses, not Python object identities. Invalid schemas with
+duplicate global declarations retain every declaration: the first source occurrence
+keeps the ordinary ID and later occurrences receive `#2`, `#3`, and so on.
+Origins refer to the original schema before composition rewrites; line numbers are not fabricated.
 Descriptions are cached snapshots: recompile after changing schemas or overlays.
 They do not mutate `schema.classes`, and unknown IDs raise `KeyError`.
 

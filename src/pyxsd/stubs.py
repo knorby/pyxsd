@@ -70,7 +70,7 @@ import inspect
 import keyword
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1734,22 +1734,28 @@ def _root_aliases(
     aliases: list[_RootAlias] = []
     seen_elements: set[int] = set()
     used_names: set[str] = set()
-    for representatives in schema.components.values():
-        for er in representatives:
-            if id(er) in seen_elements or not _is_global_element(er):
-                continue
-            if element_ids is not None and id(er) not in element_ids:
-                continue
-            seen_elements.add(id(er))
-            aliases.append(
-                _root_alias(
-                    er,
-                    names,
-                    used_names,
-                    class_names=class_names,
-                    imported_names=imported_names,
-                )
+    declarations: Iterable[Any]
+    if element_ids is None:
+        declarations = (er for group in schema.components.values() for er in group)
+    else:
+        from pyxsd.introspection import _index
+
+        declarations = _index(schema).elements.values()
+    for er in declarations:
+        if id(er) in seen_elements or not _is_global_element(er):
+            continue
+        if element_ids is not None and id(er) not in element_ids:
+            continue
+        seen_elements.add(id(er))
+        aliases.append(
+            _root_alias(
+                er,
+                names,
+                used_names,
+                class_names=class_names,
+                imported_names=imported_names,
             )
+        )
     return aliases
 
 

@@ -41,3 +41,24 @@ def test_schema_stub_exposes_the_same_filter_contract():
     assert schema.stub(component_ids=selected, depth=0) == emit_stub(
         schema, component_ids=selected, depth=0
     )
+
+
+def test_duplicate_root_selection_uses_the_requested_declaration():
+    from pyxsd.introspection import describe_schema
+
+    schema = compile_schema(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:element name="root" type="xs:string"/>'
+        '<xs:element name="root" type="xs:int"/></xs:schema>'
+    )
+    elements = {
+        item.location.path[-1].index: item
+        for item in describe_schema(schema).components
+        if item.kind == "element"
+    }
+    first = emit_stub(schema, component_ids=(elements[1].id,), depth=0)
+    second = emit_stub(schema, component_ids=(elements[2].id,), depth=0)
+    assert "root: type[String]" in first
+    assert "root: type[Int]" not in first
+    assert "root: type[Int]" in second
+    assert "root: type[String]" not in second
