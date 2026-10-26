@@ -134,6 +134,34 @@ def test_invalid_artifact_configuration(tmp_path, options):
     anyio.run(scenario)
 
 
+def test_idle_expiry_does_not_invalidate_a_completed_active_publication(tmp_path):
+    async def scenario():
+        now = [0.0]
+        with State(tmp_path / "state") as state:
+            workspaces = WorkspaceStore(
+                state, Limits(workspace_idle_seconds=1), clock=lambda: now[0]
+            )
+            principal = stdio_principal()
+            workspace = await workspaces.create(principal)
+            store = artifacts.ArtifactStore(workspaces)
+
+            async def stream():
+                now[0] = 2.0
+                yield b"valid output"
+
+            ref = await store.put(
+                principal,
+                workspace.id,
+                stream(),
+                media_type="text/plain",
+                limit=12,
+                ttl=1,
+            )
+            assert await store.read(principal, ref.id, offset=0, length=12) == b"valid output"
+
+    anyio.run(scenario)
+
+
 @pytest.mark.parametrize(
     "values,code", [((b"too long",), "quota_exceeded"), (("not bytes",), "invalid_argument")]
 )

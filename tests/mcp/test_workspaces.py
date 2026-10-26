@@ -64,12 +64,13 @@ async def test_owner_isolation_unknown_and_foreign_ids_are_indistinguishable(sto
 async def test_release_blocks_new_leases_but_preserves_active_files(store):
     from pyxsd.mcp.errors import ToolError
 
-    workspaces, _ = store
+    workspaces, now = store
     owner = principal()
     workspace = await workspaces.create(owner)
     path = workspaces.state.root / "workspaces" / workspace.id
     (path / "input.xml").write_text("<r/>")
     async with workspaces.lease(owner, workspace.id):
+        now[0] += 4000
         await workspaces.release(owner, workspace.id)
         assert (path / "input.xml").read_text() == "<r/>"
         with pytest.raises(ToolError, match="not_found"):
@@ -79,7 +80,7 @@ async def test_release_blocks_new_leases_but_preserves_active_files(store):
 
 
 @pytest.mark.anyio
-async def test_expiry_does_not_delete_active_inputs_and_never_resurrects_key(store):
+async def test_idle_expiry_skips_active_leases_and_restarts_on_release(store):
     from pyxsd.mcp.errors import ToolError
 
     workspaces, now = store
@@ -90,10 +91,14 @@ async def test_expiry_does_not_delete_active_inputs_and_never_resurrects_key(sto
         now[0] += 4000
         await workspaces.sweep()
         assert path.exists()
-        assert await workspaces.list(owner) == ()
-        with pytest.raises(ToolError, match="not_found"):
-            async with workspaces.lease(owner, workspace.id):
-                pytest.fail("expired workspace was leased")
+        assert [item.id for item in await workspaces.list(owner)] == [workspace.id]
+        async with workspaces.lease(owner, workspace.id) as nested:
+            assert nested.id == workspace.id
+        assert path.exists()
+    assert [item.id for item in await workspaces.list(owner)] == [workspace.id]
+    assert (await workspaces.create(owner, idempotency_key="once")).id == workspace.id
+    now[0] += 4000
+    await workspaces.sweep()
     assert not path.exists()
     with pytest.raises(ToolError, match="stale_reference"):
         await workspaces.create(owner, idempotency_key="once")
