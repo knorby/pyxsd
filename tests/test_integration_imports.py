@@ -24,6 +24,7 @@ def test_base_compile_parse_and_export_do_not_import_optional_backends():
         """from io import StringIO
 import pyxsd
 import pyxsd.integrations
+import pyxsd.mcp
 from pyxsd.integrations.projection import FieldSource
 from pyxsd.integrations._projection import compile_projection, iter_projected_rows
 s = pyxsd.compile(StringIO('<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="r" type="xs:int"/></xs:schema>'))

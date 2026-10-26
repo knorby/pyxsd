@@ -1646,6 +1646,7 @@ arrow = [
     { name = "pyarrow" },
 ]
 mcp = [
+    { name = "anyio" },
     { name = "defusedxml" },
     { name = "mcp" },
     { name = "pydantic" },
@@ -1679,6 +1680,7 @@ examples-polars = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", marker = "extra == 'mcp'", specifier = ">=4.10,<5" },
     { name = "defusedxml", marker = "extra == 'mcp'", specifier = ">=0.7.1,<1" },
     { name = "elementpath", specifier = ">=4.7,<6" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3,<3" },

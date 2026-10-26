@@ -12,7 +12,7 @@ def test_mcp_extra_resolves_without_installing_arrow():
         for req in requirements
         if req.marker is None or req.marker.evaluate({"extra": "mcp"})
     }
-    assert {"mcp", "pydantic", "defusedxml", "elementpath"} <= enabled.keys()
+    assert {"mcp", "pydantic", "defusedxml", "elementpath", "anyio"} <= enabled.keys()
     assert "pyarrow" not in enabled
     assert "2.3.0" in enabled["mcp"].specifier
     assert "3.0.0" not in enabled["mcp"].specifier
@@ -20,6 +20,9 @@ def test_mcp_extra_resolves_without_installing_arrow():
     assert "3.0.0" not in enabled["pydantic"].specifier
     assert "0.7.1" in enabled["defusedxml"].specifier
     assert "1.0.0" not in enabled["defusedxml"].specifier
+    assert "4.10.0" in enabled["anyio"].specifier
+    assert "4.9.0" not in enabled["anyio"].specifier
+    assert "5.0.0" not in enabled["anyio"].specifier
     base = [
         req.name for req in requirements if req.marker is None or req.marker.evaluate({"extra": ""})
     ]
