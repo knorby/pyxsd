@@ -39,6 +39,30 @@ def test_zero_detail_budget_does_not_hide_findings():
     assert report.to_dict()["counts"] == {"error": 1, "warning": 1}
 
 
+@pytest.mark.parametrize("owner", ["document", "schema"])
+def test_require_valid_reports_aggregate_count_when_details_are_suppressed(owner):
+    from pyxsd.exceptions import ValidationError
+
+    report = ValidationReport(max_issues=0)
+    report.add_error("suppressed", code="value")
+    if owner == "document":
+        instance = pyxsd.Document(schema=None, root=None, source=None, report=report)
+    else:
+        instance = pyxsd.Schema(
+            classes={},
+            components=None,
+            namespace_context=None,
+            mode=pyxsd.ParseModes.STRICT,
+            target_namespace=None,
+            report=report,
+            source=None,
+        )
+    with pytest.raises(ValidationError, match=r"1 error\(s\)") as raised:
+        instance.require_valid()
+    assert raised.value.report is report
+    assert (report.error_count, report.suppressed_count) == (1, 1)
+
+
 @pytest.mark.parametrize("budget", [-1, 1.5, True, "2"])
 def test_invalid_report_budgets_rejected(budget):
     with pytest.raises(ValueError, match="max_issues"):

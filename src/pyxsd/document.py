@@ -102,7 +102,7 @@ class Document:
         """Raises :class:`pyxsd.ValidationError` if the report has errors."""
         if self.report.has_errors:
             raise ValidationError(
-                f"the document is not valid: {len(self.report.errors)} error(s); "
+                f"the document is not valid: {self.report.error_count} error(s); "
                 "inspect ValidationError.report",
                 self.report,
             )
