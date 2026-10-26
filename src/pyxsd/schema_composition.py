@@ -15,12 +15,14 @@ passes.
 import decimal
 import logging
 import os.path
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, cast
 from xml.etree import ElementTree as ET
 
 from pyxsd.binding import BindingPolicy
+from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import (
     XLINK_NS,
     XML_NS,
@@ -33,6 +35,12 @@ from pyxsd.namespaces import (
     local_part,
     namespace_of,
     parse_with_namespaces,
+)
+from pyxsd.resource_policy import (
+    ResourceData,
+    ResourcePolicy,
+    ResourcePolicyError,
+    record_declarations,
 )
 from pyxsd.schema_context import SchemaContext
 from pyxsd.validation import CompileContextProtocol, ValidationReport
@@ -184,6 +192,11 @@ class CompositionContext:
     #: extensions=...)``), or ``None``. ``XsdType.getBaseList`` folds the
     #: mixins it selects into each generated class's bases.
     extensions: Any = None
+    resource_policy: ResourcePolicy | None = None
+    source_data: ResourceData | None = None
+    declaration_origins: weakref.WeakKeyDictionary[ET.Element, IssueLocation] = field(
+        default_factory=weakref.WeakKeyDictionary
+    )
 
 
 def schema_composition_context(
@@ -446,17 +459,7 @@ def splice_included_schema(
         return None
     includedPath = (baseDir / location).resolve()
     key = str(includedPath)
-    if key in ctx.composed_documents:
-        logger.debug("the schema '%s' is already composed; skipping", location)
-        return None
-    if key in visited:
-        # A legal include cycle: the document is already being
-        # composed, so this repetition is skipped rather than
-        # treated as a fatal error.
-        ctx.report.add_warning(
-            f"the schema '{location}' is already being composed; the circular include is skipped",
-            code="compose-cycle",
-        )
+    if _skip_included(ctx, key, visited, location):
         return None
     includedRoot = parse_included_schema(
         ctx,
@@ -468,6 +471,11 @@ def splice_included_schema(
     )
     if includedRoot is None:
         return None
+    includedPath = _included_source_path(ctx, includedRoot)
+    canonical_key = str(includedPath)
+    if canonical_key != key and _skip_included(ctx, canonical_key, visited, location):
+        return None
+    key = canonical_key
     # A document a chameleon adoption put in a namespace (a redefined
     # base document, whose root is not stamped) is judged by that
     # namespace here: it is what a nested chameleon include adopts.
@@ -589,6 +597,24 @@ def splice_included_schema(
     return None
 
 
+def _skip_included(ctx: CompositionContext, key: str, visited: set[str], location: str) -> bool:
+    if key in ctx.composed_documents:
+        logger.debug("the schema '%s' is already composed; skipping", location)
+        return True
+    if key in visited:
+        ctx.report.add_warning(
+            f"the schema '{location}' is already being composed; the circular include is skipped",
+            code="compose-cycle",
+        )
+        return True
+    return False
+
+
+def _included_source_path(ctx: CompositionContext, root: ET.Element) -> Path:
+    # Every successful dependency parse records a non-null canonical source.
+    return Path(cast(str, ctx.declaration_origins[root].source))
+
+
 def parse_included_schema(
     ctx: CompositionContext,
     location: str,
@@ -610,8 +636,24 @@ def parse_included_schema(
     """
     includedPath = baseDir / location
     try:
-        with open(includedPath, "rb") as includedFile:
-            root = parse_with_namespaces(includedFile, ctx.namespace_context)
+        if ctx.resource_policy is not None:
+            assert ctx.source_data is not None
+            base: str | None = (
+                ctx.compose_stack[-1] if ctx.compose_stack else ctx.source_data.source_id
+            )
+            if base == "<memory>":
+                if not Path(location).is_absolute():
+                    raise ResourcePolicyError(
+                        "a relative schema dependency needs a named source base"
+                    )
+                base = None
+            data = ctx.resource_policy.read(location, base=base, purpose="schema")
+            root = ctx.resource_policy.parse(data, ctx.namespace_context)
+            origin_source = data.source_id
+        else:
+            with open(includedPath, "rb") as includedFile:
+                root = parse_with_namespaces(includedFile, ctx.namespace_context)
+            origin_source = str(includedPath.resolve())
     except OSError as e:
         message = f"the schema '{location}' could not be opened: {e}"
         code = missing_code if missing_code is not None else error_code
@@ -627,6 +669,7 @@ def parse_included_schema(
             phase="schema",
         )
         return None
+    record_declarations(root, origin_source, ctx.declaration_origins)
     apply_conditional_inclusion(root, ctx.namespace_context, ctx.report, ctx.processor_version)
     if root.tag != clark(XSD_NS, "schema"):
         # schB5/schE6/schE10: the reference resolves to well-formed
@@ -913,7 +956,7 @@ def splice_redefine(
     includedNS = includedRoot.get("targetNamespace")
     if includedNS:
         ctx.composed_target_namespaces.add(includedNS)
-    includedPath = (baseDir / location).resolve()
+    includedPath = _included_source_path(ctx, includedRoot)
     if includedNS is not None and mainNS is not None and includedNS != mainNS:
         # A redefine may target a document in the redefining schema's
         # namespace (the adopted one, for a chameleon-adopted base) or a
@@ -1070,7 +1113,7 @@ def splice_override(
         return None
     mainNS = schemaRoot.get("targetNamespace") or adoptedNS
     includedNS = includedRoot.get("targetNamespace")
-    includedPath = (baseDir / location).resolve()
+    includedPath = _included_source_path(ctx, includedRoot)
     if includedNS is not None and (mainNS is None or includedNS != mainNS):
         # XSD 1.1 §4.2.5 clause 2: a namespaced base may only be
         # overridden by a document with the identical target

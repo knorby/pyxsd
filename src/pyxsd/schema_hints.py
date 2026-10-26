@@ -110,7 +110,9 @@ def schema_location_pairs(xml_root: Any) -> list[tuple[str | None, str]]:
     return pairs
 
 
-def absolute_schema_location_pairs(xml_root: Any, base_dir: Path) -> list[tuple[str | None, str]]:
+def absolute_schema_location_pairs(
+    xml_root: Any, base_dir: Path | None
+) -> list[tuple[str | None, str]]:
     """The instance's schema-location pairs as absolute paths.
 
     Hint locations are documented relative to the instance document,
@@ -121,14 +123,19 @@ def absolute_schema_location_pairs(xml_root: Any, base_dir: Path) -> list[tuple[
     is not the same directory when the schema was named explicitly.
     """
     return [
-        (namespace, location if Path(location).is_absolute() else str(Path(base_dir) / location))
+        (
+            namespace,
+            location
+            if base_dir is None or Path(location).is_absolute()
+            else str(base_dir / location),
+        )
         for namespace, location in schema_location_pairs(xml_root)
     ]
 
 
 def resolve_schema_hint(
     xml_root: Any,
-    base_dir: Path,
+    base_dir: Path | None,
     *,
     report: ValidationReport | None = None,
 ) -> tuple[str | None, Path | None]:
@@ -151,7 +158,7 @@ def resolve_schema_hint(
         return None, None
     namespace = schema_location_info(xml_root, "n", report=report)
     hint = Path(location)
-    if not hint.is_absolute():
+    if not hint.is_absolute() and base_dir is not None:
         hint = base_dir / hint
     return namespace, hint
 

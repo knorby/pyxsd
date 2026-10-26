@@ -46,6 +46,41 @@ Both `Schema.require_valid()` and `Document.require_valid()` raise
 {class}`~pyxsd.exceptions.ValidationError`, whose `report` attribute is
 the report that failed the check.
 
+## Resource and parser policies
+
+`pyxsd.compile(..., resource_policy=policy)` and
+`pyxsd.parse(..., resource_policy=policy)` accept an optional
+`pyxsd.resource_policy.ResourcePolicy`. The compiled schema retains this
+policy for subsequent `Schema.parse()` and `Document.revalidate()` calls.
+Without a policy, existing loading and parsing behavior is unchanged.
+
+A policy supplies two methods:
+
+- `read(source, *, base, purpose)` authorizes and loads a named resource,
+  returning `ResourceData(source_id, content)` with its original bytes.
+  `base` identifies the including document, not its directory; `purpose`
+  is `"schema"` or `"instance"`. Canonical source IDs can name virtual
+  filesystem layouts. They also determine nested dependency bases and
+  composition-cycle detection.
+- `parse(data, context)` parses admitted bytes and records namespace
+  bindings in the supplied `NamespaceContext`.
+
+Includes, imports, redefines, overrides, namespace mappings and instance
+schema hints use the same policy. Raise `ResourcePolicyError` to refuse
+access: unlike unavailable-resource errors, a denial is never downgraded
+to an ignored import or schema-hint warning.
+
+Streams pass through the policy parser too; byte streams preserve original
+encoding, whereas text streams are encoded as UTF-8. Anonymous schema
+streams have no implicit filesystem base: relative dependencies require a
+canonical stream `.name`. Already-parsed `Element` inputs are rejected
+when a policy is active, so they cannot bypass its parser.
+
+These hooks are **not a sandbox or a secure parser implementation**. A
+policy is trusted application code responsible for access checks, parser
+hardening, limits and namespace evidence. Python overlays and extensions
+remain executable application code, outside this XML-loading contract.
+
 ## Report API
 
 ```{eval-rst}
