@@ -28,4 +28,7 @@ transforms.
 ```{eval-rst}
 .. autoclass:: pyxsd.transforms.print_data.PrintData
    :members:
+
+.. autoclass:: pyxsd.transforms.to_dict.ToDict
+   :members:
 ```

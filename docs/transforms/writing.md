@@ -8,8 +8,9 @@ the shape matters.
 
 Every transform must follow these rules:
 
-1. **One class per file**, and the class name matches the file name (case
-   and underscores are normalized on lookup, but match exactly to be safe).
+1. **Give the entry-point class a matching module.** CLI discovery matches
+   the class name to the module name (case and underscores are normalized,
+   but match exactly to be safe). One transform per file avoids ambiguity.
 2. **Inherit from `Transform`** (from `pyxsd.transforms`), directly or via
    a base class. `Transform` and `Displayer` are abstract — `__init__` must
    be defined.
@@ -102,9 +103,10 @@ if __name__ == "__main__":
     main()
 ```
 
-Returning `self.root` hands the tree to the next stage; returning `None`
-ends the pipeline without writing output. Both are covered in
-{doc}`using`.
+Returning `self.root` hands the tree to the next stage. Other values are
+returned unchanged; a final `None` produces no CLI transform output, but
+does not stop later calls in a chain. See {doc}`using` for library return
+semantics.
 
 ## Using the visitor helpers
 

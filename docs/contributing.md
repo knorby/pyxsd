@@ -28,6 +28,7 @@ uv run pytest --cov          # full suite with coverage
 uvx ruff@0.16.6 check .      # lint
 uvx ruff@0.16.6 format --check .
 uv run mypy src/pyxsd        # type check
+uv run --group docs sphinx-build -W --keep-going -b html docs docs/_build/html  # docs
 uv run python tests/report_conformance.py  # suite-inspired conformance report
 uv run python -m tests.conformance.run     # real-schema conformance + benchmarks
 PYXSD_RUN_XSTS=1 uv run pytest tests/test_xsts_suite.py  # W3C XML Schema Test Suite
@@ -62,7 +63,7 @@ the slower CI runners need. The `xmlschema` oracle is gated the same way by
    the pull request focused on that one change.
 2. Fork, branch from `develop`, and keep the diff minimal.
 3. Pull requests must pass the same gates CI runs: ruff lint and format,
-   mypy, and the full test suite.
+   mypy, the full test suite, and the strict Sphinx documentation build.
 4. Bug fixes come with a test that fails without the fix and passes with
    it. New public behavior comes with tests and, where applicable, a
    documentation update (schema features belong in {doc}`supported`).

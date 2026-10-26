@@ -9,6 +9,25 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Structured, bounded validation reports with JSON-safe issue details, source
+  occurrence locations, and `Document.locate()` lookups.
+- Resource-policy hooks for schema and instance reads, including virtual
+  source layouts and policy-enforced parser admission.
+- Native schema introspection with dependency queries and filtered stub
+  rendering.
+- Optional `mcp` runtime dependencies and the initial bounded workspace,
+  snapshot, and protocol-contract infrastructure for the in-progress MCP
+  integration. No MCP server API is exposed yet.
+
+### Fixed
+
+- Schema binding indexes are released after each parse, preventing per-parse
+  state from accumulating.
+
 ## [1.2.1] - 2026-10-20
 
 ### Added
@@ -265,9 +284,9 @@ official schemas.
   attribute holds every issue that failed the check.
 - Transforms are callables in the library: `document.transform(fn)`
   applies any callable taking the tree root; one returning a tree root
-  comes back as a new `Document` against the same schema, while an
-  in-place transform returning `None` leaves the document unchanged. A
-  returned document shares the pre-transform report;
+  comes back as a new `Document` against the same schema; any other return
+  value, including `None`, is returned unchanged. A returned document shares
+  the pre-transform report;
   `document.revalidate()` re-parses the serialized tree for a report
   that reflects its current shape. `document.walk()` yields every node
   pre-order. On the command line the `-t 'Name(args)'` /

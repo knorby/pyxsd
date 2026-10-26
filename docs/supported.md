@@ -13,11 +13,11 @@ paths (`uv run python tests/report_conformance.py` for the live report, and
 
 ## Built-in type lattice
 
-All 45 XSD 1.0 built-in simple types are implemented with lexical
+All 45 XSD 1.0 built-in datatypes are implemented with lexical
 validation in `__new__` (`pyxsd.xsd_data_types`): the full string family
 (string, normalizedString, token, Name, NCName, NMTOKEN, language, ID,
-IDREF, ENTITY, anyURI, QName), all integer variants with correct ranges,
-decimal, float/double (including `INF`/`-INF`/`NaN`), the date/time family
+IDREF, ENTITY, anyURI, QName, NOTATION), all integer variants with correct
+ranges, decimal, float/double (including `INF`/`-INF`/`NaN`), the date/time family
 (date, dateTime, time, duration, gYear, gYearMonth, gMonth, gMonthDay,
 gDay), base64Binary, hexBinary, anySimpleType/anyType, and the list types
 NMTOKENS/IDREFS/ENTITIES.
@@ -49,7 +49,12 @@ NMTOKENS/IDREFS/ENTITIES.
   schema's defaults for imported components and explicit `form`
   overrides), prefixed type/`ref` QNames, cross-namespace `xs:import`,
   and QName value identity
-- `xs:union` (declared members and inline anonymous members)
+- `xs:list` with named or inline item types and per-item facet validation;
+  item types may be atomic or unions without list members
+- `xs:union` with declared or inline anonymous members, including nested
+  unions and list members
+- `xs:notation` declarations and `xs:NOTATION` restrictions with
+  enumeration validation
 - element references (`ref`) and substitution groups
 - complex content `xs:extension` / `xs:restriction` derivation with `final`
   enforcement
@@ -72,10 +77,11 @@ NMTOKENS/IDREFS/ENTITIES.
 
 - `xs:include` (chameleon schemas supported), `xs:import` (cross-namespace
   components in namespaced mode, including imports without a
-  `schemaLocation` when the namespace is supplied), `xs:redefine` (single
-  level)
-- `xs:key`, `xs:unique`, `xs:keyref` with an XPath subset (child steps,
-  `.//` descendants, `*`, `.`, `@attr`, multi-step paths)
+  `schemaLocation` when the namespace is supplied), and `xs:redefine`,
+  including chained redefinitions
+- `xs:key`, `xs:unique`, `xs:keyref` with the XSD identity-constraint XPath
+  subset: namespace-qualified child and attribute steps, `.//` descendants,
+  wildcards, `.`, union paths, and `xpathDefaultNamespace`
 
 ## Validation reporting
 
@@ -151,23 +157,15 @@ happens to surface.
 * - Namespace-aware schemas
   - `targetNamespace`, `elementFormDefault=qualified`
   - partial
-  - Opt-in in namespaced mode (`ParseModes.NAMESPACED` / `--namespaces strict`); the default legacy mode keeps local-name matching. Namespace-qualified identity-constraint selectors and reporting an unbound prefix in an instance QName *value* are not implemented.
+  - Opt-in in namespaced mode (`ParseModes.NAMESPACED` / `--namespaces strict`); the default legacy mode keeps local-name matching.
 * - Wildcard namespace filtering
   - `processContents`, namespace lists
   - partial
   - Enforced in namespaced mode (including `wildcard-no-declaration` under `strict`); legacy mode passes undeclared content through permissively.
-* - Full identity XPath
-  - `xs:selector`/`xs:field` expressions
-  - partial
-  - Predicates, absolute paths, positional steps, and other axes are skipped with a warning.
-* - List type derivation
-  - `xs:list` user types
+* - General XPath in identity constraints
+  - Expressions outside the XSD selector/field subset
   - unsupported
-  - Built-in list types work; user-defined list types are not generated.
-* - Unions of list members
-  - `xs:union` with list members
-  - partial
-  - Unions of atomic types work (including inline anonymous members).
+  - The XSD subset is supported. Predicates, absolute paths, additional axes, and function calls are reported and skipped.
 * - Mixed content
   - `mixed="true"`
   - partial
@@ -175,23 +173,15 @@ happens to surface.
 * - Remote schema hints
   - URL `schemaLocation`
   - partial
-  - Local file system resolution only.
-* - Notation
-  - `xs:NOTATION`
-  - unsupported
-  - Not implemented.
-* - Redefine chains
-  - redefining an already-redefined component
-  - partial
-  - A single redefine level is supported.
+  - The default loader resolves local filesystem paths only. A custom resource policy can define other source layouts and loading rules.
 * - Unique particle attribution
-  - UPA checking
-  - ignored
-  - Content models are matched greedily in document order.
+  - UPA checking with XSD 1.1 wildcard exclusions
+  - partial
+  - Effective content models are checked, including inherited models and substitution groups. Wildcards carrying `notQName` or `notNamespace` exclusions are skipped.
 * - DTD entities
   - `ENTITY` / `ENTITIES` values
   - partial
-  - Validation considers the internal DTD subset only, and only as far as expat's built-in entity expansion and default-attribute handling go. An external subset is not fetched (pyxsd makes no network requests); pyxsd does not currently detect or report a doctype declaration. Unparsed-entity (`NDATA`) declarations are not tracked, so an `ENTITY` value referring to one can be accepted when it should be rejected.
+  - Validation considers the internal DTD subset only, and only as far as expat's built-in entity expansion and default-attribute handling go. An external subset is not fetched, and a doctype declaration is not currently detected or reported. Unparsed-entity (`NDATA`) declarations are not tracked, so an `ENTITY` value referring to one can be accepted when it should be rejected.
 * - XML 1.1 documents
   - `<?xml version="1.1"?>`
   - unsupported

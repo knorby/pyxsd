@@ -1,18 +1,18 @@
 # pyxsd documentation
 
-Documentation for **pyxsd** 1.2.1 — a Python library and CLI with one small,
-pure-Python dependency (`elementpath`, for XSD regular expressions and
-XPath) that maps XML documents into Python object trees according to an XML
-Schema (XSD), reports non-fatal validation issues, queries and exports the
-bound tree (`xpath` / `find` / `to_dict` / `to_json`), runs user-defined
-*transforms*, and writes the tree back out as XML. It is an XSD 1.1
-processor with an optional XSD 1.0 mode.
+Documentation for **pyxsd**, a Python library and CLI that maps XML
+documents into Python object trees according to an XML Schema (XSD). It
+reports validation issues, queries and exports the bound tree (`xpath` /
+`find` / `to_dict` / `to_json`), runs user-defined *transforms*, and writes
+XML. The base install has one pure-Python dependency, `elementpath`. pyxsd
+is an XSD 1.1 processor with an optional XSD 1.0 mode.
 
 For explicit local input sequences, see {doc}`batch`: reuse one compiled
 schema for parsing or export a new manifested Parquet dataset with the
-optional Arrow adapter. To attach your own methods and validation checks
-to the generated classes, see {doc}`extensions`: mixins registered on an
-`Extensions` registry fold into the classes at compile time.
+optional Arrow adapter. To attach methods and validation checks to generated
+classes, see {doc}`extensions`. The {doc}`api` covers schema introspection
+and filtered stubs; {doc}`validation` covers resource policies and diagnostic
+locations.
 
 ```{toctree}
 :maxdepth: 2

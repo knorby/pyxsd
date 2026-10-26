@@ -157,9 +157,10 @@ class Document:
         - ``fn(root, *args, **kwargs)`` may return a new tree root (a
           bound ``SchemaBase`` instance), which becomes the root of a
           new :class:`Document` against the same schema — or anything
-          else, which is returned unchanged. Transforms may also mutate
-          the tree in place and return ``None``; the document is
-          unchanged then.
+          else, including ``None``, which is returned unchanged. When a
+          transform mutates the tree in place and returns ``None``, the
+          original document remains available to the caller; no new
+          document is created.
 
         A returned document shares this document's report, which
         reflects the tree as it was parsed, not the transformed shape;

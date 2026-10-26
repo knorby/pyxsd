@@ -2,9 +2,9 @@
 
 pyxsd maps an XML document into a Python object tree according to its XML
 Schema (XSD), reports validation issues, runs user-defined *transforms*, and
-writes the tree back out as XML. Its only runtime dependency is
-[elementpath](https://pypi.org/project/elementpath/) — pure Python, no
-compiled extensions.
+writes the tree back out as XML. The base install's only runtime dependency
+is [elementpath](https://pypi.org/project/elementpath/), which is pure Python
+and has no compiled extensions.
 
 ## Requirements
 
@@ -100,12 +100,12 @@ walks with `pyxsd.tree.iter_tree` or the `walk`/visitor helpers in
 
 ## What pyxsd validates
 
-pyxsd is a *lax* validator: it builds the tree even when the document is
-invalid and records non-fatal issues in a {doc}`validation` report rather
-than aborting. Features supported in 1.0 (built-in type lattice, sequence /
-choice / all content models, groups, wildcards, substitution groups,
-`xsi:type` dispatch, nil/default/fixed, identity constraints, schema
-composition) and known gaps are tabulated in {doc}`supported`.
+pyxsd is a *lax* validator for recoverable issues: it builds the tree even
+when the document has validation errors and records non-fatal issues in a
+{doc}`validation` report rather than aborting. The supported feature set includes the built-in type lattice,
+sequence / choice / all content models, groups, wildcards, substitution
+groups, `xsi:type` dispatch, nil/default/fixed, identity constraints, and
+schema composition. Known gaps are tabulated in {doc}`supported`.
 
 ## Next steps
 

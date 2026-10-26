@@ -1,6 +1,6 @@
 # Command-line reference
 
-```
+```text
 pyxsd [options]
 ```
 

@@ -1,10 +1,10 @@
 # Transforms
 
-Transforms are small Python classes that manipulate the pyxsd object tree
-between parsing and writing. pyxsd ships a framework
-(`pyxsd.transforms`) with two built-ins — `PrintData`, and `ToDict` for
-JSON export; scientific application transforms live in `examples/legacy/`
-as reference implementations.
+Transforms are callables that manipulate the pyxsd object tree between
+parsing and writing. The `pyxsd.transforms` framework includes `PrintData`
+for XML output and `ToDict` for dictionary/JSON export. Scientific
+application transforms live in `examples/legacy/` as reference
+implementations.
 
 ```{toctree}
 :maxdepth: 1

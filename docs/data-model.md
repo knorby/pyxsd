@@ -1,11 +1,10 @@
 # Data model
 
 Every node of a pyxsd object tree — whether generated from a schema or
-synthesized by a transform — exposes the same four dunder-prefixed
-attributes. The double-underscore-free `_*_` naming prevents collisions with
-element or attribute names in your schemas (a schema can legally declare an
-element called `name`, so `name` on an instance always refers to *your*
-data, never to metadata).
+synthesized by a transform — exposes the same four metadata attributes. The
+`_*_` naming convention prevents collisions with element or attribute names
+in your schemas (a schema can legally declare an element called `name`, so
+`name` on an instance always refers to *your* data, never to metadata).
 
 The shape is codified by the `pyxsd.XMLNode` runtime-checkable
 `typing.Protocol`.
