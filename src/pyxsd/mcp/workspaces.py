@@ -71,6 +71,7 @@ class WorkspaceStore:
             if path.exists():
                 shutil.rmtree(path)
             db.execute("DELETE FROM snapshots WHERE workspace=?", (row["id"],))
+            db.execute("DELETE FROM artifacts WHERE workspace=?", (row["id"],))
             db.execute("DELETE FROM reservations WHERE workspace=?", (row["id"],))
             db.execute(
                 "UPDATE workspaces SET status='closed', closed=?, files=0, artifacts=0, "
@@ -215,9 +216,9 @@ class WorkspaceStore:
         *,
         kind: Literal["files", "artifacts"] = "files",
     ) -> AsyncIterator["Reservation"]:
-        principal.require("pyxsd:upload")
         if type(size) is not int or size < 0 or kind not in ("files", "artifacts"):
             raise ToolError("invalid_argument", "Invalid quota reservation")
+        principal.require("pyxsd:upload" if kind == "files" else "pyxsd:read")
         async with self.lease(principal, workspace_id):
             identifier = secrets.token_hex(16)
 
@@ -256,6 +257,11 @@ class WorkspaceStore:
                         if (
                             db.execute(
                                 "SELECT 1 FROM snapshots WHERE reservation=? AND status='staging'",
+                                (identifier,),
+                            ).fetchone()
+                            is not None
+                            or db.execute(
+                                "SELECT 1 FROM artifacts WHERE reservation=? AND status='staging'",
                                 (identifier,),
                             ).fetchone()
                             is not None

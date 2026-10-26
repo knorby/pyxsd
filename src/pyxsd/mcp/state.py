@@ -52,6 +52,19 @@ PRAGMA user_version = 2;
 COMMIT;
 """
 
+_ARTIFACTS = """
+BEGIN IMMEDIATE;
+CREATE TABLE artifacts (
+    id TEXT PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    media_type TEXT NOT NULL, status TEXT NOT NULL, digest TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0, expires REAL NOT NULL DEFAULT 0,
+    charged INTEGER NOT NULL DEFAULT 0, leases INTEGER NOT NULL DEFAULT 0,
+    reservation TEXT REFERENCES reservations(id) ON DELETE SET NULL
+);
+PRAGMA user_version = 3;
+COMMIT;
+"""
+
 
 class State:
     """Own the private state directory and process lock until explicitly closed.
@@ -95,7 +108,10 @@ class State:
                 version = 1
             if version == 1:
                 connection.executescript(_SNAPSHOTS)
-            elif version != 2:
+                version = 2
+            if version == 2:
+                connection.executescript(_ARTIFACTS)
+            elif version != 3:
                 raise ToolError("state_version", "Unsupported state database version")
             # Staging intents precede filesystem writes. Only ready revisions
             # were charged as committed usage; interrupted staging is discarded
@@ -106,8 +122,16 @@ class State:
                 path = root / "workspaces" / row["workspace"] / "snapshots" / row["revision"]
                 with suppress(FileNotFoundError):
                     shutil.rmtree(path)
+            for row in connection.execute(
+                "SELECT workspace,id FROM artifacts WHERE status='staging'"
+            ).fetchall():
+                path = root / "workspaces" / row["workspace"] / "artifacts" / row["id"]
+                with suppress(FileNotFoundError):
+                    shutil.rmtree(path)
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("DELETE FROM snapshots WHERE status='staging'")
+            connection.execute("DELETE FROM artifacts WHERE status='staging'")
+            connection.execute("UPDATE artifacts SET leases=0")
             connection.execute("DELETE FROM reservations")
             connection.execute(
                 "UPDATE workspaces SET leases=0, reserved_files=0, reserved_artifacts=0"

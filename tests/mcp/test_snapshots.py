@@ -23,7 +23,7 @@ def test_v1_state_upgrades_without_losing_committed_usage(tmp_path):
     with State(root) as state:
 
         async def inspect():
-            assert await state.run(lambda db: db.execute("PRAGMA user_version").fetchone()[0]) == 2
+            assert await state.run(lambda db: db.execute("PRAGMA user_version").fetchone()[0]) == 3
             assert await state.run(
                 lambda db: tuple(db.execute("SELECT files,leases FROM workspaces").fetchone())
             ) == (7, 0)
