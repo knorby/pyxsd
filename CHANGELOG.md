@@ -19,9 +19,13 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   source layouts and policy-enforced parser admission.
 - Native schema introspection with dependency queries and filtered stub
   rendering.
-- Optional `mcp` runtime dependencies and the initial bounded workspace,
-  snapshot, and protocol-contract infrastructure for the in-progress MCP
-  integration. No MCP server API is exposed yet.
+- Optional `pyxsd[mcp]` integration with a real stdio MCP server, private
+  workspaces and immutable revisions, schema exploration, XML diagnostics,
+  bounded XPath queries, exact issue explanations, artifacts, resources and
+  prompts. Includes clean worker processes, bounded JSON IPC, leased schema
+  caches, authenticated cursors and pinned OCI worker construction. Execution
+  remains disabled; HTTP transport and the real Linux containment gate are
+  tracked separately.
 
 ### Fixed
 

@@ -56,3 +56,7 @@ class Settings(WireModel):
     transport: Literal["stdio", "streamable-http"] = "stdio"
     execution_backend: Literal["disabled", "trusted-local", "isolated"] = "disabled"
     limits: Limits = Field(default_factory=Limits)
+    source_roots: dict[str, Path] = Field(default_factory=dict)
+    enabled_groups: set[str] = Field(default_factory=lambda: {"exploration", "workspaces"})
+    pydantic: bool = True
+    arrow: Literal["auto", "enabled", "disabled"] = "auto"

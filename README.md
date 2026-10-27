@@ -43,6 +43,39 @@ Schema (XSD), reports non-fatal validation issues, runs user-defined
   the bound tree (`document.transform(fn)`); chain them on the CLI
   (`PrintData() > PrintData()`)
 
+## MCP integration
+
+Run pyxsd as a local [Model Context Protocol](https://modelcontextprotocol.io/)
+server and let MCP clients explore schemas, validate XML, and inspect exact
+diagnostic occurrences:
+
+```bash
+pip install 'pyxsd[mcp]'
+pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
+```
+
+The stdio server provides:
+
+- **Schema exploration** — overviews, compact/full stubs, constraint-rich
+  declarations, and bounded `uses` / `used_by` graph queries
+- **XML diagnostics** — structured counts, exact repeated-node locations,
+  paged issue reports, source/schema fingerprints, and curated explanations
+- **Bounded XPath queries** — scalar values, node summaries, and subtrees with
+  external-resource functions disabled
+- **Private immutable state** — workspaces, revisions, digest-verified
+  artifacts, authenticated cursors, and no arbitrary client-selected mounts
+- **Clean worker processes** — bounded JSON IPC, schema leases, deadlines,
+  queue limits, cancellation, recycling, and no pickle transport
+- **MCP-native results** — strict input/output schemas, `structuredContent`
+  plus JSON text, real error flags, resources, prompts, and oversized-result
+  artifacts rather than truncated responses
+
+Start with the [MCP guide](https://pyxsd.knorby.com/mcp.html) for a complete
+Python client example, tool catalog, lifecycle rules, and deployment boundaries.
+Execution is disabled in this build; remote HTTP and user-code execution are
+separate milestones. OCI runtime requirements and containment status are in the
+[deployment guide](https://pyxsd.knorby.com/mcp-deployment.html).
+
 ## Uses
 
 ### Validate XML against its schema

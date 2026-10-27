@@ -122,3 +122,21 @@ class ExplainIssueRequest(WireModel):
     code: Nonempty
     report: ArtifactRef | None = None
     issue_index: Annotated[int, Field(ge=0)] | None = None
+
+
+class ManageWorkspaceRequest(WireModel):
+    action: Literal["create", "list", "release"]
+    workspace_id: Nonempty | None = None
+    idempotency_key: Nonempty | None = None
+
+
+class PutFilesRequest(WireModel):
+    workspace_id: Nonempty
+    files: tuple[InlineFile, ...]
+    expected_revision: Nonempty | None = None
+
+
+class ReadArtifactRequest(WireModel):
+    artifact_id: Nonempty
+    offset: Annotated[int, Field(ge=0)] = 0
+    length: PositiveBudget = 8 * 2**10

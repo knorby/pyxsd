@@ -45,6 +45,7 @@ Changelog = "https://github.com/knorby/pyxsd/blob/develop/CHANGELOG.md"
 
 [project.scripts]
 pyxsd = "pyxsd.__main__:main"
+pyxsd-mcp = "pyxsd.mcp.__main__:main"
 
 [tool.hatch.version]
 # Single source of truth for the package version (MAJOR.MINOR.MICRO);
