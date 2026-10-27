@@ -47,7 +47,13 @@ Schema (XSD), reports non-fatal validation issues, runs user-defined
 
 Run pyxsd as a local [Model Context Protocol](https://modelcontextprotocol.io/)
 server and let MCP clients explore schemas, validate XML, and inspect exact
-diagnostic occurrences:
+diagnostic occurrences. The primary launch method is `uvx`:
+
+```bash
+uvx --from 'pyxsd[mcp]' pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
+```
+
+Alternatively, install the optional dependencies and launch directly:
 
 ```bash
 pip install 'pyxsd[mcp]'

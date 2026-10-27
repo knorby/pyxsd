@@ -2,26 +2,31 @@
 
 This page describes the `pyxsd.mcp` worker-runtime boundary. It is not a claim
 that a hosted MCP service is ready for untrusted production traffic. The local
-runtime is deliberately **uncontained**; OCI containment must pass the Linux
-runtime checks and the real containment suite before remote use.
+runtime is deliberately **uncontained**; remote execution of user Python is not
+currently supported.
+
+**OCI isolation is deferred to a later design cycle.** The OCI implementation
+and Linux evidence below are retained as an experimental design record, not as a
+supported backend or a requirement for normal MCP installation, launch, or
+release. Any further OCI orchestration requires fresh approval and a design
+review.
 
 ## Runtime choices
 
 - `LocalRuntime` starts clean Python worker subprocesses. It provides bounded
   JSON IPC, per-schema serialization, deadlines, recycling and cancellation, but
   no operating-system security boundary. Do not use it to execute untrusted code.
-- `OCIRuntime` starts workers in pinned Docker-compatible OCI images. Each worker
-  receives one read-only snapshot mount. Changing snapshots or terminating the
-  worker forces removal of the old container.
 - Execution is disabled by default at the application configuration layer.
-  Remote Python execution requires the isolated backend; there is no fallback to
-  local execution when OCI startup or preflight fails.
+  Trusted-local transformation previews are available only through explicit
+  stdio opt-in; there is no fallback to another execution mode.
+- `OCIRuntime` is experimental and deferred. It is not a supported current
+  execution backend and must not be presented as a deployment requirement.
 
-Both runtimes use the same bounded, role-validated JSON protocol. Python objects,
-pickle, live `Document` instances and arbitrary host file handles never cross
-the protocol boundary.
+Local clean workers and the deferred OCI runtime use the same bounded,
+role-validated JSON protocol. Python objects, pickle, live `Document` instances
+and arbitrary host file handles never cross the protocol boundary.
 
-## OCI security configuration
+## Deferred OCI security configuration
 
 `OCICommandBuilder` constructs argument arrays without a shell. Every worker has:
 
@@ -40,7 +45,7 @@ mounted. Symlinks, missing paths and paths outside those roots are refused.
 Callers cannot mount the Docker socket, devices, home-directory credentials or
 arbitrary host paths. Do not weaken these settings to make a probe pass.
 
-## Build and pin a worker image
+## Deferred worker-image build record
 
 Build the wheel first, then build from the repository root:
 
@@ -66,7 +71,7 @@ For a registry deployment, build and push through your controlled registry
 workflow, then use the resulting `repository@sha256:<digest>` instead. Record
 that digest in deployment configuration; do not resolve `latest` at startup.
 
-## Host preflight and containment gate
+## Deferred host-preflight and containment-gate record
 
 `OCIRuntime.preflight()` requires a Linux OCI server, an active seccomp profile
 that is not unconfined, and an inspectable exact image. Failures are explicit
@@ -99,8 +104,8 @@ On 2026-10-27, all four tests passed in an aarch64 Linux runner inside Docker's
 Linux VM, using worker image
 `sha256:622215ab8c08c8f1c4699260554778c60fa1b3251e1484a94373e7ac42a16255`.
 This is evidence for that image/runtime combination, not a public-hosting safety
-claim. Isolated transformation execution and candidate capture remain separate
-implementation gates.
+claim. Isolated transformation execution and candidate capture are deferred to
+the later OCI design cycle and are not current implementation gates.
 
 ## HTTP operation
 
@@ -123,8 +128,8 @@ are refused.
 Protected `PUT /files/{workspace}/{path}` and `GET /artifacts/{id}` routes share
 the same principal and ownership checks as MCP tools. The request body limit is
 2 MiB, ranges are exact, and every download includes its digest. Trusted-local
-execution is rejected over HTTP; isolated execution additionally requires the
-containment gate above.
+execution is rejected over HTTP; remote user-code execution is not currently
+supported.
 
 ## Remote deployment boundaries
 

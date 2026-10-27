@@ -5,9 +5,11 @@ description: Drive pyxsd through the Model Context Protocol — workspaces, vali
 
 # pyxsd MCP workflow
 
-Use this skill when an MCP client must use the pyxsd server. Install with
-`pip install 'pyxsd[mcp]'` and launch `pyxsd-mcp --state-dir <private path>`.
-Everything below also has a Python/CLI fallback when the server is absent.
+Use this skill when an MCP client must use the pyxsd server. The primary launch
+method is `uvx --from 'pyxsd[mcp]' pyxsd-mcp --state-dir <private path>`.
+Alternatively, install with `pip install 'pyxsd[mcp]'` and launch
+`pyxsd-mcp --state-dir <private path>` directly. Everything below also has a
+Python/CLI fallback when the server is absent.
 
 ## Discovery
 

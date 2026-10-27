@@ -8,31 +8,42 @@ queries, and download immutable artifacts through one consistent tool surface.
 Both **stdio** and authenticated **streamable HTTP** are available. Execution is
 disabled by default. Local transformation previews require an explicit stdio
 opt-in and run with the launching user's privileges, not in a sandbox. See
-{doc}`mcp-deployment` for the worker runtime and OCI containment status.
+{doc}`mcp-deployment` for the worker boundary and deferred OCI status.
 
 ## Install and launch
 
-Install the optional dependencies with Python 3.11 or newer:
+The primary way to run the server is [`uvx`](https://docs.astral.sh/uv/), which
+creates an isolated environment with the optional MCP dependencies (Python 3.11
+or newer):
+
+```bash
+uvx --from 'pyxsd[mcp]' pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
+```
+
+Alternatively, install the optional dependencies and launch the same entry point
+directly:
 
 ```bash
 pip install 'pyxsd[mcp]'
-```
-
-Choose a private, persistent state directory and launch:
-
-```bash
 pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
 ```
 
-`python -m pyxsd.mcp` is equivalent. A generic stdio client configuration looks
-like this (use an absolute, owner-only state path):
+`python -m pyxsd.mcp` is equivalent after installation. A generic stdio client
+configuration using the primary `uvx` method looks like this (use an absolute,
+owner-only state path):
 
 ```json
 {
   "mcpServers": {
     "pyxsd": {
-      "command": "pyxsd-mcp",
-      "args": ["--state-dir", "/absolute/path/to/private/state"]
+      "command": "uvx",
+      "args": [
+        "--from",
+        "pyxsd[mcp]",
+        "pyxsd-mcp",
+        "--state-dir",
+        "/absolute/path/to/private/state"
+      ]
     }
   }
 }
@@ -338,10 +349,10 @@ Important starting limits (all operator-configurable in `Settings.limits`):
 | Compile or query deadline | 30 seconds |
 | Idle workspace TTL | 60 minutes |
 
-The local subprocess runtime is not a sandbox for untrusted Python. See
-{doc}`mcp-deployment` for pinned OCI images, read-only mounts, no-network
-configuration, forced cleanup, and the separately required Linux containment
-tests.
+The local subprocess runtime is not a sandbox for untrusted Python. OCI-based
+isolation is deferred to a later design cycle and is not required for normal MCP
+installation or launch. See {doc}`mcp-deployment` for the current execution
+boundary.
 
 ## Local transformation previews
 
@@ -352,8 +363,9 @@ pyxsd-mcp --state-dir /absolute/private/state --execution-backend trusted-local
 ```
 
 This enables `pyxsd_preview_transform`, `pyxsd_job_status`,
-`pyxsd_cancel_job` and `pyxsd_commit_transform`. HTTP refuses trusted-local execution; an unavailable isolated
-backend never falls back to local execution.
+`pyxsd_cancel_job` and `pyxsd_commit_transform`. HTTP refuses trusted-local
+execution. Remote or untrusted-code execution is not currently supported, and an
+unavailable backend never falls back to another execution mode.
 
 Call `pyxsd_preview_transform` with `workspace_id`, `document`, `source_schema`,
 `transform` and `idempotency_key`. An optional `target_schema` supports migration
@@ -381,8 +393,8 @@ claims do not determine the verdict. Invalid and malformed candidates remain
 inspectable. Serialization may change prefixes, layout, mixed-content
 presentation and comments; review the byte diff, not just structural changes.
 
-A preview does not publish files. Isolated OCI previews remain unfinished;
-do not use the local backend for untrusted code.
+A preview does not publish files. OCI-isolated previews are deferred to a later
+design cycle; do not use the local backend for untrusted code.
 
 ### Review and publish the retained candidate
 
@@ -427,8 +439,9 @@ staging is discarded rather than treated as published data. Active operations
 have deadlines and cancellation cleanup. Job outcomes are durable; interrupted
 jobs fail without automatically rerunning code.
 
-- **Missing optional dependency:** reinstall with `pip install 'pyxsd[mcp]'`;
-  the CLI reports this without a traceback.
+- **Missing optional dependency:** reinstall with `pip install 'pyxsd[mcp]'` or
+  launch through `uvx --from 'pyxsd[mcp]'`; the CLI reports this without a
+  traceback.
 - **`not_found` versus `stale_reference`:** an unknown resource is absent;
   a pinned revision or cursor no longer matches current state.
 - **Invalid versus malformed XML:** inspect the report for validation findings;
@@ -436,7 +449,7 @@ jobs fail without automatically rerunning code.
 - **Worker timeout or queue overflow:** retry only after reviewing document size,
   complexity and operator budgets. Neither produces a partial validation verdict.
 - **Execution:** disabled by default; trusted-local stdio previews require explicit
-  opt-in. Managed exact-byte publication is available; isolated execution remains unfinished.
+  opt-in. Managed exact-byte publication is available. OCI isolation and remote
+  user-code execution are deferred to a later design cycle.
 - **HTTP/OAuth:** available with explicit fixed-issuer configuration and
-  loopback-only development fallback. User-code execution over HTTP remains disabled;
-  remote deployment still requires the OCI and containment gates.
+  loopback-only development fallback. User-code execution over HTTP remains disabled.
