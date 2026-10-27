@@ -22,6 +22,7 @@ quickstart
 cli
 demo
 architecture
+mcp-deployment
 data-model
 validation
 batch

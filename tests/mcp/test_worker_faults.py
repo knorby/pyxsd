@@ -208,7 +208,7 @@ def test_pool_validation_stale_replacement_routing_and_close(tmp_path):
         original = workers._Worker.start
         workers._Worker.start = start
         try:
-            assert await pool._ensure(lane) is replacement
+            assert await pool._ensure(lane, operation) is replacement
         finally:
             workers._Worker.start = original
         assert old.closed and lane.worker is replacement

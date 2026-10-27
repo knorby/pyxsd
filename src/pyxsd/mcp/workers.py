@@ -33,6 +33,14 @@ from .worker_protocol import (
     encode_frame,
 )
 
+WORKER_BOOTSTRAP = (
+    "import os,runpy;"
+    "__import__('coverage').process_startup() if "
+    "os.getenv('COVERAGE_PROCESS_CONFIG') or os.getenv('COVERAGE_PROCESS_START') "
+    "else None;"
+    "runpy.run_module('pyxsd.mcp.worker_main',run_name='__main__')"
+)
+
 
 def snapshot_to_wire(snapshot: Snapshot) -> SnapshotMessage:
     return SnapshotMessage(
@@ -78,9 +86,17 @@ async def _receive_frame(stream: ByteReceiveStream, max_bytes: int) -> bytes:
 class _Worker:
     def __init__(self, process: Process, limits: Limits) -> None:
         self.process, self.limits = process, limits
+        self.mount_root: str | None = None
+        self.container_name: str | None = None
 
     @classmethod
-    async def start(cls, limits: Limits, *, role: Literal["clean", "execution"]) -> "_Worker":
+    async def start(
+        cls,
+        limits: Limits,
+        *,
+        role: Literal["clean", "execution"],
+        command: tuple[str, ...] | None = None,
+    ) -> "_Worker":
         environment = {
             "PATH": os.defpath,
             "LC_ALL": "C",
@@ -95,15 +111,8 @@ class _Worker:
         for name in ("COVERAGE_PROCESS_CONFIG", "COVERAGE_RUN"):
             if name in os.environ:
                 environment[name] = os.environ[name]
-        bootstrap = (
-            "import os,runpy;"
-            "__import__('coverage').process_startup() if "
-            "os.getenv('COVERAGE_PROCESS_CONFIG') or os.getenv('COVERAGE_PROCESS_START') "
-            "else None;"
-            "runpy.run_module('pyxsd.mcp.worker_main',run_name='__main__')"
-        )
         process = await anyio.open_process(
-            [sys.executable, "-I", "-u", "-c", bootstrap, "--role", role],
+            command or (sys.executable, "-I", "-u", "-c", WORKER_BOOTSTRAP, "--role", role),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -206,14 +215,16 @@ class WorkerPool:
         index = int.from_bytes(hashlib.sha256(identity).digest()[:8]) % len(self._lanes)
         return self._lanes[index]
 
-    async def _ensure(self, lane: _Lane) -> _Worker:
+    async def _ensure(self, lane: _Lane, operation: Operation) -> _Worker:
         if lane.worker is not None and lane.worker.process.returncode is None:
             return lane.worker
         if lane.worker is not None:
-            await lane.worker.close(graceful=False)
-            lane.worker = None
-        lane.worker = await _Worker.start(self.limits, role="clean")
+            await self._retire(lane, lane.worker, graceful=False)
+        lane.worker = await _Worker.start(self.limits, role=operation.role)
         return lane.worker
+
+    def _prepare(self, operation: Operation) -> Operation:
+        return operation
 
     async def _retire(self, lane: _Lane, worker: _Worker, *, graceful: bool) -> None:
         if lane.worker is worker:
@@ -246,8 +257,8 @@ class WorkerPool:
                 async with lane.lock:
                     if self._closed:
                         raise ToolError("worker_closed", "Worker pool is closed")
-                    worker = await self._ensure(lane)
-                    reply = await worker.run(operation)
+                    worker = await self._ensure(lane, operation)
+                    reply = await worker.run(self._prepare(operation))
                     completed = True
                     if reply.operations >= self.limits.worker_operations:
                         await self._retire(lane, worker, graceful=True)
