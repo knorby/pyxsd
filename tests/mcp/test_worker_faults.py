@@ -391,6 +391,17 @@ def test_worker_main_oversized_operation_and_schema_error_mapping(monkeypatch, t
     assert b"invalid_schema" in outgoing.getvalue()
 
 
+def test_worker_rejects_page_limit_above_operator_budget(tmp_path):
+    from pyxsd.mcp.cache import SchemaCache
+
+    snapshot = make_snapshot(tmp_path)
+    operation = parse_operation(workers, snapshot).model_copy(update={"issue_limit": 51})
+    cache = SchemaCache(Limits(page_items=50))
+    with pytest.raises(ToolError, match="invalid_argument"):
+        worker_main._execute(operation, cache, __version__)
+    cache.close()
+
+
 def test_discovery_ignores_non_schema_references(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
     from pyxsd.mcp.worker_protocol import DiscoverOperation

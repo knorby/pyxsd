@@ -47,9 +47,46 @@ class Operation(WireModel):
 
 class ParseOperation(Operation):
     kind: Literal["parse"] = "parse"
-    schema_ref: SchemaRef
+    schema_ref: SchemaRef | None
     document: FileRef
     hints: tuple[tuple[str | None, str], ...] = ()
+    issue_offset: Annotated[int, Field(ge=0)] = 0
+    issue_limit: Annotated[int, Field(gt=0)] = 50
+
+
+class DescribeOperation(Operation):
+    kind: Literal["describe"] = "describe"
+    schema_ref: SchemaRef
+    component_ids: tuple[Nonempty, ...] = ()
+    view: Literal["overview", "compact", "full", "constraints"] = "overview"
+    depth: Annotated[int, Field(ge=0)] | None = 1
+    offset: Annotated[int, Field(ge=0)] = 0
+    limit: Annotated[int, Field(gt=0)] = 50
+
+
+class FindOperation(Operation):
+    kind: Literal["find"] = "find"
+    schema_ref: SchemaRef
+    text: str | None = None
+    component_kind: Nonempty | None = None
+    name: Nonempty | None = None
+    namespace: str | None = None
+    component_id: Nonempty | None = None
+    direction: Literal["uses", "used_by"] = "uses"
+    depth: Annotated[int, Field(ge=0)] = 1
+    offset: Annotated[int, Field(ge=0)] = 0
+    limit: Annotated[int, Field(gt=0)] = 50
+
+
+class QueryOperation(Operation):
+    kind: Literal["query"] = "query"
+    schema_ref: SchemaRef
+    document: FileRef
+    xpath: Nonempty
+    namespaces: dict[str, str] = Field(default_factory=dict)
+    result: Literal["summary", "subtree"] = "summary"
+    offset: Annotated[int, Field(ge=0)] = 0
+    limit: Annotated[int, Field(gt=0)] = 50
 
 
 class DiscoverOperation(Operation):
@@ -57,8 +94,13 @@ class DiscoverOperation(Operation):
     refs: tuple[FileRef | SchemaRef, ...]
 
 
-CleanOperation = Annotated[ParseOperation | DiscoverOperation, Field(discriminator="kind")]
-_OPERATION: TypeAdapter[ParseOperation | DiscoverOperation] = TypeAdapter(CleanOperation)
+CleanOperation = Annotated[
+    ParseOperation | DescribeOperation | FindOperation | QueryOperation | DiscoverOperation,
+    Field(discriminator="kind"),
+]
+_OPERATION: TypeAdapter[
+    ParseOperation | DescribeOperation | FindOperation | QueryOperation | DiscoverOperation
+] = TypeAdapter(CleanOperation)
 
 
 class WorkerReply(WireModel):
@@ -156,7 +198,7 @@ def decode_frame(
 
 def decode_operation(
     frame: bytes, *, max_bytes: int, role: str
-) -> ParseOperation | DiscoverOperation:
+) -> ParseOperation | DescribeOperation | FindOperation | QueryOperation | DiscoverOperation:
     """Decode the closed operation union selected by the coordinator's worker role."""
     _decode_object(frame, max_bytes=max_bytes, expected={"role": role})
     try:

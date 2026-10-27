@@ -77,3 +77,48 @@ class ToolEnvelope(WireModel):
     provenance: dict[str, JsonValue] = Field(default_factory=dict)
     page: PageResult | None = None
     artifacts: list[ArtifactRef] = Field(default_factory=list)
+
+
+class InspectSchemaRequest(WireModel):
+    workspace_id: Nonempty
+    schema_ref: SchemaRef
+    component_ids: tuple[Nonempty, ...] = ()
+    view: Literal["overview", "compact", "full", "constraints"] = "overview"
+    depth: Annotated[int, Field(ge=0)] | None = 1
+    page: Page = Field(default_factory=Page)
+
+
+class FindComponentsRequest(WireModel):
+    workspace_id: Nonempty
+    schema_ref: SchemaRef
+    text: str | None = None
+    kind: Nonempty | None = None
+    name: Nonempty | None = None
+    namespace: str | None = None
+    component_id: Nonempty | None = None
+    direction: Literal["uses", "used_by"] = "uses"
+    depth: Annotated[int, Field(ge=0)] = 1
+    page: Page = Field(default_factory=Page)
+
+
+class ValidateDocumentRequest(WireModel):
+    workspace_id: Nonempty
+    document: FileRef
+    schema_ref: SchemaRef | None = None
+    page: Page = Field(default_factory=Page)
+
+
+class QueryDocumentRequest(WireModel):
+    workspace_id: Nonempty
+    document: FileRef
+    schema_ref: SchemaRef
+    xpath: Nonempty
+    namespaces: dict[str, str] = Field(default_factory=dict)
+    result: Literal["summary", "subtree"] = "summary"
+    page: Page = Field(default_factory=Page)
+
+
+class ExplainIssueRequest(WireModel):
+    code: Nonempty
+    report: ArtifactRef | None = None
+    issue_index: Annotated[int, Field(ge=0)] | None = None

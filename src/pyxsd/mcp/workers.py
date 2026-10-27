@@ -22,9 +22,12 @@ from .contracts import FileRef, SchemaRef, WireModel
 from .errors import ToolError
 from .snapshots import Dependency, Snapshot, SnapshotFile
 from .worker_protocol import (
+    DescribeOperation,
     DiscoverOperation,
+    FindOperation,
     Operation,
     ParseOperation,
+    QueryOperation,
     SnapshotFileMessage,
     SnapshotMessage,
     WorkerConfig,
@@ -144,11 +147,11 @@ class _Worker:
             await self.process.stdin.send(frame)
         except (anyio.BrokenResourceError, anyio.ClosedResourceError, OSError) as exc:
             raise ToolError("worker_died", "Clean worker is unavailable", retryable=True) from exc
-        data = await _receive_frame(self.process.stdout, self.limits.request_bytes)
+        data = await _receive_frame(self.process.stdout, self.limits.output_bytes)
         return decode_frame(
             data,
             WorkerReply,
-            max_bytes=self.limits.request_bytes,
+            max_bytes=self.limits.output_bytes,
             expected={"request_id": request_id, "role": role},
         )
 
@@ -203,8 +206,11 @@ class WorkerPool:
 
     def _lane(self, operation: Operation) -> _Lane:
         route: object
-        if isinstance(operation, ParseOperation):
-            route = operation.schema_ref.model_dump(mode="json")
+        if isinstance(
+            operation, (ParseOperation, DescribeOperation, FindOperation, QueryOperation)
+        ):
+            schema = operation.schema_ref
+            route = None if schema is None else schema.model_dump(mode="json")
         elif isinstance(operation, DiscoverOperation):
             route = [ref.model_dump(mode="json") for ref in operation.refs]
         else:
@@ -236,7 +242,16 @@ class WorkerPool:
         if self._closed:
             raise ToolError("worker_closed", "Worker pool is closed")
         if (
-            not isinstance(operation, (ParseOperation, DiscoverOperation))
+            not isinstance(
+                operation,
+                (
+                    ParseOperation,
+                    DescribeOperation,
+                    FindOperation,
+                    QueryOperation,
+                    DiscoverOperation,
+                ),
+            )
             or operation.role != "clean"
         ):
             raise ToolError("invalid_argument", "Unsupported clean-worker operation")
