@@ -35,6 +35,7 @@ comparison-xmlschema
 api
 integrations
 data-workflows
+skills
 migration-1.0
 history/index
 contributing
