@@ -67,23 +67,45 @@ async def terminal(jobs, job_id):
             await anyio.sleep(0.01)
 
 
-@pytest.mark.parametrize("transition", ["running", "succeeded"])
+@pytest.mark.parametrize("transition", ["running", "succeeded", "failed", "cancelled"])
 @pytest.mark.parametrize("committed", [False, True])
 def test_transition_failure_preserves_committed_outcome(tmp_path, transition, committed):
     async def scenario():
         async with harness(tmp_path) as (
             jobs,
-            _workspaces,
-            _pool,
+            workspaces,
+            pool,
             principal,
             workspace,
             snapshot,
             _now,
         ):
             from pyxsd.mcp import workers
+            from pyxsd.mcp.contracts import ToolFault
+            from pyxsd.mcp.worker_protocol import WorkerReply
 
             original = jobs._transition
+            pool_run = pool.run
             injected = False
+
+            async def outcome(op, *, deadline):
+                if transition == "failed":
+                    return WorkerReply(
+                        request_id=op.request_id,
+                        role="clean",
+                        status="error",
+                        fault=ToolFault(code="test_failure", message="Worker failed"),
+                    )
+                reply = await pool_run(op, deadline=deadline)
+                if transition == "cancelled":
+                    await workspaces.state.run(
+                        lambda db: db.execute(
+                            "UPDATE jobs SET cancel_requested=1 WHERE id=?", (op.request_id,)
+                        ).close()
+                    )
+                return reply
+
+            pool.run = outcome
 
             async def interrupted(job_id, expected, state, **kwargs):
                 nonlocal injected
@@ -104,10 +126,16 @@ def test_transition_failure_preserves_committed_outcome(tmp_path, transition, co
                 assert result.state == "succeeded"
                 assert result.result["root_present"] is True
                 assert result.fault is None
+            elif transition == "cancelled" and committed:
+                assert result.state == "cancelled"
+                assert result.result is None
+                assert result.fault is None
             else:
                 assert result.state == "failed"
                 assert result.result is None
-                assert result.fault.code == "worker_internal"
+                assert result.fault.code == (
+                    "test_failure" if transition == "failed" and committed else "worker_internal"
+                )
             replay = await jobs.submit(
                 principal, workspace.id, operation(workers, snapshot), idempotency_key="transition"
             )
@@ -758,6 +786,169 @@ def test_completed_jobs_release_runtime_handles_but_keep_durable_results(tmp_pat
             assert not jobs._finished
             for ref in refs:
                 assert (await jobs.status(principal, ref.id)).result["root_present"] is True
+
+    anyio.run(scenario)
+
+
+@pytest.mark.parametrize("after_commit", [False, True])
+def test_submission_retry_after_journal_failure_does_not_strand_or_duplicate_work(
+    tmp_path, monkeypatch, after_commit
+):
+    from pyxsd.mcp import workers
+
+    async def scenario():
+        async with harness(tmp_path) as (
+            jobs,
+            workspaces,
+            pool,
+            principal,
+            workspace,
+            snapshot,
+            _now,
+        ):
+            state_run, pool_run = workspaces.state.run, pool.run
+            injected = False
+            calls = []
+
+            async def interrupted(callback):
+                nonlocal injected
+                if callback.__name__ == "insert" and not injected:
+                    injected = True
+                    if after_commit:
+                        await state_run(callback)
+                    raise OSError("Injected admission journal failure")
+                return await state_run(callback)
+
+            async def counted(op, *, deadline):
+                calls.append(op.request_id)
+                return await pool_run(op, deadline=deadline)
+
+            monkeypatch.setattr(workspaces.state, "run", interrupted)
+            monkeypatch.setattr(pool, "run", counted)
+            op = operation(workers, snapshot)
+            with pytest.raises(OSError, match="Injected admission"):
+                await jobs.submit(principal, workspace.id, op, idempotency_key="retry-admission")
+            ref = await jobs.submit(principal, workspace.id, op, idempotency_key="retry-admission")
+            result = await terminal(jobs, ref.id)
+            assert result.state == "succeeded"
+            assert result.result["root_present"] is True
+            assert calls == [ref.id]
+
+    anyio.run(scenario)
+
+
+@pytest.mark.parametrize("phase", ["queued", "running"])
+@pytest.mark.parametrize("after_commit", [False, True])
+def test_cancel_journal_failure_keeps_a_recoverable_state(
+    tmp_path, monkeypatch, phase, after_commit
+):
+    from pyxsd.mcp import workers
+
+    async def scenario():
+        async with harness(tmp_path) as (
+            jobs,
+            workspaces,
+            pool,
+            principal,
+            workspace,
+            snapshot,
+            _now,
+        ):
+            gate, ready = anyio.Event(), anyio.Event()
+            execute, pool_run, state_run = jobs._execute, pool.run, workspaces.state.run
+            injected = False
+
+            async def queued(job_id, op):
+                ready.set()
+                await gate.wait()
+                await execute(job_id, op)
+
+            async def running(op, *, deadline):
+                ready.set()
+                await gate.wait()
+                return await pool_run(op, deadline=deadline)
+
+            async def interrupted(callback):
+                nonlocal injected
+                if callback.__name__ == "mark" and not injected:
+                    injected = True
+                    if after_commit:
+                        await state_run(callback)
+                    raise OSError("Injected cancellation journal failure")
+                return await state_run(callback)
+
+            monkeypatch.setattr(workspaces.state, "run", interrupted)
+            if phase == "queued":
+                monkeypatch.setattr(jobs, "_execute", queued)
+            else:
+                monkeypatch.setattr(pool, "run", running)
+            ref = await jobs.submit(
+                principal,
+                workspace.id,
+                operation(workers, snapshot),
+                idempotency_key="cancel-fault",
+            )
+            with anyio.fail_after(5):
+                await ready.wait()
+                with pytest.raises(OSError, match="Injected cancellation"):
+                    await jobs.cancel(principal, ref.id)
+                gate.set()
+                result = await terminal(jobs, ref.id)
+            assert injected
+            assert result.state == ("cancelled" if after_commit else "succeeded")
+            if after_commit:
+                assert result.result is None
+            else:
+                assert result.result["root_present"] is True
+
+    anyio.run(scenario)
+
+
+def test_queued_job_pins_its_managed_snapshot_until_execution_finishes(tmp_path, monkeypatch):
+    from pyxsd.mcp import workers
+    from pyxsd.mcp.safe_io import AdmittedFile
+    from pyxsd.mcp.snapshot_store import SnapshotStore
+
+    async def scenario():
+        async with harness(tmp_path) as (
+            jobs,
+            workspaces,
+            _pool,
+            principal,
+            workspace,
+            snapshot,
+            _now,
+        ):
+            managed = await SnapshotStore(workspaces).put_bytes(
+                principal,
+                workspace.id,
+                [
+                    AdmittedFile(item.path, (snapshot.root / item.path).read_bytes())
+                    for item in snapshot.files
+                ],
+                expected_revision=None,
+            )
+            gate = anyio.Event()
+            execute = jobs._execute
+
+            async def queued(job_id, op):
+                await gate.wait()
+                await execute(job_id, op)
+
+            monkeypatch.setattr(jobs, "_execute", queued)
+            ref = await jobs.submit(
+                principal, workspace.id, operation(workers, managed), idempotency_key="pin-queued"
+            )
+            try:
+                await workspaces.release(principal, workspace.id)
+                assert managed.root.exists(), "Queued job lost its pinned snapshot"
+            finally:
+                gate.set()
+            result = await terminal(jobs, ref.id)
+            assert result.state == "succeeded"
+            assert result.result["root_present"] is True
+            await jobs._wait_for_task(ref.id)
+            assert not managed.root.exists()
 
     anyio.run(scenario)
 

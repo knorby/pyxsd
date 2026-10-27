@@ -51,6 +51,11 @@ class JobManager:
         if self._closed:
             raise ToolError("jobs_closed", "Job manager is closed")
 
+    def _schedule(self, job_id: str, owner_id: str, operation: Operation) -> None:
+        operation = operation.model_copy(update={"owner_id": owner_id, "request_id": job_id})
+        self._finished[job_id] = anyio.Event()
+        self._tasks[job_id] = asyncio.create_task(self._execute(job_id, operation))
+
     @staticmethod
     def _ref(row: sqlite3.Row) -> JobRef:
         return JobRef(
@@ -123,6 +128,8 @@ class JobManager:
             if existing is not None:
                 if existing["digest"] != digest:
                     raise ToolError("idempotency_conflict", "Job key is bound to different input")
+                if existing["state"] == "queued" and existing["id"] not in self._tasks:
+                    self._schedule(existing["id"], principal.owner_id, operation)
                 return self._ref(existing)
             active = await self.state.run(
                 lambda db: db.execute(
@@ -160,10 +167,12 @@ class JobManager:
                         created,
                     ),
                 )
+                # Admission owns this pin until task cleanup, including time
+                # queued before the task has entered its cancellation scope.
+                db.execute("UPDATE workspaces SET leases=leases+1 WHERE id=?", (workspace_id,))
 
             await self.state.run(insert)
-            self._finished[job_id] = anyio.Event()
-            self._tasks[job_id] = asyncio.create_task(self._execute(job_id, operation))
+            self._schedule(job_id, principal.owner_id, operation)
             row = await self._row(principal, job_id)
             assert row is not None
             return self._ref(row)
@@ -208,23 +217,16 @@ class JobManager:
         self._scopes[job_id] = scope
         try:
             with scope:
-                async with self.workspaces.lease(
-                    Principal(
-                        operation.owner_id,
-                        frozenset({"pyxsd:execute", "pyxsd:read", "pyxsd:upload"}),
-                    ),
-                    operation.snapshot.workspace_id,
-                ):
-                    row = await self._row(Principal(operation.owner_id, frozenset()), job_id)
-                    if row is None or row["state"] != "queued" or row["cancel_requested"]:
-                        return
-                    await self._transition(job_id, ("queued",), "running")
-                    deadline = self.monotonic() + (
-                        self.limits.transform_seconds
-                        if operation.role == "execution"
-                        else self.limits.compile_query_seconds
-                    )
-                    reply = await self.pool.run(operation, deadline=deadline)
+                row = await self._row(Principal(operation.owner_id, frozenset()), job_id)
+                if row is None or row["state"] != "queued" or row["cancel_requested"]:
+                    return
+                await self._transition(job_id, ("queued",), "running")
+                deadline = self.monotonic() + (
+                    self.limits.transform_seconds
+                    if operation.role == "execution"
+                    else self.limits.compile_query_seconds
+                )
+                reply = await self.pool.run(operation, deadline=deadline)
             if scope.cancelled_caught:
                 with anyio.CancelScope(shield=True):
                     if self._interrupted:
@@ -270,6 +272,14 @@ class JobManager:
                     ),
                 )
         finally:
+            with anyio.CancelScope(shield=True):
+                await self.state.run(
+                    lambda db: db.execute(
+                        "UPDATE workspaces SET leases=leases-1 WHERE id=? AND leases>0",
+                        (operation.snapshot.workspace_id,),
+                    ).close()
+                )
+                await self.workspaces.sweep()
             self._scopes.pop(job_id, None)
             finished = self._finished.get(job_id)
             if finished is not None:
