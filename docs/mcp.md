@@ -228,14 +228,18 @@ export.
 
 ## Packaged skill discovery
 
-The server declares the vendor extension `com.knorby.pyxsd/skills` through the
-SDK's extension interface. Modern protocol discovery advertises its settings;
-legacy `initialize` responses do not expose modern extension capabilities.
-`skills/list` returns a `skills` array of names and descriptions. `skills/get`
-accepts a skill `name` and returns its UTF-8 file content and a complete manifest
-with `path`, resource `uri`, byte `size`, and SHA-256 `digest` for each file.
+The server implements the [Final skills extension](https://modelcontextprotocol.io/extensions/skills/overview)
+under `io.modelcontextprotocol/skills` through the SDK's extension interface.
+Modern protocol discovery advertises empty settings (directory reads are not
+offered); legacy `initialize` does not expose modern extension capabilities.
+`skills/list` returns one complete page of atomic skill manifests. Each includes
+the `SKILL.md` URI, its complete packaged frontmatter, and every supporting
+resource's `uri`, UTF-8 byte `size`, and `sha256:<hex>` digest. `skills/get`
+accepts that skill `uri` and returns the identical manifest. Unknown skill URIs
+and cursors are invalid-parameter errors. Complete responses have public cache
+scope and a 60,000 ms TTL; clients retrieve file contents using `resources/read`.
 SDK clients sending generic requests must use a parameter model retaining
-`name`, rather than the base protocol parameter model, which drops that field.
+`uri`, rather than the base protocol parameter model, which drops that field.
 
 Clients without extension support can list and read the same files as ordinary
 `pyxsd://skills/<name>/<path>` resources. Content is byte-identical to

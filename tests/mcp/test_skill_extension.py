@@ -22,7 +22,7 @@ from pyxsd.mcp.config import Settings
 from pyxsd.mcp.skill_extension import SkillsGetParams
 from pyxsd.skills import export_skill, list_skills
 
-IDENTIFIER = "com.knorby.pyxsd/skills"
+IDENTIFIER = "io.modelcontextprotocol/skills"
 _RESULT = TypeAdapter(dict)
 
 
@@ -62,7 +62,7 @@ def test_extension_declared_in_capabilities(tmp_path):
         async with connected(tmp_path, modern=True) as (_client, _services, initialized):
             extensions = initialized.capabilities.extensions
             assert compatibility["identifier"] == IDENTIFIER
-            assert extensions[IDENTIFIER]["methods"] == compatibility["methods"]
+            assert extensions[IDENTIFIER] == {}
             assert compatibility["discoveryProtocol"] in initialized.supported_versions
 
     anyio.run(scenario)
@@ -78,28 +78,32 @@ def test_skills_list_and_get(tmp_path):
             listed = (
                 await client.send_request(types.Request(method="skills/list", params={}), _RESULT)
             )["skills"]
-            assert {item["name"] for item in listed} == {skill.name for skill in list_skills()}
-            by_name = {item["name"]: item["description"] for item in listed}
+            assert {item["frontmatter"]["name"] for item in listed} == {
+                skill.name for skill in list_skills()
+            }
+            by_name = {
+                item["frontmatter"]["name"]: item["frontmatter"]["description"] for item in listed
+            }
             for skill in list_skills():
                 assert by_name[skill.name] == skill.description
 
             fetched = await client.send_request(
                 types.Request(
-                    method="skills/get", params=SkillsGetParams(name="pyxsd-development")
+                    method="skills/get",
+                    params=SkillsGetParams(uri="pyxsd://skills/pyxsd-development/SKILL.md"),
                 ),
                 _RESULT,
             )
-            assert "SKILL.md" in fetched["files"]
-            assert "references/occurrences.md" in fetched["files"]
-            manifest = fetched["manifest"]
+            manifest = fetched["skill"]["resources"]
+            assert any(entry["uri"].endswith("/SKILL.md") for entry in manifest)
+            assert any(entry["uri"].endswith("/references/occurrences.md") for entry in manifest)
             for entry in manifest:
                 assert sorted(entry) == compatibility["manifestFields"]
-                assert entry["size"] == len(fetched["files"][entry["path"]].encode("utf-8"))
-                assert len(entry["digest"]) == 64
-                assert (
-                    hashlib.sha256(fetched["files"][entry["path"]].encode()).hexdigest()
-                    == entry["digest"]
-                )
+                resource = await client.read_resource(entry["uri"])
+                content = resource.contents[0].text.encode("utf-8")
+                assert entry["size"] == len(content)
+                assert len(entry["digest"]) == 71
+                assert "sha256:" + hashlib.sha256(content).hexdigest() == entry["digest"]
 
     anyio.run(scenario)
 
@@ -126,11 +130,14 @@ def test_export_matches_get_bytes(tmp_path):
         async with connected(tmp_path) as (client, _services, _initialized):
             fetched = await client.send_request(
                 types.Request(
-                    method="skills/get", params=SkillsGetParams(name="pyxsd-development")
+                    method="skills/get",
+                    params=SkillsGetParams(uri="pyxsd://skills/pyxsd-development/SKILL.md"),
                 ),
                 _RESULT,
             )
-            for path, content in fetched["files"].items():
+            for entry in fetched["skill"]["resources"]:
+                path = entry["uri"].removeprefix("pyxsd://skills/pyxsd-development/")
+                content = (await client.read_resource(entry["uri"])).contents[0].text
                 exported = (destination / "pyxsd-development" / path).read_text(encoding="utf-8")
                 assert exported == content
 
@@ -145,7 +152,10 @@ def test_skill_resources_match_complete_export_without_extension_negotiation(tmp
             for skill in list_skills():
                 exported = export_skill(skill.name, tmp_path)
                 fetched = await client.send_request(
-                    types.Request(method="skills/get", params=SkillsGetParams(name=skill.name)),
+                    types.Request(
+                        method="skills/get",
+                        params=SkillsGetParams(uri=f"pyxsd://skills/{skill.name}/SKILL.md"),
+                    ),
                     _RESULT,
                 )
                 paths = {
@@ -153,13 +163,16 @@ def test_skill_resources_match_complete_export_without_extension_negotiation(tmp
                     for path in exported.rglob("*")
                     if path.is_file()
                 }
-                assert {entry["path"] for entry in fetched["manifest"]} == paths
-                for entry in fetched["manifest"]:
+                prefix = f"pyxsd://skills/{skill.name}/"
+                assert {
+                    entry["uri"].removeprefix(prefix) for entry in fetched["skill"]["resources"]
+                } == paths
+                for entry in fetched["skill"]["resources"]:
                     assert entry["uri"] in uris
                     result = await client.read_resource(entry["uri"])
                     assert (
                         result.contents[0].text.encode("utf-8")
-                        == (exported / entry["path"]).read_bytes()
+                        == (exported / entry["uri"].removeprefix(prefix)).read_bytes()
                     )
             assert (await client.read_resource("pyxsd://issue-codes")).contents
 
@@ -172,7 +185,11 @@ def test_unknown_skill_is_a_typed_error(tmp_path, name):
         async with connected(tmp_path) as (client, _services, _initialized):
             with pytest.raises(MCPError, match=r"(?i)unknown"):
                 await client.send_request(
-                    types.Request(method="skills/get", params=SkillsGetParams(name=name)), _RESULT
+                    types.Request(
+                        method="skills/get",
+                        params=SkillsGetParams(uri=f"pyxsd://skills/{name}/SKILL.md"),
+                    ),
+                    _RESULT,
                 )
 
     anyio.run(scenario)

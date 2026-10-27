@@ -1,6 +1,7 @@
 {
-  "identifier": "com.knorby.pyxsd/skills",
+  "identifier": "io.modelcontextprotocol/skills",
+  "specification": "https://raw.githubusercontent.com/modelcontextprotocol/ext-skills/main/specification/stable/skills.mdx",
   "discoveryProtocol": "2026-07-28",
   "methods": ["skills/list", "skills/get"],
-  "manifestFields": ["digest", "path", "size", "uri"]
+  "manifestFields": ["digest", "size", "uri"]
 }

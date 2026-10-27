@@ -1,4 +1,4 @@
-"""SEP-2133 extension exposing pyxsd skills through the official SDK seam.
+"""Final skills extension (SEP-2640) through the official SDK seam.
 
 Extension methods are additive only: ``skills/list`` and ``skills/get`` never
 shadow protocol discovery, and reading skill content never activates a skill.
@@ -15,18 +15,17 @@ from mcp_types import INVALID_PARAMS, RequestParams
 
 from pydantic import Field
 
-from .. import __version__
 from ..skills import list_skills
 
-IDENTIFIER = "com.knorby.pyxsd/skills"
+IDENTIFIER = "io.modelcontextprotocol/skills"
 
 
 class SkillsListParams(RequestParams):
-    pass
+    cursor: str | None = None
 
 
 class SkillsGetParams(RequestParams):
-    name: str = Field(min_length=1, max_length=64)
+    uri: str = Field(min_length=1)
 
 
 def _text(resource: Any) -> str:
@@ -50,8 +49,22 @@ def _skill_files(name: str) -> dict[str, str]:
 class SkillsExtension(Extension):
     identifier = IDENTIFIER
 
-    def settings(self) -> dict[str, Any]:
-        return {"version": __version__, "methods": ["skills/list", "skills/get"]}
+    def _manifest(self, name: str) -> dict[str, Any]:
+        metadata = next(skill for skill in list_skills() if skill.name == name)
+        return {
+            "uri": f"pyxsd://skills/{name}/SKILL.md",
+            # These are all fields in the packaged scalar frontmatter. Tests
+            # compare the complete authored header against the wire value.
+            "frontmatter": {"name": metadata.name, "description": metadata.description},
+            "resources": [
+                {
+                    "uri": f"pyxsd://skills/{name}/{path}",
+                    "size": len(content.encode("utf-8")),
+                    "digest": "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                }
+                for path, content in sorted(_skill_files(name).items())
+            ],
+        }
 
     def resources(self) -> tuple[ResourceBinding, ...]:
         return tuple(
@@ -69,29 +82,29 @@ class SkillsExtension(Extension):
 
     def methods(self) -> tuple[MethodBinding, ...]:
         async def list_handler(
-            _context: ServerRequestContext, _params: SkillsListParams
+            _context: ServerRequestContext, params: SkillsListParams
         ) -> dict[str, Any]:
+            if params.cursor is not None:
+                raise MCPError(INVALID_PARAMS, "Unknown skills cursor")
             return {
-                "skills": [
-                    {"name": skill.name, "description": skill.description}
-                    for skill in list_skills()
-                ]
+                "resultType": "complete",
+                "ttlMs": 60000,
+                "cacheScope": "public",
+                "skills": [self._manifest(skill.name) for skill in list_skills()],
             }
 
         async def get_handler(
             _context: ServerRequestContext, params: SkillsGetParams
         ) -> dict[str, Any]:
-            files = _skill_files(params.name)
-            manifest = [
-                {
-                    "path": path,
-                    "uri": f"pyxsd://skills/{params.name}/{path}",
-                    "size": len(content.encode("utf-8")),
-                    "digest": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                }
-                for path, content in sorted(files.items())
-            ]
-            return {"files": files, "manifest": manifest}
+            names = {f"pyxsd://skills/{skill.name}/SKILL.md": skill.name for skill in list_skills()}
+            if params.uri not in names:
+                raise MCPError(INVALID_PARAMS, f"Unknown skill URI {params.uri!r}")
+            return {
+                "resultType": "complete",
+                "ttlMs": 60000,
+                "cacheScope": "public",
+                "skill": self._manifest(names[params.uri]),
+            }
 
         return (
             MethodBinding("skills/list", SkillsListParams, list_handler),
