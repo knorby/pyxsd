@@ -30,6 +30,7 @@ from .worker_protocol import (
     QueryOperation,
     SnapshotFileMessage,
     SnapshotMessage,
+    StructuralDiffOperation,
     WorkerConfig,
     WorkerReply,
     decode_frame,
@@ -250,6 +251,7 @@ class WorkerPool:
                     FindOperation,
                     QueryOperation,
                     DiscoverOperation,
+                    StructuralDiffOperation,
                 ),
             )
             or operation.role != "clean"

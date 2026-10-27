@@ -7,16 +7,20 @@ import secrets
 import sqlite3
 import time
 from collections.abc import Callable
+from typing import Protocol
 
 import anyio
 
 from .contracts import JobRef, JobResult, ToolFault
 from .errors import ToolError
-from .worker_protocol import Operation
-from .workers import WorkerPool
+from .worker_protocol import Operation, WorkerReply
 from .workspaces import Principal, WorkspaceStore
 
 _TERMINAL = ("succeeded", "failed", "cancelled")
+
+
+class JobExecutor(Protocol):
+    async def run(self, operation: Operation, *, deadline: float) -> WorkerReply: ...
 
 
 def _digest(workspace_id: str, operation: Operation) -> str:
@@ -31,7 +35,7 @@ class JobManager:
     def __init__(
         self,
         workspaces: WorkspaceStore,
-        pool: WorkerPool,
+        pool: JobExecutor,
         *,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,

@@ -5,8 +5,9 @@ server. MCP clients can create private workspaces, explore compiled schemas,
 validate XML, follow diagnostics to exact source occurrences, run bounded XPath
 queries, and download immutable artifacts through one consistent tool surface.
 
-Both **stdio** and authenticated **streamable HTTP** are available. Execution of
-user-supplied Python is a separate milestone and is disabled in this build. See
+Both **stdio** and authenticated **streamable HTTP** are available. Execution is
+disabled by default. Local transformation previews require an explicit stdio
+opt-in and run with the launching user's privileges, not in a sandbox. See
 {doc}`mcp-deployment` for the worker runtime and OCI containment status.
 
 ## Install and launch
@@ -245,12 +246,53 @@ The local subprocess runtime is not a sandbox for untrusted Python. See
 configuration, forced cleanup, and the separately required Linux containment
 tests.
 
+## Local transformation previews
+
+Enable local previews only for code you trust:
+
+```bash
+pyxsd-mcp --state-dir /absolute/private/state --execution-backend trusted-local
+```
+
+This enables `pyxsd_preview_transform`, `pyxsd_job_status` and
+`pyxsd_cancel_job`. HTTP refuses trusted-local execution; an unavailable isolated
+backend never falls back to local execution.
+
+Call `pyxsd_preview_transform` with `workspace_id`, `document`, `source_schema`,
+`transform` and `idempotency_key`. An optional `target_schema` supports migration
+previews. Python transforms use this form:
+
+```json
+{
+  "kind": "python",
+  "source": "def transform(document, context):\n    return document\n"
+}
+```
+
+The function receives a `Document` and context, and may return a `Document`, a
+bound root, or `None` for in-place changes. Pipeline recipes use explicit
+registered source or supplied definitions, never implicit imports from the
+current directory. Source is capped at 64 KiB and recipes at 32 steps, or lower
+operator limits.
+
+Poll the returned job ID with `pyxsd_job_status`. A successful job returns a
+preview record with original/candidate hashes, validation reports, byte and
+positional structural diffs, checkpoint artifacts, warnings and expiry.
+Execution terminates before candidate capture. Separate clean workers validate
+the retained bytes and any requested checkpoints; executed code's validity
+claims do not determine the verdict. Invalid and malformed candidates remain
+inspectable. Serialization may change prefixes, layout, mixed-content
+presentation and comments; review the byte diff, not just structural changes.
+
+A preview does not publish files. Exact-byte publication and isolated OCI
+previews remain unfinished; do not use the local backend for untrusted code.
+
 ## Restart, errors, and current boundaries
 
 Successful revisions and artifacts survive coordinator restart. Interrupted
 staging is discarded rather than treated as published data. Active operations
-have deadlines and cancellation cleanup; durable background-job resumption is a
-separate execution milestone, not something the current stdio server claims.
+have deadlines and cancellation cleanup. Job outcomes are durable; interrupted
+jobs fail without automatically rerunning code.
 
 - **Missing optional dependency:** reinstall with `pip install 'pyxsd[mcp]'`;
   the CLI reports this without a traceback.
@@ -260,7 +302,8 @@ separate execution milestone, not something the current stdio server claims.
   malformed input is an operational `invalid_xml` fault.
 - **Worker timeout or queue overflow:** retry only after reviewing document size,
   complexity and operator budgets. Neither produces a partial validation verdict.
-- **Execution:** disabled. Do not send transforms for execution to this build.
+- **Execution:** disabled by default; trusted-local stdio previews require explicit
+  opt-in. Isolated execution and publication remain unfinished.
 - **HTTP/OAuth:** available with explicit fixed-issuer configuration and
-  loopback-only development fallback. User-code execution remains disabled;
+  loopback-only development fallback. User-code execution over HTTP remains disabled;
   remote deployment still requires the OCI and containment gates.

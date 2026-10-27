@@ -191,6 +191,35 @@ def test_main_http_configuration_and_missing_auth(tmp_path, monkeypatch, capsys)
     anyio.run(calls["services"].aclose)
 
 
+def test_cli_execution_requires_explicit_stdio_opt_in(tmp_path, monkeypatch, capsys):
+    from pyxsd.mcp import server
+    from pyxsd.mcp.__main__ import main
+
+    settings = []
+    monkeypatch.setattr(server, "run", settings.append)
+    assert main(["--state-dir", str(tmp_path)]) == 0
+    assert settings[-1].execution_backend == "disabled"
+    assert "execution" not in settings[-1].enabled_groups
+    assert main(["--state-dir", str(tmp_path), "--execution-backend", "trusted-local"]) == 0
+    assert settings[-1].execution_backend == "trusted-local"
+    assert "execution" in settings[-1].enabled_groups
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "--transport",
+                "streamable-http",
+                "--loopback-dev",
+                "--execution-backend",
+                "trusted-local",
+            ]
+        )
+        == 2
+    )
+    assert "execution_unavailable" in capsys.readouterr().err
+
+
 def test_main_version_does_not_require_sdk(capsys):
     from pyxsd.mcp.__main__ import main
 

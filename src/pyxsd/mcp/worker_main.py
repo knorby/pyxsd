@@ -36,6 +36,7 @@ from .worker_protocol import (
     Operation,
     ParseOperation,
     QueryOperation,
+    StructuralDiffOperation,
     WorkerConfig,
     WorkerReply,
     decode_frame,
@@ -234,6 +235,10 @@ def _execute(
         return _find(operation, cache, processor_version)
     if isinstance(operation, QueryOperation):
         return _query(operation, cache, processor_version)
+    if isinstance(operation, StructuralDiffOperation):
+        from .structural import compare
+
+        return compare(operation, cache.limits)
     if isinstance(operation, DiscoverOperation):
         snapshot = snapshot_from_wire(operation.snapshot)
         dependencies: dict[str, Dependency] = {}

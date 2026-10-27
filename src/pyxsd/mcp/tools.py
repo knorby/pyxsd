@@ -28,7 +28,9 @@ from .contracts import (
     ValidateDocumentRequest,
 )
 from .errors import ToolError
+from .previews import PreviewTransformRequest
 from .responses import render_result
+from .transforms import TransformSpec
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
@@ -256,6 +258,29 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
 
     if "execution" in services.settings.enabled_groups:
 
+        async def preview_transform(
+            workspace_id: str,
+            document: FileRef,
+            source_schema: SchemaRef,
+            transform: TransformSpec,
+            idempotency_key: str,
+            target_schema: SchemaRef | None = None,
+        ) -> types.CallToolResult:
+            request = PreviewTransformRequest(
+                workspace_id=workspace_id,
+                document=document,
+                source_schema=source_schema,
+                target_schema=target_schema,
+                transform=transform,
+                idempotency_key=idempotency_key,
+            )
+
+            async def operation() -> ToolEnvelope:
+                ref = await services.previews.submit(services.current_principal(), request)
+                return ToolEnvelope(data=ref.model_dump(mode="json"))
+
+            return await _invoke(services, workspace_id, operation)
+
         async def job_status(job_id: str) -> types.CallToolResult:
             try:
                 result = await services.jobs.status(services.current_principal(), job_id)
@@ -292,6 +317,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
 
         _register(server, "pyxsd_job_status", job_status, read_only=True)
         _register(server, "pyxsd_cancel_job", cancel_job, read_only=False)
+        _register(server, "pyxsd_preview_transform", preview_transform, read_only=False)
 
     if workspaces:
 

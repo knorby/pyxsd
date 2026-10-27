@@ -94,12 +94,29 @@ class DiscoverOperation(Operation):
     refs: tuple[FileRef | SchemaRef, ...]
 
 
+class StructuralDiffOperation(Operation):
+    kind: Literal["structural-diff"] = "structural-diff"
+    original: FileRef
+    candidate: FileRef
+    limit: Annotated[int, Field(gt=0)] = 50
+
+
 CleanOperation = Annotated[
-    ParseOperation | DescribeOperation | FindOperation | QueryOperation | DiscoverOperation,
+    ParseOperation
+    | DescribeOperation
+    | FindOperation
+    | QueryOperation
+    | DiscoverOperation
+    | StructuralDiffOperation,
     Field(discriminator="kind"),
 ]
 _OPERATION: TypeAdapter[
-    ParseOperation | DescribeOperation | FindOperation | QueryOperation | DiscoverOperation
+    ParseOperation
+    | DescribeOperation
+    | FindOperation
+    | QueryOperation
+    | DiscoverOperation
+    | StructuralDiffOperation
 ] = TypeAdapter(CleanOperation)
 
 
@@ -198,7 +215,14 @@ def decode_frame(
 
 def decode_operation(
     frame: bytes, *, max_bytes: int, role: str
-) -> ParseOperation | DescribeOperation | FindOperation | QueryOperation | DiscoverOperation:
+) -> (
+    ParseOperation
+    | DescribeOperation
+    | FindOperation
+    | QueryOperation
+    | DiscoverOperation
+    | StructuralDiffOperation
+):
     """Decode the closed operation union selected by the coordinator's worker role."""
     _decode_object(frame, max_bytes=max_bytes, expected={"role": role})
     try:

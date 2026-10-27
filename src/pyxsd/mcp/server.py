@@ -15,11 +15,13 @@ from .audit import AuditLogger
 from .config import Settings
 from .errors import ToolError
 from .jobs import JobManager
+from .previews import PreviewOperation, PreviewService
 from .resources import register_resources
 from .services.exploration import ExplorationService
 from .snapshot_store import SnapshotStore
 from .state import State
 from .tools import register_tools
+from .worker_protocol import Operation, WorkerReply
 from .workers import WorkerPool
 from .workspaces import Principal, WorkspaceStore, stdio_principal
 
@@ -30,15 +32,17 @@ class Services:
     def __init__(self, settings: Settings) -> None:
         if not settings.enabled_groups.issubset({"exploration", "workspaces", "execution"}):
             raise ToolError("invalid_argument", "Unknown MCP tool group")
-        if settings.execution_backend != "disabled":
-            raise ToolError("execution_unavailable", "Execution is not enabled in this build")
+        if settings.execution_backend == "isolated" or (
+            settings.execution_backend == "trusted-local" and settings.transport != "stdio"
+        ):
+            raise ToolError("execution_unavailable", "No supported execution backend configured")
         self.settings = settings
         self.state = State(settings.state_dir)
         self.principal = stdio_principal()
         self.workspaces = WorkspaceStore(self.state, settings.limits)
         self.artifacts = ArtifactStore(self.workspaces)
         self.pool = WorkerPool(settings.limits)
-        self.jobs = JobManager(self.workspaces, self.pool)
+        self.jobs = JobManager(self.workspaces, self)
         source_root: Callable[[Principal, str], Path] | None = None
         if settings.source_roots:
 
@@ -61,6 +65,19 @@ class Services:
             artifacts=self.artifacts,
             audit=AuditLogger(),
         )
+        self.previews = PreviewService(
+            self.snapshots,
+            self.pool,
+            self.artifacts,
+            backend=settings.execution_backend,
+            transport=settings.transport,
+            jobs=self.jobs,
+        )
+
+    async def run(self, operation: Operation, *, deadline: float) -> WorkerReply:
+        if isinstance(operation, PreviewOperation):
+            return await self.previews.run(operation, deadline=deadline)
+        return await self.pool.run(operation, deadline=deadline)
 
     def current_principal(self) -> Principal:
         if self.settings.transport == "stdio":
@@ -110,7 +127,8 @@ def create_server(
         title="pyxsd XML Schema tools",
         instructions=(
             "Explore schemas, validate XML, follow exact diagnostic occurrences, "
-            "and retain bounded immutable artifacts. Execution is disabled."
+            "and retain bounded immutable artifacts. "
+            f"Execution backend: {settings.execution_backend}."
         ),
         version=__version__,
         token_verifier=token_verifier,
