@@ -31,6 +31,7 @@ from .errors import ToolError
 from .previews import PreviewTransformRequest
 from .publication import CommitTransformRequest
 from .responses import render_result
+from .services.models import InspectModelRequest, ValidateDataRequest
 from .transforms import TransformSpec
 
 if TYPE_CHECKING:
@@ -348,6 +349,43 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
         _register(server, "pyxsd_job_status", job_status, read_only=True)
         _register(server, "pyxsd_cancel_job", cancel_job, read_only=False)
         _register(server, "pyxsd_preview_transform", preview_transform, read_only=False)
+
+    if services.settings.pydantic:
+
+        async def inspect_model(
+            workspace_id: str, schema_ref: SchemaRef, element: str, path: tuple[str, ...] = ()
+        ) -> types.CallToolResult:
+            request = InspectModelRequest(
+                workspace_id=workspace_id, schema_ref=schema_ref, element=element, path=path
+            )
+            return await _invoke(
+                services,
+                workspace_id,
+                lambda: services.models.inspect_model(services.current_principal(), request),
+            )
+
+        async def validate_data(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            element: str,
+            data: JsonValue,
+            path: tuple[str, ...] = (),
+        ) -> types.CallToolResult:
+            request = ValidateDataRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                element=element,
+                path=path,
+                data=data,
+            )
+            return await _invoke(
+                services,
+                workspace_id,
+                lambda: services.models.validate_data(services.current_principal(), request),
+            )
+
+        _register(server, "pyxsd_inspect_model", inspect_model, read_only=True)
+        _register(server, "pyxsd_validate_data", validate_data, read_only=True)
 
     if workspaces:
 

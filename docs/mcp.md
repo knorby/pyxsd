@@ -190,6 +190,14 @@ Schema and document references use workspace-relative POSIX paths:
 Pin `revision` for repeatable reads. New revisions never overwrite old bytes in
 place, and an active workspace lease prevents idle expiry during an operation.
 
+### Projected Pydantic contracts
+
+`pyxsd_inspect_model` exposes projected JSON Schema for a selected declaration;
+`pyxsd_validate_data` checks JSON data against it. They are available with the MCP
+extra and can be disabled with `Settings.pydantic=False`. They do not establish
+full XML validity or mutate XML. See {doc}`integrations` for aliases, exact values,
+declaration paths and unsupported shapes.
+
 ## Diagnostics and repeated occurrences
 
 `ValidationIssue.location` is a structured path with expanded names and one-based

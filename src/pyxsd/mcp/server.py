@@ -19,6 +19,7 @@ from .previews import PreviewOperation, PreviewService
 from .publication import PublicationService
 from .resources import register_resources
 from .services.exploration import ExplorationService
+from .services.models import ModelService
 from .snapshot_store import SnapshotStore
 from .state import State
 from .tools import register_tools
@@ -66,6 +67,7 @@ class Services:
             artifacts=self.artifacts,
             audit=AuditLogger(),
         )
+        self.models = ModelService(self.snapshots, self.pool, artifacts=self.artifacts)
         self.previews = PreviewService(
             self.snapshots,
             self.pool,

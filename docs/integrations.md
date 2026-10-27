@@ -80,6 +80,35 @@ Use `model_fields_set` and
 presence. Ordinary dumps can include defaults and `None` placeholders for
 omitted optional fields; do not treat such dumps as a lossless XML codec.
 
+### Projected contracts through MCP
+
+The `pyxsd[mcp]` extra includes Pydantic. `pyxsd_inspect_model` returns a selected
+declaration's projected JSON Schema; `pyxsd_validate_data` validates JSON data
+against that model. Both accept `workspace_id`, `schema_ref`, `element`, and an
+optional declaration `path`. Validation additionally accepts `data`:
+
+```json
+{
+  "workspace_id": "<workspace-id>",
+  "schema_ref": {"source": {"path": "orders.xsd"}},
+  "element": "order",
+  "path": [],
+  "data": {"@id": "one", "amount": "1.2300", "count": 4}
+}
+```
+
+Use decimal strings to preserve exact lexical precision. Results preserve aliases,
+absent-versus-nil fields, decimal strings and large integers. Errors retain bounded
+details with separate total and suppressed counts. Recursive, mixed-content and
+open shapes return `unsupported_projection` rather than an invented contract.
+
+These are **projected-data checks, not full XSD/XML validation**. Changing a
+generated model or its data does not update XML. Use `pyxsd_validate_document` for
+XML validity and the explicit preview/publication workflow for XML changes.
+Generated classes remain in clean workers and expire with their parent schema
+cache entry. An embedding can disable these tools at startup with
+`Settings(pydantic=False, ...)`.
+
 ## Arrow tables and Parquet
 
 An XML document does not inherently define a table. Select the record

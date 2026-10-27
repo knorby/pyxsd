@@ -25,6 +25,7 @@ from .worker_protocol import (
     DescribeOperation,
     DiscoverOperation,
     FindOperation,
+    ModelOperation,
     Operation,
     ParseOperation,
     QueryOperation,
@@ -252,6 +253,7 @@ class WorkerPool:
                     QueryOperation,
                     DiscoverOperation,
                     StructuralDiffOperation,
+                    ModelOperation,
                 ),
             )
             or operation.role != "clean"

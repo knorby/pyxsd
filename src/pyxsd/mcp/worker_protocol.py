@@ -101,13 +101,23 @@ class StructuralDiffOperation(Operation):
     limit: Annotated[int, Field(gt=0)] = 50
 
 
+class ModelOperation(Operation):
+    kind: Literal["model"] = "model"
+    schema_ref: SchemaRef
+    element: Nonempty
+    path: tuple[Nonempty, ...] = ()
+    action: Literal["inspect", "validate"] = "inspect"
+    data: JsonValue = None
+
+
 CleanOperation = Annotated[
     ParseOperation
     | DescribeOperation
     | FindOperation
     | QueryOperation
     | DiscoverOperation
-    | StructuralDiffOperation,
+    | StructuralDiffOperation
+    | ModelOperation,
     Field(discriminator="kind"),
 ]
 _OPERATION: TypeAdapter[
@@ -117,6 +127,7 @@ _OPERATION: TypeAdapter[
     | QueryOperation
     | DiscoverOperation
     | StructuralDiffOperation
+    | ModelOperation
 ] = TypeAdapter(CleanOperation)
 
 
@@ -222,6 +233,7 @@ def decode_operation(
     | QueryOperation
     | DiscoverOperation
     | StructuralDiffOperation
+    | ModelOperation
 ):
     """Decode the closed operation union selected by the coordinator's worker role."""
     _decode_object(frame, max_bytes=max_bytes, expected={"role": role})

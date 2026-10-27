@@ -33,6 +33,7 @@ from .worker_protocol import (
     DescribeOperation,
     DiscoverOperation,
     FindOperation,
+    ModelOperation,
     Operation,
     ParseOperation,
     QueryOperation,
@@ -224,6 +225,10 @@ def _query(
 def _execute(
     operation: Operation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
+    if isinstance(operation, ModelOperation):
+        from .services.models import execute_model
+
+        return execute_model(operation, cache, processor_version)
     limit = getattr(operation, "issue_limit", getattr(operation, "limit", 1))
     if limit > cache.limits.page_items:
         raise ToolError("invalid_argument", "Page limit exceeds the operator budget")
