@@ -110,6 +110,38 @@ class ModelOperation(Operation):
     data: JsonValue = None
 
 
+class FieldSourceSpec(WireModel):
+    scope: Literal["record", "root", "ancestor"] = "record"
+    levels: Annotated[int, Field(ge=0)] = 0
+    path: tuple[Nonempty, ...] = ()
+    attribute: Nonempty | None = None
+
+
+class RecordsOperation(Operation):
+    kind: Literal["records"] = "records"
+    schema_ref: SchemaRef
+    document: FileRef
+    element: Nonempty
+    path: tuple[Nonempty, ...] = ()
+    selector: str | None = None
+    namespaces: dict[str, str] = Field(default_factory=dict)
+    columns: dict[str, FieldSourceSpec] | None = None
+    exact_count: bool = True
+
+
+class ExportOperation(Operation):
+    kind: Literal["export-records"] = "export-records"
+    schema_ref: SchemaRef
+    documents: tuple[FileRef, ...]
+    element: Nonempty
+    path: tuple[Nonempty, ...] = ()
+    selector: str | None = None
+    namespaces: dict[str, str] = Field(default_factory=dict)
+    columns: dict[str, FieldSourceSpec] | None = None
+    format: Literal["parquet", "dataset"] = "parquet"
+    output_directory: Nonempty = "pending"
+
+
 CleanOperation = Annotated[
     ParseOperation
     | DescribeOperation
@@ -117,7 +149,9 @@ CleanOperation = Annotated[
     | QueryOperation
     | DiscoverOperation
     | StructuralDiffOperation
-    | ModelOperation,
+    | ModelOperation
+    | RecordsOperation
+    | ExportOperation,
     Field(discriminator="kind"),
 ]
 _OPERATION: TypeAdapter[
@@ -128,6 +162,8 @@ _OPERATION: TypeAdapter[
     | DiscoverOperation
     | StructuralDiffOperation
     | ModelOperation
+    | RecordsOperation
+    | ExportOperation
 ] = TypeAdapter(CleanOperation)
 
 
@@ -234,6 +270,8 @@ def decode_operation(
     | DiscoverOperation
     | StructuralDiffOperation
     | ModelOperation
+    | RecordsOperation
+    | ExportOperation
 ):
     """Decode the closed operation union selected by the coordinator's worker role."""
     _decode_object(frame, max_bytes=max_bytes, expected={"role": role})

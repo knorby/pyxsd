@@ -32,7 +32,9 @@ from .previews import PreviewTransformRequest
 from .publication import CommitTransformRequest
 from .responses import render_result
 from .services.models import InspectModelRequest, ValidateDataRequest
+from .services.records import ExportRecordsRequest, PreviewRecordsRequest
 from .transforms import TransformSpec
+from .worker_protocol import FieldSourceSpec
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
@@ -58,7 +60,7 @@ def capability_data(services: "Services") -> dict[str, JsonValue]:
             },
             "arrow": {
                 "mode": settings.arrow,
-                "available": importlib.util.find_spec("pyarrow") is not None,
+                "available": services.arrow_available,
             },
         },
     }
@@ -386,6 +388,71 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
 
         _register(server, "pyxsd_inspect_model", inspect_model, read_only=True)
         _register(server, "pyxsd_validate_data", validate_data, read_only=True)
+
+    if services.arrow_available:
+
+        async def preview_records(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            document: FileRef,
+            element: str,
+            path: tuple[str, ...] = (),
+            selector: str | None = None,
+            namespaces: dict[str, str] | None = None,
+            columns: dict[str, FieldSourceSpec] | None = None,
+            exact_count: bool = True,
+        ) -> types.CallToolResult:
+            request = PreviewRecordsRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                document=document,
+                element=element,
+                path=path,
+                selector=selector,
+                namespaces=namespaces or {},
+                columns=columns,
+                exact_count=exact_count,
+            )
+            return await _invoke(
+                services,
+                workspace_id,
+                lambda: services.records.preview_records(services.current_principal(), request),
+            )
+
+        _register(server, "pyxsd_preview_records", preview_records, read_only=True)
+
+        if "execution" in services.settings.enabled_groups:
+
+            async def export_records(
+                workspace_id: str,
+                schema_ref: SchemaRef,
+                documents: tuple[FileRef, ...],
+                element: str,
+                path: tuple[str, ...] = (),
+                selector: str | None = None,
+                namespaces: dict[str, str] | None = None,
+                columns: dict[str, FieldSourceSpec] | None = None,
+                format: Literal["parquet", "dataset"] = "parquet",
+                idempotency_key: str = "export",
+            ) -> types.CallToolResult:
+                request = ExportRecordsRequest(
+                    workspace_id=workspace_id,
+                    schema_ref=schema_ref,
+                    documents=documents,
+                    element=element,
+                    path=path,
+                    selector=selector,
+                    namespaces=namespaces or {},
+                    columns=columns,
+                    format=format,
+                    idempotency_key=idempotency_key,
+                )
+                reference = await services.records.export_records(
+                    services.current_principal(), request
+                )
+                return _plain(ToolEnvelope(data=reference.model_dump(mode="json")))
+
+            _register(server, "pyxsd_export_records", export_records, read_only=False)
 
     if workspaces:
 

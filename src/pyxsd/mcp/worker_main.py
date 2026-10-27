@@ -32,11 +32,13 @@ from .snapshots import Dependency, WorkspacePolicyError, WorkspaceResourcePolicy
 from .worker_protocol import (
     DescribeOperation,
     DiscoverOperation,
+    ExportOperation,
     FindOperation,
     ModelOperation,
     Operation,
     ParseOperation,
     QueryOperation,
+    RecordsOperation,
     StructuralDiffOperation,
     WorkerConfig,
     WorkerReply,
@@ -225,6 +227,14 @@ def _query(
 def _execute(
     operation: Operation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
+    if isinstance(operation, RecordsOperation):
+        from .services.records import execute_records
+
+        return execute_records(operation, cache, processor_version)
+    if isinstance(operation, ExportOperation):
+        from .services.records import execute_export
+
+        return execute_export(operation, cache, processor_version)
     if isinstance(operation, ModelOperation):
         from .services.models import execute_model
 

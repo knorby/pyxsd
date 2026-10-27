@@ -24,11 +24,13 @@ from .snapshots import Dependency, Snapshot, SnapshotFile
 from .worker_protocol import (
     DescribeOperation,
     DiscoverOperation,
+    ExportOperation,
     FindOperation,
     ModelOperation,
     Operation,
     ParseOperation,
     QueryOperation,
+    RecordsOperation,
     SnapshotFileMessage,
     SnapshotMessage,
     StructuralDiffOperation,
@@ -254,6 +256,8 @@ class WorkerPool:
                     DiscoverOperation,
                     StructuralDiffOperation,
                     ModelOperation,
+                    RecordsOperation,
+                    ExportOperation,
                 ),
             )
             or operation.role != "clean"

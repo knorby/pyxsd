@@ -20,10 +20,11 @@ from .publication import PublicationService
 from .resources import register_resources
 from .services.exploration import ExplorationService
 from .services.models import ModelService
+from .services.records import RecordService
 from .snapshot_store import SnapshotStore
 from .state import State
 from .tools import register_tools
-from .worker_protocol import Operation, WorkerReply
+from .worker_protocol import ExportOperation, Operation, WorkerReply
 from .workers import WorkerPool
 from .workspaces import Principal, WorkspaceStore, stdio_principal
 
@@ -38,6 +39,7 @@ class Services:
             settings.execution_backend == "trusted-local" and settings.transport != "stdio"
         ):
             raise ToolError("execution_unavailable", "No supported execution backend configured")
+        self.arrow_available = self._probe_arrow(settings.arrow)
         self.settings = settings
         self.state = State(settings.state_dir)
         self.principal = stdio_principal()
@@ -68,6 +70,13 @@ class Services:
             audit=AuditLogger(),
         )
         self.models = ModelService(self.snapshots, self.pool, artifacts=self.artifacts)
+        self.records = RecordService(
+            self.snapshots,
+            self.pool,
+            artifacts=self.artifacts,
+            arrow=self.arrow_available,
+            jobs=self.jobs,
+        )
         self.previews = PreviewService(
             self.snapshots,
             self.pool,
@@ -78,9 +87,29 @@ class Services:
         )
         self.publication = PublicationService(self.previews)
 
+    @staticmethod
+    def _probe_arrow(mode: str) -> bool:
+        """Distinguish absent, broken and healthy installs at startup, never silently."""
+        try:
+            import pyarrow  # noqa: F401
+        except ModuleNotFoundError:
+            if mode == "enabled":
+                raise ToolError(
+                    "arrow_required", "Arrow exports are enabled but pyarrow is not installed"
+                ) from None
+            return False
+        except ImportError as exc:
+            raise ToolError(
+                "arrow_unavailable",
+                f"Installed pyarrow is broken: {str(exc)[:200]}",
+            ) from exc
+        return mode != "disabled"
+
     async def run(self, operation: Operation, *, deadline: float) -> WorkerReply:
         if isinstance(operation, PreviewOperation):
             return await self.previews.run(operation, deadline=deadline)
+        if isinstance(operation, ExportOperation):
+            return await self.records.run(operation, deadline=deadline)
         return await self.pool.run(operation, deadline=deadline)
 
     def current_principal(self) -> Principal:

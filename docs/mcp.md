@@ -168,6 +168,8 @@ successful call. XML validation findings are different: an invalid document has
 | `pyxsd_validate_document` | Returns verdicts, exact issue locations, aggregate counts, paged issues and source/schema fingerprints. |
 | `pyxsd_query_document` | Runs XPath over the bound projection and returns scalars, node summaries, exact locations or bounded subtrees. |
 | `pyxsd_explain_issue` | Gives curated issue-code guidance, explicit unknowns, and optional exact issue lookup from a report artifact. |
+| `pyxsd_preview_records` | Projects document rows through Arrow with a 20-row preview cap, exact/incomplete counts, occurrence selectors and contextual columns. Read-only; requires the optional Arrow dependency. |
+| `pyxsd_export_records` | Durable job writing Parquet (single document) or a manifested dataset (multiple documents) as immutable digest-verified artifacts with provenance. Requires the execution tool group and Arrow. |
 | `pyxsd_read_artifact` | Returns a bounded byte range as base64 with digest and media type. |
 
 Schema and document references use workspace-relative POSIX paths:
@@ -197,6 +199,31 @@ place, and an active workspace lease prevents idle expiry during an operation.
 extra and can be disabled with `Settings.pydantic=False`. They do not establish
 full XML validity or mutate XML. See {doc}`integrations` for aliases, exact values,
 declaration paths and unsupported shapes.
+
+## Projected records (optional Arrow)
+
+With the optional `pyarrow` dependency installed, `pyxsd_preview_records` projects
+bound document rows in a clean worker and returns at most 20 rows plus a total row
+count. Counts are exact by default; a fast mode (`exact_count: false`) may report
+`count_complete: false` when rows exceed the preview cap. Rows are projected, not
+silently flattened: XML is fully materialized before batching, and the result
+carries a warning saying so. Selection uses either the declaration path
+(`element` plus `path`) or an ElementTree occurrence `selector` (for example
+`./item[@id='24']`), and contextual columns map record, ancestor and root
+`FieldSource` values.
+
+`pyxsd_export_records` submits a durable job that writes a single-document Parquet
+file or a multi-document manifested dataset inside a disposable worker output
+directory. The coordinator — never the worker — captures the bounded regular
+files, hashes them, and retains them as immutable artifacts with digests, sizes,
+media types and a manifest of relative paths. Export refutes invalid documents
+(`invalid_document`), enforces the document-count corpus quota and a total output
+byte budget (`output_limit`), and rejects non-regular or linked output
+(`unsafe_candidate`). Datasets never append to existing output. Download exports
+with `pyxsd_read_artifact` and verify the digest locally; the result records the
+source documents and the schema fingerprint for provenance. Both record tools are
+registered only when Arrow is available, and `pyxsd:execute` is required to
+export.
 
 ## Diagnostics and repeated occurrences
 
