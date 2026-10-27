@@ -2,6 +2,8 @@
 source = pyxsd.mcp
 branch = True
 patch = subprocess
+parallel = True
+sigterm = True
 relative_files = True
 
 [paths]

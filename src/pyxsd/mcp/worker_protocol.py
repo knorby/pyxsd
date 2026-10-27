@@ -1,19 +1,81 @@
-"""Bounded JSON frames shared by process dispatchers and clean workers.
+"""Bounded, role-validated JSON messages used across worker process boundaries.
 
-Callers supply a strict role-specific wire model and channel identity bindings.
-This codec is not authentication or a sandbox; the process pool must choose the
-model and bindings, never accept either from a tool argument or worker reply.
+This codec is not authentication or a sandbox. The coordinator chooses models
+and identity bindings; neither is accepted from a tool argument or worker reply.
 """
 
 import json
-from typing import NoReturn, TypeVar
+from typing import Annotated, Literal, NoReturn, TypeVar
 
-from pydantic import JsonValue
+from pydantic import Field, JsonValue, TypeAdapter, model_validator
 
-from .contracts import WireModel
+from .config import Limits
+from .contracts import FileRef, Nonempty, SchemaRef, ToolFault, WireModel
 from .errors import ToolError
 
 T = TypeVar("T", bound=WireModel)
+
+
+class SnapshotFileMessage(WireModel):
+    path: Nonempty
+    digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    size: Annotated[int, Field(ge=0)]
+
+
+class SnapshotMessage(WireModel):
+    """Internal mounted snapshot identity; never exposed as public resource metadata."""
+
+    workspace_id: Nonempty
+    revision: Nonempty
+    root: Nonempty
+    files: tuple[SnapshotFileMessage, ...]
+
+
+class WorkerConfig(WireModel):
+    request_id: Literal["bootstrap"] = "bootstrap"
+    role: Literal["clean", "execution"]
+    limits: Limits
+    processor_version: Nonempty
+
+
+class Operation(WireModel):
+    request_id: Nonempty
+    role: Literal["clean", "execution"] = "clean"
+    snapshot: SnapshotMessage
+    owner_id: Nonempty
+
+
+class ParseOperation(Operation):
+    kind: Literal["parse"] = "parse"
+    schema_ref: SchemaRef
+    document: FileRef
+    hints: tuple[tuple[str | None, str], ...] = ()
+
+
+class DiscoverOperation(Operation):
+    kind: Literal["discover"] = "discover"
+    refs: tuple[FileRef | SchemaRef, ...]
+
+
+CleanOperation = Annotated[ParseOperation | DiscoverOperation, Field(discriminator="kind")]
+_OPERATION: TypeAdapter[ParseOperation | DiscoverOperation] = TypeAdapter(CleanOperation)
+
+
+class WorkerReply(WireModel):
+    request_id: Nonempty
+    role: Literal["clean", "execution"]
+    status: Literal["ok", "error"]
+    result: JsonValue = None
+    fault: ToolFault | None = None
+    operations: Annotated[int, Field(ge=0)] = 0
+
+    @model_validator(mode="after")
+    def consistent_outcome(self) -> "WorkerReply":
+        if self.status == "ok" and self.fault is not None:
+            raise ValueError("A successful worker reply cannot carry a fault")
+        if self.status == "error" and (self.fault is None or self.result is not None):
+            raise ValueError("An error reply needs one fault and no result")
+        return self
 
 
 def _budget(max_bytes: int) -> None:
@@ -56,19 +118,9 @@ def encode_frame(message: WireModel, *, max_bytes: int) -> bytes:
     return frame
 
 
-def decode_frame(
-    frame: bytes,
-    model: type[T],
-    *,
-    max_bytes: int,
-    expected: dict[str, str],
-) -> T:
-    """Validate one complete frame against the channel's model and identities.
-
-    Stream readers must bound allocation before calling this function. The byte
-    check here is defense in depth, not permission to read an unbounded line.
-    Validation errors deliberately omit payloads, paths and generated tracebacks.
-    """
+def _decode_object(
+    frame: bytes, *, max_bytes: int, expected: dict[str, str]
+) -> dict[str, JsonValue]:
     _budget(max_bytes)
     if len(frame) > max_bytes:
         raise ToolError("ipc_limit", "IPC frame exceeds its byte limit")
@@ -82,6 +134,32 @@ def decode_frame(
             key not in data or data[key] != value for key, value in expected.items()
         ):
             raise ValueError("Channel identity mismatch")
-        return model.model_validate(data)
+        return data
     except (ValueError, TypeError, RecursionError) as exc:
         raise ToolError("ipc_protocol", "Invalid IPC frame or channel identity") from exc
+
+
+def decode_frame(
+    frame: bytes,
+    model: type[T],
+    *,
+    max_bytes: int,
+    expected: dict[str, str],
+) -> T:
+    """Validate one complete frame against the channel's model and identities."""
+    _decode_object(frame, max_bytes=max_bytes, expected=expected)
+    try:
+        return model.model_validate_json(frame)
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise ToolError("ipc_protocol", "Invalid IPC frame or channel identity") from exc
+
+
+def decode_operation(
+    frame: bytes, *, max_bytes: int, role: str
+) -> ParseOperation | DiscoverOperation:
+    """Decode the closed operation union selected by the coordinator's worker role."""
+    _decode_object(frame, max_bytes=max_bytes, expected={"role": role})
+    try:
+        return _OPERATION.validate_json(frame)
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise ToolError("ipc_protocol", "Invalid worker operation") from exc
