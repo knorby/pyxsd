@@ -1,0 +1,4 @@
+<catalog>
+  <item><sku>ABC-1234</sku><quantity>2</quantity></item>
+  <item><sku>DEF-5678</sku><quantity>3</quantity></item>
+</catalog>

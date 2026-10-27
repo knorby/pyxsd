@@ -140,6 +140,7 @@ def test_core_workflow_runs_without_optional_dependencies():
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     assert probe.returncode == 0, probe.stderr

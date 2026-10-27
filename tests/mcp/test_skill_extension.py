@@ -199,7 +199,7 @@ def test_docs_make_no_auto_activation_claim():
     sources = [Path("docs/mcp.md")]
     sources.extend(Path("src/pyxsd/skills").rglob("SKILL.md"))
     for path in sources:
-        assert "automatically activat" not in path.read_text().lower(), path
+        assert "automatically activat" not in path.read_text(encoding="utf-8").lower(), path
 
 
 def test_skill_reference_manifest_excludes_directories(tmp_path, monkeypatch):

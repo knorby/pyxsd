@@ -340,14 +340,31 @@ Important starting limits (all operator-configurable in `Settings.limits`):
 | Limit | Default |
 | --- | --- |
 | XML / individual XSD file | 64 MiB / 16 MiB |
+| Schema closure files / bytes | 128 / 64 MiB |
+| XML depth / element count | 256 / 1,000,000 |
 | Inline upload / MCP request | 1 MiB / 2 MiB |
+| Workspace input bytes / artifact bytes | 512 MiB / 512 MiB |
+| Workspaces / managed storage total | 32 / 4 GiB |
+| Snapshot entries / revisions | 4,096 / 32 |
+| Artifact entries | 4,096 |
 | Result payload / page items | 24 KiB / 50 |
+| Preview rows | 20 |
 | Collected issues / message | 10,000 / 4 KiB |
 | Output artifact | 128 MiB |
 | Clean cache entries / workers | 8 / 4 |
-| Worker operations before recycling | 100 |
+| Worker memory / operations / PIDs | 512 MiB / 100 / 64 |
+| Active jobs per owner / global queue | 1 / 16 |
 | Compile or query deadline | 30 seconds |
-| Idle workspace TTL | 60 minutes |
+| Transform / batch deadline | 60 / 300 seconds |
+| Transform source / pipeline steps | 64 KiB / 32 |
+| Corpus files / file validation budget | 100 / 10 seconds |
+| Preview / job-result TTL | 30 / 30 minutes |
+| Idle workspace / diagnostic TTL | 60 / 60 minutes |
+
+Compilation and binding choices are explicit per schema reference: XSD 1.0 or
+1.1, strict or lax best-effort binding, and legacy or strict namespace handling.
+Serialized XML is UTF-8, and preview byte diffs report serialization-only
+changes rather than hiding them behind a semantic comparison.
 
 The local subprocess runtime is not a sandbox for untrusted Python. OCI-based
 isolation is deferred to a later design cycle and is not required for normal MCP
@@ -431,6 +448,17 @@ explicit `allow_invalid=true`; the standard server leaves that policy disabled.
 Destinations are coordinator-managed workspace files only, not mounted or
 arbitrary host paths. This does not claim atomic replacement against external
 writers on shared host directories.
+
+## Audit records and redaction
+
+Exploration operations emit one structured audit event with the operation,
+process-local HMAC-pseudonymized owner, status, duration, workspace/revision,
+scope, cache outcome, job ID, and input/candidate digests where applicable.
+Audit payloads never include XML bodies, transform source, file contents, host
+paths, tokens, or raw owner identifiers. The HMAC key is generated per process,
+so pseudonyms are stable only for the lifetime of that coordinator; they are
+not a cross-restart correlation identifier. An embedding may provide a metrics
+callback, which receives the same already-redacted event mapping.
 
 ## Restart, errors, and current boundaries
 

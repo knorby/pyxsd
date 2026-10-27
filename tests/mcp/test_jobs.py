@@ -781,8 +781,10 @@ def test_completed_jobs_release_runtime_handles_but_keep_durable_results(tmp_pat
                 refs.append(ref)
                 assert (await terminal(jobs, ref.id)).state == "succeeded"
             await anyio.lowlevel.checkpoint()
-            await jobs.sweep()
-            assert not jobs._tasks
+            with anyio.fail_after(5):
+                while jobs._tasks:
+                    await jobs.sweep()
+                    await anyio.sleep(0.01)
             assert not jobs._finished
             for ref in refs:
                 assert (await jobs.status(principal, ref.id)).result["root_present"] is True

@@ -71,3 +71,54 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           flags: mcp
+
+  mcp-arrow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    env:
+      PYTHON_VERSION: ${{ matrix.python }}
+      LC_ALL: C
+      PYTHONUTF8: "0"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build wheel and create clean environment
+        run: |
+          uv build --wheel
+          uv venv --python "$PYTHON_VERSION"
+          WHEEL=$(find dist -name '*.whl' -print -quit)
+          uv pip install "$WHEEL[mcp,arrow]" 'pytest>=8.4'
+      - name: Test installed MCP and Arrow integration
+        run: |
+          .venv/bin/python -m pytest -q tests/mcp tests/test_mcp_packaging.py
+
+  macos-stdio:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      LC_ALL: C
+      PYTHONUTF8: "0"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.11"
+      - name: Build wheel and create clean environment
+        run: |
+          uv build --wheel
+          uv venv --python 3.11
+          WHEEL=$(find dist -name '*.whl' -print -quit)
+          uv pip install "$WHEEL[mcp]" 'pytest>=8.4'
+      - name: Exercise documented stdio launch and both protocol versions
+        run: |
+          .venv/bin/python -m pytest -q \
+            tests/mcp/test_installed_package.py \
+            tests/mcp/test_protocol_versions.py

@@ -100,6 +100,7 @@ def test_skills_cli_lists_and_exports_without_mcp(tmp_path):
         [sys.executable, "-m", "pyxsd.skills", "list"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     assert listed.returncode == 0, listed.stderr
@@ -118,6 +119,7 @@ def test_skills_cli_lists_and_exports_without_mcp(tmp_path):
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     assert exported.returncode == 0, exported.stderr
@@ -126,6 +128,7 @@ def test_skills_cli_lists_and_exports_without_mcp(tmp_path):
         [sys.executable, "-m", "pyxsd.skills", "--help"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     assert help_text.returncode == 0

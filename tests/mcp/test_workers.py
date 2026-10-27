@@ -227,6 +227,11 @@ def test_repeated_parses_have_a_bounded_process_memory_plateau(tmp_path):
     snapshot = make_snapshot(tmp_path)
 
     def rss_kib(pid):
+        status = Path(f"/proc/{pid}/status")
+        if status.exists():
+            for line in status.read_text(encoding="utf-8").splitlines():
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
         return int(subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)]).strip())
 
     async def scenario():
