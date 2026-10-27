@@ -10,7 +10,17 @@ from pyxsd.mcp.config import Limits
 from pyxsd.mcp.snapshots import WorkspacePolicyError
 
 
-def test_musicxml_unexpected_failure_is_not_a_successful_skip(monkeypatch):
+def _seed_musicxml(root):
+    example = root / "examples" / "musicxml"
+    (example / "schemas").mkdir(parents=True)
+    (example / "schemas" / "musicxml.xsd").write_text("<xs:schema/>", encoding="utf-8")
+    (example / "instance.xml").write_text("<score/>", encoding="utf-8")
+
+
+def test_musicxml_unexpected_failure_is_not_a_successful_skip(tmp_path, monkeypatch):
+    _seed_musicxml(tmp_path)
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+
     def fail(*args):
         raise RuntimeError("benchmark harness broke")
 
@@ -19,7 +29,10 @@ def test_musicxml_unexpected_failure_is_not_a_successful_skip(monkeypatch):
         benchmark._musicxml_metrics(Limits())
 
 
-def test_musicxml_policy_denial_is_an_explicit_unbenchmarked_result(monkeypatch):
+def test_musicxml_policy_denial_is_an_explicit_unbenchmarked_result(tmp_path, monkeypatch):
+    _seed_musicxml(tmp_path)
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+
     def deny(*args):
         raise WorkspacePolicyError("dangerous_xml", "DTD is forbidden")
 

@@ -611,6 +611,8 @@ def test_pydantic_decimal_projection_preserves_exact_values(tmp_path):
 
 
 def test_contextual_arrow_export_is_bounded_and_digest_verified(tmp_path):
+    pytest.importorskip("pyarrow")
+
     async def scenario():
         async with connected(tmp_path, enabled_groups=FULL, arrow="enabled") as (client, _services):
             workspace = await _create(client)
