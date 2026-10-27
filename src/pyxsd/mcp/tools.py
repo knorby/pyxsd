@@ -29,6 +29,7 @@ from .contracts import (
 )
 from .errors import ToolError
 from .previews import PreviewTransformRequest
+from .publication import CommitTransformRequest
 from .responses import render_result
 from .transforms import TransformSpec
 
@@ -257,6 +258,35 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
         _register(server, "pyxsd_explain_issue", explain_issue, read_only=True)
 
     if "execution" in services.settings.enabled_groups:
+
+        async def commit_transform(
+            preview_id: str,
+            expected_candidate_digest: str,
+            destination: str,
+            idempotency_key: str,
+            mode: Literal["new", "replace"] = "new",
+            expected_destination_digest: str | None = None,
+            allow_invalid: bool = False,
+        ) -> types.CallToolResult:
+            request = CommitTransformRequest(
+                preview_id=preview_id,
+                expected_candidate_digest=expected_candidate_digest,
+                destination=destination,
+                idempotency_key=idempotency_key,
+                mode=mode,
+                expected_destination_digest=expected_destination_digest,
+                allow_invalid=allow_invalid,
+            )
+
+            async def operation() -> ToolEnvelope:
+                receipt = await services.publication.commit(services.current_principal(), request)
+                return ToolEnvelope(data=receipt.model_dump(mode="json"))
+
+            return await _invoke(services, None, operation)
+
+        _register(
+            server, "pyxsd_commit_transform", commit_transform, read_only=False, destructive=True
+        )
 
         async def preview_transform(
             workspace_id: str,

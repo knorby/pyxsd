@@ -81,6 +81,20 @@ COMMIT;
 """
 
 
+_PUBLICATIONS = """
+BEGIN IMMEDIATE;
+CREATE TABLE publications (
+    owner TEXT NOT NULL, idempotency TEXT NOT NULL, digest TEXT NOT NULL,
+    preview TEXT NOT NULL UNIQUE,
+    workspace TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    request TEXT NOT NULL, receipt TEXT,
+    PRIMARY KEY(owner, idempotency)
+);
+PRAGMA user_version = 5;
+COMMIT;
+"""
+
+
 class State:
     """Own the private state directory and process lock until explicitly closed.
 
@@ -103,6 +117,7 @@ class State:
             raise ToolError("unsafe_state_directory", "State directory must be private and owned")
         self.root = root
         self._lock = threading.RLock()
+        self.publication_lock = anyio.Lock()
         self._closed = False
         self._fd = os.open(root / "coordinator.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
@@ -129,7 +144,10 @@ class State:
                 version = 3
             if version == 3:
                 connection.executescript(_JOBS)
-            elif version != 4:
+                version = 4
+            if version == 4:
+                connection.executescript(_PUBLICATIONS)
+            elif version != 5:
                 raise ToolError("state_version", "Unsupported state database version")
             # Staging intents precede filesystem writes. Only ready revisions
             # were charged as committed usage; interrupted staging is discarded

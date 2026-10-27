@@ -302,6 +302,7 @@ class SnapshotStore:
         expected_revision: str | None,
         replace: bool = False,
         before_publish: Callable[[Snapshot], Awaitable[None]] | None = None,
+        on_publish: Callable[[sqlite3.Connection, Snapshot], None] | None = None,
     ) -> Snapshot:
         validate_paths([item.path for item in files])
         if any(len(item.content) > self.limits.xml_file_bytes for item in files):
@@ -390,6 +391,8 @@ class SnapshotStore:
                             "INSERT INTO snapshot_heads VALUES(?,?) ON CONFLICT(workspace) DO UPDATE SET revision=excluded.revision",
                             (workspace_id, revision),
                         )
+                        if on_publish is not None:
+                            on_publish(db, snapshot)
 
                     with anyio.CancelScope(shield=True):
                         await reservation.commit(on_commit=publish)

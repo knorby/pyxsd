@@ -16,6 +16,7 @@ from .config import Settings
 from .errors import ToolError
 from .jobs import JobManager
 from .previews import PreviewOperation, PreviewService
+from .publication import PublicationService
 from .resources import register_resources
 from .services.exploration import ExplorationService
 from .snapshot_store import SnapshotStore
@@ -73,6 +74,7 @@ class Services:
             transport=settings.transport,
             jobs=self.jobs,
         )
+        self.publication = PublicationService(self.previews)
 
     async def run(self, operation: Operation, *, deadline: float) -> WorkerReply:
         if isinstance(operation, PreviewOperation):

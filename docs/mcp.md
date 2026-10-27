@@ -70,7 +70,7 @@ comes from the verified subject, and scopes come from the verified token:
 - `pyxsd:read` — exploration, resources and artifact downloads
 - `pyxsd:upload` — workspace creation and file publication
 - `pyxsd:execute`, `pyxsd:write`, `pyxsd:replace`, `pyxsd:write-invalid` —
-  reserved for execution/publication milestones
+  required by the corresponding preview/publication operations
 
 `/.well-known/oauth-protected-resource` advertises the resource metadata. Missing
 or invalid credentials receive a Bearer challenge; missing scopes are distinct
@@ -254,8 +254,8 @@ Enable local previews only for code you trust:
 pyxsd-mcp --state-dir /absolute/private/state --execution-backend trusted-local
 ```
 
-This enables `pyxsd_preview_transform`, `pyxsd_job_status` and
-`pyxsd_cancel_job`. HTTP refuses trusted-local execution; an unavailable isolated
+This enables `pyxsd_preview_transform`, `pyxsd_job_status`,
+`pyxsd_cancel_job` and `pyxsd_commit_transform`. HTTP refuses trusted-local execution; an unavailable isolated
 backend never falls back to local execution.
 
 Call `pyxsd_preview_transform` with `workspace_id`, `document`, `source_schema`,
@@ -284,8 +284,44 @@ claims do not determine the verdict. Invalid and malformed candidates remain
 inspectable. Serialization may change prefixes, layout, mixed-content
 presentation and comments; review the byte diff, not just structural changes.
 
-A preview does not publish files. Exact-byte publication and isolated OCI
-previews remain unfinished; do not use the local backend for untrusted code.
+A preview does not publish files. Isolated OCI previews remain unfinished;
+do not use the local backend for untrusted code.
+
+### Review and publish the retained candidate
+
+After inspecting the candidate, validation report, diffs and warnings, call
+`pyxsd_commit_transform` with the preview ID and candidate digest from the job
+result. Choose a workspace-relative destination and a stable idempotency key:
+
+```json
+{
+  "preview_id": "<preview job ID>",
+  "expected_candidate_digest": "<candidate SHA-256>",
+  "destination": "reviewed.xml",
+  "mode": "new",
+  "idempotency_key": "publish-reviewed-1"
+}
+```
+
+Publication copies the exact retained bytes into a new immutable workspace
+revision. It never reruns the transform or serializes its output again. The
+source/schema revision must still match the preview, the candidate must not be
+expired, and `new` refuses an existing destination. `replace` additionally
+requires `pyxsd:replace` and `expected_destination_digest` for that destination.
+All publication calls require `pyxsd:write`, read and upload permissions.
+
+Retry the same request and key after a disconnect or coordinator restart to
+retrieve the same receipt. A different request conflicts with that key, and a
+different key cannot consume the same preview twice. Receipts live as long as
+their workspace. The revision head and receipt commit in one SQLite transaction;
+interrupted staging is discarded and can be retried without executing Python.
+
+Malformed XML is never publishable. Invalid-but-well-formed output requires an
+embedding to enable the write-invalid policy, a `pyxsd:write-invalid` scope and
+explicit `allow_invalid=true`; the standard server leaves that policy disabled.
+Destinations are coordinator-managed workspace files only, not mounted or
+arbitrary host paths. This does not claim atomic replacement against external
+writers on shared host directories.
 
 ## Restart, errors, and current boundaries
 
@@ -303,7 +339,7 @@ jobs fail without automatically rerunning code.
 - **Worker timeout or queue overflow:** retry only after reviewing document size,
   complexity and operator budgets. Neither produces a partial validation verdict.
 - **Execution:** disabled by default; trusted-local stdio previews require explicit
-  opt-in. Isolated execution and publication remain unfinished.
+  opt-in. Managed exact-byte publication is available; isolated execution remains unfinished.
 - **HTTP/OAuth:** available with explicit fixed-issuer configuration and
   loopback-only development fallback. User-code execution over HTTP remains disabled;
   remote deployment still requires the OCI and containment gates.

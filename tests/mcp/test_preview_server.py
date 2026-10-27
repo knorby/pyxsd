@@ -54,6 +54,23 @@ def test_stdio_preview_uses_shared_jobs_and_retained_artifacts(tmp_path):
             assert structured(replay)["data"]["id"] == identifier
             cancelled = await client.call_tool("pyxsd_cancel_job", {"job_id": identifier})
             assert structured(cancelled)["data"]["state"] == "succeeded"
+            commit_arguments = {
+                "preview_id": identifier,
+                "expected_candidate_digest": record["candidate"]["digest"],
+                "destination": "published.xml",
+                "idempotency_key": "sdk-commit",
+            }
+            committed = await client.call_tool("pyxsd_commit_transform", commit_arguments)
+            assert committed.is_error is False, committed
+            receipt = structured(committed)["data"]
+            assert receipt["candidate_digest"] == hashlib.sha256(content).hexdigest()
+            retried = await client.call_tool("pyxsd_commit_transform", commit_arguments)
+            assert structured(retried)["data"] == receipt
+            refused = await client.call_tool(
+                "pyxsd_commit_transform", {**commit_arguments, "idempotency_key": "another"}
+            )
+            assert refused.is_error is True
+            assert structured(refused)["data"]["fault"]["code"] == "preview_consumed"
 
     anyio.run(scenario)
 
