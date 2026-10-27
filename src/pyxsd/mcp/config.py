@@ -49,6 +49,7 @@ class Limits(WireModel):
     worker_pids: PositiveBudget = 64
     corpus_files: PositiveBudget = 100
     corpus_max_files: PositiveBudget = 1000
+    corpus_file_seconds: PositiveBudget = 10
 
 
 class HTTPSettings(WireModel):

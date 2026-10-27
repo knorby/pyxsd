@@ -170,6 +170,7 @@ successful call. XML validation findings are different: an invalid document has
 | `pyxsd_explain_issue` | Gives curated issue-code guidance, explicit unknowns, and optional exact issue lookup from a report artifact. |
 | `pyxsd_preview_records` | Projects document rows through Arrow with a 20-row preview cap, exact/incomplete counts, occurrence selectors and contextual columns. Read-only; requires the optional Arrow dependency. |
 | `pyxsd_export_records` | Durable job writing Parquet (single document) or a manifested dataset (multiple documents) as immutable digest-verified artifacts with provenance. Requires the execution tool group and Arrow. |
+| `pyxsd_compare_schemas` | Durable job diffing two schema revisions (added/removed/changed components including anonymous declarations) and optionally validating a corpus under both, classifying each file as valid/regressed/resolved/invalid/malformed/unbindable/skipped. |
 | `pyxsd_read_artifact` | Returns a bounded byte range as base64 with digest and media type. |
 
 Schema and document references use workspace-relative POSIX paths:
@@ -224,6 +225,46 @@ with `pyxsd_read_artifact` and verify the digest locally; the result records the
 source documents and the schema fingerprint for provenance. Both record tools are
 registered only when Arrow is available, and `pyxsd:execute` is required to
 export.
+
+## Schema comparison and migration evidence
+
+`pyxsd_compare_schemas` submits a durable job comparing an old and a new schema
+in clean workers. The structural diff reports added, removed and changed
+components — including anonymous declarations, which are identified by content
+address, so editing an inline declaration re-identifies it as an add/remove pair
+rather than a change — plus changed-field details, a namespace-change flag, and
+exact totals. A target namespace change re-identifies every component. The
+summary is deterministic for unchanged inputs.
+
+An optional corpus validates every supplied document under **both** schemas.
+Each file lands in exactly one category — `valid`, `regressed` (was valid, now
+invalid), `resolved` (was invalid, now valid), `invalid`, `malformed`,
+`unbindable`, or `skipped` — with per-file old/new verdicts and totals covering
+every category. Corpus size is capped (default 100, operator maximum 1,000), and
+a per-corpus time budget marks remaining files `skipped` instead of failing the
+job. Files are validated sequentially per schema.
+
+Potential impact (the structural diff) is reported separately from observed
+corpus regressions, and the result states that **no universal compatibility
+conclusion follows from a corpus sample** — no-regression evidence applies only
+to the tested files and options.
+
+### Source-to-target migration workflow
+
+To migrate documents from an old schema to a new one:
+
+1. `pyxsd_compare_schemas` with the corpus you intend to migrate. Observed
+   `regressed` files need transforms; `resolved` files already validate.
+2. For each regressed file, `pyxsd_preview_transform` with a transform whose
+   source schema is the old revision and whose target schema is the new one.
+   The preview independently revalidates the retained candidate bytes in a
+   separate clean worker; only validated candidates proceed.
+3. `pyxsd_commit_transform` publishes the exact retained candidate bytes. No
+   Python is rerun at commit time.
+4. Re-run `pyxsd_compare_schemas` (or `pyxsd_validate_document`) on the migrated
+   files against the target schema. A no-regressions result on the migrated
+   corpus applies only to those files and the options tested — it is not a
+   universal compatibility claim.
 
 ## Diagnostics and repeated occurrences
 

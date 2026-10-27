@@ -30,6 +30,7 @@ from .encoding import encode_value
 from .errors import ToolError
 from .snapshots import Dependency, WorkspacePolicyError, WorkspaceResourcePolicy
 from .worker_protocol import (
+    ComparisonOperation,
     DescribeOperation,
     DiscoverOperation,
     ExportOperation,
@@ -235,6 +236,10 @@ def _execute(
         from .services.records import execute_export
 
         return execute_export(operation, cache, processor_version)
+    if isinstance(operation, ComparisonOperation):
+        from .services.comparison import execute_comparison
+
+        return execute_comparison(operation, cache, processor_version)
     if isinstance(operation, ModelOperation):
         from .services.models import execute_model
 

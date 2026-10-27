@@ -142,6 +142,13 @@ class ExportOperation(Operation):
     output_directory: Nonempty = "pending"
 
 
+class ComparisonOperation(Operation):
+    kind: Literal["compare-schemas"] = "compare-schemas"
+    old_schema: SchemaRef
+    new_schema: SchemaRef
+    corpus: tuple[FileRef, ...] = ()
+
+
 CleanOperation = Annotated[
     ParseOperation
     | DescribeOperation
@@ -151,7 +158,8 @@ CleanOperation = Annotated[
     | StructuralDiffOperation
     | ModelOperation
     | RecordsOperation
-    | ExportOperation,
+    | ExportOperation
+    | ComparisonOperation,
     Field(discriminator="kind"),
 ]
 _OPERATION: TypeAdapter[
@@ -164,6 +172,7 @@ _OPERATION: TypeAdapter[
     | ModelOperation
     | RecordsOperation
     | ExportOperation
+    | ComparisonOperation
 ] = TypeAdapter(CleanOperation)
 
 
@@ -272,6 +281,7 @@ def decode_operation(
     | ModelOperation
     | RecordsOperation
     | ExportOperation
+    | ComparisonOperation
 ):
     """Decode the closed operation union selected by the coordinator's worker role."""
     _decode_object(frame, max_bytes=max_bytes, expected={"role": role})

@@ -22,6 +22,7 @@ from .contracts import FileRef, SchemaRef, WireModel
 from .errors import ToolError
 from .snapshots import Dependency, Snapshot, SnapshotFile
 from .worker_protocol import (
+    ComparisonOperation,
     DescribeOperation,
     DiscoverOperation,
     ExportOperation,
@@ -258,6 +259,7 @@ class WorkerPool:
                     ModelOperation,
                     RecordsOperation,
                     ExportOperation,
+                    ComparisonOperation,
                 ),
             )
             or operation.role != "clean"

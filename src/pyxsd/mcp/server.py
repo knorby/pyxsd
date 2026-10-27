@@ -24,7 +24,7 @@ from .services.records import RecordService
 from .snapshot_store import SnapshotStore
 from .state import State
 from .tools import register_tools
-from .worker_protocol import ExportOperation, Operation, WorkerReply
+from .worker_protocol import ComparisonOperation, ExportOperation, Operation, WorkerReply
 from .workers import WorkerPool
 from .workspaces import Principal, WorkspaceStore, stdio_principal
 
@@ -77,6 +77,9 @@ class Services:
             arrow=self.arrow_available,
             jobs=self.jobs,
         )
+        from .services.comparison import ComparisonService
+
+        self.comparison = ComparisonService(self.snapshots, self.pool, jobs=self.jobs)
         self.previews = PreviewService(
             self.snapshots,
             self.pool,
@@ -110,6 +113,8 @@ class Services:
             return await self.previews.run(operation, deadline=deadline)
         if isinstance(operation, ExportOperation):
             return await self.records.run(operation, deadline=deadline)
+        if isinstance(operation, ComparisonOperation):
+            return await self.comparison.run(operation, deadline=deadline)
         return await self.pool.run(operation, deadline=deadline)
 
     def current_principal(self) -> Principal:

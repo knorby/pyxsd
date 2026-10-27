@@ -260,6 +260,27 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
         _register(server, "pyxsd_query_document", query_document, read_only=True)
         _register(server, "pyxsd_explain_issue", explain_issue, read_only=True)
 
+        async def compare_schemas(
+            workspace_id: str,
+            old_schema: SchemaRef,
+            new_schema: SchemaRef,
+            corpus: tuple[FileRef, ...] = (),
+            idempotency_key: str = "compare",
+        ) -> types.CallToolResult:
+            from .services.comparison import CompareSchemasRequest
+
+            request = CompareSchemasRequest(
+                workspace_id=workspace_id,
+                old_schema=old_schema,
+                new_schema=new_schema,
+                corpus=corpus,
+                idempotency_key=idempotency_key,
+            )
+            reference = await services.comparison.submit(services.current_principal(), request)
+            return _plain(ToolEnvelope(data=reference.model_dump(mode="json")))
+
+        _register(server, "pyxsd_compare_schemas", compare_schemas, read_only=True)
+
     if "execution" in services.settings.enabled_groups:
 
         async def commit_transform(

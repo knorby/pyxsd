@@ -51,6 +51,7 @@ DEFAULTS = {
     "worker_pids": 64,
     "corpus_files": 100,
     "corpus_max_files": 1000,
+    "corpus_file_seconds": 10,
 }
 
 
