@@ -5,6 +5,9 @@ from pathlib import Path
 
 import anyio
 from mcp.server import MCPServer
+from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.provider import TokenVerifier
+from mcp.server.auth.settings import AuthSettings
 
 from .. import __version__
 from .artifacts import ArtifactStore
@@ -24,10 +27,6 @@ class Services:
     """Own all coordinator state for one stdio server; close workers before SQLite."""
 
     def __init__(self, settings: Settings) -> None:
-        if settings.transport != "stdio":
-            raise ToolError(
-                "unsupported_transport", "HTTP transport is configured in a later milestone"
-            )
         if not settings.enabled_groups.issubset({"exploration", "workspaces"}):
             raise ToolError("invalid_argument", "Unknown MCP tool group")
         if settings.execution_backend != "disabled":
@@ -61,6 +60,28 @@ class Services:
             audit=AuditLogger(),
         )
 
+    def current_principal(self) -> Principal:
+        if self.settings.transport == "stdio":
+            return self.principal
+        token = get_access_token()
+        if token is not None and token.subject:
+            return Principal(f"http:{token.subject}", frozenset(token.scopes))
+        if self.settings.http is not None and self.settings.http.loopback_dev:
+            return Principal(
+                "loopback",
+                frozenset(
+                    {
+                        "pyxsd:read",
+                        "pyxsd:upload",
+                        "pyxsd:execute",
+                        "pyxsd:write",
+                        "pyxsd:replace",
+                        "pyxsd:write-invalid",
+                    }
+                ),
+            )
+        raise ToolError("forbidden", "Authentication is required")
+
     async def aclose(self) -> None:
         await self.pool.aclose()
         self.state.close()
@@ -72,7 +93,13 @@ class Services:
         await self.aclose()
 
 
-def create_server(settings: Settings, services: Services) -> MCPServer:
+def create_server(
+    settings: Settings,
+    services: Services,
+    *,
+    token_verifier: TokenVerifier | None = None,
+    auth: AuthSettings | None = None,
+) -> MCPServer:
     if settings is not services.settings:
         raise ToolError("invalid_argument", "Server and services settings differ")
     server = MCPServer(
@@ -83,6 +110,8 @@ def create_server(settings: Settings, services: Services) -> MCPServer:
             "and retain bounded immutable artifacts. Execution is disabled."
         ),
         version=__version__,
+        token_verifier=token_verifier,
+        auth=auth,
     )
     register_tools(server, services)
     register_resources(server, services)
@@ -99,4 +128,6 @@ async def _run(settings: Settings) -> None:
 
 
 def run(settings: Settings) -> None:
+    if settings.transport != "stdio":
+        raise ToolError("unsupported_transport", "Use the HTTP application for streamable HTTP")
     anyio.run(_run, settings)

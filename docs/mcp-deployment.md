@@ -91,6 +91,30 @@ memory and output exhaustion, descendant cleanup after timeout, and the real
 worker protocol inside the container. A skipped test, a fake runner, a macOS
 development run, or the presence of Docker flags is **not** containment evidence.
 
+## HTTP operation
+
+`create_http_app()` shares the same services and domain operations as stdio, with
+per-request principals derived from `AccessToken.subject` and scopes. The
+`pyxsd-mcp` CLI exposes the same application through Uvicorn. Configure the
+issuer, audience, fixed JWKS URL, allowed hosts/origins, and private state root;
+do not put those values in tool arguments. Startup performs the configured JWKS
+preflight and starts the MCP session manager, then closes workers and state at
+shutdown.
+
+Use `ConfiguredTokenVerifier` for the built-in fixed-issuer JWT support or inject
+an SDK `TokenVerifier` for an embedding-specific identity system. Supported
+algorithms are restricted to `RS256`, `ES256`, and `EdDSA`; symmetric/shared-key
+modes are not accepted. Key refresh is bounded and happens only after the cache
+TTL or an unknown key ID. Redirected JWKS responses, empty key sets, invalid
+signatures, wrong issuer/audience/algorithm, expired tokens, and missing subjects
+are refused.
+
+Protected `PUT /files/{workspace}/{path}` and `GET /artifacts/{id}` routes share
+the same principal and ownership checks as MCP tools. The request body limit is
+2 MiB, ranges are exact, and every download includes its digest. Trusted-local
+execution is rejected over HTTP; isolated execution additionally requires the
+containment gate above.
+
 ## Remote deployment boundaries
 
 Terminate TLS at a reviewed reverse proxy and use the HTTP authentication and

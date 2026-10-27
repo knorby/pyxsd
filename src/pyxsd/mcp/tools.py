@@ -87,7 +87,7 @@ async def _invoke(
         if workspace_id is None:
             return _plain(envelope)
         rendered = await render_result(
-            services.principal, workspace_id, envelope, services.artifacts
+            services.current_principal(), workspace_id, envelope, services.artifacts
         )
         return types.CallToolResult.model_validate(
             {**rendered, "isError": envelope.status == "error"}
@@ -162,7 +162,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             return await _invoke(
                 services,
                 workspace_id,
-                lambda: services.exploration.inspect_schema(services.principal, request),
+                lambda: services.exploration.inspect_schema(services.current_principal(), request),
             )
 
         async def find_schema_components(
@@ -192,7 +192,9 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             return await _invoke(
                 services,
                 workspace_id,
-                lambda: services.exploration.find_schema_components(services.principal, request),
+                lambda: services.exploration.find_schema_components(
+                    services.current_principal(), request
+                ),
             )
 
         async def validate_document(
@@ -207,7 +209,9 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             return await _invoke(
                 services,
                 workspace_id,
-                lambda: services.exploration.validate_document(services.principal, request),
+                lambda: services.exploration.validate_document(
+                    services.current_principal(), request
+                ),
             )
 
         async def query_document(
@@ -231,7 +235,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             return await _invoke(
                 services,
                 workspace_id,
-                lambda: services.exploration.query_document(services.principal, request),
+                lambda: services.exploration.query_document(services.current_principal(), request),
             )
 
         async def explain_issue(
@@ -241,7 +245,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             return await _invoke(
                 services,
                 None,
-                lambda: services.exploration.explain_issue(services.principal, request),
+                lambda: services.exploration.explain_issue(services.current_principal(), request),
             )
 
         _register(server, "pyxsd_inspect_schema", inspect_schema, read_only=True)
@@ -264,17 +268,19 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             async def operation() -> ToolEnvelope:
                 if request.action == "create":
                     workspace = await services.workspaces.create(
-                        services.principal, idempotency_key=request.idempotency_key
+                        services.current_principal(), idempotency_key=request.idempotency_key
                     )
                     return ToolEnvelope(data=workspace.model_dump(mode="json"))
                 if request.action == "list":
-                    items = await services.workspaces.list(services.principal)
+                    items = await services.workspaces.list(services.current_principal())
                     return ToolEnvelope(
                         data={"workspaces": [item.model_dump(mode="json") for item in items]}
                     )
                 if request.workspace_id is None:
                     raise ToolError("invalid_argument", "Release requires a workspace ID")
-                await services.workspaces.release(services.principal, request.workspace_id)
+                await services.workspaces.release(
+                    services.current_principal(), request.workspace_id
+                )
                 return ToolEnvelope(data={"released": request.workspace_id})
 
             return await _invoke(services, workspace_id, operation)
@@ -290,7 +296,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
 
             async def operation() -> ToolEnvelope:
                 snapshot = await services.snapshots.put_files(
-                    services.principal,
+                    services.current_principal(),
                     request.workspace_id,
                     request.files,
                     expected_revision=request.expected_revision,
@@ -315,7 +321,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
 
             async def operation() -> ToolEnvelope:
                 async with services.artifacts.lease(
-                    services.principal, request.artifact_id
+                    services.current_principal(), request.artifact_id
                 ) as reader:
                     content = await reader.read(offset=request.offset, length=request.length)
                     ref = reader.ref

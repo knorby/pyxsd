@@ -54,7 +54,7 @@ pip install 'pyxsd[mcp]'
 pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
 ```
 
-The stdio server provides:
+The stdio and authenticated streamable HTTP servers provide:
 
 - **Schema exploration** — overviews, compact/full stubs, constraint-rich
   declarations, and bounded `uses` / `used_by` graph queries
@@ -72,8 +72,9 @@ The stdio server provides:
 
 Start with the [MCP guide](https://pyxsd.knorby.com/mcp.html) for a complete
 Python client example, tool catalog, lifecycle rules, and deployment boundaries.
-Execution is disabled in this build; remote HTTP and user-code execution are
-separate milestones. OCI runtime requirements and containment status are in the
+Execution is disabled in this build. Authenticated streamable HTTP is available
+with fixed-issuer JWT verification and binary transfer; user-code execution is
+a separate milestone. OCI runtime requirements and containment status are in the
 [deployment guide](https://pyxsd.knorby.com/mcp-deployment.html).
 
 ## Uses

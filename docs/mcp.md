@@ -5,9 +5,9 @@ server. MCP clients can create private workspaces, explore compiled schemas,
 validate XML, follow diagnostics to exact source occurrences, run bounded XPath
 queries, and download immutable artifacts through one consistent tool surface.
 
-The current transport is **stdio**. Execution of user-supplied Python and remote
-HTTP transport are separate milestones; execution is disabled in this build.
-See {doc}`mcp-deployment` for the worker runtime and OCI containment status.
+Both **stdio** and authenticated **streamable HTTP** are available. Execution of
+user-supplied Python is a separate milestone and is disabled in this build. See
+{doc}`mcp-deployment` for the worker runtime and OCI containment status.
 
 ## Install and launch
 
@@ -45,6 +45,56 @@ For an operator-granted read-only source tree, add `--source-root /absolute/root
 Capture resolves only that configured root for the local `stdio` principal; a
 client cannot mount an arbitrary directory. Normal workspace uploads use
 `pyxsd_put_files` and need no source mount.
+
+## Authenticated streamable HTTP
+
+Start the HTTP transport with an explicit issuer, audience, and JWKS endpoint:
+
+```bash
+pyxsd-mcp \
+  --transport streamable-http \
+  --http-host 127.0.0.1 --http-port 8000 \
+  --issuer-url https://issuer.example \
+  --audience https://mcp.example \
+  --jwks-url https://issuer.example/jwks.json \
+  --allowed-host '127.0.0.1:*' \
+  --allowed-origin https://client.example
+```
+
+The server verifies JWT signatures with the fixed issuer's keys, pinned accepted
+algorithms, audience, expiry and a non-empty subject. There is no login provider,
+request-selected issuer, or caller-selected tenant field. Workspace ownership
+comes from the verified subject, and scopes come from the verified token:
+
+- `pyxsd:read` — exploration, resources and artifact downloads
+- `pyxsd:upload` — workspace creation and file publication
+- `pyxsd:execute`, `pyxsd:write`, `pyxsd:replace`, `pyxsd:write-invalid` —
+  reserved for execution/publication milestones
+
+`/.well-known/oauth-protected-resource` advertises the resource metadata. Missing
+or invalid credentials receive a Bearer challenge; missing scopes are distinct
+from an unknown resource. Host and Origin allowlists apply to metadata, MCP and
+binary routes. Forwarded host/identity headers are not trusted. Terminate TLS at
+a reviewed reverse proxy and keep the issuer/JWKS origin fixed in deployment
+configuration.
+
+For local development only, `--loopback-dev` permits an unauthenticated server
+bound to loopback. It is an explicit development switch, not a remote mode.
+
+### Binary transfer
+
+Authenticated routes preserve original bytes without JSON/base64 expansion:
+
+```text
+PUT /files/{workspace}/{path}
+GET /artifacts/{artifact_id}?offset=0&length=8192
+```
+
+`PUT` accepts `application/octet-stream` and publishes an immutable revision.
+Set `X-PyxSD-Expected-Revision` when updating an existing revision. Request bodies
+are limited to 2 MiB. `GET` verifies the same owner and returns the exact binary
+range, media type and `X-Content-SHA256` digest. No route mounts a host directory
+or accepts an arbitrary output path.
 
 ## End-to-end client example
 
@@ -211,5 +261,6 @@ separate execution milestone, not something the current stdio server claims.
 - **Worker timeout or queue overflow:** retry only after reviewing document size,
   complexity and operator budgets. Neither produces a partial validation verdict.
 - **Execution:** disabled. Do not send transforms for execution to this build.
-- **HTTP/OAuth:** not registered by the stdio entry point. See the deployment
-  guide for the remote security requirements rather than exposing stdio blindly.
+- **HTTP/OAuth:** available with explicit fixed-issuer configuration and
+  loopback-only development fallback. User-code execution remains disabled;
+  remote deployment still requires the OCI and containment gates.
