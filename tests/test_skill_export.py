@@ -11,6 +11,25 @@ from pyxsd.skills import SkillInfo, export_skill, list_skills
 EXPECTED = {"pyxsd-development", "pyxsd-mcp", "pyxsd-xml-doctor"}
 
 
+@pytest.mark.parametrize("declared", ["different-name", ""])
+def test_skill_metadata_rejects_missing_or_mismatched_name(declared):
+    from pyxsd.skills import _parse_metadata
+
+    with pytest.raises(ValueError, match="name"):
+        _parse_metadata("directory-name", f"---\nname: {declared}\ndescription: Example\n---\n")
+
+
+@pytest.mark.parametrize(
+    "name,description",
+    [("x" * 65, "Example"), ("bad/name", "Example"), ("valid", ""), ("valid", "x" * 1025)],
+)
+def test_skill_metadata_rejects_invalid_bounds(name, description):
+    from pyxsd.skills import _parse_metadata
+
+    with pytest.raises(ValueError):
+        _parse_metadata(name, f"---\nname: {name}\ndescription: {description}\n---\n")
+
+
 def test_list_skills_reports_bounded_metadata():
     skills = list_skills()
     assert {skill.name for skill in skills} == EXPECTED

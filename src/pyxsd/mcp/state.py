@@ -13,6 +13,7 @@ from typing import TypeVar
 
 import anyio
 
+from .config import Limits
 from .errors import ToolError
 
 T = TypeVar("T")
@@ -104,7 +105,7 @@ class State:
     in a worker thread, not on the server event loop.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, limits: "Limits | None" = None) -> None:
         try:
             import fcntl
         except ImportError as exc:
@@ -177,7 +178,7 @@ class State:
                 "UPDATE jobs SET state='failed', result=NULL, completed=?, expires=?, "
                 'fault=\'{"code":"interrupted","message":"Job was interrupted by coordinator restart","retryable":false,"details":{}}\' '
                 "WHERE state IN ('queued','running')",
-                (now, now + 1800),
+                (now, now + (limits or Limits()).job_result_seconds),
             )
             connection.commit()
             self._connection = connection

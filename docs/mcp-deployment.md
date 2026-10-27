@@ -72,6 +72,10 @@ that digest in deployment configuration; do not resolve `latest` at startup.
 that is not unconfined, and an inspectable exact image. Failures are explicit
 `runtime_unavailable` errors. No second attempt uses weaker settings.
 
+Docker applies its default seccomp profile when no override is supplied. Do not
+pass `--security-opt seccomp=default`: Docker interprets `default` as a profile
+filename, not as a request for the built-in profile.
+
 Unit tests validate deterministic arguments and failure handling only:
 
 ```bash
@@ -90,6 +94,13 @@ That suite checks actual network denial, inaccessible host/sibling data, PID,
 memory and output exhaustion, descendant cleanup after timeout, and the real
 worker protocol inside the container. A skipped test, a fake runner, a macOS
 development run, or the presence of Docker flags is **not** containment evidence.
+
+On 2026-10-27, all four tests passed in an aarch64 Linux runner inside Docker's
+Linux VM, using worker image
+`sha256:622215ab8c08c8f1c4699260554778c60fa1b3251e1484a94373e7ac42a16255`.
+This is evidence for that image/runtime combination, not a public-hosting safety
+claim. Isolated transformation execution and candidate capture remain separate
+implementation gates.
 
 ## HTTP operation
 

@@ -1,9 +1,9 @@
 """Explicit startup settings and positive, operator-controlled budgets."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .contracts import PositiveBudget, WireModel
 
@@ -50,6 +50,12 @@ class Limits(WireModel):
     corpus_files: PositiveBudget = 100
     corpus_max_files: PositiveBudget = 1000
     corpus_file_seconds: PositiveBudget = 10
+
+    @model_validator(mode="after")
+    def validate_corpus_limit(self) -> Self:
+        if self.corpus_files > self.corpus_max_files:
+            raise ValueError("corpus_files must not exceed corpus_max_files")
+        return self
 
 
 class HTTPSettings(WireModel):

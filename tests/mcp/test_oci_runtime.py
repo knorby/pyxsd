@@ -38,7 +38,6 @@ def test_deterministic_hardened_argv_and_real_pinned_base(tmp_path):
         ("--user", "65532:65532"),
         ("--cap-drop", "ALL"),
         ("--security-opt", "no-new-privileges:true"),
-        ("--security-opt", "seccomp=default"),
         ("--pids-limit", "64"),
         ("--memory", str(256 * 2**20)),
         ("--memory-swap", str(256 * 2**20)),
@@ -60,6 +59,12 @@ def test_deterministic_hardened_argv_and_real_pinned_base(tmp_path):
         in dockerfile
     )
     assert "USER 65532:65532" in dockerfile
+    # Docker applies its default seccomp profile when no override is supplied.
+    # The literal "default" is interpreted as a local profile filename.
+    assert not any(part.startswith("seccomp=") for part in argv)
+    # The coordinator supplies the complete worker command, not Python args.
+    assert 'CMD ["python", "-I", "-u"]' in dockerfile
+    assert "ENTRYPOINT" not in dockerfile
 
 
 def test_local_image_id_is_also_a_pinned_reference(tmp_path):

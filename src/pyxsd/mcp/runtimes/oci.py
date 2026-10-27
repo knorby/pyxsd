@@ -110,8 +110,6 @@ class OCICommandBuilder:
             "ALL",
             "--security-opt",
             "no-new-privileges:true",
-            "--security-opt",
-            "seccomp=default",
             "--pids-limit",
             str(settings.pids),
             "--memory",

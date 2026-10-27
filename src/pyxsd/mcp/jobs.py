@@ -225,11 +225,13 @@ class JobManager:
                 if row is None or row["state"] != "queued" or row["cancel_requested"]:
                     return
                 await self._transition(job_id, ("queued",), "running")
-                deadline = self.monotonic() + (
-                    self.limits.transform_seconds
-                    if operation.role == "execution"
-                    else self.limits.compile_query_seconds
-                )
+                if getattr(operation, "kind", None) in {"export-records", "compare-schemas"}:
+                    seconds = self.limits.batch_seconds
+                elif operation.role == "execution":
+                    seconds = self.limits.transform_seconds
+                else:
+                    seconds = self.limits.compile_query_seconds
+                deadline = self.monotonic() + seconds
                 reply = await self.pool.run(operation, deadline=deadline)
             if scope.cancelled_caught:
                 with anyio.CancelScope(shield=True):

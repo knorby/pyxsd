@@ -6,14 +6,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-COPY dist/pyxsd-1.2.1-py3-none-any.whl /tmp/pyxsd.whl
-RUN python -m pip install --no-cache-dir --no-deps /tmp/pyxsd.whl \
+COPY dist/pyxsd-1.2.1-py3-none-any.whl /tmp/pyxsd-1.2.1-py3-none-any.whl
+RUN python -m pip install --no-cache-dir --no-deps /tmp/pyxsd-1.2.1-py3-none-any.whl \
     && python -m pip install --no-cache-dir \
-       anyio==4.10.0 defusedxml==0.7.1 pydantic==2.12.5 \
-    && rm -f /tmp/pyxsd.whl \
+       anyio==4.10.0 defusedxml==0.7.1 elementpath==5.1.4 pydantic==2.12.5 \
+    && rm -f /tmp/pyxsd-1.2.1-py3-none-any.whl \
     && groupadd --gid 65532 worker \
     && useradd --uid 65532 --gid 65532 --no-create-home worker
 
 USER 65532:65532
 WORKDIR /workspace
-ENTRYPOINT ["python", "-I", "-u"]
+CMD ["python", "-I", "-u"]

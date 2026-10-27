@@ -37,6 +37,8 @@ def _parse_metadata(name: str, document: str) -> SkillInfo:
     description = fields.get("description", "")
     if len(name) > _MAX_NAME or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name) is None:
         raise ValueError(f"Skill name is invalid: {name!r}")
+    if fields.get("name") != name:
+        raise ValueError(f"Skill metadata name must match directory: {name!r}")
     if not description or len(description) > _MAX_DESCRIPTION:
         raise ValueError(f"Skill description is invalid for: {name!r}")
     return SkillInfo(name=name, description=description)

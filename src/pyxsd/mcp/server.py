@@ -41,7 +41,7 @@ class Services:
             raise ToolError("execution_unavailable", "No supported execution backend configured")
         self.arrow_available = self._probe_arrow(settings.arrow)
         self.settings = settings
-        self.state = State(settings.state_dir)
+        self.state = State(settings.state_dir, limits=settings.limits)
         self.principal = stdio_principal()
         self.workspaces = WorkspaceStore(self.state, settings.limits)
         self.artifacts = ArtifactStore(self.workspaces)
