@@ -51,26 +51,10 @@ jobs:
           fi
       - name: Type-check MCP modules with the real optional dependencies
         run: .venv/bin/python -m mypy src/pyxsd/mcp
-      - name: Test installed MCP runtime with separate branch coverage
+      - name: Test installed MCP runtime (MCP-only, no Arrow)
         run: >-
           .venv/bin/python -m pytest -q tests/mcp tests/test_mcp_packaging.py
           tests/test_integration_imports.py
-          --cov=pyxsd.mcp --cov-config=tests/mcp.coveragerc
-          --cov-branch --cov-report=xml --cov-report=term-missing
-      - name: Verify installed-wheel coverage maps to repository files
-        run: |
-          .venv/bin/python - <<'PY'
-          from pathlib import Path
-          from xml.etree import ElementTree as ET
-          files = [node.attrib["filename"] for node in ET.parse("coverage.xml").iter("class")]
-          assert files and all(name.startswith("src/pyxsd/mcp/") and Path(name).is_file() for name in files), files
-          PY
-      - name: Upload MCP coverage
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage.xml
-          flags: mcp
 
   mcp-arrow:
     runs-on: ubuntu-latest
@@ -94,10 +78,26 @@ jobs:
           uv build --wheel
           uv venv --python "$PYTHON_VERSION"
           WHEEL=$(find dist -name '*.whl' -print -quit)
-          uv pip install "$WHEEL[mcp,arrow]" 'pytest>=8.4'
-      - name: Test installed MCP and Arrow integration
-        run: |
+          uv pip install "$WHEEL[mcp,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
+      - name: Test installed MCP and Arrow integration with branch coverage
+        run: >-
           .venv/bin/python -m pytest -q tests/mcp tests/test_mcp_packaging.py
+          --cov=pyxsd.mcp --cov-config=tests/mcp.coveragerc
+          --cov-branch --cov-report=xml --cov-report=term-missing
+      - name: Verify installed-wheel coverage maps to repository files
+        run: |
+          .venv/bin/python - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          files = [node.attrib["filename"] for node in ET.parse("coverage.xml").iter("class")]
+          assert files and all(name.startswith("src/pyxsd/mcp/") and Path(name).is_file() for name in files), files
+          PY
+      - name: Upload MCP coverage
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: mcp
 
   macos-stdio:
     runs-on: macos-latest
