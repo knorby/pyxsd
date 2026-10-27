@@ -21,6 +21,7 @@ from .resources import register_resources
 from .services.exploration import ExplorationService
 from .services.models import ModelService
 from .services.records import RecordService
+from .skill_extension import SkillsExtension
 from .snapshot_store import SnapshotStore
 from .state import State
 from .tools import register_tools
@@ -171,6 +172,7 @@ def create_server(
         version=__version__,
         token_verifier=token_verifier,
         auth=auth,
+        extensions=[SkillsExtension()],
     )
     register_tools(server, services)
     register_resources(server, services)

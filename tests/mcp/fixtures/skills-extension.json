@@ -1,0 +1,6 @@
+{
+  "identifier": "com.knorby.pyxsd/skills",
+  "discoveryProtocol": "2026-07-28",
+  "methods": ["skills/list", "skills/get"],
+  "manifestFields": ["digest", "path", "size", "uri"]
+}

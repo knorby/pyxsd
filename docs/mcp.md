@@ -226,6 +226,23 @@ source documents and the schema fingerprint for provenance. Both record tools ar
 registered only when Arrow is available, and `pyxsd:execute` is required to
 export.
 
+## Packaged skill discovery
+
+The server declares the vendor extension `com.knorby.pyxsd/skills` through the
+SDK's extension interface. Modern protocol discovery advertises its settings;
+legacy `initialize` responses do not expose modern extension capabilities.
+`skills/list` returns a `skills` array of names and descriptions. `skills/get`
+accepts a skill `name` and returns its UTF-8 file content and a complete manifest
+with `path`, resource `uri`, byte `size`, and SHA-256 `digest` for each file.
+SDK clients sending generic requests must use a parameter model retaining
+`name`, rather than the base protocol parameter model, which drops that field.
+
+Clients without extension support can list and read the same files as ordinary
+`pyxsd://skills/<name>/<path>` resources. Content is byte-identical to
+`python -m pyxsd.skills export NAME DEST`, including uppercase `SKILL.md` and
+shared references. Reading content does not activate a skill; the client decides
+whether to apply it. Existing documentation resources remain available.
+
 ## Schema comparison and migration evidence
 
 `pyxsd_compare_schemas` submits a durable job comparing an old and a new schema
