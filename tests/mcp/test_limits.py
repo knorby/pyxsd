@@ -1,5 +1,7 @@
 """Cross-layer quotas fail closed at their exact configured boundaries."""
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("pydantic")
@@ -18,6 +20,12 @@ from pyxsd.mcp.services.exploration import ValidateDocumentRequest
 from pyxsd.mcp.snapshot_store import SnapshotStore
 from pyxsd.mcp.state import State
 from pyxsd.mcp.workspaces import Principal, WorkspaceStore, stdio_principal
+
+
+def test_reserved_worker_resource_limits_are_not_claimed_as_active():
+    guide = " ".join(Path("docs/mcp.md").read_text(encoding="utf-8").split())
+    assert "Worker memory / operations / PIDs" not in guide
+    assert "reserved for the deferred isolated-runtime design" in guide
 
 
 def test_snapshot_revision_and_entry_limits_are_atomic(tmp_path):

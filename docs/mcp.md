@@ -335,7 +335,7 @@ role-validated JSON—never pickle or live `Document` objects. Workers have
 absolute deadlines, queue bounds, operation recycling, death recovery and
 coordinated shutdown.
 
-Important starting limits (all operator-configurable in `Settings.limits`):
+Important active limits (all operator-configurable in `Settings.limits`):
 
 | Limit | Default |
 | --- | --- |
@@ -352,7 +352,7 @@ Important starting limits (all operator-configurable in `Settings.limits`):
 | Collected issues / message | 10,000 / 4 KiB |
 | Output artifact | 128 MiB |
 | Clean cache entries / workers | 8 / 4 |
-| Worker memory / operations / PIDs | 512 MiB / 100 / 64 |
+| Worker operations before recycling | 100 |
 | Active jobs per owner / global queue | 1 / 16 |
 | Compile or query deadline | 30 seconds |
 | Transform / batch deadline | 60 / 300 seconds |
@@ -360,6 +360,10 @@ Important starting limits (all operator-configurable in `Settings.limits`):
 | Corpus files / file validation budget | 100 / 10 seconds |
 | Preview / job-result TTL | 30 / 30 minutes |
 | Idle workspace / diagnostic TTL | 60 / 60 minutes |
+
+`worker_memory_bytes` (512 MiB) and `worker_pids` (64) are reserved for the
+deferred isolated-runtime design. The supported local subprocess runtime does
+not enforce them; they are not active containment controls.
 
 Compilation and binding choices are explicit per schema reference: XSD 1.0 or
 1.1, strict or lax best-effort binding, and legacy or strict namespace handling.

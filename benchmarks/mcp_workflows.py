@@ -18,7 +18,7 @@ from pyxsd import __version__
 from pyxsd.mcp.cache import CompileRequest, SchemaCache
 from pyxsd.mcp.config import Limits
 from pyxsd.mcp.contracts import FileRef, SchemaRef
-from pyxsd.mcp.snapshots import Snapshot, SnapshotFile
+from pyxsd.mcp.snapshots import Snapshot, SnapshotFile, WorkspacePolicyError
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "mcp"
@@ -123,7 +123,7 @@ def _musicxml_metrics(limits: Limits) -> dict[str, object]:
             "warm_compiles": warm_compiles,
             "cache": cache.info().__dict__,
         }
-    except Exception as exc:
+    except WorkspacePolicyError as exc:
         return {
             "dataset": "musicxml",
             "available": True,

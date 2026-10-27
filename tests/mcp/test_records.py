@@ -67,6 +67,44 @@ def test_preview_caps_rows_and_reports_exact_total_and_values(tmp_path):
     anyio.run(scenario)
 
 
+def test_preview_respects_operator_preview_rows_budget(tmp_path):
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
+
+    async def scenario():
+        async with harness(tmp_path, Limits(workers=1, preview_rows=1)) as (
+            _,
+            snapshots,
+            pool,
+            principal,
+            workspace,
+        ):
+            await upload(snapshots, workspace, {"schema.xsd": XSD, "input.xml": xml(3)})
+            service = RecordService(snapshots, pool)
+            request = PreviewRecordsRequest(
+                workspace_id=workspace,
+                schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                document=FileRef(path="input.xml"),
+                element="root",
+                path=("item",),
+                selector="./item",
+            )
+            exact = await service.preview_records(principal, request)
+            assert len(exact.data["rows"]) == 1
+            assert exact.data["row_count"] == 3
+            assert exact.data["count_complete"] is True
+            assert exact.data["truncated"] is True
+            inexact = await service.preview_records(
+                principal, request.model_copy(update={"exact_count": False})
+            )
+            assert len(inexact.data["rows"]) == 1
+            assert inexact.data["row_count"] == 2
+            assert inexact.data["count_complete"] is False
+            assert inexact.data["truncated"] is True
+
+    anyio.run(scenario)
+
+
 def test_invalid_document_is_not_silently_exported(tmp_path):
     from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
 

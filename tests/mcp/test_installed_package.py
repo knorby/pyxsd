@@ -1,6 +1,7 @@
 """Documented launch paths work from an installed distribution, not only source fixtures."""
 
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -41,6 +42,35 @@ def test_documented_module_launch_reports_version_and_help():
     assert "--state-dir" in help_text.stdout
     assert "trusted-local" in help_text.stdout
     assert "isolated" not in help_text.stdout
+
+
+def test_documented_console_script_launch():
+    script = Path(sys.executable).with_name("pyxsd-mcp")
+    assert script.is_file()
+    completed = subprocess.run(
+        [str(script), "--help"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "--state-dir" in completed.stdout
+    assert "trusted-local" in completed.stdout
+
+
+@pytest.mark.skipif(shutil.which("uvx") is None, reason="uvx is not installed")
+def test_documented_uvx_launch():
+    completed = subprocess.run(
+        [shutil.which("uvx"), "--from", f"{ROOT}[mcp]", "pyxsd-mcp", "--help"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "--state-dir" in completed.stdout
+    assert "trusted-local" in completed.stdout
 
 
 def test_uvx_is_primary_and_direct_install_remains_documented():
@@ -101,6 +131,7 @@ def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_pa
                     },
                 )
                 assert validated.structured_content["data"]["valid"] is True
-        assert (state / "coordinator.lock").exists() or state.is_dir()
+        assert (state / "coordinator.lock").is_file()
+        assert (state / "state.sqlite3").is_file()
 
     anyio.run(scenario)
