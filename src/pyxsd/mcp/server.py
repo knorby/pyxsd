@@ -14,6 +14,7 @@ from .artifacts import ArtifactStore
 from .audit import AuditLogger
 from .config import Settings
 from .errors import ToolError
+from .jobs import JobManager
 from .resources import register_resources
 from .services.exploration import ExplorationService
 from .snapshot_store import SnapshotStore
@@ -27,7 +28,7 @@ class Services:
     """Own all coordinator state for one stdio server; close workers before SQLite."""
 
     def __init__(self, settings: Settings) -> None:
-        if not settings.enabled_groups.issubset({"exploration", "workspaces"}):
+        if not settings.enabled_groups.issubset({"exploration", "workspaces", "execution"}):
             raise ToolError("invalid_argument", "Unknown MCP tool group")
         if settings.execution_backend != "disabled":
             raise ToolError("execution_unavailable", "Execution is not enabled in this build")
@@ -37,6 +38,7 @@ class Services:
         self.workspaces = WorkspaceStore(self.state, settings.limits)
         self.artifacts = ArtifactStore(self.workspaces)
         self.pool = WorkerPool(settings.limits)
+        self.jobs = JobManager(self.workspaces, self.pool)
         source_root: Callable[[Principal, str], Path] | None = None
         if settings.source_roots:
 
@@ -83,6 +85,7 @@ class Services:
         raise ToolError("forbidden", "Authentication is required")
 
     async def aclose(self) -> None:
+        await self.jobs.aclose()
         await self.pool.aclose()
         self.state.close()
 

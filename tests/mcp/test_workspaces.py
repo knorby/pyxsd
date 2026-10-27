@@ -394,7 +394,7 @@ def test_state_lock_and_version_protect_restart_recovery(tmp_path):
     with pytest.raises(ToolError, match="state_version"):
         State(root)
     with sqlite3.connect(root / "state.sqlite3") as db:
-        db.execute("PRAGMA user_version = 3")
+        db.execute("PRAGMA user_version = 4")
     with State(root):
         pass
 

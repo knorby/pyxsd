@@ -254,6 +254,45 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
         _register(server, "pyxsd_query_document", query_document, read_only=True)
         _register(server, "pyxsd_explain_issue", explain_issue, read_only=True)
 
+    if "execution" in services.settings.enabled_groups:
+
+        async def job_status(job_id: str) -> types.CallToolResult:
+            try:
+                result = await services.jobs.status(services.current_principal(), job_id)
+            except ToolError as exc:
+                return _plain(
+                    ToolEnvelope(
+                        status="error",
+                        data={"fault": exc.fault.model_dump(mode="json")},
+                        provenance=exc.fault.details,
+                    )
+                )
+
+            async def completed() -> ToolEnvelope:
+                return ToolEnvelope(data=result.model_dump(mode="json"))
+
+            return await _invoke(services, result.workspace_id, completed)
+
+        async def cancel_job(job_id: str) -> types.CallToolResult:
+            try:
+                result = await services.jobs.cancel(services.current_principal(), job_id)
+            except ToolError as exc:
+                return _plain(
+                    ToolEnvelope(
+                        status="error",
+                        data={"fault": exc.fault.model_dump(mode="json")},
+                        provenance=exc.fault.details,
+                    )
+                )
+
+            async def completed() -> ToolEnvelope:
+                return ToolEnvelope(data=result.model_dump(mode="json"))
+
+            return await _invoke(services, result.workspace_id, completed)
+
+        _register(server, "pyxsd_job_status", job_status, read_only=True)
+        _register(server, "pyxsd_cancel_job", cancel_job, read_only=False)
+
     if workspaces:
 
         async def manage_workspace(

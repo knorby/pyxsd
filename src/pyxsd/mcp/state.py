@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import stat
 import threading
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -65,6 +66,20 @@ PRAGMA user_version = 3;
 COMMIT;
 """
 
+_JOBS = """
+BEGIN IMMEDIATE;
+CREATE TABLE jobs (
+    id TEXT PRIMARY KEY, owner TEXT NOT NULL, workspace TEXT NOT NULL,
+    operation TEXT NOT NULL, digest TEXT NOT NULL, idempotency TEXT NOT NULL,
+    state TEXT NOT NULL, created REAL NOT NULL, started REAL, completed REAL,
+    expires REAL NOT NULL DEFAULT 0, result TEXT, fault TEXT,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(owner, idempotency)
+);
+PRAGMA user_version = 4;
+COMMIT;
+"""
+
 
 class State:
     """Own the private state directory and process lock until explicitly closed.
@@ -111,7 +126,10 @@ class State:
                 version = 2
             if version == 2:
                 connection.executescript(_ARTIFACTS)
-            elif version != 3:
+                version = 3
+            if version == 3:
+                connection.executescript(_JOBS)
+            elif version != 4:
                 raise ToolError("state_version", "Unsupported state database version")
             # Staging intents precede filesystem writes. Only ready revisions
             # were charged as committed usage; interrupted staging is discarded
@@ -135,6 +153,13 @@ class State:
             connection.execute("DELETE FROM reservations")
             connection.execute(
                 "UPDATE workspaces SET leases=0, reserved_files=0, reserved_artifacts=0"
+            )
+            now = time.time()
+            connection.execute(
+                "UPDATE jobs SET state='failed', result=NULL, completed=?, expires=?, "
+                'fault=\'{"code":"interrupted","message":"Job was interrupted by coordinator restart","retryable":false,"details":{}}\' '
+                "WHERE state IN ('queued','running')",
+                (now, now + 1800),
             )
             connection.commit()
             self._connection = connection
