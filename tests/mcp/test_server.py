@@ -281,26 +281,12 @@ def test_services_configuration_source_grants_and_shutdown(tmp_path, monkeypatch
     from pyxsd.mcp.errors import ToolError
     from pyxsd.mcp.workspaces import Principal
 
-    http_services = server_module.Services(
-        Settings(state_dir=tmp_path / "http", transport="streamable-http")
-    )
-    with pytest.raises(ToolError, match="unsupported_transport"):
-        server_module.run(http_services.settings)
-    anyio.run(http_services.aclose)
     with pytest.raises(ToolError, match="invalid_argument"):
         server_module.Services(Settings(state_dir=tmp_path / "groups", enabled_groups={"unknown"}))
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
         Settings(state_dir=tmp_path / "execute", execution_backend="isolated")
-    with pytest.raises(ToolError, match="execution_unavailable"):
-        server_module.Services(
-            Settings(
-                state_dir=tmp_path / "untrusted-http",
-                execution_backend="trusted-local",
-                transport="streamable-http",
-            )
-        )
 
     async def scenario():
         settings = Settings(

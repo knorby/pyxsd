@@ -128,70 +128,15 @@ def test_main_reraises_unrelated_import_error(monkeypatch):
         main([])
 
 
-def test_main_http_configuration_and_missing_auth(tmp_path, monkeypatch, capsys):
-    import anyio
-    import uvicorn
-
+def test_main_rejects_removed_http_options(tmp_path):
     from pyxsd.mcp.__main__ import main
 
-    calls = {}
-
-    class FakeServer:
-        def __init__(self, config):
-            calls["config"] = config
-
-        def run(self):
-            calls["ran"] = True
-
-    def create(settings, services, verifier):
-        calls["settings"] = settings
-        calls["services"] = services
-        calls["verifier"] = verifier
-        return object()
-
-    monkeypatch.setattr(uvicorn, "Server", FakeServer)
-    monkeypatch.setattr("pyxsd.mcp.http.create_http_app", create)
-    assert (
-        main(
-            [
-                "--transport",
-                "streamable-http",
-                "--state-dir",
-                str(tmp_path),
-                "--issuer-url",
-                "https://issuer.example",
-                "--audience",
-                "https://mcp.example",
-                "--jwks-url",
-                "https://issuer.example/jwks.json",
-            ]
-        )
-        == 0
-    )
-    assert calls["settings"].transport == "streamable-http"
-    assert calls["settings"].http.audience == "https://mcp.example"
-    assert calls["ran"] is True
-    assert calls["verifier"] is not None
-    anyio.run(calls["services"].aclose)
-    assert main(["--transport", "streamable-http", "--state-dir", str(tmp_path / "missing")]) == 2
-    assert "auth_required" in capsys.readouterr().err
-    assert (
-        main(
-            [
-                "--transport",
-                "streamable-http",
-                "--loopback-dev",
-                "--state-dir",
-                str(tmp_path / "dev"),
-            ]
-        )
-        == 0
-    )
-    assert calls["verifier"] is None
-    anyio.run(calls["services"].aclose)
+    with pytest.raises(SystemExit):
+        main(["--transport", "stdio", "--state-dir", str(tmp_path)])
+    assert not (tmp_path / "state").exists()
 
 
-def test_cli_execution_requires_explicit_stdio_opt_in(tmp_path, monkeypatch, capsys):
+def test_cli_execution_requires_explicit_stdio_opt_in(tmp_path, monkeypatch):
     from pyxsd.mcp import server
     from pyxsd.mcp.__main__ import main
 
@@ -203,21 +148,6 @@ def test_cli_execution_requires_explicit_stdio_opt_in(tmp_path, monkeypatch, cap
     assert main(["--state-dir", str(tmp_path), "--execution-backend", "trusted-local"]) == 0
     assert settings[-1].execution_backend == "trusted-local"
     assert "execution" in settings[-1].enabled_groups
-    assert (
-        main(
-            [
-                "--state-dir",
-                str(tmp_path),
-                "--transport",
-                "streamable-http",
-                "--loopback-dev",
-                "--execution-backend",
-                "trusted-local",
-            ]
-        )
-        == 2
-    )
-    assert "execution_unavailable" in capsys.readouterr().err
 
 
 def test_main_version_does_not_require_sdk(capsys):

@@ -5,9 +5,6 @@ from pathlib import Path
 
 import anyio
 from mcp.server import MCPServer
-from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.provider import TokenVerifier
-from mcp.server.auth.settings import AuthSettings
 
 from .. import __version__
 from .artifacts import ArtifactStore
@@ -36,8 +33,6 @@ class Services:
     def __init__(self, settings: Settings) -> None:
         if not settings.enabled_groups.issubset({"exploration", "workspaces", "execution"}):
             raise ToolError("invalid_argument", "Unknown MCP tool group")
-        if settings.execution_backend == "trusted-local" and settings.transport != "stdio":
-            raise ToolError("execution_unavailable", "No supported execution backend configured")
         self.arrow_available = self._probe_arrow(settings.arrow)
         self.settings = settings
         self.state = State(settings.state_dir, limits=settings.limits)
@@ -84,7 +79,6 @@ class Services:
             self.pool,
             self.artifacts,
             backend=settings.execution_backend,
-            transport=settings.transport,
             jobs=self.jobs,
         )
         self.publication = PublicationService(self.previews)
@@ -117,26 +111,7 @@ class Services:
         return await self.pool.run(operation, deadline=deadline)
 
     def current_principal(self) -> Principal:
-        if self.settings.transport == "stdio":
-            return self.principal
-        token = get_access_token()
-        if token is not None and token.subject:
-            return Principal(f"http:{token.subject}", frozenset(token.scopes))
-        if self.settings.http is not None and self.settings.http.loopback_dev:
-            return Principal(
-                "loopback",
-                frozenset(
-                    {
-                        "pyxsd:read",
-                        "pyxsd:upload",
-                        "pyxsd:execute",
-                        "pyxsd:write",
-                        "pyxsd:replace",
-                        "pyxsd:write-invalid",
-                    }
-                ),
-            )
-        raise ToolError("forbidden", "Authentication is required")
+        return self.principal
 
     async def aclose(self) -> None:
         await self.jobs.aclose()
@@ -153,9 +128,6 @@ class Services:
 def create_server(
     settings: Settings,
     services: Services,
-    *,
-    token_verifier: TokenVerifier | None = None,
-    auth: AuthSettings | None = None,
 ) -> MCPServer:
     if settings is not services.settings:
         raise ToolError("invalid_argument", "Server and services settings differ")
@@ -168,8 +140,6 @@ def create_server(
             f"Execution backend: {settings.execution_backend}."
         ),
         version=__version__,
-        token_verifier=token_verifier,
-        auth=auth,
         extensions=[SkillsExtension()],
     )
     register_tools(server, services)
@@ -187,6 +157,4 @@ async def _run(settings: Settings) -> None:
 
 
 def run(settings: Settings) -> None:
-    if settings.transport != "stdio":
-        raise ToolError("unsupported_transport", "Use the HTTP application for streamable HTTP")
     anyio.run(_run, settings)

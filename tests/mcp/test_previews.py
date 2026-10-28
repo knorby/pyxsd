@@ -22,7 +22,7 @@ from pyxsd.mcp.workspaces import WorkspaceStore, stdio_principal
 
 
 @asynccontextmanager
-async def harness(tmp_path, *, backend="trusted-local", transport="stdio"):
+async def harness(tmp_path, *, backend="trusted-local"):
     from pyxsd.mcp.artifacts import ArtifactStore
     from pyxsd.mcp.previews import PreviewService
     from pyxsd.mcp.snapshot_store import SnapshotStore
@@ -36,7 +36,7 @@ async def harness(tmp_path, *, backend="trusted-local", transport="stdio"):
         snapshots = SnapshotStore(workspaces)
         artifacts = ArtifactStore(workspaces)
         pool = WorkerPool(limits)
-        previews = PreviewService(snapshots, pool, artifacts, backend=backend, transport=transport)
+        previews = PreviewService(snapshots, pool, artifacts, backend=backend)
         await snapshots.put_bytes(
             principal,
             workspace.id,
@@ -151,15 +151,11 @@ def transform(document, context):
     anyio.run(scenario)
 
 
-@pytest.mark.parametrize(
-    "backend,transport",
-    [("disabled", "stdio"), ("trusted-local", "streamable-http")],
-)
-def test_preview_never_falls_back_to_local_execution(tmp_path, backend, transport):
+def test_preview_never_falls_back_to_local_execution(tmp_path):
     from pyxsd.mcp.previews import PreviewTransformRequest
 
     async def scenario():
-        async with harness(tmp_path, backend=backend, transport=transport) as (
+        async with harness(tmp_path, backend="disabled") as (
             service,
             principal,
             workspace,

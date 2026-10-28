@@ -48,7 +48,7 @@ def capability_data(services: "Services") -> dict[str, JsonValue]:
     settings = services.settings
     return {
         "version": __version__,
-        "transport": settings.transport,
+        "transport": "stdio",
         "execution_backend": settings.execution_backend,
         "enabled_groups": cast(list[JsonValue], sorted(settings.enabled_groups)),
         "source_aliases": cast(list[JsonValue], sorted(settings.source_roots)),

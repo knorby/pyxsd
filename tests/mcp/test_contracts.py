@@ -76,7 +76,6 @@ def test_configuration_and_wire_models_reject_unknown_or_coerced_fields(tmp_path
 
     settings = Settings(state_dir=tmp_path)
     assert settings.execution_backend == "disabled"
-    assert settings.transport == "stdio"
     assert settings.limits == Limits()
     assert CompileOptions().model_dump() == {
         "binding": "lax",
@@ -101,8 +100,6 @@ def test_configuration_and_wire_models_reject_unknown_or_coerced_fields(tmp_path
     ]:
         with pytest.raises(ValidationError):
             cls.model_validate(values)
-    with pytest.raises(ValidationError):
-        settings.transport = "http"
 
 
 @pytest.mark.parametrize(

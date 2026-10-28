@@ -56,23 +56,11 @@ class Limits(WireModel):
         return self
 
 
-class HTTPSettings(WireModel):
-    issuer_url: str
-    audience: str
-    jwks_url: str
-    allowed_hosts: set[str] = Field(default_factory=lambda: {"127.0.0.1", "localhost"})
-    allowed_origins: set[str] = Field(default_factory=set)
-    loopback_dev: bool = False
-    algorithms: tuple[str, ...] = ("RS256", "ES256")
-
-
 class Settings(WireModel):
     state_dir: Path
-    transport: Literal["stdio", "streamable-http"] = "stdio"
     execution_backend: Literal["disabled", "trusted-local"] = "disabled"
     limits: Limits = Field(default_factory=Limits)
     source_roots: dict[str, Path] = Field(default_factory=dict)
     enabled_groups: set[str] = Field(default_factory=lambda: {"exploration", "workspaces"})
     pydantic: bool = True
     arrow: Literal["auto", "enabled", "disabled"] = "auto"
-    http: HTTPSettings | None = None

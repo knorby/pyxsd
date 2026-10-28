@@ -81,13 +81,12 @@ class PreviewService:
         artifacts: ArtifactStore,
         *,
         backend: str = "disabled",
-        transport: str = "stdio",
         registry: dict[str, str] | None = None,
         jobs: JobManager | None = None,
     ) -> None:
         self.snapshots, self.pool, self.artifacts = snapshots, pool, artifacts
         self.limits = snapshots.limits
-        self.backend, self.transport = backend, transport
+        self.backend = backend
         self.registry = dict(registry or {})
         self.staging = snapshots.state.root / "preview-staging"
         self.staging.mkdir(mode=0o700, exist_ok=True)
@@ -96,7 +95,7 @@ class PreviewService:
 
     async def submit(self, principal: Principal, request: PreviewTransformRequest) -> JobRef:
         principal.require("pyxsd:execute", "pyxsd:read", "pyxsd:upload")
-        if self.backend != "trusted-local" or self.transport != "stdio":
+        if self.backend != "trusted-local":
             raise ToolError("execution_unavailable", "No supported execution backend configured")
         spec = normalize_transform(request.transform, self.limits)
         sources = (
