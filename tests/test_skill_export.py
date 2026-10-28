@@ -96,6 +96,61 @@ def test_export_rejects_unknown_overwrite_and_traversal(tmp_path):
         export_skill("pyxsd-mcp", linked / "escape")
 
 
+def test_export_rejects_invalid_names_and_accepts_string_destinations(tmp_path):
+    from pyxsd.skills import export_skill
+
+    with pytest.raises(KeyError):
+        export_skill(123, tmp_path)
+    destination = str(tmp_path)
+    exported = export_skill("pyxsd-xml-doctor", destination)  # type: ignore[arg-type]
+    assert exported == tmp_path / "pyxsd-xml-doctor"
+
+
+def test_export_refuses_a_symlinked_target(tmp_path):
+    from pyxsd.skills import export_skill
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "pyxsd-mcp").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="plain directory"):
+        export_skill("pyxsd-mcp", tmp_path)
+
+
+def test_skills_cli_main_covers_list_export_and_error_paths(tmp_path, capsys):
+    from pyxsd.skills.__main__ import main
+
+    assert main(["list"]) == 0
+    assert "pyxsd-development:" in capsys.readouterr().out
+
+    destination = tmp_path / "direct"
+    destination.mkdir()
+    assert main(["export", "pyxsd-xml-doctor", str(destination)]) == 0
+    assert str(destination / "pyxsd-xml-doctor") in capsys.readouterr().out
+
+    assert main(["export", "not-a-skill", str(destination)]) == 2
+    assert "Unknown skill" in capsys.readouterr().err
+
+    assert main(["export", "pyxsd-xml-doctor", str(destination)]) == 2
+    assert "Cannot export skill" in capsys.readouterr().err
+
+    assert main(["export", "pyxsd-mcp", str(tmp_path / "missing")]) == 2
+    assert "Cannot export skill" in capsys.readouterr().err
+
+
+def test_skills_module_entrypoint_lists_skills(monkeypatch, capsys):
+    import runpy
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["pyxsd.skills", "list"])
+    with (
+        pytest.warns(RuntimeWarning, match="found in sys.modules"),
+        pytest.raises(SystemExit) as raised,
+    ):
+        runpy.run_module("pyxsd.skills", run_name="__main__")
+    assert raised.value.code == 0
+    assert "pyxsd-mcp:" in capsys.readouterr().out
+
+
 def test_skills_cli_lists_and_exports_without_mcp(tmp_path):
     listed = subprocess.run(
         [sys.executable, "-m", "pyxsd.skills", "list"],
