@@ -25,7 +25,6 @@ class Limits(WireModel):
     snapshot_revisions: PositiveBudget = 32
     managed_bytes: PositiveBudget = 4 * 2**30
     cache_entries: PositiveBudget = 8
-    worker_memory_bytes: PositiveBudget = 512 * 2**20
     workers: PositiveBudget = 4
     active_jobs_per_owner: PositiveBudget = 1
     queued_jobs: PositiveBudget = 16
@@ -46,7 +45,6 @@ class Limits(WireModel):
     job_result_seconds: PositiveBudget = 1800
     diagnostic_seconds: PositiveBudget = 3600
     worker_operations: PositiveBudget = 100
-    worker_pids: PositiveBudget = 64
     corpus_files: PositiveBudget = 100
     corpus_max_files: PositiveBudget = 1000
     corpus_file_seconds: PositiveBudget = 10
@@ -71,7 +69,7 @@ class HTTPSettings(WireModel):
 class Settings(WireModel):
     state_dir: Path
     transport: Literal["stdio", "streamable-http"] = "stdio"
-    execution_backend: Literal["disabled", "trusted-local", "isolated"] = "disabled"
+    execution_backend: Literal["disabled", "trusted-local"] = "disabled"
     limits: Limits = Field(default_factory=Limits)
     source_roots: dict[str, Path] = Field(default_factory=dict)
     enabled_groups: set[str] = Field(default_factory=lambda: {"exploration", "workspaces"})

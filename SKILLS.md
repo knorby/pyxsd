@@ -20,7 +20,25 @@ python -m pyxsd.skills export pyxsd-xml-doctor ./skills
 `export` copies the skill directory plus the shared `references/` into
 `DEST/<name>/`. Exports are deterministic byte-for-byte, self-contained, and
 never follow symlinks or overwrite existing targets. The same assets are
-available through MCP in E5.
+available through MCP resources and the official skills extension.
+
+## Install with npx skills
+
+With Node.js 22.20 or newer, the [Vercel Skills CLI](https://github.com/vercel-labs/skills)
+discovers all three skills from the repository root. Discovery is read-only:
+
+```bash
+npx skills add https://github.com/knorby/pyxsd --list
+```
+
+Install them into your project for OpenCode:
+
+```bash
+npx skills add https://github.com/knorby/pyxsd -a opencode
+```
+
+Add `-g` for a user-global installation instead. The Python export above remains
+available when Node.js is not installed.
 
 Python API: `pyxsd.skills.list_skills()` and
 `pyxsd.skills.export_skill(name, destination)`.

@@ -3,6 +3,7 @@
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -132,3 +133,13 @@ def test_skills_cli_lists_and_exports_without_mcp(tmp_path):
         timeout=30,
     )
     assert help_text.returncode == 0
+
+
+def test_npx_repository_root_discovers_all_packaged_skills():
+    command = "npx skills add https://github.com/knorby/pyxsd"
+    for document in (Path("SKILLS.md"), Path("docs/skills.md")):
+        text = document.read_text(encoding="utf-8")
+        assert command in text
+        assert "/tree/develop/src/pyxsd/skills/" not in text
+    for name in EXPECTED:
+        assert (Path("src/pyxsd/skills") / name / "SKILL.md").is_file()

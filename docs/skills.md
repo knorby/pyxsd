@@ -28,6 +28,25 @@ same bytes, so caches and reviews stay stable. Each export is self-contained
 symlinks, overwrites an existing target, or writes outside the destination
 you name. There is no global home-directory install.
 
+## Install with npx skills
+
+With Node.js 22.20 or newer, the [Vercel Skills CLI](https://github.com/vercel-labs/skills)
+discovers all three skills from the repository root. To inspect them without
+installing anything:
+
+```bash
+npx skills add https://github.com/knorby/pyxsd --list
+```
+
+To install them into your project for OpenCode (project scope is the default):
+
+```bash
+npx skills add https://github.com/knorby/pyxsd -a opencode
+```
+
+Add `-g` for a user-global installation. The Python export remains the fallback
+when Node.js is unavailable.
+
 The Python API mirrors the CLI:
 
 ```python

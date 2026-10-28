@@ -1,6 +1,6 @@
 """Cross-layer quotas fail closed at their exact configured boundaries."""
 
-from pathlib import Path
+from typing import get_args
 
 import pytest
 
@@ -12,7 +12,7 @@ import anyio
 from tests.mcp.test_exploration import INVALID, XSD, harness, upload
 
 from pyxsd.mcp.artifacts import ArtifactStore
-from pyxsd.mcp.config import Limits
+from pyxsd.mcp.config import Limits, Settings
 from pyxsd.mcp.contracts import FileRef, Page, SchemaRef
 from pyxsd.mcp.errors import ToolError
 from pyxsd.mcp.safe_io import AdmittedFile
@@ -22,10 +22,13 @@ from pyxsd.mcp.state import State
 from pyxsd.mcp.workspaces import Principal, WorkspaceStore, stdio_principal
 
 
-def test_reserved_worker_resource_limits_are_not_claimed_as_active():
-    guide = " ".join(Path("docs/mcp.md").read_text(encoding="utf-8").split())
-    assert "Worker memory / operations / PIDs" not in guide
-    assert "reserved for the deferred isolated-runtime design" in guide
+def test_only_disabled_and_trusted_local_execution_are_configurable():
+    assert get_args(Settings.model_fields["execution_backend"].annotation) == (
+        "disabled",
+        "trusted-local",
+    )
+    assert "worker_memory_bytes" not in Limits.model_fields
+    assert "worker_pids" not in Limits.model_fields
 
 
 def test_snapshot_revision_and_entry_limits_are_atomic(tmp_path):

@@ -94,8 +94,6 @@ async def _receive_frame(stream: ByteReceiveStream, max_bytes: int) -> bytes:
 class _Worker:
     def __init__(self, process: Process, limits: Limits) -> None:
         self.process, self.limits = process, limits
-        self.mount_root: str | None = None
-        self.container_name: str | None = None
 
     @classmethod
     async def start(
@@ -103,7 +101,6 @@ class _Worker:
         limits: Limits,
         *,
         role: Literal["clean", "execution"],
-        command: tuple[str, ...] | None = None,
     ) -> "_Worker":
         environment = {
             "PATH": os.defpath,
@@ -120,7 +117,7 @@ class _Worker:
             if name in os.environ:
                 environment[name] = os.environ[name]
         process = await anyio.open_process(
-            command or (sys.executable, "-I", "-u", "-c", WORKER_BOOTSTRAP, "--role", role),
+            (sys.executable, "-I", "-u", "-c", WORKER_BOOTSTRAP, "--role", role),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

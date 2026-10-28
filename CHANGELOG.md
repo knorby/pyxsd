@@ -23,10 +23,10 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   workspaces and immutable revisions, schema exploration, XML diagnostics,
   bounded XPath queries, exact issue explanations, artifacts, resources and
   prompts. Includes clean worker processes, bounded JSON IPC, leased schema
-  caches, authenticated cursors and pinned OCI worker construction. Authenticated
+  caches, authenticated cursors and bounded worker protocols. Authenticated
   streamable HTTP adds fixed-issuer JWKS verification, subject/scoped ownership,
   protected resource metadata, host/origin controls and exact binary transfer.
-  Execution remains disabled; the real Linux containment gate is tracked separately.
+  Execution remains disabled by default; trusted-local previews require explicit stdio opt-in.
 
 ### Fixed
 

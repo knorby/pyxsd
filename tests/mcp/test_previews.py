@@ -153,7 +153,7 @@ def transform(document, context):
 
 @pytest.mark.parametrize(
     "backend,transport",
-    [("disabled", "stdio"), ("trusted-local", "streamable-http"), ("isolated", "stdio")],
+    [("disabled", "stdio"), ("trusted-local", "streamable-http")],
 )
 def test_preview_never_falls_back_to_local_execution(tmp_path, backend, transport):
     from pyxsd.mcp.previews import PreviewTransformRequest

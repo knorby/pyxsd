@@ -36,9 +36,7 @@ class Services:
     def __init__(self, settings: Settings) -> None:
         if not settings.enabled_groups.issubset({"exploration", "workspaces", "execution"}):
             raise ToolError("invalid_argument", "Unknown MCP tool group")
-        if settings.execution_backend == "isolated" or (
-            settings.execution_backend == "trusted-local" and settings.transport != "stdio"
-        ):
+        if settings.execution_backend == "trusted-local" and settings.transport != "stdio":
             raise ToolError("execution_unavailable", "No supported execution backend configured")
         self.arrow_available = self._probe_arrow(settings.arrow)
         self.settings = settings

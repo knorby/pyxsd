@@ -8,7 +8,7 @@ queries, and download immutable artifacts through one consistent tool surface.
 Both **stdio** and authenticated **streamable HTTP** are available. Execution is
 disabled by default. Local transformation previews require an explicit stdio
 opt-in and run with the launching user's privileges, not in a sandbox. See
-{doc}`mcp-deployment` for the worker boundary and deferred OCI status.
+{doc}`mcp-deployment` for the worker boundary.
 
 ## Install and launch
 
@@ -361,19 +361,14 @@ Important active limits (all operator-configurable in `Settings.limits`):
 | Preview / job-result TTL | 30 / 30 minutes |
 | Idle workspace / diagnostic TTL | 60 / 60 minutes |
 
-`worker_memory_bytes` (512 MiB) and `worker_pids` (64) are reserved for the
-deferred isolated-runtime design. The supported local subprocess runtime does
-not enforce them; they are not active containment controls.
-
 Compilation and binding choices are explicit per schema reference: XSD 1.0 or
 1.1, strict or lax best-effort binding, and legacy or strict namespace handling.
 Serialized XML is UTF-8, and preview byte diffs report serialization-only
 changes rather than hiding them behind a semantic comparison.
 
-The local subprocess runtime is not a sandbox for untrusted Python. OCI-based
-isolation is deferred to a later design cycle and is not required for normal MCP
-installation or launch. See {doc}`mcp-deployment` for the current execution
-boundary.
+The local subprocess runtime is not a sandbox for untrusted Python. Remote or
+untrusted-code execution is not included. See {doc}`mcp-deployment` for the
+current execution boundary.
 
 ## Local transformation previews
 
@@ -414,8 +409,7 @@ claims do not determine the verdict. Invalid and malformed candidates remain
 inspectable. Serialization may change prefixes, layout, mixed-content
 presentation and comments; review the byte diff, not just structural changes.
 
-A preview does not publish files. OCI-isolated previews are deferred to a later
-design cycle; do not use the local backend for untrusted code.
+A preview does not publish files. Do not use the local backend for untrusted code.
 
 ### Review and publish the retained candidate
 
@@ -481,7 +475,7 @@ jobs fail without automatically rerunning code.
 - **Worker timeout or queue overflow:** retry only after reviewing document size,
   complexity and operator budgets. Neither produces a partial validation verdict.
 - **Execution:** disabled by default; trusted-local stdio previews require explicit
-  opt-in. Managed exact-byte publication is available. OCI isolation and remote
-  user-code execution are deferred to a later design cycle.
+  opt-in. Managed exact-byte publication is available. Remote user-code execution
+  is not included.
 - **HTTP/OAuth:** available with explicit fixed-issuer configuration and
   loopback-only development fallback. User-code execution over HTTP remains disabled.
