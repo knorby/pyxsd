@@ -188,11 +188,11 @@ def test_candidate_growth_between_stat_and_read_still_obeys_budget(tmp_path, mon
 
 
 def test_unbound_input_is_rejected_before_loading_user_code(tmp_path):
+    from pyxsd.mcp.captures import CaptureFile
     from pyxsd.mcp.execution import ExecutionRequest
     from pyxsd.mcp.execution_main import execute as run
-    from pyxsd.mcp.snapshots import SnapshotFile
     from pyxsd.mcp.transforms import PythonTransformSpec
-    from pyxsd.mcp.workers import snapshot_to_wire
+    from pyxsd.mcp.workers import capture_to_wire
 
     snapshot = make_snapshot(tmp_path)
     data = b"<unknown/>"
@@ -200,7 +200,7 @@ def test_unbound_input_is_rejected_before_loading_user_code(tmp_path):
     snapshot = replace(
         snapshot,
         files=tuple(
-            SnapshotFile(item.path, hashlib.sha256(data).hexdigest(), len(data))
+            CaptureFile(item.path, hashlib.sha256(data).hexdigest(), len(data))
             if item.path == "document.xml"
             else item
             for item in snapshot.files
@@ -208,7 +208,7 @@ def test_unbound_input_is_rejected_before_loading_user_code(tmp_path):
     )
     request = ExecutionRequest(
         request_id="execution",
-        snapshot=snapshot_to_wire(snapshot),
+        capture=capture_to_wire(snapshot),
         schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
         document=FileRef(path="document.xml"),
         transform=PythonTransformSpec(source="raise RuntimeError('must not run')"),

@@ -19,15 +19,17 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   source layouts and policy-enforced parser admission.
 - Native schema introspection with dependency queries and filtered stub
   rendering.
-- Optional `pyxsd[mcp]` integration with a local stdio MCP server, private
-  workspaces and immutable revisions, schema exploration, XML diagnostics,
-  bounded XPath queries, exact issue explanations, artifacts, resources and
-  prompts. Includes clean worker processes, bounded JSON IPC, leased schema
-  caches, bounded cursors and bounded worker protocols. Transforms, schema
-  comparisons and Arrow exports return results directly; previews retain exact
-  candidate bytes for validated, idempotent publication. The server has no
-  HTTP/OAuth transport. Execution remains disabled by default; trusted-local
-  previews require explicit stdio opt-in.
+- Optional `pyxsd[mcp]` integration with a local stdio MCP server: session-only
+  input sets, schema exploration, XML diagnostics, bounded XPath queries, exact
+  issue explanations, validation reports, schema comparison, trusted-local
+  transform previews, Arrow record export, resources and prompts. Inputs are
+  verified in private temporary captures; outputs live in one small local
+  artifact store that survives restart and is deleted only on request. Includes
+  clean worker processes, bounded JSON IPC, content-keyed schema caches, bounded
+  cursors and bounded worker protocols. The server has no HTTP/OAuth transport,
+  durable input revisions, quota ledger or publication/commit workflow.
+  Execution remains disabled by default; trusted-local previews require
+  explicit stdio opt-in.
 
 ### Fixed
 

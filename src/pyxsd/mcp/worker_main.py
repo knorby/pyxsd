@@ -25,10 +25,10 @@ from pyxsd.schema_context import last_components, remember_components
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 
 from .cache import CompileRequest, SchemaCache
+from .captures import CaptureDependency, InputPolicyError, InputResourcePolicy
 from .contracts import SchemaRef, ToolFault
 from .encoding import encode_value
 from .errors import ToolError
-from .snapshots import Dependency, WorkspacePolicyError, WorkspaceResourcePolicy
 from .worker_protocol import (
     ComparisonOperation,
     DescribeOperation,
@@ -47,7 +47,7 @@ from .worker_protocol import (
     decode_operation,
     encode_frame,
 )
-from .workers import snapshot_from_wire
+from .workers import capture_from_wire
 
 _EXTERNAL_XPATH = re.compile(
     r"(?:^|[^\w.-])(?:[A-Za-z_][\w.-]*:)?"
@@ -68,11 +68,10 @@ def _for_schema(
     operation: Operation, schema_ref: SchemaRef, processor_version: str
 ) -> CompileRequest:
     return CompileRequest(
-        snapshot=snapshot_from_wire(operation.snapshot),
+        capture=capture_from_wire(operation.capture),
         schema_ref=schema_ref,
         hints=getattr(operation, "hints", ()),
         processor_version=processor_version,
-        owner_id=operation.owner_id,
     )
 
 
@@ -80,7 +79,7 @@ def _parse(
     operation: ParseOperation | QueryOperation, cache: SchemaCache, processor_version: str
 ) -> Document:
     if operation.schema_ref is None:
-        policy = WorkspaceResourcePolicy(snapshot_from_wire(operation.snapshot), cache.limits)
+        policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
         return parse_document(
             "/workspace/" + operation.document.path,
             mode=ParseModes.LAX,
@@ -260,21 +259,20 @@ def _execute(
 
         return compare(operation, cache.limits)
     if isinstance(operation, DiscoverOperation):
-        snapshot = snapshot_from_wire(operation.snapshot)
-        dependencies: dict[str, Dependency] = {}
+        capture = capture_from_wire(operation.capture)
+        dependencies: dict[str, CaptureDependency] = {}
         for ref in operation.refs:
             if not isinstance(ref, SchemaRef):
                 continue
             request = CompileRequest(
-                snapshot=snapshot,
+                capture=capture,
                 schema_ref=ref,
                 hints=(),
                 processor_version=processor_version,
-                owner_id=operation.owner_id,
             )
             with cache.acquire(request) as schema:
                 policy = schema.resource_policy
-                assert isinstance(policy, WorkspaceResourcePolicy)
+                assert isinstance(policy, InputResourcePolicy)
                 for item in policy.dependencies:
                     dependencies[item.path] = item
         return {
@@ -379,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
                     operations=operations,
                     max_bytes=config.limits.output_bytes,
                 )
-            except (WorkspacePolicyError, PyXSDError) as exc:
+            except (InputPolicyError, PyXSDError) as exc:
                 operations += 1
                 code = (
                     "invalid_xml"

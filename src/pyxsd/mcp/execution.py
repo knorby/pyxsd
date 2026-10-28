@@ -16,10 +16,10 @@ import anyio
 
 from pydantic import JsonValue
 
+from .captures import InputCapture
 from .config import Limits
 from .contracts import FileRef, SchemaRef, WireModel
 from .errors import ToolError
-from .snapshots import Snapshot
 from .transforms import (
     PipelineTransformSpec,
     PythonTransformSpec,
@@ -27,13 +27,13 @@ from .transforms import (
     normalize_transform,
     resolve_sources,
 )
-from .worker_protocol import SnapshotMessage, WorkerReply, decode_frame, encode_frame
-from .workers import WORKER_BOOTSTRAP, snapshot_to_wire
+from .worker_protocol import CaptureMessage, WorkerReply, decode_frame, encode_frame
+from .workers import WORKER_BOOTSTRAP, capture_to_wire
 
 
 class ExecutionRequest(WireModel):
     request_id: str
-    snapshot: SnapshotMessage
+    capture: CaptureMessage
     schema_ref: SchemaRef
     document: FileRef
     transform: TransformSpec
@@ -85,7 +85,7 @@ class TrustedLocalExecution:
 
     async def run(
         self,
-        snapshot: Snapshot,
+        capture: InputCapture,
         schema_ref: SchemaRef,
         document: FileRef,
         transform: PythonTransformSpec | PipelineTransformSpec,
@@ -104,7 +104,7 @@ class TrustedLocalExecution:
             try:
                 request = ExecutionRequest(
                     request_id="execution",
-                    snapshot=snapshot_to_wire(snapshot),
+                    capture=capture_to_wire(capture),
                     schema_ref=schema_ref,
                     document=document,
                     transform=transform,

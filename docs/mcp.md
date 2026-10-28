@@ -1,9 +1,10 @@
 # MCP integration
 
 pyxsd can run as a local [Model Context Protocol](https://modelcontextprotocol.io/)
-server. MCP clients can create private workspaces, explore compiled schemas,
-validate XML, follow diagnostics to exact source occurrences, run bounded XPath
-queries, and download immutable artifacts through one consistent tool surface.
+server. MCP clients can load schema and XML inputs for a session, explore compiled
+schemas, validate XML, follow diagnostics to exact source occurrences, run bounded
+XPath queries, transform XML, compare schemas, export records, and read retained
+output files.
 
 The server is **stdio-only** and runs beside the MCP client. Execution is disabled
 by default. Local transformation previews require an explicit opt-in and run with
@@ -12,144 +13,77 @@ the worker boundary.
 
 ## Install and launch
 
-The primary way to run the server is [`uvx`](https://docs.astral.sh/uv/), which
-creates an isolated environment with the optional MCP dependencies (Python 3.11
-or newer):
+The primary launch method is [`uvx`](https://docs.astral.sh/uv/), which creates an
+isolated environment with the optional MCP dependencies (Python 3.11 or newer):
 
 ```bash
-uvx --from 'pyxsd[mcp]' pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
+uvx --from 'pyxsd[mcp]' pyxsd-mcp
 ```
 
-Alternatively, install the optional dependencies and launch the same entry point
-directly:
+Alternatively, install the optional dependencies and launch the entry point:
 
 ```bash
 pip install 'pyxsd[mcp]'
-pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
+pyxsd-mcp
 ```
 
-`python -m pyxsd.mcp` is equivalent after installation. A generic stdio client
-configuration using the primary `uvx` method looks like this (use an absolute,
-owner-only state path):
+`python -m pyxsd.mcp` is equivalent after installation. The default store is
+`~/.local/state/pyxsd/mcp`; a generic stdio client configuration looks like this:
 
 ```json
 {
   "mcpServers": {
     "pyxsd": {
       "command": "uvx",
-      "args": [
-        "--from",
-        "pyxsd[mcp]",
-        "pyxsd-mcp",
-        "--state-dir",
-        "/absolute/path/to/private/state"
-      ]
+      "args": ["--from", "pyxsd[mcp]", "pyxsd-mcp"]
     }
   }
 }
 ```
 
-The state directory contains workspaces, immutable revisions, artifacts, and
-restart metadata. It is never selected by a tool argument. Back up or delete it
-using the same ownership policy you would use for other application state.
+Select another persistent store with `--state-dir /absolute/private/path`. Use
+`--no-persist` for a temporary store that is removed on orderly shutdown; it
+cannot be combined with `--state-dir`.
 
 For an operator-granted read-only source tree, add `--source-root /absolute/root`.
-Capture resolves only that configured root for the local `stdio` principal; a
-client cannot mount an arbitrary directory. Normal workspace uploads use
-`pyxsd_put_files` and need no source mount.
+Only that configured root is captured; a client cannot mount an arbitrary host
+directory. Normal session inputs use `pyxsd_put_files` and need no source root.
 
-### Binary transfer
+## Persistent store and session inputs
 
-Artifacts are read in bounded ranges with `pyxsd_read_artifact`
-(`artifact_id`, `offset`, `length`). The tool returns the exact bytes as base64
-plus media type and digest; verify the digest locally. The MCP SDK envelope
-carries the base64 expansion, so request bounded ranges. File uploads through
-`pyxsd_put_files` are text, while source-tree capture preserves original bytes.
-No route mounts a host directory or accepts an arbitrary output path.
+One server process owns the selected store. A second coordinator using the same
+directory fails with `state_locked`. The store holds an artifact index plus each
+retained output file:
 
-## End-to-end client example
-
-The official Python SDK works directly with the stdio transport:
-
-```python
-import anyio
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
-
-async def main():
-    parameters = StdioServerParameters(
-        command="pyxsd-mcp",
-        args=["--state-dir", "/absolute/path/to/private/state"],
-    )
-    async with stdio_client(parameters) as (read, write):
-        async with ClientSession(read, write) as client:
-            await client.initialize()
-            created = await client.call_tool(
-                "pyxsd_manage_workspace",
-                {"action": "create", "idempotency_key": "example-1"},
-            )
-            workspace = created.structured_content["data"]["id"]
-
-            await client.call_tool(
-                "pyxsd_put_files",
-                {
-                    "workspace_id": workspace,
-                    "files": [
-                        {
-                            "path": "order.xsd",
-                            "text": '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
-                            '<xs:element name="order" type="xs:int"/></xs:schema>',
-                        },
-                        {"path": "order.xml", "text": "<order>42</order>"},
-                    ],
-                    "expected_revision": None,
-                },
-            )
-            result = await client.call_tool(
-                "pyxsd_validate_document",
-                {
-                    "workspace_id": workspace,
-                    "document": {"path": "order.xml"},
-                    "schema_ref": {"source": {"path": "order.xsd"}},
-                },
-            )
-            assert result.structured_content["data"]["valid"] is True
-
-
-anyio.run(main)
+```text
+<store>/store-v2/
+├── index.sqlite3
+├── artifacts/<random-id>/<filename>
+└── scratch/                 # temporary captures and worker output
 ```
 
-Every ordinary tool returns the same `ToolEnvelope` in `structuredContent` and
-as JSON text. `result.is_error` distinguishes an operational failure from a
-successful call. XML validation findings are different: an invalid document has
-`status="ok"` and `data.valid=false`; malformed or unreadable XML has
-`is_error=true` and a typed fault.
+Workspaces, uploaded input sets, page cursors, compiled schemas, and transform
+execution context are **session-only**. Restarting the server discards them. A
+restarted session can still list and read previously retained artifacts by ID.
 
-## Tool catalog
+Legacy pyxsd MCP state such as `state.sqlite3` and `workspaces/` is not loaded,
+migrated, or deleted. Startup emits one notice if it exists and continues with
+`store-v2`. Back up or remove legacy state separately if it is no longer wanted.
 
-| Tool | What it does |
-| --- | --- |
-| `pyxsd_capabilities` | Reports version, enabled groups, execution policy, limits and adapter status without host paths or secrets. |
-| `pyxsd_manage_workspace` | Creates, lists, or explicitly releases a private workspace. Creation accepts an idempotency key. |
-| `pyxsd_put_files` | Publishes a bounded UTF-8 bundle as a new immutable revision, guarded by the expected previous revision. |
-| `pyxsd_inspect_schema` | Returns an overview, compact/full stubs, or constraint-rich component descriptions with bounded depth. |
-| `pyxsd_find_schema_components` | Searches literal text, kind, name and namespace filters, or traverses `uses` / `used_by` relationships. |
-| `pyxsd_validate_document` | Returns verdicts, exact issue locations, aggregate counts, paged issues and source/schema fingerprints. |
-| `pyxsd_query_document` | Runs XPath over the bound projection and returns scalars, node summaries, exact locations or bounded subtrees. |
-| `pyxsd_explain_issue` | Gives curated issue-code guidance, explicit unknowns, and optional exact issue lookup from a report artifact. |
-| `pyxsd_preview_records` | Projects document rows through Arrow with a 20-row preview cap, exact/incomplete counts, occurrence selectors and contextual columns. Read-only; requires the optional Arrow dependency. |
-| `pyxsd_export_records` | Writes Parquet (single document) or a manifested dataset (multiple documents) as immutable digest-verified artifacts with provenance. Requires the execution tool group and Arrow. |
-| `pyxsd_compare_schemas` | Diffs two schema revisions (added/removed/changed components including anonymous declarations) and optionally validating a corpus under both, classifying each file as valid/regressed/resolved/invalid/malformed/unbindable/skipped. |
-| `pyxsd_read_artifact` | Returns a bounded byte range as base64 with digest and media type. |
+## Basic workflow
 
-Schema and document references use workspace-relative POSIX paths:
+Call `pyxsd_manage_workspace` with `action: "create"`, upload files with
+`pyxsd_put_files`, and refer to them by workspace-relative paths. Each upload
+atomically adds or replaces the supplied paths; omitted files remain in the
+session input set. An invalid batch leaves the previous set intact.
+`action: "release"` removes only session input scratch. It never removes output
+artifacts.
 
 ```json
 {
-  "document": {"path": "order.xml", "revision": null},
+  "document": {"path": "order.xml"},
   "schema_ref": {
-    "source": {"path": "order.xsd", "revision": null},
+    "source": {"path": "order.xsd"},
     "options": {
       "binding": "lax",
       "namespaces": "strict",
@@ -160,186 +94,152 @@ Schema and document references use workspace-relative POSIX paths:
 }
 ```
 
-Pin `revision` for repeatable reads. New revisions never overwrite old bytes in
-place, and an active workspace lease prevents idle expiry during an operation.
+References contain only a path. There are no input revisions, leases, owners, or
+revision pins. Each operation copies the current uploaded set into a private
+temporary capture, verifies its manifest, and deletes it when the operation ends.
+Page cursors are bound to the request result identity and to the input generation
+and file digests; changing the inputs invalidates old pages.
 
-### Projected Pydantic contracts
+## Tool catalog
 
-`pyxsd_inspect_model` exposes projected JSON Schema for a selected declaration;
-`pyxsd_validate_data` checks JSON data against it. They are available with the MCP
-extra and can be disabled with `Settings.pydantic=False`. They do not establish
-full XML validity or mutate XML. See {doc}`integrations` for aliases, exact values,
-declaration paths and unsupported shapes.
+| Tool | What it does |
+| --- | --- |
+| `pyxsd_capabilities` | Reports version, enabled groups, execution policy, limits, source root, and adapter status. |
+| `pyxsd_manage_workspace` | Creates, lists, or releases a session-only input set. |
+| `pyxsd_put_files` | Atomically adds or replaces supplied paths in the session input set, retaining omitted files, and returns its generation and file manifest. |
+| `pyxsd_inspect_schema` | Returns an overview, compact/full stubs, or constraint-rich component descriptions with bounded depth. |
+| `pyxsd_find_schema_components` | Searches literal text, kind, name and namespace filters, or traverses `uses` / `used_by` relationships. |
+| `pyxsd_validate_document` | Returns verdicts, exact issue locations, aggregate counts, paged issues, fingerprints, and a retained report artifact. |
+| `pyxsd_query_document` | Runs XPath over the bound projection and returns scalars, node summaries, exact locations or bounded subtrees. |
+| `pyxsd_explain_issue` | Gives curated issue-code guidance and can read an exact issue from a retained report. |
+| `pyxsd_inspect_model` | Projects JSON Schema for a selected declaration (optional Pydantic integration). |
+| `pyxsd_validate_data` | Checks JSON data against a projected contract (optional Pydantic integration). |
+| `pyxsd_preview_records` | Projects document rows through Arrow with a 20-row preview cap and optional contextual columns. |
+| `pyxsd_export_records` | Writes Parquet or a manifested dataset as retained, digest-verified outputs. |
+| `pyxsd_compare_schemas` | Diffs two schemas and optionally validates a corpus under both. |
+| `pyxsd_preview_transform` | Runs a trusted-local transform, independently validates the candidate, and retains candidate/report/diff outputs. |
+| `pyxsd_list_artifacts` | Lists retained outputs in stable creation order with an opaque cursor. |
+| `pyxsd_read_artifact` | Returns a bounded byte range as base64 with digest, media type, and local path. |
+| `pyxsd_delete_artifact` | Explicitly deletes one retained output; repeating the call is harmless. |
+
+## Artifacts
+
+Outputs are never removed automatically by time, workspace release, or preview
+completion. They remain until `pyxsd_delete_artifact` is called. Validation reports,
+response spillover bodies, record exports, and preview outputs are all indexed the
+same way. Listing and reading return the local absolute path, size, SHA-256 digest,
+media type, creation time, and kind.
+
+`pyxsd_read_artifact` reads exact ranges:
+
+```json
+{"artifact_id": "<32-hex ID>", "offset": 0, "length": 8192}
+```
+
+The MCP envelope carries base64 expansion, so request bounded ranges. The
+coordinator verifies the full file against its indexed digest before returning the
+range. A missing or modified file is a typed error, never substituted content.
+Datasets and previews are a set of independent artifacts; deleting one does not
+cascade to another.
+
+Large structured results that exceed the response budget are written once as a
+`result` artifact. The tool returns a summary and artifact reference instead of
+truncated JSON. Read the complete body by range and concatenate it.
+
+Resources include `pyxsd://issue-codes`, `pyxsd://capabilities`, and
+`pyxsd://artifacts/{artifact_id}`. The three prompts are `pyxsd_diagnose_xml`,
+`pyxsd_author_pipeline`, and `pyxsd_evaluate_migration`. They provide optional
+workflow guidance; no prompt or skill is required for tool correctness.
+
+## Schema exploration and diagnostics
+
+Exploration and query operations run in clean workers against a verified temporary
+capture. Related operations may reuse a compiled schema when the complete schema
+manifest and options match; cached schemas are rebound to the current capture, so
+replacing session inputs cannot reuse deleted paths.
+
+`ValidationIssue.location` is a structured path with expanded names and one-based
+same-name sibling indexes. It identifies the exact occurrence, not merely the
+first element with a matching local name. Query with `result: "subtree"` to
+retrieve that occurrence's XML and location together.
+
+Reports distinguish aggregate counts from collection suppression and detail
+pagination. `pyxsd_validate_document` retains its full report artifact, so
+`pyxsd_explain_issue` can later inspect an issue after the session inputs are
+released. Invalid XML is a successful validation with `data.valid=false`;
+malformed XML is an `invalid_xml` fault.
 
 ## Projected records (optional Arrow)
 
 With the optional `pyarrow` dependency installed, `pyxsd_preview_records` projects
 bound document rows in a clean worker and returns at most 20 rows plus a total row
-count. Counts are exact by default; a fast mode (`exact_count: false`) may report
-`count_complete: false` when rows exceed the preview cap. Rows are projected, not
-silently flattened: XML is fully materialized before batching, and the result
-carries a warning saying so. Selection uses either the declaration path
-(`element` plus `path`) or an ElementTree occurrence `selector` (for example
-`./item[@id='24']`), and contextual columns map record, ancestor and root
-`FieldSource` values.
+count. Counts are exact by default; `exact_count: false` may report
+`count_complete: false` when rows exceed the preview cap. Selection uses either
+the declaration path (`element` plus `path`) or an ElementTree occurrence
+`selector`, and contextual columns map record, ancestor and root `FieldSource`
+values.
 
-`pyxsd_export_records` synchronously writes a single-document Parquet file or a
-multi-document manifested dataset inside a disposable worker output directory and
-returns the retained artifact manifest directly. The coordinator — never the worker — captures the bounded regular
-files, hashes them, and retains them as immutable artifacts with digests, sizes,
-media types and a manifest of relative paths. Export refutes invalid documents
-(`invalid_document`), enforces the document-count corpus quota and a total output
-byte budget (`output_limit`), and rejects non-regular or linked output
-(`unsafe_candidate`). Datasets never append to existing output. Download exports
-with `pyxsd_read_artifact` and verify the digest locally; the result records the
-source documents and the schema fingerprint for provenance. Both record tools are
-registered only when Arrow is available, and `pyxsd:execute` is required to
-export.
-
-## Packaged skill discovery
-
-The server implements the [Final skills extension](https://modelcontextprotocol.io/extensions/skills/overview)
-under `io.modelcontextprotocol/skills` through the SDK's extension interface.
-Modern protocol discovery advertises empty settings (directory reads are not
-offered); legacy `initialize` does not expose modern extension capabilities.
-`skills/list` returns one complete page of atomic skill manifests. Each includes
-the `SKILL.md` URI, its complete packaged frontmatter, and every supporting
-resource's `uri`, UTF-8 byte `size`, and `sha256:<hex>` digest. `skills/get`
-accepts that skill `uri` and returns the identical manifest. Unknown skill URIs
-and cursors are invalid-parameter errors. Complete responses have public cache
-scope and a 60,000 ms TTL; clients retrieve file contents using `resources/read`.
-SDK clients sending generic requests must use a parameter model retaining
-`uri`, rather than the base protocol parameter model, which drops that field.
-
-Clients without extension support can list and read the same files as ordinary
-`pyxsd://skills/<name>/<path>` resources. Content is byte-identical to
-`python -m pyxsd.skills export NAME DEST`, including uppercase `SKILL.md` and
-shared references. Reading content does not activate a skill; the client decides
-whether to apply it. Existing documentation resources remain available.
+`pyxsd_export_records` writes a single-document Parquet file or a multi-document
+manifested dataset inside disposable worker output space. The coordinator, never
+the worker, captures bounded regular files, hashes them, and retains them in the
+output store. Export rejects invalid documents, enforces the document-count corpus
+limit and output byte budget, and rejects non-regular or linked output. Datasets
+never append to existing output.
 
 ## Schema comparison and migration evidence
 
 `pyxsd_compare_schemas` compares an old and a new schema in clean workers and
 returns the result directly. The structural diff reports added, removed and changed
-components — including anonymous declarations, which are identified by content
-address, so editing an inline declaration re-identifies it as an add/remove pair
-rather than a change — plus changed-field details, a namespace-change flag, and
-exact totals. A target namespace change re-identifies every component. The
-summary is deterministic for unchanged inputs.
+components, including anonymous declarations identified by content address, plus
+changed-field details, a namespace-change flag, and exact totals. A target
+namespace change re-identifies every component. The summary is deterministic for
+unchanged inputs.
 
-An optional corpus validates every supplied document under **both** schemas.
-Each file lands in exactly one category — `valid`, `regressed` (was valid, now
-invalid), `resolved` (was invalid, now valid), `invalid`, `malformed`,
-`unbindable`, or `skipped` — with per-file old/new verdicts and totals covering
-every category. Corpus size is capped (default 100, operator maximum 1,000), and
-a per-corpus time budget marks remaining files `skipped` instead of failing the
-comparison. Files are validated sequentially per schema.
+An optional corpus validates every supplied document under **both** schemas. Each
+file lands in exactly one category: `valid`, `regressed`, `resolved`, `invalid`,
+`malformed`, `unbindable`, or `skipped`, with per-file old/new verdicts and totals.
+Corpus size is capped (default 100, operator maximum 1,000), and a per-corpus time
+budget marks remaining files `skipped`. Potential impact is reported separately
+from observed corpus regressions; no universal compatibility conclusion follows
+from a corpus sample.
 
-Potential impact (the structural diff) is reported separately from observed
-corpus regressions, and the result states that **no universal compatibility
-conclusion follows from a corpus sample** — no-regression evidence applies only
-to the tested files and options.
+A migration review typically:
 
-### Source-to-target migration workflow
+1. Compares old and new schemas with the intended corpus.
+2. Previews a transform for each file that needs one, optionally with a target
+   schema.
+3. Inspects the retained candidate, report, byte diff and structural diff.
+4. Saves the candidate with the client's own file tools if it should persist in a
+   project.
+5. Revalidates the saved files against the target schema.
 
-To migrate documents from an old schema to a new one:
+## Packaged skill discovery
 
-1. `pyxsd_compare_schemas` with the corpus you intend to migrate. Observed
-   `regressed` files need transforms; `resolved` files already validate.
-2. For each regressed file, `pyxsd_preview_transform` with a transform whose
-   source schema is the old revision and whose target schema is the new one.
-   The preview independently revalidates the retained candidate bytes in a
-   separate clean worker; only validated candidates proceed.
-3. `pyxsd_commit_transform` publishes the exact retained candidate bytes. No
-   Python is rerun at commit time.
-4. Re-run `pyxsd_compare_schemas` (or `pyxsd_validate_document`) on the migrated
-   files against the target schema. A no-regressions result on the migrated
-   corpus applies only to those files and the options tested — it is not a
-   universal compatibility claim.
+The server implements the [Final skills extension](https://modelcontextprotocol.io/extensions/skills/overview)
+under `io.modelcontextprotocol/skills` through the SDK extension interface.
+`skills/list` returns one complete page of atomic skill manifests. Each includes
+the `SKILL.md` URI, complete frontmatter, and every supporting resource's `uri`,
+UTF-8 byte `size`, and `sha256:<hex>` digest. `skills/get` accepts that skill URI
+and returns the identical manifest. Unknown skill URIs and cursors are
+invalid-parameter errors. Complete responses have public cache scope and a 60,000
+ms TTL; clients retrieve file contents using `resources/read`.
 
-## Diagnostics and repeated occurrences
-
-`ValidationIssue.location` is a structured path with expanded names and one-based
-same-name sibling indexes. It identifies the exact occurrence, not merely the
-first element with a matching local name. Use `pyxsd_query_document` with
-`result="subtree"` to retrieve that occurrence's XML and location together.
-
-Reports distinguish:
-
-- **aggregate counts** (`error_count` / `warning_count` in the report's `counts`);
-- **collection suppression**, when an operator's issue budget omits details;
-- **pagination**, which pages only the retained details without changing counts.
-
-Page cursors authenticate the owner, revision, query and position. Reusing one
-for another query or revision fails. Large scalar and subtree results are kept
-intact; the coordinator stores oversized envelopes once as JSON artifacts and
-returns a summary plus the artifact reference instead of truncated JSON.
-Artifact ranges default to 8 KiB so base64 data and the JSON text/structured
-representations fit together in the response budget.
-
-## Resources and prompts
-
-Resources include `pyxsd://issue-codes`, `pyxsd://capabilities`, and
-`pyxsd://artifacts/{artifact_id}`. Artifact reads recheck ownership and return
-the immutable bytes. The three prompts are `pyxsd_diagnose_xml`,
-`pyxsd_author_pipeline`, and `pyxsd_evaluate_migration`. They provide optional
-workflow guidance; no prompt or skill is required for tool correctness.
-
-## Worker and resource model
-
-The coordinator authorizes workspaces and budgets before a clean worker parses
-or evaluates XML. Related operations run serially on one cached `Schema`;
-separate workers provide isolation and parallelism. IPC uses bounded,
-role-validated JSON—never pickle or live `Document` objects. Workers have
-absolute deadlines, queue bounds, operation recycling, death recovery and
-coordinated shutdown.
-
-Important active limits (all operator-configurable in `Settings.limits`):
-
-| Limit | Default |
-| --- | --- |
-| XML / individual XSD file | 64 MiB / 16 MiB |
-| Schema closure files / bytes | 128 / 64 MiB |
-| XML depth / element count | 256 / 1,000,000 |
-| Inline upload / MCP request | 1 MiB / 2 MiB |
-| Workspace input bytes / artifact bytes | 512 MiB / 512 MiB |
-| Workspaces / managed storage total | 32 / 4 GiB |
-| Snapshot entries / revisions | 4,096 / 32 |
-| Artifact entries | 4,096 |
-| Result payload / page items | 24 KiB / 50 |
-| Preview rows | 20 |
-| Collected issues / message | 10,000 / 4 KiB |
-| Output artifact | 128 MiB |
-| Clean cache entries / workers | 8 / 4 |
-| Worker operations before recycling | 100 |
-| Worker queue slots | 16 |
-| Compile or query deadline | 30 seconds |
-| Transform / batch deadline | 60 / 300 seconds |
-| Transform source / pipeline steps | 64 KiB / 32 |
-| Corpus files / file validation budget | 100 / 10 seconds |
-| Preview TTL | 30 minutes |
-| Idle workspace / diagnostic TTL | 60 / 60 minutes |
-
-Compilation and binding choices are explicit per schema reference: XSD 1.0 or
-1.1, strict or lax best-effort binding, and legacy or strict namespace handling.
-Serialized XML is UTF-8, and preview byte diffs report serialization-only
-changes rather than hiding them behind a semantic comparison.
-
-The local subprocess runtime is not a sandbox for untrusted Python. Remote or
-untrusted-code execution is not included. See {doc}`mcp-deployment` for the
-current execution boundary.
+Clients without extension support can list and read the same files as ordinary
+`pyxsd://skills/<name>/<path>` resources. Content is byte-identical to
+`python -m pyxsd.skills export NAME DEST`. Reading content does not activate a
+skill; the client decides whether to apply it.
 
 ## Local transformation previews
 
 Enable local previews only for code you trust:
 
 ```bash
-pyxsd-mcp --state-dir /absolute/private/state --execution-backend trusted-local
+pyxsd-mcp --execution-backend trusted-local
 ```
 
-This enables `pyxsd_preview_transform` and `pyxsd_commit_transform`. The server is
-stdio-only; remote or untrusted-code execution is not currently supported, and an
-unavailable backend never falls back to another execution mode.
+This enables `pyxsd_preview_transform`. The server is stdio-only; remote or
+untrusted-code execution is not supported, and an unavailable backend never falls
+back to another execution mode.
 
 Call `pyxsd_preview_transform` with `workspace_id`, `document`, `source_schema`
 and `transform`. An optional `target_schema` supports migration previews. Python
@@ -352,89 +252,94 @@ transforms use this form:
 }
 ```
 
-The function receives a `Document` and context, and may return a `Document`, a
+The function receives a `Document` and context and may return a `Document`, a
 bound root, or `None` for in-place changes. Pipeline recipes use explicit
-registered source or supplied definitions, never implicit imports from the
-current directory. Source is capped at 64 KiB and recipes at 32 steps, or lower
-operator limits.
+registered or supplied definitions, never implicit imports from the current
+directory. Source is capped at 64 KiB and recipes at 32 steps, or lower operator
+limits.
 
-The call returns a preview record with original/candidate hashes, validation
-reports, byte and positional structural diffs, checkpoint artifacts, warnings and
-expiry. Execution terminates before candidate capture. Separate clean workers
-validate the retained bytes and any requested checkpoints; executed code's
-validity claims do not determine the verdict. Invalid and malformed candidates
-remain inspectable. Serialization may change prefixes, layout, mixed-content
-presentation and comments; review the byte diff, not just structural changes.
+The call returns a preview record immediately. It contains the workspace and
+generation, input/schema/code digests, candidate/report/diff/structural-diff output
+references, checkpoint references, validity flags, and warnings. The candidate,
+report, byte diff and structural diff are retained artifacts; inspect the exact
+candidate bytes with `pyxsd_read_artifact`.
 
-Preview records are session-scoped: they remain available to `commit` in the same
-server process and are discarded on restart. Rerun a preview after restart. A
-preview does not publish files. Do not use the local backend for untrusted code.
+Execution terminates before candidate capture. Separate clean workers validate the
+retained bytes and checkpoints; executed code's validity claims do not determine
+the verdict. Invalid and malformed candidates remain inspectable. Serialization
+may change prefixes, layout, mixed-content presentation and comments; review the
+byte diff, not only structural changes. Original input bytes are kept solely in
+private temporary capture space through validation and structural comparison, and
+are discarded afterward.
 
-### Review and publish the retained candidate
+There is no commit or publication tool. If a candidate should become part of a
+project, read its bytes and write the file with the client's file tools. The
+server never writes into the source project. Do not use the local execution
+backend for untrusted code.
 
-After inspecting the candidate, validation report, diffs and warnings, call
-`pyxsd_commit_transform` with the preview ID and candidate digest from the
-preview record. Choose a workspace-relative destination and a stable idempotency key:
+## Worker and resource model
 
-```json
-{
-  "preview_id": "<preview ID>",
-  "expected_candidate_digest": "<candidate SHA-256>",
-  "destination": "reviewed.xml",
-  "mode": "new",
-  "idempotency_key": "publish-reviewed-1"
-}
-```
+The coordinator verifies inputs and budgets before a clean worker parses or
+evaluates XML. Related operations run serially on one cached `Schema`; separate
+workers provide isolation and parallelism. IPC uses bounded, role-validated
+JSON—never pickle or live `Document` objects. Workers have absolute deadlines,
+queue bounds, operation recycling, death recovery and coordinated shutdown.
 
-Publication copies the exact retained bytes into a new immutable workspace
-revision. It never reruns the transform or serializes its output again. The
-source/schema revision must still match the preview, the candidate must not be
-expired, and `new` refuses an existing destination. `replace` additionally
-requires `pyxsd:replace` and `expected_destination_digest` for that destination.
-All publication calls require `pyxsd:write`, read and upload permissions.
+Important active limits (all operator-configurable in `Settings.limits`):
 
-Retry the same request and key to retrieve the same receipt. A different request
-conflicts with that key, and a different key cannot consume the same preview
-twice. Receipts live as long as their workspace. The revision head and receipt
-commit in one SQLite transaction; interrupted staging is discarded and can be
-retried without executing Python while the preview remains in the session.
+| Limit | Default |
+| --- | --- |
+| XML / individual XSD file | 64 MiB / 16 MiB |
+| Schema closure files / bytes | 128 / 64 MiB |
+| XML depth / element count | 256 / 1,000,000 |
+| Inline upload / MCP request | 1 MiB / 2 MiB |
+| Session input bytes / workspaces | 512 MiB / 32 |
+| Input entries | 4,096 |
+| Result payload / page items | 24 KiB / 50 |
+| Preview rows | 20 |
+| Collected issues / message | 10,000 / 4 KiB |
+| Output artifact | 128 MiB |
+| Clean cache entries / workers | 8 / 4 |
+| Worker operations before recycling | 100 |
+| Worker queue slots | 16 |
+| Compile or query deadline | 30 seconds |
+| Transform / batch deadline | 60 / 300 seconds |
+| Transform source / pipeline steps | 64 KiB / 32 |
+| Corpus files / file validation budget | 100 / 10 seconds |
 
-Malformed XML is never publishable. Invalid-but-well-formed output requires an
-embedding to enable the write-invalid policy, a `pyxsd:write-invalid` scope and
-explicit `allow_invalid=true`; the standard server leaves that policy disabled.
-Destinations are coordinator-managed workspace files only, not mounted or
-arbitrary host paths. This does not claim atomic replacement against external
-writers on shared host directories.
+Compilation and binding choices are explicit per schema reference: XSD 1.0 or 1.1,
+strict or lax best-effort binding, and legacy or strict namespace handling.
+Serialized XML is UTF-8, and preview byte diffs report serialization-only changes
+rather than hiding them.
 
-## Audit records and redaction
+The local subprocess runtime is not a sandbox for untrusted Python. Remote or
+untrusted-code execution is not included. See {doc}`mcp-deployment` for the
+execution boundary.
 
-Exploration operations emit one structured audit event with the operation,
-process-local HMAC-pseudonymized owner, status, duration, workspace/revision,
-scope, cache outcome, and input/candidate digests where applicable.
+## Audit records and restart behavior
+
+Exploration operations emit one structured audit event with the operation, status,
+duration, workspace/generation, cache outcome, and input digests where applicable.
 Audit payloads never include XML bodies, transform source, file contents, host
-paths, tokens, or raw owner identifiers. The HMAC key is generated per process,
-so pseudonyms are stable only for the lifetime of that coordinator; they are
-not a cross-restart correlation identifier. An embedding may provide a metrics
-callback, which receives the same already-redacted event mapping.
+paths, tokens, or user identities. An embedding may provide a metrics callback,
+which receives the same already-redacted event mapping.
 
-## Restart, errors, and current boundaries
-
-Successful revisions and artifacts survive coordinator restart. Interrupted
-staging is discarded rather than treated as published data. Active operations
-have deadlines and process-group cancellation cleanup. Completed artifacts and
-successful revisions are durable; interrupted work is not retried automatically.
+Retained artifacts survive restart. Session workspaces, uploaded inputs, page
+cursors, compiled schemas, and preview execution context do not. Active operations
+have deadlines and process-group cancellation cleanup; interrupted work is not
+retried automatically and produces no partial artifact.
 
 - **Missing optional dependency:** reinstall with `pip install 'pyxsd[mcp]'` or
   launch through `uvx --from 'pyxsd[mcp]'`; the CLI reports this without a
   traceback.
-- **`not_found` versus `stale_reference`:** an unknown resource is absent;
-  a pinned revision or cursor no longer matches current state.
+- **`state_locked`:** another server owns the selected persistent store.
+- **`invalid_cursor`:** the cursor is malformed, belongs to a different result, or
+  refers to inputs that have changed.
 - **Invalid versus malformed XML:** inspect the report for validation findings;
   malformed input is an operational `invalid_xml` fault.
 - **Worker timeout or queue overflow:** retry only after reviewing document size,
   complexity and operator budgets. Neither produces a partial validation verdict.
 - **Execution:** disabled by default; trusted-local stdio previews require explicit
-  opt-in. Managed exact-byte publication is available. Remote user-code execution
-  is not included.
+  opt-in. Remote user-code execution is not included.
 - **Network transports:** none. The server speaks stdio only; there is no HTTP,
   OAuth/JWKS, multi-tenant, or remote execution mode.

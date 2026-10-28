@@ -83,10 +83,10 @@ def test_structural_diff_added_removed_changed_and_deterministic(tmp_path):
     from pyxsd.mcp.services.comparison import ComparisonService
 
     async def scenario():
-        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
-            await upload(snapshots, workspace, {"old.xsd": OLD, "new.xsd": NEW})
-            service = ComparisonService(snapshots, pool)
-            result = await service.compare(principal, _compare_request(workspace))
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"old.xsd": OLD, "new.xsd": NEW})
+            service = ComparisonService(inputs, pool)
+            result = await service.compare(_compare_request(workspace))
             structural = result["structural"]
             assert "element:added" in structural["added"]
             assert "element:legacy" in structural["removed"]
@@ -107,7 +107,7 @@ def test_structural_diff_added_removed_changed_and_deterministic(tmp_path):
             assert structural["totals"] == {"added": 4, "removed": 4, "changed": 4}
             details = {entry["id"]: entry["fields"] for entry in structural["changed_details"]}
             assert "facets" in details["type:Amount"]
-            repeat = await service.compare(principal, _compare_request(workspace))
+            repeat = await service.compare(_compare_request(workspace))
             assert repeat["structural"] == structural
 
     anyio.run(scenario)
@@ -117,11 +117,10 @@ def test_anonymous_declarations_diff_by_content_addressed_identity(tmp_path):
     from pyxsd.mcp.services.comparison import ComparisonService
 
     async def scenario():
-        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
-            await upload(snapshots, workspace, {"old.xsd": OLD_ANON, "new.xsd": NEW_ANON})
-            service = ComparisonService(snapshots, pool)
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"old.xsd": OLD_ANON, "new.xsd": NEW_ANON})
+            service = ComparisonService(inputs, pool)
             result = await service.compare(
-                principal,
                 _compare_request(
                     workspace,
                     old_schema=SchemaRef(source=FileRef(path="old.xsd")),
@@ -139,11 +138,10 @@ def test_namespace_change_reports_flag_and_reidentified_components(tmp_path):
     from pyxsd.mcp.services.comparison import ComparisonService
 
     async def scenario():
-        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
-            await upload(snapshots, workspace, {"old.xsd": OLD_NS, "new.xsd": NEW_NS})
-            service = ComparisonService(snapshots, pool)
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"old.xsd": OLD_NS, "new.xsd": NEW_NS})
+            service = ComparisonService(inputs, pool)
             result = await service.compare(
-                principal,
                 _compare_request(
                     workspace,
                     old_schema=SchemaRef(source=FileRef(path="old.xsd")),
@@ -162,9 +160,9 @@ def test_corpus_classifies_every_file_and_separates_impact_from_evidence(tmp_pat
     from pyxsd.mcp.services.comparison import ComparisonService
 
     async def scenario():
-        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
             await upload(
-                snapshots,
+                inputs,
                 workspace,
                 {
                     "old.xsd": OLD,
@@ -177,7 +175,7 @@ def test_corpus_classifies_every_file_and_separates_impact_from_evidence(tmp_pat
                     "unbindable.xml": UNBINDABLE,
                 },
             )
-            service = ComparisonService(snapshots, pool)
+            service = ComparisonService(inputs, pool)
             corpus = tuple(
                 FileRef(path=name)
                 for name in (
@@ -189,7 +187,7 @@ def test_corpus_classifies_every_file_and_separates_impact_from_evidence(tmp_pat
                     "unbindable.xml",
                 )
             )
-            result = await service.compare(principal, _compare_request(workspace, corpus=corpus))
+            result = await service.compare(_compare_request(workspace, corpus=corpus))
             corpus_result = result["corpus"]
             statuses = {entry["path"]: entry["status"] for entry in corpus_result["files"]}
             assert statuses == {
@@ -219,20 +217,19 @@ def test_corpus_classifies_every_file_and_separates_impact_from_evidence(tmp_pat
     anyio.run(scenario)
 
 
-def test_corpus_cap_and_revision_consistency(tmp_path):
+def test_corpus_cap_is_enforced(tmp_path):
     from pyxsd.mcp.config import Limits
     from pyxsd.mcp.services.comparison import ComparisonService
 
     async def scenario():
         async with harness(tmp_path, Limits(workers=1, corpus_files=2)) as (
             _,
-            snapshots,
+            inputs,
             pool,
-            principal,
             workspace,
         ):
             await upload(
-                snapshots,
+                inputs,
                 workspace,
                 {
                     "old.xsd": OLD,
@@ -242,22 +239,12 @@ def test_corpus_cap_and_revision_consistency(tmp_path):
                     "c.xml": GOOD,
                 },
             )
-            service = ComparisonService(snapshots, pool)
+            service = ComparisonService(inputs, pool)
             with pytest.raises(ToolError, match="quota_exceeded"):
                 await service.compare(
-                    principal,
                     _compare_request(
                         workspace,
                         corpus=tuple(FileRef(path=name) for name in ("a.xml", "b.xml", "c.xml")),
-                    ),
-                )
-            with pytest.raises(ToolError, match="stale_reference"):
-                await service.compare(
-                    principal,
-                    _compare_request(
-                        workspace,
-                        old_schema=SchemaRef(source=FileRef(path="old.xsd", revision="one")),
-                        new_schema=SchemaRef(source=FileRef(path="new.xsd", revision="two")),
                     ),
                 )
 
@@ -269,18 +256,17 @@ def test_corpus_timeout_skips_remaining_files(tmp_path):
     from pyxsd.mcp.config import Limits
     from pyxsd.mcp.services import comparison as comparison_module
     from pyxsd.mcp.worker_protocol import ComparisonOperation
-    from pyxsd.mcp.workers import snapshot_to_wire
+    from pyxsd.mcp.workers import capture_to_wire
 
     async def scenario():
         async with harness(tmp_path, Limits(workers=1, corpus_file_seconds=1)) as (
             _,
-            snapshots,
+            inputs,
             _pool,
-            principal,
             workspace,
         ):
             await upload(
-                snapshots,
+                inputs,
                 workspace,
                 {
                     "old.xsd": OLD,
@@ -288,23 +274,22 @@ def test_corpus_timeout_skips_remaining_files(tmp_path):
                     "good.xml": GOOD,
                 },
             )
-            snapshot = await snapshots.get(principal, workspace)
-            operation = ComparisonOperation(
-                request_id="timeout",
-                snapshot=snapshot_to_wire(snapshot),
-                owner_id=principal.owner_id,
-                old_schema=SchemaRef(source=FileRef(path="old.xsd")),
-                new_schema=SchemaRef(source=FileRef(path="new.xsd")),
-                corpus=(FileRef(path="good.xml"),),
-            )
-            cache = SchemaCache(snapshots.limits)
-            try:
-                ticks = iter([0.0, 100.0, 100.0, 100.0])
-                result = comparison_module.execute_comparison(
-                    operation, cache, "test", clock=lambda: next(ticks)
+            async with inputs.capture(workspace) as capture:
+                operation = ComparisonOperation(
+                    request_id="timeout",
+                    capture=capture_to_wire(capture),
+                    old_schema=SchemaRef(source=FileRef(path="old.xsd")),
+                    new_schema=SchemaRef(source=FileRef(path="new.xsd")),
+                    corpus=(FileRef(path="good.xml"),),
                 )
-            finally:
-                cache.close()
+                cache = SchemaCache(inputs.limits)
+                try:
+                    ticks = iter([0.0, 100.0, 100.0, 100.0])
+                    result = comparison_module.execute_comparison(
+                        operation, cache, "test", clock=lambda: next(ticks)
+                    )
+                finally:
+                    cache.close()
             assert result["corpus"]["files"] == [
                 {"path": "good.xml", "status": "skipped", "old": "skipped", "new": "skipped"}
             ]
@@ -319,9 +304,9 @@ def test_comparison_rejects_worker_faults_and_non_object_results(tmp_path, monke
     from pyxsd.mcp.worker_protocol import WorkerReply
 
     async def scenario():
-        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
-            await upload(snapshots, workspace, {"old.xsd": OLD, "new.xsd": NEW})
-            service = ComparisonService(snapshots, pool)
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"old.xsd": OLD, "new.xsd": NEW})
+            service = ComparisonService(inputs, pool)
 
             async def failed(operation, *, deadline):
                 return WorkerReply(
@@ -333,7 +318,7 @@ def test_comparison_rejects_worker_faults_and_non_object_results(tmp_path, monke
 
             monkeypatch.setattr(service.pool, "run", failed)
             with pytest.raises(ToolError, match="worker_died"):
-                await service.compare(principal, _compare_request(workspace))
+                await service.compare(_compare_request(workspace))
 
             async def not_an_object(operation, *, deadline):
                 return WorkerReply(
@@ -342,7 +327,7 @@ def test_comparison_rejects_worker_faults_and_non_object_results(tmp_path, monke
 
             monkeypatch.setattr(service.pool, "run", not_an_object)
             with pytest.raises(ToolError, match="ipc_protocol"):
-                await service.compare(principal, _compare_request(workspace))
+                await service.compare(_compare_request(workspace))
 
     anyio.run(scenario)
 
@@ -364,7 +349,6 @@ def test_compare_tool_works_through_the_sdk_server(tmp_path):
                         {"path": "new.xsd", "text": NEW},
                         {"path": "good.xml", "text": GOOD},
                     ],
-                    "expected_revision": None,
                 },
             )
             submitted = await client.call_tool(

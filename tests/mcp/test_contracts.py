@@ -20,12 +20,8 @@ DEFAULTS = {
     "inline_bytes": 2**20,
     "request_bytes": 2 * 2**20,
     "workspace_bytes": 512 * 2**20,
-    "artifact_bytes_per_workspace": 512 * 2**20,
     "workspaces": 32,
-    "snapshot_entries": 4096,
-    "artifact_entries": 4096,
-    "snapshot_revisions": 32,
-    "managed_bytes": 4 * 2**30,
+    "input_entries": 4096,
     "cache_entries": 8,
     "workers": 4,
     "worker_queue": 16,
@@ -41,9 +37,6 @@ DEFAULTS = {
     "message_bytes": 4 * 2**10,
     "output_bytes": 128 * 2**20,
     "cache_idle_seconds": 900,
-    "workspace_idle_seconds": 3600,
-    "preview_seconds": 1800,
-    "diagnostic_seconds": 3600,
     "worker_operations": 100,
     "corpus_files": 100,
     "corpus_max_files": 1000,
@@ -204,7 +197,13 @@ def test_wire_records_and_fault_details_are_explicit_json():
     from pyxsd.mcp.errors import ToolError
 
     artifact = ArtifactRef(
-        id="opaque", digest="a" * 64, size=0, media_type="text/plain", expires_at=1.0
+        id="opaque",
+        path="/tmp/output",
+        digest="a" * 64,
+        size=0,
+        media_type="text/plain",
+        created_at=1.0,
+        kind="result",
     )
     envelope = ToolEnvelope(artifacts=[artifact], page=PageResult(returned=0))
     assert encode_value(envelope) == json.loads(envelope.model_dump_json())

@@ -23,7 +23,6 @@ class WireModel(BaseModel):
 
 class FileRef(WireModel):
     path: Nonempty
-    revision: Nonempty | None = None
 
 
 class InlineFile(WireModel):
@@ -45,10 +44,12 @@ class SchemaRef(WireModel):
 
 class ArtifactRef(WireModel):
     id: Nonempty
-    digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-    size: Annotated[int, Field(ge=0)]
+    path: Nonempty
     media_type: Nonempty
-    expires_at: float
+    size: Annotated[int, Field(ge=0)]
+    digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    created_at: float
+    kind: Nonempty
 
 
 class Page(WireModel):
@@ -127,16 +128,23 @@ class ExplainIssueRequest(WireModel):
 class ManageWorkspaceRequest(WireModel):
     action: Literal["create", "list", "release"]
     workspace_id: Nonempty | None = None
-    idempotency_key: Nonempty | None = None
 
 
 class PutFilesRequest(WireModel):
     workspace_id: Nonempty
     files: tuple[InlineFile, ...]
-    expected_revision: Nonempty | None = None
 
 
 class ReadArtifactRequest(WireModel):
     artifact_id: Nonempty
     offset: Annotated[int, Field(ge=0)] = 0
     length: PositiveBudget = 8 * 2**10
+
+
+class ListArtifactsRequest(WireModel):
+    cursor: Nonempty | None = None
+    limit: PositiveBudget = 50
+
+
+class DeleteArtifactRequest(WireModel):
+    artifact_id: Nonempty

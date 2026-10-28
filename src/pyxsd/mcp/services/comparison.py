@@ -17,10 +17,9 @@ from ..cache import CompileRequest, SchemaCache
 from ..contracts import FileRef, Nonempty, SchemaRef, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
-from ..snapshot_store import SnapshotStore
+from ..inputs import SessionInputs
 from ..worker_protocol import ComparisonOperation
-from ..workers import WorkerPool, snapshot_from_wire, snapshot_to_wire
-from ..workspaces import Principal
+from ..workers import WorkerPool, capture_from_wire, capture_to_wire
 from .exploration import ExplorationService
 
 _CATEGORIES = ("valid", "regressed", "resolved", "invalid", "malformed", "unbindable", "skipped")
@@ -58,18 +57,16 @@ def execute_comparison(
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, JsonValue]:
     old_request = CompileRequest(
-        snapshot=snapshot_from_wire(operation.snapshot),
+        capture=capture_from_wire(operation.capture),
         schema_ref=operation.old_schema,
         hints=(),
         processor_version=processor_version,
-        owner_id=operation.owner_id,
     )
     new_request = CompileRequest(
-        snapshot=snapshot_from_wire(operation.snapshot),
+        capture=capture_from_wire(operation.capture),
         schema_ref=operation.new_schema,
         hints=(),
         processor_version=processor_version,
-        owner_id=operation.owner_id,
     )
     with cache.acquire(old_request) as old_schema, cache.acquire(new_request) as new_schema:
         old_description, new_description = describe_schema(old_schema), describe_schema(new_schema)
@@ -175,29 +172,17 @@ def execute_comparison(
 
 
 class ComparisonService(ExplorationService):
-    def __init__(self, snapshots: SnapshotStore, pool: WorkerPool) -> None:
-        super().__init__(snapshots, pool)
-        self.limits = snapshots.limits
+    def __init__(self, inputs: SessionInputs, pool: WorkerPool) -> None:
+        super().__init__(inputs, pool)
+        self.limits = inputs.limits
 
-    async def compare(
-        self, principal: Principal, request: CompareSchemasRequest
-    ) -> dict[str, JsonValue]:
-        principal.require("pyxsd:execute", "pyxsd:read", "pyxsd:upload")
+    async def compare(self, request: CompareSchemasRequest) -> dict[str, JsonValue]:
         if len(request.corpus) > self.limits.corpus_files:
             raise ToolError("quota_exceeded", "Corpus exceeds the operator file budget")
-        revisions = {
-            reference.revision
-            for reference in (request.old_schema.source, request.new_schema.source, *request.corpus)
-            if reference.revision is not None
-        }
-        if len(revisions) > 1:
-            raise ToolError("stale_reference", "Comparison references must share a revision")
-        revision = next(iter(revisions), None)
-        async with self._snapshot(principal, request.workspace_id, revision) as snapshot:
+        async with self._capture(request.workspace_id) as capture:
             operation = ComparisonOperation(
                 request_id=secrets.token_hex(16),
-                snapshot=snapshot_to_wire(snapshot),
-                owner_id=principal.owner_id,
+                capture=capture_to_wire(capture),
                 old_schema=request.old_schema,
                 new_schema=request.new_schema,
                 corpus=request.corpus,

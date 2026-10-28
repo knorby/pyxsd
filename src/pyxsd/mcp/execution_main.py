@@ -9,19 +9,19 @@ from pyxsd import Document, Schema
 from pyxsd.binding import ParseModes
 from pyxsd.schema_base import SchemaBase
 
+from .captures import InputResourcePolicy
 from .contracts import ToolFault
 from .errors import ToolError
 from .execution import ExecutionRequest
-from .snapshots import WorkspaceResourcePolicy
 from .transforms import PythonTransformSpec, normalize_transform
 from .worker_protocol import WorkerReply, decode_frame, encode_frame
-from .workers import snapshot_from_wire
+from .workers import capture_from_wire
 
 
 @dataclass(frozen=True)
 class TransformContext:
     source_path: str
-    revision: str
+    generation: int
     output_directory: str
 
 
@@ -53,7 +53,7 @@ def _apply(
 
 def execute(request: ExecutionRequest) -> dict[str, Any]:
     spec = normalize_transform(request.transform, request.limits)
-    policy = WorkspaceResourcePolicy(snapshot_from_wire(request.snapshot), request.limits)
+    policy = InputResourcePolicy(capture_from_wire(request.capture), request.limits)
     options = request.schema_ref.options
     schema = Schema.compile(
         "/workspace/" + request.schema_ref.source.path,
@@ -70,7 +70,9 @@ def execute(request: ExecutionRequest) -> dict[str, Any]:
     if document.root is None:
         raise ToolError("unbindable", "Source document has no usable root")
     context = TransformContext(
-        request.document.path, request.snapshot.revision, request.output_directory
+        request.document.path,
+        capture_from_wire(request.capture).generation,
+        request.output_directory,
     )
     checkpoints = []
     if isinstance(spec, PythonTransformSpec):

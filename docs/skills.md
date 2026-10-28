@@ -10,8 +10,9 @@ environment without the optional MCP dependencies installed.
   parse many, repair exact occurrences, and revalidate fresh.
 - **pyxsd-xml-doctor** — diagnose XML validation failures: read constraint
   evidence, fix the exact occurrence, and revalidate the whole document.
-- **pyxsd-mcp** — drive pyxsd through MCP: workspaces, validation with exact
-  occurrences, direct comparisons, session previews, and exports with immutable artifacts.
+- **pyxsd-mcp** — drive pyxsd through MCP: session inputs, validation with exact
+  occurrences, direct comparisons, transform previews, exports, and retained
+  local outputs.
 
 ## Using skills
 
@@ -61,9 +62,9 @@ Skill bodies teach the workflows the test suite actually verifies: compiling
 a schema once and parsing many documents, locating the exact repeated-node
 occurrence an issue points at, repairing it, and revalidating the whole
 document fresh (a stale `require_valid` verdict describes the old bytes).
-The MCP skill covers local stdio workspaces, cursor-paginated issues, direct results,
-schema comparison, and immutable artifact exports — and how each falls back
-to the Python/CLI workflow when the server is not installed.
+The MCP skill covers local stdio session inputs, cursor-paginated issues, direct
+results, schema comparison, transform previews, retained output artifacts, and
+how each falls back to the Python/CLI workflow when the server is not installed.
 
 ## Evaluation status
 

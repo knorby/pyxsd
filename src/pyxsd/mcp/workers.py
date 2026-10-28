@@ -17,11 +17,13 @@ from anyio.abc import ByteReceiveStream, Process
 
 from pyxsd import __version__
 
+from .captures import CaptureDependency, CaptureFile, InputCapture
 from .config import Limits
 from .contracts import FileRef, SchemaRef, WireModel
 from .errors import ToolError
-from .snapshots import Dependency, Snapshot, SnapshotFile
 from .worker_protocol import (
+    CaptureFileMessage,
+    CaptureMessage,
     ComparisonOperation,
     DescribeOperation,
     DiscoverOperation,
@@ -32,8 +34,6 @@ from .worker_protocol import (
     ParseOperation,
     QueryOperation,
     RecordsOperation,
-    SnapshotFileMessage,
-    SnapshotMessage,
     StructuralDiffOperation,
     WorkerConfig,
     WorkerReply,
@@ -50,24 +50,22 @@ WORKER_BOOTSTRAP = (
 )
 
 
-def snapshot_to_wire(snapshot: Snapshot) -> SnapshotMessage:
-    return SnapshotMessage(
-        workspace_id=snapshot.workspace_id,
-        revision=snapshot.revision,
-        root=str(snapshot.root),
+def capture_to_wire(capture: InputCapture) -> CaptureMessage:
+    return CaptureMessage(
+        root=str(capture.root),
         files=tuple(
-            SnapshotFileMessage(path=item.path, digest=item.digest, size=item.size)
-            for item in snapshot.files
+            CaptureFileMessage(path=item.path, digest=item.digest, size=item.size)
+            for item in capture.files
         ),
     )
 
 
-def snapshot_from_wire(message: SnapshotMessage) -> Snapshot:
-    return Snapshot(
-        message.workspace_id,
-        message.revision,
+def capture_from_wire(message: CaptureMessage) -> InputCapture:
+    return InputCapture(
+        "source",
+        0,
         Path(message.root),
-        tuple(SnapshotFile(item.path, item.digest, item.size) for item in message.files),
+        tuple(CaptureFile(item.path, item.digest, item.size) for item in message.files),
     )
 
 
@@ -218,7 +216,8 @@ class WorkerPool:
         else:
             route = None
         identity = json.dumps(
-            [operation.owner_id, operation.snapshot.workspace_id, route], sort_keys=True
+            [route, [(item.path, item.digest, item.size) for item in operation.capture.files]],
+            sort_keys=True,
         ).encode()
         index = int.from_bytes(hashlib.sha256(identity).digest()[:8]) % len(self._lanes)
         return self._lanes[index]
@@ -301,13 +300,12 @@ class WorkerPool:
                 self._inflight -= 1
 
     async def discover(
-        self, snapshot: Snapshot, refs: tuple[FileRef | SchemaRef, ...]
-    ) -> tuple[Dependency, ...]:
+        self, capture: InputCapture, refs: tuple[FileRef | SchemaRef, ...]
+    ) -> tuple[CaptureDependency, ...]:
         """B2 discovery adapter: all XML parsing remains in the clean subprocess."""
         operation = DiscoverOperation(
             request_id=secrets.token_hex(16),
-            snapshot=snapshot_to_wire(snapshot),
-            owner_id=f"snapshot:{snapshot.workspace_id}",
+            capture=capture_to_wire(capture),
             refs=refs,
         )
         reply = await self.run(
@@ -326,7 +324,7 @@ class WorkerPool:
         ):
             raise ToolError("ipc_protocol", "Worker returned malformed dependencies")
         items = cast(list[dict[str, Any]], reply.result["dependencies"])
-        return tuple(Dependency(**item) for item in items)
+        return tuple(CaptureDependency(**item) for item in items)
 
     async def aclose(self) -> None:
         if self._closed:

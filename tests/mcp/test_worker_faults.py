@@ -83,14 +83,13 @@ def base_operation(snapshot, role="clean"):
     return Operation(
         request_id="base",
         role=role,
-        snapshot=workers.snapshot_to_wire(snapshot),
-        owner_id="owner",
+        capture=workers.capture_to_wire(snapshot),
     )
 
 
 def test_frame_reader_bounds_trailing_bytes_eof_and_snapshot_roundtrip(tmp_path):
     snapshot = make_snapshot(tmp_path)
-    assert workers.snapshot_from_wire(workers.snapshot_to_wire(snapshot)) == snapshot
+    assert workers.capture_from_wire(workers.capture_to_wire(snapshot)).files == snapshot.files
 
     async def scenario():
         assert await workers._receive_frame(ReceiveStream(b"{", b"}\n"), 3) == b"{}\n"
@@ -372,8 +371,7 @@ def test_worker_main_oversized_operation_and_schema_error_mapping(monkeypatch, t
         "pyxsd.mcp.worker_protocol", fromlist=["DiscoverOperation"]
     ).DiscoverOperation(
         request_id="discover",
-        snapshot=workers.snapshot_to_wire(snapshot),
-        owner_id="owner",
+        capture=workers.capture_to_wire(snapshot),
         refs=(SchemaRef(source=FileRef(path="schema.xsd")), FileRef(path="document.xml")),
     )
     incoming = encode_frame(config(), max_bytes=2 * 2**20) + encode_frame(
@@ -409,8 +407,7 @@ def test_discovery_ignores_non_schema_references(tmp_path):
     snapshot = make_snapshot(tmp_path)
     operation = DiscoverOperation(
         request_id="files",
-        snapshot=workers.snapshot_to_wire(snapshot),
-        owner_id="owner",
+        capture=workers.capture_to_wire(snapshot),
         refs=(FileRef(path="document.xml"),),
     )
     cache = SchemaCache(Limits())

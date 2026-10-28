@@ -41,9 +41,10 @@ def test_settings_have_no_remote_transport_fields(tmp_path):
     settings = Settings(state_dir=tmp_path)
     assert set(settings.model_dump()) == {
         "state_dir",
+        "persist",
         "execution_backend",
         "limits",
-        "source_roots",
+        "source_root",
         "enabled_groups",
         "pydantic",
         "arrow",

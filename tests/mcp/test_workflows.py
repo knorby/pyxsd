@@ -133,24 +133,21 @@ RECORDS_DOC = (
 
 
 async def _create(client):
-    response = await client.call_tool(
-        "pyxsd_manage_workspace", {"action": "create", "idempotency_key": "workflow"}
-    )
+    response = await client.call_tool("pyxsd_manage_workspace", {"action": "create"})
     assert response.is_error is False, structured(response)
     return structured(response)["data"]["id"]
 
 
-async def _put(client, workspace, files, *, expected_revision=None):
+async def _put(client, workspace, files):
     response = await client.call_tool(
         "pyxsd_put_files",
         {
             "workspace_id": workspace,
             "files": [{"path": path, "text": text} for path, text in files.items()],
-            "expected_revision": expected_revision,
         },
     )
     assert response.is_error is False, structured(response)
-    return structured(response)["data"]["revision"]
+    return structured(response)["data"]["generation"]
 
 
 async def _call(client, tool, arguments, *, error=False):
@@ -162,9 +159,9 @@ async def _call(client, tool, arguments, *, error=False):
 async def _expected_fingerprint(services, workspace, schema_path):
     from pyxsd.mcp.services.exploration import ExplorationService
 
-    snapshot = await services.snapshots.get(services.principal, workspace)
-    schema = SchemaRef(source=FileRef(path=schema_path))
-    return ExplorationService._fingerprint(snapshot, schema)
+    async with services.inputs.capture(workspace) as capture:
+        schema = SchemaRef(source=FileRef(path=schema_path))
+        return ExplorationService._fingerprint(capture, schema)
 
 
 def test_unfamiliar_schema_overview_search_and_fingerprint(tmp_path):
@@ -279,7 +276,7 @@ def test_namespace_collision_uses_expanded_names(tmp_path):
     anyio.run(scenario)
 
 
-def test_repeated_node_repair_publishes_exact_candidate(tmp_path):
+def test_repeated_node_repair_returns_exact_candidate(tmp_path):
     async def scenario():
         async with connected(tmp_path, enabled_groups=FULL, execution_backend="trusted-local") as (
             client,
@@ -323,38 +320,21 @@ def test_repeated_node_repair_publishes_exact_candidate(tmp_path):
             )
             record = submitted["data"]
             assert record["valid"] is True
-            committed = await _call(
+            content = await _call(
                 client,
-                "pyxsd_commit_transform",
+                "pyxsd_read_artifact",
                 {
-                    "preview_id": record["id"],
-                    "expected_candidate_digest": record["candidate"]["digest"],
-                    "destination": "revised.xml",
-                    "idempotency_key": "publish-repair",
+                    "artifact_id": record["candidate"]["id"],
+                    "offset": 0,
+                    "length": record["candidate"]["size"],
                 },
             )
-            assert committed["data"]["destination"] == "revised.xml"
-            revalidated = await _call(
-                client,
-                "pyxsd_validate_document",
-                {
-                    "workspace_id": workspace,
-                    "document": {"path": "revised.xml"},
-                    "schema_ref": {"source": {"path": "schema.xsd"}},
-                },
+            assert (
+                hashlib.sha256(base64.b64decode(content["data"]["data"])).hexdigest()
+                == (record["candidate"]["digest"])
             )
-            assert revalidated["data"]["valid"] is True
-            values = await _call(
-                client,
-                "pyxsd_query_document",
-                {
-                    "workspace_id": workspace,
-                    "document": {"path": "revised.xml"},
-                    "schema_ref": {"source": {"path": "schema.xsd"}},
-                    "xpath": "/root/item/value/text()",
-                },
-            )
-            assert values["data"]["results"] == ["1", "2", "3"]
+            names = {tool.name for tool in (await client.list_tools()).tools}
+            assert "pyxsd_commit_transform" not in names
 
     anyio.run(scenario)
 
@@ -461,7 +441,7 @@ def test_changed_import_recomputes_fingerprint_and_verdict(tmp_path):
     async def scenario():
         async with connected(tmp_path, enabled_groups=EXPLORATION) as (client, services):
             workspace = await _create(client)
-            revision = await _put(
+            generation = await _put(
                 client,
                 workspace,
                 {"schema.xsd": IMPORT_ROOT, "value.xsd": IMPORT_INT, "doc.xml": "<root>abc</root>"},
@@ -478,10 +458,8 @@ def test_changed_import_recomputes_fingerprint_and_verdict(tmp_path):
             assert first["data"]["valid"] is False
             before = first["provenance"]["schema_fingerprint"]
             assert before == await _expected_fingerprint(services, workspace, "schema.xsd")
-            changed = await _put(
-                client, workspace, {"value.xsd": IMPORT_STRING}, expected_revision=revision
-            )
-            assert changed != revision
+            changed = await _put(client, workspace, {"value.xsd": IMPORT_STRING})
+            assert changed != generation
             second = await _call(
                 client,
                 "pyxsd_validate_document",
@@ -492,7 +470,7 @@ def test_changed_import_recomputes_fingerprint_and_verdict(tmp_path):
                 },
             )
             assert second["data"]["valid"] is True
-            assert second["provenance"]["revision"] == changed
+            assert second["provenance"]["generation"] == changed
             after = second["provenance"]["schema_fingerprint"]
             assert after == await _expected_fingerprint(services, workspace, "schema.xsd")
             assert after != before

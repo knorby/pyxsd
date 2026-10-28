@@ -13,7 +13,7 @@ pytest.importorskip("defusedxml")
 
 import anyio
 from mcp.shared.memory import create_client_server_memory_streams
-from tests.mcp.test_exploration import INVALID, VALID, XSD, _chunks
+from tests.mcp.test_exploration import INVALID, VALID, XSD
 
 from mcp import ClientSession
 from pyxsd.mcp.config import Settings
@@ -54,9 +54,7 @@ def structured(result):
 
 
 async def create_workspace(client):
-    result = await client.call_tool(
-        "pyxsd_manage_workspace", {"action": "create", "idempotency_key": "one"}
-    )
+    result = await client.call_tool("pyxsd_manage_workspace", {"action": "create"})
     assert result.is_error is False
     return structured(result)["data"]["id"]
 
@@ -70,11 +68,10 @@ async def upload(client, workspace, *, valid=True):
                 {"path": "schema.xsd", "text": XSD},
                 {"path": "document.xml", "text": VALID if valid else INVALID},
             ],
-            "expected_revision": None,
         },
     )
     assert result.is_error is False
-    return structured(result)["data"]["revision"]
+    return structured(result)["data"]["generation"]
 
 
 def test_catalog_schema_tools_resources_and_prompts(tmp_path):
@@ -108,7 +105,7 @@ def test_catalog_schema_tools_resources_and_prompts(tmp_path):
             assert unknown.is_error is True
 
             workspace = await create_workspace(client)
-            revision = await upload(client, workspace)
+            await upload(client, workspace)
             inspected = await client.call_tool(
                 "pyxsd_inspect_schema",
                 {"workspace_id": workspace, "schema_ref": {"source": {"path": "schema.xsd"}}},
@@ -146,25 +143,11 @@ def test_catalog_schema_tools_resources_and_prompts(tmp_path):
             )
             assert structured(queried)["data"]["results"][0]["location"]["path"][-1]["index"] == 1
 
-            invalid_call = await client.call_tool(
-                "pyxsd_put_files",
-                {
-                    "workspace_id": workspace,
-                    "files": [{"path": "bad.xml", "text": "<root>"}],
-                    "expected_revision": "missing",
-                },
-            )
-            assert invalid_call.is_error is True
-            error = structured(invalid_call)
-            assert error["status"] == "error"
-            assert error["data"]["fault"]["code"] == "stale_reference"
-
             published = await client.call_tool(
                 "pyxsd_put_files",
                 {
                     "workspace_id": workspace,
                     "files": [{"path": "bad.xml", "text": "<root>"}],
-                    "expected_revision": revision,
                 },
             )
             assert published.is_error is False
@@ -186,13 +169,8 @@ def test_catalog_schema_tools_resources_and_prompts(tmp_path):
             capabilities = await client.read_resource("pyxsd://capabilities")
             assert str(tmp_path) not in capabilities.contents[0].text
 
-            ref = await services.artifacts.put(
-                services.principal,
-                workspace,
-                _chunks(b"abc"),
-                media_type="application/octet-stream",
-                limit=3,
-                ttl=60,
+            ref = await services.outputs.put_bytes(
+                b"abc", name="sample.bin", media_type="application/octet-stream", kind="test"
             )
             artifact = await client.read_resource(f"pyxsd://artifacts/{ref.id}")
             assert base64.b64decode(artifact.contents[0].blob) == b"abc"
@@ -245,7 +223,6 @@ def test_large_results_spill_and_download_as_exact_json(tmp_path):
                         {"path": "text.xsd", "text": schema},
                         {"path": "text.xml", "text": f"<root>{text}</root>"},
                     ],
-                    "expected_revision": None,
                 },
             )
             result = await client.call_tool(
@@ -278,7 +255,6 @@ def test_services_configuration_source_grants_and_shutdown(tmp_path, monkeypatch
     from pyxsd.mcp import server as server_module
     from pyxsd.mcp.config import Limits
     from pyxsd.mcp.errors import ToolError
-    from pyxsd.mcp.workspaces import Principal
 
     with pytest.raises(ToolError, match="invalid_argument"):
         server_module.Services(Settings(state_dir=tmp_path / "groups", enabled_groups={"unknown"}))
@@ -290,16 +266,19 @@ def test_services_configuration_source_grants_and_shutdown(tmp_path, monkeypatch
     async def scenario():
         settings = Settings(
             state_dir=tmp_path / "state",
-            source_roots={"stdio": tmp_path},
+            source_root=tmp_path,
             limits=Limits(result_bytes=1),
         )
         async with server_module.Services(settings) as services:
-            assert services.snapshots._source_root(services.principal, "workspace") == tmp_path
-            with pytest.raises(ToolError, match="capture_unavailable"):
-                services.snapshots._source_root(Principal("other", frozenset()), "workspace")
+            assert services.inputs.source_root == tmp_path
+            without = Settings(state_dir=tmp_path / "no-source")
+            async with server_module.Services(without) as plain:
+                with pytest.raises(ToolError, match="capture_unavailable"):
+                    async with plain.inputs.capture_source("source", ()):
+                        pass
             with pytest.raises(ToolError, match="invalid_argument"):
                 server_module.create_server(Settings(state_dir=tmp_path / "other"), services)
-        assert services.state._closed
+        assert services.storage._closed
 
         small = Settings(state_dir=tmp_path / "small", limits=Limits(result_bytes=1))
         services = server_module.Services(small)
@@ -312,7 +291,7 @@ def test_services_configuration_source_grants_and_shutdown(tmp_path, monkeypatch
         monkeypatch.setattr(server_module, "Services", lambda _settings: services)
         monkeypatch.setattr(server_module, "create_server", lambda *_args: FakeServer())
         await server_module._run(small)
-        assert services.state._closed
+        assert services.storage._closed
 
         called = {}
         monkeypatch.setattr(
@@ -332,11 +311,7 @@ def test_response_limit_is_a_structured_fault(tmp_path):
 
     async def scenario():
         async with connected(tmp_path, limits=Limits(result_bytes=1)) as (client, _services):
-            workspace = await create_workspace(client)
-            result = await client.call_tool(
-                "pyxsd_put_files",
-                {"workspace_id": workspace, "files": [], "expected_revision": None},
-            )
+            result = await client.call_tool("pyxsd_manage_workspace", {"action": "create"})
             assert result.is_error is True
             assert structured(result)["data"]["fault"]["code"] == "response_limit"
 
@@ -350,7 +325,7 @@ def test_tool_groups_are_startup_configuration(tmp_path):
             assert "pyxsd_inspect_schema" in names
             assert "pyxsd_manage_workspace" not in names
             assert "pyxsd_put_files" not in names
-            assert "pyxsd_read_artifact" not in names
+            assert "pyxsd_read_artifact" in names
 
         async with connected(tmp_path, enabled_groups={"workspaces"}) as (client, _services):
             names = {tool.name for tool in (await client.list_tools()).tools}
@@ -358,3 +333,25 @@ def test_tool_groups_are_startup_configuration(tmp_path):
             assert "pyxsd_inspect_schema" not in names
 
     anyio.run(scenario)
+
+
+def test_services_closes_storage_when_output_store_initialization_fails(tmp_path, monkeypatch):
+    from pyxsd.mcp import server as server_module
+    from pyxsd.mcp.config import Settings
+
+    created = []
+
+    class CapturingStorage(server_module.Storage):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    class BrokenOutputs:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("index unavailable")
+
+    monkeypatch.setattr(server_module, "Storage", CapturingStorage)
+    monkeypatch.setattr(server_module, "OutputStore", BrokenOutputs)
+    with pytest.raises(RuntimeError, match="index unavailable"):
+        server_module.Services(Settings(state_dir=tmp_path / "state"))
+    assert created and created[0]._closed

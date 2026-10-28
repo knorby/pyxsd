@@ -11,8 +11,7 @@ from ..contracts import Nonempty, SchemaRef, ToolEnvelope, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
 from ..worker_protocol import ModelOperation
-from ..workers import snapshot_from_wire, snapshot_to_wire
-from ..workspaces import Principal
+from ..workers import capture_from_wire, capture_to_wire
 from .exploration import ExplorationService
 
 _WARNING = (
@@ -38,11 +37,10 @@ def execute_model(
     from pyxsd.integrations.pydantic import models
 
     request = CompileRequest(
-        snapshot=snapshot_from_wire(operation.snapshot),
+        capture=capture_from_wire(operation.capture),
         schema_ref=operation.schema_ref,
         hints=(),
         processor_version=processor_version,
-        owner_id=operation.owner_id,
     )
     try:
         with cache.acquire(request) as schema:
@@ -87,26 +85,18 @@ def execute_model(
 
 
 class ModelService(ExplorationService):
-    async def inspect_model(
-        self, principal: Principal, request: InspectModelRequest
-    ) -> ToolEnvelope:
-        return await self._model(principal, request)
+    async def inspect_model(self, request: InspectModelRequest) -> ToolEnvelope:
+        return await self._model(request)
 
-    async def validate_data(
-        self, principal: Principal, request: ValidateDataRequest
-    ) -> ToolEnvelope:
-        return await self._model(principal, request)
+    async def validate_data(self, request: ValidateDataRequest) -> ToolEnvelope:
+        return await self._model(request)
 
-    async def _model(
-        self, principal: Principal, request: InspectModelRequest | ValidateDataRequest
-    ) -> ToolEnvelope:
-        async with self._snapshot(
-            principal, request.workspace_id, request.schema_ref.source.revision
-        ) as snapshot:
+    async def _model(self, request: InspectModelRequest | ValidateDataRequest) -> ToolEnvelope:
+        async with self._capture(request.workspace_id) as capture:
+            result_id = self._result_id(request, capture)
             operation = ModelOperation(
                 request_id=secrets.token_hex(16),
-                snapshot=snapshot_to_wire(snapshot),
-                owner_id=principal.owner_id,
+                capture=capture_to_wire(capture),
                 schema_ref=request.schema_ref,
                 element=request.element,
                 path=request.path,
@@ -117,12 +107,10 @@ class ModelService(ExplorationService):
                 operation, deadline=time.monotonic() + self.pool.limits.compile_query_seconds
             )
             envelope = self._envelope(
-                principal,
                 reply,
                 provenance=self._provenance(
-                    snapshot, request.schema_ref, request.schema_ref.source.path
+                    capture, request.schema_ref, request.schema_ref.source.path
                 ),
-                snapshot=snapshot,
-                query_digest=self._digest(request),
+                result_id=result_id,
             )
             return envelope.model_copy(update={"warnings": [_WARNING]})

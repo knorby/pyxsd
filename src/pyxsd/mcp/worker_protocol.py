@@ -16,19 +16,17 @@ from .errors import ToolError
 T = TypeVar("T", bound=WireModel)
 
 
-class SnapshotFileMessage(WireModel):
+class CaptureFileMessage(WireModel):
     path: Nonempty
     digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     size: Annotated[int, Field(ge=0)]
 
 
-class SnapshotMessage(WireModel):
-    """Internal mounted snapshot identity; never exposed as public resource metadata."""
+class CaptureMessage(WireModel):
+    """Internal temporary input identity; never exposed as durable metadata."""
 
-    workspace_id: Nonempty
-    revision: Nonempty
     root: Nonempty
-    files: tuple[SnapshotFileMessage, ...]
+    files: tuple[CaptureFileMessage, ...]
 
 
 class WorkerConfig(WireModel):
@@ -41,8 +39,7 @@ class WorkerConfig(WireModel):
 class Operation(WireModel):
     request_id: Nonempty
     role: Literal["clean", "execution"] = "clean"
-    snapshot: SnapshotMessage
-    owner_id: Nonempty
+    capture: CaptureMessage
 
 
 class ParseOperation(Operation):

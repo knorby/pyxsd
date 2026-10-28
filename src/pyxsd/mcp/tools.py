@@ -3,7 +3,6 @@
 import base64
 import importlib.util
 import json
-import sqlite3
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -13,11 +12,13 @@ from pydantic import ConfigDict, JsonValue
 from .. import __version__
 from .contracts import (
     ArtifactRef,
+    DeleteArtifactRequest,
     ExplainIssueRequest,
     FileRef,
     FindComponentsRequest,
     InlineFile,
     InspectSchemaRequest,
+    ListArtifactsRequest,
     ManageWorkspaceRequest,
     Page,
     PutFilesRequest,
@@ -28,8 +29,8 @@ from .contracts import (
     ValidateDocumentRequest,
 )
 from .errors import ToolError
+from .output_store import OutputRef
 from .previews import PreviewTransformRequest
-from .publication import CommitTransformRequest
 from .responses import render_result
 from .services.models import InspectModelRequest, ValidateDataRequest
 from .services.records import ExportRecordsRequest, PreviewRecordsRequest
@@ -51,7 +52,7 @@ def capability_data(services: "Services") -> dict[str, JsonValue]:
         "transport": "stdio",
         "execution_backend": settings.execution_backend,
         "enabled_groups": cast(list[JsonValue], sorted(settings.enabled_groups)),
-        "source_aliases": cast(list[JsonValue], sorted(settings.source_roots)),
+        "source_root": None if settings.source_root is None else str(settings.source_root),
         "limits": settings.limits.model_dump(mode="json"),
         "adapters": {
             "pydantic": {
@@ -66,6 +67,18 @@ def capability_data(services: "Services") -> dict[str, JsonValue]:
     }
 
 
+def _artifact(reference: OutputRef) -> ArtifactRef:
+    return ArtifactRef(
+        id=reference.id,
+        path=str(reference.path),
+        media_type=reference.media_type,
+        size=reference.size,
+        digest=reference.digest,
+        created_at=reference.created_at,
+        kind=reference.kind,
+    )
+
+
 def _plain(envelope: ToolEnvelope) -> types.CallToolResult:
     data = envelope.model_dump(mode="json")
     text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
@@ -78,7 +91,6 @@ def _plain(envelope: ToolEnvelope) -> types.CallToolResult:
 
 async def _invoke(
     services: "Services",
-    workspace_id: str | None,
     operation: Callable[[], Awaitable[ToolEnvelope]],
 ) -> types.CallToolResult:
     try:
@@ -90,11 +102,7 @@ async def _invoke(
                 data={"fault": exc.fault.model_dump(mode="json")},
                 provenance=exc.fault.details,
             )
-        if workspace_id is None:
-            return _plain(envelope)
-        rendered = await render_result(
-            services.current_principal(), workspace_id, envelope, services.artifacts
-        )
+        rendered = await render_result(envelope, services.outputs)
         return types.CallToolResult.model_validate(
             {**rendered, "isError": envelope.status == "error"}
         )
@@ -106,6 +114,37 @@ async def _invoke(
                 provenance=exc.fault.details,
             )
         )
+
+
+def _encode_after(after: tuple[float, str] | None) -> str | None:
+    if after is None:
+        return None
+    return (
+        base64.urlsafe_b64encode(json.dumps([after[0], after[1]], separators=(",", ":")).encode())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+
+
+def _decode_after(cursor: str | None) -> tuple[float, str] | None:
+    if cursor is None:
+        return None
+    try:
+        if not 1 <= len(cursor) <= 128:
+            raise ValueError("length")
+        data = json.loads(
+            base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
+        )
+        if (
+            not isinstance(data, list)
+            or len(data) != 2
+            or type(data[0]) not in (int, float)
+            or not isinstance(data[1], str)
+        ):
+            raise ValueError("payload")
+        return float(data[0]), data[1]
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise ToolError("invalid_cursor", "Artifact cursor is invalid") from exc
 
 
 def _register(
@@ -165,11 +204,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 depth=depth,
                 page=page,
             )
-            return await _invoke(
-                services,
-                workspace_id,
-                lambda: services.exploration.inspect_schema(services.current_principal(), request),
-            )
+            return await _invoke(services, lambda: services.exploration.inspect_schema(request))
 
         async def find_schema_components(
             workspace_id: str,
@@ -196,11 +231,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 page=page,
             )
             return await _invoke(
-                services,
-                workspace_id,
-                lambda: services.exploration.find_schema_components(
-                    services.current_principal(), request
-                ),
+                services, lambda: services.exploration.find_schema_components(request)
             )
 
         async def validate_document(
@@ -212,13 +243,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             request = ValidateDocumentRequest(
                 workspace_id=workspace_id, document=document, schema_ref=schema_ref, page=page
             )
-            return await _invoke(
-                services,
-                workspace_id,
-                lambda: services.exploration.validate_document(
-                    services.current_principal(), request
-                ),
-            )
+            return await _invoke(services, lambda: services.exploration.validate_document(request))
 
         async def query_document(
             workspace_id: str,
@@ -238,21 +263,13 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 result=result,
                 page=page,
             )
-            return await _invoke(
-                services,
-                workspace_id,
-                lambda: services.exploration.query_document(services.current_principal(), request),
-            )
+            return await _invoke(services, lambda: services.exploration.query_document(request))
 
         async def explain_issue(
             code: str, report: ArtifactRef | None = None, issue_index: int | None = None
         ) -> types.CallToolResult:
             request = ExplainIssueRequest(code=code, report=report, issue_index=issue_index)
-            return await _invoke(
-                services,
-                None,
-                lambda: services.exploration.explain_issue(services.current_principal(), request),
-            )
+            return await _invoke(services, lambda: services.exploration.explain_issue(request))
 
         _register(server, "pyxsd_inspect_schema", inspect_schema, read_only=True)
         _register(server, "pyxsd_find_schema_components", find_schema_components, read_only=True)
@@ -276,43 +293,13 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             )
 
             async def operation() -> ToolEnvelope:
-                result = await services.comparison.compare(services.current_principal(), request)
-                return ToolEnvelope(data=result)
+                return ToolEnvelope(data=await services.comparison.compare(request))
 
-            return await _invoke(services, workspace_id, operation)
+            return await _invoke(services, operation)
 
         _register(server, "pyxsd_compare_schemas", compare_schemas, read_only=True)
 
     if "execution" in services.settings.enabled_groups:
-
-        async def commit_transform(
-            preview_id: str,
-            expected_candidate_digest: str,
-            destination: str,
-            idempotency_key: str,
-            mode: Literal["new", "replace"] = "new",
-            expected_destination_digest: str | None = None,
-            allow_invalid: bool = False,
-        ) -> types.CallToolResult:
-            request = CommitTransformRequest(
-                preview_id=preview_id,
-                expected_candidate_digest=expected_candidate_digest,
-                destination=destination,
-                idempotency_key=idempotency_key,
-                mode=mode,
-                expected_destination_digest=expected_destination_digest,
-                allow_invalid=allow_invalid,
-            )
-
-            async def operation() -> ToolEnvelope:
-                receipt = await services.publication.commit(services.current_principal(), request)
-                return ToolEnvelope(data=receipt.model_dump(mode="json"))
-
-            return await _invoke(services, None, operation)
-
-        _register(
-            server, "pyxsd_commit_transform", commit_transform, read_only=False, destructive=True
-        )
 
         async def preview_transform(
             workspace_id: str,
@@ -330,10 +317,10 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             )
 
             async def operation() -> ToolEnvelope:
-                record = await services.previews.preview(services.current_principal(), request)
+                record = await services.previews.preview(workspace_id, request)
                 return ToolEnvelope(data=record.model_dump(mode="json"))
 
-            return await _invoke(services, workspace_id, operation)
+            return await _invoke(services, operation)
 
         _register(server, "pyxsd_preview_transform", preview_transform, read_only=False)
 
@@ -345,11 +332,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             request = InspectModelRequest(
                 workspace_id=workspace_id, schema_ref=schema_ref, element=element, path=path
             )
-            return await _invoke(
-                services,
-                workspace_id,
-                lambda: services.models.inspect_model(services.current_principal(), request),
-            )
+            return await _invoke(services, lambda: services.models.inspect_model(request))
 
         async def validate_data(
             workspace_id: str,
@@ -365,11 +348,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 path=path,
                 data=data,
             )
-            return await _invoke(
-                services,
-                workspace_id,
-                lambda: services.models.validate_data(services.current_principal(), request),
-            )
+            return await _invoke(services, lambda: services.models.validate_data(request))
 
         _register(server, "pyxsd_inspect_model", inspect_model, read_only=True)
         _register(server, "pyxsd_validate_data", validate_data, read_only=True)
@@ -398,11 +377,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 columns=columns,
                 exact_count=exact_count,
             )
-            return await _invoke(
-                services,
-                workspace_id,
-                lambda: services.records.preview_records(services.current_principal(), request),
-            )
+            return await _invoke(services, lambda: services.records.preview_records(request))
 
         _register(server, "pyxsd_preview_records", preview_records, read_only=True)
 
@@ -432,12 +407,9 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 )
 
                 async def operation() -> ToolEnvelope:
-                    result = await services.records.export_records(
-                        services.current_principal(), request
-                    )
-                    return ToolEnvelope(data=result)
+                    return ToolEnvelope(data=await services.records.export_records(request))
 
-                return await _invoke(services, workspace_id, operation)
+                return await _invoke(services, operation)
 
             _register(server, "pyxsd_export_records", export_records, read_only=False)
 
@@ -446,108 +418,100 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
         async def manage_workspace(
             action: Literal["create", "list", "release"],
             workspace_id: str | None = None,
-            idempotency_key: str | None = None,
         ) -> types.CallToolResult:
-            request = ManageWorkspaceRequest(
-                action=action, workspace_id=workspace_id, idempotency_key=idempotency_key
-            )
+            request = ManageWorkspaceRequest(action=action, workspace_id=workspace_id)
 
             async def operation() -> ToolEnvelope:
                 if request.action == "create":
-                    workspace = await services.workspaces.create(
-                        services.current_principal(), idempotency_key=request.idempotency_key
-                    )
-                    return ToolEnvelope(data=workspace.model_dump(mode="json"))
+                    workspace = await services.inputs.create()
+                    return ToolEnvelope(data=workspace.__dict__)
                 if request.action == "list":
-                    items = await services.workspaces.list(services.current_principal())
-                    return ToolEnvelope(
-                        data={"workspaces": [item.model_dump(mode="json") for item in items]}
-                    )
+                    items = await services.inputs.list()
+                    return ToolEnvelope(data={"workspaces": [item.__dict__ for item in items]})
                 if request.workspace_id is None:
                     raise ToolError("invalid_argument", "Release requires a workspace ID")
-                await services.workspaces.release(
-                    services.current_principal(), request.workspace_id
-                )
+                await services.inputs.release(request.workspace_id)
                 return ToolEnvelope(data={"released": request.workspace_id})
 
-            return await _invoke(services, workspace_id, operation)
+            return await _invoke(services, operation)
 
         async def put_files(
             workspace_id: str,
             files: tuple[InlineFile, ...],
-            expected_revision: str | None = None,
         ) -> types.CallToolResult:
-            request = PutFilesRequest(
-                workspace_id=workspace_id, files=files, expected_revision=expected_revision
-            )
+            request = PutFilesRequest(workspace_id=workspace_id, files=files)
 
             async def operation() -> ToolEnvelope:
-                snapshot = await services.snapshots.put_files(
-                    services.current_principal(),
-                    request.workspace_id,
-                    request.files,
-                    expected_revision=request.expected_revision,
-                )
-                return ToolEnvelope(
-                    data={
-                        "workspace_id": snapshot.workspace_id,
-                        "revision": snapshot.revision,
-                        "files": [
-                            {"path": item.path, "digest": item.digest, "size": item.size}
-                            for item in snapshot.files
-                        ],
-                    }
-                )
-
-            return await _invoke(services, workspace_id, operation)
-
-        async def read_artifact(
-            artifact_id: str, offset: int = 0, length: int = 8 * 2**10
-        ) -> types.CallToolResult:
-            request = ReadArtifactRequest(artifact_id=artifact_id, offset=offset, length=length)
-
-            async def operation() -> ToolEnvelope:
-                async with services.artifacts.lease(
-                    services.current_principal(), request.artifact_id
-                ) as reader:
-                    content = await reader.read(offset=request.offset, length=request.length)
-                    ref = reader.ref
-                return ToolEnvelope(
-                    data={
-                        "encoding": "base64",
-                        "data": base64.b64encode(content).decode("ascii"),
-                        "media_type": ref.media_type,
-                        "digest": ref.digest,
-                        "size": ref.size,
-                        "offset": request.offset,
-                    },
-                    artifacts=[ref],
-                )
-
-            try:
-                workspace = await _artifact_workspace(services, request.artifact_id)
-            except ToolError as exc:
-                return _plain(
-                    ToolEnvelope(
-                        status="error",
-                        data={"fault": exc.fault.model_dump(mode="json")},
-                        provenance=exc.fault.details,
+                await services.inputs.put_files(request.workspace_id, request.files)
+                async with services.inputs.capture(request.workspace_id) as capture:
+                    return ToolEnvelope(
+                        data={
+                            "workspace_id": capture.workspace_id,
+                            "generation": capture.generation,
+                            "files": [
+                                {"path": item.path, "digest": item.digest, "size": item.size}
+                                for item in capture.files
+                            ],
+                        }
                     )
-                )
-            return await _invoke(services, workspace, operation)
+
+            return await _invoke(services, operation)
 
         _register(
             server, "pyxsd_manage_workspace", manage_workspace, read_only=False, destructive=True
         )
         _register(server, "pyxsd_put_files", put_files, read_only=False)
-        _register(server, "pyxsd_read_artifact", read_artifact, read_only=True)
 
+    async def list_artifacts(limit: int = 50, cursor: str | None = None) -> types.CallToolResult:
+        request = ListArtifactsRequest(limit=limit, cursor=cursor)
 
-async def _artifact_workspace(services: "Services", artifact_id: str) -> str:
-    def lookup(db: sqlite3.Connection) -> str:
-        row = db.execute("SELECT workspace FROM artifacts WHERE id=?", (artifact_id,)).fetchone()
-        if row is None:
-            raise ToolError("not_found", "Artifact not found")
-        return row["workspace"]
+        async def operation() -> ToolEnvelope:
+            after = _decode_after(request.cursor)
+            refs, next_after = await services.outputs.list(after=after, limit=request.limit)
+            wire = [_artifact(item) for item in refs]
+            return ToolEnvelope(
+                data={
+                    "artifacts": [item.model_dump(mode="json") for item in wire],
+                    "next_cursor": _encode_after(next_after),
+                }
+            )
 
-    return await services.state.run(lookup)
+        return await _invoke(services, operation)
+
+    async def delete_artifact(artifact_id: str) -> types.CallToolResult:
+        request = DeleteArtifactRequest(artifact_id=artifact_id)
+
+        async def operation() -> ToolEnvelope:
+            await services.outputs.delete(request.artifact_id)
+            return ToolEnvelope(data={"deleted": request.artifact_id})
+
+        return await _invoke(services, operation)
+
+    async def read_artifact(
+        artifact_id: str, offset: int = 0, length: int = 8 * 2**10
+    ) -> types.CallToolResult:
+        request = ReadArtifactRequest(artifact_id=artifact_id, offset=offset, length=length)
+
+        async def operation() -> ToolEnvelope:
+            reference, content = await services.outputs.read_with_ref(
+                request.artifact_id, offset=request.offset, length=request.length
+            )
+            ref = _artifact(reference)
+            return ToolEnvelope(
+                data={
+                    "encoding": "base64",
+                    "data": base64.b64encode(content).decode("ascii"),
+                    "path": ref.path,
+                    "media_type": ref.media_type,
+                    "digest": ref.digest,
+                    "size": ref.size,
+                    "offset": request.offset,
+                },
+                artifacts=[ref],
+            )
+
+        return await _invoke(services, operation)
+
+    _register(server, "pyxsd_list_artifacts", list_artifacts, read_only=True)
+    _register(server, "pyxsd_delete_artifact", delete_artifact, read_only=False, destructive=True)
+    _register(server, "pyxsd_read_artifact", read_artifact, read_only=True)

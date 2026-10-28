@@ -11,10 +11,10 @@ from xml.etree.ElementTree import Element
 from pydantic import JsonValue
 from pyxsd.namespaces import NamespaceContext
 
+from .captures import InputResourcePolicy
 from .config import Limits
-from .snapshots import WorkspaceResourcePolicy
 from .worker_protocol import StructuralDiffOperation
-from .workers import snapshot_from_wire
+from .workers import capture_from_wire
 
 
 def _index(root: Element) -> dict[tuple[tuple[str, int], ...], str]:
@@ -36,7 +36,7 @@ def _index(root: Element) -> dict[tuple[tuple[str, int], ...], str]:
 
 
 def compare(operation: StructuralDiffOperation, limits: Limits) -> dict[str, JsonValue]:
-    policy = WorkspaceResourcePolicy(snapshot_from_wire(operation.snapshot), limits)
+    policy = InputResourcePolicy(capture_from_wire(operation.capture), limits)
     indexes = []
     for reference in (operation.original, operation.candidate):
         data = policy.read(reference.path, base=None, purpose="instance")

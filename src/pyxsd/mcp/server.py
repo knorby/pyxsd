@@ -1,82 +1,65 @@
 """MCP SDK server assembly and one owned services/shutdown boundary."""
 
-from collections.abc import Callable
-from pathlib import Path
-
 import anyio
 from mcp.server import MCPServer
 
 from .. import __version__
-from .artifacts import ArtifactStore
 from .audit import AuditLogger
 from .config import Settings
 from .errors import ToolError
+from .inputs import SessionInputs
+from .output_store import OutputStore
 from .previews import PreviewService
-from .publication import PublicationService
 from .resources import register_resources
+from .services.comparison import ComparisonService
 from .services.exploration import ExplorationService
 from .services.models import ModelService
 from .services.records import RecordService
 from .skill_extension import SkillsExtension
-from .snapshot_store import SnapshotStore
-from .state import State
+from .storage import Storage
 from .tools import register_tools
 from .workers import WorkerPool
-from .workspaces import Principal, WorkspaceStore, stdio_principal
 
 
 class Services:
-    """Own all coordinator state for one stdio server; close workers before SQLite."""
+    """Own one local store, session inputs, worker pool and output index."""
 
     def __init__(self, settings: Settings) -> None:
         if not settings.enabled_groups.issubset({"exploration", "workspaces", "execution"}):
             raise ToolError("invalid_argument", "Unknown MCP tool group")
         self.arrow_available = self._probe_arrow(settings.arrow)
         self.settings = settings
-        self.state = State(settings.state_dir)
-        self.principal = stdio_principal()
-        self.workspaces = WorkspaceStore(self.state, settings.limits)
-        self.artifacts = ArtifactStore(self.workspaces)
-        self.pool = WorkerPool(settings.limits)
-        source_root: Callable[[Principal, str], Path] | None = None
-        if settings.source_roots:
-
-            def source_root(principal: Principal, workspace_id: str) -> Path:
-                try:
-                    return settings.source_roots[principal.owner_id]
-                except KeyError as exc:
-                    raise ToolError(
-                        "capture_unavailable", "No source grant for this owner"
-                    ) from exc
-
-        self.snapshots = SnapshotStore(
-            self.workspaces,
-            source_root=source_root,
-            discovery=self.pool,
-        )
-        self.exploration = ExplorationService(
-            self.snapshots,
-            self.pool,
-            artifacts=self.artifacts,
-            audit=AuditLogger(),
-        )
-        self.models = ModelService(self.snapshots, self.pool, artifacts=self.artifacts)
-        self.records = RecordService(
-            self.snapshots,
-            self.pool,
-            artifacts=self.artifacts,
-            arrow=self.arrow_available,
-        )
-        from .services.comparison import ComparisonService
-
-        self.comparison = ComparisonService(self.snapshots, self.pool)
-        self.previews = PreviewService(
-            self.snapshots,
-            self.pool,
-            self.artifacts,
-            backend=settings.execution_backend,
-        )
-        self.publication = PublicationService(self.previews)
+        self.storage = Storage(settings.state_dir, persist=settings.persist)
+        try:
+            self.outputs = OutputStore(self.storage, settings.limits)
+            self.pool = WorkerPool(settings.limits)
+            self.inputs = SessionInputs(
+                self.storage.scratch,
+                settings.limits,
+                source_root=settings.source_root,
+                discovery=self.pool,
+            )
+            audit = AuditLogger()
+            self.exploration = ExplorationService(
+                self.inputs, self.pool, outputs=self.outputs, audit=audit
+            )
+            self.models = ModelService(self.inputs, self.pool, outputs=self.outputs)
+            self.records = RecordService(
+                self.inputs,
+                self.pool,
+                outputs=self.outputs,
+                arrow=self.arrow_available,
+            )
+            self.comparison = ComparisonService(self.inputs, self.pool)
+            self.previews = PreviewService(
+                self.inputs,
+                self.pool,
+                self.outputs,
+                backend=settings.execution_backend,
+            )
+        except BaseException:
+            self.storage.close()
+            raise
 
     @staticmethod
     def _probe_arrow(mode: str) -> bool:
@@ -96,12 +79,10 @@ class Services:
             ) from exc
         return mode != "disabled"
 
-    def current_principal(self) -> Principal:
-        return self.principal
-
     async def aclose(self) -> None:
         await self.pool.aclose()
-        self.state.close()
+        self.outputs.close()
+        self.storage.close()
 
     async def __aenter__(self) -> "Services":
         return self
@@ -120,8 +101,8 @@ def create_server(
         name="pyxsd",
         title="pyxsd XML Schema tools",
         instructions=(
-            "Explore schemas, validate XML, follow exact diagnostic occurrences, "
-            "and retain bounded immutable artifacts. "
+            "Explore schemas, validate XML, follow exact diagnostic occurrences, and retain "
+            "bounded local output artifacts. Inputs and previews last for this server session. "
             f"Execution backend: {settings.execution_backend}."
         ),
         version=__version__,

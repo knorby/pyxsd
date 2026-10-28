@@ -1,8 +1,9 @@
-"""Bounded live schemas for clean workers, never the coordinator or user-code jobs.
+"""Bounded live schemas for clean workers, never the coordinator or user code.
 
 Acquisition is synchronous: the worker dispatcher owns its thread and holds the
-lease for the complete parse/query/projection operation. Snapshot manifests are
-immutable inputs; changed bytes under an old manifest fail closed, not recompile.
+cache entry for the complete parse/query/projection operation. Capture manifests
+are immutable inputs; changed bytes under an old manifest fail closed and cause
+recompilation against the current capture.
 """
 
 import hashlib
@@ -18,20 +19,19 @@ from pyxsd import Schema
 from pyxsd.binding import ParseModes
 from pyxsd.schema_context import last_components, remember_components
 
+from .captures import InputCapture, InputPolicyError, InputResourcePolicy
 from .config import Limits
 from .contracts import SchemaRef
 from .errors import ToolError
 from .safe_io import validate_paths
-from .snapshots import Snapshot, WorkspaceResourcePolicy
 
 
 @dataclass(frozen=True)
 class CompileRequest:
-    snapshot: Snapshot
+    capture: InputCapture
     schema_ref: SchemaRef
     hints: tuple[tuple[str | None, str], ...]
     processor_version: str
-    owner_id: str
 
     def __post_init__(self) -> None:
         # Frozen wire models still contain mutable mappings. Own a private copy.
@@ -52,7 +52,7 @@ class CacheInfo:
 @dataclass
 class _Entry:
     schema: Schema
-    policy: WorkspaceResourcePolicy
+    policy: InputResourcePolicy
     last_used: float
     pins: int = 0
     owner: int | None = None
@@ -63,14 +63,8 @@ def _key(request: CompileRequest) -> str:
     refs = [request.schema_ref.source, *request.schema_ref.options.namespace_schemas.values()]
     for ref in refs:
         validate_paths([ref.path])
-        if ref.revision is not None and ref.revision != request.snapshot.revision:
-            raise ToolError("stale_reference", "Schema reference does not match snapshot")
     data = {
-        "owner": request.owner_id,
-        "workspace": request.snapshot.workspace_id,
-        "revision": request.snapshot.revision,
-        "root": str(request.snapshot.root),
-        "files": sorted((item.path, item.digest, item.size) for item in request.snapshot.files),
+        "files": sorted((item.path, item.digest, item.size) for item in request.capture.files),
         "schema": request.schema_ref.model_dump(mode="json"),
         "hints": request.hints,
         "processor": request.processor_version,
@@ -126,7 +120,7 @@ class SchemaCache:
                     del self._entries[key]
 
     def _compile(self, request: CompileRequest) -> _Entry:
-        policy = WorkspaceResourcePolicy(request.snapshot, self.limits)
+        policy = InputResourcePolicy(request.capture, self.limits)
         options = request.schema_ref.options
         mode = ParseModes.LAX if options.binding == "lax" else ParseModes.STRICT
         schema = Schema.compile(
@@ -156,18 +150,24 @@ class SchemaCache:
                 if entry is not None:
                     if entry.owner == threading.get_ident():
                         raise ToolError("cache_busy", "Schema leases are not reentrant")
-                    # Verify every dependency, including recorded missing attempts.
-                    policy = WorkspaceResourcePolicy(request.snapshot, self.limits)
+                    # Verify every dependency against the current capture. A
+                    # deleted/changed capture invalidates the entry, not the request.
+                    policy = InputResourcePolicy(request.capture, self.limits)
                     try:
                         for dep in entry.policy.dependencies:
                             with suppress(FileNotFoundError):
                                 policy.read(dep.path, base=None, purpose="schema")
-                    except BaseException:
+                    except InputPolicyError as exc:
                         self._stale += 1
-                        raise
-                    self._hits += 1
-                    self._entries.move_to_end(key)
-                else:
+                        if exc.code != "source_changed":
+                            raise
+                        del self._entries[key]
+                        entry = None
+                    if entry is not None:
+                        entry.policy.rebind(request.capture)
+                        self._hits += 1
+                        self._entries.move_to_end(key)
+                if entry is None:
                     if len(self._entries) + self._temporary >= self.limits.cache_entries:
                         idle = next((k for k, e in self._entries.items() if not e.pins), None)
                         if idle is None:

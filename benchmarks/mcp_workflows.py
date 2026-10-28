@@ -16,29 +16,28 @@ from pathlib import Path
 
 from pyxsd import __version__
 from pyxsd.mcp.cache import CompileRequest, SchemaCache
+from pyxsd.mcp.captures import CaptureFile, InputCapture, InputPolicyError
 from pyxsd.mcp.config import Limits
 from pyxsd.mcp.contracts import FileRef, SchemaRef
-from pyxsd.mcp.snapshots import Snapshot, SnapshotFile, WorkspacePolicyError
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "mcp"
 
 
-def _manifest(root: Path, names: list[str]) -> tuple[SnapshotFile, ...]:
+def _manifest(root: Path, names: list[str]) -> tuple[CaptureFile, ...]:
     entries = []
     for name in sorted(names):
         content = (root / name).read_bytes()
-        entries.append(SnapshotFile(name, hashlib.sha256(content).hexdigest(), len(content)))
+        entries.append(CaptureFile(name, hashlib.sha256(content).hexdigest(), len(content)))
     return tuple(entries)
 
 
-def _run(cache: SchemaCache, snapshot: Snapshot, schema: str, document: str) -> float:
+def _run(cache: SchemaCache, capture: InputCapture, schema: str, document: str) -> float:
     request = CompileRequest(
-        snapshot=snapshot,
+        capture=capture,
         schema_ref=SchemaRef(source=FileRef(path=schema)),
         hints=(),
         processor_version=__version__,
-        owner_id="benchmark",
     )
     started = time.perf_counter()
     with cache.acquire(request) as compiled:
@@ -51,14 +50,14 @@ def _small_fixture_metrics(work: Path, limits: Limits) -> dict[str, object]:
     source = work / "small"
     shutil.copytree(FIXTURE, source)
     names = ["catalog.xsd", "types.xsd", "document.xml"]
-    snapshot = Snapshot("benchmark", "small-cold", source, _manifest(source, names))
+    capture = InputCapture("benchmark", 1, source, _manifest(source, names))
     cache = SchemaCache(limits)
     try:
         before = cache.info().misses
-        cold_ms = _run(cache, snapshot, "catalog.xsd", "document.xml")
+        cold_ms = _run(cache, capture, "catalog.xsd", "document.xml")
         cold_compiles = cache.info().misses - before
         before = cache.info().misses
-        warm_ms = _run(cache, snapshot, "catalog.xsd", "document.xml")
+        warm_ms = _run(cache, capture, "catalog.xsd", "document.xml")
         warm_compiles = cache.info().misses - before
         changed = source / "types.xsd"
         changed.write_text(
@@ -67,7 +66,7 @@ def _small_fixture_metrics(work: Path, limits: Limits) -> dict[str, object]:
             ),
             encoding="utf-8",
         )
-        invalidated = Snapshot("benchmark", "small-changed", source, _manifest(source, names))
+        invalidated = InputCapture("benchmark", 2, source, _manifest(source, names))
         before = cache.info().misses
         invalidated_ms = _run(cache, invalidated, "catalog.xsd", "document.xml")
         invalidated_compiles = cache.info().misses - before
@@ -102,14 +101,14 @@ def _musicxml_metrics(limits: Limits) -> dict[str, object]:
         for path in example.rglob("*")
         if path.is_file() and "__pycache__" not in path.parts
     )
-    snapshot = Snapshot("benchmark", "musicxml", example, _manifest(example, names))
+    capture = InputCapture("benchmark", 1, example, _manifest(example, names))
     cache = SchemaCache(limits)
     try:
         before = cache.info().misses
-        cold_ms = _run(cache, snapshot, "schemas/musicxml.xsd", "instance.xml")
+        cold_ms = _run(cache, capture, "schemas/musicxml.xsd", "instance.xml")
         cold_compiles = cache.info().misses - before
         before = cache.info().misses
-        warm_ms = _run(cache, snapshot, "schemas/musicxml.xsd", "instance.xml")
+        warm_ms = _run(cache, capture, "schemas/musicxml.xsd", "instance.xml")
         warm_compiles = cache.info().misses - before
         assert (cold_compiles, warm_compiles) == (1, 0)
         return {
@@ -123,7 +122,7 @@ def _musicxml_metrics(limits: Limits) -> dict[str, object]:
             "warm_compiles": warm_compiles,
             "cache": cache.info().__dict__,
         }
-    except WorkspacePolicyError as exc:
+    except InputPolicyError as exc:
         return {
             "dataset": "musicxml",
             "available": True,

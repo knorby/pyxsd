@@ -25,15 +25,15 @@ def test_inspect_and_validate_exact_projected_contract(tmp_path):
     from pyxsd.mcp.services.models import InspectModelRequest, ModelService, ValidateDataRequest
 
     async def scenario():
-        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
-            service = ModelService(snapshots, pool)
-            await upload(snapshots, workspace, {"schema.xsd": XSD})
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            service = ModelService(inputs, pool)
+            await upload(inputs, workspace, {"schema.xsd": XSD})
             request = InspectModelRequest(
                 workspace_id=workspace,
                 schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
                 element="order",
             )
-            inspected = await service.inspect_model(principal, request)
+            inspected = await service.inspect_model(request)
             contract = inspected.data["json_schema"]
             assert "@id" in contract["properties"]
             assert "amount" in contract["required"]
@@ -41,7 +41,6 @@ def test_inspect_and_validate_exact_projected_contract(tmp_path):
             assert len(inspected.provenance["schema_fingerprint"]) == 64
             huge = 10**100 + 7
             validated = await service.validate_data(
-                principal,
                 ValidateDataRequest(
                     **request.model_dump(),
                     data={
@@ -56,7 +55,6 @@ def test_inspect_and_validate_exact_projected_contract(tmp_path):
             assert validated.data["value"]["count"] == str(huge)
             assert "optional" not in validated.data["value"]
             nil = await service.validate_data(
-                principal,
                 ValidateDataRequest(
                     **request.model_dump(),
                     data={
@@ -69,7 +67,6 @@ def test_inspect_and_validate_exact_projected_contract(tmp_path):
             )
             assert nil.data["value"]["optional"] is None
             bad = await service.validate_data(
-                principal,
                 ValidateDataRequest(**request.model_dump(), data={"count": "wrong"}),
             )
             assert bad.data["valid"] is False
@@ -84,9 +81,9 @@ def test_recursive_shape_is_explicitly_unsupported(tmp_path):
     from pyxsd.mcp.services.models import InspectModelRequest, ModelService
 
     async def scenario():
-        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
             await upload(
-                snapshots,
+                inputs,
                 workspace,
                 {
                     "schema.xsd": '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
@@ -97,8 +94,7 @@ def test_recursive_shape_is_explicitly_unsupported(tmp_path):
                 },
             )
             with pytest.raises(ToolError, match="unsupported_projection"):
-                await ModelService(snapshots, pool).inspect_model(
-                    principal,
+                await ModelService(inputs, pool).inspect_model(
                     InspectModelRequest(
                         workspace_id=workspace,
                         schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
@@ -120,9 +116,9 @@ def test_unsupported_shapes_are_explicit(tmp_path, shape):
     from pyxsd.mcp.services.models import InspectModelRequest, ModelService
 
     async def scenario():
-        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
             await upload(
-                snapshots,
+                inputs,
                 workspace,
                 {
                     "schema.xsd": '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
@@ -130,8 +126,7 @@ def test_unsupported_shapes_are_explicit(tmp_path, shape):
                 },
             )
             with pytest.raises(ToolError, match="unsupported_projection"):
-                await ModelService(snapshots, pool).inspect_model(
-                    principal,
+                await ModelService(inputs, pool).inspect_model(
                     InspectModelRequest(
                         workspace_id=workspace,
                         schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
@@ -190,14 +185,13 @@ def test_projected_models_reuse_and_expire_with_parent_cache(tmp_path):
     from pyxsd.mcp.config import Limits
     from pyxsd.mcp.services.models import execute_model
     from pyxsd.mcp.worker_protocol import ModelOperation
-    from pyxsd.mcp.workers import snapshot_to_wire
+    from pyxsd.mcp.workers import capture_to_wire
 
     req = request(tmp_path, files={"root.xsd": XSD})
     cache = SchemaCache(Limits())
     operation = ModelOperation(
         request_id="models",
-        owner_id=req.owner_id,
-        snapshot=snapshot_to_wire(req.snapshot),
+        capture=capture_to_wire(req.capture),
         schema_ref=req.schema_ref,
         element="order",
         action="inspect",
@@ -224,13 +218,12 @@ def test_local_declaration_selection_and_bounded_error_details(tmp_path):
     async def scenario():
         async with harness(tmp_path, Limits(collected_issues=1)) as (
             _,
-            snapshots,
+            inputs,
             pool,
-            principal,
             workspace,
         ):
-            await upload(snapshots, workspace, {"schema.xsd": XSD})
-            service = ModelService(snapshots, pool)
+            await upload(inputs, workspace, {"schema.xsd": XSD})
+            service = ModelService(inputs, pool)
             selected = InspectModelRequest(
                 workspace_id=workspace,
                 schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
@@ -238,12 +231,11 @@ def test_local_declaration_selection_and_bounded_error_details(tmp_path):
                 path=("amount",),
             )
             good = await service.validate_data(
-                principal, ValidateDataRequest(**selected.model_dump(), data="2.500")
+                ValidateDataRequest(**selected.model_dump(), data="2.500")
             )
             assert good.data["value"] == "2.500"
             root = selected.model_copy(update={"path": ()})
             bad = await service.validate_data(
-                principal,
                 ValidateDataRequest(
                     **root.model_dump(),
                     data={
@@ -258,6 +250,6 @@ def test_local_declaration_selection_and_bounded_error_details(tmp_path):
             assert bad.data["suppressed_count"] == bad.data["error_count"] - 1
             missing = selected.model_copy(update={"element": "absent"})
             with pytest.raises(ToolError, match="unsupported_projection"):
-                await service.inspect_model(principal, missing)
+                await service.inspect_model(missing)
 
     anyio.run(scenario)

@@ -44,7 +44,6 @@ def test_stdio_initialization_discovery_workflow_logs_and_teardown(tmp_path):
                         {"path": "schema.xsd", "text": XSD},
                         {"path": "document.xml", "text": VALID},
                     ],
-                    "expected_revision": None,
                 },
             )
             result = await client.call_tool(
@@ -99,7 +98,7 @@ def test_main_run_configuration_errors_and_module_exit(tmp_path, monkeypatch, ca
     seen = []
     monkeypatch.setattr(server, "run", seen.append)
     assert main(["--state-dir", str(tmp_path), "--source-root", str(tmp_path / "source")]) == 0
-    assert seen[0].source_roots["stdio"] == tmp_path / "source"
+    assert seen[0].source_root == tmp_path / "source"
 
     def denied(_settings):
         raise ToolError("denied", "Denied")

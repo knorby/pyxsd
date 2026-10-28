@@ -15,7 +15,7 @@ pytest.importorskip("defusedxml")
 
 import anyio
 
-from pyxsd.mcp import snapshots
+from pyxsd.mcp.captures import CaptureFile, InputCapture
 from pyxsd.mcp.config import Limits
 from pyxsd.mcp.contracts import FileRef, SchemaRef
 from pyxsd.mcp.errors import ToolError
@@ -30,17 +30,14 @@ def make_snapshot(tmp_path: Path, *, large: bool = False):
     manifest = []
     for name, content in files.items():
         (tmp_path / name).write_bytes(content)
-        manifest.append(
-            snapshots.SnapshotFile(name, hashlib.sha256(content).hexdigest(), len(content))
-        )
-    return snapshots.Snapshot("workspace", "revision", tmp_path, tuple(manifest))
+        manifest.append(CaptureFile(name, hashlib.sha256(content).hexdigest(), len(content)))
+    return InputCapture("workspace", 1, tmp_path, tuple(manifest))
 
 
 def parse_operation(workers, snapshot, request_id="request", document="document.xml"):
     return workers.ParseOperation(
         request_id=request_id,
-        snapshot=workers.snapshot_to_wire(snapshot),
-        owner_id="owner",
+        capture=workers.capture_to_wire(snapshot),
         schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
         document=FileRef(path=document),
         hints=(),
@@ -183,40 +180,6 @@ def test_queue_capacity_and_cancellation_release_slots(tmp_path):
         recovered = await pool.run(second, deadline=time.monotonic() + 10)
         assert recovered.status == "ok"
         await pool.aclose()
-
-    anyio.run(scenario)
-
-
-def test_snapshot_capture_uses_the_real_worker_discovery_adapter(tmp_path):
-    from pyxsd.mcp import workers
-    from pyxsd.mcp.snapshot_store import SnapshotStore
-    from pyxsd.mcp.state import State
-    from pyxsd.mcp.workspaces import WorkspaceStore, stdio_principal
-
-    source = tmp_path / "source"
-    source.mkdir()
-    make_snapshot(source)
-
-    async def scenario():
-        limits = Limits(workers=1)
-        with State(tmp_path / "state") as state:
-            workspaces = WorkspaceStore(state, limits)
-            principal = stdio_principal()
-            workspace = await workspaces.create(principal)
-            pool = workers.WorkerPool(limits)
-            store = SnapshotStore(
-                workspaces, source_root=lambda _principal, _workspace: source, discovery=pool
-            )
-            refs = (
-                FileRef(path="document.xml"),
-                SchemaRef(source=FileRef(path="schema.xsd")),
-            )
-            try:
-                snapshot = await store.capture(principal, workspace.id, refs)
-                assert {item.path for item in snapshot.files} == {"document.xml", "schema.xsd"}
-                assert await store.capture(principal, workspace.id, refs) == snapshot
-            finally:
-                await pool.aclose()
 
     anyio.run(scenario)
 

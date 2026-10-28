@@ -16,17 +16,15 @@ from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 
 
 def policy_for(root, contents, **limits):
-    from pyxsd.mcp.snapshots import Snapshot, SnapshotFile, WorkspaceResourcePolicy
+    from pyxsd.mcp.captures import CaptureFile, InputCapture, InputResourcePolicy
 
     records = []
     for path, content in contents.items():
         target = root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
-        records.append(SnapshotFile(path, hashlib.sha256(content).hexdigest(), len(content)))
-    return WorkspaceResourcePolicy(
-        Snapshot("workspace", "revision", root, tuple(records)), Limits(**limits)
-    )
+        records.append(CaptureFile(path, hashlib.sha256(content).hexdigest(), len(content)))
+    return InputResourcePolicy(InputCapture("workspace", 1, root, tuple(records)), Limits(**limits))
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
@@ -178,11 +176,11 @@ def test_manifested_file_disappearing_is_not_an_advisory_missing_import(tmp_path
 
 
 def test_duplicate_snapshot_paths_are_rejected(tmp_path):
-    from pyxsd.mcp.snapshots import WorkspaceResourcePolicy
+    from pyxsd.mcp.captures import InputResourcePolicy
 
     policy = policy_for(tmp_path, {"one": b"data"})
     with pytest.raises(ResourcePolicyError, match="path_collision"):
-        WorkspaceResourcePolicy(replace(policy.snapshot, files=policy.snapshot.files * 2), Limits())
+        InputResourcePolicy(replace(policy.capture, files=policy.capture.files * 2), Limits())
 
 
 def test_canonical_source_names_anonymous_bases_and_missing_instances(tmp_path):

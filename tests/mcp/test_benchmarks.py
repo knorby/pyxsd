@@ -6,8 +6,8 @@ pytest.importorskip("pydantic")
 
 from benchmarks import mcp_workflows as benchmark
 
+from pyxsd.mcp.captures import InputPolicyError
 from pyxsd.mcp.config import Limits
-from pyxsd.mcp.snapshots import WorkspacePolicyError
 
 
 def _seed_musicxml(root):
@@ -34,7 +34,7 @@ def test_musicxml_policy_denial_is_an_explicit_unbenchmarked_result(tmp_path, mo
     monkeypatch.setattr(benchmark, "ROOT", tmp_path)
 
     def deny(*args):
-        raise WorkspacePolicyError("dangerous_xml", "DTD is forbidden")
+        raise InputPolicyError("dangerous_xml", "DTD is forbidden")
 
     monkeypatch.setattr(benchmark, "_run", deny)
     result = benchmark._musicxml_metrics(Limits())

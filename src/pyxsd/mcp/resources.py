@@ -31,16 +31,17 @@ def register_resources(server: "MCPServer", services: "Services") -> None:
         mime_type="application/octet-stream",
     )
     async def artifact(artifact_id: str) -> bytes:
-        async with services.artifacts.lease(services.principal, artifact_id) as reader:
-            chunks = []
-            for offset in range(0, reader.ref.size, services.settings.limits.result_bytes):
-                chunks.append(
-                    await reader.read(
-                        offset=offset,
-                        length=min(services.settings.limits.result_bytes, reader.ref.size - offset),
-                    )
+        ref = await services.outputs.get(artifact_id)
+        chunks = []
+        for offset in range(0, ref.size, services.settings.limits.result_bytes):
+            chunks.append(
+                await services.outputs.read(
+                    artifact_id,
+                    offset=offset,
+                    length=min(services.settings.limits.result_bytes, ref.size - offset),
                 )
-            return b"".join(chunks)
+            )
+        return b"".join(chunks)
 
     @server.prompt(name="pyxsd_diagnose_xml", description="Diagnose an XML document against an XSD")
     def diagnose_xml(schema_ref: str, document_ref: str) -> str:
@@ -56,8 +57,8 @@ def register_resources(server: "MCPServer", services: "Services") -> None:
     def author_pipeline(goal: str) -> str:
         return (
             f"Design a minimal XML transformation pipeline for: {goal}. Use registered "
-            "transforms or explicit reviewed code, preview the candidate, inspect warnings "
-            "and independently revalidate before any publication step."
+            "transforms or explicit reviewed code, preview the candidate, inspect warnings, "
+            "independently revalidate it, and save any accepted bytes with your file tools."
         )
 
     @server.prompt(name="pyxsd_evaluate_migration", description="Evaluate an XSD migration")

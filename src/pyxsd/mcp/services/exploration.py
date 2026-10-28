@@ -1,4 +1,4 @@
-"""Schema/document exploration with authenticated pages and complete provenance."""
+"""Schema/document exploration over temporary session input captures."""
 
 import hashlib
 import json
@@ -10,11 +10,10 @@ from typing import Any, cast
 
 from pydantic import JsonValue
 
-from ..artifacts import ArtifactStore
 from ..audit import AuditLogger
+from ..captures import InputCapture
 from ..contracts import (
     ExplainIssueRequest,
-    FileRef,
     FindComponentsRequest,
     InspectSchemaRequest,
     Page,
@@ -25,9 +24,9 @@ from ..contracts import (
     ValidateDocumentRequest,
 )
 from ..errors import ToolError
-from ..pagination import CursorCodec
-from ..snapshot_store import SnapshotStore
-from ..snapshots import Snapshot
+from ..inputs import SessionInputs
+from ..output_store import OutputStore
+from ..pagination import PageTokens
 from ..worker_protocol import (
     DescribeOperation,
     FindOperation,
@@ -35,8 +34,7 @@ from ..worker_protocol import (
     QueryOperation,
     WorkerReply,
 )
-from ..workers import WorkerPool, snapshot_to_wire
-from ..workspaces import Principal
+from ..workers import WorkerPool, capture_to_wire
 
 _EXPLANATIONS: dict[str, dict[str, JsonValue]] = {
     "missing-attribute": {
@@ -87,93 +85,70 @@ def _valid_report(report: JsonValue) -> bool:
 class ExplorationService:
     def __init__(
         self,
-        snapshots: SnapshotStore,
+        inputs: SessionInputs,
         pool: WorkerPool,
         *,
-        artifacts: ArtifactStore | None = None,
-        cursors: CursorCodec | None = None,
+        outputs: OutputStore | None = None,
+        tokens: PageTokens | None = None,
         audit: AuditLogger | None = None,
     ) -> None:
-        self.snapshots, self.pool = snapshots, pool
-        self.artifacts = artifacts
-        self.cursors = CursorCodec() if cursors is None else cursors
+        self.inputs, self.pool = inputs, pool
+        self.outputs = outputs
+        self.tokens = PageTokens() if tokens is None else tokens
         self.audit = AuditLogger() if audit is None else audit
 
     @asynccontextmanager
-    async def _snapshot(
-        self, principal: Principal, workspace_id: str, revision: str | None
-    ) -> AsyncIterator[Snapshot]:
-        async with self.snapshots.workspaces.lease(principal, workspace_id):
-            try:
-                snapshot = await self.snapshots.get(principal, workspace_id, revision=revision)
-            except ToolError as exc:
-                if revision is not None and exc.fault.code == "not_found":
-                    raise ToolError("stale_reference", "Requested revision is unavailable") from exc
-                raise
-            yield snapshot
+    async def _capture(self, workspace_id: str) -> AsyncIterator[InputCapture]:
+        async with self.inputs.capture(workspace_id) as capture:
+            yield capture
 
     @staticmethod
-    def _revision(document: FileRef, schema: SchemaRef | None) -> str | None:
-        schema_revision = None if schema is None else schema.source.revision
-        if (
-            document.revision is not None
-            and schema_revision is not None
-            and document.revision != schema_revision
-        ):
-            raise ToolError("stale_reference", "Document and schema revisions differ")
-        return document.revision or schema_revision
-
-    @staticmethod
-    def _fingerprint(snapshot: Snapshot, schema: SchemaRef | None) -> str:
+    def _fingerprint(capture: InputCapture, schema: SchemaRef | None) -> str:
         data = {
-            "files": [(item.path, item.digest, item.size) for item in snapshot.files],
+            "files": [(item.path, item.digest, item.size) for item in capture.files],
             "schema": None if schema is None else schema.model_dump(mode="json"),
         }
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
     def _provenance(
-        self, snapshot: Snapshot, schema: SchemaRef | None, source_path: str
+        self, capture: InputCapture, schema: SchemaRef | None, source_path: str
     ) -> dict[str, JsonValue]:
-        item = next((item for item in snapshot.files if item.path == source_path), None)
+        item = next((item for item in capture.files if item.path == source_path), None)
         return {
-            "workspace_id": snapshot.workspace_id,
-            "revision": snapshot.revision,
+            "workspace_id": capture.workspace_id,
+            "generation": capture.generation,
             "source": {
                 "path": source_path,
                 "digest": None if item is None else item.digest,
                 "size": None if item is None else item.size,
             },
-            "schema_fingerprint": self._fingerprint(snapshot, schema),
+            "schema_fingerprint": self._fingerprint(capture, schema),
             "options": (
                 {"hinted": True} if schema is None else schema.options.model_dump(mode="json")
             ),
         }
 
     @staticmethod
-    def _digest(request: Any) -> str:
-        data = request.model_dump(mode="json", exclude={"page"})
+    def _result_id(request: Any, capture: InputCapture) -> str:
+        data = {
+            "request": request.model_dump(mode="json", exclude={"page"}),
+            "generation": capture.generation,
+            "files": [(item.path, item.digest, item.size) for item in capture.files],
+        }
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
-    def _position(
-        self, principal: Principal, page: Page, revision: str, digest: str
-    ) -> tuple[int, int]:
+    def _position(self, page: Page, result_id: str) -> tuple[int, int]:
         if page.limit > self.pool.limits.page_items:
             raise ToolError("invalid_argument", "Page limit exceeds the operator budget")
-        offset = (
-            0
-            if page.cursor is None
-            else self.cursors.decode_page(principal, revision, digest, page.cursor)
-        )
+        offset = 0 if page.cursor is None else self.tokens.decode_page(result_id, page.cursor)
         return offset, page.limit
 
     def _envelope(
         self,
-        principal: Principal,
         reply: WorkerReply,
         *,
         provenance: dict[str, JsonValue],
-        snapshot: Snapshot,
-        query_digest: str,
+        result_id: str,
         offset: int = 0,
     ) -> ToolEnvelope:
         if reply.status == "error":
@@ -193,11 +168,7 @@ class ExplorationService:
             returned = int(cast(int, page_data["returned"]))
             truncated = bool(page_data["truncated"])
             next_cursor = (
-                self.cursors.encode_page(
-                    principal, snapshot.revision, query_digest, offset + returned
-                )
-                if truncated
-                else None
+                self.tokens.encode_page(result_id, offset + returned) if truncated else None
             )
             page = PageResult(
                 returned=returned,
@@ -210,127 +181,104 @@ class ExplorationService:
     def _audit(
         self,
         operation: str,
-        principal: Principal,
         started: float,
         status: str,
-        snapshot: Snapshot | None,
+        capture: InputCapture | None,
     ) -> None:
         self.audit.emit(
             operation=operation,
-            owner_id=principal.owner_id,
             status=status,
             duration=time.monotonic() - started,
-            workspace_id=None if snapshot is None else snapshot.workspace_id,
-            revision=None if snapshot is None else snapshot.revision,
+            workspace_id=None if capture is None else capture.workspace_id,
+            generation=None if capture is None else capture.generation,
         )
 
-    async def inspect_schema(
-        self, principal: Principal, request: InspectSchemaRequest
-    ) -> ToolEnvelope:
-        started, status = time.monotonic(), "ok"
-        snapshot = None
+    async def inspect_schema(self, request: InspectSchemaRequest) -> ToolEnvelope:
+        started, status, capture = time.monotonic(), "ok", None
         try:
-            async with self._snapshot(
-                principal, request.workspace_id, request.schema_ref.source.revision
-            ) as snapshot:
-                digest = self._digest(request)
-                offset, limit = self._position(principal, request.page, snapshot.revision, digest)
-                operation = DescribeOperation(
-                    request_id=secrets.token_hex(16),
-                    snapshot=snapshot_to_wire(snapshot),
-                    owner_id=principal.owner_id,
-                    schema_ref=request.schema_ref,
-                    component_ids=request.component_ids,
-                    view=request.view,
-                    depth=request.depth,
-                    offset=offset,
-                    limit=limit,
-                )
+            async with self._capture(request.workspace_id) as capture:
+                result_id = self._result_id(request, capture)
+                offset, limit = self._position(request.page, result_id)
                 reply = await self.pool.run(
-                    operation, deadline=time.monotonic() + self.pool.limits.compile_query_seconds
+                    DescribeOperation(
+                        request_id=secrets.token_hex(16),
+                        capture=capture_to_wire(capture),
+                        schema_ref=request.schema_ref,
+                        component_ids=request.component_ids,
+                        view=request.view,
+                        depth=request.depth,
+                        offset=offset,
+                        limit=limit,
+                    ),
+                    deadline=time.monotonic() + self.pool.limits.compile_query_seconds,
                 )
                 return self._envelope(
-                    principal,
                     reply,
                     provenance=self._provenance(
-                        snapshot, request.schema_ref, request.schema_ref.source.path
+                        capture, request.schema_ref, request.schema_ref.source.path
                     ),
-                    snapshot=snapshot,
-                    query_digest=digest,
+                    result_id=result_id,
                     offset=offset,
                 )
         except BaseException:
             status = "error"
             raise
         finally:
-            self._audit("inspect_schema", principal, started, status, snapshot)
+            self._audit("inspect_schema", started, status, capture)
 
-    async def find_schema_components(
-        self, principal: Principal, request: FindComponentsRequest
-    ) -> ToolEnvelope:
-        started, status = time.monotonic(), "ok"
-        snapshot = None
+    async def find_schema_components(self, request: FindComponentsRequest) -> ToolEnvelope:
+        started, status, capture = time.monotonic(), "ok", None
         try:
-            async with self._snapshot(
-                principal, request.workspace_id, request.schema_ref.source.revision
-            ) as snapshot:
-                digest = self._digest(request)
-                offset, limit = self._position(principal, request.page, snapshot.revision, digest)
-                operation = FindOperation(
-                    request_id=secrets.token_hex(16),
-                    snapshot=snapshot_to_wire(snapshot),
-                    owner_id=principal.owner_id,
-                    schema_ref=request.schema_ref,
-                    text=request.text,
-                    component_kind=request.kind,
-                    name=request.name,
-                    namespace=request.namespace,
-                    component_id=request.component_id,
-                    direction=request.direction,
-                    depth=request.depth,
-                    offset=offset,
-                    limit=limit,
-                )
+            async with self._capture(request.workspace_id) as capture:
+                result_id = self._result_id(request, capture)
+                offset, limit = self._position(request.page, result_id)
                 reply = await self.pool.run(
-                    operation, deadline=time.monotonic() + self.pool.limits.compile_query_seconds
+                    FindOperation(
+                        request_id=secrets.token_hex(16),
+                        capture=capture_to_wire(capture),
+                        schema_ref=request.schema_ref,
+                        text=request.text,
+                        component_kind=request.kind,
+                        name=request.name,
+                        namespace=request.namespace,
+                        component_id=request.component_id,
+                        direction=request.direction,
+                        depth=request.depth,
+                        offset=offset,
+                        limit=limit,
+                    ),
+                    deadline=time.monotonic() + self.pool.limits.compile_query_seconds,
                 )
                 return self._envelope(
-                    principal,
                     reply,
                     provenance=self._provenance(
-                        snapshot, request.schema_ref, request.schema_ref.source.path
+                        capture, request.schema_ref, request.schema_ref.source.path
                     ),
-                    snapshot=snapshot,
-                    query_digest=digest,
+                    result_id=result_id,
                     offset=offset,
                 )
         except BaseException:
             status = "error"
             raise
         finally:
-            self._audit("find_schema_components", principal, started, status, snapshot)
+            self._audit("find_schema_components", started, status, capture)
 
-    async def validate_document(
-        self, principal: Principal, request: ValidateDocumentRequest
-    ) -> ToolEnvelope:
-        started, status = time.monotonic(), "ok"
-        snapshot = None
+    async def validate_document(self, request: ValidateDocumentRequest) -> ToolEnvelope:
+        started, status, capture = time.monotonic(), "ok", None
         try:
-            revision = self._revision(request.document, request.schema_ref)
-            async with self._snapshot(principal, request.workspace_id, revision) as snapshot:
-                digest = self._digest(request)
-                offset, limit = self._position(principal, request.page, snapshot.revision, digest)
-                operation = ParseOperation(
-                    request_id=secrets.token_hex(16),
-                    snapshot=snapshot_to_wire(snapshot),
-                    owner_id=principal.owner_id,
-                    schema_ref=request.schema_ref,
-                    document=request.document,
-                    issue_offset=offset,
-                    issue_limit=limit,
-                )
+            async with self._capture(request.workspace_id) as capture:
+                result_id = self._result_id(request, capture)
+                offset, limit = self._position(request.page, result_id)
                 reply = await self.pool.run(
-                    operation, deadline=time.monotonic() + self.pool.limits.compile_query_seconds
+                    ParseOperation(
+                        request_id=secrets.token_hex(16),
+                        capture=capture_to_wire(capture),
+                        schema_ref=request.schema_ref,
+                        document=request.document,
+                        issue_offset=offset,
+                        issue_limit=limit,
+                    ),
+                    deadline=time.monotonic() + self.pool.limits.compile_query_seconds,
                 )
                 if reply.status == "ok" and isinstance(reply.result, dict):
                     report = reply.result.get("report")
@@ -343,66 +291,79 @@ class ExplorationService:
                             }
                         }
                     )
-                return self._envelope(
-                    principal,
+                envelope = self._envelope(
                     reply,
-                    provenance=self._provenance(
-                        snapshot, request.schema_ref, request.document.path
-                    ),
-                    snapshot=snapshot,
-                    query_digest=digest,
+                    provenance=self._provenance(capture, request.schema_ref, request.document.path),
+                    result_id=result_id,
                     offset=offset,
                 )
+                report_data = (
+                    envelope.data.get("report") if isinstance(envelope.data, dict) else None
+                )
+                if self.outputs is not None and isinstance(report_data, dict):
+                    reference = await self.outputs.put_bytes(
+                        json.dumps(report_data, separators=(",", ":")).encode(),
+                        name="report.json",
+                        media_type="application/json",
+                        kind="report",
+                    )
+                    from ..contracts import ArtifactRef
+
+                    envelope = envelope.model_copy(
+                        update={
+                            "artifacts": [
+                                ArtifactRef(
+                                    id=reference.id,
+                                    path=str(reference.path),
+                                    media_type=reference.media_type,
+                                    size=reference.size,
+                                    digest=reference.digest,
+                                    created_at=reference.created_at,
+                                    kind=reference.kind,
+                                )
+                            ]
+                        }
+                    )
+                return envelope
         except BaseException:
             status = "error"
             raise
         finally:
-            self._audit("validate_document", principal, started, status, snapshot)
+            self._audit("validate_document", started, status, capture)
 
-    async def query_document(
-        self, principal: Principal, request: QueryDocumentRequest
-    ) -> ToolEnvelope:
-        started, status = time.monotonic(), "ok"
-        snapshot = None
+    async def query_document(self, request: QueryDocumentRequest) -> ToolEnvelope:
+        started, status, capture = time.monotonic(), "ok", None
         try:
-            revision = self._revision(request.document, request.schema_ref)
-            async with self._snapshot(principal, request.workspace_id, revision) as snapshot:
-                digest = self._digest(request)
-                offset, limit = self._position(principal, request.page, snapshot.revision, digest)
-                operation = QueryOperation(
-                    request_id=secrets.token_hex(16),
-                    snapshot=snapshot_to_wire(snapshot),
-                    owner_id=principal.owner_id,
-                    schema_ref=request.schema_ref,
-                    document=request.document,
-                    xpath=request.xpath,
-                    namespaces=request.namespaces,
-                    result=request.result,
-                    offset=offset,
-                    limit=limit,
-                )
+            async with self._capture(request.workspace_id) as capture:
+                result_id = self._result_id(request, capture)
+                offset, limit = self._position(request.page, result_id)
                 reply = await self.pool.run(
-                    operation, deadline=time.monotonic() + self.pool.limits.compile_query_seconds
+                    QueryOperation(
+                        request_id=secrets.token_hex(16),
+                        capture=capture_to_wire(capture),
+                        schema_ref=request.schema_ref,
+                        document=request.document,
+                        xpath=request.xpath,
+                        namespaces=request.namespaces,
+                        result=request.result,
+                        offset=offset,
+                        limit=limit,
+                    ),
+                    deadline=time.monotonic() + self.pool.limits.compile_query_seconds,
                 )
                 return self._envelope(
-                    principal,
                     reply,
-                    provenance=self._provenance(
-                        snapshot, request.schema_ref, request.document.path
-                    ),
-                    snapshot=snapshot,
-                    query_digest=digest,
+                    provenance=self._provenance(capture, request.schema_ref, request.document.path),
+                    result_id=result_id,
                     offset=offset,
                 )
         except BaseException:
             status = "error"
             raise
         finally:
-            self._audit("query_document", principal, started, status, snapshot)
+            self._audit("query_document", started, status, capture)
 
-    async def explain_issue(
-        self, principal: Principal, request: ExplainIssueRequest
-    ) -> ToolEnvelope:
+    async def explain_issue(self, request: ExplainIssueRequest) -> ToolEnvelope:
         started, status = time.monotonic(), "ok"
         try:
             known = request.code in _EXPLANATIONS
@@ -418,31 +379,27 @@ class ExplorationService:
                 }
             )
             if request.report is not None or request.issue_index is not None:
-                if request.report is None or request.issue_index is None or self.artifacts is None:
+                if request.report is None or request.issue_index is None or self.outputs is None:
                     raise ToolError("invalid_argument", "Issue lookup needs a report and index")
-                data["issue"] = await self._issue(principal, request)
+                data["issue"] = await self._issue(request)
             return ToolEnvelope(data=data)
         except BaseException:
             status = "error"
             raise
         finally:
-            self._audit("explain_issue", principal, started, status, None)
+            self._audit("explain_issue", started, status, None)
 
-    async def _issue(self, principal: Principal, request: ExplainIssueRequest) -> JsonValue:
-        assert (
-            request.report is not None
-            and request.issue_index is not None
-            and self.artifacts is not None
-        )
+    async def _issue(self, request: ExplainIssueRequest) -> JsonValue:
+        assert request.report is not None and request.issue_index is not None
+        assert self.outputs is not None
         ref = request.report
         chunks = []
-        for offset in range(0, ref.size, self.artifacts.limits.result_bytes):
+        for offset in range(0, ref.size, self.outputs.limits.result_bytes):
             chunks.append(
-                await self.artifacts.read(
-                    principal,
+                await self.outputs.read(
                     ref.id,
                     offset=offset,
-                    length=min(self.artifacts.limits.result_bytes, ref.size - offset),
+                    length=min(self.outputs.limits.result_bytes, ref.size - offset),
                 )
             )
         try:

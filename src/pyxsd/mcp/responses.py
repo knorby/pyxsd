@@ -1,14 +1,12 @@
 """Bound structured content and its text fallback as one result payload."""
 
 import json
-from collections.abc import AsyncIterator
 
 from pydantic import JsonValue
 
-from .artifacts import ArtifactStore
 from .contracts import ArtifactRef, ToolEnvelope
 from .errors import ToolError
-from .workspaces import Principal
+from .output_store import OutputStore
 
 
 def _json(value: object) -> bytes:
@@ -35,53 +33,41 @@ def _summary(envelope: ToolEnvelope, size: int, ref: ArtifactRef) -> ToolEnvelop
     )
 
 
-async def render_result(
-    principal: Principal,
-    workspace_id: str,
-    envelope: ToolEnvelope,
-    artifacts: ArtifactStore,
-) -> dict[str, JsonValue]:
-    """Return the SDK content fields, retaining oversized envelopes exactly once.
-
-    Budgeting includes JSON escaping in the text fallback, not merely the data
-    string's length. Large diagnostics, provenance and warnings live together in
-    the retained envelope rather than being cut into invalid/ambiguous JSON.
-    Resource authorization belongs to the operation producing the envelope.
-    """
-    principal.require("pyxsd:read")
+async def render_result(envelope: ToolEnvelope, outputs: OutputStore) -> dict[str, JsonValue]:
+    """Return SDK content fields, retaining oversized envelopes exactly once."""
     body = _json(envelope.model_dump(mode="json"))
-    budget = artifacts.limits.result_bytes
+    budget = outputs.limits.result_bytes
     if len(body) <= budget:
         result = _pack(envelope, body.decode("utf-8"))
         if len(_json(result)) <= budget:
             return result
-    if len(body) > artifacts.limits.output_bytes:
+    if len(body) > outputs.limits.output_bytes:
         raise ToolError("quota_exceeded", "Result exceeds the artifact output limit")
 
-    # The concrete store issues 32-character IDs and SHA-256 digests. Reserve
-    # the longest finite float spelling plus slack for the expiry timestamp,
-    # before retaining anything for a budget too small to hold its reference.
     placeholder = ArtifactRef(
         id="0" * 32,
-        digest="0" * 64,
-        size=len(body),
+        path="pending/result.json",
         media_type="application/json",
-        expires_at=-1.7976931348623157e308,
+        size=len(body),
+        digest="0" * 64,
+        created_at=-1.7976931348623157e308,
+        kind="result",
     )
     preview = _summary(envelope, len(body), placeholder)
     if len(_json(_pack(preview, _json(preview.model_dump(mode="json")).decode()))) + 64 > budget:
         raise ToolError("response_limit", "Response budget cannot contain an artifact reference")
 
-    async def stream() -> AsyncIterator[bytes]:
-        yield body
-
-    ref = await artifacts.put(
-        principal,
-        workspace_id,
-        stream(),
-        media_type="application/json",
-        limit=len(body),
-        ttl=artifacts.limits.diagnostic_seconds,
+    reference = await outputs.put_bytes(
+        body, name="result.json", media_type="application/json", kind="result"
+    )
+    ref = ArtifactRef(
+        id=reference.id,
+        path=str(reference.path),
+        media_type=reference.media_type,
+        size=reference.size,
+        digest=reference.digest,
+        created_at=reference.created_at,
+        kind=reference.kind,
     )
     summary = _summary(envelope, len(body), ref)
     return _pack(summary, _json(summary.model_dump(mode="json")).decode())

@@ -79,7 +79,8 @@ def test_uvx_is_primary_and_direct_install_remains_documented():
     assert install.index("uvx --from 'pyxsd[mcp]' pyxsd-mcp") < install.index(
         "pip install 'pyxsd[mcp]'"
     )
-    assert "pyxsd-mcp --state-dir" in install
+    assert "--state-dir" in install
+    assert "--no-persist" in install
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "uvx --from 'pyxsd[mcp]' pyxsd-mcp" in readme
     skill = (ROOT / "src/pyxsd/skills/pyxsd-mcp/SKILL.md").read_text(encoding="utf-8")
@@ -102,7 +103,7 @@ def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_pa
                 assert initialized.capabilities.tools is not None
                 created = await client.call_tool(
                     "pyxsd_manage_workspace",
-                    {"action": "create", "idempotency_key": "installed-example"},
+                    {"action": "create"},
                 )
                 workspace = created.structured_content["data"]["id"]
                 await client.call_tool(
@@ -119,7 +120,6 @@ def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_pa
                             },
                             {"path": "order.xml", "text": "<order>42</order>"},
                         ],
-                        "expected_revision": None,
                     },
                 )
                 validated = await client.call_tool(
@@ -132,6 +132,6 @@ def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_pa
                 )
                 assert validated.structured_content["data"]["valid"] is True
         assert (state / "coordinator.lock").is_file()
-        assert (state / "state.sqlite3").is_file()
+        assert (state / "store-v2" / "index.sqlite3").is_file()
 
     anyio.run(scenario)

@@ -5,29 +5,25 @@ import secrets
 import stat
 import tempfile
 import time
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal, cast
 
 from pydantic import Field, JsonValue
 
-from ..artifacts import ArtifactRef, ArtifactStore
-from ..audit import AuditLogger
 from ..cache import CompileRequest, SchemaCache
 from ..contracts import FileRef, Nonempty, SchemaRef, ToolEnvelope, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
 from ..execution import capture_candidate
-from ..pagination import CursorCodec
-from ..snapshot_store import SnapshotStore
+from ..inputs import SessionInputs
+from ..output_store import OutputRef, OutputStore
 from ..worker_protocol import (
     ExportOperation,
     FieldSourceSpec,
     RecordsOperation,
     WorkerReply,
 )
-from ..workers import WorkerPool, snapshot_from_wire, snapshot_to_wire
-from ..workspaces import Principal
+from ..workers import WorkerPool, capture_from_wire, capture_to_wire
 from .exploration import ExplorationService
 
 
@@ -63,11 +59,10 @@ def execute_records(
     from pyxsd.integrations.projection import FieldSource
 
     request = CompileRequest(
-        snapshot=snapshot_from_wire(operation.snapshot),
+        capture=capture_from_wire(operation.capture),
         schema_ref=operation.schema_ref,
         hints=(),
         processor_version=processor_version,
-        owner_id=operation.owner_id,
     )
     try:
         with cache.acquire(request) as schema:
@@ -130,11 +125,10 @@ def execute_export(
     if operation.format == "parquet" and len(operation.documents) != 1:
         raise ToolError("invalid_argument", "Parquet export accepts exactly one document")
     request = CompileRequest(
-        snapshot=snapshot_from_wire(operation.snapshot),
+        capture=capture_from_wire(operation.capture),
         schema_ref=operation.schema_ref,
         hints=(),
         processor_version=processor_version,
-        owner_id=operation.owner_id,
     )
     try:
         with cache.acquire(request) as schema:
@@ -205,45 +199,38 @@ def execute_export(
 class RecordService(ExplorationService):
     def __init__(
         self,
-        snapshots: SnapshotStore,
+        inputs: SessionInputs,
         pool: WorkerPool,
         *,
-        artifacts: ArtifactStore | None = None,
-        cursors: CursorCodec | None = None,
-        audit: AuditLogger | None = None,
+        outputs: OutputStore,
         arrow: bool = True,
     ) -> None:
-        super().__init__(snapshots, pool, artifacts=artifacts, cursors=cursors, audit=audit)
-        self.limits = snapshots.limits
+        super().__init__(inputs, pool, outputs=outputs)
+        self.limits = inputs.limits
         self.arrow = arrow
-        self.staging = snapshots.state.root / "record-staging"
+        self.outputs = outputs
+        self.staging = outputs.storage.scratch / "record-staging"
         self.staging.mkdir(mode=0o700, exist_ok=True)
 
     def _require_arrow(self) -> None:
         if not self.arrow:
             raise ToolError("arrow_required", "Arrow projection is not available in this build")
 
-    async def preview_records(
-        self, principal: Principal, request: PreviewRecordsRequest
-    ) -> ToolEnvelope:
+    async def preview_records(self, request: PreviewRecordsRequest) -> ToolEnvelope:
         self._require_arrow()
-        revision = self._revision(request.document, request.schema_ref)
-        async with self._snapshot(principal, request.workspace_id, revision) as snapshot:
+        async with self._capture(request.workspace_id) as capture:
             operation = RecordsOperation(
                 request_id=secrets.token_hex(16),
-                snapshot=snapshot_to_wire(snapshot),
-                owner_id=principal.owner_id,
+                capture=capture_to_wire(capture),
                 **request.model_dump(exclude={"workspace_id"}),
             )
             reply = await self.pool.run(
                 operation, deadline=time.monotonic() + self.pool.limits.compile_query_seconds
             )
             envelope = self._envelope(
-                principal,
                 reply,
-                snapshot=snapshot,
-                query_digest=self._digest(request),
-                provenance=self._provenance(snapshot, request.schema_ref, request.document.path),
+                result_id=self._result_id(request, capture),
+                provenance=self._provenance(capture, request.schema_ref, request.document.path),
             )
             return envelope.model_copy(
                 update={
@@ -253,30 +240,16 @@ class RecordService(ExplorationService):
                 }
             )
 
-    async def export_records(
-        self, principal: Principal, request: ExportRecordsRequest
-    ) -> dict[str, JsonValue]:
-        principal.require("pyxsd:execute", "pyxsd:read", "pyxsd:upload")
+    async def export_records(self, request: ExportRecordsRequest) -> dict[str, JsonValue]:
         self._require_arrow()
-        if self.artifacts is None:
-            raise ToolError("invalid_argument", "Record exports require artifact retention")
         if not request.documents:
             raise ToolError("invalid_argument", "Exports require at least one document")
         if len(request.documents) > self.limits.corpus_files:
             raise ToolError("quota_exceeded", "Export corpus exceeds the operator budget")
-        revisions = {ref.revision for ref in request.documents if ref.revision is not None}
-        schema_revision = request.schema_ref.source.revision
-        if schema_revision is not None:
-            revisions.add(schema_revision)
-        if len(revisions) > 1:
-            raise ToolError("stale_reference", "Export references must share a revision")
-        async with self._snapshot(
-            principal, request.workspace_id, next(iter(revisions), None)
-        ) as snapshot:
+        async with self._capture(request.workspace_id) as capture:
             operation = ExportOperation(
                 request_id=secrets.token_hex(16),
-                snapshot=snapshot_to_wire(snapshot),
-                owner_id=principal.owner_id,
+                capture=capture_to_wire(capture),
                 schema_ref=request.schema_ref,
                 documents=request.documents,
                 element=request.element,
@@ -295,27 +268,14 @@ class RecordService(ExplorationService):
             raise ToolError("ipc_protocol", "Export returned no result object")
         return reply.result
 
-    async def _retain(
-        self, principal: Principal, workspace_id: str, data: bytes, media_type: str
-    ) -> ArtifactRef:
-        assert self.artifacts is not None
-
-        async def chunks() -> AsyncIterator[bytes]:
-            yield data
-
-        return await self.artifacts.put(
-            principal,
-            workspace_id,
-            chunks(),
-            media_type=media_type,
-            limit=len(data),
-            ttl=max(1, self.limits.preview_seconds),
+    async def _retain(self, data: bytes, media_type: str, *, name: str) -> OutputRef:
+        assert self.outputs is not None
+        return await self.outputs.put_bytes(
+            data, name=name.rsplit("/", 1)[-1], media_type=media_type, kind="export"
         )
 
     async def _export(self, operation: ExportOperation, *, deadline: float) -> WorkerReply:
         """Run the export, then capture coordinator-owned bytes."""
-        principal = Principal(operation.owner_id, frozenset({"pyxsd:read", "pyxsd:upload"}))
-        workspace_id = operation.snapshot.workspace_id
         with tempfile.TemporaryDirectory(prefix="export-", dir=self.staging) as directory:
             root = Path(directory)
             dispatched = operation.model_copy(update={"output_directory": str(root)})
@@ -332,7 +292,7 @@ class RecordService(ExplorationService):
                 finally:
                     os.close(directory_fd)
                 reference = await self._retain(
-                    principal, workspace_id, data, "application/vnd.apache.parquet"
+                    data, "application/vnd.apache.parquet", name="export.parquet"
                 )
                 artifacts.append(
                     {
@@ -368,7 +328,7 @@ class RecordService(ExplorationService):
                         if path.suffix == ".json"
                         else "application/vnd.apache.parquet"
                     )
-                    reference = await self._retain(principal, workspace_id, data, media_type)
+                    reference = await self._retain(data, media_type, name=path.name)
                     artifacts.append(
                         {
                             "path": (Path("export-dataset") / path.relative_to(base)).as_posix(),
@@ -383,6 +343,6 @@ class RecordService(ExplorationService):
             result["manifest"] = cast(JsonValue, list(artifacts))
             result["source_documents"] = [ref.path for ref in operation.documents]
             result["schema_fingerprint"] = self._fingerprint(
-                snapshot_from_wire(operation.snapshot), operation.schema_ref
+                capture_from_wire(operation.capture), operation.schema_ref
             )
             return reply.model_copy(update={"result": result})

@@ -16,7 +16,8 @@ pytest.importorskip("defusedxml")
 
 from pyxsd import Schema, __version__
 from pyxsd.introspection import describe_schema
-from pyxsd.mcp import contracts, snapshots
+from pyxsd.mcp import contracts
+from pyxsd.mcp.captures import CaptureFile, InputCapture
 from pyxsd.mcp.config import Limits
 from pyxsd.mcp.errors import ToolError
 from pyxsd.schema_context import last_components
@@ -31,15 +32,14 @@ def request(tmp_path: Path, **kwargs):
     for name, text in files.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     manifest = tuple(
-        snapshots.SnapshotFile(name, hashlib.sha256(text.encode()).hexdigest(), len(text.encode()))
+        CaptureFile(name, hashlib.sha256(text.encode()).hexdigest(), len(text.encode()))
         for name, text in sorted(files.items())
     )
     return CompileRequest(
-        snapshot=snapshots.Snapshot("workspace", "revision", tmp_path, manifest),
+        capture=InputCapture("workspace", 1, tmp_path, manifest),
         schema_ref=contracts.SchemaRef(source=contracts.FileRef(path="root.xsd")),
         hints=(),
         processor_version=__version__,
-        owner_id="owner",
         **kwargs,
     )
 
@@ -92,15 +92,12 @@ def test_cache_applies_collection_and_message_budgets(tmp_path):
         cache.close()
 
 
-@pytest.mark.parametrize(
-    "field", ["owner", "version", "binding", "namespaces", "xsd", "hints", "mapping"]
-)
+@pytest.mark.parametrize("field", ["version", "binding", "namespaces", "xsd", "hints", "mapping"])
 def test_every_compile_input_separates_keys(tmp_path, field):
     from pyxsd.mcp.cache import SchemaCache
 
     req = request(tmp_path)
     changed = {
-        "owner": lambda: replace(req, owner_id="other"),
         "version": lambda: replace(req, processor_version="different"),
         "binding": lambda: replace(
             req,
@@ -161,14 +158,9 @@ def test_changed_same_stat_dependency_and_missing_appearance(tmp_path):
         tmp_path, files={"root.xsd": root, "dep.xsd": dependency.replace('value="1"', 'value="2"')}
     )
     os.utime(tmp_path / "dep.xsd", ns=(stat.st_atime_ns, stat.st_mtime_ns))
-    with (
-        pytest.raises(snapshots.WorkspacePolicyError, match="source_changed"),
-        cache.acquire(present),
-    ):
-        pytest.fail("Changed bytes cannot use the old manifest")
-    assert cache.info().active == 0
     with cache.acquire(updated) as after:
         assert after is not before is not absent
+    assert cache.info().active == 0
     assert cache.info().misses == 3
     cache.close()
 
@@ -192,20 +184,29 @@ def test_different_schemas_can_operate_in_parallel(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
     cache = SchemaCache(Limits())
-    req = request(tmp_path)
+    request(tmp_path)
     barrier = threading.Barrier(2, timeout=5)
     errors = []
 
-    def worker(owner):
+    def worker(directory, schema_text):
         try:
-            with cache.acquire(replace(req, owner_id=owner)) as schema:
+            directory.mkdir()
+            with cache.acquire(
+                request(
+                    directory,
+                    files={"root.xsd": schema_text},
+                )
+            ) as schema:
                 barrier.wait()
                 assert schema.parse(io.StringIO("<root>7</root>")).root == 7
         except BaseException as exc:
             errors.append(exc)
             barrier.abort()
 
-    threads = [threading.Thread(target=worker, args=(owner,)) for owner in ("one", "two")]
+    threads = [
+        threading.Thread(target=worker, args=(tmp_path / str(index), schema_text))
+        for index, schema_text in enumerate((XSD, XSD.replace("xs:int", "xs:long")))
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -229,17 +230,31 @@ def test_compile_failure_does_not_retain_entry_or_compatibility_state(tmp_path):
     cache.close()
 
 
-def test_pinned_revision_must_match_snapshot(tmp_path):
+def test_capture_root_and_generation_do_not_change_cache_identity(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
     cache = SchemaCache(Limits())
-    req = request(tmp_path)
-    ref = contracts.SchemaRef(source=contracts.FileRef(path="root.xsd", revision="old"))
-    with (
-        pytest.raises(ToolError, match="stale_reference"),
-        cache.acquire(replace(req, schema_ref=ref)),
-    ):
-        pytest.fail("A different pinned snapshot cannot be substituted")
+    first = request(tmp_path)
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    (other_root / "root.xsd").write_text(XSD, encoding="utf-8")
+    second = replace(
+        first,
+        capture=InputCapture(
+            "different-workspace",
+            99,
+            other_root,
+            (CaptureFile("root.xsd", first.capture.files[0].digest, len(XSD.encode())),),
+        ),
+    )
+    with cache.acquire(first) as original:
+        assert original.parse(io.StringIO("<root>3</root>")).root == 3
+    (first.capture.root / "root.xsd").unlink()
+    with cache.acquire(second) as reused:
+        assert reused is original
+        assert reused.parse(io.StringIO("<root>4</root>")).root == 4
+    assert cache.info().hits == 1
+    cache.close()
 
 
 def test_lru_idle_pins_and_derived_lifetime(tmp_path):
@@ -253,7 +268,7 @@ def test_lru_idle_pins_and_derived_lifetime(tmp_path):
         schema_ref, derived_ref = weakref.ref(schema), weakref.ref(schema._introspection_index)
         with (
             pytest.raises(ToolError, match="cache_busy"),
-            cache.acquire(replace(req, owner_id="other")),
+            cache.acquire(replace(req, processor_version="other")),
         ):
             pytest.fail("Pinned entries cannot be evicted")
     del schema
@@ -264,7 +279,7 @@ def test_lru_idle_pins_and_derived_lifetime(tmp_path):
     assert cache.info().entries == 0
     with cache.acquire(req) as first:
         pass
-    with cache.acquire(replace(req, owner_id="other")) as second:
+    with cache.acquire(replace(req, processor_version="other")) as second:
         assert second is not first
     assert cache.info().evictions == 2
     cache.close()
@@ -330,8 +345,8 @@ def test_recent_hit_controls_eviction_and_request_owns_options(tmp_path):
 
     cache = SchemaCache(Limits(cache_entries=2))
     first_req = request(tmp_path)
-    second_req = replace(first_req, owner_id="two")
-    third_req = replace(first_req, owner_id="three")
+    second_req = replace(first_req, processor_version="two")
+    third_req = replace(first_req, processor_version="three")
     with cache.acquire(first_req) as first, cache.acquire(second_req) as second:
         pass
     with cache.acquire(first_req) as hit:
@@ -344,9 +359,7 @@ def test_recent_hit_controls_eviction_and_request_owns_options(tmp_path):
         assert new_second is not second
     assert cache.info().evictions == 2
     options = contracts.CompileOptions()
-    original = contracts.SchemaRef(
-        source=contracts.FileRef(path="root.xsd", revision="revision"), options=options
-    )
+    original = contracts.SchemaRef(source=contracts.FileRef(path="root.xsd"), options=options)
     owned = replace(first_req, schema_ref=original)
     options.namespace_schemas["urn:later"] = contracts.FileRef(path="missing.xsd")
     assert not owned.schema_ref.options.namespace_schemas
@@ -373,3 +386,40 @@ def test_repeated_parses_release_documents_and_cache_off_is_bounded(tmp_path):
             pytest.fail("Bypass compiles still consume active capacity")
     assert cache.info().active == 0
     cache.close()
+
+
+def test_non_source_policy_failure_during_hit_verification_is_not_hidden(tmp_path):
+    from pyxsd.mcp.cache import SchemaCache
+    from pyxsd.mcp.captures import CaptureDependency, InputPolicyError
+
+    cache = SchemaCache(Limits())
+    req = request(tmp_path)
+    try:
+        with cache.acquire(req):
+            pass
+        key = next(iter(cache._entries))
+        cache._entries[key].policy._dependencies["../escape.xsd"] = CaptureDependency(
+            "../escape.xsd", None, 0
+        )
+        with pytest.raises(InputPolicyError, match="invalid_path"), cache.acquire(req):
+            pass
+    finally:
+        cache.close()
+
+
+def test_changed_capture_dependency_evicts_the_cached_schema(tmp_path):
+    from pyxsd.mcp.cache import SchemaCache
+    from pyxsd.mcp.captures import InputPolicyError
+
+    cache = SchemaCache(Limits())
+    req = request(tmp_path)
+    try:
+        with cache.acquire(req):
+            pass
+        (tmp_path / "root.xsd").write_text(XSD + " ")
+        with pytest.raises(InputPolicyError, match="source_changed"), cache.acquire(req):
+            pass
+        assert cache.info().stale == 1
+        assert cache.info().entries == 0
+    finally:
+        cache.close()

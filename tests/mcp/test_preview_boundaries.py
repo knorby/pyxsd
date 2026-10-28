@@ -1,4 +1,4 @@
-"""D2 boundary contracts: serialization diffs, hostile workers, safe IPC."""
+"""Preview boundary contracts: serialization, hostile workers, safe IPC."""
 
 import hashlib
 import json
@@ -12,11 +12,10 @@ pytest.importorskip("anyio")
 pytest.importorskip("defusedxml")
 
 import anyio
-from tests.mcp.test_previews import harness
+from tests.mcp.test_previews import harness, preview
 
-from pyxsd.mcp.contracts import FileRef, SchemaRef
+from pyxsd.mcp.contracts import FileRef, InlineFile, SchemaRef
 from pyxsd.mcp.errors import ToolError
-from pyxsd.mcp.safe_io import AdmittedFile
 
 FORGED_DIGEST = "0" * 64
 
@@ -66,41 +65,20 @@ SMUGGLED_FRAME = (
 )
 
 
-async def submit_preview(service, principal, workspace, source, *, document, key=None):
-    from pyxsd.mcp.previews import PreviewTransformRequest
-    from pyxsd.mcp.transforms import normalize_transform
-
-    request = PreviewTransformRequest(
-        workspace_id=workspace,
-        document=FileRef(path=document),
-        source_schema=SchemaRef(source=FileRef(path="schema.xsd")),
-        transform=normalize_transform({"kind": "python", "source": source}, service.limits),
-    )
-    return await service.preview(principal, request)
-
-
 def test_noop_transform_diff_includes_serialization_only_changes(tmp_path):
     async def scenario():
-        async with harness(tmp_path) as (service, principal, workspace):
-            current = await service.snapshots.get(principal, workspace)
-            await service.snapshots.put_bytes(
-                principal,
+        async with harness(tmp_path) as (service, workspace):
+            await service.inputs.put_files(
                 workspace,
-                [AdmittedFile("valid.xml", b"<root><item>42</item></root>")],
-                expected_revision=current.revision,
+                [InlineFile(path="valid.xml", text="<root><item>42</item></root>")],
             )
-            record = await submit_preview(service, principal, workspace, NOOP, document="valid.xml")
+            request = _request(workspace, "valid.xml", NOOP)
+            record = await service.preview(workspace, request)
             assert record.valid is True
-            original = await service.artifacts.read(
-                principal, record.original.id, offset=0, length=8000
-            )
-            candidate = await service.artifacts.read(
-                principal, record.candidate.id, offset=0, length=8000
-            )
-            assert original == b"<root><item>42</item></root>"
-            assert candidate != original
+            candidate = await service.outputs.read(record.candidate.id, offset=0, length=8000)
+            assert candidate != b"<root><item>42</item></root>"
             assert record.candidate.digest == hashlib.sha256(candidate).hexdigest()
-            diff = await service.artifacts.read(principal, record.diff.id, offset=0, length=24000)
+            diff = await service.outputs.read(record.diff.id, offset=0, length=24000)
             assert diff, "serialization-only changes must appear in the byte diff"
             assert any("serialization" in warning.lower() for warning in record.warnings)
             assert any("comment" in warning.lower() for warning in record.warnings)
@@ -110,18 +88,12 @@ def test_noop_transform_diff_includes_serialization_only_changes(tmp_path):
 
 def test_nondeterministic_transforms_retain_independent_candidates(tmp_path):
     async def scenario():
-        async with harness(tmp_path) as (service, principal, workspace):
-            one = await submit_preview(
-                service, principal, workspace, NONDETERMINISTIC, document="document.xml"
-            )
-            two = await submit_preview(
-                service, principal, workspace, NONDETERMINISTIC, document="document.xml"
-            )
+        async with harness(tmp_path) as (service, workspace):
+            one = await preview(service, workspace, NONDETERMINISTIC)
+            two = await preview(service, workspace, NONDETERMINISTIC)
             assert one.candidate.digest != two.candidate.digest
             for record in (one, two):
-                content = await service.artifacts.read(
-                    principal, record.candidate.id, offset=0, length=8000
-                )
+                content = await service.outputs.read(record.candidate.id, offset=0, length=8000)
                 assert record.candidate.digest == hashlib.sha256(content).hexdigest()
 
     anyio.run(scenario)
@@ -129,16 +101,11 @@ def test_nondeterministic_transforms_retain_independent_candidates(tmp_path):
 
 def test_forged_worker_hash_claim_is_ignored(tmp_path):
     async def scenario():
-        async with harness(tmp_path) as (service, principal, workspace):
-            record = await submit_preview(
-                service, principal, workspace, FORGED_HASH, document="document.xml"
-            )
-            content = await service.artifacts.read(
-                principal, record.candidate.id, offset=0, length=8000
-            )
+        async with harness(tmp_path) as (service, workspace):
+            record = await preview(service, workspace, FORGED_HASH)
+            content = await service.outputs.read(record.candidate.id, offset=0, length=8000)
             assert b"<item>7</item>" in content
-            digest = hashlib.sha256(content).hexdigest()
-            assert record.candidate.digest == digest
+            assert record.candidate.digest == hashlib.sha256(content).hexdigest()
             assert record.candidate.digest != FORGED_DIGEST
             assert FORGED_DIGEST not in json.dumps(record.model_dump(mode="json"))
 
@@ -147,17 +114,22 @@ def test_forged_worker_hash_claim_is_ignored(tmp_path):
 
 def test_smuggled_stdout_frame_is_not_a_second_result(tmp_path):
     async def scenario():
-        async with harness(tmp_path) as (service, principal, workspace):
+        async with harness(tmp_path) as (service, workspace):
             with pytest.raises(ToolError, match="ipc_protocol"):
-                await submit_preview(
-                    service,
-                    principal,
-                    workspace,
-                    SMUGGLED_FRAME,
-                    document="document.xml",
-                )
+                await preview(service, workspace, SMUGGLED_FRAME)
 
     anyio.run(scenario)
+
+
+def _request(workspace, document, source):
+    from pyxsd.mcp.previews import PreviewTransformRequest
+
+    return PreviewTransformRequest(
+        workspace_id=workspace,
+        document=FileRef(path=document),
+        source_schema=SchemaRef(source=FileRef(path="schema.xsd")),
+        transform={"kind": "python", "source": source},
+    )
 
 
 def test_ipc_decode_refuses_executable_deserialization(tmp_path):

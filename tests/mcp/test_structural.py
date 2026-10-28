@@ -11,11 +11,11 @@ pytest.importorskip("defusedxml")
 
 import anyio
 
+from pyxsd.mcp.captures import CaptureFile, InputCapture
 from pyxsd.mcp.config import Limits
 from pyxsd.mcp.contracts import FileRef
-from pyxsd.mcp.snapshots import Snapshot, SnapshotFile
 from pyxsd.mcp.worker_protocol import StructuralDiffOperation
-from pyxsd.mcp.workers import WorkerPool, snapshot_to_wire
+from pyxsd.mcp.workers import WorkerPool, capture_to_wire
 
 
 @pytest.mark.parametrize("limit", [1, 50])
@@ -27,16 +27,15 @@ def test_added_removed_changed_and_unchanged_occurrences_are_bounded(tmp_path, l
     manifest = []
     for path, content in files.items():
         (tmp_path / path).write_bytes(content)
-        manifest.append(SnapshotFile(path, hashlib.sha256(content).hexdigest(), len(content)))
-    snapshot = Snapshot("workspace", "revision", tmp_path, tuple(manifest))
+        manifest.append(CaptureFile(path, hashlib.sha256(content).hexdigest(), len(content)))
+    capture = InputCapture("workspace", 1, tmp_path, tuple(manifest))
 
     async def scenario():
         async with WorkerPool(Limits(workers=1)) as pool:
             result = await pool.run(
                 StructuralDiffOperation(
                     request_id="diff",
-                    owner_id="owner",
-                    snapshot=snapshot_to_wire(snapshot),
+                    capture=capture_to_wire(capture),
                     original=FileRef(path="old.xml"),
                     candidate=FileRef(path="new.xml"),
                     limit=limit,

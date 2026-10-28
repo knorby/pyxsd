@@ -50,14 +50,14 @@ server and let MCP clients explore schemas, validate XML, and inspect exact
 diagnostic occurrences. The primary launch method is `uvx`:
 
 ```bash
-uvx --from 'pyxsd[mcp]' pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
+uvx --from 'pyxsd[mcp]' pyxsd-mcp
 ```
 
 Alternatively, install the optional dependencies and launch directly:
 
 ```bash
 pip install 'pyxsd[mcp]'
-pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
+pyxsd-mcp
 ```
 
 The local stdio server provides:
@@ -68,18 +68,21 @@ The local stdio server provides:
   paged issue reports, source/schema fingerprints, and curated explanations
 - **Bounded XPath queries** — scalar values, node summaries, and subtrees with
   external-resource functions disabled
-- **Private immutable state** — workspaces, revisions, digest-verified
-  artifacts, bounded cursors, and no arbitrary client-selected mounts
-- **Clean worker processes** — bounded JSON IPC, schema leases, deadlines,
-  queue limits, cancellation, recycling, and no pickle transport
+- **Local session inputs** — replaceable schema/XML upload sets, private
+  verified operation captures, and no arbitrary client-selected mounts
+- **Persistent outputs** — digest-verified local artifacts that survive restart
+  and are deleted only when explicitly requested
+- **Clean worker processes** — bounded JSON IPC, content-keyed schema caches,
+  deadlines, queue limits, cancellation, recycling, and no pickle transport
 - **MCP-native results** — strict input/output schemas, `structuredContent`
-  plus JSON text, real error flags, resources, prompts, and oversized-result
-  artifacts rather than truncated responses
+  plus JSON text, real error flags, resources, prompts, validation, comparison,
+  transform previews, record exports, and oversized-result artifacts rather than
+  truncated responses
 
 Start with the [MCP guide](https://pyxsd.knorby.com/mcp.html) for a complete
-Python client example, tool catalog, lifecycle rules, and deployment boundaries.
-Execution is disabled in this build. The server speaks stdio only; there is no
-HTTP/OAuth mode, and remote user-code execution is not included.
+Python client example, tool catalog, session/output lifecycle, and deployment
+boundaries. Execution is disabled in this build. The server speaks stdio only;
+there is no HTTP/OAuth mode, and remote user-code execution is not included.
 
 ## Uses
 

@@ -1,4 +1,4 @@
-"""Durable previews retain bytes and validate outside the execution process."""
+"""Preview outputs retain exact candidate bytes and validate outside execution."""
 
 import difflib
 import hashlib
@@ -6,24 +6,34 @@ import json
 import secrets
 import tempfile
 import time
-from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Literal, cast
 
 from pydantic import JsonValue
 
-from .artifacts import ArtifactStore
+from .captures import CaptureFile, InputCapture
 from .contracts import ArtifactRef, FileRef, Nonempty, SchemaRef, WireModel
 from .errors import ToolError
 from .execution import TrustedLocalExecution
+from .inputs import SessionInputs
+from .output_store import OutputRef, OutputStore
 from .safe_io import SafeDirectory
-from .snapshot_store import SnapshotStore
-from .snapshots import Snapshot, SnapshotFile
 from .transforms import PipelineTransformSpec, TransformSpec, normalize_transform, resolve_sources
 from .worker_protocol import Operation, ParseOperation, StructuralDiffOperation
-from .workers import WorkerPool, snapshot_from_wire, snapshot_to_wire
-from .workspaces import Principal
+from .workers import WorkerPool, capture_to_wire
+
+
+def _artifact(reference: OutputRef) -> ArtifactRef:
+    return ArtifactRef(
+        id=reference.id,
+        path=str(reference.path),
+        media_type=reference.media_type,
+        size=reference.size,
+        digest=reference.digest,
+        created_at=reference.created_at,
+        kind=reference.kind,
+    )
 
 
 class PreviewTransformRequest(WireModel):
@@ -44,11 +54,10 @@ class PreviewCheckpoint(WireModel):
 class PreviewRecord(WireModel):
     id: Nonempty
     workspace_id: Nonempty
-    revision: Nonempty
+    generation: int
     input_digest: str
     schema_digest: str
     code_digest: str
-    original: ArtifactRef
     candidate: ArtifactRef
     report: ArtifactRef
     diff: ArtifactRef
@@ -56,8 +65,6 @@ class PreviewRecord(WireModel):
     valid: bool
     well_formed: bool
     warnings: list[str]
-    expires_at: float
-    publication_state: Literal["available"] = "available"
     checkpoints: tuple[PreviewCheckpoint, ...] = ()
 
 
@@ -74,26 +81,22 @@ class PreviewOperation(Operation):
 class PreviewService:
     def __init__(
         self,
-        snapshots: SnapshotStore,
+        inputs: SessionInputs,
         pool: WorkerPool,
-        artifacts: ArtifactStore,
+        outputs: OutputStore,
         *,
         backend: str = "disabled",
         registry: dict[str, str] | None = None,
     ) -> None:
-        self.snapshots, self.pool, self.artifacts = snapshots, pool, artifacts
-        self.limits = snapshots.limits
+        self.inputs, self.pool, self.outputs = inputs, pool, outputs
+        self.limits = inputs.limits
         self.backend = backend
         self.registry = dict(registry or {})
-        self.staging = snapshots.state.root / "preview-staging"
+        self.staging = outputs.storage.scratch / "preview-staging"
         self.staging.mkdir(mode=0o700, exist_ok=True)
         self.execution = TrustedLocalExecution(self.staging, self.limits)
-        self._previews: dict[tuple[str, str], PreviewRecord] = {}
 
-    async def preview(
-        self, principal: Principal, request: PreviewTransformRequest
-    ) -> PreviewRecord:
-        principal.require("pyxsd:execute", "pyxsd:read", "pyxsd:upload")
+    async def preview(self, workspace_id: str, request: PreviewTransformRequest) -> PreviewRecord:
         if self.backend != "trusted-local":
             raise ToolError("execution_unavailable", "No supported execution backend configured")
         spec = normalize_transform(request.transform, self.limits)
@@ -102,82 +105,49 @@ class PreviewService:
             if isinstance(spec, PipelineTransformSpec)
             else {}
         )
-        refs = [request.document, request.source_schema.source]
-        if request.target_schema is not None:
-            refs.append(request.target_schema.source)
-        revisions = {ref.revision for ref in refs if ref.revision is not None}
-        if len(revisions) > 1:
-            raise ToolError("stale_reference", "Preview references must share a revision")
-        async with self.snapshots.workspaces.lease(principal, request.workspace_id):
-            snapshot = await self.snapshots.get(
-                principal, request.workspace_id, revision=next(iter(revisions), None)
-            )
+        async with self.inputs.capture(workspace_id) as capture:
             operation = PreviewOperation(
                 request_id=secrets.token_hex(16),
-                owner_id=principal.owner_id,
-                snapshot=snapshot_to_wire(snapshot),
+                capture=capture_to_wire(capture),
                 document=request.document,
                 source_schema=request.source_schema,
                 target_schema=request.target_schema or request.source_schema,
                 transform=spec,
                 sources=sources,
             )
-            reply = await self._execute(
-                operation, deadline=time.monotonic() + self.limits.transform_seconds
+            return await self._execute(
+                operation,
+                capture,
+                deadline=time.monotonic() + self.limits.transform_seconds,
             )
-            self._previews[(principal.owner_id, reply.id)] = reply
-            return reply
 
-    async def get(self, principal: Principal, preview_id: str) -> PreviewRecord:
-        record = self._previews.get((principal.owner_id, preview_id))
-        if record is None:
-            raise ToolError("preview_unavailable", "Preview has no retained result")
-        if record.expires_at <= time.time():
-            raise ToolError("preview_expired", "Preview has expired")
-        return record
-
-    async def _put(
-        self, principal: Principal, workspace: str, content: bytes, media: str
-    ) -> ArtifactRef:
-        async def chunks() -> AsyncIterator[bytes]:
-            yield content
-
-        return await self.artifacts.put(
-            principal,
-            workspace,
-            chunks(),
-            media_type=media,
-            limit=self.limits.output_bytes,
-            ttl=max(1, self.limits.preview_seconds),
+    async def _put(self, content: bytes, media: str, *, name: str, kind: str) -> ArtifactRef:
+        return _artifact(
+            await self.outputs.put_bytes(content, name=name, media_type=media, kind=kind)
         )
 
-    async def _execute(self, operation: PreviewOperation, *, deadline: float) -> PreviewRecord:
-        principal = Principal(
-            operation.owner_id, frozenset({"pyxsd:read", "pyxsd:upload", "pyxsd:execute"})
-        )
-        snapshot = snapshot_from_wire(operation.snapshot)
+    async def _execute(
+        self, operation: PreviewOperation, capture: InputCapture, *, deadline: float
+    ) -> PreviewRecord:
         # Preserve inputs before user code runs. Local execution has launching-user
         # privileges; it must not supply the schema bytes used for the final verdict.
-        with SafeDirectory(snapshot.root) as source:
+        with SafeDirectory(capture.root) as source:
             originals = {
                 item.path: source.read(item.path, max_bytes=self.limits.xml_file_bytes).content
-                for item in snapshot.files
+                for item in capture.files
             }
         if any(
             hashlib.sha256(originals[item.path]).hexdigest() != item.digest
-            for item in snapshot.files
+            for item in capture.files
         ):
             raise ToolError("source_changed", "Preview input differs from its manifest")
         original = originals[operation.document.path]
-        original_ref = await self._put(
-            principal, snapshot.workspace_id, original, "application/xml"
-        )
         with tempfile.TemporaryDirectory(prefix="preview-", dir=self.staging) as directory:
             root = Path(directory)
             self._materialize(root, originals)
-            isolated_input = replace(snapshot, root=root)
+            isolated = replace(capture, root=root)
             candidate = await self.execution.run(
-                isolated_input,
+                isolated,
                 operation.source_schema,
                 operation.document,
                 operation.transform,
@@ -185,28 +155,31 @@ class PreviewService:
                 deadline=deadline,
             )
         valid, well_formed, report = await self._validate(
-            operation, snapshot, originals, candidate.content, operation.target_schema, deadline
+            operation, capture, originals, candidate.content, operation.target_schema, deadline
         )
         structural: JsonValue = (
-            await self._compare(operation, snapshot, originals, candidate.content, deadline)
+            await self._compare(operation, capture, originals, candidate.content, deadline)
             if well_formed
             else {"available": False, "reason": "Candidate is not well-formed XML"}
         )
         checkpoints = []
-        for content in candidate.checkpoint_candidates:
+        for index, content in enumerate(candidate.checkpoint_candidates):
             checkpoint_valid, checkpoint_formed, checkpoint_report = await self._validate(
-                operation, snapshot, originals, content, operation.source_schema, deadline
+                operation, capture, originals, content, operation.source_schema, deadline
             )
             checkpoints.append(
                 PreviewCheckpoint(
                     candidate=await self._put(
-                        principal, snapshot.workspace_id, content, "application/xml"
+                        content,
+                        "application/xml",
+                        name=f"checkpoint-{index}.xml",
+                        kind="preview-checkpoint",
                     ),
                     report=await self._put(
-                        principal,
-                        snapshot.workspace_id,
                         json.dumps(checkpoint_report, separators=(",", ":")).encode(),
                         "application/json",
+                        name=f"checkpoint-{index}-report.json",
+                        kind="preview-checkpoint-report",
                     ),
                     valid=checkpoint_valid,
                     well_formed=checkpoint_formed,
@@ -214,10 +187,8 @@ class PreviewService:
             )
         return await self._record(
             operation,
-            snapshot,
-            principal,
+            capture,
             original,
-            original_ref,
             candidate.content,
             valid,
             well_formed,
@@ -229,7 +200,7 @@ class PreviewService:
     async def _compare(
         self,
         operation: PreviewOperation,
-        snapshot: Snapshot,
+        capture: InputCapture,
         originals: dict[str, bytes],
         content: bytes,
         deadline: float,
@@ -240,18 +211,17 @@ class PreviewService:
             name = "candidate-" + secrets.token_hex(16) + ".xml"
             (root / name).write_bytes(content)
             comparison = replace(
-                snapshot,
+                capture,
                 root=root,
                 files=(
-                    *snapshot.files,
-                    SnapshotFile(name, hashlib.sha256(content).hexdigest(), len(content)),
+                    *capture.files,
+                    CaptureFile(name, hashlib.sha256(content).hexdigest(), len(content)),
                 ),
             )
             reply = await self.pool.run(
                 StructuralDiffOperation(
                     request_id=secrets.token_hex(16),
-                    owner_id=operation.owner_id,
-                    snapshot=snapshot_to_wire(comparison),
+                    capture=capture_to_wire(comparison),
                     original=operation.document,
                     candidate=FileRef(path=name),
                     limit=self.limits.page_items,
@@ -266,7 +236,7 @@ class PreviewService:
     async def _validate(
         self,
         operation: PreviewOperation,
-        snapshot: Snapshot,
+        capture: InputCapture,
         originals: dict[str, bytes],
         content: bytes,
         schema_ref: SchemaRef,
@@ -280,19 +250,18 @@ class PreviewService:
             candidate_path = "candidate-" + secrets.token_hex(16) + ".xml"
             (root / candidate_path).write_bytes(content)
             digest = hashlib.sha256(content).hexdigest()
-            validation_snapshot = replace(
-                snapshot,
+            validation_capture = replace(
+                capture,
                 root=root,
                 files=(
-                    *snapshot.files,
-                    SnapshotFile(candidate_path, digest, len(content)),
+                    *capture.files,
+                    CaptureFile(candidate_path, digest, len(content)),
                 ),
             )
             validation = await self.pool.run(
                 ParseOperation(
                     request_id=secrets.token_hex(16),
-                    snapshot=snapshot_to_wire(validation_snapshot),
-                    owner_id=operation.owner_id,
+                    capture=capture_to_wire(validation_capture),
                     schema_ref=schema_ref,
                     document=FileRef(path=candidate_path),
                     issue_limit=self.limits.page_items,
@@ -318,10 +287,8 @@ class PreviewService:
     async def _record(
         self,
         operation: PreviewOperation,
-        snapshot: Snapshot,
-        principal: Principal,
+        capture: InputCapture,
         original: bytes,
-        original_ref: ArtifactRef,
         content: bytes,
         valid: bool,
         well_formed: bool,
@@ -330,13 +297,13 @@ class PreviewService:
         structural: JsonValue,
     ) -> PreviewRecord:
         candidate_ref = await self._put(
-            principal, snapshot.workspace_id, content, "application/xml"
+            content, "application/xml", name="candidate.xml", kind="preview-candidate"
         )
         report_ref = await self._put(
-            principal,
-            snapshot.workspace_id,
             json.dumps(report, separators=(",", ":")).encode(),
             "application/json",
+            name="report.json",
+            kind="preview-report",
         )
         diff = "".join(
             difflib.unified_diff(
@@ -346,12 +313,12 @@ class PreviewService:
                 tofile="candidate",
             )
         ).encode()
-        diff_ref = await self._put(principal, snapshot.workspace_id, diff, "text/x-diff")
+        diff_ref = await self._put(diff, "text/x-diff", name="candidate.diff", kind="preview-diff")
         structural_ref = await self._put(
-            principal,
-            snapshot.workspace_id,
             json.dumps(structural, separators=(",", ":")).encode(),
             "application/json",
+            name="structural.json",
+            kind="preview-structural",
         )
         code = (
             operation.transform.source
@@ -364,22 +331,21 @@ class PreviewService:
                 sort_keys=True,
             )
         )
-        record = PreviewRecord(
+        return PreviewRecord(
             id=operation.request_id,
-            workspace_id=snapshot.workspace_id,
-            revision=snapshot.revision,
+            workspace_id=capture.workspace_id,
+            generation=capture.generation,
             input_digest=hashlib.sha256(original).hexdigest(),
             schema_digest=hashlib.sha256(
                 json.dumps(
                     {
-                        "files": [(item.path, item.digest) for item in snapshot.files],
+                        "files": [(item.path, item.digest) for item in capture.files],
                         "schema": operation.target_schema.model_dump(mode="json"),
                     },
                     sort_keys=True,
                 ).encode()
             ).hexdigest(),
             code_digest=hashlib.sha256(code.encode()).hexdigest(),
-            original=original_ref,
             candidate=candidate_ref,
             report=report_ref,
             diff=diff_ref,
@@ -390,23 +356,7 @@ class PreviewService:
             warnings=[
                 "Serialization may alter prefixes, layout, mixed-content presentation and comments; the byte diff includes serialization-only changes."
             ],
-            expires_at=min(
-                ref.expires_at
-                for ref in (
-                    original_ref,
-                    candidate_ref,
-                    report_ref,
-                    diff_ref,
-                    structural_ref,
-                    *(
-                        ref
-                        for checkpoint in checkpoints
-                        for ref in (checkpoint.candidate, checkpoint.report)
-                    ),
-                )
-            ),
         )
-        return record
 
     @staticmethod
     def _materialize(root: Path, files: dict[str, bytes]) -> None:

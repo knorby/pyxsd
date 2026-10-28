@@ -10,12 +10,16 @@ pytest.importorskip("anyio")
 import anyio
 
 from pyxsd.mcp import responses
-from pyxsd.mcp.artifacts import ArtifactStore
 from pyxsd.mcp.config import Limits
 from pyxsd.mcp.contracts import ToolEnvelope
 from pyxsd.mcp.errors import ToolError
-from pyxsd.mcp.state import State
-from pyxsd.mcp.workspaces import WorkspaceStore, stdio_principal
+from pyxsd.mcp.output_store import OutputStore
+from pyxsd.mcp.storage import Storage
+
+
+def _store(tmp_path, limits=None):
+    storage = Storage(tmp_path / "state", persist=False)
+    return storage, OutputStore(storage, limits or Limits())
 
 
 @pytest.mark.parametrize(
@@ -29,49 +33,37 @@ from pyxsd.mcp.workspaces import WorkspaceStore, stdio_principal
 )
 def test_large_results_spill_once_as_valid_json(tmp_path, envelope):
     async def scenario():
-        with State(tmp_path / "state") as state:
-            workspaces = WorkspaceStore(state, Limits())
-            workspace = await workspaces.create(stdio_principal())
-            store = ArtifactStore(workspaces)
-            result = await responses.render_result(stdio_principal(), workspace.id, envelope, store)
+        storage, store = _store(tmp_path)
+        try:
+            result = await responses.render_result(envelope, store)
             encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()
-            assert len(encoded) <= workspaces.limits.result_bytes
+            assert len(encoded) <= store.limits.result_bytes
             structured = result["structuredContent"]
             assert json.loads(result["content"][0]["text"]) == structured
             ref = structured["artifacts"][0]
             parts = []
             for offset in range(0, ref["size"], 24576):
-                parts.append(
-                    await store.read(stdio_principal(), ref["id"], offset=offset, length=24576)
-                )
+                parts.append(await store.read(ref["id"], offset=offset, length=24576))
             assert json.loads(b"".join(parts)) == envelope.model_dump(mode="json")
-            assert (
-                await state.run(
-                    lambda db: db.execute("SELECT count(*) FROM artifacts").fetchone()[0]
-                )
-                == 1
-            )
             assert "unique-body-marker" not in result["content"][0]["text"]
+        finally:
+            store.close()
+            storage.close()
 
     anyio.run(scenario)
 
 
 def test_small_result_does_not_create_artifacts(tmp_path):
     async def scenario():
-        with State(tmp_path / "state") as state:
-            workspaces = WorkspaceStore(state, Limits())
-            workspace = await workspaces.create(stdio_principal())
+        storage, store = _store(tmp_path)
+        try:
             envelope = ToolEnvelope(data={"hello": "world"})
-            result = await responses.render_result(
-                stdio_principal(), workspace.id, envelope, ArtifactStore(workspaces)
-            )
+            result = await responses.render_result(envelope, store)
             assert result["structuredContent"] == envelope.model_dump(mode="json")
-            assert (
-                await state.run(
-                    lambda db: db.execute("SELECT count(*) FROM artifacts").fetchone()[0]
-                )
-                == 0
-            )
+            assert await store.list() == ([], None)
+        finally:
+            store.close()
+            storage.close()
 
     anyio.run(scenario)
 
@@ -86,18 +78,13 @@ def test_small_result_does_not_create_artifacts(tmp_path):
 )
 def test_unrepresentable_results_fail_before_retaining_bytes(tmp_path, limits, envelope, code):
     async def scenario():
-        with State(tmp_path / "state") as state:
-            workspaces = WorkspaceStore(state, limits)
-            workspace = await workspaces.create(stdio_principal())
+        storage, store = _store(tmp_path, limits)
+        try:
             with pytest.raises(ToolError, match=code):
-                await responses.render_result(
-                    stdio_principal(), workspace.id, envelope, ArtifactStore(workspaces)
-                )
-            assert (
-                await state.run(
-                    lambda db: db.execute("SELECT count(*) FROM artifacts").fetchone()[0]
-                )
-                == 0
-            )
+                await responses.render_result(envelope, store)
+            assert await store.list() == ([], None)
+        finally:
+            store.close()
+            storage.close()
 
     anyio.run(scenario)

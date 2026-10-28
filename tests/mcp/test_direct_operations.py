@@ -9,7 +9,7 @@ pytest.importorskip("defusedxml")
 import anyio
 
 from pydantic import ValidationError
-from pyxsd.mcp.contracts import FileRef, SchemaRef
+from pyxsd.mcp.contracts import FileRef, InlineFile, SchemaRef
 from pyxsd.mcp.errors import ToolError
 
 OLD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -44,9 +44,7 @@ def test_sdk_exposes_direct_results_and_no_job_tools(tmp_path):
             assert "pyxsd_job_status" not in names
             assert "pyxsd_cancel_job" not in names
 
-            created = await client.call_tool(
-                "pyxsd_manage_workspace", {"action": "create", "idempotency_key": "direct"}
-            )
+            created = await client.call_tool("pyxsd_manage_workspace", {"action": "create"})
             workspace = created.structured_content["data"]["id"]
             await client.call_tool(
                 "pyxsd_put_files",
@@ -57,7 +55,6 @@ def test_sdk_exposes_direct_results_and_no_job_tools(tmp_path):
                         {"path": "new.xsd", "text": NEW},
                         {"path": "doc.xml", "text": DOC},
                     ],
-                    "expected_revision": None,
                 },
             )
             compared = await client.call_tool(
@@ -90,16 +87,8 @@ def test_sdk_exposes_direct_results_and_no_job_tools(tmp_path):
             assert "valid" in record, record
             assert record["candidate"]["digest"]
             assert "state" not in record
-            committed = await client.call_tool(
-                "pyxsd_commit_transform",
-                {
-                    "preview_id": record["id"],
-                    "expected_candidate_digest": record["candidate"]["digest"],
-                    "destination": "revised.xml",
-                    "idempotency_key": "direct-publish",
-                },
-            )
-            assert committed.structured_content["data"]["destination"] == "revised.xml"
+            names = {tool.name for tool in (await client.list_tools()).tools}
+            assert "pyxsd_commit_transform" not in names
 
     anyio.run(scenario)
 
@@ -126,27 +115,36 @@ def test_direct_requests_have_no_job_only_idempotency_field():
             model(idempotency_key="not-a-job", **fields)
 
 
-def test_preview_handles_are_session_scoped_and_expire(tmp_path):
-    from tests.mcp.test_previews import harness, preview
+def test_artifacts_survive_session_restart_but_workspaces_do_not(tmp_path):
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.inputs import SessionInputs
+    from pyxsd.mcp.output_store import OutputStore
+    from pyxsd.mcp.storage import Storage
 
     async def scenario():
-        async with harness(tmp_path) as (service, principal, workspace):
-            record = await preview(service, principal, workspace, REPAIR)
-            assert (await service.get(principal, record.id)).id == record.id
-
-            service._previews[(principal.owner_id, record.id)] = record.model_copy(
-                update={"expires_at": 0}
+        storage = Storage(tmp_path / "state")
+        try:
+            outputs = OutputStore(storage, Limits())
+            inputs = SessionInputs(storage.scratch, Limits())
+            workspace = await inputs.create()
+            await inputs.put_files(workspace.id, [InlineFile(path="doc.xml", text=DOC)])
+            kept = await outputs.put_bytes(
+                b"evidence", name="report.json", media_type="application/json", kind="report"
             )
-            with pytest.raises(ToolError, match="preview_expired"):
-                await service.get(principal, record.id)
+            outputs.close()
+        finally:
+            storage.close()
 
-            fresh = type(service)(
-                service.snapshots,
-                service.pool,
-                service.artifacts,
-                backend="trusted-local",
-            )
-            with pytest.raises(ToolError, match="preview_unavailable"):
-                await fresh.get(principal, record.id)
+        restarted = Storage(tmp_path / "state")
+        try:
+            outputs = OutputStore(restarted, Limits())
+            inputs = SessionInputs(restarted.scratch, Limits())
+            assert await inputs.list() == []
+            with pytest.raises(ToolError, match="not_found"):
+                await inputs.put_files(workspace.id, [])
+            assert await outputs.read(kept.id, offset=0, length=64) == b"evidence"
+            outputs.close()
+        finally:
+            restarted.close()
 
     anyio.run(scenario)

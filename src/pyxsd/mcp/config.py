@@ -8,6 +8,10 @@ from pydantic import Field, model_validator
 from .contracts import PositiveBudget, WireModel
 
 
+def default_state_dir() -> Path:
+    return Path.home() / ".local/state/pyxsd/mcp"
+
+
 class Limits(WireModel):
     xml_file_bytes: PositiveBudget = 64 * 2**20
     schema_file_bytes: PositiveBudget = 16 * 2**20
@@ -18,12 +22,8 @@ class Limits(WireModel):
     inline_bytes: PositiveBudget = 2**20
     request_bytes: PositiveBudget = 2 * 2**20
     workspace_bytes: PositiveBudget = 512 * 2**20
-    artifact_bytes_per_workspace: PositiveBudget = 512 * 2**20
     workspaces: PositiveBudget = 32
-    snapshot_entries: PositiveBudget = 4096
-    artifact_entries: PositiveBudget = 4096
-    snapshot_revisions: PositiveBudget = 32
-    managed_bytes: PositiveBudget = 4 * 2**30
+    input_entries: PositiveBudget = 4096
     cache_entries: PositiveBudget = 8
     workers: PositiveBudget = 4
     worker_queue: PositiveBudget = 16
@@ -39,9 +39,6 @@ class Limits(WireModel):
     message_bytes: PositiveBudget = 4 * 2**10
     output_bytes: PositiveBudget = 128 * 2**20
     cache_idle_seconds: PositiveBudget = 900
-    workspace_idle_seconds: PositiveBudget = 3600
-    preview_seconds: PositiveBudget = 1800
-    diagnostic_seconds: PositiveBudget = 3600
     worker_operations: PositiveBudget = 100
     corpus_files: PositiveBudget = 100
     corpus_max_files: PositiveBudget = 1000
@@ -55,10 +52,11 @@ class Limits(WireModel):
 
 
 class Settings(WireModel):
-    state_dir: Path
+    state_dir: Path = Field(default_factory=default_state_dir)
+    persist: bool = True
     execution_backend: Literal["disabled", "trusted-local"] = "disabled"
     limits: Limits = Field(default_factory=Limits)
-    source_roots: dict[str, Path] = Field(default_factory=dict)
+    source_root: Path | None = None
     enabled_groups: set[str] = Field(default_factory=lambda: {"exploration", "workspaces"})
     pydantic: bool = True
     arrow: Literal["auto", "enabled", "disabled"] = "auto"
