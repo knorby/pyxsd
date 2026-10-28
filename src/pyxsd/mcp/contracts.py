@@ -140,33 +140,3 @@ class ReadArtifactRequest(WireModel):
     artifact_id: Nonempty
     offset: Annotated[int, Field(ge=0)] = 0
     length: PositiveBudget = 8 * 2**10
-
-
-JobState = Literal["queued", "running", "succeeded", "failed", "cancelled"]
-
-
-class JobRef(WireModel):
-    id: Nonempty
-    state: JobState
-    created_at: float
-    expires_at: float | None = None
-
-
-class JobResult(WireModel):
-    id: Nonempty
-    workspace_id: Nonempty
-    state: JobState
-    created_at: float
-    started_at: float | None = None
-    completed_at: float | None = None
-    expires_at: float | None = None
-    result: JsonValue = None
-    fault: ToolFault | None = None
-
-
-class JobStatusRequest(WireModel):
-    job_id: Nonempty
-
-
-class CancelJobRequest(WireModel):
-    job_id: Nonempty

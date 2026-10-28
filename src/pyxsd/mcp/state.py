@@ -5,7 +5,6 @@ import shutil
 import sqlite3
 import stat
 import threading
-import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -13,7 +12,6 @@ from typing import TypeVar
 
 import anyio
 
-from .config import Limits
 from .errors import ToolError
 
 T = TypeVar("T")
@@ -67,21 +65,6 @@ PRAGMA user_version = 3;
 COMMIT;
 """
 
-_JOBS = """
-BEGIN IMMEDIATE;
-CREATE TABLE jobs (
-    id TEXT PRIMARY KEY, owner TEXT NOT NULL, workspace TEXT NOT NULL,
-    operation TEXT NOT NULL, digest TEXT NOT NULL, idempotency TEXT NOT NULL,
-    state TEXT NOT NULL, created REAL NOT NULL, started REAL, completed REAL,
-    expires REAL NOT NULL DEFAULT 0, result TEXT, fault TEXT,
-    cancel_requested INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(owner, idempotency)
-);
-PRAGMA user_version = 4;
-COMMIT;
-"""
-
-
 _PUBLICATIONS = """
 BEGIN IMMEDIATE;
 CREATE TABLE publications (
@@ -105,7 +88,7 @@ class State:
     in a worker thread, not on the server event loop.
     """
 
-    def __init__(self, root: Path, *, limits: "Limits | None" = None) -> None:
+    def __init__(self, root: Path) -> None:
         try:
             import fcntl
         except ImportError as exc:
@@ -143,11 +126,9 @@ class State:
             if version == 2:
                 connection.executescript(_ARTIFACTS)
                 version = 3
-            if version == 3:
-                connection.executescript(_JOBS)
-                version = 4
-            if version == 4:
+            if version == 3 or version == 4:
                 connection.executescript(_PUBLICATIONS)
+                version = 5
             elif version != 5:
                 raise ToolError("state_version", "Unsupported state database version")
             # Staging intents precede filesystem writes. Only ready revisions
@@ -172,13 +153,6 @@ class State:
             connection.execute("DELETE FROM reservations")
             connection.execute(
                 "UPDATE workspaces SET leases=0, reserved_files=0, reserved_artifacts=0"
-            )
-            now = time.time()
-            connection.execute(
-                "UPDATE jobs SET state='failed', result=NULL, completed=?, expires=?, "
-                'fault=\'{"code":"interrupted","message":"Job was interrupted by coordinator restart","retryable":false,"details":{}}\' '
-                "WHERE state IN ('queued','running')",
-                (now, now + (limits or Limits()).job_result_seconds),
             )
             connection.commit()
             self._connection = connection

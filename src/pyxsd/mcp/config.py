@@ -26,8 +26,7 @@ class Limits(WireModel):
     managed_bytes: PositiveBudget = 4 * 2**30
     cache_entries: PositiveBudget = 8
     workers: PositiveBudget = 4
-    active_jobs_per_owner: PositiveBudget = 1
-    queued_jobs: PositiveBudget = 16
+    worker_queue: PositiveBudget = 16
     compile_query_seconds: PositiveBudget = 30
     transform_seconds: PositiveBudget = 60
     batch_seconds: PositiveBudget = 300
@@ -42,7 +41,6 @@ class Limits(WireModel):
     cache_idle_seconds: PositiveBudget = 900
     workspace_idle_seconds: PositiveBudget = 3600
     preview_seconds: PositiveBudget = 1800
-    job_result_seconds: PositiveBudget = 1800
     diagnostic_seconds: PositiveBudget = 3600
     worker_operations: PositiveBudget = 100
     corpus_files: PositiveBudget = 100

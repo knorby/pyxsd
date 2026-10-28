@@ -198,7 +198,7 @@ class WorkerPool:
     def __init__(self, limits: Limits) -> None:
         self.limits = limits
         self._lanes = tuple(_Lane() for _ in range(limits.workers))
-        self._slots = anyio.CapacityLimiter(limits.workers + limits.queued_jobs)
+        self._slots = anyio.CapacityLimiter(limits.workers + limits.worker_queue)
         self._closed = False
         self._inflight = 0
 

@@ -159,7 +159,7 @@ def test_queue_capacity_and_cancellation_release_slots(tmp_path):
     snapshot = make_snapshot(tmp_path, large=True)
 
     async def scenario():
-        pool = workers.WorkerPool(Limits(workers=1, queued_jobs=1))
+        pool = workers.WorkerPool(Limits(workers=1, worker_queue=1))
         first = parse_operation(workers, snapshot, "first", "large.xml")
         second = parse_operation(workers, snapshot, "second")
 
