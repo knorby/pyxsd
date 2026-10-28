@@ -1,55 +1,44 @@
 # MCP worker deployment
 
-This page describes the `pyxsd.mcp` worker-runtime boundary. It is not a claim
-that a hosted MCP service is ready for untrusted production traffic. The local
-runtime is deliberately **uncontained**; remote execution of user Python is not
-supported. No OCI/Docker backend or worker image is included.
+This page describes the `pyxsd.mcp` worker-runtime boundary. The server is a
+**local stdio process** that runs beside the MCP client. It is not a hosted
+multi-tenant service, and no network listener is included.
 
 ## Runtime choices
 
-- `LocalRuntime` starts clean Python worker subprocesses. It provides bounded
-  JSON IPC, per-schema serialization, deadlines, recycling and cancellation, but
-  no operating-system security boundary. Do not use it to execute untrusted code.
-- Execution is disabled by default at the application configuration layer.
-  Trusted-local transformation previews are available only through explicit
-  stdio opt-in; there is no fallback to another execution mode.
+- Clean workers are Python subprocesses with bounded JSON IPC, per-schema
+  serialization, deadlines, recycling and process-group cleanup, but no
+  operating-system security boundary.
+- Execution is disabled by default. Trusted-local transformation previews require
+  an explicit `--execution-backend trusted-local` opt-in and run with the
+  launching user's privileges, not in a sandbox. Do not use them for untrusted
+  code, and there is no fallback to another execution mode.
+- No OCI/Docker backend or worker image is included.
 
-Local clean workers use a bounded, role-validated JSON protocol. Python objects,
+Local workers use a bounded, role-validated JSON protocol. Python objects,
 pickle, live `Document` instances and arbitrary host file handles never cross
 the protocol boundary.
 
-## HTTP operation
+## State and transport
 
-`create_http_app()` shares the same services and domain operations as stdio, with
-per-request principals derived from `AccessToken.subject` and scopes. The
-`pyxsd-mcp` CLI exposes the same application through Uvicorn. Configure the
-issuer, audience, fixed JWKS URL, allowed hosts/origins, and private state root;
-do not put those values in tool arguments. Startup performs the configured JWKS
-preflight and starts the MCP session manager, then closes workers and state at
+Keep the state directory private and owned by the launching user. It contains
+workspaces, immutable revisions, artifacts and restart metadata; it is never
+selected by a tool argument. The server holds a process lock so a second
+coordinator cannot reset live leases, and it closes workers and state on
 shutdown.
 
-Use `ConfiguredTokenVerifier` for the built-in fixed-issuer JWT support or inject
-an SDK `TokenVerifier` for an embedding-specific identity system. Supported
-algorithms are restricted to `RS256`, `ES256`, and `EdDSA`; symmetric/shared-key
-modes are not accepted. Key refresh is bounded and happens only after the cache
-TTL or an unknown key ID. Redirected JWKS responses, empty key sets, invalid
-signatures, wrong issuer/audience/algorithm, expired tokens, and missing subjects
-are refused.
+The MCP transport is stdio only. There is no HTTP listener, OAuth/JWKS
+verification, request-derived principal, remote multi-client mode, or network
+file route. Workspace access uses the local process identity. Do not expose the
+stdio process through an untrusted relay.
 
-Protected `PUT /files/{workspace}/{path}` and `GET /artifacts/{id}` routes share
-the same principal and ownership checks as MCP tools. The request body limit is
-2 MiB, ranges are exact, and every download includes its digest. Trusted-local
-execution is rejected over HTTP; remote user-code execution is not supported.
+## Local boundaries
 
-## Remote deployment boundaries
+Source roots and the state directory stay under operator control. Bound request
+bodies, queues, reports, artifacts and execution time through `Settings.limits`.
+The initial topology is one coordinator with its own private state and worker
+subprocesses, not a distributed or shared-filesystem deployment.
 
-Terminate TLS at a reviewed reverse proxy and use the HTTP authentication and
-scope rules from the MCP design. Keep source roots and state directories outside
-client control. Bound request bodies, queues, reports, artifacts and execution
-time at the coordinator and at any operator-provided worker boundary.
-
-For mutually untrusted tenants, use a stronger operator-provided runtime or
-dedicated VM boundary and an explicit threat model; local workers do not
-establish a public-hosting safety claim. The initial topology is one coordinator
-with its own private state and workers, not a distributed/shared-filesystem
-deployment.
+For mutually untrusted code or tenants, use a separate operator-designed sandbox
+with its own threat model. Local workers do not establish a public-hosting or
+untrusted-code safety claim.

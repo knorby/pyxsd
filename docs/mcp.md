@@ -5,10 +5,10 @@ server. MCP clients can create private workspaces, explore compiled schemas,
 validate XML, follow diagnostics to exact source occurrences, run bounded XPath
 queries, and download immutable artifacts through one consistent tool surface.
 
-Both **stdio** and authenticated **streamable HTTP** are available. Execution is
-disabled by default. Local transformation previews require an explicit stdio
-opt-in and run with the launching user's privileges, not in a sandbox. See
-{doc}`mcp-deployment` for the worker boundary.
+The server is **stdio-only** and runs beside the MCP client. Execution is disabled
+by default. Local transformation previews require an explicit opt-in and run with
+the launching user's privileges, not in a sandbox. See {doc}`mcp-deployment` for
+the worker boundary.
 
 ## Install and launch
 
@@ -58,55 +58,14 @@ Capture resolves only that configured root for the local `stdio` principal; a
 client cannot mount an arbitrary directory. Normal workspace uploads use
 `pyxsd_put_files` and need no source mount.
 
-## Authenticated streamable HTTP
-
-Start the HTTP transport with an explicit issuer, audience, and JWKS endpoint:
-
-```bash
-pyxsd-mcp \
-  --transport streamable-http \
-  --http-host 127.0.0.1 --http-port 8000 \
-  --issuer-url https://issuer.example \
-  --audience https://mcp.example \
-  --jwks-url https://issuer.example/jwks.json \
-  --allowed-host '127.0.0.1:*' \
-  --allowed-origin https://client.example
-```
-
-The server verifies JWT signatures with the fixed issuer's keys, pinned accepted
-algorithms, audience, expiry and a non-empty subject. There is no login provider,
-request-selected issuer, or caller-selected tenant field. Workspace ownership
-comes from the verified subject, and scopes come from the verified token:
-
-- `pyxsd:read` — exploration, resources and artifact downloads
-- `pyxsd:upload` — workspace creation and file publication
-- `pyxsd:execute`, `pyxsd:write`, `pyxsd:replace`, `pyxsd:write-invalid` —
-  required by the corresponding preview/publication operations
-
-`/.well-known/oauth-protected-resource` advertises the resource metadata. Missing
-or invalid credentials receive a Bearer challenge; missing scopes are distinct
-from an unknown resource. Host and Origin allowlists apply to metadata, MCP and
-binary routes. Forwarded host/identity headers are not trusted. Terminate TLS at
-a reviewed reverse proxy and keep the issuer/JWKS origin fixed in deployment
-configuration.
-
-For local development only, `--loopback-dev` permits an unauthenticated server
-bound to loopback. It is an explicit development switch, not a remote mode.
-
 ### Binary transfer
 
-Authenticated routes preserve original bytes without JSON/base64 expansion:
-
-```text
-PUT /files/{workspace}/{path}
-GET /artifacts/{artifact_id}?offset=0&length=8192
-```
-
-`PUT` accepts `application/octet-stream` and publishes an immutable revision.
-Set `X-PyxSD-Expected-Revision` when updating an existing revision. Request bodies
-are limited to 2 MiB. `GET` verifies the same owner and returns the exact binary
-range, media type and `X-Content-SHA256` digest. No route mounts a host directory
-or accepts an arbitrary output path.
+Artifacts are read in bounded ranges with `pyxsd_read_artifact`
+(`artifact_id`, `offset`, `length`). The tool returns the exact bytes as base64
+plus media type and digest; verify the digest locally. The MCP SDK envelope
+carries the base64 expansion, so request bounded ranges. File uploads through
+`pyxsd_put_files` are text, while source-tree capture preserves original bytes.
+No route mounts a host directory or accepts an arbitrary output path.
 
 ## End-to-end client example
 
@@ -180,8 +139,8 @@ successful call. XML validation findings are different: an invalid document has
 | `pyxsd_query_document` | Runs XPath over the bound projection and returns scalars, node summaries, exact locations or bounded subtrees. |
 | `pyxsd_explain_issue` | Gives curated issue-code guidance, explicit unknowns, and optional exact issue lookup from a report artifact. |
 | `pyxsd_preview_records` | Projects document rows through Arrow with a 20-row preview cap, exact/incomplete counts, occurrence selectors and contextual columns. Read-only; requires the optional Arrow dependency. |
-| `pyxsd_export_records` | Durable job writing Parquet (single document) or a manifested dataset (multiple documents) as immutable digest-verified artifacts with provenance. Requires the execution tool group and Arrow. |
-| `pyxsd_compare_schemas` | Durable job diffing two schema revisions (added/removed/changed components including anonymous declarations) and optionally validating a corpus under both, classifying each file as valid/regressed/resolved/invalid/malformed/unbindable/skipped. |
+| `pyxsd_export_records` | Writes Parquet (single document) or a manifested dataset (multiple documents) as immutable digest-verified artifacts with provenance. Requires the execution tool group and Arrow. |
+| `pyxsd_compare_schemas` | Diffs two schema revisions (added/removed/changed components including anonymous declarations) and optionally validating a corpus under both, classifying each file as valid/regressed/resolved/invalid/malformed/unbindable/skipped. |
 | `pyxsd_read_artifact` | Returns a bounded byte range as base64 with digest and media type. |
 
 Schema and document references use workspace-relative POSIX paths:
@@ -224,9 +183,9 @@ carries a warning saying so. Selection uses either the declaration path
 `./item[@id='24']`), and contextual columns map record, ancestor and root
 `FieldSource` values.
 
-`pyxsd_export_records` submits a durable job that writes a single-document Parquet
-file or a multi-document manifested dataset inside a disposable worker output
-directory. The coordinator — never the worker — captures the bounded regular
+`pyxsd_export_records` synchronously writes a single-document Parquet file or a
+multi-document manifested dataset inside a disposable worker output directory and
+returns the retained artifact manifest directly. The coordinator — never the worker — captures the bounded regular
 files, hashes them, and retains them as immutable artifacts with digests, sizes,
 media types and a manifest of relative paths. Export refutes invalid documents
 (`invalid_document`), enforces the document-count corpus quota and a total output
@@ -260,8 +219,8 @@ whether to apply it. Existing documentation resources remain available.
 
 ## Schema comparison and migration evidence
 
-`pyxsd_compare_schemas` submits a durable job comparing an old and a new schema
-in clean workers. The structural diff reports added, removed and changed
+`pyxsd_compare_schemas` compares an old and a new schema in clean workers and
+returns the result directly. The structural diff reports added, removed and changed
 components — including anonymous declarations, which are identified by content
 address, so editing an inline declaration re-identifies it as an add/remove pair
 rather than a change — plus changed-field details, a namespace-change flag, and
@@ -274,7 +233,7 @@ invalid), `resolved` (was invalid, now valid), `invalid`, `malformed`,
 `unbindable`, or `skipped` — with per-file old/new verdicts and totals covering
 every category. Corpus size is capped (default 100, operator maximum 1,000), and
 a per-corpus time budget marks remaining files `skipped` instead of failing the
-job. Files are validated sequentially per schema.
+comparison. Files are validated sequentially per schema.
 
 Potential impact (the structural diff) is reported separately from observed
 corpus regressions, and the result states that **no universal compatibility
@@ -353,12 +312,12 @@ Important active limits (all operator-configurable in `Settings.limits`):
 | Output artifact | 128 MiB |
 | Clean cache entries / workers | 8 / 4 |
 | Worker operations before recycling | 100 |
-| Active jobs per owner / global queue | 1 / 16 |
+| Worker queue slots | 16 |
 | Compile or query deadline | 30 seconds |
 | Transform / batch deadline | 60 / 300 seconds |
 | Transform source / pipeline steps | 64 KiB / 32 |
 | Corpus files / file validation budget | 100 / 10 seconds |
-| Preview / job-result TTL | 30 / 30 minutes |
+| Preview TTL | 30 minutes |
 | Idle workspace / diagnostic TTL | 60 / 60 minutes |
 
 Compilation and binding choices are explicit per schema reference: XSD 1.0 or
@@ -378,14 +337,13 @@ Enable local previews only for code you trust:
 pyxsd-mcp --state-dir /absolute/private/state --execution-backend trusted-local
 ```
 
-This enables `pyxsd_preview_transform`, `pyxsd_job_status`,
-`pyxsd_cancel_job` and `pyxsd_commit_transform`. HTTP refuses trusted-local
-execution. Remote or untrusted-code execution is not currently supported, and an
+This enables `pyxsd_preview_transform` and `pyxsd_commit_transform`. The server is
+stdio-only; remote or untrusted-code execution is not currently supported, and an
 unavailable backend never falls back to another execution mode.
 
-Call `pyxsd_preview_transform` with `workspace_id`, `document`, `source_schema`,
-`transform` and `idempotency_key`. An optional `target_schema` supports migration
-previews. Python transforms use this form:
+Call `pyxsd_preview_transform` with `workspace_id`, `document`, `source_schema`
+and `transform`. An optional `target_schema` supports migration previews. Python
+transforms use this form:
 
 ```json
 {
@@ -400,26 +358,27 @@ registered source or supplied definitions, never implicit imports from the
 current directory. Source is capped at 64 KiB and recipes at 32 steps, or lower
 operator limits.
 
-Poll the returned job ID with `pyxsd_job_status`. A successful job returns a
-preview record with original/candidate hashes, validation reports, byte and
-positional structural diffs, checkpoint artifacts, warnings and expiry.
-Execution terminates before candidate capture. Separate clean workers validate
-the retained bytes and any requested checkpoints; executed code's validity
-claims do not determine the verdict. Invalid and malformed candidates remain
-inspectable. Serialization may change prefixes, layout, mixed-content
+The call returns a preview record with original/candidate hashes, validation
+reports, byte and positional structural diffs, checkpoint artifacts, warnings and
+expiry. Execution terminates before candidate capture. Separate clean workers
+validate the retained bytes and any requested checkpoints; executed code's
+validity claims do not determine the verdict. Invalid and malformed candidates
+remain inspectable. Serialization may change prefixes, layout, mixed-content
 presentation and comments; review the byte diff, not just structural changes.
 
-A preview does not publish files. Do not use the local backend for untrusted code.
+Preview records are session-scoped: they remain available to `commit` in the same
+server process and are discarded on restart. Rerun a preview after restart. A
+preview does not publish files. Do not use the local backend for untrusted code.
 
 ### Review and publish the retained candidate
 
 After inspecting the candidate, validation report, diffs and warnings, call
-`pyxsd_commit_transform` with the preview ID and candidate digest from the job
-result. Choose a workspace-relative destination and a stable idempotency key:
+`pyxsd_commit_transform` with the preview ID and candidate digest from the
+preview record. Choose a workspace-relative destination and a stable idempotency key:
 
 ```json
 {
-  "preview_id": "<preview job ID>",
+  "preview_id": "<preview ID>",
   "expected_candidate_digest": "<candidate SHA-256>",
   "destination": "reviewed.xml",
   "mode": "new",
@@ -434,11 +393,11 @@ expired, and `new` refuses an existing destination. `replace` additionally
 requires `pyxsd:replace` and `expected_destination_digest` for that destination.
 All publication calls require `pyxsd:write`, read and upload permissions.
 
-Retry the same request and key after a disconnect or coordinator restart to
-retrieve the same receipt. A different request conflicts with that key, and a
-different key cannot consume the same preview twice. Receipts live as long as
-their workspace. The revision head and receipt commit in one SQLite transaction;
-interrupted staging is discarded and can be retried without executing Python.
+Retry the same request and key to retrieve the same receipt. A different request
+conflicts with that key, and a different key cannot consume the same preview
+twice. Receipts live as long as their workspace. The revision head and receipt
+commit in one SQLite transaction; interrupted staging is discarded and can be
+retried without executing Python while the preview remains in the session.
 
 Malformed XML is never publishable. Invalid-but-well-formed output requires an
 embedding to enable the write-invalid policy, a `pyxsd:write-invalid` scope and
@@ -451,7 +410,7 @@ writers on shared host directories.
 
 Exploration operations emit one structured audit event with the operation,
 process-local HMAC-pseudonymized owner, status, duration, workspace/revision,
-scope, cache outcome, job ID, and input/candidate digests where applicable.
+scope, cache outcome, and input/candidate digests where applicable.
 Audit payloads never include XML bodies, transform source, file contents, host
 paths, tokens, or raw owner identifiers. The HMAC key is generated per process,
 so pseudonyms are stable only for the lifetime of that coordinator; they are
@@ -462,8 +421,8 @@ callback, which receives the same already-redacted event mapping.
 
 Successful revisions and artifacts survive coordinator restart. Interrupted
 staging is discarded rather than treated as published data. Active operations
-have deadlines and cancellation cleanup. Job outcomes are durable; interrupted
-jobs fail without automatically rerunning code.
+have deadlines and process-group cancellation cleanup. Completed artifacts and
+successful revisions are durable; interrupted work is not retried automatically.
 
 - **Missing optional dependency:** reinstall with `pip install 'pyxsd[mcp]'` or
   launch through `uvx --from 'pyxsd[mcp]'`; the CLI reports this without a
@@ -477,5 +436,5 @@ jobs fail without automatically rerunning code.
 - **Execution:** disabled by default; trusted-local stdio previews require explicit
   opt-in. Managed exact-byte publication is available. Remote user-code execution
   is not included.
-- **HTTP/OAuth:** available with explicit fixed-issuer configuration and
-  loopback-only development fallback. User-code execution over HTTP remains disabled.
+- **Network transports:** none. The server speaks stdio only; there is no HTTP,
+  OAuth/JWKS, multi-tenant, or remote execution mode.

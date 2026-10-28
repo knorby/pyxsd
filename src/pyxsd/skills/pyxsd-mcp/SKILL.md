@@ -1,6 +1,6 @@
 ---
 name: pyxsd-mcp
-description: Drive pyxsd through the Model Context Protocol — workspaces, validation with exact occurrences, durable jobs, comparisons, and exports with immutable artifacts.
+description: Drive pyxsd through the local stdio Model Context Protocol — workspaces, validation with exact occurrences, direct comparisons, previews, and exports with immutable artifacts.
 ---
 
 # pyxsd MCP workflow
@@ -8,8 +8,9 @@ description: Drive pyxsd through the Model Context Protocol — workspaces, vali
 Use this skill when an MCP client must use the pyxsd server. The primary launch
 method is `uvx --from 'pyxsd[mcp]' pyxsd-mcp --state-dir <private path>`.
 Alternatively, install with `pip install 'pyxsd[mcp]'` and launch
-`pyxsd-mcp --state-dir <private path>` directly. Everything below also has a
-Python/CLI fallback when the server is absent.
+`pyxsd-mcp --state-dir <private path>` directly. The server is local stdio only;
+there is no HTTP or remote mode. Everything below also has a Python/CLI fallback
+when the server is absent.
 
 ## Discovery
 
@@ -33,14 +34,14 @@ features — check `adapters.arrow.available` and `execution_backend`.
 5. `pyxsd_explain_issue` gives curated guidance for a code; unknown codes say
    so rather than inventing repairs.
 
-## Durable jobs
+## Direct results and session previews
 
-Transform previews, exports, and comparisons are submitted as jobs
-(`pyxsd_preview_transform`, `pyxsd_export_records`, `pyxsd_compare_schemas`)
-returning a job id; poll `pyxsd_job_status`, cancel with `pyxsd_cancel_job`.
-Cancellation never publishes a late success. Jobs are idempotent per key:
-same key + same input replays the stored result; same key + different input is
-an `idempotency_conflict`.
+`pyxsd_compare_schemas` and `pyxsd_export_records` return their result payloads
+directly — there is no polling or cancel step. `pyxsd_preview_transform` returns
+a preview record immediately. Preview records are session-scoped: commit them in
+the same server process, and rerun the preview after a restart. Publication uses
+the preview's exact retained bytes and a stable `idempotency_key`; the same key
+and input replay the receipt, while different input is an `idempotency_conflict`.
 
 ## Comparison and migration
 

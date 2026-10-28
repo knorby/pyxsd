@@ -60,7 +60,7 @@ pip install 'pyxsd[mcp]'
 pyxsd-mcp --state-dir "$HOME/.local/state/pyxsd/mcp"
 ```
 
-The stdio and authenticated streamable HTTP servers provide:
+The local stdio server provides:
 
 - **Schema exploration** — overviews, compact/full stubs, constraint-rich
   declarations, and bounded `uses` / `used_by` graph queries
@@ -69,7 +69,7 @@ The stdio and authenticated streamable HTTP servers provide:
 - **Bounded XPath queries** — scalar values, node summaries, and subtrees with
   external-resource functions disabled
 - **Private immutable state** — workspaces, revisions, digest-verified
-  artifacts, authenticated cursors, and no arbitrary client-selected mounts
+  artifacts, bounded cursors, and no arbitrary client-selected mounts
 - **Clean worker processes** — bounded JSON IPC, schema leases, deadlines,
   queue limits, cancellation, recycling, and no pickle transport
 - **MCP-native results** — strict input/output schemas, `structuredContent`
@@ -78,9 +78,8 @@ The stdio and authenticated streamable HTTP servers provide:
 
 Start with the [MCP guide](https://pyxsd.knorby.com/mcp.html) for a complete
 Python client example, tool catalog, lifecycle rules, and deployment boundaries.
-Execution is disabled in this build. Authenticated streamable HTTP is available
-with fixed-issuer JWT verification and binary transfer; remote user-code
-execution is not included.
+Execution is disabled in this build. The server speaks stdio only; there is no
+HTTP/OAuth mode, and remote user-code execution is not included.
 
 ## Uses
 

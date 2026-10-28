@@ -8,7 +8,7 @@ optional MCP dependencies.
 | --- | --- |
 | `pyxsd-development` | Build Python bindings from XML Schemas — compile once, parse many, repair exact occurrences, revalidate fresh. |
 | `pyxsd-xml-doctor` | Diagnose validation failures — read constraint evidence, fix the exact occurrence, revalidate the whole document. |
-| `pyxsd-mcp` | Drive pyxsd through MCP — workspaces, paginated issues, durable jobs, comparisons, exports with immutable artifacts. |
+| `pyxsd-mcp` | Drive pyxsd through local stdio MCP — workspaces, paginated issues, direct results, session previews, and exports with immutable artifacts. |
 
 ## Listing and exporting
 
