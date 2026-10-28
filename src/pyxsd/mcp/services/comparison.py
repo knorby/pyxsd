@@ -14,12 +14,11 @@ from pyxsd.introspection import ComponentDescription, describe_schema
 from pyxsd.schema import Schema
 
 from ..cache import CompileRequest, SchemaCache
-from ..contracts import FileRef, JobRef, Nonempty, SchemaRef, WireModel
+from ..contracts import FileRef, Nonempty, SchemaRef, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
-from ..jobs import JobManager
 from ..snapshot_store import SnapshotStore
-from ..worker_protocol import ComparisonOperation, Operation, WorkerReply
+from ..worker_protocol import ComparisonOperation
 from ..workers import WorkerPool, snapshot_from_wire, snapshot_to_wire
 from ..workspaces import Principal
 from .exploration import ExplorationService
@@ -32,7 +31,6 @@ class CompareSchemasRequest(WireModel):
     old_schema: SchemaRef
     new_schema: SchemaRef
     corpus: tuple[FileRef, ...] = ()
-    idempotency_key: Nonempty
 
 
 def _fingerprint(component: ComponentDescription) -> str:
@@ -177,14 +175,13 @@ def execute_comparison(
 
 
 class ComparisonService(ExplorationService):
-    def __init__(
-        self, snapshots: SnapshotStore, pool: WorkerPool, *, jobs: JobManager | None = None
-    ) -> None:
+    def __init__(self, snapshots: SnapshotStore, pool: WorkerPool) -> None:
         super().__init__(snapshots, pool)
         self.limits = snapshots.limits
-        self.jobs = jobs if jobs is not None else JobManager(snapshots.workspaces, self)
 
-    async def submit(self, principal: Principal, request: CompareSchemasRequest) -> JobRef:
+    async def compare(
+        self, principal: Principal, request: CompareSchemasRequest
+    ) -> dict[str, JsonValue]:
         principal.require("pyxsd:execute", "pyxsd:read", "pyxsd:upload")
         if len(request.corpus) > self.limits.corpus_files:
             raise ToolError("quota_exceeded", "Corpus exceeds the operator file budget")
@@ -205,11 +202,11 @@ class ComparisonService(ExplorationService):
                 new_schema=request.new_schema,
                 corpus=request.corpus,
             )
-            return await self.jobs.submit(
-                principal, request.workspace_id, operation, idempotency_key=request.idempotency_key
-            )
-
-    async def run(self, operation: Operation, *, deadline: float) -> WorkerReply:
-        if not isinstance(operation, ComparisonOperation):
-            raise ToolError("invalid_argument", "Unsupported comparison operation")
-        return await self.pool.run(operation, deadline=deadline)
+            deadline = time.monotonic() + self.limits.batch_seconds
+            reply = await self.pool.run(operation, deadline=deadline)
+        if reply.status == "error":
+            assert reply.fault is not None
+            raise ToolError(reply.fault.code, reply.fault.message)
+        if not isinstance(reply.result, dict):
+            raise ToolError("ipc_protocol", "Comparison returned no result object")
+        return reply.result

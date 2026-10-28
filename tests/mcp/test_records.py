@@ -219,19 +219,13 @@ def _export_request(workspace, **overrides):
         "element": "root",
         "path": ("item",),
         "selector": "./item",
-        "idempotency_key": "export",
     }
     fields.update(overrides)
     return ExportRecordsRequest(**fields)
 
 
-async def _terminal(service, principal, ref):
-    with anyio.fail_after(20):
-        while True:
-            result = await service.jobs.status(principal, ref.id)
-            if result.state in {"succeeded", "failed", "cancelled"}:
-                return result
-            await anyio.sleep(0.01)
+async def _terminal(service, principal, result):
+    return result
 
 
 def test_export_records_job_produces_independent_parquet_artifact(tmp_path):
@@ -249,12 +243,9 @@ def test_export_records_job_produces_independent_parquet_artifact(tmp_path):
 
             artifacts = ArtifactStore(snapshots.workspaces)
             service = RecordService(snapshots, pool, artifacts=artifacts)
-            ref = await service.export_records(
-                principal, _export_request(workspace, idempotency_key="parquet-1")
-            )
+            ref = await service.export_records(principal, _export_request(workspace))
             result = await _terminal(service, principal, ref)
-            assert result.state == "succeeded", result.fault
-            payload = result.result
+            payload = result
             assert payload["format"] == "parquet"
             assert payload["row_count"] == 25
             assert payload["source_documents"] == ["input.xml"]
@@ -290,13 +281,8 @@ def test_export_invalid_document_fails_without_artifacts(tmp_path):
 
             artifacts = ArtifactStore(snapshots.workspaces)
             service = RecordService(snapshots, pool, artifacts=artifacts)
-            ref = await service.export_records(
-                principal, _export_request(workspace, idempotency_key="bad")
-            )
-            result = await _terminal(service, principal, ref)
-            assert result.state == "failed"
-            assert result.fault.code == "invalid_document"
-            assert result.result is None
+            with pytest.raises(ToolError, match="invalid_document"):
+                await service.export_records(principal, _export_request(workspace))
 
     anyio.run(scenario)
 
@@ -318,13 +304,8 @@ def test_export_output_quota_refusal_leaves_no_artifact(tmp_path):
 
             artifacts = ArtifactStore(snapshots.workspaces)
             service = RecordService(snapshots, pool, artifacts=artifacts)
-            ref = await service.export_records(
-                principal, _export_request(workspace, idempotency_key="quota")
-            )
-            result = await _terminal(service, principal, ref)
-            assert result.state == "failed"
-            assert result.fault.code == "output_limit"
-            assert result.result is None
+            with pytest.raises(ToolError, match="output_limit"):
+                await service.export_records(principal, _export_request(workspace))
 
     anyio.run(scenario)
 
@@ -360,7 +341,6 @@ def test_export_dataset_multiple_documents_manifest_and_corpus_quota(tmp_path):
                 workspace,
                 documents=(FileRef(path="a.xml"), FileRef(path="b.xml")),
                 format="dataset",
-                idempotency_key="dataset",
             )
             with pytest.raises(ToolError, match="quota_exceeded"):
                 await service.export_records(principal, request)
@@ -388,12 +368,10 @@ def test_export_dataset_multiple_documents_manifest_and_corpus_quota(tmp_path):
                     workspace,
                     documents=(FileRef(path="a.xml"), FileRef(path="b.xml")),
                     format="dataset",
-                    idempotency_key="dataset",
                 ),
             )
             result = await _terminal(service, principal, ref)
-            assert result.state == "succeeded", result.fault
-            payload = result.result
+            payload = result
             assert payload["format"] == "dataset"
             assert payload["row_count"] == 5
             assert payload["source_documents"] == ["a.xml", "b.xml"]
@@ -430,9 +408,7 @@ def test_arrow_gate_blocks_record_services(tmp_path):
                     ),
                 )
             with pytest.raises(ToolError, match="arrow_required"):
-                await service.export_records(
-                    principal, _export_request(workspace, idempotency_key="gated")
-                )
+                await service.export_records(principal, _export_request(workspace))
 
     anyio.run(scenario)
 
@@ -483,21 +459,10 @@ def test_arrow_tools_work_through_the_sdk_server(tmp_path):
                     "element": "root",
                     "path": ["item"],
                     "selector": "./item",
-                    "idempotency_key": "sdk-export",
                 },
             )
             assert submitted.is_error is False
-            job_id = structured(submitted)["data"]["id"]
-            with anyio.fail_after(20):
-                while True:
-                    status = await client.call_tool("pyxsd_job_status", {"job_id": job_id})
-                    payload = structured(status)["data"]
-                    if payload["state"] == "succeeded":
-                        break
-                    assert payload["state"] != "failed", payload
-                    await anyio.sleep(0.01)
-            assert payload["result"] is not None
-            export = payload["result"]
+            export = structured(submitted)["data"]
             assert export["row_count"] == 3
             entry = next(item for item in export["artifacts"] if item["path"] == "export.parquet")
             downloaded = await client.call_tool(
@@ -613,28 +578,42 @@ def test_export_request_validation_and_revision_consistency(tmp_path):
         async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
             await upload(snapshots, workspace, {"schema.xsd": XSD, "input.xml": xml(1)})
             bare = RecordService(snapshots, pool)
-            try:
-                with pytest.raises(ToolError, match="invalid_argument"):
-                    await bare.export_records(principal, _export_request(workspace))
-            finally:
-                await bare.jobs.aclose()
+            with pytest.raises(ToolError, match="invalid_argument"):
+                await bare.export_records(principal, _export_request(workspace))
             service = RecordService(snapshots, pool, artifacts=ArtifactStore(snapshots.workspaces))
-            try:
-                with pytest.raises(ToolError, match="invalid_argument"):
-                    await service.export_records(
-                        principal, _export_request(workspace, documents=())
-                    )
-                with pytest.raises(ToolError, match="stale_reference"):
-                    await service.export_records(
-                        principal,
-                        _export_request(
-                            workspace,
-                            documents=(FileRef(path="input.xml", revision="one"),),
-                            schema_ref=SchemaRef(source=FileRef(path="schema.xsd", revision="two")),
-                        ),
-                    )
-            finally:
-                await service.jobs.aclose()
+            with pytest.raises(ToolError, match="invalid_argument"):
+                await service.export_records(principal, _export_request(workspace, documents=()))
+            with pytest.raises(ToolError, match="stale_reference"):
+                await service.export_records(
+                    principal,
+                    _export_request(
+                        workspace,
+                        documents=(FileRef(path="input.xml", revision="one"),),
+                        schema_ref=SchemaRef(source=FileRef(path="schema.xsd", revision="two")),
+                    ),
+                )
+
+    anyio.run(scenario)
+
+
+def test_export_rejects_a_non_object_worker_result(tmp_path, monkeypatch):
+    from pyxsd.mcp.artifacts import ArtifactStore
+    from pyxsd.mcp.services.records import RecordService
+    from pyxsd.mcp.worker_protocol import WorkerReply
+
+    async def scenario():
+        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
+            await upload(snapshots, workspace, {"schema.xsd": XSD, "input.xml": xml(1)})
+            service = RecordService(snapshots, pool, artifacts=ArtifactStore(snapshots.workspaces))
+
+            async def fake_export(operation, *, deadline):
+                return WorkerReply(
+                    request_id=operation.request_id, role="clean", status="ok", result=[]
+                )
+
+            monkeypatch.setattr(service, "_export", fake_export)
+            with pytest.raises(ToolError, match="ipc_protocol"):
+                await service.export_records(principal, _export_request(workspace))
 
     anyio.run(scenario)
 
@@ -693,9 +672,7 @@ def test_capture_rejects_unsafe_and_overweight_dataset_output(tmp_path, monkeypa
         ):
             snapshot = await upload(snapshots, workspace, {"schema.xsd": XSD, "input.xml": xml(1)})
             service = RecordService(snapshots, pool, artifacts=ArtifactStore(snapshots.workspaces))
-            records_op, export_op = _worker_operation(snapshot)
-            with pytest.raises(ToolError, match="invalid_argument"):
-                await service.run(records_op, deadline=1.0)
+            _records_op, export_op = _worker_operation(snapshot)
             export_op = export_op.model_copy(update={"format": "dataset"})
 
             def write_symlink(root):
@@ -705,7 +682,7 @@ def test_capture_rejects_unsafe_and_overweight_dataset_output(tmp_path, monkeypa
 
             _fake_pool(monkeypatch, service, write_symlink)
             with pytest.raises(ToolError, match="unsafe_candidate"):
-                await service.run(export_op, deadline=1.0)
+                await service._export(export_op, deadline=1.0)
 
             def write_oversize(root):
                 base = root / "export-dataset"
@@ -714,7 +691,7 @@ def test_capture_rejects_unsafe_and_overweight_dataset_output(tmp_path, monkeypa
 
             _fake_pool(monkeypatch, service, write_oversize)
             with pytest.raises(ToolError, match="output_limit"):
-                await service.run(export_op, deadline=1.0)
+                await service._export(export_op, deadline=1.0)
 
             def write_growing(root):
                 base = root / "export-dataset"
@@ -740,7 +717,6 @@ def test_capture_rejects_unsafe_and_overweight_dataset_output(tmp_path, monkeypa
 
             monkeypatch.setattr(records_module.os, "fdopen", lambda fd, *a, **k: GrowingStream(fd))
             with pytest.raises(ToolError, match="output_limit"):
-                await service.run(export_op, deadline=1.0)
-            await service.jobs.aclose()
+                await service._export(export_op, deadline=1.0)
 
     anyio.run(scenario)

@@ -265,7 +265,6 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             old_schema: SchemaRef,
             new_schema: SchemaRef,
             corpus: tuple[FileRef, ...] = (),
-            idempotency_key: str = "compare",
         ) -> types.CallToolResult:
             from .services.comparison import CompareSchemasRequest
 
@@ -274,10 +273,13 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 old_schema=old_schema,
                 new_schema=new_schema,
                 corpus=corpus,
-                idempotency_key=idempotency_key,
             )
-            reference = await services.comparison.submit(services.current_principal(), request)
-            return _plain(ToolEnvelope(data=reference.model_dump(mode="json")))
+
+            async def operation() -> ToolEnvelope:
+                result = await services.comparison.compare(services.current_principal(), request)
+                return ToolEnvelope(data=result)
+
+            return await _invoke(services, workspace_id, operation)
 
         _register(server, "pyxsd_compare_schemas", compare_schemas, read_only=True)
 
@@ -317,7 +319,6 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             document: FileRef,
             source_schema: SchemaRef,
             transform: TransformSpec,
-            idempotency_key: str,
             target_schema: SchemaRef | None = None,
         ) -> types.CallToolResult:
             request = PreviewTransformRequest(
@@ -326,51 +327,14 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 source_schema=source_schema,
                 target_schema=target_schema,
                 transform=transform,
-                idempotency_key=idempotency_key,
             )
 
             async def operation() -> ToolEnvelope:
-                ref = await services.previews.submit(services.current_principal(), request)
-                return ToolEnvelope(data=ref.model_dump(mode="json"))
+                record = await services.previews.preview(services.current_principal(), request)
+                return ToolEnvelope(data=record.model_dump(mode="json"))
 
             return await _invoke(services, workspace_id, operation)
 
-        async def job_status(job_id: str) -> types.CallToolResult:
-            try:
-                result = await services.jobs.status(services.current_principal(), job_id)
-            except ToolError as exc:
-                return _plain(
-                    ToolEnvelope(
-                        status="error",
-                        data={"fault": exc.fault.model_dump(mode="json")},
-                        provenance=exc.fault.details,
-                    )
-                )
-
-            async def completed() -> ToolEnvelope:
-                return ToolEnvelope(data=result.model_dump(mode="json"))
-
-            return await _invoke(services, result.workspace_id, completed)
-
-        async def cancel_job(job_id: str) -> types.CallToolResult:
-            try:
-                result = await services.jobs.cancel(services.current_principal(), job_id)
-            except ToolError as exc:
-                return _plain(
-                    ToolEnvelope(
-                        status="error",
-                        data={"fault": exc.fault.model_dump(mode="json")},
-                        provenance=exc.fault.details,
-                    )
-                )
-
-            async def completed() -> ToolEnvelope:
-                return ToolEnvelope(data=result.model_dump(mode="json"))
-
-            return await _invoke(services, result.workspace_id, completed)
-
-        _register(server, "pyxsd_job_status", job_status, read_only=True)
-        _register(server, "pyxsd_cancel_job", cancel_job, read_only=False)
         _register(server, "pyxsd_preview_transform", preview_transform, read_only=False)
 
     if services.settings.pydantic:
@@ -454,7 +418,6 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 namespaces: dict[str, str] | None = None,
                 columns: dict[str, FieldSourceSpec] | None = None,
                 format: Literal["parquet", "dataset"] = "parquet",
-                idempotency_key: str = "export",
             ) -> types.CallToolResult:
                 request = ExportRecordsRequest(
                     workspace_id=workspace_id,
@@ -466,12 +429,15 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                     namespaces=namespaces or {},
                     columns=columns,
                     format=format,
-                    idempotency_key=idempotency_key,
                 )
-                reference = await services.records.export_records(
-                    services.current_principal(), request
-                )
-                return _plain(ToolEnvelope(data=reference.model_dump(mode="json")))
+
+                async def operation() -> ToolEnvelope:
+                    result = await services.records.export_records(
+                        services.current_principal(), request
+                    )
+                    return ToolEnvelope(data=result)
+
+                return await _invoke(services, workspace_id, operation)
 
             _register(server, "pyxsd_export_records", export_records, read_only=False)
 

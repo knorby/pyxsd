@@ -1,7 +1,5 @@
 """Schema comparison separates structural impact from observed corpus evidence."""
 
-import time
-
 import pytest
 
 pytest.importorskip("pydantic")
@@ -76,19 +74,9 @@ def _compare_request(workspace, **overrides):
         "workspace_id": workspace,
         "old_schema": SchemaRef(source=FileRef(path="old.xsd")),
         "new_schema": SchemaRef(source=FileRef(path="new.xsd")),
-        "idempotency_key": "compare",
     }
     fields.update(overrides)
     return CompareSchemasRequest(**fields)
-
-
-async def _terminal(service, principal, ref):
-    with anyio.fail_after(20):
-        while True:
-            result = await service.jobs.status(principal, ref.id)
-            if result.state in {"succeeded", "failed", "cancelled"}:
-                return result
-            await anyio.sleep(0.01)
 
 
 def test_structural_diff_added_removed_changed_and_deterministic(tmp_path):
@@ -98,12 +86,8 @@ def test_structural_diff_added_removed_changed_and_deterministic(tmp_path):
         async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
             await upload(snapshots, workspace, {"old.xsd": OLD, "new.xsd": NEW})
             service = ComparisonService(snapshots, pool)
-            ref = await service.submit(
-                principal, _compare_request(workspace, idempotency_key="one")
-            )
-            result = await _terminal(service, principal, ref)
-            assert result.state == "succeeded", result.fault
-            structural = result.result["structural"]
+            result = await service.compare(principal, _compare_request(workspace))
+            structural = result["structural"]
             assert "element:added" in structural["added"]
             assert "element:legacy" in structural["removed"]
             # Local declarations use content-addressed element@<hash> ids and are
@@ -123,12 +107,8 @@ def test_structural_diff_added_removed_changed_and_deterministic(tmp_path):
             assert structural["totals"] == {"added": 4, "removed": 4, "changed": 4}
             details = {entry["id"]: entry["fields"] for entry in structural["changed_details"]}
             assert "facets" in details["type:Amount"]
-            repeat = await service.submit(
-                principal, _compare_request(workspace, idempotency_key="two")
-            )
-            second = await _terminal(service, principal, repeat)
-            assert second.state == "succeeded", second.fault
-            assert second.result["structural"] == structural
+            repeat = await service.compare(principal, _compare_request(workspace))
+            assert repeat["structural"] == structural
 
     anyio.run(scenario)
 
@@ -140,18 +120,15 @@ def test_anonymous_declarations_diff_by_content_addressed_identity(tmp_path):
         async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
             await upload(snapshots, workspace, {"old.xsd": OLD_ANON, "new.xsd": NEW_ANON})
             service = ComparisonService(snapshots, pool)
-            ref = await service.submit(
+            result = await service.compare(
                 principal,
                 _compare_request(
                     workspace,
                     old_schema=SchemaRef(source=FileRef(path="old.xsd")),
                     new_schema=SchemaRef(source=FileRef(path="new.xsd")),
-                    idempotency_key="anon",
                 ),
             )
-            result = await _terminal(service, principal, ref)
-            assert result.state == "succeeded", result.fault
-            structural = result.result["structural"]
+            structural = result["structural"]
             assert any(identifier.startswith("type@") for identifier in structural["removed"])
             assert any(identifier.startswith("type@") for identifier in structural["added"])
 
@@ -165,18 +142,15 @@ def test_namespace_change_reports_flag_and_reidentified_components(tmp_path):
         async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
             await upload(snapshots, workspace, {"old.xsd": OLD_NS, "new.xsd": NEW_NS})
             service = ComparisonService(snapshots, pool)
-            ref = await service.submit(
+            result = await service.compare(
                 principal,
                 _compare_request(
                     workspace,
                     old_schema=SchemaRef(source=FileRef(path="old.xsd")),
                     new_schema=SchemaRef(source=FileRef(path="new.xsd")),
-                    idempotency_key="ns",
                 ),
             )
-            result = await _terminal(service, principal, ref)
-            assert result.state == "succeeded", result.fault
-            structural = result.result["structural"]
+            structural = result["structural"]
             assert structural["namespace_changed"] is True
             assert "element:{http://new.example}root" in structural["added"]
             assert "element:{http://old.example}root" in structural["removed"]
@@ -215,12 +189,8 @@ def test_corpus_classifies_every_file_and_separates_impact_from_evidence(tmp_pat
                     "unbindable.xml",
                 )
             )
-            ref = await service.submit(
-                principal, _compare_request(workspace, corpus=corpus, idempotency_key="corpus")
-            )
-            result = await _terminal(service, principal, ref)
-            assert result.state == "succeeded", result.fault
-            corpus_result = result.result["corpus"]
+            result = await service.compare(principal, _compare_request(workspace, corpus=corpus))
+            corpus_result = result["corpus"]
             statuses = {entry["path"]: entry["status"] for entry in corpus_result["files"]}
             assert statuses == {
                 "good.xml": "valid",
@@ -241,10 +211,10 @@ def test_corpus_classifies_every_file_and_separates_impact_from_evidence(tmp_pat
             }
             assert corpus_result["regressions"] == ["regressed.xml"]
             assert corpus_result["resolutions"] == ["resolved.xml"]
-            conclusions = result.result["conclusions"]
+            conclusions = result["conclusions"]
             assert conclusions["corpus_only"] is True
             assert "No universal compatibility" in conclusions["statement"]
-            assert result.result["structural"]["totals"]["added"] == 4
+            assert result["structural"]["totals"]["added"] == 4
 
     anyio.run(scenario)
 
@@ -274,22 +244,20 @@ def test_corpus_cap_and_revision_consistency(tmp_path):
             )
             service = ComparisonService(snapshots, pool)
             with pytest.raises(ToolError, match="quota_exceeded"):
-                await service.submit(
+                await service.compare(
                     principal,
                     _compare_request(
                         workspace,
                         corpus=tuple(FileRef(path=name) for name in ("a.xml", "b.xml", "c.xml")),
-                        idempotency_key="cap",
                     ),
                 )
             with pytest.raises(ToolError, match="stale_reference"):
-                await service.submit(
+                await service.compare(
                     principal,
                     _compare_request(
                         workspace,
                         old_schema=SchemaRef(source=FileRef(path="old.xsd", revision="one")),
                         new_schema=SchemaRef(source=FileRef(path="new.xsd", revision="two")),
-                        idempotency_key="revisions",
                     ),
                 )
 
@@ -345,18 +313,47 @@ def test_corpus_timeout_skips_remaining_files(tmp_path):
     anyio.run(scenario)
 
 
+def test_comparison_rejects_worker_faults_and_non_object_results(tmp_path, monkeypatch):
+    from pyxsd.mcp.contracts import ToolFault
+    from pyxsd.mcp.services.comparison import ComparisonService
+    from pyxsd.mcp.worker_protocol import WorkerReply
+
+    async def scenario():
+        async with harness(tmp_path) as (_, snapshots, pool, principal, workspace):
+            await upload(snapshots, workspace, {"old.xsd": OLD, "new.xsd": NEW})
+            service = ComparisonService(snapshots, pool)
+
+            async def failed(operation, *, deadline):
+                return WorkerReply(
+                    request_id=operation.request_id,
+                    role="clean",
+                    status="error",
+                    fault=ToolFault(code="worker_died", message="No verdict"),
+                )
+
+            monkeypatch.setattr(service.pool, "run", failed)
+            with pytest.raises(ToolError, match="worker_died"):
+                await service.compare(principal, _compare_request(workspace))
+
+            async def not_an_object(operation, *, deadline):
+                return WorkerReply(
+                    request_id=operation.request_id, role="clean", status="ok", result=[]
+                )
+
+            monkeypatch.setattr(service.pool, "run", not_an_object)
+            with pytest.raises(ToolError, match="ipc_protocol"):
+                await service.compare(principal, _compare_request(workspace))
+
+    anyio.run(scenario)
+
+
 def test_compare_tool_works_through_the_sdk_server(tmp_path):
     from tests.mcp.test_server import connected, create_workspace, structured
 
     async def scenario():
         async with connected(
             tmp_path, enabled_groups={"exploration", "workspaces", "execution"}
-        ) as (client, services):
-            from pyxsd.mcp.errors import ToolError
-
-            with pytest.raises(ToolError, match="invalid_argument"):
-                await services.comparison.run(object(), deadline=time.monotonic() + 1)
-
+        ) as (client, _services):
             workspace = await create_workspace(client)
             await client.call_tool(
                 "pyxsd_put_files",
@@ -377,19 +374,9 @@ def test_compare_tool_works_through_the_sdk_server(tmp_path):
                     "old_schema": {"source": {"path": "old.xsd"}},
                     "new_schema": {"source": {"path": "new.xsd"}},
                     "corpus": [{"path": "good.xml"}],
-                    "idempotency_key": "sdk",
                 },
             )
-            job = structured(submitted)["data"]["id"]
-            with anyio.fail_after(20):
-                while True:
-                    status = await client.call_tool("pyxsd_job_status", {"job_id": job})
-                    payload = structured(status)["data"]
-                    if payload["state"] in {"succeeded", "failed", "cancelled"}:
-                        break
-                    await anyio.sleep(0.01)
-            assert payload["state"] == "succeeded", payload.get("fault")
-            result = payload["result"]
+            result = structured(submitted)["data"]
             assert "element:added" in result["structural"]["added"]
             assert result["corpus"]["files"][0]["status"] == "valid"
             assert result["conclusions"]["corpus_only"] is True

@@ -159,15 +159,6 @@ async def _call(client, tool, arguments, *, error=False):
     return structured(response)
 
 
-async def _job(client, job_id):
-    with anyio.fail_after(30):
-        while True:
-            payload = (await _call(client, "pyxsd_job_status", {"job_id": job_id}))["data"]
-            if payload["state"] in {"succeeded", "failed", "cancelled"}:
-                return payload
-            await anyio.sleep(0.01)
-
-
 async def _expected_fingerprint(services, workspace, schema_path):
     from pyxsd.mcp.services.exploration import ExplorationService
 
@@ -328,12 +319,9 @@ def test_repeated_node_repair_publishes_exact_candidate(tmp_path):
                     "document": {"path": "doc.xml"},
                     "source_schema": {"source": {"path": "schema.xsd"}},
                     "transform": {"kind": "python", "source": REPAIR},
-                    "idempotency_key": "repair",
                 },
             )
-            preview = await _job(client, submitted["data"]["id"])
-            assert preview["state"] == "succeeded", preview.get("fault")
-            record = preview["result"]
+            record = submitted["data"]
             assert record["valid"] is True
             committed = await _call(
                 client,
@@ -532,12 +520,10 @@ def test_cross_schema_migration_previews_against_target(tmp_path):
                     "old_schema": {"source": {"path": "old.xsd"}},
                     "new_schema": {"source": {"path": "new.xsd"}},
                     "corpus": [{"path": "doc.xml"}],
-                    "idempotency_key": "migration-compare",
                 },
             )
-            comparison = await _job(client, compared["data"]["id"])
-            assert comparison["state"] == "succeeded", comparison.get("fault")
-            corpus = comparison["result"]["corpus"]
+            comparison = compared["data"]
+            corpus = comparison["corpus"]
             assert corpus["resolutions"] == ["doc.xml"]
             assert corpus["totals"]["resolved"] == 1
             submitted = await _call(
@@ -552,13 +538,10 @@ def test_cross_schema_migration_previews_against_target(tmp_path):
                         "kind": "python",
                         "source": "def transform(document, context):\n    return document\n",
                     },
-                    "idempotency_key": "migration-preview",
                 },
             )
-            preview = await _job(client, submitted["data"]["id"])
-            assert preview["state"] == "succeeded", preview.get("fault")
-            assert preview["result"]["valid"] is True
-            assert comparison["result"]["conclusions"]["corpus_only"] is True
+            assert submitted["data"]["valid"] is True
+            assert comparison["conclusions"]["corpus_only"] is True
 
     anyio.run(scenario)
 
@@ -614,7 +597,12 @@ def test_contextual_arrow_export_is_bounded_and_digest_verified(tmp_path):
     pytest.importorskip("pyarrow")
 
     async def scenario():
-        async with connected(tmp_path, enabled_groups=FULL, arrow="enabled") as (client, _services):
+        async with connected(
+            tmp_path,
+            enabled_groups=FULL,
+            arrow="enabled",
+            execution_backend="trusted-local",
+        ) as (client, _services):
             workspace = await _create(client)
             await _put(client, workspace, {"schema.xsd": RECORDS, "doc.xml": RECORDS_DOC})
             preview = await _call(
@@ -653,15 +641,11 @@ def test_contextual_arrow_export_is_bounded_and_digest_verified(tmp_path):
                         "id": {"attribute": "id"},
                         "batch": {"scope": "root", "attribute": "batch"},
                     },
-                    "idempotency_key": "workflow-export",
                 },
             )
-            export = await _job(client, submitted["data"]["id"])
-            assert export["state"] == "succeeded", export.get("fault")
-            assert export["result"]["row_count"] == 3
-            entry = next(
-                item for item in export["result"]["artifacts"] if item["path"] == "export.parquet"
-            )
+            export = submitted["data"]
+            assert export["row_count"] == 3
+            entry = next(item for item in export["artifacts"] if item["path"] == "export.parquet")
             downloaded = await _call(
                 client,
                 "pyxsd_read_artifact",

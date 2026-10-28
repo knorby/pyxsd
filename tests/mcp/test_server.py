@@ -14,7 +14,6 @@ pytest.importorskip("defusedxml")
 import anyio
 from mcp.shared.memory import create_client_server_memory_streams
 from tests.mcp.test_exploration import INVALID, VALID, XSD, _chunks
-from tests.mcp.test_workers import parse_operation
 
 from mcp import ClientSession
 from pyxsd.mcp.config import Settings
@@ -340,43 +339,6 @@ def test_response_limit_is_a_structured_fault(tmp_path):
             )
             assert result.is_error is True
             assert structured(result)["data"]["fault"]["code"] == "response_limit"
-
-    anyio.run(scenario)
-
-
-def test_job_tools_return_durable_results_and_errors(tmp_path):
-    from pyxsd.mcp import workers as worker_module
-
-    async def scenario():
-        async with connected(tmp_path, enabled_groups={"execution", "workspaces"}) as (
-            client,
-            services,
-        ):
-            workspace = await create_workspace(client)
-            await upload(client, workspace)
-            snapshot = await services.snapshots.get(services.principal, workspace)
-            ref = await services.jobs.submit(
-                services.principal,
-                workspace,
-                parse_operation(worker_module, snapshot),
-                idempotency_key="sdk-job",
-            )
-            with anyio.fail_after(5):
-                while True:
-                    result = await client.call_tool("pyxsd_job_status", {"job_id": ref.id})
-                    data = structured(result)["data"]
-                    if data["state"] == "succeeded":
-                        break
-                    await anyio.sleep(0.01)
-            assert data["result"]["root_present"] is True
-            repeated = await client.call_tool("pyxsd_cancel_job", {"job_id": ref.id})
-            assert structured(repeated)["data"]["state"] == "succeeded"
-            missing = await client.call_tool("pyxsd_job_status", {"job_id": "missing"})
-            assert missing.is_error is True
-            assert structured(missing)["data"]["fault"]["code"] == "not_found"
-            missing_cancel = await client.call_tool("pyxsd_cancel_job", {"job_id": "missing"})
-            assert missing_cancel.is_error is True
-            assert structured(missing_cancel)["data"]["fault"]["code"] == "not_found"
 
     anyio.run(scenario)
 

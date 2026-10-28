@@ -14,17 +14,15 @@ from pydantic import Field, JsonValue
 from ..artifacts import ArtifactRef, ArtifactStore
 from ..audit import AuditLogger
 from ..cache import CompileRequest, SchemaCache
-from ..contracts import FileRef, JobRef, Nonempty, SchemaRef, ToolEnvelope, WireModel
+from ..contracts import FileRef, Nonempty, SchemaRef, ToolEnvelope, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
 from ..execution import capture_candidate
-from ..jobs import JobManager
 from ..pagination import CursorCodec
 from ..snapshot_store import SnapshotStore
 from ..worker_protocol import (
     ExportOperation,
     FieldSourceSpec,
-    Operation,
     RecordsOperation,
     WorkerReply,
 )
@@ -55,7 +53,6 @@ class ExportRecordsRequest(WireModel):
     namespaces: dict[str, str] = Field(default_factory=dict)
     columns: dict[str, FieldSourceSpec] | None = None
     format: Literal["parquet", "dataset"] = "parquet"
-    idempotency_key: Nonempty
 
 
 def execute_records(
@@ -215,14 +212,12 @@ class RecordService(ExplorationService):
         cursors: CursorCodec | None = None,
         audit: AuditLogger | None = None,
         arrow: bool = True,
-        jobs: JobManager | None = None,
     ) -> None:
         super().__init__(snapshots, pool, artifacts=artifacts, cursors=cursors, audit=audit)
         self.limits = snapshots.limits
         self.arrow = arrow
         self.staging = snapshots.state.root / "record-staging"
         self.staging.mkdir(mode=0o700, exist_ok=True)
-        self.jobs = jobs if jobs is not None else JobManager(snapshots.workspaces, self)
 
     def _require_arrow(self) -> None:
         if not self.arrow:
@@ -258,7 +253,9 @@ class RecordService(ExplorationService):
                 }
             )
 
-    async def export_records(self, principal: Principal, request: ExportRecordsRequest) -> JobRef:
+    async def export_records(
+        self, principal: Principal, request: ExportRecordsRequest
+    ) -> dict[str, JsonValue]:
         principal.require("pyxsd:execute", "pyxsd:read", "pyxsd:upload")
         self._require_arrow()
         if self.artifacts is None:
@@ -289,12 +286,14 @@ class RecordService(ExplorationService):
                 columns=request.columns,
                 format=request.format,
             )
-            return await self.jobs.submit(
-                principal,
-                request.workspace_id,
-                operation,
-                idempotency_key=request.idempotency_key,
-            )
+            deadline = time.monotonic() + self.limits.batch_seconds
+            reply = await self._export(operation, deadline=deadline)
+        if reply.status == "error":
+            assert reply.fault is not None
+            raise ToolError(reply.fault.code, reply.fault.message)
+        if not isinstance(reply.result, dict):
+            raise ToolError("ipc_protocol", "Export returned no result object")
+        return reply.result
 
     async def _retain(
         self, principal: Principal, workspace_id: str, data: bytes, media_type: str
@@ -310,13 +309,11 @@ class RecordService(ExplorationService):
             chunks(),
             media_type=media_type,
             limit=len(data),
-            ttl=max(1, self.limits.job_result_seconds),
+            ttl=max(1, self.limits.preview_seconds),
         )
 
-    async def run(self, operation: Operation, *, deadline: float) -> WorkerReply:
-        """JobExecutor entry: dispatch, then capture coordinator-owned bytes."""
-        if not isinstance(operation, ExportOperation):
-            raise ToolError("invalid_argument", "Unsupported record operation")
+    async def _export(self, operation: ExportOperation, *, deadline: float) -> WorkerReply:
+        """Run the export, then capture coordinator-owned bytes."""
         principal = Principal(operation.owner_id, frozenset({"pyxsd:read", "pyxsd:upload"}))
         workspace_id = operation.snapshot.workspace_id
         with tempfile.TemporaryDirectory(prefix="export-", dir=self.staging) as directory:

@@ -14,15 +14,14 @@ from typing import Literal, cast
 from pydantic import JsonValue
 
 from .artifacts import ArtifactStore
-from .contracts import ArtifactRef, FileRef, JobRef, Nonempty, SchemaRef, WireModel
+from .contracts import ArtifactRef, FileRef, Nonempty, SchemaRef, WireModel
 from .errors import ToolError
 from .execution import TrustedLocalExecution
-from .jobs import JobManager
 from .safe_io import SafeDirectory
 from .snapshot_store import SnapshotStore
 from .snapshots import Snapshot, SnapshotFile
 from .transforms import PipelineTransformSpec, TransformSpec, normalize_transform, resolve_sources
-from .worker_protocol import Operation, ParseOperation, StructuralDiffOperation, WorkerReply
+from .worker_protocol import Operation, ParseOperation, StructuralDiffOperation
 from .workers import WorkerPool, snapshot_from_wire, snapshot_to_wire
 from .workspaces import Principal
 
@@ -33,7 +32,6 @@ class PreviewTransformRequest(WireModel):
     source_schema: SchemaRef
     target_schema: SchemaRef | None = None
     transform: TransformSpec
-    idempotency_key: Nonempty
 
 
 class PreviewCheckpoint(WireModel):
@@ -82,7 +80,6 @@ class PreviewService:
         *,
         backend: str = "disabled",
         registry: dict[str, str] | None = None,
-        jobs: JobManager | None = None,
     ) -> None:
         self.snapshots, self.pool, self.artifacts = snapshots, pool, artifacts
         self.limits = snapshots.limits
@@ -91,9 +88,11 @@ class PreviewService:
         self.staging = snapshots.state.root / "preview-staging"
         self.staging.mkdir(mode=0o700, exist_ok=True)
         self.execution = TrustedLocalExecution(self.staging, self.limits)
-        self.jobs = JobManager(snapshots.workspaces, self) if jobs is None else jobs
+        self._previews: dict[tuple[str, str], PreviewRecord] = {}
 
-    async def submit(self, principal: Principal, request: PreviewTransformRequest) -> JobRef:
+    async def preview(
+        self, principal: Principal, request: PreviewTransformRequest
+    ) -> PreviewRecord:
         principal.require("pyxsd:execute", "pyxsd:read", "pyxsd:upload")
         if self.backend != "trusted-local":
             raise ToolError("execution_unavailable", "No supported execution backend configured")
@@ -123,15 +122,16 @@ class PreviewService:
                 transform=spec,
                 sources=sources,
             )
-            return await self.jobs.submit(
-                principal, request.workspace_id, operation, idempotency_key=request.idempotency_key
+            reply = await self._execute(
+                operation, deadline=time.monotonic() + self.limits.transform_seconds
             )
+            self._previews[(principal.owner_id, reply.id)] = reply
+            return reply
 
     async def get(self, principal: Principal, preview_id: str) -> PreviewRecord:
-        result = await self.jobs.status(principal, preview_id)
-        if result.state != "succeeded":
+        record = self._previews.get((principal.owner_id, preview_id))
+        if record is None:
             raise ToolError("preview_unavailable", "Preview has no retained result")
-        record = PreviewRecord.model_validate_json(json.dumps(result.result))
         if record.expires_at <= time.time():
             raise ToolError("preview_expired", "Preview has expired")
         return record
@@ -148,12 +148,10 @@ class PreviewService:
             chunks(),
             media_type=media,
             limit=self.limits.output_bytes,
-            ttl=min(self.limits.preview_seconds, self.limits.job_result_seconds),
+            ttl=max(1, self.limits.preview_seconds),
         )
 
-    async def run(self, operation: Operation, *, deadline: float) -> WorkerReply:
-        if not isinstance(operation, PreviewOperation):
-            raise ToolError("invalid_argument", "Unsupported preview operation")
+    async def _execute(self, operation: PreviewOperation, *, deadline: float) -> PreviewRecord:
         principal = Principal(
             operation.owner_id, frozenset({"pyxsd:read", "pyxsd:upload", "pyxsd:execute"})
         )
@@ -330,7 +328,7 @@ class PreviewService:
         report: JsonValue,
         checkpoints: tuple[PreviewCheckpoint, ...],
         structural: JsonValue,
-    ) -> WorkerReply:
+    ) -> PreviewRecord:
         candidate_ref = await self._put(
             principal, snapshot.workspace_id, content, "application/xml"
         )
@@ -408,12 +406,7 @@ class PreviewService:
                 )
             ),
         )
-        return WorkerReply(
-            request_id=operation.request_id,
-            role="execution",
-            status="ok",
-            result=record.model_dump(mode="json"),
-        )
+        return record
 
     @staticmethod
     def _materialize(root: Path, files: dict[str, bytes]) -> None:

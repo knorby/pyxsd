@@ -322,7 +322,7 @@ def test_changed_retained_inputs_refuse_publication(tmp_path, monkeypatch, targe
     anyio.run(scenario)
 
 
-@pytest.mark.parametrize("state", ["expired", "cancelled", "foreign-owner"])
+@pytest.mark.parametrize("state", ["expired", "missing", "foreign-owner"])
 def test_unavailable_preview_cannot_publish(tmp_path, state):
     from pyxsd.mcp.publication import CommitTransformRequest, PublicationService
 
@@ -332,21 +332,12 @@ def test_unavailable_preview_cannot_publish(tmp_path, state):
             code = "preview_expired"
             if state == "expired":
                 expired = record.model_copy(update={"expires_at": 0.0})
-                await previews.snapshots.state.run(
-                    lambda db: db.execute(
-                        "UPDATE jobs SET result=? WHERE id=?",
-                        (expired.model_dump_json(), record.id),
-                    ).close()
-                )
-            elif state == "cancelled":
+                previews._previews[(principal.owner_id, record.id)] = expired
+            elif state == "missing":
                 code = "preview_unavailable"
-                await previews.snapshots.state.run(
-                    lambda db: db.execute(
-                        "UPDATE jobs SET state='cancelled' WHERE id=?", (record.id,)
-                    ).close()
-                )
+                previews._previews.pop((principal.owner_id, record.id))
             else:
-                code = "not_found"
+                code = "preview_unavailable"
                 principal = Principal("other", principal.scopes)
             with pytest.raises(ToolError, match=code):
                 await PublicationService(previews).commit(

@@ -66,7 +66,7 @@ SMUGGLED_FRAME = (
 )
 
 
-async def submit_preview(service, principal, workspace, source, *, document, key):
+async def submit_preview(service, principal, workspace, source, *, document, key=None):
     from pyxsd.mcp.previews import PreviewTransformRequest
     from pyxsd.mcp.transforms import normalize_transform
 
@@ -75,15 +75,8 @@ async def submit_preview(service, principal, workspace, source, *, document, key
         document=FileRef(path=document),
         source_schema=SchemaRef(source=FileRef(path="schema.xsd")),
         transform=normalize_transform({"kind": "python", "source": source}, service.limits),
-        idempotency_key=key,
     )
-    ref = await service.submit(principal, request)
-    with anyio.fail_after(20):
-        while True:
-            result = await service.jobs.status(principal, ref.id)
-            if result.state in {"succeeded", "failed", "cancelled"}:
-                return result
-            await anyio.sleep(0.01)
+    return await service.preview(principal, request)
 
 
 def test_noop_transform_diff_includes_serialization_only_changes(tmp_path):
@@ -96,11 +89,7 @@ def test_noop_transform_diff_includes_serialization_only_changes(tmp_path):
                 [AdmittedFile("valid.xml", b"<root><item>42</item></root>")],
                 expected_revision=current.revision,
             )
-            result = await submit_preview(
-                service, principal, workspace, NOOP, document="valid.xml", key="noop"
-            )
-            assert result.state == "succeeded", result
-            record = await service.get(principal, result.id)
+            record = await submit_preview(service, principal, workspace, NOOP, document="valid.xml")
             assert record.valid is True
             original = await service.artifacts.read(
                 principal, record.original.id, offset=0, length=8000
@@ -122,16 +111,12 @@ def test_noop_transform_diff_includes_serialization_only_changes(tmp_path):
 def test_nondeterministic_transforms_retain_independent_candidates(tmp_path):
     async def scenario():
         async with harness(tmp_path) as (service, principal, workspace):
-            first = await submit_preview(
-                service, principal, workspace, NONDETERMINISTIC, document="document.xml", key="a"
+            one = await submit_preview(
+                service, principal, workspace, NONDETERMINISTIC, document="document.xml"
             )
-            second = await submit_preview(
-                service, principal, workspace, NONDETERMINISTIC, document="document.xml", key="b"
+            two = await submit_preview(
+                service, principal, workspace, NONDETERMINISTIC, document="document.xml"
             )
-            assert first.state == "succeeded", first
-            assert second.state == "succeeded", second
-            one = await service.get(principal, first.id)
-            two = await service.get(principal, second.id)
             assert one.candidate.digest != two.candidate.digest
             for record in (one, two):
                 content = await service.artifacts.read(
@@ -145,11 +130,9 @@ def test_nondeterministic_transforms_retain_independent_candidates(tmp_path):
 def test_forged_worker_hash_claim_is_ignored(tmp_path):
     async def scenario():
         async with harness(tmp_path) as (service, principal, workspace):
-            result = await submit_preview(
-                service, principal, workspace, FORGED_HASH, document="document.xml", key="forged"
+            record = await submit_preview(
+                service, principal, workspace, FORGED_HASH, document="document.xml"
             )
-            assert result.state == "succeeded", result
-            record = await service.get(principal, result.id)
             content = await service.artifacts.read(
                 principal, record.candidate.id, offset=0, length=8000
             )
@@ -165,17 +148,14 @@ def test_forged_worker_hash_claim_is_ignored(tmp_path):
 def test_smuggled_stdout_frame_is_not_a_second_result(tmp_path):
     async def scenario():
         async with harness(tmp_path) as (service, principal, workspace):
-            result = await submit_preview(
-                service,
-                principal,
-                workspace,
-                SMUGGLED_FRAME,
-                document="document.xml",
-                key="smuggle",
-            )
-            assert result.state == "failed", result
-            assert result.fault is not None
-            assert result.fault.code == "ipc_protocol"
+            with pytest.raises(ToolError, match="ipc_protocol"):
+                await submit_preview(
+                    service,
+                    principal,
+                    workspace,
+                    SMUGGLED_FRAME,
+                    document="document.xml",
+                )
 
     anyio.run(scenario)
 

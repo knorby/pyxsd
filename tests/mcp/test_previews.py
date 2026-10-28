@@ -49,7 +49,6 @@ async def harness(tmp_path, *, backend="trusted-local"):
         try:
             yield previews, principal, workspace.id
         finally:
-            await previews.jobs.aclose()
             await pool.aclose()
 
 
@@ -65,16 +64,8 @@ async def preview(service, principal, workspace, source):
             {"kind": "python", "source": source} if isinstance(source, str) else source,
             service.limits,
         ),
-        idempotency_key="preview",
     )
-    ref = await service.submit(principal, request)
-    with anyio.fail_after(10):
-        while True:
-            result = await service.jobs.status(principal, ref.id)
-            if result.state in {"succeeded", "failed", "cancelled"}:
-                assert result.state == "succeeded", result
-                return await service.get(principal, ref.id)
-            await anyio.sleep(0.01)
+    return await service.preview(principal, request)
 
 
 def test_repair_retains_exact_candidate_original_report_and_serialization_diff(tmp_path):
@@ -161,7 +152,7 @@ def test_preview_never_falls_back_to_local_execution(tmp_path):
             workspace,
         ):
             with pytest.raises(ToolError, match="execution_unavailable"):
-                await service.submit(
+                await service.preview(
                     principal,
                     PreviewTransformRequest(
                         workspace_id=workspace,
@@ -171,7 +162,6 @@ def test_preview_never_falls_back_to_local_execution(tmp_path):
                             "kind": "python",
                             "source": "def transform(document, context): pass",
                         },
-                        idempotency_key="refuse",
                     ),
                 )
 
@@ -278,15 +268,9 @@ def test_cross_schema_preview_uses_target_schema_and_rejects_mixed_revisions(tmp
                 source_schema=SchemaRef(source=FileRef(path="schema.xsd")),
                 target_schema=SchemaRef(source=FileRef(path="target.xsd")),
                 transform={"kind": "python", "source": "def transform(document, context): pass"},
-                idempotency_key="migration",
             )
-            ref = await service.submit(principal, request)
-            with anyio.fail_after(10):
-                while (await service.jobs.status(principal, ref.id)).state == "running" or (
-                    await service.jobs.status(principal, ref.id)
-                ).state == "queued":
-                    await anyio.sleep(0.01)
-            assert (await service.get(principal, ref.id)).valid
+            record = await service.preview(principal, request)
+            assert record.valid
             stale = request.model_copy(
                 update={
                     "document": FileRef(path="document.xml", revision="one"),
@@ -294,7 +278,7 @@ def test_cross_schema_preview_uses_target_schema_and_rejects_mixed_revisions(tmp
                 }
             )
             with pytest.raises(ToolError, match="stale_reference"):
-                await service.submit(principal, stale)
+                await service.preview(principal, stale)
 
     anyio.run(scenario)
 
@@ -312,25 +296,16 @@ def test_unavailable_and_expired_preview_results(tmp_path):
                     "kind": "python",
                     "source": "def transform(document, context): raise ValueError()",
                 },
-                idempotency_key="failed",
             )
-            ref = await service.submit(principal, request)
-            with anyio.fail_after(10):
-                while (await service.jobs.status(principal, ref.id)).state not in {
-                    "failed",
-                    "succeeded",
-                }:
-                    await anyio.sleep(0.01)
+            with pytest.raises(ToolError, match="transform_failed"):
+                await service.preview(principal, request)
             with pytest.raises(ToolError, match="preview_unavailable"):
-                await service.get(principal, ref.id)
+                await service.get(principal, "missing-preview")
             record = await preview(
                 service, principal, workspace, "def transform(document, context): pass"
             )
-            expired = record.model_copy(update={"expires_at": 0})
-            await service.snapshots.state.run(
-                lambda db: db.execute(
-                    "UPDATE jobs SET result=? WHERE id=?", (expired.model_dump_json(), record.id)
-                ).close()
+            service._previews[(principal.owner_id, record.id)] = record.model_copy(
+                update={"expires_at": 0}
             )
             with pytest.raises(ToolError, match="preview_expired"):
                 await service.get(principal, record.id)
@@ -343,7 +318,7 @@ def test_preview_refuses_changed_inputs_and_clean_worker_operational_faults(tmp_
 
     from pyxsd.mcp.contracts import ToolFault
     from pyxsd.mcp.previews import PreviewOperation
-    from pyxsd.mcp.worker_protocol import Operation, WorkerReply
+    from pyxsd.mcp.worker_protocol import WorkerReply
     from pyxsd.mcp.workers import snapshot_to_wire
 
     async def scenario():
@@ -359,18 +334,9 @@ def test_preview_refuses_changed_inputs_and_clean_worker_operational_faults(tmp_
                 transform={"kind": "python", "source": "def transform(document, context): pass"},
                 sources={},
             )
-            with pytest.raises(ToolError, match="invalid_argument"):
-                await service.run(
-                    Operation(
-                        request_id="wrong",
-                        owner_id=principal.owner_id,
-                        snapshot=operation.snapshot,
-                    ),
-                    deadline=time.monotonic() + 10,
-                )
             (snapshot.root / "document.xml").write_bytes(b"changed")
             with pytest.raises(ToolError, match="source_changed"):
-                await service.run(operation, deadline=time.monotonic() + 10)
+                await service._execute(operation, deadline=time.monotonic() + 10)
 
             async def failed(op, *, deadline):
                 return WorkerReply(

@@ -11,8 +11,7 @@ from .artifacts import ArtifactStore
 from .audit import AuditLogger
 from .config import Settings
 from .errors import ToolError
-from .jobs import JobManager
-from .previews import PreviewOperation, PreviewService
+from .previews import PreviewService
 from .publication import PublicationService
 from .resources import register_resources
 from .services.exploration import ExplorationService
@@ -22,7 +21,6 @@ from .skill_extension import SkillsExtension
 from .snapshot_store import SnapshotStore
 from .state import State
 from .tools import register_tools
-from .worker_protocol import ComparisonOperation, ExportOperation, Operation, WorkerReply
 from .workers import WorkerPool
 from .workspaces import Principal, WorkspaceStore, stdio_principal
 
@@ -40,7 +38,6 @@ class Services:
         self.workspaces = WorkspaceStore(self.state, settings.limits)
         self.artifacts = ArtifactStore(self.workspaces)
         self.pool = WorkerPool(settings.limits)
-        self.jobs = JobManager(self.workspaces, self)
         source_root: Callable[[Principal, str], Path] | None = None
         if settings.source_roots:
 
@@ -69,17 +66,15 @@ class Services:
             self.pool,
             artifacts=self.artifacts,
             arrow=self.arrow_available,
-            jobs=self.jobs,
         )
         from .services.comparison import ComparisonService
 
-        self.comparison = ComparisonService(self.snapshots, self.pool, jobs=self.jobs)
+        self.comparison = ComparisonService(self.snapshots, self.pool)
         self.previews = PreviewService(
             self.snapshots,
             self.pool,
             self.artifacts,
             backend=settings.execution_backend,
-            jobs=self.jobs,
         )
         self.publication = PublicationService(self.previews)
 
@@ -101,20 +96,10 @@ class Services:
             ) from exc
         return mode != "disabled"
 
-    async def run(self, operation: Operation, *, deadline: float) -> WorkerReply:
-        if isinstance(operation, PreviewOperation):
-            return await self.previews.run(operation, deadline=deadline)
-        if isinstance(operation, ExportOperation):
-            return await self.records.run(operation, deadline=deadline)
-        if isinstance(operation, ComparisonOperation):
-            return await self.comparison.run(operation, deadline=deadline)
-        return await self.pool.run(operation, deadline=deadline)
-
     def current_principal(self) -> Principal:
         return self.principal
 
     async def aclose(self) -> None:
-        await self.jobs.aclose()
         await self.pool.aclose()
         self.state.close()
 
