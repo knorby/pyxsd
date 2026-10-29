@@ -10,7 +10,7 @@ from typing import Literal, cast
 
 from pydantic import Field, JsonValue
 
-from ..cache import CompileRequest, SchemaCache
+from ..cache import CompileRequest, SchemaCache, require_complete_schema
 from ..contracts import FileRef, Nonempty, SchemaRef, ToolEnvelope, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
@@ -66,6 +66,7 @@ def execute_records(
     )
     try:
         with cache.acquire(request) as schema:
+            require_complete_schema(schema)
             document = schema.parse("/workspace/" + operation.document.path)
             if document.report.error_count or document.root is None:
                 raise ToolError("invalid_document", "Record projection requires valid XML")
@@ -132,6 +133,7 @@ def execute_export(
     )
     try:
         with cache.acquire(request) as schema:
+            require_complete_schema(schema)
             documents = []
             for reference in operation.documents:
                 document = schema.parse("/workspace/" + reference.path)
@@ -218,7 +220,9 @@ class RecordService(ExplorationService):
 
     async def preview_records(self, request: PreviewRecordsRequest) -> ToolEnvelope:
         self._require_arrow()
-        async with self._capture(request.workspace_id) as capture:
+        async with self._capture(
+            request.workspace_id, (request.schema_ref, request.document)
+        ) as capture:
             operation = RecordsOperation(
                 request_id=secrets.token_hex(16),
                 capture=capture_to_wire(capture),
@@ -246,7 +250,9 @@ class RecordService(ExplorationService):
             raise ToolError("invalid_argument", "Exports require at least one document")
         if len(request.documents) > self.limits.corpus_files:
             raise ToolError("quota_exceeded", "Export corpus exceeds the operator budget")
-        async with self._capture(request.workspace_id) as capture:
+        async with self._capture(
+            request.workspace_id, (request.schema_ref, *request.documents)
+        ) as capture:
             operation = ExportOperation(
                 request_id=secrets.token_hex(16),
                 capture=capture_to_wire(capture),

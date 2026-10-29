@@ -28,7 +28,7 @@ def _store(tmp_path, limits=None):
         ToolEnvelope(data="x" * 25000),
         ToolEnvelope(data="x" * 13000),
         ToolEnvelope(data={"stub": "unique-body-marker" * 1500}),
-        ToolEnvelope(warnings=["é" * 14000]),
+        ToolEnvelope(data="x" * 25000, warnings=["kept"]),
     ],
 )
 def test_large_results_spill_once_as_valid_json(tmp_path, envelope):
@@ -82,6 +82,81 @@ def test_unrepresentable_results_fail_before_retaining_bytes(tmp_path, limits, e
         try:
             with pytest.raises(ToolError, match=code):
                 await responses.render_result(envelope, store)
+            assert await store.list() == ([], None)
+        finally:
+            store.close()
+            storage.close()
+
+    anyio.run(scenario)
+
+
+def test_spill_preserves_page_warnings_provenance_and_artifacts(tmp_path):
+    from pyxsd.mcp.contracts import ArtifactRef, PageResult
+
+    async def scenario():
+        storage, store = _store(tmp_path)
+        try:
+            existing = ArtifactRef(
+                id="a" * 32,
+                path="artifacts/report.json",
+                media_type="application/json",
+                size=9,
+                digest="b" * 64,
+                created_at=1.0,
+                kind="report",
+            )
+            envelope = ToolEnvelope(
+                data={"blob": "x" * 25000},
+                warnings=["kept-warning"],
+                provenance={"generation": 4},
+                page=PageResult(returned=1, next_cursor="cursor", truncated=True, total=9),
+                artifacts=[existing],
+            )
+            result = await responses.render_result(envelope, store)
+            structured = result["structuredContent"]
+            assert structured["warnings"] == ["kept-warning"]
+            assert structured["provenance"] == {"generation": 4}
+            assert structured["page"] == {
+                "returned": 1,
+                "next_cursor": "cursor",
+                "truncated": True,
+                "total": 9,
+            }
+            assert structured["artifacts"][0] == existing.model_dump(mode="json")
+            assert structured["artifacts"][1]["kind"] == "result"
+            retained, _ = await store.list()
+            assert [ref.kind for ref in retained] == ["result"]
+        finally:
+            store.close()
+            storage.close()
+
+    anyio.run(scenario)
+
+
+def test_render_result_without_spill_raises_response_limit(tmp_path):
+    async def scenario():
+        storage, store = _store(tmp_path)
+        try:
+            envelope = ToolEnvelope(data="x" * 25000)
+            with pytest.raises(ToolError) as raised:
+                await responses.render_result(envelope, store, spill=False)
+            assert raised.value.fault.code == "response_limit"
+            assert await store.list() == ([], None)
+        finally:
+            store.close()
+            storage.close()
+
+    anyio.run(scenario)
+
+
+def test_warnings_only_oversized_envelope_fails_closed(tmp_path):
+    """Warnings are preserved through spillover, so they cannot be summarized away."""
+
+    async def scenario():
+        storage, store = _store(tmp_path)
+        try:
+            with pytest.raises(ToolError, match="response_limit"):
+                await responses.render_result(ToolEnvelope(warnings=["é" * 14000]), store)
             assert await store.list() == ([], None)
         finally:
             store.close()

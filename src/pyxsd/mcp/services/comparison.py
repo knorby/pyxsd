@@ -1,25 +1,25 @@
 """Schema comparison with corpus evidence, computed in clean workers."""
 
-import hashlib
 import json
 import secrets
 import time
 from collections.abc import Callable
-from dataclasses import asdict
 from typing import cast
 
 from pydantic import JsonValue
+from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.introspection import ComponentDescription, describe_schema
 from pyxsd.schema import Schema
 
-from ..cache import CompileRequest, SchemaCache
+from ..cache import CompileRequest, SchemaCache, require_complete_schema
 from ..contracts import FileRef, Nonempty, SchemaRef, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
 from ..inputs import SessionInputs
 from ..worker_protocol import ComparisonOperation
 from ..workers import WorkerPool, capture_from_wire, capture_to_wire
+from . import comparison_identity
 from .exploration import ExplorationService
 
 _CATEGORIES = ("valid", "regressed", "resolved", "invalid", "malformed", "unbindable", "skipped")
@@ -32,21 +32,32 @@ class CompareSchemasRequest(WireModel):
     corpus: tuple[FileRef, ...] = ()
 
 
-def _fingerprint(component: ComponentDescription) -> str:
-    return hashlib.sha256(
-        json.dumps(asdict(component), sort_keys=True, default=str).encode()
-    ).hexdigest()
+def _fingerprint(component: ComponentDescription, keys: dict[str, str]) -> str:
+    return comparison_identity.fingerprint(component, keys)
 
 
-def _validate(schema: Schema, path: str) -> str:
-    """Classify one corpus file against one compiled schema."""
+def _classify(schema: Schema, path: str) -> tuple[str, Document | None]:
+    """Classify one corpus file against one compiled schema, keeping the parse."""
     try:
         document = schema.parse("/workspace/" + path)
     except PyXSDError:
-        return "malformed"
+        return "malformed", None
     if document.root is None:
-        return "unbindable"
-    return "valid" if document.report.error_count == 0 else "invalid"
+        return "unbindable", document
+    return ("valid" if document.report.error_count == 0 else "invalid"), document
+
+
+def _evidence(document: Document, limit: int) -> list[dict[str, JsonValue]]:
+    data = cast(dict[str, JsonValue], document.report.to_dict())
+    issues = cast(list[dict[str, JsonValue]], data["issues"])
+    return [
+        {
+            "code": issue.get("code"),
+            "message": issue.get("message"),
+            "location": issue.get("location"),
+        }
+        for issue in issues[:limit]
+    ]
 
 
 def execute_comparison(
@@ -69,35 +80,42 @@ def execute_comparison(
         processor_version=processor_version,
     )
     with cache.acquire(old_request) as old_schema, cache.acquire(new_request) as new_schema:
+        require_complete_schema(old_schema)
+        require_complete_schema(new_schema)
         old_description, new_description = describe_schema(old_schema), describe_schema(new_schema)
-        old_components = {item.id: item for item in old_description.components}
-        new_components = {item.id: item for item in new_description.components}
-        added = sorted(set(new_components) - set(old_components))
-        removed = sorted(set(old_components) - set(new_components))
-        common = sorted(set(old_components) & set(new_components))
-        changed = sorted(
-            item
-            for item in common
-            if _fingerprint(old_components[item]) != _fingerprint(new_components[item])
+        old_keys = comparison_identity.comparison_keys(
+            old_description, "/workspace/" + operation.old_schema.source.path
         )
+        new_keys = comparison_identity.comparison_keys(
+            new_description, "/workspace/" + operation.new_schema.source.path
+        )
+        old_prints = {
+            old_keys[item.id]: _fingerprint(item, old_keys) for item in old_description.components
+        }
+        new_prints = {
+            new_keys[item.id]: _fingerprint(item, new_keys) for item in new_description.components
+        }
+        added = sorted(set(new_prints) - set(old_prints))
+        removed = sorted(set(old_prints) - set(new_prints))
+        common = sorted(set(old_prints) & set(new_prints))
+        changed = sorted(item for item in common if old_prints[item] != new_prints[item])
+        old_by_key = {old_keys[item.id]: item for item in old_description.components}
+        new_by_key = {new_keys[item.id]: item for item in new_description.components}
         changed_details: list[dict[str, JsonValue]] = []
         for identifier in changed[: cache.limits.page_items]:
-            old_data = asdict(old_components[identifier])
-            new_data = asdict(new_components[identifier])
-            changed_details.append(
+            old_data = comparison_identity.semantic_dict(old_by_key[identifier], old_keys)
+            new_data = comparison_identity.semantic_dict(new_by_key[identifier], new_keys)
+            changes = [
                 {
-                    "id": identifier,
-                    "fields": cast(
-                        list[JsonValue],
-                        sorted(
-                            key
-                            for key in old_data
-                            if json.dumps(old_data[key], sort_keys=True, default=str)
-                            != json.dumps(new_data[key], sort_keys=True, default=str)
-                        ),
-                    ),
+                    "field": field,
+                    "old": encode_value(old_data[field]),
+                    "new": encode_value(new_data[field]),
                 }
-            )
+                for field in sorted(old_data)
+                if json.dumps(old_data[field], sort_keys=True, default=str)
+                != json.dumps(new_data[field], sort_keys=True, default=str)
+            ]
+            changed_details.append({"id": identifier, "changes": cast(JsonValue, changes)})
         structural: dict[str, JsonValue] = {
             "added": encode_value(added),
             "removed": encode_value(removed),
@@ -128,10 +146,11 @@ def execute_comparison(
                 )
                 totals["skipped"] += 1
                 continue
-            old_status = _validate(old_schema, reference.path)
-            new_status = (
-                "malformed" if old_status == "malformed" else _validate(new_schema, reference.path)
-            )
+            old_status, old_document = _classify(old_schema, reference.path)
+            if old_status == "malformed":
+                new_status, new_document = "malformed", None
+            else:
+                new_status, new_document = _classify(new_schema, reference.path)
             if old_status == "malformed" or new_status == "malformed":
                 status = "malformed"
             elif old_status == "unbindable" and new_status == "unbindable":
@@ -147,9 +166,21 @@ def execute_comparison(
                     status = "invalid"
                 else:
                     status = "valid"
-            files.append(
-                {"path": reference.path, "status": status, "old": old_status, "new": new_status}
-            )
+            entry: dict[str, JsonValue] = {
+                "path": reference.path,
+                "status": status,
+                "old": old_status,
+                "new": new_status,
+            }
+            if status == "regressed":
+                entry["evidence"] = cast(
+                    JsonValue, _evidence(cast(Document, new_document), cache.limits.page_items)
+                )
+            elif status == "resolved":
+                entry["evidence"] = cast(
+                    JsonValue, _evidence(cast(Document, old_document), cache.limits.page_items)
+                )
+            files.append(entry)
             totals[status] += 1
         corpus: dict[str, JsonValue] = {
             "files": cast(JsonValue, files),
@@ -179,7 +210,10 @@ class ComparisonService(ExplorationService):
     async def compare(self, request: CompareSchemasRequest) -> dict[str, JsonValue]:
         if len(request.corpus) > self.limits.corpus_files:
             raise ToolError("quota_exceeded", "Corpus exceeds the operator file budget")
-        async with self._capture(request.workspace_id) as capture:
+        async with self._capture(
+            request.workspace_id,
+            (request.old_schema, request.new_schema, *request.corpus),
+        ) as capture:
             operation = ComparisonOperation(
                 request_id=secrets.token_hex(16),
                 capture=capture_to_wire(capture),

@@ -105,7 +105,16 @@ class PreviewService:
             if isinstance(spec, PipelineTransformSpec)
             else {}
         )
-        async with self.inputs.capture(workspace_id) as capture:
+        preview_refs: tuple[FileRef | SchemaRef, ...] = tuple(
+            ref
+            for ref in (
+                request.document,
+                request.source_schema,
+                request.target_schema,
+            )
+            if ref is not None
+        )
+        async with self.inputs.operation_capture(workspace_id, preview_refs) as capture:
             operation = PreviewOperation(
                 request_id=secrets.token_hex(16),
                 capture=capture_to_wire(capture),

@@ -25,18 +25,35 @@ execution or Arrow features — check `adapters.arrow.available` and
    session generation and file manifest. Uploading again atomically adds or
    replaces the supplied paths and retains omitted files; there are no durable
    revisions.
+   With `--source-root`, leave the workspace empty instead and pass relative
+   paths into that tree. Captures use generation 0 plus file digests. Uploaded
+   inputs and source-root files are never merged implicitly. Empty uploads are
+   a no-op.
 3. `pyxsd_validate_document` — invalid XML is a **successful call** with
    `data.valid == false`; malformed XML is an error fault (`invalid_xml`).
    Counts are aggregate; issue details page via `page.next_cursor`. Cursors are
    bound to the query result and current input generation.
 4. `pyxsd_query_document` follows an issue to its exact occurrence: repeated
    nodes are identified by same-name sibling indexes in `location.path`, and
-   `result: "subtree"` returns that occurrence's XML.
+   `result: "subtree"` regenerates that occurrence's XML from bound data; it is
+   not source-faithful and does not preserve comments or formatting.
 5. `pyxsd_explain_issue` gives curated guidance. Pass the retained report
    artifact to inspect one exact issue; reports remain readable after session
    inputs are released.
 6. `pyxsd_manage_workspace` with `action: "release"` removes only session inputs.
    It never deletes retained artifacts.
+
+For a corpus, use `pyxsd_validate_documents` with `documents` items containing
+`document: {path: ...}` and optional `schema_ref: {source: {path: ...}}`.
+One capture/worker call handles the batch; results retain request order and
+contain per-document verdicts/counts or faults. Reports are retained only for
+invalid documents. Split at `limits.corpus_max_files`; use the singular tool for
+paged diagnostics. Missing uploaded inputs, malformed XML, and schema-group
+failures return item faults; source-tree capture failures may reject a whole batch.
+
+`not_found` means an input is missing; `schema_incomplete` means a required
+include/import is missing; `invalid_schema` means schema errors. These are not
+evidence that a document is invalid. Inspect incomplete schemas to diagnose them.
 
 ## Outputs
 
@@ -46,7 +63,8 @@ digest, media type, creation time, and kind.
 
 - `pyxsd_list_artifacts` pages in stable creation order with an opaque cursor.
 - `pyxsd_read_artifact` returns an exact bounded base64 range plus digest, media
-  type, and local path. Concatenate ranged reads for a large body.
+  type, and local path. Concatenate ranged reads for a large body; reduce length
+  on `response_limit` (reads never spill recursively).
 - `pyxsd_delete_artifact` explicitly deletes one output. Repeating it is
   harmless. Nothing is removed automatically by time, workspace release, or
   preview completion.
@@ -58,8 +76,10 @@ execution context do not; recreate them and rerun the operation.
 
 `pyxsd_compare_schemas` returns **structural impact** separately from **corpus
 evidence** (each file classified valid/regressed/resolved/invalid/malformed/
-unbindable/skipped under both schemas). Anonymous declarations are
-content-addressed, so edits appear as add/remove pairs. A no-regressions result
+unbindable/skipped under both schemas). Identical schemas moved to another path
+produce an empty diff. Named local declarations stay stable across sibling edits;
+`changed_details` contains actual old/new field values. Regressed/resolved corpus
+items carry bounded issue evidence from the failing side. A no-regressions result
 applies only to the tested files and options.
 
 For a source-to-target migration: compare old/new with the corpus, preview a

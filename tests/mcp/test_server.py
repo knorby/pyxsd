@@ -355,3 +355,114 @@ def test_services_closes_storage_when_output_store_initialization_fails(tmp_path
     with pytest.raises(RuntimeError, match="index unavailable"):
         server_module.Services(Settings(state_dir=tmp_path / "state"))
     assert created and created[0]._closed
+
+
+def test_every_tool_has_description(tmp_path):
+    async def scenario():
+        from pyxsd.mcp.config import Settings
+        from pyxsd.mcp.server import Services, create_server
+
+        settings = Settings(state_dir=tmp_path / "state")
+        services = Services(settings)
+        server = create_server(settings, services)
+        try:
+            tools = server._tool_manager._tools
+            assert len(tools) >= 15
+            for name, tool in tools.items():
+                assert isinstance(tool.description, str) and len(tool.description) >= 20, (
+                    f"{name} lacks a description"
+                )
+        finally:
+            await services.aclose()
+
+    anyio.run(scenario)
+
+
+def _arg_schema(server, name):
+    tool = server._tool_manager._tools[name]
+    return tool.fn_metadata.arg_model.model_json_schema()
+
+
+def _param_description(schema, prop):
+    assert "properties" in schema, schema
+    field = schema["properties"].get(prop)
+    assert field is not None, (prop, schema["properties"].keys())
+    description = field.get("description")
+    assert isinstance(description, str) and len(description) >= 15
+    return description
+
+
+def _ref_description(schema, prop):
+    """Resolve a param whose type (or item type) is a referenced model."""
+
+    field = schema["properties"][prop]
+    if "anyOf" in field:
+        ref = next(part["$ref"] for part in field["anyOf"] if "$ref" in part)
+    else:
+        ref = field.get("items", field)["$ref"]
+    return schema["$defs"][ref.split("/")[-1]]
+
+
+def test_critical_parameter_descriptions(tmp_path):
+    async def scenario():
+        from pyxsd.mcp.config import Settings
+        from pyxsd.mcp.server import Services, create_server
+
+        settings = Settings(state_dir=tmp_path / "state")
+        services = Services(settings)
+        server = create_server(settings, services)
+        try:
+            batch = _arg_schema(server, "pyxsd_validate_documents")
+            described = _ref_description(batch, "documents")
+            assert described["properties"]["document"].get("description")
+            assert described["properties"]["schema_ref"].get("description")
+
+            single = _arg_schema(server, "pyxsd_validate_document")
+            ref = _ref_description(single, "schema_ref")
+            assert "source" in ref.get("properties", {})
+            assert ref["properties"]["source"].get("description")
+
+            query = _arg_schema(server, "pyxsd_query_document")
+            assert "xpath" in query["properties"]
+            assert query["properties"]["xpath"].get("description")
+
+            model = _arg_schema(server, "pyxsd_inspect_model")
+            element = model["properties"]["element"]["description"]
+            assert "Clark" in element or "local name" in element
+
+            reader = _arg_schema(server, "pyxsd_read_artifact")
+            length = reader["properties"]["length"]["description"]
+            assert "budget" in length or "response" in length
+
+            compare = _arg_schema(server, "pyxsd_compare_schemas")
+            corpus = compare["properties"]["corpus"]["description"]
+            assert "cap" in corpus or "corpus_max_files" in corpus
+        finally:
+            await services.aclose()
+
+    anyio.run(scenario)
+
+
+def test_validate_documents_tool_end_to_end(tmp_path):
+    async def scenario():
+        async with connected(tmp_path) as (client, _services):
+            workspace = await create_workspace(client)
+            await upload(client, workspace)
+            result = await client.call_tool(
+                "pyxsd_validate_documents",
+                {
+                    "workspace_id": workspace,
+                    "documents": [
+                        {
+                            "document": {"path": "document.xml"},
+                            "schema_ref": {"source": {"path": "schema.xsd"}},
+                        }
+                    ],
+                },
+            )
+            assert result.is_error is False
+            data = structured(result)["data"]
+            assert data["summary"] == {"total": 1, "valid": 1, "invalid": 0, "failed": 0}
+            assert data["results"][0]["valid"] is True
+
+    anyio.run(scenario)

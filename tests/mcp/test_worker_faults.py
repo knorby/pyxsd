@@ -413,3 +413,85 @@ def test_discovery_ignores_non_schema_references(tmp_path):
     cache = SchemaCache(Limits())
     assert worker_main._execute(operation, cache, __version__) == {"dependencies": []}
     cache.close()
+
+
+INCOMPLETE = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+<xs:include schemaLocation="inc.xsd"/>
+<xs:element name="root"><xs:complexType><xs:sequence>
+<xs:element name="item" type="xs:int"/>
+</xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+UNKNOWN_TYPE = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+<xs:element name="root" type="xs:nonexistent"/>
+</xs:schema>"""
+
+DOC = "<root><item>3</item></root>"
+
+
+def snapshot_with(tmp_path, schema: str):
+    import hashlib
+
+    from pyxsd.mcp.captures import CaptureFile, InputCapture
+
+    content = schema.encode()
+    document = DOC.encode()
+    (tmp_path / "schema.xsd").write_bytes(content)
+    (tmp_path / "document.xml").write_bytes(document)
+    return InputCapture(
+        "workspace",
+        1,
+        tmp_path,
+        (
+            CaptureFile("schema.xsd", hashlib.sha256(content).hexdigest(), len(content)),
+            CaptureFile("document.xml", hashlib.sha256(document).hexdigest(), len(document)),
+        ),
+    )
+
+
+def test_parse_fails_closed_on_incomplete_schema_closure(tmp_path):
+    from pyxsd.mcp.cache import SchemaCache
+
+    snapshot = snapshot_with(tmp_path, INCOMPLETE)
+    cache = SchemaCache(Limits())
+    operation = parse_operation(workers, snapshot)
+    with pytest.raises(ToolError) as raised:
+        worker_main._execute(operation, cache, __version__)
+    assert raised.value.fault.code == "schema_incomplete"
+    assert raised.value.fault.details["missing"] == ["inc.xsd"]
+    with pytest.raises(ToolError) as cached:
+        worker_main._execute(operation, cache, __version__)
+    assert cached.value.fault.code == "schema_incomplete"
+    cache.close()
+
+
+def test_parse_fails_closed_on_schema_report_errors(tmp_path):
+    from pyxsd.mcp.cache import SchemaCache
+
+    snapshot = snapshot_with(tmp_path, UNKNOWN_TYPE)
+    cache = SchemaCache(Limits())
+    operation = parse_operation(workers, snapshot)
+    with pytest.raises(ToolError) as raised:
+        worker_main._execute(operation, cache, __version__)
+    assert raised.value.fault.code == "invalid_schema"
+    assert raised.value.fault.details["errors"] >= 1
+    cache.close()
+
+
+def test_introspection_may_inspect_incomplete_schema(tmp_path):
+    from pyxsd.mcp.cache import SchemaCache
+    from pyxsd.mcp.worker_protocol import DescribeOperation
+
+    snapshot = snapshot_with(tmp_path, INCOMPLETE)
+    cache = SchemaCache(Limits())
+    result = worker_main._execute(
+        DescribeOperation(
+            request_id="describe",
+            capture=workers.capture_to_wire(snapshot),
+            schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+        ),
+        cache,
+        __version__,
+    )
+    assert result["roots"] == ["element:root"]
+    cache.close()

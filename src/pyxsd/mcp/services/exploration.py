@@ -14,6 +14,7 @@ from ..audit import AuditLogger
 from ..captures import InputCapture
 from ..contracts import (
     ExplainIssueRequest,
+    FileRef,
     FindComponentsRequest,
     InspectSchemaRequest,
     Page,
@@ -22,12 +23,14 @@ from ..contracts import (
     SchemaRef,
     ToolEnvelope,
     ValidateDocumentRequest,
+    ValidateDocumentsRequest,
 )
 from ..errors import ToolError
 from ..inputs import SessionInputs
 from ..output_store import OutputStore
 from ..pagination import PageTokens
 from ..worker_protocol import (
+    BatchParseOperation,
     DescribeOperation,
     FindOperation,
     ParseOperation,
@@ -37,6 +40,31 @@ from ..worker_protocol import (
 from ..workers import WorkerPool, capture_to_wire
 
 _EXPLANATIONS: dict[str, dict[str, JsonValue]] = {
+    "order": {
+        "summary": "Child elements do not match the declared content-model order.",
+        "actions": ["Compare the parent's children with its declared sequence or choice."],
+        "uncertainty": "Recovery may identify the parent rather than one offending child.",
+    },
+    "invalid-attribute": {
+        "summary": "An attribute is not accepted by the element declaration.",
+        "actions": ["Check its expanded name, declared attributes, and wildcard policy."],
+        "uncertainty": "Namespace and parse options affect attribute binding.",
+    },
+    "occurrence-min": {
+        "summary": "Required child content is missing from its container.",
+        "actions": ["Inspect the parent's required children and minimum occurrence counts."],
+        "uncertainty": "The location is the container, not a nonexistent missing child.",
+    },
+    "unexpected-element": {
+        "summary": "A child element is not accepted at this content-model position.",
+        "actions": ["Check its expanded name, position, and allowed occurrence counts."],
+        "uncertainty": "Earlier errors can affect content-model recovery.",
+    },
+    "schema-compose": {
+        "summary": "Schema composition could not resolve or combine a dependency.",
+        "actions": ["Inspect include/import locations and provide the complete schema closure."],
+        "uncertainty": "An incomplete schema cannot establish document validity.",
+    },
     "missing-attribute": {
         "summary": "A required attribute is absent from an element.",
         "actions": ["Inspect the element location and add the declared attribute."],
@@ -82,6 +110,28 @@ def _valid_report(report: JsonValue) -> bool:
     return isinstance(counts, dict) and counts.get("error") == 0
 
 
+def _required_paths(refs: tuple[FileRef | SchemaRef, ...]) -> list[str]:
+    paths: list[str] = []
+    for ref in refs:
+        if isinstance(ref, SchemaRef):
+            paths.append(ref.source.path)
+            paths.extend(item.path for item in ref.options.namespace_schemas.values())
+        else:
+            paths.append(ref.path)
+    return paths
+
+
+def _require_present(capture: InputCapture, paths: list[str]) -> None:
+    present = {item.path for item in capture.files}
+    missing = sorted({path for path in paths if path not in present})
+    if missing:
+        raise ToolError(
+            "not_found",
+            "Required file is not present in the workspace inputs",
+            details={"path": missing[0], "missing": [str(path) for path in missing]},
+        )
+
+
 class ExplorationService:
     def __init__(
         self,
@@ -98,8 +148,11 @@ class ExplorationService:
         self.audit = AuditLogger() if audit is None else audit
 
     @asynccontextmanager
-    async def _capture(self, workspace_id: str) -> AsyncIterator[InputCapture]:
-        async with self.inputs.capture(workspace_id) as capture:
+    async def _capture(
+        self, workspace_id: str, refs: tuple[FileRef | SchemaRef, ...] = ()
+    ) -> AsyncIterator[InputCapture]:
+        async with self.inputs.operation_capture(workspace_id, refs) as capture:
+            _require_present(capture, _required_paths(refs))
             yield capture
 
     @staticmethod
@@ -196,7 +249,7 @@ class ExplorationService:
     async def inspect_schema(self, request: InspectSchemaRequest) -> ToolEnvelope:
         started, status, capture = time.monotonic(), "ok", None
         try:
-            async with self._capture(request.workspace_id) as capture:
+            async with self._capture(request.workspace_id, (request.schema_ref,)) as capture:
                 result_id = self._result_id(request, capture)
                 offset, limit = self._position(request.page, result_id)
                 reply = await self.pool.run(
@@ -229,7 +282,7 @@ class ExplorationService:
     async def find_schema_components(self, request: FindComponentsRequest) -> ToolEnvelope:
         started, status, capture = time.monotonic(), "ok", None
         try:
-            async with self._capture(request.workspace_id) as capture:
+            async with self._capture(request.workspace_id, (request.schema_ref,)) as capture:
                 result_id = self._result_id(request, capture)
                 offset, limit = self._position(request.page, result_id)
                 reply = await self.pool.run(
@@ -266,7 +319,10 @@ class ExplorationService:
     async def validate_document(self, request: ValidateDocumentRequest) -> ToolEnvelope:
         started, status, capture = time.monotonic(), "ok", None
         try:
-            async with self._capture(request.workspace_id) as capture:
+            refs: tuple[FileRef | SchemaRef, ...] = (request.document,)
+            if request.schema_ref is not None:
+                refs = (request.schema_ref, request.document)
+            async with self._capture(request.workspace_id, refs) as capture:
                 result_id = self._result_id(request, capture)
                 offset, limit = self._position(request.page, result_id)
                 reply = await self.pool.run(
@@ -331,10 +387,126 @@ class ExplorationService:
         finally:
             self._audit("validate_document", started, status, capture)
 
+    async def validate_documents(self, request: ValidateDocumentsRequest) -> ToolEnvelope:
+        started, status, capture = time.monotonic(), "ok", None
+        try:
+            if not request.documents:
+                raise ToolError("invalid_argument", "Batch validation needs at least one item")
+            if len(request.documents) > self.pool.limits.corpus_max_files:
+                raise ToolError("quota_exceeded", "Batch exceeds the operator file budget")
+            batch_refs: tuple[FileRef | SchemaRef, ...] = (
+                *(entry.schema_ref for entry in request.documents if entry.schema_ref),
+                *(entry.document for entry in request.documents),
+            )
+            async with self.inputs.operation_capture(request.workspace_id, batch_refs) as capture:
+                operation = BatchParseOperation(
+                    request_id=secrets.token_hex(16),
+                    capture=capture_to_wire(capture),
+                    items=request.documents,
+                )
+                reply = await self.pool.run(
+                    operation,
+                    deadline=time.monotonic() + self.pool.limits.batch_seconds,
+                )
+                if reply.status == "error":
+                    assert reply.fault is not None
+                    raise ToolError(
+                        reply.fault.code,
+                        reply.fault.message,
+                        retryable=reply.fault.retryable,
+                        details=reply.fault.details,
+                    )
+                if not isinstance(reply.result, dict) or not isinstance(
+                    reply.result.get("items"), list
+                ):
+                    raise ToolError("ipc_protocol", "Batch returned malformed service data")
+                results: list[dict[str, JsonValue]] = []
+                summary = {"total": 0, "valid": 0, "invalid": 0, "failed": 0}
+                for item_request, item in zip(
+                    request.documents,
+                    cast(list[dict[str, JsonValue]], reply.result["items"]),
+                    strict=True,
+                ):
+                    summary["total"] += 1
+                    document = item.get("document")
+                    path = (
+                        document.get("path")
+                        if isinstance(document, dict)
+                        else cast(str, item.get("path", ""))
+                    )
+                    report_data = item.get("report")
+                    report: JsonValue = None
+                    if item.get("valid") is False:
+                        summary["invalid"] += 1
+                    elif item.get("valid") is True:
+                        summary["valid"] += 1
+                    else:
+                        summary["failed"] += 1
+                    if (
+                        item.get("valid") is False
+                        and isinstance(report_data, dict)
+                        and self.outputs is not None
+                    ):
+                        reference = await self.outputs.put_bytes(
+                            json.dumps(report_data, separators=(",", ":")).encode(),
+                            name="report.json",
+                            media_type="application/json",
+                            kind="report",
+                        )
+                        from ..contracts import ArtifactRef
+
+                        report = cast(
+                            JsonValue,
+                            ArtifactRef(
+                                id=reference.id,
+                                path=str(reference.path),
+                                media_type=reference.media_type,
+                                size=reference.size,
+                                digest=reference.digest,
+                                created_at=reference.created_at,
+                                kind=reference.kind,
+                            ).model_dump(mode="json"),
+                        )
+                    valid = item.get("valid")
+                    provenance = (
+                        None
+                        if valid is None
+                        else {
+                            "generation": capture.generation,
+                            "schema_fingerprint": self._fingerprint(
+                                capture, item_request.schema_ref
+                            ),
+                        }
+                    )
+                    results.append(
+                        {
+                            "document": {"path": path},
+                            "valid": valid,
+                            "counts": item.get("counts"),
+                            "report": report,
+                            "fault": item.get("fault"),
+                            "provenance": cast(JsonValue, provenance),
+                        }
+                    )
+                return ToolEnvelope(
+                    data={"results": cast(JsonValue, results), "summary": cast(JsonValue, summary)},
+                    provenance={
+                        "workspace_id": capture.workspace_id,
+                        "generation": capture.generation,
+                    },
+                )
+        except BaseException:
+            status = "error"
+            raise
+        finally:
+            self._audit("validate_documents", started, status, capture)
+
     async def query_document(self, request: QueryDocumentRequest) -> ToolEnvelope:
         started, status, capture = time.monotonic(), "ok", None
         try:
-            async with self._capture(request.workspace_id) as capture:
+            async with self._capture(
+                request.workspace_id, (request.schema_ref, request.document)
+            ) as capture:
                 result_id = self._result_id(request, capture)
                 offset, limit = self._position(request.page, result_id)
                 reply = await self.pool.run(
@@ -351,12 +523,17 @@ class ExplorationService:
                     ),
                     deadline=time.monotonic() + self.pool.limits.compile_query_seconds,
                 )
-                return self._envelope(
+                envelope = self._envelope(
                     reply,
                     provenance=self._provenance(capture, request.schema_ref, request.document.path),
                     result_id=result_id,
                     offset=offset,
                 )
+                if request.result == "subtree":
+                    envelope.warnings.append(
+                        "Subtree results are serialized from bound data; source formatting and comments are not preserved."
+                    )
+                return envelope
         except BaseException:
             status = "error"
             raise
@@ -381,7 +558,14 @@ class ExplorationService:
             if request.report is not None or request.issue_index is not None:
                 if request.report is None or request.issue_index is None or self.outputs is None:
                     raise ToolError("invalid_argument", "Issue lookup needs a report and index")
-                data["issue"] = await self._issue(request)
+                issue = await self._issue(request)
+                if isinstance(issue, dict) and issue.get("code") != request.code:
+                    raise ToolError(
+                        "invalid_argument",
+                        "Supplied code does not match the referenced issue",
+                        details={"supplied": request.code, "actual": issue.get("code")},
+                    )
+                data["issue"] = issue
             return ToolEnvelope(data=data)
         except BaseException:
             status = "error"

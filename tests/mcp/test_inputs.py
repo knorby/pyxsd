@@ -23,6 +23,32 @@ XSD = (
 DOC = "<root>value</root>"
 
 
+def test_put_files_empty_is_noop(tmp_path):
+    async def scenario():
+        store = inputs(tmp_path)
+        workspace = await store.create()
+        await store.put_files(workspace.id, [InlineFile(path="a.xml", text=DOC)])
+        directory = store._root / workspace.id / "files"
+        before_stat = directory.stat()
+        async with store.capture(workspace.id) as before:
+            expected, generation = before.files, before.generation
+        await store.put_files(workspace.id, [])
+        assert directory.stat().st_ino == before_stat.st_ino
+        assert directory.stat().st_mtime_ns == before_stat.st_mtime_ns
+        manifest = await store.manifest(workspace.id)
+        assert manifest.files == expected
+        assert manifest.generation == generation
+        async with store.capture(workspace.id) as after:
+            assert after.generation == generation
+            assert after.files == expected
+        with pytest.raises(ToolError, match="not_found"):
+            await store.put_files("missing", [])
+        with pytest.raises(ToolError, match="not_found"):
+            await store.manifest("missing")
+
+    anyio.run(scenario)
+
+
 def inputs(root, limits=None, **kwargs):
     return SessionInputs(root / "scratch", limits or Limits(workspaces=4), **kwargs)
 
@@ -393,5 +419,25 @@ def test_missing_source_dependency_is_recorded_without_failing_capture(tmp_path)
         refs = (SchemaRef(source=FileRef(path="schema.xsd")),)
         async with store.capture_source(workspace.id, refs) as capture:
             assert [item.path for item in capture.files] == ["schema.xsd"]
+
+    anyio.run(scenario)
+
+
+def test_capture_source_returns_real_workspace_id(tmp_path):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "schema.xsd").write_text(XSD)
+
+    class Discovery:
+        async def discover(self, capture, refs):
+            return ()
+
+    async def scenario():
+        store = inputs(tmp_path / "store", source_root=tree, discovery=Discovery())
+        workspace = await store.create()
+        refs = (SchemaRef(source=FileRef(path="schema.xsd")),)
+        async with store.capture_source(workspace.id, refs) as capture:
+            assert capture.workspace_id == workspace.id
+            assert capture.generation == 0
 
     anyio.run(scenario)

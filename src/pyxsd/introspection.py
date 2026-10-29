@@ -19,6 +19,12 @@ from pyxsd.namespaces import XSD_NS, namespace_of
 if TYPE_CHECKING:
     from pyxsd.schema import Schema
 
+#: The component kinds `find_components` accepts; mirrors the XSD symbol
+#: spaces in `element_representative._COMPONENT_KINDS` without importing it
+#: (that module pulls in the schema runtime; this one stays import-light).
+#: `tests/mcp/test_exploration.py` pins the two definitions together.
+COMPONENT_KINDS = frozenset({"schema", "element", "attribute", "group", "attributeGroup", "type"})
+
 
 @dataclass(frozen=True)
 class FacetDescription:

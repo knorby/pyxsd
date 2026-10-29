@@ -48,6 +48,11 @@ cannot be combined with `--state-dir`.
 For an operator-granted read-only source tree, add `--source-root /absolute/root`.
 Only that configured root is captured; a client cannot mount an arbitrary host
 directory. Normal session inputs use `pyxsd_put_files` and need no source root.
+Create an empty workspace and use paths relative to the source root directly;
+operations capture only the referenced files and discovered dependencies. Source
+captures carry the real workspace ID and generation `0`, with file digests used
+for result identity. Once a workspace has uploads, operations use only those
+uploads: missing paths are never silently filled from the source tree.
 
 ## Persistent store and session inputs
 
@@ -76,6 +81,7 @@ Call `pyxsd_manage_workspace` with `action: "create"`, upload files with
 `pyxsd_put_files`, and refer to them by workspace-relative paths. Each upload
 atomically adds or replaces the supplied paths; omitted files remain in the
 session input set. An invalid batch leaves the previous set intact.
+An empty upload is a no-op and returns the unchanged generation and manifest.
 `action: "release"` removes only session input scratch. It never removes output
 artifacts.
 
@@ -110,6 +116,7 @@ and file digests; changing the inputs invalidates old pages.
 | `pyxsd_inspect_schema` | Returns an overview, compact/full stubs, or constraint-rich component descriptions with bounded depth. |
 | `pyxsd_find_schema_components` | Searches literal text, kind, name and namespace filters, or traverses `uses` / `used_by` relationships. |
 | `pyxsd_validate_document` | Returns verdicts, exact issue locations, aggregate counts, paged issues, fingerprints, and a retained report artifact. |
+| `pyxsd_validate_documents` | Validates a batch with per-document schemas and outcomes in one capture and worker call; retains reports only for invalid documents. |
 | `pyxsd_query_document` | Runs XPath over the bound projection and returns scalars, node summaries, exact locations or bounded subtrees. |
 | `pyxsd_explain_issue` | Gives curated issue-code guidance and can read an exact issue from a retained report. |
 | `pyxsd_inspect_model` | Projects JSON Schema for a selected declaration (optional Pydantic integration). |
@@ -139,12 +146,16 @@ media type, creation time, and kind.
 The MCP envelope carries base64 expansion, so request bounded ranges. The
 coordinator verifies the full file against its indexed digest before returning the
 range. A missing or modified file is a typed error, never substituted content.
+If the base64 reply cannot fit the response budget, `response_limit` asks for a
+smaller range. Artifact reads never spill recursively into another artifact.
 Datasets and previews are a set of independent artifacts; deleting one does not
 cascade to another.
 
 Large structured results that exceed the response budget are written once as a
 `result` artifact. The tool returns a summary and artifact reference instead of
 truncated JSON. Read the complete body by range and concatenate it.
+The summary preserves pagination, warnings, provenance, and existing artifact
+references. Its `bytes` field measures the serialized envelope, not a source file.
 
 Resources include `pyxsd://issue-codes`, `pyxsd://capabilities`, and
 `pyxsd://artifacts/{artifact_id}`. The three prompts are `pyxsd_diagnose_xml`,
@@ -162,12 +173,60 @@ replacing session inputs cannot reuse deleted paths.
 same-name sibling indexes. It identifies the exact occurrence, not merely the
 first element with a matching local name. Query with `result: "subtree"` to
 retrieve that occurrence's XML and location together.
+Subtrees are regenerated from bound data: formatting and comments are not
+preserved (`source_faithful: false`), and the response carries a warning.
+Missing-child diagnostics identify a container rather than a nonexistent child;
+check `location_precision` before treating an issue as an exact occurrence.
 
 Reports distinguish aggregate counts from collection suppression and detail
 pagination. `pyxsd_validate_document` retains its full report artifact, so
 `pyxsd_explain_issue` can later inspect an issue after the session inputs are
 released. Invalid XML is a successful validation with `data.valid=false`;
 malformed XML is an `invalid_xml` fault.
+
+Missing inputs fault with `not_found`; unresolved schema dependencies fault with
+`schema_incomplete`, and schema report errors fault with `invalid_schema`.
+Validation, queries, projection, comparison, and transform validation require
+complete schemas; schema inspection remains available to diagnose missing pieces.
+`pyxsd_explain_issue` rejects a supplied code that disagrees with a report's issue.
+
+### Batch validation
+
+For a corpus, prefer `pyxsd_validate_documents` to repeated singular calls:
+
+```json
+{
+  "workspace_id": "<workspace ID>",
+  "documents": [
+    {"document": {"path": "one.xml"}, "schema_ref": {"source": {"path": "one.xsd"}}},
+    {"document": {"path": "two.xml"}, "schema_ref": {"source": {"path": "two.xsd"}}}
+  ]
+}
+```
+
+One capture and worker call serve the batch; each unique schema is leased once.
+Results preserve request order, including duplicates, and include verdict/counts
+or a typed item fault. Malformed documents and schema-group failures do not abort
+other groups. Missing uploaded references return item faults; source-tree capture
+or worker/protocol failures can reject the whole call. Omitted `schema_ref` uses
+document schema-location hints.
+The existing `corpus_max_files` and `batch_seconds` limits apply; split larger
+corpora into batches. Valid documents create no report artifact; invalid documents
+retain all collected issues within the existing collection/output limits. Use the
+singular tool for paged, detailed diagnosis.
+
+### Component and model selection
+
+Overview `roots` lists all visible global element component IDs; `entry_roots`
+contains only declarations authored in the entry file. `depth` affects compact/full
+views, not overview. Searches reject unknown kinds; bare names match local names
+across namespaces, while Clark names (`{namespace}name`) match exactly.
+
+`pyxsd_inspect_model` and `pyxsd_validate_data` accept Clark element names,
+`element:{namespace}name` IDs, or unambiguous bare local names. Ambiguity returns
+`invalid_argument` with candidates. Nested `path` steps still require Clark names.
+Mixed content and repeated composite groups remain core projection limitations;
+scope a path to a supported descendant when the root cannot be projected.
 
 ## Projected records (optional Arrow)
 
@@ -190,10 +249,16 @@ never append to existing output.
 
 `pyxsd_compare_schemas` compares an old and a new schema in clean workers and
 returns the result directly. The structural diff reports added, removed and changed
-components, including anonymous declarations identified by content address, plus
-changed-field details, a namespace-change flag, and exact totals. A target
+components using comparison-specific declaration identities, plus changed-field
+details, a namespace-change flag, and exact totals. A target
 namespace change re-identifies every component. The summary is deterministic for
 unchanged inputs.
+Identical schemas moved to another directory produce an empty diff. Named local
+declarations are identified by their owner and name; anonymous declarations use
+structural roles with collision discriminators. Navigation component IDs remain
+unchanged. `changed_details` entries have `id` and `changes`, each containing
+`field`, `old`, and `new` JSON values, excluding location noise. Referring elements
+can also change when they embed a changed type's constraints.
 
 An optional corpus validates every supplied document under **both** schemas. Each
 file lands in exactly one category: `valid`, `regressed`, `resolved`, `invalid`,
@@ -202,6 +267,8 @@ Corpus size is capped (default 100, operator maximum 1,000), and a per-corpus ti
 budget marks remaining files `skipped`. Potential impact is reported separately
 from observed corpus regressions; no universal compatibility conclusion follows
 from a corpus sample.
+Regressed files include bounded new-schema issue `evidence` (code, message,
+location); resolved files include old-schema evidence.
 
 A migration review typically:
 

@@ -253,3 +253,101 @@ def test_local_declaration_selection_and_bounded_error_details(tmp_path):
                 await service.inspect_model(missing)
 
     anyio.run(scenario)
+
+
+AMBIGUOUS_XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  xmlns:a="urn:a" xmlns:b="urn:b">
+  <xs:import namespace="urn:b" schemaLocation="b.xsd"/>
+  <xs:element name="ingredient" type="xs:string"/>
+</xs:schema>"""
+AMBIGUOUS_B = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  targetNamespace="urn:b">
+  <xs:element name="ingredient" type="xs:string"/>
+</xs:schema>"""
+
+
+NAMESPACED_XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  targetNamespace="urn:oii:core">
+  <xs:element name="ingredient"><xs:complexType><xs:sequence>
+  <xs:element name="name" type="xs:string"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+
+def test_inspect_model_accepts_bare_local_name(tmp_path):
+    from pyxsd.mcp.services.models import InspectModelRequest, ModelService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            service = ModelService(inputs, pool)
+            await upload(inputs, workspace, {"schema.xsd": NAMESPACED_XSD})
+            clark = await service.inspect_model(
+                InspectModelRequest(
+                    workspace_id=workspace,
+                    schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                    element="{urn:oii:core}ingredient",
+                )
+            )
+            bare = await service.inspect_model(
+                InspectModelRequest(
+                    workspace_id=workspace,
+                    schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                    element="ingredient",
+                )
+            )
+            assert bare.data == clark.data
+
+    anyio.run(scenario)
+
+
+def test_inspect_model_accepts_root_id_form(tmp_path):
+    from pyxsd.mcp.services.models import InspectModelRequest, ModelService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            service = ModelService(inputs, pool)
+            await upload(inputs, workspace, {"schema.xsd": NAMESPACED_XSD})
+            clark = await service.inspect_model(
+                InspectModelRequest(
+                    workspace_id=workspace,
+                    schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                    element="{urn:oii:core}ingredient",
+                )
+            )
+            by_id = await service.inspect_model(
+                InspectModelRequest(
+                    workspace_id=workspace,
+                    schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                    element="element:{urn:oii:core}ingredient",
+                )
+            )
+            assert by_id.data == clark.data
+
+    anyio.run(scenario)
+
+
+def test_inspect_model_ambiguous_bare_name_lists_candidates(tmp_path):
+    from pyxsd.mcp.services.models import InspectModelRequest, ModelService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            service = ModelService(inputs, pool)
+            await upload(
+                inputs,
+                workspace,
+                {"schema.xsd": AMBIGUOUS_XSD, "b.xsd": AMBIGUOUS_B},
+            )
+            request = InspectModelRequest(
+                workspace_id=workspace,
+                schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                element="ingredient",
+            )
+            with pytest.raises(ToolError) as exc:
+                await service.inspect_model(request)
+            assert exc.value.fault.code == "invalid_argument"
+            assert sorted(exc.value.fault.details["candidates"]) == [
+                "element:ingredient",
+                "element:{urn:b}ingredient",
+            ]
+
+    anyio.run(scenario)

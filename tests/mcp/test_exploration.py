@@ -241,7 +241,7 @@ def test_valid_malformed_unbindable_and_missing_paths(tmp_path):
                         xpath="/root",
                     ),
                 )
-            with pytest.raises(ToolError, match="invalid_xml"):
+            with pytest.raises(ToolError, match="not_found") as absent:
                 await service.validate_document(
                     ValidateDocumentRequest(
                         workspace_id=workspace,
@@ -249,6 +249,7 @@ def test_valid_malformed_unbindable_and_missing_paths(tmp_path):
                         schema_ref=schema_ref(),
                     ),
                 )
+            assert absent.value.fault.details["path"] == "missing.xml"
 
     anyio.run(scenario)
 
@@ -331,7 +332,7 @@ def test_hinted_schema_and_service_limit_and_revision_rejections(tmp_path):
                     ),
                 )
             empty = await service.inputs.create()
-            with pytest.raises(ToolError, match="invalid_xml"):
+            with pytest.raises(ToolError, match="not_found"):
                 await service.validate_document(
                     ValidateDocumentRequest(
                         workspace_id=empty.id, document=FileRef(path="hinted.xml")
@@ -428,6 +429,11 @@ def test_explain_known_unknown_and_scoped_issue(tmp_path):
                 ExplainIssueRequest(code="value", report=ref, issue_index=0),
             )
             assert scoped.data["issue"]["constraint"]["actual"] == "bad"
+            with pytest.raises(ToolError, match="invalid_argument") as mismatch:
+                await service.explain_issue(
+                    ExplainIssueRequest(code="order", report=ref, issue_index=0)
+                )
+            assert mismatch.value.fault.details == {"supplied": "order", "actual": "value"}
             with pytest.raises(ToolError, match="invalid_argument"):
                 await service.explain_issue(ExplainIssueRequest(code="value", report=ref))
             bad = await service.outputs.put_bytes(
@@ -464,5 +470,170 @@ def test_validation_without_an_output_store_keeps_the_report_inline(tmp_path):
             )
             assert result.data["valid"] is True
             assert result.artifacts == []
+
+    anyio.run(scenario)
+
+
+def test_missing_inputs_report_not_found_with_path(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": XSD, "doc.xml": VALID})
+            with pytest.raises(ToolError) as missing_document:
+                await service.validate_document(
+                    ValidateDocumentRequest(
+                        workspace_id=workspace,
+                        document=FileRef(path="nope.xml"),
+                        schema_ref=schema_ref(),
+                    )
+                )
+            assert missing_document.value.fault.code == "not_found"
+            assert missing_document.value.fault.details["path"] == "nope.xml"
+            with pytest.raises(ToolError) as missing_schema:
+                await service.validate_document(
+                    ValidateDocumentRequest(
+                        workspace_id=workspace,
+                        document=FileRef(path="doc.xml"),
+                        schema_ref=schema_ref("absent.xsd"),
+                    )
+                )
+            assert missing_schema.value.fault.code == "not_found"
+            assert missing_schema.value.fault.details["path"] == "absent.xsd"
+
+    anyio.run(scenario)
+
+
+TWO_NS_XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="item" type="xs:string"/>
+</xs:schema>"""
+TWO_NS_OTHER = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  xmlns:o="urn:other" targetNamespace="urn:other">
+  <xs:element name="item" type="xs:string"/>
+</xs:schema>"""
+TWO_NS_MAIN = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:import namespace="urn:other" schemaLocation="other.xsd"/>
+  <xs:element name="main" type="xs:string"/>
+  <xs:element name="item" type="xs:string"/>
+</xs:schema>"""
+
+
+def test_find_rejects_unknown_kind(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": XSD})
+            with pytest.raises(ToolError, match="invalid_argument"):
+                await service.find_schema_components(
+                    FindComponentsRequest(
+                        workspace_id=workspace, schema_ref=schema_ref(), kind="widget"
+                    ),
+                )
+
+    anyio.run(scenario)
+
+
+def test_find_bare_name_matches_local_names(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {
+                    "schema.xsd": TWO_NS_MAIN,
+                    "other.xsd": TWO_NS_OTHER,
+                    "plain.xsd": TWO_NS_XSD,
+                },
+            )
+            bare = await service.find_schema_components(
+                FindComponentsRequest(
+                    workspace_id=workspace, schema_ref=schema_ref("plain.xsd"), name="item"
+                ),
+            )
+            assert [item["id"] for item in bare.data["components"]] == ["element:item"]
+            # Clark name matches exactly one of the two same-named globals.
+            clark = await service.find_schema_components(
+                FindComponentsRequest(
+                    workspace_id=workspace,
+                    schema_ref=schema_ref(),
+                    name="{urn:other}item",
+                ),
+            )
+            assert [item["id"] for item in clark.data["components"]] == ["element:{urn:other}item"]
+            bare_across = await service.find_schema_components(
+                FindComponentsRequest(workspace_id=workspace, schema_ref=schema_ref(), name="item"),
+            )
+            assert {item["id"] for item in bare_across.data["components"]} == {
+                "element:item",
+                "element:{urn:other}item",
+            }
+            miss = await service.find_schema_components(
+                FindComponentsRequest(
+                    workspace_id=workspace, schema_ref=schema_ref(), name="nosuch"
+                ),
+            )
+            assert miss.data["components"] == []
+            assert miss.page is not None
+            assert miss.page.total == 0
+
+    anyio.run(scenario)
+
+
+def test_overview_entry_roots_exclude_imported_globals(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.xsd": TWO_NS_MAIN, "other.xsd": TWO_NS_OTHER},
+            )
+            overview = await service.inspect_schema(
+                InspectSchemaRequest(workspace_id=workspace, schema_ref=schema_ref())
+            )
+            assert set(overview.data["roots"]) == {
+                "element:main",
+                "element:item",
+                "element:{urn:other}item",
+            }
+            assert set(overview.data["entry_roots"]) == {"element:main", "element:item"}
+
+    anyio.run(scenario)
+
+
+def test_component_kinds_mirror_the_runtime_kinds():
+    from pyxsd.element_representatives.element_representative import _COMPONENT_KINDS
+    from pyxsd.introspection import COMPONENT_KINDS
+
+    assert frozenset(_COMPONENT_KINDS.values()) == COMPONENT_KINDS
+
+
+@pytest.mark.parametrize(
+    "code", ["order", "invalid-attribute", "occurrence-min", "unexpected-element", "schema-compose"]
+)
+def test_explain_issue_new_codes_known(tmp_path, code):
+    async def scenario():
+        async with harness(tmp_path) as (service, _inputs, _pool, _workspace):
+            result = await service.explain_issue(ExplainIssueRequest(code=code))
+            assert result.data["known"] is True
+            assert result.data["summary"]
+
+    anyio.run(scenario)
+
+
+def test_query_subtree_warns_serialized(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": XSD, "doc.xml": VALID})
+            for mode in ("summary", "subtree"):
+                result = await service.query_document(
+                    QueryDocumentRequest(
+                        workspace_id=workspace,
+                        schema_ref=schema_ref(),
+                        document=FileRef(path="doc.xml"),
+                        xpath="/root",
+                        result=mode,
+                    )
+                )
+                assert bool(result.warnings) == (mode == "subtree")
+                if mode == "subtree":
+                    assert "serialized" in result.warnings[0]
+                    assert result.data["results"][0]["source_faithful"] is False
 
     anyio.run(scenario)

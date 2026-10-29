@@ -10,7 +10,14 @@ from typing import Annotated, Literal, NoReturn, TypeVar
 from pydantic import Field, JsonValue, TypeAdapter, model_validator
 
 from .config import Limits
-from .contracts import FileRef, Nonempty, SchemaRef, ToolFault, WireModel
+from .contracts import (
+    BatchValidationItem,
+    FileRef,
+    Nonempty,
+    SchemaRef,
+    ToolFault,
+    WireModel,
+)
 from .errors import ToolError
 
 T = TypeVar("T", bound=WireModel)
@@ -49,6 +56,12 @@ class ParseOperation(Operation):
     hints: tuple[tuple[str | None, str], ...] = ()
     issue_offset: Annotated[int, Field(ge=0)] = 0
     issue_limit: Annotated[int, Field(gt=0)] = 50
+
+
+class BatchParseOperation(Operation):
+    kind: Literal["parse-batch"] = "parse-batch"
+    items: tuple[BatchValidationItem, ...]
+    issue_limit: Annotated[int, Field(gt=0)] = 10
 
 
 class DescribeOperation(Operation):
@@ -148,6 +161,7 @@ class ComparisonOperation(Operation):
 
 CleanOperation = Annotated[
     ParseOperation
+    | BatchParseOperation
     | DescribeOperation
     | FindOperation
     | QueryOperation
@@ -161,6 +175,7 @@ CleanOperation = Annotated[
 ]
 _OPERATION: TypeAdapter[
     ParseOperation
+    | BatchParseOperation
     | DescribeOperation
     | FindOperation
     | QueryOperation
@@ -270,6 +285,7 @@ def decode_operation(
     frame: bytes, *, max_bytes: int, role: str
 ) -> (
     ParseOperation
+    | BatchParseOperation
     | DescribeOperation
     | FindOperation
     | QueryOperation

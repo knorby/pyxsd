@@ -24,7 +24,7 @@ def test_obsolete_modules_and_symbols_are_absent():
         "publication.py",
     ):
         assert not (package / name).exists()
-    sources = "\n".join(path.read_text() for path in package.rglob("*.py"))
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in package.rglob("*.py"))
     for symbol in ("Principal", "WorkspaceStore", "SnapshotStore", "PublicationService"):
         assert symbol not in sources
     for field in (

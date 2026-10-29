@@ -66,6 +66,11 @@ class SessionInputs:
             raise ToolError("not_found", "Workspace not found")
         return area
 
+    async def has_files(self, workspace_id: str) -> bool:
+        """Whether the session workspace currently holds uploaded files."""
+        async with self._lock:
+            return bool(self._area(workspace_id).files)
+
     async def create(self) -> Workspace:
         async with self._lock:
             if len(self._areas) >= self.limits.workspaces:
@@ -105,6 +110,8 @@ class SessionInputs:
         async with self._lock:
             area = self._area(workspace_id)
             async with area.lock:
+                if not admitted:
+                    return
                 merged = {**area.files, **{item.path: item for item in admitted}}
                 self._validate(merged)
                 directory = await self._new_directory("upload-")
@@ -128,6 +135,23 @@ class SessionInputs:
                     area.files, area.generation = merged, area.generation + 1
                 finally:
                     shutil.rmtree(directory, ignore_errors=True)
+
+    async def manifest(self, workspace_id: str) -> InputCapture:
+        """Return generation and admitted-file metadata without copying inputs.
+
+        This metadata snapshot is not a verified operation capture.
+        """
+        async with self._lock:
+            area = self._area(workspace_id)
+            return InputCapture(
+                workspace_id,
+                area.generation,
+                self._root / workspace_id / "files",
+                tuple(
+                    CaptureFile(path, self._digest(item), len(item.content))
+                    for path, item in sorted(area.files.items())
+                ),
+            )
 
     def _validate(self, files: dict[str, AdmittedFile]) -> None:
         validate_paths(list(files))
@@ -200,19 +224,41 @@ class SessionInputs:
         directory = await self._new_directory("capture-")
         try:
             try:
-                capture = await self._capture_source_once(directory, tuple(refs))
+                capture = await self._capture_source_once(directory, tuple(refs), workspace_id)
             except ToolError as exc:
                 if exc.fault.code != "source_changed":
                     raise
                 shutil.rmtree(directory)
                 directory.mkdir(mode=0o700)
-                capture = await self._capture_source_once(directory, tuple(refs))
+                capture = await self._capture_source_once(directory, tuple(refs), workspace_id)
             yield capture
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 
+    @asynccontextmanager
+    async def operation_capture(
+        self, workspace_id: str, refs: Sequence[FileRef | SchemaRef]
+    ) -> AsyncIterator[InputCapture]:
+        """Select the input set for one operation.
+
+        Uploaded workspace files always win and are never merged with the
+        configured source tree. An empty workspace with a configured source root
+        captures just the referenced files and their discovered dependencies;
+        an empty workspace without one keeps the plain (empty) capture so the
+        caller reports the missing typed inputs.
+        """
+        if await self.has_files(workspace_id):
+            async with self.capture(workspace_id) as captured:
+                yield captured
+        elif self.source_root is not None and self.discovery is not None:
+            async with self.capture_source(workspace_id, refs) as captured:
+                yield captured
+        else:
+            async with self.capture(workspace_id) as captured:
+                yield captured
+
     async def _capture_source_once(
-        self, directory: Path, refs: tuple[FileRef | SchemaRef, ...]
+        self, directory: Path, refs: tuple[FileRef | SchemaRef, ...], workspace_id: str
     ) -> InputCapture:
         assert self.source_root is not None and self.discovery is not None
         sources = [
@@ -226,6 +272,7 @@ class SessionInputs:
         ]
         if not sources:
             raise ToolError("invalid_argument", "Source capture needs at least one file")
+        sources = list({file.path: file for file in sources}.values())
         validate_paths([file.path for file in sources])
         schema_paths = {
             file.path
@@ -291,7 +338,7 @@ class SessionInputs:
                     for path in sorted(captured)
                 )
                 found = await self.discovery.discover(
-                    InputCapture("source", 0, directory, files), refs
+                    InputCapture(workspace_id, 0, directory, files), refs
                 )
                 names = tuple(dict.fromkeys(item.path for item in found))
                 validate_paths(names)
@@ -309,7 +356,7 @@ class SessionInputs:
                     continue
                 break
             return InputCapture(
-                "source",
+                workspace_id,
                 0,
                 directory,
                 tuple(

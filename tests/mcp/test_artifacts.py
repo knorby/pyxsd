@@ -107,3 +107,37 @@ def test_artifact_validation_errors_are_structured(tmp_path):
             assert structured(invalid_limit)["data"]["fault"]["code"] == "invalid_argument"
 
     anyio.run(scenario)
+
+
+def test_read_artifact_never_spills_and_fails_with_response_limit(tmp_path):
+    from pyxsd.mcp.config import Limits
+
+    async def scenario():
+        async with connected(tmp_path, limits=Limits(result_bytes=4 * 2**10)) as (
+            client,
+            services,
+        ):
+            reference = await services.outputs.put_bytes(
+                b"g" * 8192, name="big.bin", media_type="application/octet-stream", kind="result"
+            )
+            # A range that fits the budget returns bytes without spilling.
+            fitted = structured(
+                await client.call_tool(
+                    "pyxsd_read_artifact", {"artifact_id": reference.id, "length": 640}
+                )
+            )
+            assert base64.b64decode(fitted["data"]["data"]) == b"g" * 640
+            before, _ = await services.outputs.list()
+            assert len(before) == 1
+            # An oversized range faults instead of spilling into another artifact.
+            rejected = structured(
+                await client.call_tool(
+                    "pyxsd_read_artifact", {"artifact_id": reference.id, "length": 8192}
+                )
+            )
+            assert rejected["status"] == "error"
+            assert rejected["data"]["fault"]["code"] == "response_limit"
+            after, _ = await services.outputs.list()
+            assert [ref.id for ref in after] == [reference.id]
+
+    anyio.run(scenario)

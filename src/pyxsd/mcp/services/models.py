@@ -5,8 +5,9 @@ import time
 from typing import Any, cast
 
 from pydantic import JsonValue, ValidationError
+from pyxsd.schema import Schema
 
-from ..cache import CompileRequest, SchemaCache
+from ..cache import CompileRequest, SchemaCache, require_complete_schema
 from ..contracts import Nonempty, SchemaRef, ToolEnvelope, WireModel
 from ..encoding import encode_value
 from ..errors import ToolError
@@ -30,6 +31,41 @@ class ValidateDataRequest(InspectModelRequest):
     data: JsonValue
 
 
+def _resolve_element(schema: Schema, element: str) -> str:
+    """Resolve a user-supplied element name to a global declaration name.
+
+    Accepts the ``element:{...}name`` IDs schema inspection returns, Clark
+    notation as-is, and bare local names when exactly one global element has
+    that local name. Ambiguous bare names list their candidates.
+    """
+    from pyxsd.introspection import describe_schema
+
+    from ..errors import ToolError
+
+    if element.startswith("element:"):
+        element = element[len("element:") :]
+    if "{" in element:
+        return element
+    roots = describe_schema(schema).roots
+    matches = [
+        root
+        for root in roots
+        if root.startswith("element:")
+        and (root[len("element:") :] == element or root.endswith("}" + element))
+    ]
+    if len(matches) > 1:
+        raise ToolError(
+            "invalid_argument",
+            "Element name is ambiguous; pass a Clark name",
+            details={"candidates": [str(root) for root in sorted(matches)]},
+        )
+    if matches:
+        return matches[0][len("element:") :]
+    # No global matches: pass through unchanged so the registry's own
+    # missing/unknown error path reports it.
+    return element
+
+
 def execute_model(
     operation: ModelOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
@@ -44,13 +80,16 @@ def execute_model(
     )
     try:
         with cache.acquire(request) as schema:
+            require_complete_schema(schema)
             # The registry dies with its parent schema's cache entry, never a
             # global model cache or a coordinator-side generated class.
             registry = getattr(schema, "_mcp_projected_models", None)
             if registry is None:
                 registry = models(schema)
                 cast(Any, schema)._mcp_projected_models = registry
-            model = registry.model_for(element=operation.element, path=operation.path)
+            model = registry.model_for(
+                element=_resolve_element(schema, operation.element), path=operation.path
+            )
             if operation.action == "inspect":
                 return {
                     "json_schema": encode_value(model.model_json_schema(by_alias=True)),
@@ -92,7 +131,7 @@ class ModelService(ExplorationService):
         return await self._model(request)
 
     async def _model(self, request: InspectModelRequest | ValidateDataRequest) -> ToolEnvelope:
-        async with self._capture(request.workspace_id) as capture:
+        async with self._capture(request.workspace_id, (request.schema_ref,)) as capture:
             result_id = self._result_id(request, capture)
             operation = ModelOperation(
                 request_id=secrets.token_hex(16),

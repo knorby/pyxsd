@@ -29,18 +29,30 @@ def _summary(envelope: ToolEnvelope, size: int, ref: ArtifactRef) -> ToolEnvelop
     return ToolEnvelope(
         status=envelope.status,
         data={"summary": "Full result is stored in the attached JSON artifact.", "bytes": size},
-        artifacts=[ref],
+        warnings=envelope.warnings,
+        provenance=envelope.provenance,
+        page=envelope.page,
+        artifacts=[*envelope.artifacts, ref],
     )
 
 
-async def render_result(envelope: ToolEnvelope, outputs: OutputStore) -> dict[str, JsonValue]:
-    """Return SDK content fields, retaining oversized envelopes exactly once."""
+async def render_result(
+    envelope: ToolEnvelope, outputs: OutputStore, *, spill: bool = True
+) -> dict[str, JsonValue]:
+    """Return SDK content fields, retaining oversized envelopes exactly once.
+
+    ``spill=False`` never writes an artifact: an envelope that cannot fit the
+    response budget raises ``response_limit`` so byte-range callers ask for a
+    smaller range instead of receiving an artifact about an artifact.
+    """
     body = _json(envelope.model_dump(mode="json"))
     budget = outputs.limits.result_bytes
     if len(body) <= budget:
         result = _pack(envelope, body.decode("utf-8"))
         if len(_json(result)) <= budget:
             return result
+    if not spill:
+        raise ToolError("response_limit", "Response exceeds the budget; request a smaller range")
     if len(body) > outputs.limits.output_bytes:
         raise ToolError("quota_exceeded", "Result exceeds the artifact output limit")
 

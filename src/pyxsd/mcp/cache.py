@@ -26,6 +26,31 @@ from .errors import ToolError
 from .safe_io import validate_paths
 
 
+def require_complete_schema(schema: Schema) -> None:
+    """Fail closed when a leased schema's closure or report is unusable.
+
+    A dependency recorded without a digest means the compiled closure is
+    incomplete (for example an unresolved include); schema report errors mean
+    the compiled schema itself is invalid. Warnings alone never fail here.
+    Introspection-only callers may skip this check to diagnose broken schemas.
+    """
+    policy = schema.resource_policy
+    assert isinstance(policy, InputResourcePolicy)
+    missing = [dep.path for dep in policy.dependencies if dep.digest is None]
+    if missing:
+        raise ToolError(
+            "schema_incomplete",
+            "Schema closure is missing required files",
+            details={"missing": [str(path) for path in missing], "path": missing[0]},
+        )
+    if schema.report.has_errors:
+        raise ToolError(
+            "invalid_schema",
+            "Schema reported compilation errors",
+            details={"errors": schema.report.error_count},
+        )
+
+
 @dataclass(frozen=True)
 class CompileRequest:
     capture: InputCapture

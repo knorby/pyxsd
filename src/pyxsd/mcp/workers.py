@@ -22,6 +22,7 @@ from .config import Limits
 from .contracts import FileRef, SchemaRef, WireModel
 from .errors import ToolError
 from .worker_protocol import (
+    BatchParseOperation,
     CaptureFileMessage,
     CaptureMessage,
     ComparisonOperation,
@@ -247,6 +248,7 @@ class WorkerPool:
                 operation,
                 (
                     ParseOperation,
+                    BatchParseOperation,
                     DescribeOperation,
                     FindOperation,
                     QueryOperation,

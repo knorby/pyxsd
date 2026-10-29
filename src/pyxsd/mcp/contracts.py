@@ -22,23 +22,37 @@ class WireModel(BaseModel):
 
 
 class FileRef(WireModel):
-    path: Nonempty
+    path: Annotated[
+        Nonempty, Field(description="Workspace-relative or capture-relative file path.")
+    ]
 
 
 class InlineFile(WireModel):
-    path: Nonempty
-    text: str
+    path: Annotated[
+        Nonempty, Field(description="Workspace-relative destination path for this upload.")
+    ]
+    text: Annotated[str, Field(description="Full UTF-8 text of the file to store.")]
 
 
 class CompileOptions(WireModel):
-    binding: Literal["lax", "strict"] = "lax"
-    namespaces: Literal["strict", "legacy"] = "strict"
-    xsd_version: Literal["1.0", "1.1"] = "1.1"
-    namespace_schemas: dict[str, FileRef] = Field(default_factory=dict)
+    binding: Annotated[
+        Literal["lax", "strict"], Field(description="Attribute/element binding strictness.")
+    ] = "lax"
+    namespaces: Annotated[
+        Literal["strict", "legacy"],
+        Field(description="Namespace handling mode; strict requires qualified names."),
+    ] = "strict"
+    xsd_version: Annotated[Literal["1.0", "1.1"], Field(description="XSD spec version target.")] = (
+        "1.1"
+    )
+    namespace_schemas: Annotated[
+        dict[str, FileRef],
+        Field(description="Extra schemas registered for specific namespaces (hint resolution)."),
+    ] = Field(default_factory=dict)
 
 
 class SchemaRef(WireModel):
-    source: FileRef
+    source: Annotated[FileRef, Field(description="Entry schema file this reference resolves.")]
     options: CompileOptions = Field(default_factory=CompileOptions)
 
 
@@ -53,8 +67,13 @@ class ArtifactRef(WireModel):
 
 
 class Page(WireModel):
-    cursor: Nonempty | None = None
-    limit: PositiveBudget = 50
+    cursor: Annotated[
+        Nonempty | None, Field(description="Opaque cursor from page.next_cursor.")
+    ] = None
+    limit: Annotated[
+        PositiveBudget,
+        Field(description="Maximum items to return; must fit the page_items budget."),
+    ] = 50
 
 
 class PageResult(WireModel):
@@ -109,6 +128,28 @@ class ValidateDocumentRequest(WireModel):
     page: Page = Field(default_factory=Page)
 
 
+class BatchValidationItem(WireModel):
+    """One document in a batch validation request, with its own schema."""
+
+    document: FileRef = Field(description="Workspace-relative path of the XML document.")
+    schema_ref: SchemaRef | None = Field(
+        default=None,
+        description=(
+            "Schema for this document; omitted falls back to document schema-location hints."
+        ),
+    )
+
+
+class ValidateDocumentsRequest(WireModel):
+    workspace_id: Nonempty
+    documents: tuple[BatchValidationItem, ...] = Field(
+        description=(
+            "One or more items, each with its own optional schema. Results keep request "
+            "order; reports are retained only for invalid documents."
+        )
+    )
+
+
 class QueryDocumentRequest(WireModel):
     workspace_id: Nonempty
     document: FileRef
@@ -136,9 +177,12 @@ class PutFilesRequest(WireModel):
 
 
 class ReadArtifactRequest(WireModel):
-    artifact_id: Nonempty
-    offset: Annotated[int, Field(ge=0)] = 0
-    length: PositiveBudget = 8 * 2**10
+    artifact_id: Annotated[Nonempty, Field(description="Artifact id from a reference or listing.")]
+    offset: Annotated[int, Field(description="Byte offset into the artifact.", ge=0)] = 0
+    length: Annotated[
+        PositiveBudget,
+        Field(description="Bytes to read; oversized ranges fault with response_limit."),
+    ] = 8 * 2**10
 
 
 class ListArtifactsRequest(WireModel):
