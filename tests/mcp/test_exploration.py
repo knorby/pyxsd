@@ -405,7 +405,8 @@ def test_explain_known_unknown_and_scoped_issue(tmp_path):
             }
             report = {
                 "issues": [
-                    {"code": "value", "constraint": {"kind": "enumeration", "actual": "bad"}}
+                    {"code": "value", "constraint": {"kind": "enumeration", "actual": "bad"}},
+                    {"code": "occurrence-max", "constraint": {"kind": "max", "actual": 2}},
                 ]
             }
             made = await service.outputs.put_bytes(
@@ -429,6 +430,14 @@ def test_explain_known_unknown_and_scoped_issue(tmp_path):
                 ExplainIssueRequest(code="value", report=ref, issue_index=0),
             )
             assert scoped.data["issue"]["constraint"]["actual"] == "bad"
+            maximum = await service.explain_issue(
+                ExplainIssueRequest(code="occurrence-max", report=ref, issue_index=1)
+            )
+            assert maximum.data["known"] is True
+            assert maximum.data["summary"]
+            assert maximum.data["actions"]
+            assert maximum.data["uncertainty"]
+            assert maximum.data["issue"]["constraint"]["actual"] == 2
             with pytest.raises(ToolError, match="invalid_argument") as mismatch:
                 await service.explain_issue(
                     ExplainIssueRequest(code="order", report=ref, issue_index=0)
@@ -635,5 +644,62 @@ def test_query_subtree_warns_serialized(tmp_path):
                 if mode == "subtree":
                     assert "serialized" in result.warnings[0]
                     assert result.data["results"][0]["source_faithful"] is False
+
+    anyio.run(scenario)
+
+
+def test_singular_valid_report_is_not_retained(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": XSD, "valid.xml": VALID})
+            calls = 0
+            original = service.outputs.put_bytes
+
+            async def counted(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                return await original(*args, **kwargs)
+
+            service.outputs.put_bytes = counted
+            result = await service.validate_document(
+                ValidateDocumentRequest(
+                    workspace_id=workspace,
+                    document=FileRef(path="valid.xml"),
+                    schema_ref=schema_ref(),
+                )
+            )
+            assert result.data["valid"] is True
+            assert result.data["report"] is None
+            assert calls == 0
+            assert result.artifacts == []
+
+    anyio.run(scenario)
+
+
+def test_singular_invalid_report_is_retained(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": XSD, "invalid.xml": INVALID})
+            calls = 0
+            original = service.outputs.put_bytes
+
+            async def counted(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                return await original(*args, **kwargs)
+
+            service.outputs.put_bytes = counted
+            result = await service.validate_document(
+                ValidateDocumentRequest(
+                    workspace_id=workspace,
+                    document=FileRef(path="invalid.xml"),
+                    schema_ref=schema_ref(),
+                )
+            )
+            assert result.data["valid"] is False
+            assert result.data["report"]["counts"]["error"] > 0
+            assert calls == 1
+            assert len(result.artifacts) == 1
+            assert result.artifacts[0].kind == "report"
 
     anyio.run(scenario)

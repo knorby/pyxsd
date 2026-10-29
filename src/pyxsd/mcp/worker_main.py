@@ -140,16 +140,23 @@ def _parse_batch(
     groups: dict[str, list[int]] = {}
     present = {file.path for file in operation.capture.files}
     for index, current in enumerate(operation.items):
-        required = [current.document.path]
+        required = [(current.document.path, "document")]
         if current.schema_ref is not None:
-            required.append(current.schema_ref.source.path)
+            required.append((current.schema_ref.source.path, "schema"))
             required.extend(
-                file.path for file in current.schema_ref.options.namespace_schemas.values()
+                (file.path, "schema")
+                for file in current.schema_ref.options.namespace_schemas.values()
             )
-        missing = sorted(set(required) - present)
-        if missing:
+        absent = [(path, role) for path, role in required if path not in present]
+        if absent:
+            missing = sorted({path for path, _role in absent})
+            path, role = absent[0]
             items[index] = _batch_fault(
-                current, "not_found", "Required input is missing: " + missing[0], cache
+                current,
+                "not_found",
+                "Required input is missing: " + path,
+                cache,
+                details={"role": role, "path": path, "missing": [str(path) for path in missing]},
             )
             continue
         key = (
@@ -210,14 +217,25 @@ def _parse_batch(
 
 
 def _batch_fault(
-    item: BatchValidationItem, code: str, message: str, cache: SchemaCache
+    item: BatchValidationItem,
+    code: str,
+    message: str,
+    cache: SchemaCache,
+    *,
+    details: dict[str, JsonValue] | None = None,
 ) -> dict[str, JsonValue]:
+    fault: dict[str, JsonValue] = {
+        "code": code,
+        "message": message[: cache.limits.message_bytes],
+    }
+    if details is not None:
+        fault["details"] = details
     return {
         "document": {"path": item.document.path},
         "valid": None,
         "counts": None,
         "report": None,
-        "fault": {"code": code, "message": message[: cache.limits.message_bytes]},
+        "fault": fault,
     }
 
 

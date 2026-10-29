@@ -32,7 +32,8 @@ execution or Arrow features — check `adapters.arrow.available` and
 3. `pyxsd_validate_document` — invalid XML is a **successful call** with
    `data.valid == false`; malformed XML is an error fault (`invalid_xml`).
    Counts are aggregate; issue details page via `page.next_cursor`. Cursors are
-   bound to the query result and current input generation.
+   bound to the query result and current input generation. Valid documents return
+   `report: null` and create no report artifact; invalid documents retain one.
 4. `pyxsd_query_document` follows an issue to its exact occurrence: repeated
    nodes are identified by same-name sibling indexes in `location.path`, and
    `result: "subtree"` regenerates that occurrence's XML from bound data; it is
@@ -50,6 +51,7 @@ contain per-document verdicts/counts or faults. Reports are retained only for
 invalid documents. Split at `limits.corpus_max_files`; use the singular tool for
 paged diagnostics. Missing uploaded inputs, malformed XML, and schema-group
 failures return item faults; source-tree capture failures may reject a whole batch.
+Missing-input fault details include `role`, `path`, and `missing`.
 
 `not_found` means an input is missing; `schema_incomplete` means a required
 include/import is missing; `invalid_schema` means schema errors. These are not
@@ -61,10 +63,12 @@ Validation reports, oversized response bodies, record exports, and transform
 previews are stored as local artifacts with an ID, absolute path, size, SHA-256
 digest, media type, creation time, and kind.
 
-- `pyxsd_list_artifacts` pages in stable creation order with an opaque cursor.
-- `pyxsd_read_artifact` returns an exact bounded base64 range plus digest, media
-  type, and local path. Concatenate ranged reads for a large body; reduce length
-  on `response_limit` (reads never spill recursively).
+- `pyxsd_list_artifacts` pages in stable creation order using envelope
+  `page.next_cursor`; the cursor survives response spillover.
+- `pyxsd_read_artifact` returns a bounded base64 range plus actual `length`, total
+  `size`, digest, media type, and local path. `length` can be smaller than
+  requested at end of file. Concatenate ranged reads for a large body; reduce
+  length on `response_limit` (reads never spill recursively).
 - `pyxsd_delete_artifact` explicitly deletes one output. Repeating it is
   harmless. Nothing is removed automatically by time, workspace release, or
   preview completion.

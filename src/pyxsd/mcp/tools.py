@@ -22,6 +22,7 @@ from .contracts import (
     ListArtifactsRequest,
     ManageWorkspaceRequest,
     Page,
+    PageResult,
     PutFilesRequest,
     QueryDocumentRequest,
     ReadArtifactRequest,
@@ -608,8 +609,9 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
     async def list_artifacts(limit: int = 50, cursor: str | None = None) -> types.CallToolResult:
         """List retained artifacts (reports, exports, oversized responses).
 
-        Ordered oldest-first with cursor pagination; every entry carries the
-        id, digest, media type, size, and local path needed for ranged reads.
+        Ordered oldest-first; use envelope page.next_cursor for continuation,
+        including when the listing spills. Every entry carries the id, digest,
+        media type, size, and local path needed for ranged reads.
         """
         request = ListArtifactsRequest(limit=limit, cursor=cursor)
 
@@ -618,10 +620,13 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             refs, next_after = await services.outputs.list(after=after, limit=request.limit)
             wire = [_artifact(item) for item in refs]
             return ToolEnvelope(
-                data={
-                    "artifacts": [item.model_dump(mode="json") for item in wire],
-                    "next_cursor": _encode_after(next_after),
-                }
+                data={"artifacts": [item.model_dump(mode="json") for item in wire]},
+                page=PageResult(
+                    returned=len(refs),
+                    next_cursor=_encode_after(next_after),
+                    truncated=next_after is not None,
+                    total=None,
+                ),
             )
 
         return await _invoke(services, operation)
@@ -655,8 +660,9 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
     ) -> types.CallToolResult:
         """Read an exact bounded byte range of a retained artifact as base64.
 
-        Returns the range plus the artifact's digest, media type, and local
-        path. Ranges that would exceed the response budget fault with
+        Returns the range plus its actual length and the artifact's total size,
+        digest, media type, and local path. Length can be smaller than requested
+        at end of file. Ranges that would exceed the response budget fault with
         response_limit rather than spilling into another artifact; page large
         reads with offset/length. Artifacts survive workspace release.
         """
@@ -676,6 +682,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                     "digest": ref.digest,
                     "size": ref.size,
                     "offset": request.offset,
+                    "length": len(content),
                 },
                 artifacts=[ref],
             )

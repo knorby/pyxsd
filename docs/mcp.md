@@ -115,7 +115,7 @@ and file digests; changing the inputs invalidates old pages.
 | `pyxsd_put_files` | Atomically adds or replaces supplied paths in the session input set, retaining omitted files, and returns its generation and file manifest. |
 | `pyxsd_inspect_schema` | Returns an overview, compact/full stubs, or constraint-rich component descriptions with bounded depth. |
 | `pyxsd_find_schema_components` | Searches literal text, kind, name and namespace filters, or traverses `uses` / `used_by` relationships. |
-| `pyxsd_validate_document` | Returns verdicts, exact issue locations, aggregate counts, paged issues, fingerprints, and a retained report artifact. |
+| `pyxsd_validate_document` | Returns verdicts, exact issue locations, aggregate counts, paged issues, and fingerprints; retains a report artifact only for invalid documents. |
 | `pyxsd_validate_documents` | Validates a batch with per-document schemas and outcomes in one capture and worker call; retains reports only for invalid documents. |
 | `pyxsd_query_document` | Runs XPath over the bound projection and returns scalars, node summaries, exact locations or bounded subtrees. |
 | `pyxsd_explain_issue` | Gives curated issue-code guidance and can read an exact issue from a retained report. |
@@ -145,7 +145,9 @@ media type, creation time, and kind.
 
 The MCP envelope carries base64 expansion, so request bounded ranges. The
 coordinator verifies the full file against its indexed digest before returning the
-range. A missing or modified file is a typed error, never substituted content.
+range. The response's `length` is the actual returned byte count, which can be
+smaller than requested at end of file; `size` remains the complete artifact size.
+A missing or modified file is a typed error, never substituted content.
 If the base64 reply cannot fit the response budget, `response_limit` asks for a
 smaller range. Artifact reads never spill recursively into another artifact.
 Datasets and previews are a set of independent artifacts; deleting one does not
@@ -156,6 +158,9 @@ Large structured results that exceed the response budget are written once as a
 truncated JSON. Read the complete body by range and concatenate it.
 The summary preserves pagination, warnings, provenance, and existing artifact
 references. Its `bytes` field measures the serialized envelope, not a source file.
+`pyxsd_list_artifacts` puts `returned`, `next_cursor`, and `truncated` in the
+envelope's `page`, so a spilled listing remains pageable without first reading
+its full-result artifact.
 
 Resources include `pyxsd://issue-codes`, `pyxsd://capabilities`, and
 `pyxsd://artifacts/{artifact_id}`. The three prompts are `pyxsd_diagnose_xml`,
@@ -179,9 +184,10 @@ Missing-child diagnostics identify a container rather than a nonexistent child;
 check `location_precision` before treating an issue as an exact occurrence.
 
 Reports distinguish aggregate counts from collection suppression and detail
-pagination. `pyxsd_validate_document` retains its full report artifact, so
-`pyxsd_explain_issue` can later inspect an issue after the session inputs are
-released. Invalid XML is a successful validation with `data.valid=false`;
+pagination. `pyxsd_validate_document` returns `report: null` and writes no report
+artifact for a valid document; for an invalid document it retains the full report
+so `pyxsd_explain_issue` can inspect an issue after session inputs are released.
+Invalid XML is a successful validation with `data.valid=false`;
 malformed XML is an `invalid_xml` fault.
 
 Missing inputs fault with `not_found`; unresolved schema dependencies fault with
@@ -189,6 +195,7 @@ Missing inputs fault with `not_found`; unresolved schema dependencies fault with
 Validation, queries, projection, comparison, and transform validation require
 complete schemas; schema inspection remains available to diagnose missing pieces.
 `pyxsd_explain_issue` rejects a supplied code that disagrees with a report's issue.
+Curated guidance covers both `occurrence-min` and `occurrence-max`.
 
 ### Batch validation
 
@@ -207,9 +214,10 @@ For a corpus, prefer `pyxsd_validate_documents` to repeated singular calls:
 One capture and worker call serve the batch; each unique schema is leased once.
 Results preserve request order, including duplicates, and include verdict/counts
 or a typed item fault. Malformed documents and schema-group failures do not abort
-other groups. Missing uploaded references return item faults; source-tree capture
-or worker/protocol failures can reject the whole call. Omitted `schema_ref` uses
-document schema-location hints.
+other groups. Missing uploaded references return item faults whose details name
+the `path`, all `missing` paths, and whether the first missing `role` is the
+`document` or `schema`. Source-tree capture or worker/protocol failures can reject
+the whole call. Omitted `schema_ref` uses document schema-location hints.
 The existing `corpus_max_files` and `batch_seconds` limits apply; split larger
 corpora into batches. Valid documents create no report artifact; invalid documents
 retain all collected issues within the existing collection/output limits. Use the

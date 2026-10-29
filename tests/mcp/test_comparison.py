@@ -119,7 +119,7 @@ def test_structural_diff_added_removed_changed_and_deterministic(tmp_path):
     anyio.run(scenario)
 
 
-def test_anonymous_declarations_diff_by_content_addressed_identity(tmp_path):
+def test_anonymous_edit_changes_stable_declaration_identity(tmp_path):
     from pyxsd.mcp.services.comparison import ComparisonService
 
     async def scenario():
@@ -134,8 +134,9 @@ def test_anonymous_declarations_diff_by_content_addressed_identity(tmp_path):
                 ),
             )
             structural = result["structural"]
-            assert any(identifier.startswith("type@") for identifier in structural["removed"])
-            assert any(identifier.startswith("type@") for identifier in structural["added"])
+            assert structural["added"] == []
+            assert structural["removed"] == []
+            assert any(identifier.startswith("type@") for identifier in structural["changed"])
 
     anyio.run(scenario)
 
@@ -761,5 +762,90 @@ def test_valid_and_malformed_corpus_entries_omit_evidence(tmp_path):
             assert "evidence" not in by_path["good.xml"]
             assert by_path["bad.xml"]["status"] == "malformed"
             assert "evidence" not in by_path["bad.xml"]
+
+    anyio.run(scenario)
+
+
+ANONYMOUS_RENAME = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+<xs:element name="root"><xs:complexType><xs:sequence>
+<xs:element name="item"><xs:simpleType><xs:restriction base="xs:string">
+<xs:maxLength value="12"/>
+</xs:restriction></xs:simpleType></xs:element>
+</xs:sequence><xs:attribute name="id"><xs:simpleType>
+<xs:restriction base="xs:string"><xs:pattern value="[a-z]+"/></xs:restriction>
+</xs:simpleType></xs:attribute></xs:complexType></xs:element>
+</xs:schema>"""
+
+INCLUDED_MAIN = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+ xmlns:o="urn:o" targetNamespace="urn:o" xmlns:t="urn:o">
+<xs:include schemaLocation="one.xsd"/><xs:include schemaLocation="two.xsd"/>
+<xs:element name="root"><xs:complexType><xs:sequence>
+<xs:element ref="t:first"/><xs:element ref="t:second"/>
+</xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+
+def _included_global(name: str, length: int) -> str:
+    return f"""<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:o">
+<xs:element name="{name}"><xs:complexType><xs:sequence>
+<xs:element name="value"><xs:simpleType><xs:restriction base="xs:string">
+<xs:maxLength value="{length}"/>
+</xs:restriction></xs:simpleType></xs:element>
+</xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+
+def test_identical_anonymous_rename_is_empty_diff(tmp_path):
+    from pyxsd.mcp.services.comparison import ComparisonService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"old/a.xsd": ANONYMOUS_RENAME, "new/b.xsd": ANONYMOUS_RENAME},
+            )
+            result = await ComparisonService(inputs, pool).compare(
+                _compare_request(
+                    workspace,
+                    old_schema=SchemaRef(source=FileRef(path="old/a.xsd")),
+                    new_schema=SchemaRef(source=FileRef(path="new/b.xsd")),
+                )
+            )
+            assert result["structural"]["totals"] == {"added": 0, "removed": 0, "changed": 0}
+            assert result["structural"]["changed_details"] == []
+
+    anyio.run(scenario)
+
+
+def test_included_anonymous_move_and_single_file_edit(tmp_path):
+    from pyxsd.mcp.services.comparison import ComparisonService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            files = {
+                "old/main.xsd": INCLUDED_MAIN,
+                "old/one.xsd": _included_global("first", 10),
+                "old/two.xsd": _included_global("second", 10),
+                "new/main.xsd": INCLUDED_MAIN,
+                "new/one.xsd": _included_global("first", 10),
+                "new/two.xsd": _included_global("second", 10),
+            }
+            await upload(inputs, workspace, files)
+            service = ComparisonService(inputs, pool)
+            request = _compare_request(
+                workspace,
+                old_schema=SchemaRef(source=FileRef(path="old/main.xsd")),
+                new_schema=SchemaRef(source=FileRef(path="new/main.xsd")),
+            )
+            result = await service.compare(request)
+            assert result["structural"]["totals"] == {"added": 0, "removed": 0, "changed": 0}
+            await upload(inputs, workspace, {"new/two.xsd": _included_global("second", 11)})
+            result = await service.compare(request)
+            structural = result["structural"]
+            assert structural["added"] == []
+            assert structural["removed"] == []
+            assert "element:{urn:o}second" in structural["changed"]
+            assert "element:{urn:o}first" not in structural["changed"]
 
     anyio.run(scenario)

@@ -20,7 +20,10 @@ def _canonical(source: str | None, entry_path: str) -> str:
     if source is None:
         return "<unknown>"
     normalized = posixpath.normpath(source)
-    root = posixpath.dirname(posixpath.normpath(entry_path))
+    entry = posixpath.normpath(entry_path)
+    if normalized == entry:
+        return "<entry>"
+    root = posixpath.dirname(entry)
     return posixpath.relpath(normalized, root) if root else normalized
 
 

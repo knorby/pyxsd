@@ -50,6 +50,11 @@ _EXPLANATIONS: dict[str, dict[str, JsonValue]] = {
         "actions": ["Check its expanded name, declared attributes, and wildcard policy."],
         "uncertainty": "Namespace and parse options affect attribute binding.",
     },
+    "occurrence-max": {
+        "summary": "Content appears more often than its declaration permits.",
+        "actions": ["Inspect the repeated content and its declared maximum occurrence count."],
+        "uncertainty": "Recovery may report the container rather than every excess occurrence.",
+    },
     "occurrence-min": {
         "summary": "Required child content is missing from its container.",
         "actions": ["Inspect the parent's required children and minimum occurrence counts."],
@@ -356,7 +361,17 @@ class ExplorationService:
                 report_data = (
                     envelope.data.get("report") if isinstance(envelope.data, dict) else None
                 )
-                if self.outputs is not None and isinstance(report_data, dict):
+                if isinstance(envelope.data, dict) and envelope.data.get("valid") is True:
+                    envelope = envelope.model_copy(
+                        update={"data": {**envelope.data, "report": None}}
+                    )
+                    report_data = None
+                if (
+                    self.outputs is not None
+                    and isinstance(envelope.data, dict)
+                    and envelope.data.get("valid") is False
+                    and isinstance(report_data, dict)
+                ):
                     reference = await self.outputs.put_bytes(
                         json.dumps(report_data, separators=(",", ":")).encode(),
                         name="report.json",

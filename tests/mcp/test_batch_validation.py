@@ -523,3 +523,55 @@ def test_batch_partial_schema_incomplete(tmp_path):
             }
 
     anyio.run(scenario)
+
+
+def test_batch_missing_input_faults_include_role(tmp_path):
+    from pyxsd.mcp.contracts import CompileOptions, SchemaRef
+
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema-a.xsd": SCHEMA_A, "good-a.xml": GOOD_A},
+            )
+            namespace_ref = SchemaRef(
+                source=FileRef(path="schema-a.xsd"),
+                options=CompileOptions(
+                    namespace_schemas={"urn:extra": FileRef(path="missing-ns.xsd")}
+                ),
+            )
+            result = await service.validate_documents(
+                ValidateDocumentsRequest(
+                    workspace_id=workspace,
+                    documents=(
+                        item("missing.xml", ref("schema-a.xsd")),
+                        item("good-a.xml", ref("missing.xsd")),
+                        item("good-a.xml", namespace_ref),
+                        item("good-a.xml", ref("schema-a.xsd")),
+                    ),
+                )
+            )
+            rows = result.data["results"]
+            expected = (
+                ("document", "missing.xml"),
+                ("schema", "missing.xsd"),
+                ("schema", "missing-ns.xsd"),
+            )
+            for row, (role, path) in zip(rows[:3], expected, strict=True):
+                assert row["valid"] is None
+                assert row["fault"]["code"] == "not_found"
+                assert row["fault"]["details"] == {
+                    "role": role,
+                    "path": path,
+                    "missing": [path],
+                }
+            assert rows[3]["valid"] is True
+            assert result.data["summary"] == {
+                "total": 4,
+                "valid": 1,
+                "invalid": 0,
+                "failed": 3,
+            }
+
+    anyio.run(scenario)
