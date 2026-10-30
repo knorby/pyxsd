@@ -133,9 +133,11 @@ def test_open_reader_survives_delete_without_blocking_publish(tmp_path):
 
         anyio.run(mutate)
         resume.wait(timeout=15)
-    finally:
+    except BaseException:
         opened.abort()
         resume.abort()
+        raise
+    finally:
         _finish([process])
     assert results.get(timeout=5) == b"original"
 
@@ -166,9 +168,11 @@ def test_descriptor_open_is_inside_the_delete_reservation(tmp_path):
 
         anyio.run(blocked_delete)
         resume.wait(timeout=15)
-    finally:
+    except BaseException:
         opened.abort()
         resume.abort()
+        raise
+    finally:
         _finish([process])
     assert results.get(timeout=5) == b"original"
 
