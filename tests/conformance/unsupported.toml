@@ -32,7 +32,7 @@ note = "Character data is preserved verbatim in the bound tree: an element's lea
 name = "Schema hints by URL"
 construct = "xsi:schemaLocation with remote/absolute URIs"
 status = "partial"
-note = "The default loader resolves local filesystem paths only. A custom resource policy can define other source layouts and loading rules."
+note = "The default loader resolves local filesystem paths only and never fetches a URL. RemoteResourcePolicy adds opt-in HTTPS-only schema loading: a remote explicit or hint-selected main schema is the root read, allow_remote_hints gates instance-selected schemas, an additional remote hint from a local schema needs both allow_remote_hints and allow_local_remote, an ordinary local-schema remote dependency needs allow_local_remote, cross-origin dependencies of admitted remote documents need allowed_origins, and budgets are finite; there is no persistent cache."
 
 [[feature]]
 name = "Unique particle attribution"

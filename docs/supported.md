@@ -177,7 +177,7 @@ happens to surface.
 * - Remote schema hints
   - URL `schemaLocation`
   - partial
-  - The default loader resolves local filesystem paths only and never fetches a URL. `RemoteResourcePolicy` adds opt-in HTTPS-only schema loading with explicit root/origin rules, `allow_remote_hints` for an instance-selected schema, `allow_local_remote` for a local schema's remote dependency, and finite budgets; there is no persistent cache.
+  - The default loader resolves local filesystem paths only and never fetches a URL. `RemoteResourcePolicy` adds opt-in HTTPS-only schema loading: a remote explicit or hint-selected main schema is the root read, `allow_remote_hints` gates instance-selected schemas, an additional remote hint from a local schema needs both `allow_remote_hints` and `allow_local_remote`, an ordinary local-schema remote dependency needs `allow_local_remote`, cross-origin dependencies of admitted remote documents need `allowed_origins`, and budgets are finite; there is no persistent cache.
 * - Unique particle attribution
   - UPA checking with XSD 1.1 wildcard exclusions
   - partial

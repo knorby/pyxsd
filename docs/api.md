@@ -78,8 +78,11 @@ no redirect following. Supply `transport=` and/or `resolver=` to
 `RemoteResourcePolicy` to audit or constrain retrieval. `RemoteResourcePolicy.read`
 receives one of the `ResourcePurpose` values: `"schema"` for an explicit or
 mapped schema and ordinary dependency, `"schema-hint"` for a schema selected by
-the instance's location hint, and `"instance"` for an instance document. Remote
-instance documents are refused.
+the instance's location hint, and `"instance"` for an instance document. A
+hint-selected main schema is a root read (requiring `allow_remote_hints` but no
+`allowed_origins` entry); an additional remote hint from a local base is also a
+local-to-remote read and needs both `allow_remote_hints` and
+`allow_local_remote`. Remote instance documents are refused.
 
 ## Source spans
 

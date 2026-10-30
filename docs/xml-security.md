@@ -69,6 +69,16 @@ inherit it, so pass the policy again for instance documents. The module-level
 `pyxsd.parse(xml, xsd=..., xml_policy=..., xml_limits=...)` convenience applies
 the same values to both the instance and the schema compile.
 
+Use `protected()` when legacy documents may carry harmless DTD syntax but must
+not declare entities or external references:
+
+```python
+import pyxsd
+
+schema = pyxsd.Schema.compile("legacy.xsd")
+document = schema.parse("legacy.xml", xml_policy=pyxsd.XmlParserPolicy.protected())
+```
+
 These parser options cannot be combined with a custom `resource_policy`.
 A resource policy's `parse()` owns XML parsing and is trusted application code;
 see [resource policies](#resource-policies). A pre-parsed
@@ -151,15 +161,21 @@ schema = pyxsd.Schema.compile(
 ### Trust rules
 
 - Every retrieval is **HTTPS**.
-- The explicit main schema of `pyxsd.compile`/`Schema.compile` is the one
-  authorized root read.
+- A compile's remote loads have at most one authorized **root read**: the
+  explicit main schema supplied by the caller, or a main schema selected from
+  the instance's location hint (which also reads with `base=None`). Selecting
+  the policy authorizes a remote root; when the root came from an instance hint,
+  `allow_remote_hints=True` is required as well. A remote main hint needs no
+  `allowed_origins` entry.
 - A dependency of a remote document may stay on the requesting document's
   origin or the root's origin. Any other origin must be listed in
   `allowed_origins` (an HTTPS origin, not a URL).
-- An instance `xsi:schemaLocation`/`xsi:noNamespaceSchemaLocation` that names a
-  remote schema additionally requires `allow_remote_hints=True`.
-- A local schema (or an anonymous memory stream) may reference a remote
-  dependency only with `allow_local_remote=True`.
+- An **additional** remote hint resolved from a local schema is not a root read:
+  it is also a local-to-remote read, so it requires **both**
+  `allow_remote_hints=True` and `allow_local_remote=True`.
+- An ordinary remote `xs:include`/`xs:import` referenced by a local schema
+  requires `allow_local_remote=True`; once that document is admitted, its own
+  cross-origin dependencies need `allowed_origins` as above.
 - Remote instance documents are refused. Remote loading is limited to schemas.
 - A remote document cannot pivot to a local path, a `file:` URL, or another
   non-HTTPS URL. A remote schema never loads a Python overlay.
@@ -191,11 +207,20 @@ cache**: every compilation retrieves what it needs again.
 ### DNS checking is not rebinding immunity
 
 The policy calls `resolver(host, port)` before every request and rejects
-non-global addresses by default. The transport then resolves the hostname again
-to establish the connection. A DNS answer can therefore change between the check
-and the connection. The preconnection check raises the bar; it does not provide
-DNS-rebinding immunity. If that distinction matters, supply a custom
-`RemoteTransport` that connects only to the address that was checked.
+non-global addresses by default. That answer is used only for the preconnection
+authorization; the transport then resolves the hostname again to establish the
+connection. A DNS answer can therefore change between the check and the
+connection. The preconnection check raises the bar; it does not provide
+DNS-rebinding immunity.
+
+The public seam cannot fix this by itself: `RemoteTransport.fetch(url, *,
+limits)` receives the URL, not the checked addresses, so a transport that
+resolves the hostname again performs the same second lookup. To pin the address,
+supply a resolver/transport pair that resolves once, validates that answer, and
+connects to the exact validated address (or a transport that performs its own
+single resolve-check-connect as one step); replacing only the transport or only
+the resolver does not close the gap. The built-in `HttpClientTransport` resolves
+at connect time and is not pinned.
 
 `RemoteTransport` is the retrieval seam: `fetch(url, *, limits)` performs one
 HTTPS request and returns a `RemoteResponse` without following redirects. The
@@ -227,10 +252,13 @@ their supported XPath subsets during validation. These are not sandboxes:
 ## MCP servers
 
 The packaged MCP server is local, offline, and does not use
-`RemoteResourcePolicy`. Every schema and instance document from the input
-capture is parsed with `defusedxml` and `forbid_dtd=True`,
+`RemoteResourcePolicy`. The semantic parse of every schema and instance
+document from the input capture uses `defusedxml` with `forbid_dtd=True`,
 `forbid_entities=True`, and `forbid_external=True`, under the operator's XML
-byte, depth, and element limits.
+byte, depth, and element limits. A `result: "subtree"` query additionally runs
+`SourceIndex`, a raw Expat pass configured with `XmlParserPolicy.strict()`; it
+applies the same declaration policy and limits and never installs an external
+resource fetcher. Both parse paths apply the same declaration policy.
 The `pyxsd[mcp]` extra no longer declares `defusedxml` separately because it is a
 base dependency. See {doc}`mcp-deployment` for the worker and transport
 boundaries.

@@ -42,7 +42,7 @@ runs and are explained in [Supported features](supported.md).
 - **A small, pure-Python base.** The base install depends on `elementpath`
   and `defusedxml`, has no compiled extensions, and parses locally by default.
   `defusedxml` is loaded only when a parser profile selects it. Optional extras
-  add their own dependencies. Remote retrieval exists only through an explicit
+  add their own dependencies. The only built-in remote retrieval is an explicit
   `RemoteResourcePolicy`, and a custom `ResourcePolicy` is trusted application
   code; audit any network or file access you implement there.
 - **Direct query and export.** `xpath` / `find` / `findall` and

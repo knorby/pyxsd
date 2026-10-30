@@ -91,8 +91,8 @@ there is no HTTP/OAuth mode, and remote user-code execution is not included.
 Parsing and schema retrieval are local and offline by default. The stdlib parser
 is kept for speed and compatibility, so protections are opt-in:
 `XmlParserPolicy.protected()` or `.strict()` select a defusedxml-backed parser,
-and `XmlLimits` bounds bytes, depth, and element count. Remote XSD loading exists
-only through an explicit `RemoteResourcePolicy` with HTTPS-only trust rules and
+and `XmlLimits` bounds bytes, depth, and element count. The only built-in remote
+XSD loader is an explicit `RemoteResourcePolicy`, with HTTPS-only trust rules and
 finite per-compilation budgets; there is no persistent remote cache. The MCP
 server is stricter and always local. Read the
 [XML security guide](https://pyxsd.knorby.com/xml-security.html) before parsing

@@ -92,11 +92,14 @@ namespace evidence. Python overlays and extensions remain executable
 application code, outside this XML-loading contract.
 
 `pyxsd.RemoteResourcePolicy` is the built-in opt-in remote schema loader.
-Selecting it authorizes an explicit HTTPS root schema; same-origin
-dependencies require no further configuration, cross-origin ones must appear
-in `allowed_origins`, instance-driven remote hints need
-`allow_remote_hints=True`, and a local schema can reach a remote dependency
-only with `allow_local_remote=True`. Every request is HTTPS, address-checked,
+Selecting it authorizes a remote main schema, whether the caller supplied it
+explicitly or the instance selected it through a location hint; a hint-selected
+remote main also requires `allow_remote_hints=True`, and as the root read it
+needs no `allowed_origins` entry. An **additional** remote hint resolved from a
+local schema is not a root read and needs **both** `allow_remote_hints=True` and
+`allow_local_remote=True`. An ordinary remote include/import from a local schema
+needs `allow_local_remote=True`; once admitted, cross-origin dependencies of a
+remote document need `allowed_origins`. Every request is HTTPS, address-checked,
 budgeted, and subject to `RemoteLimits`; there is no persistent cache. Remote
 instance documents, remote-to-local pivots, `file:` URLs, and remote Python
 overlays are refused. Once selected, transport/resolver failures abort the
