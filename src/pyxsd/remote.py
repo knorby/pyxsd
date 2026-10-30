@@ -198,6 +198,11 @@ class _DeadlineSocket:
         buffering: int | None = None,
     ) -> io.BufferedReader:
         raw = socket.SocketIO(cast(socket.socket, self), mode)
+        # ``socket.makefile`` counts every file object so that ``socket.close``
+        # defers the real close until the last file is closed; ``SocketIO.close``
+        # performs the matching decrement through ``_decref_socketios``.
+        raw_socket = cast(Any, self._sock)
+        raw_socket._io_refs += 1
         return io.BufferedReader(raw)
 
 

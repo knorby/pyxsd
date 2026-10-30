@@ -7,7 +7,9 @@ policy remains the only place that authorizes a next hop.
 """
 
 import http.client
+import socket
 import ssl
+import threading
 
 import pytest
 
@@ -16,6 +18,7 @@ from pyxsd.remote import (
     RemoteLimits,
     RemoteResponse,
     RemoteTransportError,
+    _DeadlineSocket,
 )
 
 URL = "https://schemas.example/a/main.xsd"
@@ -72,6 +75,7 @@ class ScriptedSocket:
         self.offset = 0
         self.timeouts = []
         self.closed = False
+        self._io_refs = 0
         self._clock = clock
         self._recv_delay = recv_delay
         self._slow_after = slow_after
@@ -98,10 +102,10 @@ class ScriptedSocket:
         pass
 
     def _decref_socketios(self) -> None:
-        pass
+        self._io_refs -= 1
 
     def _inc_ref(self) -> None:
-        pass
+        self._io_refs += 1
 
     def close(self) -> None:
         self.closed = True
@@ -386,6 +390,41 @@ def test_fetch_enforces_the_deadline_inside_the_body(monkeypatch):
 
     assert headers_end < created[0].raw.offset < len(FIXED_RESPONSE)
     assert created[0].closed
+
+
+def test_deadline_socket_keeps_the_fd_alive_until_its_file_closes():
+    reader, writer = socket.socketpair()
+    clock = FakeClock()
+    wrapped = _DeadlineSocket(
+        reader,
+        clock=clock,
+        deadline=30.0,
+        read_timeout=30.0,
+        url=URL,
+        request_seconds=30.0,
+    )
+    stream = wrapped.makefile("rb")
+    payload = b"x" * (100 * 1024)
+    errors = []
+
+    def send() -> None:
+        try:
+            writer.sendall(payload)
+        except OSError as exc:
+            errors.append(exc)
+        finally:
+            writer.close()
+
+    thread = threading.Thread(target=send)
+    thread.start()
+    try:
+        wrapped.close()
+        assert stream.read() == payload
+    finally:
+        stream.close()
+        wrapped.close()
+        thread.join(timeout=5)
+    assert not errors
 
 
 def test_fetch_reports_a_deadline_timeout_as_a_transport_error(monkeypatch):
