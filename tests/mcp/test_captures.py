@@ -129,6 +129,21 @@ def test_schema_and_instance_budgets_fail_closed(tmp_path):
         exact_bytes.read("other.xsd", base="/workspace/schema.xsd", purpose="schema")
 
 
+def test_schema_hint_purpose_is_budgeted_as_a_schema_dependency(tmp_path):
+    item = capture(tmp_path, {"schema.xsd": XSD.encode(), "other.xsd": XSD.encode()})
+    policy = InputResourcePolicy(item, Limits(schema_closure_files=2))
+    policy.read("/workspace/schema.xsd", base=None, purpose="schema")
+    policy.read("other.xsd", base="/workspace/schema.xsd", purpose="schema-hint")
+    assert [dependency.path for dependency in policy.dependencies] == [
+        "other.xsd",
+        "schema.xsd",
+    ]
+    # A hint-derived schema stays in the schema closure, not the instance
+    # budget, so a third schema document exceeds the file limit.
+    with pytest.raises(InputPolicyError, match="schema_limit"):
+        policy.read("third.xsd", base="/workspace/schema.xsd", purpose="schema-hint")
+
+
 def test_xml_parser_enforces_depth_elements_and_defused_constructs(tmp_path):
     item = capture(tmp_path, {"schema.xsd": XSD.encode()})
     root = InputResourcePolicy(item, Limits()).parse(

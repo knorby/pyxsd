@@ -34,10 +34,17 @@ class ResourceData:
 class ResourcePolicy(Protocol):
     """Application-controlled loading and parsing for a schema and its instances.
 
-    Source IDs are canonical filesystem-shaped names (including virtual paths).
-    A dependency's base is its including document, not its directory. Parsers
-    must populate the supplied namespace context. Anonymous streams use
-    ``<memory>`` and have no implicit filesystem base.
+    Source IDs are canonical strings: a local path (including a virtual path
+    a policy defines, such as ``/workspace/...``), an absolute remote URI, or
+    ``<memory>`` for an anonymous stream. A dependency's base is its
+    including document, not its directory: a policy resolves a remote base
+    with URI semantics and any other base with its own filesystem semantics.
+    ``purpose`` is ``"schema"`` for an explicitly supplied schema and for an
+    ordinary schema dependency, ``"schema-hint"`` for a schema an instance
+    document selected through ``xsi:schemaLocation`` or
+    ``xsi:noNamespaceSchemaLocation``, and ``"instance"`` for an instance
+    document. Parsers must populate the supplied namespace context. Anonymous
+    streams use ``<memory>`` and have no implicit filesystem base.
     """
 
     def read(self, source: str, *, base: str | None, purpose: str) -> ResourceData:

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from pyxsd.namespaces import XSI_NS, clark
+from pyxsd.resource_refs import classify_resource
 from pyxsd.validation import IssueSeverity, ValidationReport, report_or_log
 
 
@@ -110,25 +111,37 @@ def schema_location_pairs(xml_root: Any) -> list[tuple[str | None, str]]:
     return pairs
 
 
+def _hint_reference(location: str, base_dir: Path | None) -> str:
+    """Resolve one hint location against the instance document's directory.
+
+    Hint locations are documented relative to the instance document, so a
+    relative one is joined onto *base_dir*. A hint naming an absolute URI
+    stays a URI: joining a URL onto a filesystem path would produce an
+    unopenable local name, and whether the URI may be retrieved is the
+    resource policy's decision. With no instance directory (an anonymous
+    stream) the location is kept as written.
+    """
+    if base_dir is None or classify_resource(location).kind == "remote":
+        return location
+    if Path(location).is_absolute():
+        return location
+    return str(base_dir / location)
+
+
 def absolute_schema_location_pairs(
     xml_root: Any, base_dir: Path | None
 ) -> list[tuple[str | None, str]]:
-    """The instance's schema-location pairs as absolute paths.
+    """The instance's schema-location pairs as resolved references.
 
-    Hint locations are documented relative to the instance document,
-    so callers that forward the pairs into a schema compilation
-    resolve them against *base_dir* (the instance document's
-    directory) before handing them on; a compilation resolves the
-    schema's own relative locations against its own directory, which
-    is not the same directory when the schema was named explicitly.
+    Hint locations are documented relative to the instance document, so
+    callers that forward the pairs into a schema compilation resolve them
+    against *base_dir* (the instance document's directory) before handing
+    them on; a compilation resolves the schema's own relative locations
+    against its own directory, which is not the same directory when the
+    schema was named explicitly. An absolute URI stays a URI.
     """
     return [
-        (
-            namespace,
-            location
-            if base_dir is None or Path(location).is_absolute()
-            else str(base_dir / location),
-        )
+        (namespace, _hint_reference(location, base_dir))
         for namespace, location in schema_location_pairs(xml_root)
     ]
 
@@ -138,11 +151,14 @@ def resolve_schema_hint(
     base_dir: Path | None,
     *,
     report: ValidationReport | None = None,
-) -> tuple[str | None, Path | None]:
-    """Resolves the instance's schema hint to ``(namespace, path)``.
+) -> tuple[str | None, str | None]:
+    """Resolves the instance's schema hint to ``(namespace, reference)``.
 
     Returns ``(None, None)`` when the instance carries no schema
-    location hint at all.
+    location hint at all. The reference is a local path or an absolute
+    URI; a URL hint stays a URI and is never reinterpreted as a
+    filesystem path, so :func:`pyxsd.compile` can deny it unless the
+    caller supplied a remote-capable resource policy.
 
     - ``base_dir``: the directory a relative hint is resolved
       against — the instance document's own directory, or the
@@ -157,10 +173,7 @@ def resolve_schema_hint(
     if location is None:
         return None, None
     namespace = schema_location_info(xml_root, "n", report=report)
-    hint = Path(location)
-    if not hint.is_absolute() and base_dir is not None:
-        hint = base_dir / hint
-    return namespace, hint
+    return namespace, _hint_reference(location, base_dir)
 
 
 __all__ = [

@@ -99,6 +99,16 @@ class TestAdditionalSchemaSources:
         )
         assert "extra" in result.classes
 
+    def test_remote_hint_is_a_policy_error_not_a_missing_hint_warning(self, tmp_path):
+        schema = f'<xs:schema {XS}><xs:element name="root" type="xs:string"/></xs:schema>'
+        with pytest.raises(ResourcePolicyError, match="remote-capable resource policy"):
+            _compile(
+                tmp_path,
+                schema,
+                mode=ParseModes.NAMESPACED,
+                schema_location_pairs=[("urn:x", "https://schemas.example/x.xsd")],
+            )
+
 
 class TestDirectiveIds:
     """``note_directive_id`` duplicate reporting."""
