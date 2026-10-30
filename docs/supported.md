@@ -11,6 +11,10 @@ profile. A separate manifest-driven regression corpus backs the integration
 paths (`uv run python tests/report_conformance.py` for the live report, and
 `uv run python tests/report_xsts.py` for the test suite).
 
+Parser profiles, structural limits, remote schema rules, and the untrusted-input
+boundary are covered in {doc}`xml-security`. The defaults remain stdlib parsing
+and local-only loading.
+
 ## Built-in type lattice
 
 All 45 XSD 1.0 built-in datatypes are implemented with lexical
@@ -173,7 +177,7 @@ happens to surface.
 * - Remote schema hints
   - URL `schemaLocation`
   - partial
-  - The default loader resolves local filesystem paths only. A custom resource policy can define other source layouts and loading rules.
+  - The default loader resolves local filesystem paths only and never fetches a URL. `RemoteResourcePolicy` adds opt-in HTTPS-only schema loading with explicit root/origin rules, `allow_remote_hints` for an instance-selected schema, `allow_local_remote` for a local schema's remote dependency, and finite budgets; there is no persistent cache.
 * - Unique particle attribution
   - UPA checking with XSD 1.1 wildcard exclusions
   - partial
@@ -181,7 +185,7 @@ happens to surface.
 * - DTD entities
   - `ENTITY` / `ENTITIES` values
   - partial
-  - Validation considers the internal DTD subset only, and only as far as expat's built-in entity expansion and default-attribute handling go. An external subset is not fetched, and a doctype declaration is not currently detected or reported. Unparsed-entity (`NDATA`) declarations are not tracked, so an `ENTITY` value referring to one can be accepted when it should be rejected.
+  - Validation considers the internal DTD subset only, and only as far as expat's built-in entity expansion and default-attribute handling go. No built-in profile retrieves an external subset or external entity. The stdlib default keeps that behavior for speed and compatibility and neither fetches nor reports a DOCTYPE declaration; `XmlParserPolicy.protected()` forbids entity declarations and external DOCTYPE identifiers, and `.strict()` forbids any DOCTYPE. Unparsed-entity (`NDATA`) declarations are not tracked, so an `ENTITY` value referring to one can be accepted when it should be rejected.
 * - XML 1.1 documents
   - `<?xml version="1.1"?>`
   - unsupported

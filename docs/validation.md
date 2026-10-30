@@ -59,16 +59,19 @@ A policy supplies two methods:
 - `read(source, *, base, purpose)` authorizes and loads a named resource,
   returning `ResourceData(source_id, content)` with its original bytes.
   `base` identifies the including document, not its directory; `purpose`
-  is `"schema"` or `"instance"`. Canonical source IDs can name virtual
-  filesystem layouts. They also determine nested dependency bases and
-  composition-cycle detection.
+  is `"schema"` (an explicit or mapped schema, or an ordinary dependency),
+  `"schema-hint"` (a schema the instance selected through its location
+  hint), or `"instance"`. Canonical source IDs can name virtual filesystem
+  layouts. They also determine nested dependency bases and composition-cycle
+  detection.
 - `parse(data, context)` parses admitted bytes and records namespace
   bindings in the supplied `NamespaceContext`.
 
 Includes, imports, redefines, overrides, namespace mappings and instance
 schema hints use the same policy. Raise `ResourcePolicyError` to refuse
 access: unlike unavailable-resource errors, a denial is never downgraded
-to an ignored import or schema-hint warning.
+to an ignored import or schema-hint warning. A policy's `parse()` owns XML
+parsing; `xml_policy` and `xml_limits` cannot be combined with it.
 
 Streams pass through the policy parser too; byte streams preserve original
 encoding, whereas text streams are encoded as UTF-8. Anonymous schema
@@ -76,10 +79,29 @@ streams have no implicit filesystem base: relative dependencies require a
 canonical stream `.name`. Already-parsed `Element` inputs are rejected
 when a policy is active, so they cannot bypass its parser.
 
-These hooks are **not a sandbox or a secure parser implementation**. A
-policy is trusted application code responsible for access checks, parser
-hardening, limits and namespace evidence. Python overlays and extensions
-remain executable application code, outside this XML-loading contract.
+`Schema.compile` and `Schema.parse` also accept opt-in `xml_policy` and
+`xml_limits` arguments without a custom resource policy. `xml_policy=None`
+keeps the stdlib parser and its current DTD/entity behavior;
+`XmlParserPolicy.protected()` or `.strict()` selects a defusedxml-backed
+profile, and `XmlLimits` bounds bytes, depth, and start-tag count. A
+compile-time parser policy applies to the schema and its dependencies but is
+not inherited by later instance parses, so pass it per parse. These hooks are
+**not a sandbox or a secure parser implementation**. A policy is trusted
+application code responsible for access checks, parser hardening, limits and
+namespace evidence. Python overlays and extensions remain executable
+application code, outside this XML-loading contract.
+
+`pyxsd.RemoteResourcePolicy` is the built-in opt-in remote schema loader.
+Selecting it authorizes an explicit HTTPS root schema; same-origin
+dependencies require no further configuration, cross-origin ones must appear
+in `allowed_origins`, instance-driven remote hints need
+`allow_remote_hints=True`, and a local schema can reach a remote dependency
+only with `allow_local_remote=True`. Every request is HTTPS, address-checked,
+budgeted, and subject to `RemoteLimits`; there is no persistent cache. Remote
+instance documents, remote-to-local pivots, `file:` URLs, and remote Python
+overlays are refused. Once selected, transport/resolver failures abort the
+compile even for a document-authored include/import. Full rules, defaults, and
+the DNS-rebinding caveat are in {doc}`xml-security`.
 
 ## Report API
 

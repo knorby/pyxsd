@@ -20,6 +20,16 @@ live `Document` instances and arbitrary host file handles never cross the protoc
 boundary. Workers receive a content-verified temporary input capture and return a
 bounded reply.
 
+The server is also **offline by construction**. It never selects
+`RemoteResourcePolicy` and has no network loader: every captured schema and
+instance document is read from the session input set or the configured source
+root. XML and schema bytes are parsed with `defusedxml` under
+`forbid_dtd=True`, `forbid_entities=True`, and `forbid_external=True`, plus the
+operator's XML byte, depth, and element limits. A remote `schemaLocation`,
+include, or import is not fetched; the reference fails rather than retrieving
+anything. Protecting a non-MCP application is a separate decision documented in
+{doc}`xml-security`.
+
 ## Store and transport
 
 The server retains artifacts at `<project-root>/.pyxsd/mcp`, or at the path

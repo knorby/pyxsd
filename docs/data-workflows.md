@@ -215,7 +215,7 @@ precision and timezone decisions belong to your application.
 pyxsd deliberately does not embed SQL execution, dataframe engines, joins,
 business rules, exchange rates, or user-supplied expressions in the library or
 its integrations. The library delivers schema-typed values with honest
-validation; consumers decide what the values mean. That boundary keeps the
-base dependency surface at `elementpath`, keeps Arrow and Pydantic
-independently optional, and lets DuckDB, Polars, and application policy evolve
-on their own schedules.
+validation; consumers decide what the values mean. That boundary keeps the base
+dependencies to `elementpath` and `defusedxml` (used only by opt-in parser
+profiles), keeps Arrow and Pydantic independently optional, and lets DuckDB,
+Polars, and application policy evolve on their own schedules.

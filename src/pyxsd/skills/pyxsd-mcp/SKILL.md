@@ -46,9 +46,16 @@ execution or Arrow features — check `adapters.arrow.available` and
    `report: null` and create no report artifact; invalid documents retain one.
 4. `pyxsd_query_document` follows an issue to its exact occurrence: repeated
    nodes are identified by same-name sibling indexes in `location.path`, and
-   `result: "subtree"` slices that occurrence's exact original source bytes
-   (base64 `data` with its `span`), preserving formatting, comments, and CDATA
-   while excluding the element's trailing tail text.
+   `result: "subtree"` takes an exact slice of the captured original bytes, not
+   regenerated XML. Each result carries base64 `data`, `byte_length`, a
+   half-open `span` in the source's original encoding, and `source_faithful`;
+   prefixes, attribute layout, comments, and CDATA are preserved while the
+   element's trailing tail and any XML declaration are excluded. A slice can
+   rely on ancestor namespace declarations, so restore them before parsing it
+   alone. UTF-16 documents return UTF-16 bytes and byte offsets, not re-encoded
+   UTF-8. An unaddressable occurrence reports a per-result `source_unavailable`
+   fault with null data/span rather than falling back to serialization. Summary
+   results keep their old shape.
 5. `pyxsd_explain_issue` gives curated guidance. Pass the retained report
    artifact to inspect one exact issue; reports remain readable after session
    inputs are released.

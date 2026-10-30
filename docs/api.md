@@ -25,6 +25,79 @@ schema once; `Schema.parse` binds one instance document and returns a
 from an argument or the instance's own schema hints, compiles, and
 binds.
 
+Both methods accept optional `xml_policy` and `xml_limits` arguments.
+The policy is opt-in: `None` keeps stdlib parsing and unlimited structure.
+A compile-time policy applies to the schema and its dependencies but is
+**not** inherited by later `Schema.parse` calls; pass it again per instance.
+Neither argument can be combined with a custom `resource_policy`, whose
+`parse()` owns parsing. `pyxsd.parse` applies both values to the instance and
+the schema compile. See {doc}`xml-security` for the profiles and limits and
+the section below for the reference.
+
+Writing is deterministic: `Document.write`, `Document.to_string`, and
+`XmlTreeWriter` emit no generated timestamp, so serializing the same tree twice
+produces the same bytes. `XmlTreeWriter.writeHeaderInfo()` remains a no-op
+subclass hook for callers that want their own header (issue #48).
+
+## Parser and resource policies
+
+`XmlParserPolicy` selects the stdlib backend (the default) or a
+defusedxml-backed profile. `XmlLimits` bounds bytes, element depth, and start-tag
+count. `RemoteResourcePolicy` is the only built-in remote XSD loader: HTTPS only,
+explicit origin/hint authorization, finite budgets, no persistent cache. A
+custom `ResourcePolicy` replaces reading and parsing entirely.
+
+```{eval-rst}
+.. autoclass:: pyxsd.xml_policy.XmlParserPolicy
+   :members:
+
+.. autoclass:: pyxsd.xml_policy.XmlLimits
+   :members:
+
+.. autoclass:: pyxsd.remote.RemoteResourcePolicy
+   :members:
+
+.. autoclass:: pyxsd.remote.RemoteLimits
+   :members:
+
+.. autoclass:: pyxsd.remote.RemoteTransport
+   :members:
+
+.. autoclass:: pyxsd.remote.HttpClientTransport
+   :members:
+
+.. autoclass:: pyxsd.resource_policy.ResourcePolicy
+   :members:
+
+.. autoclass:: pyxsd.resource_policy.ResourcePolicyError
+   :undoc-members:
+```
+
+`RemoteTransport.fetch(url, *, limits)` is the retrieval seam: one HTTPS request,
+no redirect following. Supply `transport=` and/or `resolver=` to
+`RemoteResourcePolicy` to audit or constrain retrieval. `RemoteResourcePolicy.read`
+receives one of the `ResourcePurpose` values: `"schema"` for an explicit or
+mapped schema and ordinary dependency, `"schema-hint"` for a schema selected by
+the instance's location hint, and `"instance"` for an instance document. Remote
+instance documents are refused.
+
+## Source spans
+
+`pyxsd.source_spans.SourceIndex` indexes exact original-byte ranges for element
+occurrences without building another tree. It is the mechanism behind the MCP
+server's source-faithful subtrees; the core library does not expose spans from
+`Document` directly. Paths use the same expanded-name and same-name-sibling
+addressing as {class}`~pyxsd.validation.ValidationIssue` locations, and the
+whole input is parsed and policy-checked before a span is returned.
+
+```{eval-rst}
+.. autoclass:: pyxsd.source_spans.SourceIndex
+   :members:
+
+.. autoclass:: pyxsd.source_spans.SourceSpan
+   :members:
+```
+
 ## Mixin extensions
 
 ```{eval-rst}

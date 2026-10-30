@@ -13,6 +13,20 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ### Added
 
+- Opt-in XML parser profiles: `XmlParserPolicy.protected()` forbids entity
+  declarations and external references, `.strict()` also forbids DTDs, and
+  `XmlLimits` adds byte, depth, and element budgets. Stdlib parsing remains the
+  default for speed and compatibility, and no built-in profile fetches an
+  external DTD or entity.
+- Opt-in HTTPS schema loading with `RemoteResourcePolicy` and finite
+  `RemoteLimits`: explicit root/origin rules, separately gated remote instance
+  hints, strict parsing of downloaded resources, redirect and address
+  revalidation, per-compilation budgets, and no persistent remote cache.
+  Local/offline loading remains the default.
+- Source-faithful MCP subtrees: `pyxsd_query_document` with
+  `result="subtree"` returns exact base64 original bytes with `span`,
+  `byte_length`, `source_faithful`, and per-result `source_unavailable` faults
+  instead of regenerated XML.
 - Structured, bounded validation reports with JSON-safe issue details, source
   occurrence locations, and `Document.locate()` lookups.
 - Resource-policy hooks for schema and instance reads, including virtual
@@ -31,8 +45,20 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   Execution remains disabled by default; trusted-local previews require
   explicit stdio opt-in.
 
+### Changed
+
+- `defusedxml` joins `elementpath` as a base dependency (both pure Python).
+  `defusedxml` is loaded only when an opt-in parser profile selects it, and it
+  is no longer a separate `pyxsd[mcp]` requirement.
+- Document serialization is deterministic for the same tree: repeated writes
+  produce identical bytes, and the generated header no longer varies between
+  runs.
+
 ### Fixed
 
+- `XmlTreeWriter.writeHeaderInfo()` no longer emits a generated timestamp; the
+  default is a no-op subclass hook for callers that want their own header
+  (issue #48).
 - Schema binding indexes are released after each parse, preventing per-parse
   state from accumulating.
 
