@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import io
 import socket
+import threading
 from typing import Any
 
 import pytest
 
 import pyxsd
-from pyxsd.namespaces import NamespaceContext
+from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.remote import (
+    AddressResolver,
     HttpClientTransport,
     RemoteLimits,
     RemoteResourcePolicy,
@@ -44,6 +46,16 @@ def xsd(body: str = "", *, target: str | None = None) -> str:
 
 
 SIMPLE_DOC = xsd('<xs:element name="root" type="xs:string"/>')
+HINT_MAIN_DOC = (
+    f'<xs:schema xmlns:xs="{XS}" xmlns:e="urn:extra">'
+    '<xs:import namespace="urn:extra"/>'
+    '<xs:element name="root" type="e:Number"/></xs:schema>'
+)
+EXTRA = "https://a.example/extra.xsd"
+EXTRA_DOC = xsd(
+    '<xs:simpleType name="Number"><xs:restriction base="xs:int"/></xs:simpleType>',
+    target="urn:extra",
+)
 ROOT_DOC = xsd('<xs:include schemaLocation="types.xsd"/><xs:element name="root" type="Number"/>')
 TYPES_DOC = xsd('<xs:simpleType name="Number"><xs:restriction base="xs:int"/></xs:simpleType>')
 MID_DOC = xsd('<xs:include schemaLocation="types.xsd"/>')
@@ -116,6 +128,28 @@ def remote_policy(
         resolver=resolver if resolver is not None else Resolver(),
         **kwargs,
     )
+
+
+class RecordingRemotePolicy(RemoteResourcePolicy):
+    """A remote policy that records the purpose of every read."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.reads: list[tuple[str, str | None, str]] = []
+
+    def read(self, source: str, *, base: str | None, purpose: Any) -> Any:
+        self.reads.append((source, base, purpose))
+        return super().read(source, base=base, purpose=purpose)
+
+
+class ServingPolicy:
+    """A trusted policy that serves one remote document for any source name."""
+
+    def read(self, source: str, *, base: str | None, purpose: Any) -> ResourceData:
+        return ResourceData(ROOT, SIMPLE_DOC.encode("utf-8"))
+
+    def parse(self, data: ResourceData, context: Any) -> Any:
+        return parse_with_namespaces(io.BytesIO(data.content), context)
 
 
 @pytest.fixture(autouse=True)
@@ -193,6 +227,8 @@ def test_allowed_origins_must_be_https_origins() -> None:
     for origin in ("https://b.example:99999", "https://b.example:0"):
         with pytest.raises(ValueError, match="invalid port"):
             RemoteResourcePolicy(allowed_origins=(origin,))
+    with pytest.raises(ValueError, match="user information"):
+        RemoteResourcePolicy(allowed_origins=("https://user:secret@b.example",))
 
 
 @pytest.mark.parametrize(
@@ -226,6 +262,30 @@ def test_instance_remote_hints_require_the_hint_flag(tmp_path: Any) -> None:
     document = pyxsd.parse(str(instance), resource_policy=allowed)
     assert document.is_valid
     assert transport.requests == [ROOT]
+
+
+def test_remote_hints_allow_a_same_origin_additional_hint(tmp_path: Any) -> None:
+    instance = tmp_path / "input.xml"
+    instance.write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        f'xsi:noNamespaceSchemaLocation="{ROOT}" '
+        f'xsi:schemaLocation="urn:extra {EXTRA}">4</root>',
+        encoding="utf-8",
+    )
+    transport = FakeTransport(
+        {ROOT: response(ROOT, HINT_MAIN_DOC), EXTRA: response(EXTRA, EXTRA_DOC)}
+    )
+    policy = RecordingRemotePolicy(
+        transport=transport, resolver=Resolver(), allow_remote_hints=True
+    )
+    document = pyxsd.parse(str(instance), mode=pyxsd.ParseModes.NAMESPACED, resource_policy=policy)
+    assert document.is_valid
+    assert transport.requests == [ROOT, EXTRA]
+    assert policy.reads == [
+        (str(instance), None, "instance"),
+        (ROOT, None, "schema-hint"),
+        (EXTRA, ROOT, "schema-hint"),
+    ]
 
 
 def test_hint_derived_remote_dependency_from_a_local_schema_needs_both_flags(
@@ -262,6 +322,37 @@ def test_local_schema_remote_dependency_requires_allow_local_remote(tmp_path: An
     assert transport.requests == [ROOT, TYPES]
 
 
+STREAM_REMOTE_DOC = xsd(
+    f'<xs:include schemaLocation="{ROOT}"/><xs:element name="root" type="Number"/>'
+)
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"allow_local_remote": False}])
+def test_a_stream_schema_cannot_authorize_a_remote_root(kwargs: dict[str, Any]) -> None:
+    transport = FakeTransport({ROOT: response(ROOT, ROOT_DOC), TYPES: response(TYPES, TYPES_DOC)})
+    policy = remote_policy(transport, **kwargs)
+    with pytest.raises(ResourcePolicyError, match="allow_local_remote"):
+        pyxsd.compile(io.StringIO(STREAM_REMOTE_DOC), resource_policy=policy)
+    assert transport.requests == []
+
+
+def test_a_stream_schema_remote_dependency_needs_allow_local_remote() -> None:
+    transport = FakeTransport({ROOT: response(ROOT, ROOT_DOC), TYPES: response(TYPES, TYPES_DOC)})
+    policy = remote_policy(transport, allow_local_remote=True)
+    schema = pyxsd.compile(io.StringIO(STREAM_REMOTE_DOC), resource_policy=policy)
+    assert not schema.report.has_errors
+    assert transport.requests == [ROOT, TYPES]
+
+
+def test_stream_remote_closure_budgets_persist_across_dependencies() -> None:
+    stream = xsd(f'<xs:include schemaLocation="{ROOT}"/><xs:include schemaLocation="{MID}"/>')
+    transport = FakeTransport({ROOT: response(ROOT, SIMPLE_DOC), MID: response(MID, SIMPLE_DOC)})
+    policy = remote_policy(transport, allow_local_remote=True, limits=RemoteLimits(resources=1))
+    with pytest.raises(ResourcePolicyError, match="resources=1"):
+        pyxsd.compile(io.StringIO(stream), resource_policy=policy)
+    assert transport.requests == [ROOT]
+
+
 @pytest.mark.parametrize(
     "pivot",
     [
@@ -290,7 +381,7 @@ def test_a_remote_base_never_reads_an_absolute_local_path_locally() -> None:
     assert transport.requests == ["https://a.example/etc/passwd"]
 
 
-def test_remote_overlay_is_never_retrieved(tmp_path: Any) -> None:
+def test_remote_overlay_is_never_retrieved() -> None:
     transport = FakeTransport({ROOT: response(ROOT, SIMPLE_DOC)})
     policy = remote_policy(transport)
     with pytest.raises(ResourcePolicyError, match="overlay"):
@@ -305,6 +396,26 @@ def test_a_remote_root_cannot_load_a_local_overlay(tmp_path: Any) -> None:
     policy = remote_policy(transport)
     with pytest.raises(ResourcePolicyError, match="overlay"):
         pyxsd.compile(ROOT, overlay=overlay, resource_policy=policy)
+    assert transport.requests == []
+
+
+def test_a_policy_aliasing_a_local_source_to_remote_cannot_load_an_overlay(
+    tmp_path: Any,
+) -> None:
+    overlay = tmp_path / "overlay.py"
+    overlay.write_text("x = 1\n", encoding="utf-8")
+    with pytest.raises(ResourcePolicyError, match="remote schema"):
+        pyxsd.compile("alias.xsd", overlay=overlay, resource_policy=ServingPolicy())
+
+
+def test_a_memory_schema_cannot_resolve_an_overlay_module_name(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "overlay_module.py").write_text("x = 1\n", encoding="utf-8")
+    policy = remote_policy(FakeTransport({}))
+    with pytest.raises(ImportError, match="not found"):
+        pyxsd.compile(io.StringIO(SIMPLE_DOC), overlay="overlay_module", resource_policy=policy)
 
 
 def test_a_memory_schema_still_loads_an_explicit_local_overlay(tmp_path: Any) -> None:
@@ -495,6 +606,44 @@ def test_the_redirect_limit_bounds_the_chain() -> None:
     assert transport.requests == [ROOT, first]
 
 
+def test_redirect_bodies_count_toward_closure_bytes() -> None:
+    redirect_body = "x" * 64
+    limit = len(redirect_body) + len(SIMPLE_DOC) - 1
+    transport = FakeTransport(
+        {
+            ROOT: response(ROOT, redirect_body, status=302, headers={"Location": FINAL}),
+            FINAL: response(FINAL, SIMPLE_DOC),
+        }
+    )
+    policy = remote_policy(
+        transport,
+        limits=RemoteLimits(response_bytes=limit, closure_bytes=limit),
+    )
+    with pytest.raises(ResourcePolicyError, match="closure_bytes"):
+        policy.read(ROOT, base=None, purpose="schema")
+    assert transport.requests == [ROOT, FINAL]
+
+
+def test_the_redirect_budget_is_shared_across_resources() -> None:
+    final_doc = xsd('<xs:include schemaLocation="types.xsd"/>')
+    types_redirect = "https://a.example/real/types.xsd"
+    types_real = "https://a.example/real/real-types.xsd"
+    transport = FakeTransport(
+        {
+            ROOT: response(ROOT, "", status=302, headers={"Location": FINAL}),
+            FINAL: response(FINAL, final_doc),
+            types_redirect: response(
+                types_redirect, "", status=302, headers={"Location": types_real}
+            ),
+            types_real: response(types_real, TYPES_DOC),
+        }
+    )
+    policy = remote_policy(transport, limits=RemoteLimits(redirects=1))
+    with pytest.raises(ResourcePolicyError, match="redirects=1"):
+        pyxsd.compile(ROOT, resource_policy=policy)
+    assert transport.requests == [ROOT, FINAL, types_redirect]
+
+
 def test_a_non_success_response_is_denied() -> None:
     transport = FakeTransport({ROOT: response(ROOT, "gone", status=404)})
     policy = remote_policy(transport)
@@ -507,6 +656,15 @@ def test_transport_failures_propagate() -> None:
     policy = remote_policy(transport)
     with pytest.raises(RemoteTransportError, match="boom"):
         policy.read(ROOT, base=None, purpose="schema")
+
+
+def test_a_transport_failure_for_a_document_dependency_is_fatal() -> None:
+    root = xsd('<xs:include schemaLocation="mid.xsd"/>')
+    transport = FakeTransport({ROOT: response(ROOT, root), MID: RemoteTransportError("offline")})
+    policy = remote_policy(transport)
+    with pytest.raises(RemoteTransportError, match="offline"):
+        pyxsd.compile(ROOT, resource_policy=policy)
+    assert transport.requests == [ROOT, MID]
 
 
 # --- closure budgets and deduplication ---------------------------------------
@@ -573,6 +731,73 @@ def test_repeated_reads_are_accounted_against_the_closure_bytes() -> None:
     policy.read(ROOT, base=None, purpose="schema")
     with pytest.raises(ResourcePolicyError, match="closure_bytes"):
         policy.read(ROOT, base=ROOT, purpose="schema")
+
+
+def test_canonical_urls_normalize_before_deduplication() -> None:
+    real = "https://a.example/a/root.xsd?q=~"
+    alias = "https://a.example/a/./%72oot.xsd?q=%7e"
+    transport = FakeTransport({real: response(real, SIMPLE_DOC)})
+    policy = remote_policy(transport, limits=RemoteLimits(resources=1))
+    first = policy.read(alias, base=None, purpose="schema")
+    second = policy.read(real, base=real, purpose="schema")
+    assert first.source_id == second.source_id == real
+    assert transport.requests == [real, real]
+
+
+def test_a_trailing_slash_is_preserved_in_canonical_identity() -> None:
+    slashed = "https://a.example/a/b/"
+    transport = FakeTransport({slashed: response(slashed, SIMPLE_DOC)})
+    data = remote_policy(transport).read(slashed, base=None, purpose="schema")
+    assert data.source_id == slashed
+
+
+def test_reserved_percent_escapes_are_uppercased_not_decoded() -> None:
+    canonical = "https://a.example/a%2Fb.xsd"
+    transport = FakeTransport({canonical: response(canonical, SIMPLE_DOC)})
+    data = remote_policy(transport).read("https://a.example/a%2fb.xsd", base=None, purpose="schema")
+    assert data.source_id == canonical
+    assert transport.requests == [canonical]
+
+
+def test_one_policy_serves_several_compilations_with_separate_closures() -> None:
+    first = "https://a.example/one.xsd"
+    second = "https://a.example/two.xsd"
+    transport = FakeTransport(
+        {first: response(first, SIMPLE_DOC), second: response(second, SIMPLE_DOC)}
+    )
+    policy = remote_policy(transport, limits=RemoteLimits(resources=1))
+    for root in (first, second):
+        schema = pyxsd.compile(root, resource_policy=policy)
+        assert not schema.report.has_errors
+    assert transport.requests == [first, second]
+
+
+def test_concurrent_compilations_do_not_share_closure_state() -> None:
+    first = "https://a.example/one.xsd"
+    second = "https://a.example/two.xsd"
+    transport = FakeTransport(
+        {first: response(first, SIMPLE_DOC), second: response(second, SIMPLE_DOC)}
+    )
+    policy = remote_policy(transport, limits=RemoteLimits(resources=1))
+    barrier = threading.Barrier(2, timeout=5)
+    errors: list[BaseException] = []
+
+    def worker(root: str) -> None:
+        try:
+            with policy.compilation():
+                barrier.wait()
+                policy.read(root, base=None, purpose="schema")
+        except BaseException as exc:  # pragma: no cover - asserted empty below
+            errors.append(exc)
+            barrier.abort()
+
+    threads = [threading.Thread(target=worker, args=(root,)) for root in (first, second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert sorted(transport.requests) == sorted([first, second])
 
 
 def test_a_dependency_cycle_is_skipped_without_unbounded_retrieval() -> None:
@@ -679,6 +904,7 @@ def test_unknown_purposes_are_rejected() -> None:
 
 
 def test_remote_public_types_are_exported() -> None:
+    assert pyxsd.AddressResolver is AddressResolver
     assert pyxsd.RemoteResourcePolicy is RemoteResourcePolicy
     assert pyxsd.RemoteLimits is RemoteLimits
     assert pyxsd.RemoteTransportError is RemoteTransportError

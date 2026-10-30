@@ -30,9 +30,13 @@ import http.client
 import io
 import ipaddress
 import math
+import posixpath
+import re
 import socket
 import ssl
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -388,12 +392,49 @@ def _url_parts(url: str) -> tuple[str, str, int, str, str]:
     return scheme, host, 443 if port is None else port, parsed.path or "/", parsed.query
 
 
+#: Percent-encoded unreserved characters are equivalent to their literal form
+#: (RFC 3986 §6.2.2.2); everything else keeps an uppercase hex escape.
+_PERCENT = re.compile(r"%([0-9A-Fa-f]{2})")
+_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+
+def _normalize_percent(text: str) -> str:
+    """Canonicalize percent escapes for URL identity."""
+
+    def replace(match: re.Match[str]) -> str:
+        character = chr(int(match.group(1), 16))
+        if character in _UNRESERVED:
+            return character
+        return f"%{match.group(1).upper()}"
+
+    return _PERCENT.sub(replace, text)
+
+
+def _normalize_path(path: str) -> str:
+    """Remove dot segments without losing a final slash.
+
+    ``_url_parts`` always supplies an absolute, non-empty path, so the only
+    shape ``posixpath.normpath`` drops is a trailing slash.
+    """
+    normalized = posixpath.normpath(path)
+    if path.endswith("/") and not normalized.endswith("/"):
+        normalized = f"{normalized}/"
+    return normalized
+
+
 def _canonical_url(url: str) -> str:
-    """Canonicalize *url* for identity: lowercase host, no default port or fragment."""
+    """Canonicalize *url* for identity before dedupe and fetch.
+
+    Lowercases the scheme/host, drops the default port and fragment, decodes
+    percent-encoded unreserved characters (uppercasing other escapes), and
+    removes path dot segments, so spelling aliases cannot inflate the
+    resource count.
+    """
     scheme, host, port, path, query = _url_parts(url)
     display = f"[{host}]" if ":" in host else host
     netloc = display if port == 443 else f"{display}:{port}"
-    return urlunsplit((scheme, netloc, path, query, ""))
+    normalized_path = _normalize_path(_normalize_percent(path))
+    return urlunsplit((scheme, netloc, normalized_path, _normalize_percent(query), ""))
 
 
 def _origin(url: str) -> _Origin:
@@ -403,7 +444,7 @@ def _origin(url: str) -> _Origin:
 
 
 def _allowed_origin(origin: str) -> _Origin:
-    """Parse one ``allowed_origins`` entry, rejecting anything but an origin."""
+    """Parse one ``allowed_origins`` entry, rejecting anything but a bare origin."""
     parsed = urlsplit(origin)
     if (
         parsed.scheme.lower() != "https"
@@ -413,6 +454,8 @@ def _allowed_origin(origin: str) -> _Origin:
         or parsed.fragment
     ):
         raise ValueError(f"allowed_origins entry {origin!r} is not an https origin")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"allowed_origins entry {origin!r} must not include user information")
     try:
         port = parsed.port
     except ValueError as exc:
@@ -422,8 +465,41 @@ def _allowed_origin(origin: str) -> _Origin:
     return "https", parsed.hostname.lower(), 443 if port is None else port
 
 
+class _Closure:
+    """Budgets and trust state for one in-flight compilation.
+
+    ``root_pending`` is true only when the compilation's main schema is an
+    explicit path or URL; an anonymous stream has no root read, so every
+    memory-base dependency stays a dependency.
+    """
+
+    __slots__ = ("closure_bytes", "depths", "redirects", "resources", "root_origin", "root_pending")
+
+    def __init__(self, *, root_pending: bool) -> None:
+        self.root_pending = root_pending
+        self.resources: set[str] = set()
+        self.closure_bytes = 0
+        self.redirects = 0
+        self.depths: dict[str, int] = {}
+        self.root_origin: _Origin | None = None
+
+    def reset(self) -> None:
+        self.resources = set()
+        self.closure_bytes = 0
+        self.redirects = 0
+        self.depths = {}
+        self.root_origin = None
+
+    def claim_root(self) -> bool:
+        """Consume the one root read this closure allows, if any."""
+        if not self.root_pending:
+            return False
+        self.root_pending = False
+        return True
+
+
 class RemoteResourcePolicy:
-    """Opt-in HTTPS schema loading with one closure's budgets and trust rules.
+    """Opt-in HTTPS schema loading with per-compilation budgets and trust rules.
 
     Selecting the policy authorizes the application's remote root schema.
     Dependencies of an admitted remote document may reference the same origin
@@ -438,16 +514,34 @@ class RemoteResourcePolicy:
     exceeds ``limits.closure_bytes``, ``limits.resources`` unique URLs, and
     ``limits.depth`` dependency levels. Redirects are followed one request at
     a time, with the scheme, origin, and addresses revalidated before each new
-    request, up to ``limits.redirects`` hops.
+    request, up to ``limits.redirects`` hops. **Every downloaded body counts**
+    toward ``closure_bytes``, including redirect and error responses, and
+    ``limits.redirects`` is a closure-wide total across all resources (not a
+    per-resource cap).
+
+    The main schema of an explicit :func:`pyxsd.compile` is the only root read.
+    An anonymous stream has no root read, so every memory-base dependency is
+    still a local-to-remote dependency and needs ``allow_local_remote=True``;
+    a stream's document-authored remote reference can never authorize an
+    arbitrary origin as a root or reset the closure budgets. :meth:`compilation`
+    gives each in-flight compile its own closure state (a context variable), so
+    one policy instance can serve concurrent compiles without sharing origins
+    or budgets. Direct ``read`` calls outside a compilation share one fallback
+    closure and each explicit root read resets it.
 
     Pivots are denied: a remote document may never resolve to a local path or
     a ``file:``/other non-HTTPS URL, remote instance documents are refused, and
-    a remote schema never loads a Python overlay.
+    a remote schema never loads a Python overlay (a ``<memory>`` schema has no
+    local directory for a module-name overlay either).
 
     ``parse`` always uses :meth:`XmlParserPolicy.strict` and the policy's XML
     limits (``response_bytes`` for bytes, ``xml_depth`` and ``xml_elements``
     for structure), so a downloaded document declaring a DTD or entity is
     denied. There is no persistent cache and no external-entity handler.
+
+    Once this policy is selected, transport and resolver failures abort the
+    compile even for a document-authored ``xs:include``/``xs:import``; only the
+    no-policy path keeps the offline advisory missing-resource behavior.
 
     ``resolver`` is consulted before every request. The transport resolves the
     hostname again for the connection, so this preconnection check cannot
@@ -463,11 +557,8 @@ class RemoteResourcePolicy:
     allow_remote_hints: bool
     allow_local_remote: bool
     allow_private_addresses: bool
-    _resources: set[str]
-    _closure_bytes: int
-    _redirects: int
-    _depths: dict[str, int]
-    _root_origin: _Origin | None
+    _closure_state: ContextVar[_Closure | None]
+    _standalone: _Closure
 
     def __init__(
         self,
@@ -487,15 +578,43 @@ class RemoteResourcePolicy:
         self.allow_private_addresses = allow_private_addresses
         self._transport: RemoteTransport = HttpClientTransport() if transport is None else transport
         self._resolver: AddressResolver = _system_addresses if resolver is None else resolver
-        self._reset_closure()
+        self._closure_state: ContextVar[_Closure | None] = ContextVar(
+            f"pyxsd_remote_closure_{id(self)}", default=None
+        )
+        self._standalone = _Closure(root_pending=True)
+
+    @contextmanager
+    def compilation(self, *, root_read: bool = True) -> Iterator[None]:
+        """Isolate the closure state of one in-flight compilation.
+
+        ``root_read`` is true when the compilation's main schema is an explicit
+        path or URL (so the first schema read is the authorized root) and false
+        for an anonymous stream, whose dependencies must still authorize
+        local-to-remote loading. Each entered scope has its own resources,
+        bytes, redirects, depths, and root origin, so concurrent compiles on
+        one policy do not share or reset each other's budgets.
+
+        :func:`pyxsd.compile` calls this automatically for this policy.
+        """
+        token = self._closure_state.set(_Closure(root_pending=root_read))
+        try:
+            yield
+        finally:
+            self._closure_state.reset(token)
 
     def read(self, source: str, *, base: str | None, purpose: ResourcePurpose) -> ResourceData:
         """Read a local resource or an authorized remote schema."""
         checked = validate_purpose(purpose)
-        if base is None and checked != "instance":
-            # A caller-supplied schema starts a new retrieval closure, so one
-            # policy instance can serve several compilations.
-            self._reset_closure()
+        active = self._closure_state.get()
+        closure = self._standalone if active is None else active
+        if active is None:
+            # Direct calls outside a compilation: each explicit root read starts
+            # a fresh fallback closure, preserving single-read behavior.
+            is_root = base is None and checked != "instance"
+            if is_root:
+                closure.reset()
+        else:
+            is_root = checked != "instance" and base is None and closure.claim_root()
         reference = resolve_reference(source, base=base)
         classified = classify_resource(reference)
         if (
@@ -508,7 +627,9 @@ class RemoteResourcePolicy:
                 f"'{classified.value}'"
             )
         if classified.kind == "remote":
-            return self._read_remote(classified.value, base=base, purpose=checked)
+            return self._read_remote(
+                classified.value, base=base, purpose=checked, is_root=is_root, closure=closure
+            )
         return self._read_local(classified.value)
 
     def parse(self, data: ResourceData, context: NamespaceContext) -> ET.Element:
@@ -528,7 +649,15 @@ class RemoteResourcePolicy:
         path = Path(reference)
         return ResourceData(str(path), path.read_bytes())
 
-    def _read_remote(self, url: str, *, base: str | None, purpose: ResourcePurpose) -> ResourceData:
+    def _read_remote(
+        self,
+        url: str,
+        *,
+        base: str | None,
+        purpose: ResourcePurpose,
+        is_root: bool,
+        closure: _Closure,
+    ) -> ResourceData:
         canonical = _canonical_url(url)
         origin = _origin(canonical)
         if purpose == "instance":
@@ -541,39 +670,54 @@ class RemoteResourcePolicy:
                 f"the instance schema hint '{canonical}' is remote; "
                 "set allow_remote_hints=True to permit instance-driven remote schemas"
             )
-        is_root = base is None
         depth = 0
-        if base is not None:
-            base_ref = classify_resource(base)
-            if base_ref.kind == "remote":
-                parent = _canonical_url(base_ref.value)
-                depth = self._depths.get(parent, 0) + 1
-                parent_origin = _origin(parent)
-                if not (
-                    origin == parent_origin
-                    or (self._root_origin is not None and origin == self._root_origin)
-                    or origin in self.allowed_origins
-                ):
+        if not is_root:
+            if base is None:
+                # A memory-base dependency is passed to policies without a
+                # directory (``base=None``); it is local-to-remote like any
+                # other anonymous dependency and never a root.
+                if not self.allow_local_remote:
                     raise ResourcePolicyError(
-                        f"the remote dependency '{canonical}' is cross-origin; "
-                        "add its origin to allowed_origins"
+                        f"the remote dependency '{canonical}' was referenced by an "
+                        "anonymous resource; set allow_local_remote=True to permit "
+                        "local-to-remote loading"
                     )
-            elif not self.allow_local_remote:
-                raise ResourcePolicyError(
-                    f"the remote dependency '{canonical}' was referenced by a local "
-                    "resource; set allow_local_remote=True to permit local-to-remote loading"
-                )
-        final_url, content = self._fetch(canonical, depth=depth)
-        if is_root or self._root_origin is None:
-            self._root_origin = _origin(final_url)
-        self._depths.setdefault(final_url, depth)
+            else:
+                base_ref = classify_resource(base)
+                if base_ref.kind == "remote":
+                    parent = _canonical_url(base_ref.value)
+                    depth = closure.depths.get(parent, 0) + 1
+                    parent_origin = _origin(parent)
+                    if not (
+                        origin == parent_origin
+                        or (closure.root_origin is not None and origin == closure.root_origin)
+                        or origin in self.allowed_origins
+                    ):
+                        raise ResourcePolicyError(
+                            f"the remote dependency '{canonical}' is cross-origin; "
+                            "add its origin to allowed_origins"
+                        )
+                elif not self.allow_local_remote:
+                    raise ResourcePolicyError(
+                        f"the remote dependency '{canonical}' was referenced by a local "
+                        "resource; set allow_local_remote=True to permit local-to-remote loading"
+                    )
+        final_url, content = self._fetch(canonical, depth=depth, closure=closure)
+        if is_root or closure.root_origin is None:
+            closure.root_origin = _origin(final_url)
+        closure.depths.setdefault(final_url, depth)
         return ResourceData(final_url, content)
 
-    def _fetch(self, url: str, *, depth: int) -> tuple[str, bytes]:
-        """Fetch one resource, authorizing and revalidating each redirect hop."""
+    def _fetch(self, url: str, *, depth: int, closure: _Closure) -> tuple[str, bytes]:
+        """Fetch one resource, authorizing and revalidating each redirect hop.
+
+        Redirect and error bodies are downloaded bytes and therefore count
+        toward ``closure_bytes``; redirect hops are counted on the closure, not
+        per resource.
+        """
         current = url
         while True:
-            self._admit(current, depth)
+            self._admit(current, depth, closure=closure)
             response = self._transport.fetch(current, limits=self.limits)
             size = len(response.content)
             if size > self.limits.response_bytes:
@@ -581,8 +725,8 @@ class RemoteResourcePolicy:
                     f"the response from '{current}' exceeds "
                     f"response_bytes={self.limits.response_bytes}"
                 )
-            self._closure_bytes += size
-            if self._closure_bytes > self.limits.closure_bytes:
+            closure.closure_bytes += size
+            if closure.closure_bytes > self.limits.closure_bytes:
                 raise ResourcePolicyError(
                     f"the remote schema closure exceeds closure_bytes={self.limits.closure_bytes}"
                 )
@@ -594,8 +738,8 @@ class RemoteResourcePolicy:
                         f"the redirect response from '{current}' has no Location header"
                     )
                 target = _canonical_url(urljoin(current, location))
-                self._redirects += 1
-                if self._redirects > self.limits.redirects:
+                closure.redirects += 1
+                if closure.redirects > self.limits.redirects:
                     raise ResourcePolicyError(
                         f"the redirect from '{current}' exceeds redirects={self.limits.redirects}"
                     )
@@ -603,7 +747,7 @@ class RemoteResourcePolicy:
                 if (
                     target_origin != _origin(current)
                     and target_origin not in self.allowed_origins
-                    and target_origin != self._root_origin
+                    and target_origin != closure.root_origin
                 ):
                     raise ResourcePolicyError(
                         f"the redirect to '{target}' is cross-origin; "
@@ -617,20 +761,20 @@ class RemoteResourcePolicy:
                 )
             return current, response.content
 
-    def _admit(self, url: str, depth: int) -> None:
+    def _admit(self, url: str, depth: int, *, closure: _Closure) -> None:
         """Check address, depth, and resource-count budgets before a fetch."""
         if depth > self.limits.depth:
             raise ResourcePolicyError(
                 f"the remote schema dependency depth exceeds depth={self.limits.depth}"
             )
         self._check_addresses(url)
-        if url not in self._resources:
-            if len(self._resources) >= self.limits.resources:
+        if url not in closure.resources:
+            if len(closure.resources) >= self.limits.resources:
                 raise ResourcePolicyError(
                     f"the remote schema closure exceeds resources={self.limits.resources}"
                 )
-            self._resources.add(url)
-        self._depths.setdefault(url, depth)
+            closure.resources.add(url)
+        closure.depths.setdefault(url, depth)
 
     def _check_addresses(self, url: str) -> None:
         _, host, port, _, _ = _url_parts(url)
@@ -656,13 +800,6 @@ class RemoteResourcePolicy:
                     f"the remote host '{host}' resolves to the non-public address "
                     f"'{address}'; set allow_private_addresses=True only for trusted hosts"
                 )
-
-    def _reset_closure(self) -> None:
-        self._resources = set()
-        self._closure_bytes = 0
-        self._redirects = 0
-        self._depths = {}
-        self._root_origin = None
 
 
 __all__ = [

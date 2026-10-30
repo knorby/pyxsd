@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 __version__ = "1.2.1"
 
 __all__ = [
+    "AddressResolver",
     "BindingPolicy",
     "Document",
     "Extensions",
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from pyxsd.extensions import Extensions
     from pyxsd.nodes import XMLNode
     from pyxsd.remote import (
+        AddressResolver,
         HttpClientTransport,
         RemoteLimits,
         RemoteResourcePolicy,
@@ -82,6 +84,7 @@ def __getattr__(name: str):
 
         return Extensions
     if name in (
+        "AddressResolver",
         "HttpClientTransport",
         "RemoteLimits",
         "RemoteResourcePolicy",

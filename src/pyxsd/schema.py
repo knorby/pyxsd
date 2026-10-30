@@ -14,6 +14,7 @@ import os.path
 import warnings
 import weakref
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal
 from xml.etree import ElementTree as ET
@@ -275,74 +276,84 @@ class Schema:
                 f"the overlay '{overlay}' is remote; Python overlay modules are "
                 "never retrieved remotely"
             )
-        original_source = source
-        source_data = None
-        if resource_policy is not None:
-            try:
-                source_data = read_resource(source, resource_policy, purpose=purpose)
-            except OSError as exc:
-                raise PyXSDError(f"the schema file could not be opened: {exc}") from exc
-            source = source_data.source_id
-        elif isinstance(source, (str, os.PathLike)):
-            require_local_reference(os.fspath(source), purpose=purpose)
-        main_source = resource_base(source) if isinstance(source, (str, os.PathLike)) else None
-        # A remote schema never loads a local Python overlay: that would be a
-        # remote-to-local pivot. The fallback directory (for an overlay named
-        # as a module) is derived only from a local source; a remote or
-        # memory source has no local directory to borrow.
-        overlay_dir: Path | None = None
-        if overlay is not None:
-            if main_source is not None and classify_resource(main_source).kind == "remote":
-                raise ResourcePolicyError(
-                    f"the remote schema '{main_source}' cannot load the local overlay "
-                    f"'{overlay}'; Python overlays are never loaded for remote schemas"
-                )
-            if main_source is None:
-                overlay_dir = Path.cwd()
-            elif classify_resource(main_source).kind == "local":
-                overlay_dir = Path(main_source).parent
-        ctx = CompositionContext(
-            mode=mode,
-            processor_version=decimal.Decimal(xsd_version),
-            namespace_schemas=dict(namespace_schemas or {}),
-            namespace_context=(
-                namespace_context if namespace_context is not None else NamespaceContext()
-            ),
-            report=new_validation_report(resource_policy),
-            classes={},
-            main_source=main_source,
-            schema_context=SchemaContext(components=ComponentTable()),
-            namespace_overrides={},
-            component_namespaces={},
-            injected_builtin_ids=set(),
-            form_defaults={},
-            xpath_default_namespaces={},
-            composed_element_ids=set(),
-            composed_schema_roots={},
-            composed_schema_namespaces={},
-            directive_ids={},
-            compose_stack=[],
-            redefine_origins={},
-            override_origins={},
-            resolved_imports=set(),
-            composed_target_namespaces=set(),
-            extensions=extensions,
-            resource_policy=resource_policy,
-            source_data=source_data,
-            xml_policy=xml_policy,
-            xml_limits=xml_limits,
-        )
-        # Without an instance document there are no schemaLocation
-        # hints of our own; the caller (:func:`parse`) may forward the
-        # instance document's own pairs. Namespace-supplied schemas
-        # still resolve relative to the main schema document.
-        ctx.additional_schemas = collect_additional_schemas(ctx, schema_location_pairs or [])
-        host = _CompileHost(ctx)
-        schema = _compile_into_context(ctx, source, host)
-        schema.source = original_source
-        if overlay:
-            load_overlay_classes(schema, overlay, fallback_dir=overlay_dir)
-        return schema
+        if (
+            overlay is not None
+            and isinstance(source, (str, os.PathLike))
+            and classify_resource(source).kind == "remote"
+        ):
+            raise ResourcePolicyError(
+                f"the remote schema '{source}' cannot load the local overlay "
+                f"'{overlay}'; Python overlays are never loaded for remote schemas"
+            )
+        with _policy_compilation(resource_policy, root_read=isinstance(source, (str, os.PathLike))):
+            original_source = source
+            source_data = None
+            if resource_policy is not None:
+                try:
+                    source_data = read_resource(source, resource_policy, purpose=purpose)
+                except OSError as exc:
+                    raise PyXSDError(f"the schema file could not be opened: {exc}") from exc
+                source = source_data.source_id
+            elif isinstance(source, (str, os.PathLike)):
+                require_local_reference(os.fspath(source), purpose=purpose)
+            main_source = resource_base(source) if isinstance(source, (str, os.PathLike)) else None
+            # A remote schema never loads a local Python overlay: that would be a
+            # remote-to-local pivot. The fallback directory (for an overlay named
+            # as a module) is derived only from a local source; a remote or
+            # memory source has no local directory to borrow.
+            overlay_dir: Path | None = None
+            if overlay is not None:
+                if main_source is not None and classify_resource(main_source).kind == "remote":
+                    raise ResourcePolicyError(
+                        f"the remote schema '{main_source}' cannot load the local overlay "
+                        f"'{overlay}'; Python overlays are never loaded for remote schemas"
+                    )
+                if main_source is None:
+                    overlay_dir = Path.cwd()
+                elif classify_resource(main_source).kind == "local":
+                    overlay_dir = Path(main_source).parent
+            ctx = CompositionContext(
+                mode=mode,
+                processor_version=decimal.Decimal(xsd_version),
+                namespace_schemas=dict(namespace_schemas or {}),
+                namespace_context=(
+                    namespace_context if namespace_context is not None else NamespaceContext()
+                ),
+                report=new_validation_report(resource_policy),
+                classes={},
+                main_source=main_source,
+                schema_context=SchemaContext(components=ComponentTable()),
+                namespace_overrides={},
+                component_namespaces={},
+                injected_builtin_ids=set(),
+                form_defaults={},
+                xpath_default_namespaces={},
+                composed_element_ids=set(),
+                composed_schema_roots={},
+                composed_schema_namespaces={},
+                directive_ids={},
+                compose_stack=[],
+                redefine_origins={},
+                override_origins={},
+                resolved_imports=set(),
+                composed_target_namespaces=set(),
+                extensions=extensions,
+                resource_policy=resource_policy,
+                source_data=source_data,
+                xml_policy=xml_policy,
+                xml_limits=xml_limits,
+            )
+            # Without an instance document there are no schemaLocation
+            # hints of our own; the caller (:func:`parse`) may forward the
+            # instance document's own pairs. Namespace-supplied schemas
+            # still resolve relative to the main schema document.
+            ctx.additional_schemas = collect_additional_schemas(ctx, schema_location_pairs or [])
+            host = _CompileHost(ctx)
+            schema = _compile_into_context(ctx, source, host)
+            schema.source = original_source
+            if overlay:
+                load_overlay_classes(schema, overlay, fallback_dir=overlay_dir)
+            return schema
 
     def require_valid(self) -> None:
         """Raises :class:`pyxsd.ValidationError` if the report has errors."""
@@ -542,6 +553,23 @@ class Schema:
 
 #: :meth:`Schema.compile` exposed as a module-level function.
 compile = Schema.compile
+
+
+@contextmanager
+def _policy_compilation(policy: ResourcePolicy | None, *, root_read: bool) -> Iterator[None]:
+    """Enter a policy's optional per-compilation closure scope.
+
+    Only :class:`~pyxsd.remote.RemoteResourcePolicy` defines the hook; a
+    caller's custom 3-argument policy sees no API change. ``root_read`` is
+    false for an anonymous stream schema, whose dependencies must still
+    authorize local-to-remote loading.
+    """
+    enter = getattr(policy, "compilation", None)
+    if enter is None:
+        yield
+    else:
+        with enter(root_read=root_read):
+            yield
 
 
 def _reject_parser_override(
