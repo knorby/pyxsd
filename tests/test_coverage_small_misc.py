@@ -354,7 +354,7 @@ def test_make_temp_file_of_tree_writes_the_tree_and_rewinds():
     finally:
         stream.close()
 
-    assert text.startswith("<!--File created by PyXSD")
+    assert "File created by PyXSD" not in text
     assert "<root>hi</root>" in text
 
 

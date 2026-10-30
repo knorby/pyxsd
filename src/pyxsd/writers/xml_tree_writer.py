@@ -36,7 +36,6 @@ dictionary the following variables:
     list. These values are commonly numbers.
 """
 
-import time
 from typing import IO, Any
 
 from pyxsd import xsi
@@ -306,14 +305,14 @@ class XmlTreeWriter:
         tagWriter.writeEndTag()
 
     def writeHeaderInfo(self) -> None:
-        """Writes a comment at the top of the file with the creation
-        information. Includes date and time information.
+        """Hook called before the root element is written.
+
+        The default writes nothing so that serialization is
+        deterministic: writing the same tree twice must produce the
+        same bytes, and a generated timestamp would break that.
+        Subclasses may override this method to emit their own header.
         """
-        self.output.write(
-            "<!--File created by PyXSD at {} on {}-->\n".format(
-                time.strftime("%X"), time.strftime("%x")
-            )
-        )
+        return None
 
 
 def _tree_is_namespaced(root: Any) -> bool:
