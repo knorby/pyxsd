@@ -83,6 +83,7 @@ from pyxsd.schema_hints import absolute_schema_location_pairs, resolve_schema_hi
 from pyxsd.validation import ValidationReport
 from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import apply_conditional_inclusion
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,8 @@ class Schema:
         schema_location_pairs: list[tuple[str | None, str]] | None = None,
         extensions: Extensions | None = None,
         resource_policy: ResourcePolicy | None = None,
+        xml_policy: XmlParserPolicy | None = None,
+        xml_limits: XmlLimits | None = None,
     ) -> "Schema":
         """Compiles *source* into a :class:`Schema`.
 
@@ -237,11 +240,26 @@ class Schema:
           generated classes' bases at build time (``XsdType.
           getBaseList``). Without one, class generation is unchanged.
 
+        - ``resource_policy`` - a trusted application resource policy.
+          Its ``parse()`` owns XML parsing, so ``xml_policy`` and
+          ``xml_limits`` cannot be combined with it.
+
+        - ``xml_policy`` - an opt-in :class:`~pyxsd.xml_policy.
+          XmlParserPolicy` applied to the main schema and every
+          included/imported dependency. ``None`` keeps stdlib parsing
+          and its current DTD/entity behavior. The choice is compile-
+          scoped: it never becomes the default for later
+          :meth:`parse` calls.
+
+        - ``xml_limits`` - optional :class:`~pyxsd.xml_policy.
+          XmlLimits` byte/depth/element budgets for the same documents.
+
         Use :meth:`require_valid` to reject a schema whose report
         holds errors.
         """
         if xsd_version not in ("1.0", "1.1"):
             raise ValueError(f"xsd_version must be '1.0' or '1.1', not {xsd_version!r}")
+        _reject_parser_override(resource_policy, xml_policy, xml_limits)
         original_source = source
         source_data = None
         if resource_policy is not None:
@@ -291,6 +309,8 @@ class Schema:
             extensions=extensions,
             resource_policy=resource_policy,
             source_data=source_data,
+            xml_policy=xml_policy,
+            xml_limits=xml_limits,
         )
         # Without an instance document there are no schemaLocation
         # hints of our own; the caller (:func:`parse`) may forward the
@@ -376,7 +396,13 @@ class Schema:
 
         return iter_parse(self, sources, errors=errors)
 
-    def parse(self, xml: str | Path | os.PathLike[str] | IO[str] | ET.Element) -> "Document":
+    def parse(
+        self,
+        xml: str | Path | os.PathLike[str] | IO[str] | ET.Element,
+        *,
+        xml_policy: XmlParserPolicy | None = None,
+        xml_limits: XmlLimits | None = None,
+    ) -> "Document":
         """Binds *xml* against this schema and returns a :class:`Document`.
 
         - ``xml`` - the instance document: a file path, a file object
@@ -386,6 +412,14 @@ class Schema:
           (the fatal-input rule); content problems instead land on the
           document's report.
 
+        - ``xml_policy`` / ``xml_limits`` - opt-in parser posture and
+          structural budgets for this instance parse only. They do not
+          inherit a nondefault policy from :meth:`compile`; ``None``
+          keeps stdlib parsing and unlimited structure. They cannot be
+          combined with a custom ``resource_policy``, whose ``parse()``
+          is trusted application code. A pre-parsed ``Element`` is also
+          a caller-trusted boundary, so no parser option is applied.
+
         Each parse binds with its own fresh instance report, so a
         schema may serve many documents without their findings mixing:
         the returned document's :attr:`~pyxsd.document.Document.report`
@@ -394,6 +428,7 @@ class Schema:
         when the document root matched no global element declaration
         (the ``unknown-root`` issue records why).
         """
+        _reject_parser_override(self.resource_policy, xml_policy, xml_limits)
         if self.resource_policy is not None:
             try:
                 data = read_resource(xml, self.resource_policy, purpose="instance")
@@ -408,7 +443,12 @@ class Schema:
         else:
             logger.debug("The XML file is being parsed by the ElementTree library...")
             try:
-                tree = parse_with_namespaces(xml, self.namespace_context)
+                tree = parse_with_namespaces(
+                    xml,
+                    self.namespace_context,
+                    policy=xml_policy,
+                    limits=xml_limits,
+                )
             except OSError as e:
                 raise PyXSDError(f"the xml input could not be read: {e}") from e
             except ET.ParseError as e:
@@ -486,6 +526,19 @@ class Schema:
 compile = Schema.compile
 
 
+def _reject_parser_override(
+    resource_policy: ResourcePolicy | None,
+    xml_policy: XmlParserPolicy | None,
+    xml_limits: XmlLimits | None,
+) -> None:
+    """Refuse parser arguments that a trusted ResourcePolicy would swallow."""
+    if resource_policy is not None and (xml_policy is not None or xml_limits is not None):
+        raise ValueError(
+            "xml_policy and xml_limits cannot be combined with resource_policy: "
+            "ResourcePolicy.parse() is trusted application code"
+        )
+
+
 def parse(
     xml: str | Path | os.PathLike[str] | IO[str] | ET.Element,
     *,
@@ -494,6 +547,8 @@ def parse(
     namespace_schemas: dict[str, str | Path] | None = None,
     overlay: str | Path | os.PathLike[str] | None = None,
     resource_policy: ResourcePolicy | None = None,
+    xml_policy: XmlParserPolicy | None = None,
+    xml_limits: XmlLimits | None = None,
 ) -> "Document":
     """Parses *xml* against its schema and returns a :class:`Document`.
 
@@ -513,7 +568,18 @@ def parse(
 
     - ``mode``, ``namespace_schemas``, ``overlay`` - passed to
       :meth:`Schema.compile`.
+
+    - ``resource_policy`` - a trusted application resource policy for
+      both the instance and schema documents. Its ``parse()`` owns XML
+      parsing, so ``xml_policy``/``xml_limits`` cannot be combined with
+      it.
+
+    - ``xml_policy`` / ``xml_limits`` - opt-in parser posture and
+      structural budgets applied explicitly to the instance and to the
+      schema compile. They never become an implicit default for later
+      :meth:`Schema.parse` calls.
     """
+    _reject_parser_override(resource_policy, xml_policy, xml_limits)
     context = NamespaceContext()
     # The instance is parsed once, up front: for non-element sources
     # its prefix-to-URI bindings land in *context* (shared with the
@@ -533,7 +599,7 @@ def parse(
         tree = xml
     else:
         try:
-            tree = parse_with_namespaces(xml, context)
+            tree = parse_with_namespaces(xml, context, policy=xml_policy, limits=xml_limits)
         except (OSError, ET.ParseError) as e:
             raise PyXSDError(f"the xml input could not be read: {e}") from e
     # Extra ``xsi:schemaLocation`` pairs beyond the main schema are
@@ -562,6 +628,8 @@ def parse(
         namespace_context=None if isinstance(xml, ET.Element) else context,
         schema_location_pairs=pairs,
         resource_policy=resource_policy,
+        xml_policy=xml_policy,
+        xml_limits=xml_limits,
     )
     if resource_policy is not None:
         return schema._bind_tree(tree, xml, source_id=source_id)
@@ -656,7 +724,12 @@ def _compile_into_context(
         elif isinstance(xsd_file, (str, os.PathLike)):
             try:
                 with open(xsd_file, "rb") as schemaFile:
-                    root = parse_with_namespaces(schemaFile, ctx.namespace_context)
+                    root = parse_with_namespaces(
+                        schemaFile,
+                        ctx.namespace_context,
+                        policy=ctx.xml_policy,
+                        limits=ctx.xml_limits,
+                    )
             except OSError as e:
                 raise PyXSDError(f"the schema file could not be opened: {e}") from e
             except ET.ParseError as e:
@@ -666,7 +739,12 @@ def _compile_into_context(
             # without a location hint is rejected by the caller.
             assert xsd_file is not None
             try:
-                root = parse_with_namespaces(xsd_file, ctx.namespace_context)
+                root = parse_with_namespaces(
+                    xsd_file,
+                    ctx.namespace_context,
+                    policy=ctx.xml_policy,
+                    limits=ctx.xml_limits,
+                )
             except ET.ParseError as e:
                 raise PyXSDError(f"the schema file is not well-formed XML: {e}") from e
         logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")

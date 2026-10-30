@@ -16,6 +16,8 @@ __all__ = [
     "ValidationError",
     "XMLNode",
     "XPathError",
+    "XmlLimits",
+    "XmlParserPolicy",
     "__version__",
     "compile",
     "parse",
@@ -34,6 +36,7 @@ if TYPE_CHECKING:
     from pyxsd.extensions import Extensions
     from pyxsd.nodes import XMLNode
     from pyxsd.schema import Schema, compile, parse
+    from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 
 def __getattr__(name: str):
@@ -69,6 +72,10 @@ def __getattr__(name: str):
         from pyxsd.nodes import XMLNode
 
         return XMLNode
+    if name in ("XmlLimits", "XmlParserPolicy"):
+        from pyxsd import xml_policy
+
+        return getattr(xml_policy, name)
     if name == "compile":
         from pyxsd.schema import compile
 

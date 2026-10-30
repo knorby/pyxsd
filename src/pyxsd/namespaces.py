@@ -16,9 +16,14 @@ from __future__ import annotations
 import os
 import weakref
 import xml.etree.ElementTree as ET
-from typing import IO
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import IO, TYPE_CHECKING, Any, Literal
 
 from pyxsd.exceptions import NamespaceError  # re-exported for compatibility
+
+if TYPE_CHECKING:
+    from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 #: The XML Schema namespace.
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
@@ -158,6 +163,9 @@ class NamespaceContext:
 def parse_with_namespaces(
     source: str | os.PathLike[str] | IO[bytes] | IO[str],
     context: NamespaceContext | None = None,
+    *,
+    policy: XmlParserPolicy | None = None,
+    limits: XmlLimits | None = None,
 ) -> ET.Element:
     """Parse ``source`` and record namespace bindings in ``context``.
 
@@ -165,17 +173,45 @@ def parse_with_namespaces(
     :func:`xml.etree.ElementTree.parse` would produce; the context is the
     only addition. When ``context`` is omitted, an internal throwaway is
     used, which is useful only for the returned tree.
+
+    ``policy`` selects an opt-in parser posture; ``None`` and
+    :meth:`~pyxsd.xml_policy.XmlParserPolicy.default` keep the stdlib
+    parser and its current DTD/entity behavior. ``limits`` optionally
+    bounds the supplied bytes, element depth, and element count; a
+    violation raises :class:`~pyxsd.resource_policy.ResourcePolicyError`.
+    Defusedxml denials are converted to the same error with the original
+    exception as ``__cause__``; malformed XML still raises
+    :class:`xml.etree.ElementTree.ParseError`.
     """
     ctx = context if context is not None else NamespaceContext()
+    if limits is not None and limits.max_bytes is not None:
+        with _byte_limited_source(source, limits.max_bytes) as bounded:
+            return _parse_events(bounded, ctx, policy, limits)
+    return _parse_events(source, ctx, policy, limits)
+
+
+def _parse_events(
+    source: str | os.PathLike[str] | IO[bytes] | IO[str] | _ByteLimitedReader,
+    ctx: NamespaceContext,
+    policy: XmlParserPolicy | None,
+    limits: XmlLimits | None,
+) -> ET.Element:
     pending: list[tuple[str, str]] = []
     stack: list[dict[str, str]] = [{}]
     root: ET.Element | None = None
+    count = 0
 
-    for event, payload in ET.iterparse(source, events=("start", "end", "start-ns", "end-ns")):
+    for event, payload in _iterparse_events(source, policy):
         if event == "start-ns":
             prefix, uri = payload
             pending.append((prefix or "", uri))
         elif event == "start":
+            count += 1
+            if limits is not None:
+                if limits.max_depth is not None and len(stack) > limits.max_depth:
+                    raise _policy_error(f"the XML input exceeds max_depth={limits.max_depth}")
+                if limits.max_elements is not None and count > limits.max_elements:
+                    raise _policy_error(f"the XML input exceeds max_elements={limits.max_elements}")
             frame = dict(stack[-1])
             for prefix, uri in pending:
                 frame[prefix] = uri
@@ -193,6 +229,82 @@ def parse_with_namespaces(
     if root is None:
         raise ET.ParseError("the document has no root element")
     return root
+
+
+def _iterparse_events(
+    source: str | os.PathLike[str] | IO[bytes] | IO[str] | _ByteLimitedReader,
+    policy: XmlParserPolicy | None,
+) -> Iterator[tuple[str, Any]]:
+    events: tuple[Literal["start", "end", "start-ns", "end-ns"], ...] = (
+        "start",
+        "end",
+        "start-ns",
+        "end-ns",
+    )
+    if policy is not None and policy.use_defusedxml:
+        from defusedxml import ElementTree as DefusedET
+        from defusedxml.common import DefusedXmlException
+
+        try:
+            yield from DefusedET.iterparse(
+                source,
+                events=events,
+                forbid_dtd=policy.forbid_dtd,
+                forbid_entities=policy.forbid_entities,
+                forbid_external=policy.forbid_external,
+            )
+        except DefusedXmlException as exc:
+            raise _policy_error(_defused_message(exc)) from exc
+    else:
+        yield from ET.iterparse(source, events=events)
+
+
+def _defused_message(exc: Exception) -> str:
+    from defusedxml.common import DTDForbidden, EntitiesForbidden
+
+    if isinstance(exc, DTDForbidden):
+        return "XML DOCTYPE declarations are forbidden by the parser policy"
+    if isinstance(exc, EntitiesForbidden):
+        return "XML entity declarations are forbidden by the parser policy"
+    return "XML external references are forbidden by the parser policy"
+
+
+@contextmanager
+def _byte_limited_source(
+    source: str | os.PathLike[str] | IO[bytes] | IO[str],
+    max_bytes: int,
+) -> Iterator[_ByteLimitedReader]:
+    if isinstance(source, (str, os.PathLike)):
+        # Let ElementTree see a file object here so the same counter applies
+        # to named files and caller-supplied streams alike.
+        with open(source, "rb") as stream:
+            yield _ByteLimitedReader(stream, max_bytes)
+    else:
+        yield _ByteLimitedReader(source, max_bytes)
+
+
+class _ByteLimitedReader:
+    """A read-only stream proxy that fails as soon as its budget is crossed."""
+
+    def __init__(self, stream: IO[bytes] | IO[str], max_bytes: int) -> None:
+        self._stream = stream
+        self._max_bytes = max_bytes
+        self._seen = 0
+
+    def read(self, size: int = -1) -> Any:
+        data = self._stream.read(size)
+        self._seen += len(data)
+        if self._seen > self._max_bytes:
+            raise _policy_error(f"the XML input exceeds max_bytes={self._max_bytes}")
+        return data
+
+
+def _policy_error(message: str) -> Exception:
+    # Imported lazily: pyxsd.resource_policy imports NamespaceContext from
+    # this module, so a module-level import here would be circular.
+    from pyxsd.resource_policy import ResourcePolicyError
+
+    return ResourcePolicyError(message)
 
 
 __all__ = [

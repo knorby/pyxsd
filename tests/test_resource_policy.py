@@ -8,6 +8,7 @@ import pytest
 
 import pyxsd
 from pyxsd.namespaces import parse_with_namespaces
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 XS = "http://www.w3.org/2001/XMLSchema"
 SIMPLE = f'<xs:schema xmlns:xs="{XS}"><xs:element name="root" type="xs:int"/></xs:schema>'
@@ -384,3 +385,26 @@ def test_advisory_instance_hint_denial_is_not_downgraded(tmp_path):
     with pytest.raises(ResourcePolicyError, match="denied"):
         pyxsd.parse("input.xml", mode=pyxsd.ParseModes.NAMESPACED, resource_policy=policy)
     assert policy.reads[-1][0] == tmp_path / "secret.xsd"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"xml_policy": XmlParserPolicy.protected()},
+        {"xml_limits": XmlLimits(max_bytes=1_000)},
+    ],
+)
+def test_custom_resource_policy_owns_explicit_parser_arguments(tmp_path, kwargs):
+    policy = RecordingPolicy(tmp_path)
+    with pytest.raises(ValueError, match="resource_policy"):
+        pyxsd.compile(io.StringIO(SIMPLE), resource_policy=policy, **kwargs)
+    with pytest.raises(ValueError, match="resource_policy"):
+        pyxsd.parse(
+            io.StringIO("<root>4</root>"),
+            xsd=io.StringIO(SIMPLE),
+            resource_policy=policy,
+            **kwargs,
+        )
+    schema = pyxsd.compile(io.StringIO(SIMPLE), resource_policy=policy)
+    with pytest.raises(ValueError, match="resource_policy"):
+        schema.parse(io.StringIO("<root>4</root>"), **kwargs)

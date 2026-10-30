@@ -46,6 +46,7 @@ from pyxsd.schema_context import SchemaContext
 from pyxsd.validation import CompileContextProtocol, ValidationReport
 from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import PROCESSOR_VERSION, apply_conditional_inclusion
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,11 @@ class CompositionContext:
     extensions: Any = None
     resource_policy: ResourcePolicy | None = None
     source_data: ResourceData | None = None
+    #: Opt-in parser posture and structural budgets for this compile.
+    #: They reach every schema document parsed through composition;
+    #: ``None`` keeps the stdlib parser and unset limits.
+    xml_policy: XmlParserPolicy | None = None
+    xml_limits: XmlLimits | None = None
     declaration_origins: weakref.WeakKeyDictionary[ET.Element, IssueLocation] = field(
         default_factory=weakref.WeakKeyDictionary
     )
@@ -652,7 +658,12 @@ def parse_included_schema(
             origin_source = data.source_id
         else:
             with open(includedPath, "rb") as includedFile:
-                root = parse_with_namespaces(includedFile, ctx.namespace_context)
+                root = parse_with_namespaces(
+                    includedFile,
+                    ctx.namespace_context,
+                    policy=ctx.xml_policy,
+                    limits=ctx.xml_limits,
+                )
             origin_source = str(includedPath.resolve())
     except OSError as e:
         message = f"the schema '{location}' could not be opened: {e}"
