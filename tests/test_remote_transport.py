@@ -21,6 +21,19 @@ from pyxsd.remote import (
 URL = "https://schemas.example/a/main.xsd"
 
 
+class FakeClock:
+    """A deterministic monotonic clock; tests advance it explicitly."""
+
+    def __init__(self, now: float = 0.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class FakeSocket:
     """Records the socket read timeout installed after connecting."""
 
@@ -41,20 +54,26 @@ class FakeResponse:
         headers=(),
         body: bytes = b"",
         read_error: Exception | None = None,
+        clock: FakeClock | None = None,
+        read_delay: float = 0.0,
     ) -> None:
         self.status = status
         self._headers = list(headers)
         self._body = body
         self._offset = 0
         self._read_error = read_error
+        self._clock = clock
+        self._read_delay = read_delay
         self.read_sizes = []
         self.closed = False
 
     def getheaders(self):
         return list(self._headers)
 
-    def read(self, amount: int) -> bytes:
+    def read1(self, amount: int) -> bytes:
         self.read_sizes.append(amount)
+        if self._clock is not None:
+            self._clock.advance(self._read_delay)
         if self._read_error is not None:
             raise self._read_error
         chunk = self._body[self._offset : self._offset + amount]
@@ -65,7 +84,15 @@ class FakeResponse:
         self.closed = True
 
 
-def install(monkeypatch, response: FakeResponse, *, connect_error=None, getresponse_error=None):
+def install(
+    monkeypatch,
+    response: FakeResponse,
+    *,
+    connect_error=None,
+    getresponse_error=None,
+    clock: FakeClock | None = None,
+    connect_delay: float = 0.0,
+):
     """Replace ``HTTPSConnection`` and return the list of created fakes."""
     created = []
 
@@ -86,6 +113,8 @@ def install(monkeypatch, response: FakeResponse, *, connect_error=None, getrespo
 
         def connect(self) -> None:
             self.connect_calls += 1
+            if clock is not None:
+                clock.advance(connect_delay)
             if self.connect_error is not None:
                 raise self.connect_error
             self.sock = FakeSocket()
@@ -125,7 +154,8 @@ def test_fetch_returns_one_https_response_and_closes_resources(monkeypatch):
     assert connection.host == "schemas.example"
     assert connection.port == 443
     assert connection.requests == [("GET", "/a/main.xsd")]
-    assert response.read_sizes == [limits.response_bytes + 1]
+    assert response.read_sizes
+    assert all(size <= limits.response_bytes + 1 for size in response.read_sizes)
     assert response.closed
     assert connection.closed
 
@@ -138,7 +168,7 @@ def test_fetch_configures_separate_connect_and_read_timeouts(monkeypatch):
 
     connection = created[0]
     assert connection.timeout == 1.5
-    assert connection.sock.timeouts == [2.5]
+    assert connection.sock.timeouts == [2.5, 2.5]
 
 
 def test_fetch_uses_a_verified_default_tls_context(monkeypatch):
@@ -150,6 +180,76 @@ def test_fetch_uses_a_verified_default_tls_context(monkeypatch):
     assert isinstance(context, ssl.SSLContext)
     assert context.check_hostname is True
     assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_fetch_clamps_connect_timeout_to_the_request_deadline(monkeypatch):
+    clock = FakeClock(100.0)
+    created = install(monkeypatch, FakeResponse(), clock=clock)
+
+    HttpClientTransport(clock=clock).fetch(
+        URL, limits=RemoteLimits(connect_timeout=10, request_seconds=4)
+    )
+
+    assert created[0].timeout == 4
+
+
+def test_fetch_stops_when_the_deadline_expires_while_connecting(monkeypatch):
+    clock = FakeClock()
+    created = install(monkeypatch, FakeResponse(), clock=clock, connect_delay=5)
+
+    with pytest.raises(RemoteTransportError, match="request_seconds=5"):
+        HttpClientTransport(clock=clock).fetch(
+            URL, limits=RemoteLimits(connect_timeout=10, request_seconds=5)
+        )
+
+    assert created[0].closed
+
+
+def test_fetch_stops_when_the_request_deadline_expires_while_reading(monkeypatch):
+    clock = FakeClock()
+    response = FakeResponse(body=b"xxxx", clock=clock, read_delay=3)
+    created = install(monkeypatch, response, clock=clock)
+
+    with pytest.raises(RemoteTransportError, match="request_seconds=5"):
+        HttpClientTransport(clock=clock).fetch(
+            URL, limits=RemoteLimits(read_timeout=30, request_seconds=5)
+        )
+
+    assert created[0].sock.timeouts == [5, 5, 2]
+    assert response.closed
+    assert created[0].closed
+
+
+def test_fetch_reports_a_deadline_timeout_as_a_transport_error(monkeypatch):
+    clock = FakeClock()
+    failure = TimeoutError("timed out")
+    response = FakeResponse(read_error=failure, clock=clock, read_delay=5)
+    created = install(monkeypatch, response, clock=clock)
+
+    with pytest.raises(RemoteTransportError, match="request_seconds=5") as caught:
+        HttpClientTransport(clock=clock).fetch(
+            URL, limits=RemoteLimits(read_timeout=30, request_seconds=5)
+        )
+
+    assert caught.value.__cause__ is failure
+    assert response.closed
+    assert created[0].closed
+
+
+def test_fetch_propagates_a_read_timeout_before_the_deadline(monkeypatch):
+    clock = FakeClock()
+    failure = TimeoutError("timed out")
+    response = FakeResponse(read_error=failure, clock=clock, read_delay=1)
+    created = install(monkeypatch, response, clock=clock)
+
+    with pytest.raises(TimeoutError) as caught:
+        HttpClientTransport(clock=clock).fetch(
+            URL, limits=RemoteLimits(read_timeout=2.5, request_seconds=30)
+        )
+
+    assert caught.value is failure
+    assert response.closed
+    assert created[0].closed
 
 
 def test_fetch_keeps_bytes_exactly_at_the_response_limit(monkeypatch):
@@ -210,6 +310,7 @@ def test_fetch_rejects_non_https_urls_before_connecting(monkeypatch, url):
         "https://",
         "https:///a/main.xsd",
         "https://schemas.example:not-a-port/a/main.xsd",
+        "https://schemas.example:0/a/main.xsd",
     ],
 )
 def test_fetch_rejects_urls_without_a_valid_host_or_port(monkeypatch, url):
@@ -277,6 +378,21 @@ def test_response_headers_are_case_insensitive(monkeypatch):
         result.headers["missing"]
 
 
+def test_remote_response_has_value_equality_and_is_hashable(monkeypatch):
+    headers = [("Content-Type", "application/xml")]
+    install(monkeypatch, FakeResponse(headers=headers, body=b"<xs:schema/>"))
+    first = HttpClientTransport().fetch(URL, limits=RemoteLimits())
+    install(monkeypatch, FakeResponse(headers=headers, body=b"<xs:schema/>"))
+    second = HttpClientTransport().fetch(URL, limits=RemoteLimits())
+
+    assert first == second
+    assert hash(first) == hash(second)
+    assert len({first, second}) == 1
+    assert first.headers == {"content-type": "application/xml"}
+    assert first.headers != object()
+    assert first != RemoteResponse(url=URL, status=200, headers=dict(headers), content=b"other")
+
+
 def test_fetch_wraps_a_malformed_status_line(monkeypatch):
     failure = http.client.BadStatusLine("not-http")
     created = install(monkeypatch, FakeResponse(), getresponse_error=failure)
@@ -322,6 +438,7 @@ def test_remote_limits_defaults_are_finite_and_exact():
     assert limits.redirects == 5
     assert limits.connect_timeout == 10
     assert limits.read_timeout == 30
+    assert limits.request_seconds == 30
     assert limits.xml_depth == 256
     assert limits.xml_elements == 250_000
 
@@ -336,6 +453,7 @@ def test_remote_limits_defaults_are_finite_and_exact():
         "redirects",
         "connect_timeout",
         "read_timeout",
+        "request_seconds",
         "xml_depth",
         "xml_elements",
     ],
@@ -346,8 +464,41 @@ def test_remote_limits_reject_nonpositive_budgets(name, value):
         RemoteLimits(**{name: value})
 
 
-@pytest.mark.parametrize("name", ["connect_timeout", "read_timeout"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "response_bytes",
+        "closure_bytes",
+        "resources",
+        "depth",
+        "redirects",
+        "xml_depth",
+        "xml_elements",
+    ],
+)
+@pytest.mark.parametrize("value", [1.0, "16"])
+def test_remote_limits_reject_non_integer_budgets(name, value):
+    with pytest.raises(ValueError, match=name):
+        RemoteLimits(**{name: value})
+
+
+@pytest.mark.parametrize("name", ["connect_timeout", "read_timeout", "request_seconds"])
 @pytest.mark.parametrize("value", [float("inf"), float("nan")])
 def test_remote_limits_reject_nonfinite_timeouts(name, value):
     with pytest.raises(ValueError, match=name):
         RemoteLimits(**{name: value})
+
+
+@pytest.mark.parametrize("name", ["connect_timeout", "read_timeout", "request_seconds"])
+@pytest.mark.parametrize("value", ["30", None, object()])
+def test_remote_limits_reject_nonnumeric_timeouts(name, value):
+    with pytest.raises(ValueError, match=name):
+        RemoteLimits(**{name: value})
+
+
+def test_remote_limits_require_response_bytes_within_closure_bytes():
+    equal = RemoteLimits(response_bytes=16, closure_bytes=16)
+    assert equal.response_bytes == equal.closure_bytes == 16
+
+    with pytest.raises(ValueError, match="response_bytes"):
+        RemoteLimits(response_bytes=17, closure_bytes=16)
