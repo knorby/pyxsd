@@ -49,9 +49,11 @@ class SessionInputs:
         *,
         source_root: Path | None = None,
         discovery: DiscoveryWorker | None = None,
+        excluded_source_root: Path | None = None,
     ) -> None:
         self.scratch, self.limits = scratch, limits
         self.source_root, self.discovery = source_root, discovery
+        self.excluded_source_root = excluded_source_root
         self.scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._root = self.scratch / "inputs"
         self._root.mkdir(mode=0o700, exist_ok=True)
@@ -285,7 +287,8 @@ class SessionInputs:
         observed: dict[str, CapturedFile] = {}
         missing: set[str] = set()
         materialized: set[str] = set()
-        with SafeDirectory(self.source_root) as source:
+        source_root = self.source_root
+        with SafeDirectory(source_root) as source:
 
             def check_schema_limits() -> None:
                 items = [captured[path] for path in schema_paths if path in captured]
@@ -302,6 +305,10 @@ class SessionInputs:
                 check_schema_limits()
                 changed = False
                 for path in paths:
+                    if self.excluded_source_root is not None and (
+                        source_root.resolve() / path
+                    ).is_relative_to(self.excluded_source_root.resolve()):
+                        raise ToolError("invalid_argument", "MCP state is not a source input")
                     if path in captured or path in missing:
                         continue
                     if len(captured) + len(missing) >= self.limits.input_entries:

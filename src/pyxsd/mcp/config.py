@@ -8,8 +8,8 @@ from pydantic import Field, model_validator
 from .contracts import PositiveBudget, WireModel
 
 
-def default_state_dir() -> Path:
-    return Path.home() / ".local/state/pyxsd/mcp"
+def default_state_dir(project_root: Path) -> Path:
+    return project_root / ".pyxsd/mcp"
 
 
 class Limits(WireModel):
@@ -52,7 +52,8 @@ class Limits(WireModel):
 
 
 class Settings(WireModel):
-    state_dir: Path = Field(default_factory=default_state_dir)
+    project_root: Path = Field(default_factory=Path.cwd)
+    state_dir: Path = Path(".pyxsd/mcp")
     persist: bool = True
     execution_backend: Literal["disabled", "trusted-local"] = "disabled"
     limits: Limits = Field(default_factory=Limits)
@@ -60,3 +61,21 @@ class Settings(WireModel):
     enabled_groups: set[str] = Field(default_factory=lambda: {"exploration", "workspaces"})
     pydantic: bool = True
     arrow: Literal["auto", "enabled", "disabled"] = "auto"
+
+    @model_validator(mode="after")
+    def resolve_scope(self) -> Self:
+        project = self.project_root.absolute()
+        if not project.is_dir():
+            raise ValueError("project_root must be an existing directory")
+        state = (
+            self.state_dir.absolute()
+            if "state_dir" in self.model_fields_set
+            else default_state_dir(project)
+        )
+        source = None if self.source_root is None else self.source_root.absolute()
+        if self.persist and source is not None and source.resolve().is_relative_to(state.resolve()):
+            raise ValueError("state_dir must not contain the source_root")
+        object.__setattr__(self, "project_root", project)
+        object.__setattr__(self, "state_dir", state)
+        object.__setattr__(self, "source_root", source)
+        return self

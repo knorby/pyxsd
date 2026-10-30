@@ -76,10 +76,10 @@ def test_artifact_read_verifies_content_once(tmp_path, monkeypatch):
             calls = 0
             original = services.outputs._verified
 
-            def counted(row, *, offset, length):
+            def counted(row, descriptor, *, offset, length):
                 nonlocal calls
                 calls += 1
-                return original(row, offset=offset, length=length)
+                return original(row, descriptor, offset=offset, length=length)
 
             monkeypatch.setattr(services.outputs, "_verified", counted)
             response = structured(
@@ -178,21 +178,22 @@ def test_spilled_list_keeps_cursor_in_envelope_page(tmp_path):
                     media_type="text/plain",
                     kind="result",
                 )
-                for index in range(3)
+                for index in range(6)
             ]
-            first = structured(await client.call_tool("pyxsd_list_artifacts", {"limit": 2}))
+            # Five entries exceed the budget even with short Linux temp paths.
+            first = structured(await client.call_tool("pyxsd_list_artifacts", {"limit": 5}))
             assert "summary" in first["data"]
             assert "next_cursor" not in first["data"]
             cursor = first["page"]["next_cursor"]
             assert cursor
-            assert first["page"]["returned"] == 2
+            assert first["page"]["returned"] == 5
             assert first["page"]["truncated"] is True
             second = structured(
                 await client.call_tool("pyxsd_list_artifacts", {"limit": 2, "cursor": cursor})
             )
             # The spill result itself is also a retained artifact and follows
             # the original third entry in the second page.
-            assert second["data"]["artifacts"][0]["id"] == refs[2].id
+            assert second["data"]["artifacts"][0]["id"] == refs[5].id
             assert len(second["data"]["artifacts"]) == 2
             assert second["page"]["next_cursor"] is None
             assert "next_cursor" not in second["data"]

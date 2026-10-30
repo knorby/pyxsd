@@ -12,7 +12,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--state-dir",
         type=Path,
-        help="Persistent store path (default: ~/.local/state/pyxsd/mcp)",
+        help="Persistent store path (default: <project-root>/.pyxsd/mcp; created on first output)",
     )
     parser.add_argument(
         "--no-persist",
@@ -20,6 +20,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Use a temporary store removed when the server exits",
     )
+    parser.add_argument("--project-root", type=Path, help="Project directory (default: launch cwd)")
     parser.add_argument("--source-root", type=Path, help="Operator-granted read-only source root")
     parser.add_argument(
         "--execution-backend",
@@ -42,7 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not arguments.persist and arguments.state_dir is not None:
         parser.error("--state-dir cannot be combined with --no-persist")
     try:
-        from .config import Settings, default_state_dir
+        from .config import Settings
         from .errors import ToolError
         from .server import run
     except ModuleNotFoundError as exc:
@@ -55,7 +56,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(message)s")
     settings = Settings(
-        state_dir=arguments.state_dir or default_state_dir(),
+        **({"state_dir": arguments.state_dir} if arguments.state_dir is not None else {}),
+        **({"project_root": arguments.project_root} if arguments.project_root is not None else {}),
         persist=arguments.persist,
         source_root=arguments.source_root,
         execution_backend=arguments.execution_backend,

@@ -131,7 +131,6 @@ def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_pa
                     },
                 )
                 assert validated.structured_content["data"]["valid"] is True
-        assert (state / "coordinator.lock").is_file()
-        assert (state / "store-v2" / "index.sqlite3").is_file()
+        assert not state.exists()
 
     anyio.run(scenario)

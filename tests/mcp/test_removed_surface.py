@@ -38,6 +38,7 @@ def test_obsolete_modules_and_symbols_are_absent():
     ):
         assert field not in Limits.model_fields
     assert set(Settings.model_fields) == {
+        "project_root",
         "state_dir",
         "persist",
         "execution_backend",
@@ -55,6 +56,7 @@ def test_fresh_store_has_only_the_artifact_table(tmp_path):
 
         with Storage(tmp_path / "store") as storage:
             outputs = OutputStore(storage, Limits())
+            await outputs.put_bytes(b"x", name="a.txt", media_type="text/plain", kind="result")
             try:
                 tables = await storage.run(
                     lambda db: {

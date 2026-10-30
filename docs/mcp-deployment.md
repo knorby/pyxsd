@@ -22,20 +22,28 @@ bounded reply.
 
 ## Store and transport
 
-The server creates a private store automatically at
-`~/.local/state/pyxsd/mcp`, or at the path selected with `--state-dir`. The store
-contains a small SQLite artifact index and retained output files. Use
-`--no-persist` for a temporary store removed on orderly shutdown. One server
-process owns a persistent store through `coordinator.lock`; do not run two
-coordinators against the same directory.
+The server retains artifacts at `<project-root>/.pyxsd/mcp`, or at the path
+selected with `--state-dir`. Project root defaults to the launch working directory;
+use `--project-root` when the host launches elsewhere. Persistent directories and
+the SQLite index are created only when retaining the first artifact, not during
+discovery or normal no-output use. Use `--no-persist` for temporary outputs removed
+on orderly shutdown. Multiple local servers may share the same selected scope;
+SQLite coordinates short transactions with a 5000 ms timeout (`state_busy` is
+retryable). Network filesystem sharing is unsupported.
 
-Session inputs and operation captures live under `store-v2/scratch/` for the
-lifetime of the operation and are removed afterward. They are not durable
+Session inputs and operation captures live in separate per-server temporary
+scratch, outside the persistent store, and are removed afterward. They are not durable
 workspace revisions. Retained artifacts remain until explicitly deleted with
 `pyxsd_delete_artifact`.
 
 Legacy `state.sqlite3` and `workspaces/` data in the selected directory is not
 opened, migrated, or deleted. A new `store-v2` directory is used instead.
+The old global default is not discovered or migrated. Stop old servers before
+explicitly reusing it; mixed old/new versions sharing state are unsupported.
+Startup never removes unindexed files, which might belong to a peer writer. For
+offline cleanup, stop every server sharing a store before removing only that
+dedicated MCP directory, losing its retained outputs. Projects normally gitignore
+`.pyxsd/`; the server does not edit `.gitignore`.
 
 The MCP transport is stdio only. There is no HTTP listener, OAuth/JWKS
 verification, remote multi-client mode, or network file route. Do not expose the
@@ -45,8 +53,10 @@ stdio process through an untrusted relay.
 
 Source roots and the store directory stay under operator control. Bound request
 bodies, queues, reports, artifacts and execution time through `Settings.limits`.
-The initial topology is one coordinator with its own private store and worker
-subprocesses, not a distributed or shared-filesystem deployment.
+Each server has independent inputs, scratch and worker subprocesses; project
+scoping is organizational isolation, not an OS-user security boundary. State is
+excluded from source capture, including discovered dependencies. This is not a
+distributed or network-filesystem deployment.
 
 For mutually untrusted code or tenants, use a separate operator-designed sandbox
 with its own threat model. Local workers do not establish a public-hosting or

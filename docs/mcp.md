@@ -28,7 +28,9 @@ pyxsd-mcp
 ```
 
 `python -m pyxsd.mcp` is equivalent after installation. The default store is
-`~/.local/state/pyxsd/mcp`; a generic stdio client configuration looks like this:
+`<project-root>/.pyxsd/mcp`, created only when an artifact is retained. The project
+root is the launch working directory; clients that launch elsewhere should pass
+`--project-root /absolute/project`. A generic stdio client configuration looks like this:
 
 ```json
 {
@@ -45,6 +47,14 @@ Select another persistent store with `--state-dir /absolute/private/path`. Use
 `--no-persist` for a temporary store that is removed on orderly shutdown; it
 cannot be combined with `--state-dir`.
 
+An explicit state directory wins over the project default and deliberately shares
+artifacts with other servers selecting it. Relative paths are frozen against the
+launch working directory. There is no Git-root search or client-controlled scope
+switching. Projects normally gitignore `.pyxsd/`; pyxsd never edits `.gitignore`.
+For a read-only project, use `--no-persist` or select a writable private
+`--state-dir`. An unwritable default does not prevent discovery; retaining an
+output reports a storage fault instead.
+
 For an operator-granted read-only source tree, add `--source-root /absolute/root`.
 Only that configured root is captured; a client cannot mount an arbitrary host
 directory. Normal session inputs use `pyxsd_put_files` and need no source root.
@@ -53,27 +63,45 @@ operations capture only the referenced files and discovered dependencies. Source
 captures carry the real workspace ID and generation `0`, with file digests used
 for result identity. Once a workspace has uploads, operations use only those
 uploads: missing paths are never silently filled from the source tree.
+Persistent state is excluded from source captures, including discovered schema
+dependencies. A source root cannot itself be inside the state directory. Uploaded
+files with similar relative names are ordinary session inputs.
 
 ## Persistent store and session inputs
 
-One server process owns the selected store. A second coordinator using the same
-directory fails with `state_locked`. The store holds an artifact index plus each
-retained output file:
+Servers for different projects are independent. Servers selecting the same store
+share retained artifacts through short SQLite transactions; no lifetime process
+lock is held. The store holds an artifact index plus each retained output file:
 
 ```text
 <store>/store-v2/
 ├── index.sqlite3
-├── artifacts/<random-id>/<filename>
-└── scratch/                 # temporary captures and worker output
+└── artifacts/<random-id>/<filename>
 ```
 
 Workspaces, uploaded input sets, page cursors, compiled schemas, and transform
 execution context are **session-only**. Restarting the server discards them. A
 restarted session can still list and read previously retained artifacts by ID.
+Each server owns separate temporary scratch outside persistent state. Closing one
+server never cleans another server's scratch. Discovery, uploads, valid validation
+without output, and reads/lists/deletes against an absent store do not create
+`.pyxsd/`. `--no-persist` keeps all outputs temporary.
 
-Legacy pyxsd MCP state such as `state.sqlite3` and `workspaces/` is not loaded,
-migrated, or deleted. Startup emits one notice if it exists and continues with
-`store-v2`. Back up or remove legacy state separately if it is no longer wanted.
+SQLite uses rollback journaling and a 5000 ms contention timeout. Busy/locked
+transactions return retryable `state_busy`; other failures are not labeled busy.
+Files are staged and fsynced before publication. An already-open read can finish
+after another server deletes the artifact; later reads return `not_found`.
+
+Startup does not reconcile or remove unindexed files: they may belong to a live
+writer. Crashes may leave unlisted staging or orphan files. To reset the store,
+stop **all** servers using it, then remove only its dedicated MCP directory (by
+default `.pyxsd/mcp`); this deletes retained outputs too. No online garbage
+collection or orphan adoption is performed.
+
+The old user-global default is not migrated, discovered, or deleted. To reuse its
+artifacts, stop old servers first and explicitly select that directory with
+`--state-dir`. Mixed old/new servers sharing state are unsupported. Legacy
+`state.sqlite3` and `workspaces/` files remain untouched.
 
 ## Basic workflow
 
@@ -407,7 +435,8 @@ retried automatically and produces no partial artifact.
 - **Missing optional dependency:** reinstall with `pip install 'pyxsd[mcp]'` or
   launch through `uvx --from 'pyxsd[mcp]'`; the CLI reports this without a
   traceback.
-- **`state_locked`:** another server owns the selected persistent store.
+- **`state_busy`:** a SQLite transaction exceeded the bounded contention wait;
+  retry the operation. `state_io` and `state_corrupt` are separate storage failures.
 - **`invalid_cursor`:** the cursor is malformed, belongs to a different result, or
   refers to inputs that have changed.
 - **Invalid versus malformed XML:** inspect the report for validation findings;

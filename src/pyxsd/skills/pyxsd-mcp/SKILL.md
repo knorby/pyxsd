@@ -11,10 +11,20 @@ method is `uvx --from 'pyxsd[mcp]' pyxsd-mcp`. Alternatively, install with
 stdio only; there is no HTTP or remote mode. Everything below also has a
 Python/CLI fallback when the server is absent.
 
+Launch from the project directory or pass `--project-root /absolute/project`.
+Retained outputs default to `.pyxsd/mcp`, created only on first artifact; normal
+discovery/uploads/valid no-output calls leave the project untouched. Projects
+normally gitignore `.pyxsd/`. `--state-dir` explicitly shares another store;
+`--no-persist` uses temporary outputs. Servers may share artifacts, not inputs or
+scratch. Retry `state_busy`; do not infer other failures are contention. Persistent
+state cannot be used as source-root input. Stop every server using a store before
+resetting its dedicated MCP directory; startup never cleans crash orphans.
+
 ## Discovery
 
 Call `pyxsd_capabilities` first. It reports the version, enabled tool groups,
-execution backend, source root, limits, and adapter availability. Do not assume
+execution backend, project root, resolved state directory, persistence policy,
+source root, limits, and adapter availability. Do not assume
 execution or Arrow features — check `adapters.arrow.available` and
 `execution_backend`.
 

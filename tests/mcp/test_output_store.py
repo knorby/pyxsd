@@ -25,6 +25,15 @@ def limits(**overrides):
     return Limits(**fields)
 
 
+def execute(storage, sql, parameters=()):
+    """Inject/inspect database fixtures through the synchronized transaction API."""
+    return storage._run(lambda db: db.execute(sql, parameters))
+
+
+def initialize(store):
+    store._run(lambda db: True, create=True)
+
+
 def test_binary_roundtrip_ranges_and_restart(tmp_path):
     content = b"\x00prefix-\xff-suffix\x00"
 
@@ -55,8 +64,8 @@ def test_binary_roundtrip_ranges_and_restart(tmp_path):
 
 def test_index_has_only_justified_artifact_metadata(tmp_path):
     with Storage(tmp_path / "state") as storage:
-        OutputStore(storage, limits())
-        rows = storage.connection.execute("PRAGMA table_info(artifacts)").fetchall()
+        initialize(OutputStore(storage, limits()))
+        rows = execute(storage, "PRAGMA table_info(artifacts)").fetchall()
         assert [row["name"] for row in rows] == [
             "id",
             "path",
@@ -67,11 +76,11 @@ def test_index_has_only_justified_artifact_metadata(tmp_path):
             "kind",
             "metadata",
         ]
-        assert storage.connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert execute(storage, "PRAGMA user_version").fetchone()[0] == 1
         tables = {
             row[0]
-            for row in storage.connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
+            for row in execute(
+                storage, "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
         assert tables == {"artifacts"}
@@ -79,10 +88,10 @@ def test_index_has_only_justified_artifact_metadata(tmp_path):
 
 def test_unknown_index_version_is_not_rewritten(tmp_path):
     with Storage(tmp_path / "state") as storage:
-        storage.connection.execute("PRAGMA user_version = 2")
+        execute(storage, "PRAGMA user_version = 2")
         before = (storage.format_root / "index.sqlite3").read_bytes()
         with pytest.raises(ToolError, match="state_version"):
-            OutputStore(storage, limits())
+            initialize(OutputStore(storage, limits()))
         after = (storage.format_root / "index.sqlite3").read_bytes()
         assert after == before
 
@@ -98,7 +107,7 @@ def test_metadata_is_bounded_and_has_no_lifecycle_columns(tmp_path):
                 kind="report",
                 metadata={"issue_count": 2},
             )
-            row = storage.connection.execute("SELECT metadata FROM artifacts").fetchone()
+            row = execute(storage, "SELECT metadata FROM artifacts").fetchone()
             assert json.loads(row["metadata"]) == {"issue_count": 2}
             with pytest.raises(ToolError, match="metadata_limit"):
                 await store.put_bytes(
@@ -128,7 +137,7 @@ def test_file_names_media_types_kinds_and_limits_are_validated(tmp_path):
                 await store.put_bytes(
                     b"12345", name="ok.xml", media_type="text/xml", kind="candidate"
                 )
-            assert not any(storage.artifacts.iterdir())
+            assert not storage.artifacts.exists()
 
     anyio.run(scenario)
 
@@ -188,6 +197,7 @@ def test_delete_is_idempotent_and_never_deletes_legacy_state(tmp_path):
     async def scenario():
         with Storage(tmp_path / "state") as storage:
             legacy = storage.root / "workspaces" / "old"
+            storage.root.mkdir(mode=0o700)
             legacy.mkdir(parents=True)
             marker = legacy / "keep.xml"
             marker.write_bytes(b"legacy")
@@ -227,8 +237,9 @@ def test_anchor_identifiers_collide_cleanly_and_never_reuse_ids(tmp_path, monkey
     anyio.run(scenario)
 
 
-def test_startup_removes_only_unindexed_new_store_files(tmp_path):
+def test_startup_preserves_unindexed_new_store_files(tmp_path):
     with Storage(tmp_path / "state") as storage:
+        initialize(OutputStore(storage, limits()))
         orphan = storage.artifacts / "orphan"
         orphan.mkdir()
         (orphan / "stale.xml").write_bytes(b"stale")
@@ -236,7 +247,7 @@ def test_startup_removes_only_unindexed_new_store_files(tmp_path):
         legacy.mkdir(parents=True)
         (legacy / "keep.xml").write_bytes(b"keep")
         OutputStore(storage, limits())
-        assert not orphan.exists()
+        assert (orphan / "stale.xml").read_bytes() == b"stale"
         assert (legacy / "keep.xml").read_bytes() == b"keep"
 
 
@@ -244,15 +255,41 @@ def test_failed_index_insert_removes_finished_file(tmp_path):
     async def scenario():
         with Storage(tmp_path / "state") as storage:
             store = OutputStore(storage, limits())
-            storage.connection.execute(
+            initialize(store)
+            execute(
+                storage,
                 "CREATE TRIGGER reject BEFORE INSERT ON artifacts "
-                "BEGIN SELECT RAISE(ABORT, 'insert failed'); END"
+                "BEGIN SELECT RAISE(ABORT, 'insert failed'); END",
             )
             with pytest.raises(sqlite3.IntegrityError, match="insert failed"):
                 await store.put_bytes(
                     b"value", name="candidate.xml", media_type="application/xml", kind="candidate"
                 )
             assert not any(storage.artifacts.iterdir())
+
+    anyio.run(scenario)
+
+
+@pytest.mark.parametrize("failure", ["fsync", "allocation"])
+def test_output_write_failure_is_typed_and_retryable_after_repair(tmp_path, monkeypatch, failure):
+    async def scenario():
+        with Storage(tmp_path / "state") as storage:
+            store = OutputStore(storage, limits())
+
+            def denied(*args):
+                raise PermissionError("fsync denied")
+
+            if failure == "fsync":
+                monkeypatch.setattr(os, "fsync", denied)
+            else:
+                monkeypatch.setattr(store, "_allocate", denied)
+            with pytest.raises(ToolError, match="state_io"):
+                await store.put_bytes(b"x", name="a.txt", media_type="text/plain", kind="result")
+            assert await store.list(limit=3) == ([], None)
+            assert not any(storage.artifacts.iterdir())
+            monkeypatch.undo()
+            ref = await store.put_bytes(b"x", name="a.txt", media_type="text/plain", kind="result")
+            assert await store.read(ref.id, offset=0, length=1) == b"x"
 
     anyio.run(scenario)
 
@@ -289,9 +326,9 @@ def test_read_write_delete_are_coordinated(tmp_path):
 
 def test_index_schema_missing_table_is_rejected(tmp_path):
     with Storage(tmp_path / "state") as storage:
-        storage.connection.execute("PRAGMA user_version = 1")
+        execute(storage, "PRAGMA user_version = 1")
         with pytest.raises(ToolError, match="state_version"):
-            OutputStore(storage, limits())
+            initialize(OutputStore(storage, limits()))
 
 
 def test_invalid_metadata_content_types_and_closed_store_are_rejected(tmp_path, monkeypatch):
@@ -348,12 +385,11 @@ def test_malicious_paths_and_nonregular_files_are_rejected(tmp_path):
             ref = await store.put_bytes(
                 b"value", name="candidate.xml", media_type="application/xml", kind="candidate"
             )
-            storage.connection.execute(
-                "UPDATE artifacts SET path='../outside.xml' WHERE id=?", (ref.id,)
-            )
+            execute(storage, "UPDATE artifacts SET path='../outside.xml' WHERE id=?", (ref.id,))
             with pytest.raises(ToolError, match="artifact_changed"):
                 await store.get(ref.id)
-            storage.connection.execute(
+            execute(
+                storage,
                 "UPDATE artifacts SET path=? WHERE id=?",
                 (
                     str(
@@ -395,22 +431,24 @@ def test_delete_failure_leaves_artifact_readable_and_bad_ids_are_ignored(tmp_pat
             ref = await store.put_bytes(
                 b"value", name="candidate.xml", media_type="application/xml", kind="candidate"
             )
-            storage.connection.execute(
+            execute(
+                storage,
                 "CREATE TRIGGER reject_delete BEFORE DELETE ON artifacts "
-                "BEGIN SELECT RAISE(ABORT, 'delete failed'); END"
+                "BEGIN SELECT RAISE(ABORT, 'delete failed'); END",
             )
             with pytest.raises(sqlite3.IntegrityError, match="delete failed"):
                 await store.delete(ref.id)
             assert await store.get(ref.id) == ref
-            storage.connection.execute("DROP TRIGGER reject_delete")
+            execute(storage, "DROP TRIGGER reject_delete")
             await store.delete("../bad")
             assert await store.get(ref.id) == ref
 
     anyio.run(scenario)
 
 
-def test_startup_reconciles_unindexed_files_and_links_only(tmp_path):
+def test_startup_leaves_unindexed_files_and_links_untouched(tmp_path):
     with Storage(tmp_path / "state") as storage:
+        initialize(OutputStore(storage, limits()))
         target = tmp_path / "outside"
         target.write_bytes(b"outside")
         unindexed = storage.artifacts / "unindexed"
@@ -421,7 +459,7 @@ def test_startup_reconciles_unindexed_files_and_links_only(tmp_path):
         link_orphan = storage.artifacts / "link-orphan"
         link_orphan.symlink_to(target)
         OutputStore(storage, limits())
-        assert not unindexed.exists()
-        assert not file_orphan.exists()
-        assert not link_orphan.exists()
+        assert (unindexed / "stale").read_bytes() == b"stale"
+        assert file_orphan.read_bytes() == b"file"
+        assert link_orphan.is_symlink()
         assert target.read_bytes() == b"outside"

@@ -38,6 +38,7 @@ class Services:
                 settings.limits,
                 source_root=settings.source_root,
                 discovery=self.pool,
+                excluded_source_root=settings.state_dir if settings.persist else None,
             )
             audit = AuditLogger()
             self.exploration = ExplorationService(

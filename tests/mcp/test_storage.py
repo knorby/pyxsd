@@ -1,4 +1,4 @@
-"""The local store owns startup, persistence, locking, and cleanup."""
+"""Lazy transactions own persistence, not a process-lifetime lock."""
 
 import os
 import sqlite3
@@ -6,162 +6,107 @@ import sqlite3
 import pytest
 
 pytest.importorskip("pydantic")
+import anyio
 
 from pyxsd.mcp.errors import ToolError
+from pyxsd.mcp.storage import Storage
 
 
-def test_storage_creates_a_private_new_format_store(tmp_path):
-    from pyxsd.mcp.storage import Storage
-
-    root = tmp_path / "new" / "nested"
+def test_storage_creates_private_state_only_on_demand(tmp_path):
+    root = tmp_path / "new/nested"
     with Storage(root) as storage:
         assert storage.root == root
         assert storage.format_root == root / "store-v2"
-        assert storage.artifacts.is_dir()
         assert storage.scratch.is_dir()
-        assert storage.lock_path == root / "coordinator.lock"
-        assert stat_mode(root) == 0o700
-        assert stat_mode(storage.format_root) == 0o700
-        assert stat_mode(storage.artifacts) == 0o700
-        assert stat_mode(storage.scratch) == 0o700
+        assert not root.exists()
+        storage._run(lambda db: True)
+        for directory in (root, storage.format_root, storage.artifacts, storage.scratch):
+            assert os.stat(directory).st_mode & 0o777 == 0o700
+        assert not (root / "coordinator.lock").exists()
 
 
-def stat_mode(path):
-    return os.stat(path).st_mode & 0o777
+def test_storage_accepts_two_owners(tmp_path):
+    with Storage(tmp_path / "store") as first, Storage(tmp_path / "store") as second:
+        assert first._run(lambda db: 1) == 1
+        assert second._run(lambda db: 2) == 2
 
 
-def test_storage_rejects_a_second_owner(tmp_path):
-    from pyxsd.mcp.storage import Storage
-
-    first = Storage(tmp_path / "store")
-    try:
-        with pytest.raises(ToolError, match="state_locked"):
-            Storage(tmp_path / "store")
-    finally:
-        first.close()
-
-
-def test_storage_rejects_unsafe_or_foreign_directories(tmp_path):
-    from pyxsd.mcp.storage import Storage
-
+def test_storage_rejects_unsafe_or_foreign_directories_on_use(tmp_path):
     unsafe = tmp_path / "unsafe"
     unsafe.mkdir(mode=0o755)
     unsafe.chmod(0o755)
-    with pytest.raises(ToolError, match="unsafe_state_directory"):
-        Storage(unsafe)
-
     linked = tmp_path / "linked"
     linked.symlink_to(tmp_path, target_is_directory=True)
-    with pytest.raises(ToolError, match="unsafe_state_directory"):
-        Storage(linked)
+    for root in (unsafe, linked):
+        with Storage(root) as storage, pytest.raises(ToolError, match="unsafe_state_directory"):
+            storage._run(lambda db: True)
 
 
-def test_temporary_storage_uses_an_independent_root_and_cleans_up(tmp_path):
-    from pyxsd.mcp.storage import Storage
-
+def test_temporary_storage_cleans_only_its_own_scratch(tmp_path):
     requested = tmp_path / "requested"
     storage = Storage(requested, persist=False)
-    temporary_root = storage.root
-    try:
-        assert temporary_root != requested
-        assert not requested.exists()
-        assert storage.format_root == temporary_root / "store-v2"
-        assert storage.format_root.is_dir()
+    root = storage.scratch
+    with Storage(requested, persist=False) as other:
+        assert storage.root != other.root
+        storage._run(lambda db: True)
         assert storage.artifacts.is_dir()
-        assert storage.scratch.is_dir()
-    finally:
         storage.close()
-    assert not temporary_root.exists()
+        storage.close()
+        assert other.scratch.is_dir()
+    assert not root.exists()
+    assert not requested.exists()
 
 
-def test_storage_never_touches_legacy_files_and_warns(tmp_path, caplog):
-    from pyxsd.mcp.storage import Storage
-
+def test_storage_never_touches_legacy_files(tmp_path):
     root = tmp_path / "legacy"
     root.mkdir(mode=0o700)
     database = root / "state.sqlite3"
-    database.write_bytes(b"legacy database")
-    workspaces = root / "workspaces" / "old" / "snapshot.xml"
-    workspaces.parent.mkdir(parents=True)
-    workspaces.write_bytes(b"<old/>")
-    before = (database.read_bytes(), workspaces.read_bytes())
-
-    with caplog.at_level("WARNING"), Storage(root) as storage:
-        assert storage.format_root == root / "store-v2"
-        assert (
-            not (storage.format_root / "index.sqlite3").read_bytes().startswith(b"legacy database")
-        )
-
-    assert (database.read_bytes(), workspaces.read_bytes()) == before
-    notices = [record.message for record in caplog.records if "legacy" in record.message]
-    assert len(notices) == 1
-    assert str(database) in notices[0]
+    database.write_bytes(b"legacy")
+    with Storage(root) as storage:
+        storage._run(lambda db: True)
+    assert database.read_bytes() == b"legacy"
 
 
-def test_storage_rejects_unknown_index_versions_without_rewriting(tmp_path):
-    from pyxsd.mcp.storage import Storage
-
-    root = tmp_path / "versioned"
-    root.mkdir(mode=0o700)
-    format_root = root / "store-v2"
-    format_root.mkdir(mode=0o700)
-    index = format_root / "index.sqlite3"
-    connection = sqlite3.connect(index)
-    connection.execute("PRAGMA user_version = 99")
-    connection.close()
-    before = index.read_bytes()
-
-    with pytest.raises(ToolError, match="state_version"):
-        Storage(root)
-    assert index.read_bytes() == before
+def test_unknown_index_version_is_not_rewritten(tmp_path):
+    with Storage(tmp_path / "state") as storage:
+        storage._run(lambda db: db.execute("PRAGMA user_version = 99").close())
+        index = storage.format_root / "index.sqlite3"
+        before = index.read_bytes()
+        with pytest.raises(ToolError, match="state_version"):
+            storage._run(lambda db: True)
+        assert index.read_bytes() == before
 
 
-def test_storage_cleans_up_when_initialization_fails(tmp_path, monkeypatch):
-    from pyxsd.mcp.storage import Storage
-
+def test_initialization_failure_is_typed_and_can_retry(tmp_path, monkeypatch):
     def fail(*_args, **_kwargs):
         raise OSError("disk failure")
 
-    monkeypatch.setattr("pyxsd.mcp.storage.sqlite3.connect", fail)
-    root = tmp_path / "broken"
-    with pytest.raises(OSError, match="disk failure"):
-        Storage(root)
-    monkeypatch.undo()
-    with Storage(root):
-        pass
+    with Storage(tmp_path / "broken") as storage:
+        monkeypatch.setattr("pyxsd.mcp.storage.sqlite3.connect", fail)
+        with pytest.raises(ToolError, match="state_io"):
+            storage._run(lambda db: True)
+        monkeypatch.undo()
+        assert storage._run(lambda db: True) is True
 
 
-def test_storage_can_reopen_after_close_and_allows_repeated_close(tmp_path):
-    from pyxsd.mcp.storage import Storage
-
-    root = tmp_path / "repeat"
-    first = Storage(root)
-    first.close()
-    first.close()
-    with Storage(root):
-        pass
-
-
-def test_storage_transactions_rollback_and_report_a_closed_store(tmp_path):
-    import anyio
-
-    from pyxsd.mcp.storage import Storage
-
+def test_transactions_rollback_and_closed_store_fails(tmp_path):
     async def scenario():
         storage = Storage(tmp_path / "transactions")
         try:
             await storage.run(lambda db: db.execute("CREATE TABLE check_one(value TEXT)").close())
+
+            def fail(db):
+                db.execute("INSERT INTO check_one VALUES('discarded')")
+                raise RuntimeError("rollback")
+
             with pytest.raises(RuntimeError, match="rollback"):
+                await storage.run(fail)
+            assert (
                 await storage.run(
-                    lambda db: (
-                        db.execute("INSERT INTO check_one VALUES('discarded')"),
-                        (_ for _ in ()).throw(RuntimeError("rollback")),
-                    )
+                    lambda db: db.execute("SELECT count(*) FROM check_one").fetchone()[0]
                 )
-            count = await storage.run(
-                lambda db: db.execute("SELECT count(*) FROM check_one").fetchone()[0]
+                == 0
             )
-            assert count == 0
         finally:
             storage.close()
         with pytest.raises(ToolError, match="state_closed"):
@@ -170,78 +115,82 @@ def test_storage_transactions_rollback_and_report_a_closed_store(tmp_path):
     anyio.run(scenario)
 
 
-def test_storage_accepts_the_current_index_version(tmp_path):
-    from pyxsd.mcp.storage import Storage
-
-    root = tmp_path / "current"
-    root.mkdir(mode=0o700)
-    format_root = root / "store-v2"
-    format_root.mkdir(mode=0o700)
-    connection = sqlite3.connect(format_root / "index.sqlite3")
-    connection.execute("PRAGMA user_version = 1")
-    connection.close()
-    with Storage(root):
-        pass
-
-
-def test_storage_cleanup_and_close_tolerate_missing_resources(tmp_path, monkeypatch, caplog):
-    from pyxsd.mcp.storage import Storage
-
+def test_storage_close_tolerates_cleanup_failure(tmp_path, monkeypatch, caplog):
     storage = Storage(tmp_path / "cleanup", persist=False)
-    storage._connection.close()
-    storage._connection = None
-    os.close(storage._fd)
-    storage._fd = None
-    temporary = storage._temporary
 
     def fail():
         raise OSError("cannot remove")
 
-    monkeypatch.setattr(temporary, "cleanup", fail)
-    with caplog.at_level("WARNING"):
-        storage.close()
+    monkeypatch.setattr(storage._temporary, "cleanup", fail)
+    storage.close()
     assert "Unable to remove temporary MCP state" in caplog.text
 
 
-def test_storage_rejects_unsupported_platforms(tmp_path, monkeypatch):
-    import builtins
-
-    from pyxsd.mcp.storage import Storage
-
-    real_import = builtins.__import__
-
-    def blocked(name, *args, **kwargs):
-        if name == "fcntl":
-            raise ImportError(name)
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", blocked)
-    with pytest.raises(ToolError, match="unsupported_platform"):
-        Storage(tmp_path / "no-fcntl")
-    monkeypatch.undo()
-
+def test_storage_rejects_unsupported_platform(tmp_path, monkeypatch):
     monkeypatch.delattr("pyxsd.mcp.storage.os.O_NOFOLLOW")
     with pytest.raises(ToolError, match="unsupported_platform"):
-        Storage(tmp_path / "no-follow")
+        Storage(tmp_path / "unsupported")
 
 
-def test_cli_selects_the_default_store_and_rejects_conflicting_flags(tmp_path, monkeypatch):
+def test_index_symlink_is_rejected(tmp_path):
+    with Storage(tmp_path / "state") as storage:
+        storage._run(lambda db: True)
+        index = storage.format_root / "index.sqlite3"
+    index.unlink()
+    target = tmp_path / "target"
+    target.write_bytes(b"untouched")
+    index.symlink_to(target)
+    with (
+        Storage(tmp_path / "state") as storage,
+        pytest.raises(ToolError, match="unsafe_state_directory"),
+    ):
+        storage._run(lambda db: True)
+    assert target.read_bytes() == b"untouched"
+
+
+def test_nonbusy_sqlite_error_is_not_misclassified(tmp_path):
+    with (
+        Storage(tmp_path / "state") as storage,
+        pytest.raises(sqlite3.OperationalError, match="no such table"),
+    ):
+        storage._run(lambda db: db.execute("SELECT * FROM absent"))
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        (sqlite3.SQLITE_READONLY, "state_io"),
+        (sqlite3.SQLITE_CANTOPEN, "state_io"),
+        (sqlite3.SQLITE_CORRUPT, "state_corrupt"),
+    ],
+)
+def test_sqlite_storage_failures_are_typed_without_retry(tmp_path, monkeypatch, code, expected):
+    def fail(*args, **kwargs):
+        error = sqlite3.OperationalError("storage failure")
+        error.sqlite_errorcode = code
+        raise error
+
+    monkeypatch.setattr("pyxsd.mcp.storage.sqlite3.connect", fail)
+    with Storage(tmp_path / "state") as storage, pytest.raises(ToolError, match=expected) as raised:
+        storage._run(lambda db: True)
+    assert raised.value.fault.retryable is False
+
+
+def test_cli_scope_and_conflicting_flags(tmp_path, monkeypatch):
     from pyxsd.mcp.__main__ import main
 
-    home = tmp_path / "home"
     captured = []
-    monkeypatch.setattr(
-        "pyxsd.mcp.config.default_state_dir", lambda: home / ".local/state/pyxsd/mcp"
-    )
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("pyxsd.mcp.server.run", captured.append)
     assert main([]) == 0
-    assert captured[-1].state_dir == home / ".local/state/pyxsd/mcp"
+    assert captured[-1].state_dir == tmp_path / ".pyxsd/mcp"
     assert captured[-1].persist is True
-
-    monkeypatch.setattr("pyxsd.mcp.server.run", captured.append)
     assert main(["--state-dir", str(tmp_path / "custom")]) == 0
     assert captured[-1].state_dir == tmp_path / "custom"
-
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    assert main(["--project-root", str(nested)]) == 0
+    assert captured[-1].state_dir == nested / ".pyxsd/mcp"
     with pytest.raises(SystemExit) as raised:
         main(["--no-persist", "--state-dir", str(tmp_path / "other")])
     assert raised.value.code == 2

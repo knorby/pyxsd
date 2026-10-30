@@ -13,9 +13,10 @@ import sqlite3
 import stat
 import time
 from builtins import list as list_type
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TypeVar, cast
 
 import anyio
 
@@ -25,8 +26,9 @@ from .config import Limits
 from .errors import ToolError
 from .storage import Storage
 
+T = TypeVar("T")
+
 _SCHEMA = """
-BEGIN IMMEDIATE;
 CREATE TABLE artifacts (
     id TEXT PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
@@ -37,8 +39,6 @@ CREATE TABLE artifacts (
     kind TEXT NOT NULL,
     metadata TEXT NOT NULL
 );
-PRAGMA user_version = 1;
-COMMIT;
 """
 
 _COLUMNS = ("id", "path", "media_type", "size", "digest", "created", "kind", "metadata")
@@ -67,31 +67,24 @@ class OutputStore:
         self.storage, self.limits = storage, limits
         self._lock = anyio.Lock()
         self._closed = False
-        self._initialize()
-        self._reconcile()
 
-    def _initialize(self) -> None:
-        connection = self.storage.connection
+    def _initialize(self, connection: sqlite3.Connection) -> None:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version == 0:
-            connection.executescript(_SCHEMA)
-        elif version != 1:
-            raise ToolError("state_version", "Unsupported output index version")
+            connection.execute(_SCHEMA)
+            connection.execute("PRAGMA user_version = 1")
         rows = connection.execute("PRAGMA table_info(artifacts)").fetchall()
         if tuple(row["name"] for row in rows) != _COLUMNS:
             raise ToolError("state_version", "Output index schema is unavailable")
 
-    def _reconcile(self) -> None:
-        indexed = {
-            row[0] for row in self.storage.connection.execute("SELECT id FROM artifacts").fetchall()
-        }
-        for path in self.storage.artifacts.iterdir():
-            if path.name in indexed:
-                continue
-            if path.is_symlink() or not path.is_dir():
-                path.unlink()
-            else:
-                shutil.rmtree(path)
+    def _run(
+        self, operation: Callable[[sqlite3.Connection], T], *, create: bool = False
+    ) -> T | None:
+        def initialized(connection: sqlite3.Connection) -> T:
+            self._initialize(connection)
+            return operation(connection)
+
+        return self.storage._run(initialized, create=create)
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -164,10 +157,13 @@ class OutputStore:
         kind: str,
         metadata: str,
     ) -> OutputRef:
-        identifier, directory = self._allocate()
+        self._run(lambda db: True, create=True)
+        try:
+            identifier, directory = self._allocate()
+        except OSError as exc:
+            raise ToolError("state_io", "Unable to allocate local output") from exc
         final = directory / name
         stage = directory / (name + ".tmp")
-        connection = self.storage.connection
         try:
             with stage.open("xb") as output:
                 output.write(content)
@@ -177,9 +173,8 @@ class OutputStore:
             created = time.time()
             digest = hashlib.sha256(content).hexdigest()
             relative = str(final.relative_to(self.storage.format_root))
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                connection.execute(
+            self._run(
+                lambda connection: connection.execute(
                     "INSERT INTO artifacts VALUES(?,?,?,?,?,?,?,?)",
                     (
                         identifier,
@@ -191,13 +186,12 @@ class OutputStore:
                         kind,
                         metadata,
                     ),
-                )
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
-        except BaseException:
+                ).close()
+            )
+        except BaseException as exc:
             shutil.rmtree(directory, ignore_errors=True)
+            if isinstance(exc, OSError):
+                raise ToolError("state_io", "Unable to retain local output") from exc
             raise
         return OutputRef(
             id=identifier,
@@ -209,10 +203,10 @@ class OutputStore:
             kind=kind,
         )
 
-    def _row(self, artifact_id: str) -> sqlite3.Row:
+    def _row(self, connection: sqlite3.Connection, artifact_id: str) -> sqlite3.Row:
         row = None
         if _ID.fullmatch(artifact_id) is not None:
-            row = self.storage.connection.execute(
+            row = connection.execute(
                 "SELECT * FROM artifacts WHERE id=?", (artifact_id,)
             ).fetchone()
         if row is None:
@@ -238,7 +232,10 @@ class OutputStore:
             kind=row["kind"],
         )
 
-    def _verified(self, row: sqlite3.Row, *, offset: int, length: int) -> bytes:
+    def _open_verified_source(
+        self, connection: sqlite3.Connection, artifact_id: str
+    ) -> tuple[sqlite3.Row, int]:
+        row = self._row(connection, artifact_id)
         path = self._path(row)
         try:
             descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -246,24 +243,24 @@ class OutputStore:
             raise ToolError("artifact_missing", "Artifact file is missing") from exc
         except OSError as exc:
             raise ToolError("artifact_changed", "Artifact cannot be read safely") from exc
-        try:
-            metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ToolError("artifact_changed", "Artifact is not a regular file")
-            digest, size = hashlib.sha256(), 0
-            selected = bytearray()
-            with os.fdopen(descriptor, "rb", closefd=False) as file:
-                while True:
-                    chunk = file.read(1 << 20)
-                    if not chunk:
-                        break
-                    start = size
-                    size += len(chunk)
-                    digest.update(chunk)
-                    if start < offset + length and size > offset:
-                        selected.extend(chunk[max(0, offset - start) : offset + length - start])
-        finally:
-            os.close(descriptor)
+        return row, descriptor
+
+    def _verified(self, row: sqlite3.Row, descriptor: int, *, offset: int, length: int) -> bytes:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ToolError("artifact_changed", "Artifact is not a regular file")
+        digest, size = hashlib.sha256(), 0
+        selected = bytearray()
+        with os.fdopen(descriptor, "rb", closefd=False) as file:
+            while True:
+                chunk = file.read(1 << 20)
+                if not chunk:
+                    break
+                start = size
+                size += len(chunk)
+                digest.update(chunk)
+                if start < offset + length and size > offset:
+                    selected.extend(chunk[max(0, offset - start) : offset + length - start])
         if size != row["size"] or digest.hexdigest() != row["digest"]:
             raise ToolError("artifact_changed", "Artifact bytes no longer match the index")
         return bytes(selected)
@@ -274,9 +271,8 @@ class OutputStore:
             return await anyio.to_thread.run_sync(self._get_sync, artifact_id)
 
     def _get_sync(self, artifact_id: str) -> OutputRef:
-        row = self._row(artifact_id)
-        self._verified(row, offset=0, length=0)
-        return self._ref(row)
+        ref, _ = self._read_with_ref_sync(artifact_id, 0, 0)
+        return ref
 
     async def read_with_ref(
         self, artifact_id: str, *, offset: int, length: int
@@ -293,8 +289,21 @@ class OutputStore:
     def _read_with_ref_sync(
         self, artifact_id: str, offset: int, length: int
     ) -> tuple[OutputRef, bytes]:
-        row = self._row(artifact_id)
-        return self._ref(row), self._verified(row, offset=offset, length=length)
+        opened: list_type[tuple[sqlite3.Row, int]] = []
+
+        def acquire(db: sqlite3.Connection) -> bool:
+            opened.append(self._open_verified_source(db, artifact_id))
+            return True
+
+        try:
+            if self._run(acquire) is None:
+                raise ToolError("not_found", "Artifact not found")
+            row, descriptor = opened[0]
+            content = self._verified(row, descriptor, offset=offset, length=length)
+            return self._ref(row), content
+        finally:
+            if opened:
+                os.close(opened[0][1])
 
     async def read(self, artifact_id: str, *, offset: int, length: int) -> bytes:
         _, content = await self.read_with_ref(artifact_id, offset=offset, length=length)
@@ -321,12 +330,17 @@ class OutputStore:
     def _list_sync(
         self, after: tuple[float, str] | None, limit: int
     ) -> tuple[list_type[OutputRef], tuple[float, str] | None]:
+        return self._run(lambda db: self._list_rows(db, after, limit)) or ([], None)
+
+    def _list_rows(
+        self, connection: sqlite3.Connection, after: tuple[float, str] | None, limit: int
+    ) -> tuple[list_type[OutputRef], tuple[float, str] | None]:
         if after is None:
-            rows = self.storage.connection.execute(
+            rows = connection.execute(
                 "SELECT * FROM artifacts ORDER BY created,id LIMIT ?", (limit + 1,)
             ).fetchall()
         else:
-            rows = self.storage.connection.execute(
+            rows = connection.execute(
                 "SELECT * FROM artifacts WHERE created>? OR (created=? AND id>?) "
                 "ORDER BY created,id LIMIT ?",
                 (after[0], after[0], after[1], limit + 1),
@@ -345,19 +359,11 @@ class OutputStore:
     def _delete_sync(self, artifact_id: str) -> None:
         if _ID.fullmatch(artifact_id) is None:
             return
-        row = self.storage.connection.execute(
-            "SELECT path FROM artifacts WHERE id=?", (artifact_id,)
-        ).fetchone()
-        if row is not None:
-            connection = self.storage.connection
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                connection.execute("DELETE FROM artifacts WHERE id=?", (artifact_id,))
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
-        shutil.rmtree(self.storage.artifacts / artifact_id, ignore_errors=True)
+        removed = self._run(
+            lambda db: db.execute("DELETE FROM artifacts WHERE id=?", (artifact_id,)).rowcount
+        )
+        if removed:
+            shutil.rmtree(self.storage.artifacts / artifact_id, ignore_errors=True)
 
     def close(self) -> None:
         self._closed = True

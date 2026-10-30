@@ -56,6 +56,10 @@ def capability_data(services: "Services") -> dict[str, JsonValue]:
         "execution_backend": settings.execution_backend,
         "enabled_groups": cast(list[JsonValue], sorted(settings.enabled_groups)),
         "source_root": None if settings.source_root is None else str(settings.source_root),
+        "project_root": str(settings.project_root),
+        "state_dir": str(settings.state_dir),
+        "persist": settings.persist,
+        "state_creation": "first_artifact",
         "limits": settings.limits.model_dump(mode="json"),
         "adapters": {
             "pydantic": {

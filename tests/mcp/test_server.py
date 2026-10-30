@@ -79,7 +79,9 @@ def test_catalog_schema_tools_resources_and_prompts(tmp_path):
         async with connected(tmp_path) as (client, services):
             capabilities_result = await client.call_tool("pyxsd_capabilities", {})
             assert structured(capabilities_result)["data"]["version"]
-            assert str(tmp_path) not in json.dumps(structured(capabilities_result))
+            assert structured(capabilities_result)["data"]["state_dir"] == str(
+                services.settings.state_dir
+            )
 
             tools = await client.list_tools()
             names = {tool.name for tool in tools.tools}
@@ -167,7 +169,9 @@ def test_catalog_schema_tools_resources_and_prompts(tmp_path):
             codes = await client.read_resource("pyxsd://issue-codes")
             assert "missing-attribute" in codes.contents[0].text
             capabilities = await client.read_resource("pyxsd://capabilities")
-            assert str(tmp_path) not in capabilities.contents[0].text
+            assert json.loads(capabilities.contents[0].text)["state_dir"] == str(
+                services.settings.state_dir
+            )
 
             ref = await services.outputs.put_bytes(
                 b"abc", name="sample.bin", media_type="application/octet-stream", kind="test"
