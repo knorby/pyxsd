@@ -20,6 +20,13 @@ from pyxsd.remote import (
 
 URL = "https://schemas.example/a/main.xsd"
 
+STATUS_LINE = b"HTTP/1.1 200 OK\r\n"
+FIXED_HEADERS = b"Content-Type: application/xml\r\nContent-Length: 4\r\n\r\n"
+FIXED_RESPONSE = STATUS_LINE + FIXED_HEADERS + b"body"
+CHUNK_PREFIX = STATUS_LINE + b"Transfer-Encoding: chunked\r\n\r\n"
+CHUNK_SIZE_LINE = b"5;ext=1\r\n"
+CHUNKED_RESPONSE = CHUNK_PREFIX + CHUNK_SIZE_LINE + b"hello\r\n0\r\n\r\n"
+
 
 class FakeClock:
     """A deterministic monotonic clock; tests advance it explicitly."""
@@ -42,6 +49,62 @@ class FakeSocket:
 
     def settimeout(self, value) -> None:
         self.timeouts.append(value)
+
+
+class ScriptedSocket:
+    """A finite byte stream whose low-level reads advance a fake clock.
+
+    ``slow_after`` is the payload offset at which each receive begins to cost
+    ``recv_delay`` seconds; bytes before it arrive instantly. ``recv_chunk``
+    caps one receive so a test can drip one byte at a time.
+    """
+
+    def __init__(
+        self,
+        payload: bytes,
+        *,
+        clock: FakeClock,
+        recv_delay: float = 0.0,
+        slow_after: int = 0,
+        recv_chunk: int = 1,
+    ) -> None:
+        self.payload = payload
+        self.offset = 0
+        self.timeouts = []
+        self.closed = False
+        self._clock = clock
+        self._recv_delay = recv_delay
+        self._slow_after = slow_after
+        self._recv_chunk = recv_chunk
+
+    def recv_into(self, buffer, nbytes: int = 0, flags: int = 0) -> int:
+        if self.offset >= self._slow_after:
+            self._clock.advance(self._recv_delay)
+        if self.offset >= len(self.payload):
+            return 0
+        size = nbytes or len(buffer)
+        size = min(size, self._recv_chunk, len(self.payload) - self.offset)
+        buffer[:size] = self.payload[self.offset : self.offset + size]
+        self.offset += size
+        return size
+
+    def settimeout(self, value) -> None:
+        self.timeouts.append(value)
+
+    def gettimeout(self):
+        return None
+
+    def sendall(self, data, flags: int = 0) -> None:
+        pass
+
+    def _decref_socketios(self) -> None:
+        pass
+
+    def _inc_ref(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeResponse:
@@ -134,6 +197,58 @@ def install(
     return created
 
 
+def install_scripted(
+    monkeypatch,
+    payload: bytes,
+    *,
+    clock: FakeClock,
+    recv_delay: float = 0.0,
+    slow_after: int = 0,
+    recv_chunk: int = 1,
+):
+    """Replace ``HTTPSConnection`` with one that serves a real HTTPResponse."""
+    created = []
+
+    class FakeConnection:
+        def __init__(self, host, port=None, *, timeout=None, context=None):
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+            self.context = context
+            self.requests = []
+            self.sock = None
+            self.raw = None
+            self.closed = False
+            created.append(self)
+
+        def connect(self) -> None:
+            self.raw = ScriptedSocket(
+                payload,
+                clock=clock,
+                recv_delay=recv_delay,
+                slow_after=slow_after,
+                recv_chunk=recv_chunk,
+            )
+            self.sock = self.raw
+
+        def request(self, method: str, target: str) -> None:
+            self.requests.append((method, target))
+            self.sock.sendall(b"GET " + target.encode("ascii") + b" HTTP/1.1\r\n\r\n")
+
+        def getresponse(self) -> http.client.HTTPResponse:
+            response = http.client.HTTPResponse(self.sock, method="GET")
+            response.begin()
+            return response
+
+        def close(self) -> None:
+            self.closed = True
+            if self.sock is not None:
+                self.sock.close()
+
+    monkeypatch.setattr(http.client, "HTTPSConnection", FakeConnection)
+    return created
+
+
 def test_fetch_returns_one_https_response_and_closes_resources(monkeypatch):
     response = FakeResponse(
         headers=[("Content-Type", "application/xml")],
@@ -161,14 +276,17 @@ def test_fetch_returns_one_https_response_and_closes_resources(monkeypatch):
 
 
 def test_fetch_configures_separate_connect_and_read_timeouts(monkeypatch):
-    created = install(monkeypatch, FakeResponse())
+    clock = FakeClock()
+    payload = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+    created = install_scripted(monkeypatch, payload, clock=clock)
     limits = RemoteLimits(connect_timeout=1.5, read_timeout=2.5)
 
-    HttpClientTransport().fetch(URL, limits=limits)
+    result = HttpClientTransport(clock=clock).fetch(URL, limits=limits)
 
-    connection = created[0]
-    assert connection.timeout == 1.5
-    assert connection.sock.timeouts == [2.5, 2.5]
+    assert created[0].timeout == 1.5
+    assert created[0].raw.timeouts
+    assert set(created[0].raw.timeouts) == {2.5}
+    assert result.content == b""
 
 
 def test_fetch_uses_a_verified_default_tls_context(monkeypatch):
@@ -205,18 +323,68 @@ def test_fetch_stops_when_the_deadline_expires_while_connecting(monkeypatch):
     assert created[0].closed
 
 
-def test_fetch_stops_when_the_request_deadline_expires_while_reading(monkeypatch):
+def test_fetch_enforces_the_deadline_inside_the_status_line(monkeypatch):
     clock = FakeClock()
-    response = FakeResponse(body=b"xxxx", clock=clock, read_delay=3)
-    created = install(monkeypatch, response, clock=clock)
+    created = install_scripted(monkeypatch, FIXED_RESPONSE, clock=clock, recv_delay=1)
 
-    with pytest.raises(RemoteTransportError, match="request_seconds=5"):
-        HttpClientTransport(clock=clock).fetch(
-            URL, limits=RemoteLimits(read_timeout=30, request_seconds=5)
-        )
+    with pytest.raises(RemoteTransportError, match="request_seconds=2"):
+        HttpClientTransport(clock=clock).fetch(URL, limits=RemoteLimits(request_seconds=2))
 
-    assert created[0].sock.timeouts == [5, 5, 2]
-    assert response.closed
+    assert created[0].raw.offset < len(STATUS_LINE)
+    assert created[0].closed
+
+
+def test_fetch_enforces_the_deadline_inside_a_header_line(monkeypatch):
+    clock = FakeClock()
+    created = install_scripted(
+        monkeypatch,
+        FIXED_RESPONSE,
+        clock=clock,
+        recv_delay=1,
+        slow_after=len(STATUS_LINE),
+    )
+
+    with pytest.raises(RemoteTransportError, match="request_seconds=2"):
+        HttpClientTransport(clock=clock).fetch(URL, limits=RemoteLimits(request_seconds=2))
+
+    headers_end = len(STATUS_LINE) + len(FIXED_HEADERS)
+    assert len(STATUS_LINE) < created[0].raw.offset < headers_end
+    assert created[0].closed
+
+
+def test_fetch_enforces_the_deadline_inside_a_chunk_size_line(monkeypatch):
+    clock = FakeClock()
+    created = install_scripted(
+        monkeypatch,
+        CHUNKED_RESPONSE,
+        clock=clock,
+        recv_delay=1,
+        slow_after=len(CHUNK_PREFIX),
+    )
+
+    with pytest.raises(RemoteTransportError, match="request_seconds=2"):
+        HttpClientTransport(clock=clock).fetch(URL, limits=RemoteLimits(request_seconds=2))
+
+    chunk_line_end = len(CHUNK_PREFIX) + len(CHUNK_SIZE_LINE)
+    assert len(CHUNK_PREFIX) < created[0].raw.offset < chunk_line_end
+    assert created[0].closed
+
+
+def test_fetch_enforces_the_deadline_inside_the_body(monkeypatch):
+    clock = FakeClock()
+    headers_end = len(STATUS_LINE) + len(FIXED_HEADERS)
+    created = install_scripted(
+        monkeypatch,
+        FIXED_RESPONSE,
+        clock=clock,
+        recv_delay=1,
+        slow_after=headers_end,
+    )
+
+    with pytest.raises(RemoteTransportError, match="request_seconds=2"):
+        HttpClientTransport(clock=clock).fetch(URL, limits=RemoteLimits(request_seconds=2))
+
+    assert headers_end < created[0].raw.offset < len(FIXED_RESPONSE)
     assert created[0].closed
 
 

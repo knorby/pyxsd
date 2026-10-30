@@ -17,18 +17,17 @@ not describe itself as a complete SSRF sandbox.
 from __future__ import annotations
 
 import http.client
+import io
 import math
+import socket
 import ssl
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from time import monotonic
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from pyxsd.exceptions import PyXSDError
-
-if TYPE_CHECKING:
-    import socket
 
 #: The largest single response read; the body is read incrementally so the
 #: total request deadline is checked between reads.
@@ -142,6 +141,66 @@ class RemoteResponse:
     content: bytes
 
 
+def _deadline_error(url: str, request_seconds: float) -> RemoteTransportError:
+    return RemoteTransportError(
+        f"the request to '{url}' exceeded request_seconds={request_seconds}"
+    )
+
+
+class _DeadlineSocket:
+    """A socket proxy that re-arms the request deadline before every read.
+
+    ``http.client`` reads status lines, header lines, chunk framing, and body
+    data through a buffered file object. Capping a high-level ``readline`` or
+    ``read1`` call is not enough: one call may issue many underlying reads.
+    The proxy recomputes the remaining request time before every
+    ``recv_into`` and ``sendall`` and installs ``min(read_timeout, remaining)``
+    on the real socket, so every low-level read is bounded by both limits.
+    """
+
+    def __init__(
+        self,
+        sock: socket.socket,
+        *,
+        clock: Callable[[], float],
+        deadline: float,
+        read_timeout: float,
+        url: str,
+        request_seconds: float,
+    ) -> None:
+        self._sock = sock
+        self._clock = clock
+        self._deadline = deadline
+        self._read_timeout = read_timeout
+        self._url = url
+        self._request_seconds = request_seconds
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._sock, name)
+
+    def _next_timeout(self) -> float:
+        remaining = self._deadline - self._clock()
+        if remaining <= 0:
+            raise _deadline_error(self._url, self._request_seconds)
+        return min(self._read_timeout, remaining)
+
+    def recv_into(self, buffer: Any, nbytes: int = 0, flags: int = 0) -> int:
+        self._sock.settimeout(self._next_timeout())
+        return self._sock.recv_into(buffer, nbytes, flags)
+
+    def sendall(self, data: Any, flags: int = 0) -> None:
+        self._sock.settimeout(self._next_timeout())
+        self._sock.sendall(data, flags)
+
+    def makefile(
+        self,
+        mode: Literal["rb"] = "rb",
+        buffering: int | None = None,
+    ) -> io.BufferedReader:
+        raw = socket.SocketIO(cast(socket.socket, self), mode)
+        return io.BufferedReader(raw)
+
+
 class RemoteTransport(Protocol):
     """The retrieval seam a remote resource policy calls one hop at a time."""
 
@@ -155,10 +214,12 @@ class HttpClientTransport:
 
     Each call creates a fresh default TLS context (certificate and hostname
     verification enabled), connects with at most ``connect_timeout``, then
-    reads the body incrementally. Every socket read uses the smaller of
-    ``read_timeout`` and the time left before ``request_seconds``, and the
-    deadline covers connecting, the response headers, and all body reads, so a
-    server that drips bytes cannot hold the request open indefinitely.
+    reads the response through a deadline-aware socket proxy. Every low-level
+    socket read, including the status line, each header line, chunk framing,
+    and body data, re-arms the timeout to the smaller of ``read_timeout`` and
+    the time left before ``request_seconds``. The deadline therefore covers
+    connecting, the response headers, and all body reads, so a server that
+    drips bytes cannot hold the request open indefinitely.
     ``Content-Length`` is never trusted; a response whose streamed bytes exceed
     the budget is rejected. The response and connection are closed on every
     outcome.
@@ -187,16 +248,25 @@ class HttpClientTransport:
         response: http.client.HTTPResponse | None = None
         try:
             connection.connect()
-            sock = cast("socket.socket", connection.sock)
-            remaining = self._remaining(url, limits, deadline)
-            sock.settimeout(min(limits.read_timeout, remaining))
+            raw_sock = cast(socket.socket, connection.sock)
+            connection.sock = cast(
+                socket.socket,
+                _DeadlineSocket(
+                    raw_sock,
+                    clock=self._clock,
+                    deadline=deadline,
+                    read_timeout=limits.read_timeout,
+                    url=url,
+                    request_seconds=limits.request_seconds,
+                ),
+            )
+            self._remaining(url, limits, deadline)
             connection.request("GET", target)
             response = connection.getresponse()
             chunks: list[bytes] = []
             total = 0
             while True:
-                remaining = self._remaining(url, limits, deadline)
-                sock.settimeout(min(limits.read_timeout, remaining))
+                self._remaining(url, limits, deadline)
                 chunk = response.read1(min(_READ_CHUNK, limits.response_bytes + 1 - total))
                 if not chunk:
                     self._remaining(url, limits, deadline)
@@ -217,7 +287,7 @@ class HttpClientTransport:
             raise RemoteTransportError(f"malformed HTTP response from '{url}': {exc}") from exc
         except TimeoutError as exc:
             if self._clock() >= deadline:
-                raise self._deadline_error(url, limits) from exc
+                raise _deadline_error(url, limits.request_seconds) from exc
             raise
         finally:
             try:
@@ -229,14 +299,8 @@ class HttpClientTransport:
     def _remaining(self, url: str, limits: RemoteLimits, deadline: float) -> float:
         remaining = deadline - self._clock()
         if remaining <= 0:
-            raise self._deadline_error(url, limits)
+            raise _deadline_error(url, limits.request_seconds)
         return remaining
-
-    @staticmethod
-    def _deadline_error(url: str, limits: RemoteLimits) -> RemoteTransportError:
-        return RemoteTransportError(
-            f"the request to '{url}' exceeded request_seconds={limits.request_seconds}"
-        )
 
 
 def _request_target(url: str) -> tuple[str, int, str]:
