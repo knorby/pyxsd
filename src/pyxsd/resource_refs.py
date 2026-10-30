@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urljoin
 
-from pyxsd.resource_policy import ResourcePolicyError
+from pyxsd.resource_policy import ResourcePolicyError, ResourcePurpose
 
 #: What a canonical source name denotes.
 ResourceKind = Literal["local", "remote", "memory"]
@@ -28,8 +28,9 @@ MEMORY_SOURCE = "<memory>"
 
 #: An RFC 3986 scheme: a letter, then scheme characters, then a colon.
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
-#: A Windows drive letter is a path, not a URI scheme.
-_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+#: A Windows drive designator (absolute ``C:\x`` and drive-relative ``c:x``)
+#: is a path, not a one-letter URI scheme.
+_DRIVE_PATH = re.compile(r"^[A-Za-z]:")
 
 
 @dataclass(frozen=True)
@@ -78,11 +79,15 @@ def resolve_reference(
     """Resolve *location* to a canonical reference against *base*.
 
     *base* is the canonical name of the document that wrote *location*. A
-    remote base resolves with RFC 3986 URI semantics (``urljoin``), keeping
-    any query and fragment; a local or virtual base resolves with
-    filesystem semantics relative to that document. An absolute reference of
-    either kind is returned canonicalized rather than being joined onto a
-    base of the other kind.
+    remote base resolves every *location* with RFC 3986 URI semantics
+    (``urljoin``), keeping any query and fragment: a relative reference and
+    an absolute URI both follow RFC 3986, and a reference that looks like an
+    absolute filesystem path (``/x``) is a path on the remote origin rather
+    than a local file. A local or virtual base resolves a local reference
+    with filesystem semantics relative to that document, while an absolute
+    URI stays a URI instead of being joined onto a local path. A Windows
+    drive designator is a local path even against a remote base, so a caller
+    must treat that result as a remote-to-local pivot and deny it.
 
     ``base=None`` keeps the legacy behavior of resolving a relative local
     reference against the working directory (an anonymous stream with no
@@ -114,7 +119,9 @@ def resolve_reference(
     return str((Path(base_text).parent / path).resolve())
 
 
-def require_local_reference(reference: str, *, purpose: str, advisory: bool = False) -> str:
+def require_local_reference(
+    reference: str, *, purpose: ResourcePurpose, advisory: bool = False
+) -> str:
     """Return *reference* if it names a local resource, else deny it.
 
     Used where no policy can authorize retrieval: a URL must fail rather

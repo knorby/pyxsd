@@ -201,6 +201,60 @@ def test_instance_selected_main_schema_and_hints_are_schema_hint_reads(tmp_path)
     ]
 
 
+def test_explicit_schema_with_instance_hints_uses_schema_and_hint_purposes(tmp_path):
+    (tmp_path / "schemas").mkdir()
+    (tmp_path / "instances").mkdir()
+    (tmp_path / "schemas/main.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="root" type="xs:string"/></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "schemas/hint.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}" targetNamespace="urn:hint">'
+        '<xs:include schemaLocation="hint-types.xsd"/></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "schemas/hint-types.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="Hinted">'
+        '<xs:restriction base="xs:int"/></xs:simpleType></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "instances/input.xml").write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="../schemas/main.xsd" '
+        'xsi:schemaLocation="urn:hint ../schemas/hint.xsd">text</root>',
+        encoding="utf-8",
+    )
+    policy = RecordingPolicy(tmp_path)
+    document = pyxsd.parse(
+        "instances/input.xml",
+        xsd="schemas/main.xsd",
+        mode=pyxsd.ParseModes.NAMESPACED,
+        resource_policy=policy,
+    )
+    assert not document.report.has_errors
+    assert [(path.name, purpose) for path, _, purpose in policy.reads] == [
+        ("input.xml", "instance"),
+        ("main.xsd", "schema"),
+        ("hint.xsd", "schema-hint"),
+        ("hint-types.xsd", "schema"),
+    ]
+
+
+def test_root_remote_denial_names_the_real_purpose(tmp_path):
+    from pyxsd.resource_policy import ResourcePolicyError
+
+    remote = "https://schemas.example/main.xsd"
+    with pytest.raises(ResourcePolicyError, match="the schema reference"):
+        pyxsd.compile(remote)
+    (tmp_path / "input.xml").write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        f'xsi:noNamespaceSchemaLocation="{remote}">4</root>',
+        encoding="utf-8",
+    )
+    with pytest.raises(ResourcePolicyError, match="the schema-hint reference"):
+        pyxsd.parse(str(tmp_path / "input.xml"))
+
+
 def test_streams_and_revalidation_are_policy_parsed_without_extra_reads(tmp_path):
     policy = RecordingPolicy(tmp_path)
     schema = pyxsd.compile(io.StringIO(SIMPLE), resource_policy=policy)

@@ -254,6 +254,36 @@ def test_advisory_schema_hint_policy_denial_is_not_downgraded(tmp_path):
         )
 
 
+def test_cli_propagates_the_hint_selected_schema_purpose(tmp_path, monkeypatch):
+    from pyxsd import cli
+    from pyxsd.schema import Schema
+
+    (tmp_path / "note.xsd").write_text(SCHEMA)
+    (tmp_path / "note.xml").write_text(HINT_DOC)
+    seen = []
+    original = Schema.compile.__func__
+
+    def recording(cls, source, **kwargs):
+        seen.append(kwargs.get("_source_purpose"))
+        return original(cls, source, **kwargs)
+
+    monkeypatch.setattr(Schema, "compile", classmethod(recording))
+    document = cli._build_document(
+        str(tmp_path / "note.xml"), None, mode=pyxsd.ParseModes.STRICT, overlay=None
+    )
+    assert seen == ["schema-hint"]
+    assert document.root is not None
+
+    explicit = cli._build_document(
+        str(tmp_path / "note.xml"),
+        str(tmp_path / "note.xsd"),
+        mode=pyxsd.ParseModes.STRICT,
+        overlay=None,
+    )
+    assert seen == ["schema-hint", "schema"]
+    assert explicit.root is not None
+
+
 def test_compile_policy_and_limits_do_not_leak_into_later_parses():
     schema = pyxsd.Schema.compile(
         StringIO(SIMPLE_STRING),

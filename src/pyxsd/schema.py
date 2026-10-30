@@ -33,10 +33,13 @@ from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import XML_NS, NamespaceContext, parse_with_namespaces
 from pyxsd.resource_policy import (
     ResourcePolicy,
+    ResourcePolicyError,
+    ResourcePurpose,
     new_validation_report,
     read_resource,
     record_declarations,
     source_identifier,
+    validate_purpose,
 )
 from pyxsd.resource_refs import classify_resource, require_local_reference, resource_base
 from pyxsd.schema_base import SchemaBase
@@ -193,7 +196,7 @@ class Schema:
         resource_policy: ResourcePolicy | None = None,
         xml_policy: XmlParserPolicy | None = None,
         xml_limits: XmlLimits | None = None,
-        _source_purpose: str = "schema",
+        _source_purpose: ResourcePurpose = "schema",
     ) -> "Schema":
         """Compiles *source* into a :class:`Schema`.
 
@@ -265,28 +268,39 @@ class Schema:
         """
         if xsd_version not in ("1.0", "1.1"):
             raise ValueError(f"xsd_version must be '1.0' or '1.1', not {xsd_version!r}")
+        purpose = validate_purpose(_source_purpose)
         _reject_parser_override(resource_policy, xml_policy, xml_limits)
+        if overlay is not None and classify_resource(overlay).kind == "remote":
+            raise ResourcePolicyError(
+                f"the overlay '{overlay}' is remote; Python overlay modules are "
+                "never retrieved remotely"
+            )
         original_source = source
         source_data = None
         if resource_policy is not None:
             try:
-                source_data = read_resource(source, resource_policy, purpose=_source_purpose)
+                source_data = read_resource(source, resource_policy, purpose=purpose)
             except OSError as exc:
                 raise PyXSDError(f"the schema file could not be opened: {exc}") from exc
             source = source_data.source_id
         elif isinstance(source, (str, os.PathLike)):
-            require_local_reference(os.fspath(source), purpose="schema")
+            require_local_reference(os.fspath(source), purpose=purpose)
         main_source = resource_base(source) if isinstance(source, (str, os.PathLike)) else None
-        # A relative namespace mapping or hint resolves against the main
-        # schema document, exactly as it always has; an anonymous stream
-        # keeps the working directory as its base (a policy compile of a
-        # stream refuses relative dependencies in
-        # ``collect_additional_schemas`` instead).
-        overlay_dir = (
-            Path(main_source).parent
-            if main_source is not None and classify_resource(main_source).kind == "local"
-            else Path.cwd()
-        )
+        # A remote schema never loads a local Python overlay: that would be a
+        # remote-to-local pivot. The fallback directory (for an overlay named
+        # as a module) is derived only from a local source; a remote or
+        # memory source has no local directory to borrow.
+        overlay_dir: Path | None = None
+        if overlay is not None:
+            if main_source is not None and classify_resource(main_source).kind == "remote":
+                raise ResourcePolicyError(
+                    f"the remote schema '{main_source}' cannot load the local overlay "
+                    f"'{overlay}'; Python overlays are never loaded for remote schemas"
+                )
+            if main_source is None:
+                overlay_dir = Path.cwd()
+            elif classify_resource(main_source).kind == "local":
+                overlay_dir = Path(main_source).parent
         ctx = CompositionContext(
             mode=mode,
             processor_version=decimal.Decimal(xsd_version),
@@ -627,7 +641,7 @@ def parse(
     # A schema the caller named is an application input; a schema selected
     # from the instance's own location hint is instance-driven and reads
     # under a separate purpose so a policy can authorize it differently.
-    source_purpose = "schema"
+    source_purpose: ResourcePurpose = "schema"
     if xsd is None:
         _namespace, hint = resolve_schema_hint(tree, base_dir)
         if hint is None:

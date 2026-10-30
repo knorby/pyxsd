@@ -20,6 +20,7 @@ from xml.etree import ElementTree as ET
 from pyxsd import __version__
 from pyxsd.binding import ParseModes
 from pyxsd.exceptions import PyXSDError
+from pyxsd.resource_policy import ResourcePurpose
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +372,7 @@ def _build_document(
     base_dir = Path(xml_source).resolve().parent if isinstance(xml_source, str) else Path.cwd()
     _namespace, hint = resolve_schema_hint(tree, base_dir, report=hint_report)
     pairs = absolute_schema_location_pairs(tree, base_dir)
+    source_purpose: ResourcePurpose = "schema"
     if xsd is None:
         if hint is None:
             raise PyXSDError(
@@ -378,6 +380,9 @@ def _build_document(
                 "schemaLocation or noNamespaceSchemaLocation tag"
             )
         xsd = hint
+        # The instance selected the main schema: a policy may authorize that
+        # instance-driven read differently from a caller-named schema.
+        source_purpose = "schema-hint"
     schema = Schema.compile(
         xsd,
         mode=mode,
@@ -387,6 +392,7 @@ def _build_document(
         # Extra instance schemaLocation pairs are advisory composition
         # hints (strict namespace mode only), like the main hint above.
         schema_location_pairs=pairs,
+        _source_purpose=source_purpose,
     )
     document = schema.parse(tree)
     document.report.extend(hint_report)

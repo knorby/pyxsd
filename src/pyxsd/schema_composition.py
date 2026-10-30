@@ -39,6 +39,7 @@ from pyxsd.namespaces import (
 from pyxsd.resource_policy import (
     ResourceData,
     ResourcePolicy,
+    ResourcePurpose,
     record_declarations,
 )
 from pyxsd.resource_refs import (
@@ -161,7 +162,7 @@ class AdditionalSchema:
 
     namespace: str | None
     location: str
-    purpose: str
+    purpose: ResourcePurpose
 
 
 @dataclass
@@ -320,6 +321,10 @@ def splice_additional_schemas(
             missing_severity="warning" if is_hint else "error",
             missing_code="schema-hint" if is_hint else None,
             purpose=addition.purpose,
+            # A caller or instance supplied this reference, so a remote
+            # denial is fatal even though a missing local hint is reported
+            # as an advisory ``schema-hint`` warning.
+            advisory=False,
         )
 
 
@@ -368,7 +373,14 @@ def splice_composed_schemas(
         if local == "include":
             schemaRoot.remove(child)
             splice_included_schema(
-                ctx, child, schemaRoot, base, visited, isImport=False, adoptedNS=adoptedNS
+                ctx,
+                child,
+                schemaRoot,
+                base,
+                visited,
+                isImport=False,
+                adoptedNS=adoptedNS,
+                advisory=True,
             )
         elif local == "redefine":
             schemaRoot.remove(child)
@@ -394,6 +406,7 @@ def splice_composed_schemas(
                 isImport=True,
                 checkImportNamespace=True,
                 adoptedNS=adoptedNS,
+                advisory=True,
             )
     return None
 
@@ -430,7 +443,8 @@ def splice_included_schema(
     checkImportNamespace: bool = False,
     missing_code: str | None = None,
     adoptedNS: str | None = None,
-    purpose: str = "schema",
+    purpose: ResourcePurpose = "schema",
+    advisory: bool = False,
 ) -> None:
     """Splices the named components of one included/imported schema.
 
@@ -455,6 +469,11 @@ def splice_included_schema(
     explicit caller mapping) reads as ``"schema"``, while an
     instance-supplied ``xsi:schemaLocation`` hint reads as
     ``"schema-hint"``.
+
+    ``advisory`` states, independently of the reported severity, that the
+    reference is a hint XSD permits a processor to skip. Only an advisory
+    remote reference is downgraded to a missing-resource report when no
+    policy can authorize it; a caller-supplied reference raises.
 
     ``checkImportNamespace`` is true for an ``xs:import`` written in
     a schema document: the import's ``namespace`` attribute must
@@ -512,6 +531,7 @@ def splice_included_schema(
         missing_severity=missing_severity,
         missing_code=missing_code,
         purpose=purpose,
+        advisory=advisory,
     )
     if includedRoot is None:
         return None
@@ -667,7 +687,8 @@ def parse_included_schema(
     error_code: str = "schema-compose",
     missing_severity: str = "error",
     missing_code: str | None = None,
-    purpose: str = "schema",
+    purpose: ResourcePurpose = "schema",
+    advisory: bool = False,
 ) -> Any | None:
     """Parses one included schema file; returns its root or ``None``.
 
@@ -685,13 +706,12 @@ def parse_included_schema(
     local path. Without a resource policy a remote reference is a policy
     denial for a caller-supplied reference; ``purpose`` is the resource
     purpose a policy read runs under.
+
+    ``advisory`` is the explicit authority decision for that denial: a
+    document-authored or instance hint may be skipped (reported with
+    ``missing_severity``), while a caller-supplied reference must raise.
     """
     reference = resolve_reference(location, base=base)
-    # A reference a schema document itself wrote is advisory: an offline
-    # remote document is reported with the caller's missing-resource
-    # severity. A reference the caller or an instance supplied is a
-    # required input (or an instance-driven hint), so it raises instead.
-    advisory = purpose == "schema" and missing_severity == "warning"
     try:
         if ctx.resource_policy is not None:
             # A memory base cannot locate a relative dependency; an absolute
@@ -705,7 +725,7 @@ def parse_included_schema(
         else:
             # No policy can authorize retrieval: a remote reference is never
             # opened as a filesystem path.
-            local = require_local_reference(reference, purpose="schema", advisory=advisory)
+            local = require_local_reference(reference, purpose=purpose, advisory=advisory)
             with open(local, "rb") as includedFile:
                 root = parse_with_namespaces(
                     includedFile,
@@ -993,7 +1013,9 @@ def splice_redefine(
             code="schema-compose",
         )
         return None
-    includedRoot = parse_included_schema(ctx, location, base, missing_severity="warning")
+    includedRoot = parse_included_schema(
+        ctx, location, base, missing_severity="warning", advisory=True
+    )
     if includedRoot is None:
         # A redefine that actually redefines a component needs its
         # base document: without it the redefined component cannot be
@@ -1155,7 +1177,9 @@ def splice_override(
             code="schema-compose",
         )
         return None
-    includedRoot = parse_included_schema(ctx, location, base, missing_severity="warning")
+    includedRoot = parse_included_schema(
+        ctx, location, base, missing_severity="warning", advisory=True
+    )
     if includedRoot is None:
         # An override with content needs its base document: without it
         # the target set cannot be established. An override carrying

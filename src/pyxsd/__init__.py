@@ -8,10 +8,18 @@ __all__ = [
     "BindingPolicy",
     "Document",
     "Extensions",
+    "HttpClientTransport",
     "NamespaceError",
     "ParseModes",
     "PyXSDError",
     "PyXSDWarning",
+    "RemoteLimits",
+    "RemoteResourcePolicy",
+    "RemoteResponse",
+    "RemoteTransport",
+    "RemoteTransportError",
+    "ResourcePolicy",
+    "ResourcePolicyError",
     "Schema",
     "ValidationError",
     "XMLNode",
@@ -35,6 +43,15 @@ if TYPE_CHECKING:
     )
     from pyxsd.extensions import Extensions
     from pyxsd.nodes import XMLNode
+    from pyxsd.remote import (
+        HttpClientTransport,
+        RemoteLimits,
+        RemoteResourcePolicy,
+        RemoteResponse,
+        RemoteTransport,
+        RemoteTransportError,
+    )
+    from pyxsd.resource_policy import ResourcePolicy, ResourcePolicyError
     from pyxsd.schema import Schema, compile, parse
     from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
@@ -64,6 +81,21 @@ def __getattr__(name: str):
         from pyxsd.extensions import Extensions
 
         return Extensions
+    if name in (
+        "HttpClientTransport",
+        "RemoteLimits",
+        "RemoteResourcePolicy",
+        "RemoteResponse",
+        "RemoteTransport",
+        "RemoteTransportError",
+    ):
+        from pyxsd import remote
+
+        return getattr(remote, name)
+    if name in ("ResourcePolicy", "ResourcePolicyError"):
+        from pyxsd import resource_policy
+
+        return getattr(resource_policy, name)
     if name == "Schema":
         from pyxsd.schema import Schema
 
