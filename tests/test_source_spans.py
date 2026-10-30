@@ -9,7 +9,6 @@ and never retrieve an external resource.
 
 from __future__ import annotations
 
-import contextlib
 import io
 import socket
 from xml.etree import ElementTree as ET
@@ -21,7 +20,7 @@ from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import ParseProvenance, PathStep
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.resource_policy import ResourcePolicyError
-from pyxsd.source_spans import SourceIndex, SourceSpan
+from pyxsd.source_spans import SourceIndex, SourceSpan, _closing_tag_end
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 XML_DECL = b'<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -224,12 +223,28 @@ def test_utf16_trailing_whitespace_does_not_enter_any_span(text):
     assert index.extract(at(("r", 1))) == tag.encode("utf-16-le")
 
 
-def test_utf16_name_with_marker_bytes_still_finds_the_closing_angle_bracket():
+def test_utf16_name_containing_a_marker_byte_still_finds_the_closing_angle_bracket():
     name = "\u4e3e\u4e00"
     text = f"<{name}>x</{name}> "
     data = utf16(text, endian="le", bom=True)
     index = SourceIndex("utf16-name.xml", data)
     assert index.extract(at((name, 1))) == f"<{name}>x</{name}>".encode("utf-16-le")
+
+
+def test_utf16_closing_angle_scan_ignores_unaligned_marker_bytes():
+    # A real name cannot currently place b">\x00" at an odd offset (Expat
+    # rejects U+3E00..U+3EFF name characters), so the alignment invariant is
+    # tested on the closing-tag scanner itself. The byte pair at offset 5 is
+    # the unaligned hazard; the aligned terminator is at offset 8.
+    content = b"<\x00/\x00" + b"\x00\x3e" + b"\x00\x41" + b">\x00"
+    assert content[5:7] == b">\x00"
+    assert content[8:10] == b">\x00"
+    assert _closing_tag_end(content, 0, 2, b">\x00") == 10
+
+
+def test_closing_angle_scan_rejects_a_missing_terminator():
+    with pytest.raises(PyXSDError, match="terminator"):
+        _closing_tag_end(b"<\x00/\x00", 0, 2, b">\x00")
 
 
 @pytest.mark.parametrize(
@@ -280,6 +295,14 @@ def test_closing_tags_allow_whitespace_before_the_angle_bracket():
 def test_cdata_and_comment_after_a_self_closing_sibling():
     data = b"<r><x/><![CDATA[<y>]]><!-- z --><y/></r>"
     index = SourceIndex("mixed.xml", data)
+    assert index.extract(at(("r", 1), ("x", 1))) == b"<x/>"
+    assert index.extract(at(("r", 1), ("y", 1))) == b"<y/>"
+    assert index.extract(at(("r", 1))) == data
+
+
+def test_processing_instruction_after_a_self_closing_sibling():
+    data = b"<r><x/><?work go?><y/></r>"
+    index = SourceIndex("pi.xml", data)
     assert index.extract(at(("r", 1), ("x", 1))) == b"<x/>"
     assert index.extract(at(("r", 1), ("y", 1))) == b"<y/>"
     assert index.extract(at(("r", 1))) == data
@@ -414,11 +437,15 @@ def test_index_never_reads_a_file_or_opens_a_socket(monkeypatch, data, policy):
     def deny(*args, **kwargs):
         raise AssertionError("the index tried to reach an external resource")
 
+    expected = "accepted" if policy is None else "denied"
     with monkeypatch.context() as patch:
         patch.setattr("builtins.open", deny)
         patch.setattr(socket, "socket", deny)
-        with contextlib.suppress(PyXSDError):
-            SourceIndex("external.xml", data, policy=policy)
+        status, detail = index_outcome(data, policy)
+    assert status == expected
+    if expected == "denied":
+        assert isinstance(detail, str)
+        assert "forbidden" in detail
 
 
 def test_default_index_installs_no_external_entity_fetcher(monkeypatch):

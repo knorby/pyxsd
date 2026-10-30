@@ -34,11 +34,13 @@ class SourceSpan:
 
 
 class SourceIndex:
-    """Lazily queried map of element paths to exact source byte spans.
+    """Eagerly parsed index of element paths to exact source byte spans.
 
-    ``source`` names the input in diagnostics. ``content`` is the original
-    encoding; spans index its bytes, so a UTF-16 or BOM-prefixed document is
-    sliced in that encoding rather than re-encoded. ``policy`` defaults to
+    The constructor parses and validates the whole input once; ``span`` and
+    ``extract`` are cheap dictionary lookups. ``source`` names the input in
+    diagnostics. ``content`` is the original encoding; spans index its bytes,
+    so a UTF-16 or BOM-prefixed document is sliced in that encoding rather
+    than re-encoded. ``policy`` defaults to
     :meth:`~pyxsd.xml_policy.XmlParserPolicy.default` (the same declaration
     behavior as core parsing); ``limits`` bounds the supplied bytes, element
     depth (the root is depth one), and start-tag count.
@@ -195,15 +197,39 @@ class _IndexState:
         closing tag and just past ``/>`` for a self-closing tag. A following
         construct at the same index therefore proves self-closing (which
         also disambiguates ``<x/></r>``, where the next bytes look like a
-        close tag). Skipped trailing whitespace after the root is the only
-        content that appears at a later index without its own event, so the
-        closing-tag preposition remains the deciding test there.
+        close tag). Trailing whitespace after the root and skipped entity
+        references are the only content that can appear at a later index
+        without a registered event, so the closing-tag preposition remains
+        the deciding test there.
         """
         if next_index <= anchor:
             return anchor
         if not self._content.startswith(self._close_marker, anchor):
             return anchor
-        return self._content.index(self._terminator, anchor) + self._unit
+        return _closing_tag_end(self._content, anchor, self._unit, self._terminator)
+
+
+def _closing_tag_end(content: bytes, anchor: int, unit: int, terminator: bytes) -> int:
+    """Return the byte offset just past the ``>`` ending the tag at ``anchor``.
+
+    ``anchor`` addresses the ``<`` of ``</``. Every code unit starts at
+    ``anchor + k * unit`` because Expat's byte indices are code-unit aligned
+    for the detected encoding, so only those offsets may be compared: in
+    UTF-16 a ``>`` byte pair can straddle two name characters at an odd
+    offset and must be ignored. Starting after the two-character ``</``
+    keeps the search inside the closing tag.
+
+    A successfully parsed closing tag always has a terminator. Reaching the
+    end of the input would violate that invariant, so it raises instead of
+    returning a truncated span (``bytes.index`` cannot be used here because
+    it would accept the unaligned pair).
+    """
+    position = anchor + 2 * unit
+    while position < len(content):
+        if content.startswith(terminator, position):
+            return position + unit
+        position += unit
+    raise PyXSDError("the XML closing tag has no terminator at a code-unit boundary")
 
 
 def _expanded_name(raw: str) -> str:
