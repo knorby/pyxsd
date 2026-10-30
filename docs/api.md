@@ -52,7 +52,7 @@ method:
 .. autofunction:: pyxsd.stubs.emit_stub
 ```
 
-`Schema.stub(*, compact=False) -> str` reads the **live** schema at call
+`Schema.stub(*, compact=False, component_ids=None, depth=None) -> str` reads the **live** schema at call
 time — nothing is cached at compile time — so a stub regenerated after an
 overlay is loaded shows the overlay's members.
 
@@ -84,6 +84,48 @@ short spellings such as `str`, `int`, and `date` back to the pyxsd
 classes they stand for), one line per class and member, facet-only simple
 types folded onto the members that use them, and a trailing `# roots:`
 comment line. It is a description, not Python source.
+
+### Native schema exploration and filtered views
+
+`pyxsd.introspection` describes compiled declarations without Pydantic or Arrow:
+
+```python
+from pyxsd.introspection import describe_component, find_components, related_components
+
+matches = find_components(schema, text="order", kind="type")
+declaration = describe_component(schema, matches[0].id)
+dependencies = related_components(schema, declaration.id, direction="uses", depth=2)
+print(schema.stub(compact=True, component_ids=(declaration.id,), depth=1))
+```
+
+`describe_schema(schema)` returns the complete inventory and global root IDs.
+Descriptions are frozen records containing declaration origins, Python accessors,
+effective facets, inherited assertions, derivation, substitution and identity
+constraints, and compiled particle trees. They are not adapter projections and
+can describe recursive, mixed or wildcard content that those adapters reject.
+Pattern facets retain their AND-of-OR restriction groups; their representation
+identifies authored XSD patterns versus compiled Python regexes. Namespace filters
+use expanded-name namespaces; `namespace=""` selects unqualified declarations.
+
+Member occurrence bounds are conservative summaries shared with the stub renderer;
+their `occurrence_precision` is `conservative`. Exact choice/group relationships
+and finite repetition bounds live in `particle`. Attribute-use bounds are exact,
+including prohibited uses. Never treat independent member summaries as a substitute
+for the particle tree or full document validation.
+
+Global component IDs combine kind and expanded name; local and anonymous IDs use
+source/declaration addresses, not Python object identities. Invalid schemas with
+duplicate global declarations retain every declaration: the first source occurrence
+keeps the ordinary ID and later occurrences receive `#2`, `#3`, and so on.
+Origins refer to the original schema before composition rewrites; line numbers are not fabricated.
+Descriptions are cached snapshots: recompile after changing schemas or overlays.
+They do not mutate `schema.classes`, and unknown IDs raise `KeyError`.
+
+Filtered stubs select this inventory, include dependency declarations up to `depth`,
+and omit unrelated root aliases. Omit `depth` to follow all reachable declarations;
+zero selects only the requested declarations' bindings. An empty tuple selects
+nothing. Explicitly selected simple types remain visible in compact mode instead
+of being folded away. Unfiltered stub rendering retains its existing behavior.
 
 ### Truthfulness contract
 

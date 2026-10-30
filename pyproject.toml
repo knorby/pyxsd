@@ -34,6 +34,7 @@ classifiers = [
 [project.optional-dependencies]
 pydantic = ["pydantic>=2.12.5,<3"]
 arrow = ["pyarrow>=22"]
+mcp = ["mcp>=2.3,<3", "pydantic>=2.12.5,<3", "defusedxml>=0.7.1,<1", "anyio>=4.10,<5"]
 
 [project.urls]
 Homepage = "https://github.com/knorby/pyxsd"
@@ -44,6 +45,7 @@ Changelog = "https://github.com/knorby/pyxsd/blob/develop/CHANGELOG.md"
 
 [project.scripts]
 pyxsd = "pyxsd.__main__:main"
+pyxsd-mcp = "pyxsd.mcp.__main__:main"
 
 [tool.hatch.version]
 # Single source of truth for the package version (MAJOR.MINOR.MICRO);
@@ -61,6 +63,7 @@ dev = [
     # Independent XSD oracle. The CI workflow runs it as a required
     # job (PYXSD_RUN_ORACLE=1); locally it is env-gated.
     "xmlschema>=4",
+    "types-defusedxml>=0.7.0.20260504",
 ]
 docs = [
     "sphinx>=8.2",
@@ -157,6 +160,7 @@ module = [
     "pyxsd.nodes",
     "pyxsd.xsd_data_types",
     "pyxsd.identity",
+    "pyxsd.mcp.*",
     "pyxsd.writers.*",
     "pyxsd.transforms.*",
 ]
@@ -166,16 +170,16 @@ disallow_incomplete_defs = true
 [[tool.mypy.overrides]]
 # PyArrow does not ship typing metadata; Pydantic is absent in base-only
 # environments. This affects third-party imports, not our own module checks.
-module = ["pyarrow", "pyarrow.*", "pydantic"]
+module = ["pyarrow", "pyarrow.*", "pydantic", "anyio", "anyio.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["pyxsd"]
 branch = true
 
-# Base CI measures the core and dependency-free projection. Adapter CI uses
-# tests/integration.coveragerc to include both optional backends separately.
-omit = ["*/pyxsd/integrations/pydantic.py", "*/pyxsd/integrations/arrow.py", "*/pyxsd/integrations/_dataset.py"]
+# Base CI measures the core and dependency-free projection. Dedicated adapter
+# and MCP jobs include optional modules through their own coverage configurations.
+omit = ["*/pyxsd/integrations/pydantic.py", "*/pyxsd/integrations/arrow.py", "*/pyxsd/integrations/_dataset.py", "*/pyxsd/mcp/*"]
 
 [tool.coverage.report]
 show_missing = true

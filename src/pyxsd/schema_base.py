@@ -20,7 +20,7 @@ from pyxsd.derivation import (
 )
 from pyxsd.extensions import run_validation_hooks
 from pyxsd.namespaces import XML_NS, NamespaceError, local_name, namespace_of
-from pyxsd.schema_context import current_context
+from pyxsd.schema_context import current_context, source_location, source_scoped
 from pyxsd.validation import IssueSeverity, report_or_log
 from pyxsd.wildcards import NAMESPACE_ANY, WildcardSpec
 from pyxsd.xsd_data_types import (
@@ -47,6 +47,18 @@ def _requires_unsatisfiable_content(model: Any) -> bool:
     if getattr(model, "kind", None) == "choice" and model.min_occurs > 0 and not model.children:
         return True
     return any(_requires_unsatisfiable_content(child) for child in getattr(model, "children", ()))
+
+
+def _source_location(node, *, attribute=None):
+    from dataclasses import replace
+
+    context = current_context()
+    if context is not None and context.provenance is not None:
+        location = context.provenance.source_location(node)
+        if location is not None and attribute is not None:
+            return replace(location, attribute=attribute)
+        return location
+    return None
 
 
 def _mode_for(cls) -> BindingPolicy:
@@ -330,7 +342,7 @@ class SchemaBase:
     # ------------------------------------------------------------------
 
     @classmethod
-    def _report_issue(cls, severity, message, *, code, element=None):
+    def _report_issue(cls, severity, message, *, code, element=None, **diagnostic):
         """Record a validation issue on the owning parser's report.
 
         The report is resolved as the active context's binding report
@@ -348,7 +360,11 @@ class SchemaBase:
             schema = getattr(cls, "schema", None)
             if schema is not None:
                 report = getattr(schema, "report", None)
-        report_or_log(report, severity, code=code, message=message, element=element)
+        if code == "occurrence-min":
+            diagnostic.setdefault("location_precision", "container")
+        elif diagnostic.get("location") is not None:
+            diagnostic.setdefault("location_precision", "exact")
+        report_or_log(report, severity, code=code, message=message, element=element, **diagnostic)
 
     @classmethod
     def _parserHost(cls):
@@ -364,14 +380,14 @@ class SchemaBase:
         return getattr(getattr(cls, "schema", None), "_host", None)
 
     @classmethod
-    def _report_error(cls, message, *, code, element=None):
+    def _report_error(cls, message, *, code, element=None, **diagnostic):
         """Record an error-severity validation issue."""
-        cls._report_issue(IssueSeverity.ERROR, message, code=code, element=element)
+        cls._report_issue(IssueSeverity.ERROR, message, code=code, element=element, **diagnostic)
 
     @classmethod
-    def _report_warning(cls, message, *, code, element=None):
+    def _report_warning(cls, message, *, code, element=None, **diagnostic):
         """Record a warning-severity validation issue."""
-        cls._report_issue(IssueSeverity.WARNING, message, code=code, element=element)
+        cls._report_issue(IssueSeverity.WARNING, message, code=code, element=element, **diagnostic)
 
     @classmethod
     def _reportStrayCharacters(cls, elementTag, *, empty=False):
@@ -573,6 +589,7 @@ class SchemaBase:
         cls._bindWildcardChild(instance, subElement, spec)
 
     @classmethod
+    @source_scoped(2, "subElement")
     def _bindWildcardChild(cls, instance, subElement, spec, memberHeadMap=None) -> None:
         """Binds one child accepted by an element wildcard.
 
@@ -752,6 +769,7 @@ class SchemaBase:
     # ------------------------------------------------------------------
 
     @classmethod
+    @source_scoped(1, "elementTag", bind_result=True)
     def makeInstanceFromTag(cls, elementTag, forcedText=None):
         """Takes in a schema type class and its corresponding xml element.
 
@@ -862,6 +880,7 @@ class SchemaBase:
                 f"is not valid for its type: {e}",
                 code=getattr(e, "code", "value"),
                 element=cls.__name__,
+                constraint=getattr(e, "constraint", None),
             )
             if _mode_for(cls).invalid_value == "raw":
                 raw = cls._rawPrimitiveValue(elementTag, elementTag.text)
@@ -967,7 +986,8 @@ class SchemaBase:
                 # subclass element sharing the name must not capture
                 # the value (and a plain setattr would find it first
                 # in the MRO).
-                descriptor.__set__(self, elementTag.attrib[instanceKey])
+                with source_location(elementTag, attribute=instanceKey):
+                    descriptor.__set__(self, elementTag.attrib[instanceKey])
                 # An xsi-namespace declaration was already consumed by
                 # the pass above under its display spelling; bookkeep
                 # it under that key so the attribute is not counted
@@ -1206,6 +1226,7 @@ class SchemaBase:
                             "position in the content model",
                             code="order",
                             element=cls.__name__,
+                            location=_source_location(subElement),
                         )
                     elif exceeds_wildcard(subElementName):
                         cls._report_error(
@@ -1213,6 +1234,7 @@ class SchemaBase:
                             "limits of the wildcard that allows it",
                             code="order",
                             element=cls.__name__,
+                            location=_source_location(subElement),
                         )
                     else:
                         cls._report_error(
@@ -1220,6 +1242,7 @@ class SchemaBase:
                             "content model and no wildcard allows it",
                             code="unexpected-element",
                             element=cls.__name__,
+                            location=_source_location(subElement),
                         )
 
             # A required particle is genuinely unmet when the best match
@@ -1236,6 +1259,7 @@ class SchemaBase:
                         "which is missing from the xml",
                         code="occurrence-min",
                         element=cls.__name__,
+                        details={"expected": missing},
                     )
                 elif stalled and _requires_unsatisfiable_content(model):
                     cls._report_error(
@@ -1426,6 +1450,7 @@ class SchemaBase:
         return selected
 
     @classmethod
+    @source_scoped(2, "subElement")
     def _classForChild(cls, descriptor, subElement):
         """Resolves the class used to build one matched child element.
 
@@ -1471,6 +1496,7 @@ class SchemaBase:
         return subElCls
 
     @classmethod
+    @source_scoped(2, "subElement")
     def _addChildInstance(
         cls,
         instance,
@@ -1732,6 +1758,7 @@ class SchemaBase:
                 f"for its type: {e}",
                 code=getattr(e, "code", code),
                 element=cls.__name__,
+                constraint=getattr(e, "constraint", None),
             )
             return None
         instance._attribs_ = {
@@ -1873,6 +1900,7 @@ class SchemaBase:
         return None
 
     @classmethod
+    @source_scoped(2, "subElement")
     def _addSubstitutionMember(cls, instance, subElement, elemDescriptors):
         """Parses a child as a substitution-group member, if it is one.
 
@@ -2089,6 +2117,9 @@ class SchemaBase:
         - ``subInstance`` - the bound instance for the child element.
         - ``subElement`` - the xml element the instance was built from.
         """
+        context = current_context()
+        if context is not None and context.provenance is not None:
+            context.provenance.bind(subElement, subInstance)
         if subElement.tail is not None:
             subInstance._tail_ = subElement.tail
 
@@ -2338,6 +2369,7 @@ class SchemaBase:
                 f"is not valid for its type: {e}",
                 code=getattr(e, "code", "value"),
                 element=cls.__name__,
+                constraint=getattr(e, "constraint", None),
             )
             if _mode_for(cls).invalid_value == "raw":
                 return cls._rawPrimitiveValue(subElement, dataTypeText)
@@ -2377,6 +2409,7 @@ class SchemaBase:
         return instance
 
     @classmethod
+    @source_scoped(1, "elementTag", bind_result=True)
     def makeGenericInstance(cls, elementTag, skipped=False):
         """Builds a pass-through instance for wildcard (``xs:any``)
         content.
@@ -2580,6 +2613,8 @@ class SchemaBase:
                     f"attribute '{descriptorAttrName}' is required but was not found",
                     code="missing-attribute",
                     element=elementName,
+                    location=_source_location(elementTag, attribute=matchName),
+                    location_precision="container",
                 )
             if found and attrUse == "prohibited" and not self._attributeWildcardAdmits(matchName):
                 self._report_error(

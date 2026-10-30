@@ -89,8 +89,8 @@ class CountElements(Transform):
         return self.root  # hand the tree to the writer
 ```
 
-Rules recap (full guide in {doc}`transforms/writing`): one class per file
-named after the module; `__init__` takes the root; `__call__` does the
+Rules recap (full guide in {doc}`transforms/writing`): give the entry-point
+class a matching module; `__init__` takes the root; `__call__` does the
 work; returning the root lets the writer serialize it. The module is
 resolved from the installed package first, then the current directory,
 then the instance's directory — which is why the CLI picks up the local

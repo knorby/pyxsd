@@ -9,6 +9,33 @@ For a narrative explanation of what changed between 0.1 and 1.0 — including a
 complete breaking-changes table and step-by-step upgrade instructions — see the
 [migration guide](https://pyxsd.knorby.com/migration-1.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Structured, bounded validation reports with JSON-safe issue details, source
+  occurrence locations, and `Document.locate()` lookups.
+- Resource-policy hooks for schema and instance reads, including virtual
+  source layouts and policy-enforced parser admission.
+- Native schema introspection with dependency queries and filtered stub
+  rendering.
+- Optional `pyxsd[mcp]` integration with a local stdio MCP server: session-only
+  input sets, schema exploration, XML diagnostics, bounded XPath queries, exact
+  issue explanations, validation reports, schema comparison, trusted-local
+  transform previews, Arrow record export, resources and prompts. Inputs are
+  verified in private temporary captures; outputs live in one small local
+  artifact store that survives restart and is deleted only on request. Includes
+  clean worker processes, bounded JSON IPC, content-keyed schema caches, bounded
+  cursors and bounded worker protocols. The server has no HTTP/OAuth transport,
+  durable input revisions, quota ledger or publication/commit workflow.
+  Execution remains disabled by default; trusted-local previews require
+  explicit stdio opt-in.
+
+### Fixed
+
+- Schema binding indexes are released after each parse, preventing per-parse
+  state from accumulating.
+
 ## [1.2.1] - 2026-10-20
 
 ### Added
@@ -265,9 +292,9 @@ official schemas.
   attribute holds every issue that failed the check.
 - Transforms are callables in the library: `document.transform(fn)`
   applies any callable taking the tree root; one returning a tree root
-  comes back as a new `Document` against the same schema, while an
-  in-place transform returning `None` leaves the document unchanged. A
-  returned document shares the pre-transform report;
+  comes back as a new `Document` against the same schema; any other return
+  value, including `None`, is returned unchanged. A returned document shares
+  the pre-transform report;
   `document.revalidate()` re-parses the serialized tree for a report
   that reflects its current shape. `document.walk()` yields every node
   pre-order. On the command line the `-t 'Name(args)'` /

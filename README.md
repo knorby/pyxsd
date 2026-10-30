@@ -30,17 +30,59 @@ Schema (XSD), reports non-fatal validation issues, runs user-defined
 - **XSD 1.1 processor** — with an optional XSD 1.0 mode
   (`Schema.compile(xsd, xsd_version="1.0")` / `--xsd-version 1.0`) that
   applies the 1.0 vocabulary gate and semantic differences
-- **Lax validation** — bad documents still build a tree; every issue is a
-  code-tagged entry in a `ValidationReport` (`--strict` and
-  `require_valid()` make it a CI failure)
+- **Lax validation** — recoverable document errors still build a tree; every
+  issue is a code-tagged entry in a `ValidationReport` (`--strict` and
+  `require_valid()` make errors fatal)
 - **Query and export** — `Document.xpath` / `find` / `findall` return the
   original bound nodes, and `Document.to_dict` / `to_json` export plain
   Python data (also as the `ToDict` transform)
+- **Schema tooling** — inspect declarations and dependencies with
+  `pyxsd.introspection`, filter generated type stubs, and optionally scope
+  schema and instance reads with a `ResourcePolicy`
 - **Transform pipeline** — apply plain callables or `Transform` classes to
   the bound tree (`document.transform(fn)`); chain them on the CLI
   (`PrintData() > PrintData()`)
-- A niche-but-real niche: runtime XML↔Python binding *plus* a transform
-  framework, without pulling in `lxml` or generating static code
+
+## MCP integration
+
+Run pyxsd as a local [Model Context Protocol](https://modelcontextprotocol.io/)
+server and let MCP clients explore schemas, validate XML, and inspect exact
+diagnostic occurrences. The primary launch method is `uvx`:
+
+```bash
+uvx --from 'pyxsd[mcp]' pyxsd-mcp
+```
+
+Alternatively, install the optional dependencies and launch directly:
+
+```bash
+pip install 'pyxsd[mcp]'
+pyxsd-mcp
+```
+
+The local stdio server provides:
+
+- **Schema exploration** — overviews, compact/full stubs, constraint-rich
+  declarations, and bounded `uses` / `used_by` graph queries
+- **XML diagnostics** — structured counts, exact repeated-node locations,
+  paged issue reports, source/schema fingerprints, and curated explanations
+- **Bounded XPath queries** — scalar values, node summaries, and subtrees with
+  external-resource functions disabled
+- **Local session inputs** — replaceable schema/XML upload sets, private
+  verified operation captures, and no arbitrary client-selected mounts
+- **Persistent outputs** — digest-verified local artifacts that survive restart
+  and are deleted only when explicitly requested
+- **Clean worker processes** — bounded JSON IPC, content-keyed schema caches,
+  deadlines, queue limits, cancellation, recycling, and no pickle transport
+- **MCP-native results** — strict input/output schemas, `structuredContent`
+  plus JSON text, real error flags, resources, prompts, validation, comparison,
+  transform previews, record exports, and oversized-result artifacts rather than
+  truncated responses
+
+Start with the [MCP guide](https://pyxsd.knorby.com/mcp.html) for a complete
+Python client example, tool catalog, session/output lifecycle, and deployment
+boundaries. Execution is disabled in this build. The server speaks stdio only;
+there is no HTTP/OAuth mode, and remote user-code execution is not included.
 
 ## Uses
 
@@ -248,7 +290,8 @@ are not directly comparable. Residual gaps are tabulated on the
 pyxsd was written at Oak Ridge National Laboratory in 2006 (see
 [history](https://pyxsd.knorby.com/history/origins.html)),
 abandoned around 2008, and revived as a Python 3 project in 2026.
-Version 1.0.0 is the first release of the modernized library.
+Version 1.0.0 was the first release of the modernized library. See
+[CHANGELOG.md](CHANGELOG.md) for subsequent releases.
 
 ## Documentation
 
@@ -272,7 +315,7 @@ Full documentation is published at **<https://pyxsd.knorby.com/>**:
 - [Contributing](https://pyxsd.knorby.com/contributing.html)
 
 The Sphinx sources live in `docs/`; build them locally with
-`uv run sphinx-build -b html docs docs/_build/html`.
+`uv run --group docs sphinx-build -W --keep-going -b html docs docs/_build/html`.
 
 ## License
 

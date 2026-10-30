@@ -1,0 +1,17 @@
+[run]
+source = pyxsd.mcp
+branch = True
+patch = subprocess
+parallel = True
+sigterm = True
+relative_files = True
+
+[paths]
+mcp =
+    src/pyxsd/mcp
+    */site-packages/pyxsd/mcp
+
+[report]
+show_missing = True
+precision = 1
+fail_under = 98

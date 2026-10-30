@@ -11,6 +11,22 @@ from pyxsd.validation import (
 )
 
 
+def test_occurrence_min_precision_container(tmp_path):
+    from pyxsd import Schema
+
+    schema_file = tmp_path / "required.xsd"
+    schema_file.write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="root"><xs:complexType><xs:sequence><xs:element name="child" type="xs:string"/></xs:sequence></xs:complexType></xs:element></xs:schema>'
+    )
+    document_file = tmp_path / "empty.xml"
+    document_file.write_text("<root/>")
+    document = Schema.compile(schema_file).parse(document_file)
+    issue = next(issue for issue in document.report.issues if issue.code == "occurrence-min")
+    assert issue.location_precision == "container"
+    assert issue.location is not None
+    assert issue.location.path[-1].name == "root"
+
+
 def _iter_er(er, found=None):
     """Every element representative in the tree rooted at *er*."""
     if found is None:

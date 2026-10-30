@@ -1,0 +1,124 @@
+name: Optional MCP integration
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        dependencies: [minimum, current]
+    env:
+      PYTHON_VERSION: ${{ matrix.python }}
+      DEPENDENCIES: ${{ matrix.dependencies }}
+      LC_ALL: C
+      PYTHONUTF8: "0"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build wheel and create clean environment
+        run: |
+          uv build --wheel
+          uv venv --python "$PYTHON_VERSION"
+      - name: Install optional runtime at minimum or current versions
+        run: |
+          WHEEL=$(find dist -name '*.whl' -print -quit)
+          if [ "$DEPENDENCIES" = minimum ]; then
+            PYDANTIC=2.12.5
+            ANYIO=4.10.0
+            if [ "$PYTHON_VERSION" = "3.15" ]; then
+              PYDANTIC=2.14.1
+            fi
+            uv pip install "$WHEEL[mcp]" 'mcp==2.3.0' "pydantic==$PYDANTIC" 'defusedxml==0.7.1' "anyio==$ANYIO" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18' 'types-defusedxml>=0.7.0.20260504'
+          else
+            uv pip install "$WHEEL[mcp]" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18' 'types-defusedxml>=0.7.0.20260504'
+          fi
+      - name: Type-check MCP modules with the real optional dependencies
+        run: .venv/bin/python -m mypy src/pyxsd/mcp
+      - name: Test installed MCP runtime (MCP-only, no Arrow)
+        run: >-
+          .venv/bin/python -m pytest -q tests/mcp tests/test_mcp_packaging.py
+          tests/test_integration_imports.py
+
+  mcp-arrow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    env:
+      PYTHON_VERSION: ${{ matrix.python }}
+      LC_ALL: C
+      PYTHONUTF8: "0"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build wheel and create clean environment
+        run: |
+          uv build --wheel
+          uv venv --python "$PYTHON_VERSION"
+          WHEEL=$(find dist -name '*.whl' -print -quit)
+          uv pip install "$WHEEL[mcp,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
+      - name: Test installed MCP and Arrow integration with branch coverage
+        run: >-
+          .venv/bin/python -m pytest -q tests/mcp tests/test_mcp_packaging.py
+          --cov=pyxsd.mcp --cov-config=tests/mcp.coveragerc
+          --cov-branch --cov-report=xml --cov-report=term-missing
+      - name: Verify installed-wheel coverage maps to repository files
+        run: |
+          .venv/bin/python - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          files = [node.attrib["filename"] for node in ET.parse("coverage.xml").iter("class")]
+          assert files and all(name.startswith("src/pyxsd/mcp/") and Path(name).is_file() for name in files), files
+          PY
+      - name: Upload MCP coverage
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: mcp
+
+  macos-stdio:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      LC_ALL: C
+      PYTHONUTF8: "0"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.11"
+      - name: Build wheel and create clean environment
+        run: |
+          uv build --wheel
+          uv venv --python 3.11
+          WHEEL=$(find dist -name '*.whl' -print -quit)
+          uv pip install "$WHEEL[mcp]" 'pytest>=8.4'
+      - name: Exercise documented stdio launch and both protocol versions
+        run: |
+          .venv/bin/python -m pytest -q \
+            tests/mcp/test_installed_package.py \
+            tests/mcp/test_protocol_versions.py

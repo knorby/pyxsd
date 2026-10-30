@@ -37,6 +37,7 @@ from elementpath import translate_pattern
 from elementpath.exceptions import ElementPathError
 from elementpath.regex import RegexError
 
+from pyxsd.locations import ConstraintInfo
 from pyxsd.regex_charset import reject_malformed_escapes, rewrite_xsd_shorthands
 from pyxsd.xsd_data_types import (
     NOTATION,
@@ -202,6 +203,14 @@ def _parse_enumeration_pair(base: Callable[[str], Any], text: str) -> tuple[Any,
     return xsd_comparable_key(value), value
 
 
+class FacetViolation(TypeError):
+    """A facet failure with machine-readable evidence and the legacy message."""
+
+    def __init__(self, message: str, constraint: ConstraintInfo) -> None:
+        super().__init__(message)
+        self.constraint = constraint
+
+
 @dataclass(frozen=True)
 class FacetConstraints:
     """The effective facets of one generated simple type.
@@ -278,18 +287,21 @@ class FacetConstraints:
             return
         actual = len(items) if items is not None else _value_length(value)
         if self.length is not None and actual != self.length:
-            raise TypeError(
-                f"facet 'length' violated: {value!r} has {actual} items, expected {self.length}"
+            raise FacetViolation(
+                f"facet 'length' violated: {value!r} has {actual} items, expected {self.length}",
+                ConstraintInfo("length", self.length, actual),
             )
         if self.min_length is not None and actual < self.min_length:
-            raise TypeError(
+            raise FacetViolation(
                 f"facet 'minLength' violated: {value!r} has {actual} items, "
-                f"minimum {self.min_length}"
+                f"minimum {self.min_length}",
+                ConstraintInfo("minLength", self.min_length, actual),
             )
         if self.max_length is not None and actual > self.max_length:
-            raise TypeError(
+            raise FacetViolation(
                 f"facet 'maxLength' violated: {value!r} has {actual} items, "
-                f"maximum {self.max_length}"
+                f"maximum {self.max_length}",
+                ConstraintInfo("maxLength", self.max_length, actual),
             )
 
     def _check_bounds(self, value: Any) -> None:
@@ -303,24 +315,28 @@ class FacetConstraints:
         actual = order_key(value)
         try:
             if self.min_inclusive is not None and actual < self.min_inclusive:
-                raise TypeError(
-                    f"facet 'minInclusive' violated: {value!r} is below {self.min_inclusive!r}"
+                raise FacetViolation(
+                    f"facet 'minInclusive' violated: {value!r} is below {self.min_inclusive!r}",
+                    ConstraintInfo("minInclusive", self.min_inclusive, actual),
                 )
             if self.min_exclusive is not None and actual <= self.min_exclusive:
-                raise TypeError(
-                    f"facet 'minExclusive' violated: {value!r} is not above {self.min_exclusive!r}"
+                raise FacetViolation(
+                    f"facet 'minExclusive' violated: {value!r} is not above {self.min_exclusive!r}",
+                    ConstraintInfo("minExclusive", self.min_exclusive, actual),
                 )
             if self.max_inclusive is not None and actual > self.max_inclusive:
-                raise TypeError(
-                    f"facet 'maxInclusive' violated: {value!r} is above {self.max_inclusive!r}"
+                raise FacetViolation(
+                    f"facet 'maxInclusive' violated: {value!r} is above {self.max_inclusive!r}",
+                    ConstraintInfo("maxInclusive", self.max_inclusive, actual),
                 )
             if self.max_exclusive is not None and actual >= self.max_exclusive:
-                raise TypeError(
-                    f"facet 'maxExclusive' violated: {value!r} is not below {self.max_exclusive!r}"
+                raise FacetViolation(
+                    f"facet 'maxExclusive' violated: {value!r} is not below {self.max_exclusive!r}",
+                    ConstraintInfo("maxExclusive", self.max_exclusive, actual),
                 )
+        except FacetViolation:
+            raise
         except TypeError as exc:
-            if "violated" in str(exc):
-                raise
             raise TypeError(f"facet bound comparison failed for {value!r}: {exc}") from exc
 
     def _check_digits(self, value: Any) -> None:
@@ -328,14 +344,16 @@ class FacetConstraints:
             return
         total, fraction = decimal_digits(value)
         if self.total_digits is not None and total > self.total_digits:
-            raise TypeError(
+            raise FacetViolation(
                 f"facet 'totalDigits' violated: {value!r} has {total} digits, "
-                f"maximum {self.total_digits}"
+                f"maximum {self.total_digits}",
+                ConstraintInfo("totalDigits", self.total_digits, total),
             )
         if self.fraction_digits is not None and fraction > self.fraction_digits:
-            raise TypeError(
+            raise FacetViolation(
                 f"facet 'fractionDigits' violated: {value!r} has {fraction} "
-                f"fraction digits, maximum {self.fraction_digits}"
+                f"fraction digits, maximum {self.fraction_digits}",
+                ConstraintInfo("fractionDigits", self.fraction_digits, fraction),
             )
 
     def _check_patterns(self, value: Any, lexical: str | None) -> None:
@@ -348,16 +366,18 @@ class FacetConstraints:
         subject = lexical if lexical is not None else str(value)
         for level in self.patterns:
             if not any(pattern.match(subject) is not None for pattern in level):
-                raise TypeError(
-                    f"facet 'pattern' violated: {subject!r} does not match the required pattern"
+                raise FacetViolation(
+                    f"facet 'pattern' violated: {subject!r} does not match the required pattern",
+                    ConstraintInfo("pattern", tuple(pattern.pattern for pattern in level), subject),
                 )
 
     def _check_enumerations(self, value: Any) -> None:
         if not self.enumerations:
             return
         if xsd_comparable_key(value) not in self.enumerations:
-            raise TypeError(
-                f"facet 'enumeration' violated: {value!r} is not one of the allowed values"
+            raise FacetViolation(
+                f"facet 'enumeration' violated: {value!r} is not one of the allowed values",
+                ConstraintInfo("enumeration", self.enumeration_values or self.enumerations, value),
             )
 
     def _check_explicit_timezone(self, value: Any, lexical: str | None) -> None:
@@ -373,10 +393,14 @@ class FacetConstraints:
         text = lexical if isinstance(lexical, str) else str(value)
         zoned = _has_timezone(text)
         if self.explicit_timezone == "required" and not zoned:
-            raise TypeError(f"facet 'explicitTimezone' violated: {text!r} has no explicit timezone")
+            raise FacetViolation(
+                f"facet 'explicitTimezone' violated: {text!r} has no explicit timezone",
+                ConstraintInfo("explicitTimezone", "required", text),
+            )
         if self.explicit_timezone == "prohibited" and zoned:
-            raise TypeError(
-                f"facet 'explicitTimezone' violated: {text!r} carries an explicit timezone"
+            raise FacetViolation(
+                f"facet 'explicitTimezone' violated: {text!r} carries an explicit timezone",
+                ConstraintInfo("explicitTimezone", "prohibited", text),
             )
 
 

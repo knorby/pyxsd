@@ -17,11 +17,13 @@ nested parser restores the enclosing context when it finishes.
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, replace
+from functools import wraps
+from typing import Any, ParamSpec, TypeVar
 
+from pyxsd.locations import IssueLocation, ParseProvenance
 from pyxsd.validation import ValidationReport
 
 
@@ -64,6 +66,7 @@ class SchemaContext:
     xpath_default_namespaces: dict[int, str | None] = field(default_factory=dict)
     injected_builtin_ids: set[int] = field(default_factory=set)
     report: ValidationReport | None = None
+    provenance: ParseProvenance | None = None
 
 
 _local = threading.local()
@@ -183,3 +186,61 @@ def context_report(context: SchemaContext, report: ValidationReport) -> Iterator
         yield context
     finally:
         context.report = previous
+
+
+@contextmanager
+def context_provenance(context: SchemaContext, provenance: ParseProvenance) -> Iterator[None]:
+    """Install only this parse's provenance; never leave it on a cached context."""
+    previous = context.provenance
+    context.provenance = provenance
+    try:
+        yield
+    finally:
+        context.provenance = previous
+
+
+@contextmanager
+def source_location(node: Any, *, attribute: str | None = None) -> Iterator[None]:
+    """Scope diagnostics to an exact source node, including dropped primitives."""
+    context = current_context()
+    if context is None or context.provenance is None or context.report is None:
+        yield
+        return
+    location = context.provenance.source_location(node)
+    if location is not None and attribute is not None:
+        location = replace(location, attribute=attribute)
+    with context.report._at(location):
+        yield
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def bound_location(node: Any) -> IssueLocation | None:
+    """Look up a bound node in the active parse, without matching its value."""
+    context = current_context()
+    if context is not None and context.provenance is not None:
+        return context.provenance.bound_location(node)
+    return None
+
+
+def source_scoped(
+    index: int, name: str, *, bind_result: bool = False
+) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
+    """Scope a binder around its source argument, before any conversions occur."""
+
+    def decorate(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+        @wraps(fn)
+        def call(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            node = args[index] if len(args) > index else kwargs[name]
+            with source_location(node):
+                result = fn(*args, **kwargs)
+            context = current_context()
+            if bind_result and context is not None and context.provenance is not None:
+                context.provenance.bind(node, result)
+            return result
+
+        return call
+
+    return decorate

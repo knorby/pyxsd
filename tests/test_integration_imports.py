@@ -24,15 +24,16 @@ def test_base_compile_parse_and_export_do_not_import_optional_backends():
         """from io import StringIO
 import pyxsd
 import pyxsd.integrations
+import pyxsd.mcp
 from pyxsd.integrations.projection import FieldSource
 from pyxsd.integrations._projection import compile_projection, iter_projected_rows
 s = pyxsd.compile(StringIO('<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="r" type="xs:int"/></xs:schema>'))
 assert s.parse(StringIO('<r>7</r>')).to_dict() == {'$': 7}
 plan = compile_projection(s, element='r', path=(), columns={'v': FieldSource()})
 assert list(iter_projected_rows(plan, s.parse(StringIO('<r>7</r>')), selector=None, namespaces=None)) == [{'v': 7}]
-assert 'pydantic' not in sys.modules and 'pyarrow' not in sys.modules
+assert not {'pydantic', 'pyarrow', 'mcp', 'defusedxml'} & sys.modules.keys()
 """,
-        ["pydantic", "pyarrow"],
+        ["pydantic", "pyarrow", "mcp", "defusedxml"],
     )
 
 

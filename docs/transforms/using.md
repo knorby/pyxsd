@@ -10,6 +10,7 @@ writer can serialize it.
 | Transform | What it does |
 | --------- | ------------ |
 | `PrintData` | Writes the tree as readable text to a file or stdout. |
+| `ToDict` | Returns the bound tree as a plain dictionary; the CLI writes mapping results as JSON. |
 
 After a transform changes the tree's shape, revalidate the transformed
 document with `Document.revalidate()` — it re-parses the serialized tree
@@ -88,7 +89,8 @@ transform_cls = resolve_transform_class(name)
 document.transform(lambda root: transform_cls(root)(*args, **kwargs))
 ```
 
-A transform that returns a tree root comes back as a new `Document`; a
-transform that changes the tree in place and returns `None` leaves the
-document itself as the result. After a structural change, use
-`Document.revalidate()` (above) to refresh the report.
+A transform that returns a tree root comes back as a new `Document`. Any
+other return value, including `None`, is returned unchanged. An in-place
+transform can therefore return `None` while the original `document` remains
+available. After a structural change, call `Document.revalidate()` on the
+document you want to check.

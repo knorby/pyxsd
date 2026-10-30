@@ -12,6 +12,7 @@ import decimal
 import logging
 import os.path
 import warnings
+import weakref
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal
@@ -28,7 +29,16 @@ from pyxsd.element_representatives.element_representative import (
 from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError
 from pyxsd.extensions import Extensions
 from pyxsd.instance_binding import bind_instance
+from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import XML_NS, NamespaceContext, parse_with_namespaces
+from pyxsd.resource_policy import (
+    ResourcePolicy,
+    ResourcePolicyError,
+    new_validation_report,
+    read_resource,
+    record_declarations,
+    source_identifier,
+)
 from pyxsd.schema_base import SchemaBase
 from pyxsd.schema_checks import (
     apply_default_attributes,
@@ -65,6 +75,7 @@ from pyxsd.schema_composition import (
 from pyxsd.schema_context import (
     SchemaContext,
     active_context,
+    context_provenance,
     context_report,
     remember_components,
 )
@@ -77,6 +88,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pyxsd.batch import DocumentSource, ParseOutcome
+    from pyxsd.introspection import _Index
 
 
 class _CompileHost:
@@ -159,6 +171,11 @@ class Schema:
         self.source = source
         self._schema_context = schema_context
         self._host = None
+        self.resource_policy: ResourcePolicy | None = None
+        self._introspection_index: _Index | None = None
+        self.declaration_origins: weakref.WeakKeyDictionary[ET.Element, IssueLocation] = (
+            weakref.WeakKeyDictionary()
+        )
 
     @classmethod
     def compile(
@@ -172,6 +189,7 @@ class Schema:
         namespace_context: NamespaceContext | None = None,
         schema_location_pairs: list[tuple[str | None, str]] | None = None,
         extensions: Extensions | None = None,
+        resource_policy: ResourcePolicy | None = None,
     ) -> "Schema":
         """Compiles *source* into a :class:`Schema`.
 
@@ -224,6 +242,22 @@ class Schema:
         """
         if xsd_version not in ("1.0", "1.1"):
             raise ValueError(f"xsd_version must be '1.0' or '1.1', not {xsd_version!r}")
+        original_source = source
+        source_data = None
+        if resource_policy is not None:
+            try:
+                source_data = read_resource(source, resource_policy, purpose="schema")
+            except OSError as exc:
+                raise PyXSDError(f"the schema file could not be opened: {exc}") from exc
+            source = source_data.source_id
+            if source == "<memory>" and any(
+                not Path(location).is_absolute()
+                for location in [
+                    *(namespace_schemas or {}).values(),
+                    *(location for _, location in schema_location_pairs or []),
+                ]
+            ):
+                raise ResourcePolicyError("a relative schema dependency needs a named source base")
         if isinstance(source, (str, os.PathLike)):
             xml_path = Path(source).resolve().parent
         else:
@@ -235,7 +269,7 @@ class Schema:
             namespace_context=(
                 namespace_context if namespace_context is not None else NamespaceContext()
             ),
-            report=ValidationReport(),
+            report=new_validation_report(resource_policy),
             classes={},
             xml_path=xml_path,
             schema_context=SchemaContext(components=ComponentTable()),
@@ -255,6 +289,8 @@ class Schema:
             hint_schema_paths=set(),
             composed_target_namespaces=set(),
             extensions=extensions,
+            resource_policy=resource_policy,
+            source_data=source_data,
         )
         # Without an instance document there are no schemaLocation
         # hints of our own; the caller (:func:`parse`) may forward the
@@ -265,6 +301,7 @@ class Schema:
         )
         host = _CompileHost(ctx)
         schema = _compile_into_context(ctx, source, host)
+        schema.source = original_source
         if overlay:
             load_overlay_classes(schema, overlay, fallback_dir=xml_path)
         return schema
@@ -273,12 +310,18 @@ class Schema:
         """Raises :class:`pyxsd.ValidationError` if the report has errors."""
         if self.report.has_errors:
             raise ValidationError(
-                f"the schema is not valid: {len(self.report.errors)} error(s); "
+                f"the schema is not valid: {self.report.error_count} error(s); "
                 "inspect ValidationError.report",
                 self.report,
             )
 
-    def stub(self, *, compact: bool = False) -> str:
+    def stub(
+        self,
+        *,
+        compact: bool = False,
+        component_ids: tuple[str, ...] | None = None,
+        depth: int | None = None,
+    ) -> str:
         """Returns ``.pyi``-style source for the classes this schema compiled.
 
         The text is a typing surface mirroring the runtime: one class
@@ -302,13 +345,18 @@ class Schema:
         document to PATH (stdout when PATH is omitted), and adding
         ``--stubs-compact`` selects the compact view.
 
-        Emitting never raises for a schema that compiled and does not
+        ``component_ids`` optionally selects native declaration IDs, with
+        ``depth`` bounding their outgoing dependencies (None follows all).
+        Unknown IDs raise KeyError and negative depths raise ValueError.
+        See :mod:`pyxsd.introspection` for IDs and declaration metadata.
+
+        Unfiltered emitting never raises for a schema that compiled and does not
         require a valid report; call :meth:`require_valid` separately
         to reject a schema whose report holds errors.
         """
         from pyxsd.stubs import emit_stub
 
-        return emit_stub(self, compact=compact)
+        return emit_stub(self, compact=compact, component_ids=component_ids, depth=depth)
 
     def iter_parse(
         self,
@@ -346,6 +394,15 @@ class Schema:
         when the document root matched no global element declaration
         (the ``unknown-root`` issue records why).
         """
+        if self.resource_policy is not None:
+            try:
+                data = read_resource(xml, self.resource_policy, purpose="instance")
+                tree = self.resource_policy.parse(data, self.namespace_context)
+            except OSError as exc:
+                raise PyXSDError(f"the xml input could not be read: {exc}") from exc
+            except ET.ParseError as exc:
+                raise PyXSDError(f"the xml file is not well-formed XML: {exc}") from exc
+            return self._bind_tree(tree, xml, source_id=data.source_id)
         if isinstance(xml, ET.Element):
             tree = xml
         else:
@@ -358,7 +415,15 @@ class Schema:
                 raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
             logger.debug("XML file parsed by the ElementTree library successfully...")
 
-        instance_report = ValidationReport()
+        return self._bind_tree(tree, xml, source_id=source_identifier(xml))
+
+    def _bind_tree(self, tree: ET.Element, source: Any, *, source_id: str | None) -> "Document":
+        """Bind an already verified tree; public policy inputs cannot use this path."""
+
+        instance_report = new_validation_report(self.resource_policy)
+        from pyxsd.locations import ParseProvenance
+
+        provenance = ParseProvenance(tree, source_id)
         context = self._schema_context
         if context is None:
             context = SchemaContext(components=self.components)
@@ -375,8 +440,9 @@ class Schema:
         # attached to this schema's shared host, so parses against one
         # ``Schema`` instance must not run concurrently -- a second
         # parse would overwrite the indexes the first is still using.
-        # Moving them into a per-parse context is the tracked post-1.0
-        # fix.
+        # They are transient binding indexes, not document storage. Clear
+        # them even when binding raises so a cached Schema never retains
+        # the most recently parsed source tree through these parent links.
         host = self._host
         if host is not None:
             host._elementParents = {}
@@ -391,18 +457,29 @@ class Schema:
         # so this parse's fresh report is installed (and restored) around
         # the binding run; generated classes keep their ``cls.schema``
         # stamp, whose report is the frozen compilation report.
-        with active_context(context), context_report(context, instance_report):
-            root = bind_instance(self, tree, instance_report)
+        try:
+            with (
+                active_context(context),
+                context_report(context, instance_report),
+                context_provenance(context, provenance),
+                instance_report._at(provenance.source_location(tree)),
+            ):
+                root = bind_instance(self, tree, instance_report)
+                provenance.bind(tree, root)
+        finally:
+            if host is not None:
+                host._elementParents.clear()
+                host._elementTypes.clear()
 
         # One merged report per document: the schema phase's issues
         # followed by this parse's instance issues. Issue objects are
         # shared, so the phase tags recorded when each was found ride
         # along, and the cached object's identity is stable for
         # require_valid.
-        merged = ValidationReport()
+        merged = new_validation_report(self.resource_policy)
         merged.extend(self.report)
         merged.extend(instance_report)
-        return Document(schema=self, root=root, source=xml, report=merged)
+        return Document(schema=self, root=root, source=source, report=merged, provenance=provenance)
 
 
 #: :meth:`Schema.compile` exposed as a module-level function.
@@ -416,6 +493,7 @@ def parse(
     mode: Any = ParseModes.STRICT,
     namespace_schemas: dict[str, str | Path] | None = None,
     overlay: str | Path | os.PathLike[str] | None = None,
+    resource_policy: ResourcePolicy | None = None,
 ) -> "Document":
     """Parses *xml* against its schema and returns a :class:`Document`.
 
@@ -443,7 +521,15 @@ def parse(
     # design), and the same tree object is bound below, so the hint
     # rewrite a malformed schemaLocation triggers is visible to the
     # binding pass.
-    if isinstance(xml, ET.Element):
+    source_id = source_identifier(xml)
+    if resource_policy is not None:
+        try:
+            data = read_resource(xml, resource_policy, purpose="instance")
+            tree = resource_policy.parse(data, context)
+        except (OSError, ET.ParseError) as exc:
+            raise PyXSDError(f"the xml input could not be read: {exc}") from exc
+        source_id = data.source_id
+    elif isinstance(xml, ET.Element):
         tree = xml
     else:
         try:
@@ -454,7 +540,11 @@ def parse(
     # advisory composition hints (strict namespace mode only), read
     # from the instance document like the main hint below and resolved
     # against the instance document's own directory.
-    base_dir = Path(xml).resolve().parent if isinstance(xml, (str, os.PathLike)) else Path.cwd()
+    if resource_policy is not None:
+        assert source_id is not None
+        base_dir = Path(source_id).resolve().parent if source_id != "<memory>" else None
+    else:
+        base_dir = Path(xml).resolve().parent if isinstance(xml, (str, os.PathLike)) else Path.cwd()
     pairs = [] if isinstance(xml, ET.Element) else absolute_schema_location_pairs(tree, base_dir)
     if xsd is None:
         _namespace, hint = resolve_schema_hint(tree, base_dir)
@@ -471,7 +561,10 @@ def parse(
         overlay=overlay,
         namespace_context=None if isinstance(xml, ET.Element) else context,
         schema_location_pairs=pairs,
+        resource_policy=resource_policy,
     )
+    if resource_policy is not None:
+        return schema._bind_tree(tree, xml, source_id=source_id)
     return schema.parse(tree)
 
 
@@ -554,7 +647,13 @@ def _compile_into_context(
     # building, the declaration sweeps) resolve it without needing the
     # parser passed down; the previous value is restored afterwards.
     with active_context(ctx.schema_context), context_report(ctx.schema_context, ctx.report):
-        if isinstance(xsd_file, (str, os.PathLike)):
+        if ctx.resource_policy is not None:
+            assert ctx.source_data is not None
+            try:
+                root = ctx.resource_policy.parse(ctx.source_data, ctx.namespace_context)
+            except ET.ParseError as exc:
+                raise PyXSDError(f"the schema file is not well-formed XML: {exc}") from exc
+        elif isinstance(xsd_file, (str, os.PathLike)):
             try:
                 with open(xsd_file, "rb") as schemaFile:
                     root = parse_with_namespaces(schemaFile, ctx.namespace_context)
@@ -576,6 +675,7 @@ def _compile_into_context(
         # before anything else, so the element-representative walk never sees
         # a declaration a ``vc:*`` selector excludes. Included and imported
         # documents are filtered as they are parsed (``parse_included_schema``).
+        record_declarations(root, source_identifier(xsd_file), ctx.declaration_origins)
         apply_conditional_inclusion(root, ctx.namespace_context, ctx.report, ctx.processor_version)
         check_namespace_attribute_values(ctx, root)
         if ctx.processor_version == decimal.Decimal("1.0"):
@@ -732,6 +832,8 @@ def _compile_into_context(
         for cls in ctx.classes.values():
             cls.schema = schema
         schema._host = host
+        schema.resource_policy = ctx.resource_policy
+        schema.declaration_origins = ctx.declaration_origins
         schema.xsd_version = str(host.processor_version)
         # Classes built lazily after the compile (an ``xs:alternative``'s
         # inline type selected at binding time) stamp their owner from

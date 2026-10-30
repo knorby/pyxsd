@@ -21,6 +21,7 @@ from typing import IO, TYPE_CHECKING, Any
 from xml.etree import ElementTree as ET
 
 from pyxsd.exceptions import PyXSDError, ValidationError
+from pyxsd.locations import IssueLocation, NodeLookup, ParseProvenance
 from pyxsd.tree import iter_tree
 from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
@@ -67,11 +68,25 @@ class Document:
         root: Any,
         source: str | Path | os.PathLike[str] | IO[str] | ET.Element | None,
         report: ValidationReport,
+        *,
+        provenance: ParseProvenance | None = None,
     ) -> None:
         self.schema = schema
         self.root = root
         self.source = source
         self._report = report
+        self._provenance = provenance
+
+    def locate(self, location: IssueLocation) -> NodeLookup:
+        """Resolve a source occurrence in this parse, not by value or local name.
+
+        Addresses are parse-revision-specific. Manually built/transformed
+        Documents have no provenance until freshly parsed with revalidate().
+        Attribute lookups return the original lexical attribute value.
+        """
+        if self._provenance is None:
+            return NodeLookup(location, None, "missing")
+        return self._provenance.locate(location)
 
     @property
     def report(self) -> ValidationReport:
@@ -87,7 +102,7 @@ class Document:
         """Raises :class:`pyxsd.ValidationError` if the report has errors."""
         if self.report.has_errors:
             raise ValidationError(
-                f"the document is not valid: {len(self.report.errors)} error(s); "
+                f"the document is not valid: {self.report.error_count} error(s); "
                 "inspect ValidationError.report",
                 self.report,
             )
@@ -142,9 +157,10 @@ class Document:
         - ``fn(root, *args, **kwargs)`` may return a new tree root (a
           bound ``SchemaBase`` instance), which becomes the root of a
           new :class:`Document` against the same schema — or anything
-          else, which is returned unchanged. Transforms may also mutate
-          the tree in place and return ``None``; the document is
-          unchanged then.
+          else, including ``None``, which is returned unchanged. When a
+          transform mutates the tree in place and returns ``None``, the
+          original document remains available to the caller; no new
+          document is created.
 
         A returned document shares this document's report, which
         reflects the tree as it was parsed, not the transformed shape;

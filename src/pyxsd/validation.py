@@ -13,10 +13,16 @@ or :attr:`~pyxsd.schema.Schema.report` for the schema phase alone.
 from __future__ import annotations
 
 import enum
+import json
 import logging
 from collections.abc import Iterator
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
+
+from pyxsd._diagnostic_encoding import encode_number
+from pyxsd.locations import ConstraintInfo, IssueLocation, LocationPrecision, PathStep
 
 if TYPE_CHECKING:
     from pyxsd.schema_base import SchemaBase
@@ -87,6 +93,10 @@ class ValidationIssue:
     message: str
     element: str | None = None
     phase: str = "instance"
+    location: IssueLocation | None = field(default=None, kw_only=True)
+    constraint: ConstraintInfo | None = field(default=None, kw_only=True)
+    details: dict[str, object] | None = field(default=None, kw_only=True)
+    location_precision: LocationPrecision = field(default="unknown", kw_only=True)
 
     def format(self) -> str:
         """Render the issue as one line, as shown by the CLI."""
@@ -94,6 +104,18 @@ class ValidationIssue:
         if self.element is not None:
             return f"{prefix} {self.element}: {self.message}"
         return f"{prefix} {self.message}"
+
+
+def _bounded_message(message: str, max_bytes: int | None) -> str:
+    if max_bytes is None:
+        return message
+    encoded = message.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return message
+    if max_bytes <= 3:
+        return "." * max_bytes
+    prefix = encoded[: max_bytes - 3].decode("utf-8", errors="ignore")
+    return prefix + "..."
 
 
 class ValidationReport:
@@ -105,8 +127,22 @@ class ValidationReport:
     the reports in as it walks the schema and instance documents.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, max_issues: int | None = None, max_message_bytes: int | None = None
+    ) -> None:
+        if max_issues is not None and (type(max_issues) is not int or max_issues < 0):
+            raise ValueError("max_issues must be a non-negative integer or None")
+        if max_message_bytes is not None and (
+            type(max_message_bytes) is not int or max_message_bytes < 0
+        ):
+            raise ValueError("max_message_bytes must be a non-negative integer or None")
+        self._max_issues = max_issues
+        self._max_message_bytes = max_message_bytes
         self._issues: list[ValidationIssue] = []
+        self._error_count = 0
+        self._warning_count = 0
+        self._location: IssueLocation | None = None
+        self._location_precision: LocationPrecision = "unknown"
         #: The phase new issues are attributed to unless one is passed
         #: explicitly. The parser flips this between schema compilation
         #: and instance binding.
@@ -119,10 +155,29 @@ class ValidationReport:
         code: str,
         element: str | None = None,
         phase: str | None = None,
+        location: IssueLocation | None = None,
+        constraint: ConstraintInfo | None = None,
+        details: dict[str, object] | None = None,
+        location_precision: LocationPrecision = "unknown",
     ) -> None:
         """Record a fatal-severity issue."""
-        self._issues.append(
-            ValidationIssue(IssueSeverity.ERROR, code, message, element, phase or self.phase)
+        if location is None:
+            location = self._location
+            if location_precision == "unknown":
+                location_precision = self._location_precision
+        self._error_count += 1
+        self._retain(
+            ValidationIssue(
+                IssueSeverity.ERROR,
+                code,
+                message,
+                element,
+                phase or self.phase,
+                location=location,
+                constraint=constraint,
+                details=details,
+                location_precision=location_precision if location is not None else "unknown",
+            )
         )
 
     def add_warning(
@@ -132,11 +187,49 @@ class ValidationReport:
         code: str,
         element: str | None = None,
         phase: str | None = None,
+        location: IssueLocation | None = None,
+        constraint: ConstraintInfo | None = None,
+        details: dict[str, object] | None = None,
+        location_precision: LocationPrecision = "unknown",
     ) -> None:
         """Record a recoverable-severity issue."""
-        self._issues.append(
-            ValidationIssue(IssueSeverity.WARNING, code, message, element, phase or self.phase)
+        if location is None:
+            location = self._location
+            if location_precision == "unknown":
+                location_precision = self._location_precision
+        self._warning_count += 1
+        self._retain(
+            ValidationIssue(
+                IssueSeverity.WARNING,
+                code,
+                message,
+                element,
+                phase or self.phase,
+                location=location,
+                constraint=constraint,
+                details=details,
+                location_precision=location_precision if location is not None else "unknown",
+            )
         )
+
+    def _retain(self, issue: ValidationIssue) -> None:
+        if self._max_issues is None or len(self._issues) < self._max_issues:
+            message = _bounded_message(issue.message, self._max_message_bytes)
+            self._issues.append(
+                issue if message == issue.message else replace(issue, message=message)
+            )
+
+    @contextmanager
+    def _at(
+        self, location: IssueLocation | None, precision: LocationPrecision = "exact"
+    ) -> Iterator[None]:
+        previous = self._location, self._location_precision
+        self._location = location
+        self._location_precision = precision if location is not None else "unknown"
+        try:
+            yield
+        finally:
+            self._location, self._location_precision = previous
 
     def for_phase(self, phase: str) -> list[ValidationIssue]:
         """Only the issues attributed to *phase* (``"schema"``/``"instance"``)."""
@@ -153,7 +246,57 @@ class ValidationReport:
         document's report the same way. The issue objects are shared,
         not copied; the other report is left unchanged.
         """
-        self._issues.extend(other._issues)
+        # Snapshot both before extending: self-extension is supported too.
+        issues = tuple(other._issues)
+        errors, warnings = other.error_count, other.warning_count
+        for issue in issues:
+            self._retain(issue)
+        self._error_count += errors
+        self._warning_count += warnings
+
+    @property
+    def error_count(self) -> int:
+        """All errors, including those whose details exceeded the budget."""
+        return self._error_count
+
+    @property
+    def warning_count(self) -> int:
+        """All warnings, including those whose details exceeded the budget."""
+        return self._warning_count
+
+    @property
+    def suppressed_count(self) -> int:
+        """Findings whose details were not retained (including merged reports)."""
+        return self.error_count + self.warning_count - len(self._issues)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return JSON-safe details and complete counts; decimals remain strings.
+
+        Unsupported detail values raise TypeError rather than falling back to a
+        potentially lossy or executable object's string representation.
+        """
+        return {
+            "issues": [
+                {
+                    "severity": issue.severity.value,
+                    "code": issue.code,
+                    "message": issue.message,
+                    "element": issue.element,
+                    "phase": issue.phase,
+                    "location": _diagnostic_value(issue.location),
+                    "constraint": _diagnostic_value(issue.constraint),
+                    "details": _diagnostic_value(issue.details),
+                    "location_precision": issue.location_precision,
+                }
+                for issue in self._issues
+            ],
+            "counts": {"error": self.error_count, "warning": self.warning_count},
+            "suppressed_count": self.suppressed_count,
+        }
+
+    def to_json(self) -> str:
+        """Serialize :meth:`to_dict` deterministically without optional packages."""
+        return json.dumps(self.to_dict(), ensure_ascii=True, allow_nan=False)
 
     @property
     def issues(self) -> list[ValidationIssue]:
@@ -173,21 +316,21 @@ class ValidationReport:
     @property
     def has_errors(self) -> bool:
         """Whether any error-severity issue was recorded."""
-        return any(i.severity is IssueSeverity.ERROR for i in self._issues)
+        return self.error_count > 0
 
     def __len__(self) -> int:
         return len(self._issues)
 
     def __bool__(self) -> bool:
-        return bool(self._issues)
+        return self.error_count + self.warning_count > 0
 
     def __iter__(self) -> Iterator[ValidationIssue]:
         return iter(self._issues)
 
     def __str__(self) -> str:
         """A multi-line rendering of the report for CLI display."""
-        n_errors = len(self.errors)
-        n_warnings = len(self.warnings)
+        n_errors = self.error_count
+        n_warnings = self.warning_count
         parts = [f"pyxsd: {n_errors} error{'' if n_errors == 1 else 's'}"]
         if n_warnings:
             parts.append(f"{n_warnings} warning{'' if n_warnings == 1 else 's'}")
@@ -195,6 +338,37 @@ class ValidationReport:
         lines = [header]
         lines.extend(f"  {issue.format()}" for issue in self._issues)
         return "\n".join(lines)
+
+
+def _diagnostic_value(value: object) -> object:
+    """Encode only explicitly supported evidence, never arbitrary dataclasses."""
+    from pyxsd.xsd_data_types import Boolean
+
+    if isinstance(value, Boolean):
+        return bool(value)
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        return encode_number(value)
+    if isinstance(value, PathStep):
+        return {"name": value.name, "index": value.index}
+    if isinstance(value, IssueLocation):
+        return {
+            "source": value.source,
+            "path": [_diagnostic_value(step) for step in value.path],
+            "attribute": value.attribute,
+        }
+    if isinstance(value, ConstraintInfo):
+        return {
+            "kind": value.kind,
+            "expected": _diagnostic_value(value.expected),
+            "actual": _diagnostic_value(value.actual),
+        }
+    if isinstance(value, (tuple, list)):
+        return [_diagnostic_value(item) for item in value]
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        return {key: _diagnostic_value(item) for key, item in value.items()}
+    raise TypeError(f"unsupported diagnostic value: {type(value).__name__}")
 
 
 def report_or_log(
@@ -205,6 +379,10 @@ def report_or_log(
     message: str,
     element: str | None = None,
     phase: str | None = None,
+    constraint: ConstraintInfo | None = None,
+    location: IssueLocation | None = None,
+    location_precision: LocationPrecision = "unknown",
+    details: dict[str, object] | None = None,
 ) -> None:
     """Records an issue on *report*, or logs it when *report* is ``None``.
 
@@ -233,6 +411,24 @@ def report_or_log(
         )
         return
     if severity is IssueSeverity.ERROR:
-        report.add_error(message, code=code, element=element, phase=phase)
+        report.add_error(
+            message,
+            code=code,
+            element=element,
+            phase=phase,
+            constraint=constraint,
+            location=location,
+            location_precision=location_precision,
+            details=details,
+        )
     else:
-        report.add_warning(message, code=code, element=element, phase=phase)
+        report.add_warning(
+            message,
+            code=code,
+            element=element,
+            phase=phase,
+            constraint=constraint,
+            location=location,
+            location_precision=location_precision,
+            details=details,
+        )

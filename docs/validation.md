@@ -1,19 +1,34 @@
 # Validation
 
-pyxsd is a **lax validator**: it never aborts on bad data. Every problem it
-finds is recorded as a `ValidationIssue` in a
-{class}`~pyxsd.validation.ValidationReport`. A compiled schema reports its
-own findings at `Schema.report`; a bound document reports the merged run —
+pyxsd reports recoverable schema and instance findings in a
+{class}`~pyxsd.validation.ValidationReport` rather than raising on the first
+one. Each finding is a `ValidationIssue`. A compiled schema reports its own
+findings at `Schema.report`; a bound document reports the merged run —
 schema-phase issues followed by instance-phase issues — at
-`Document.report`. A run can produce a complete object tree and a full
-error report at the same time.
+`Document.report`. A run can produce a bound object tree and multiple
+validation findings at the same time.
+
+Reporting is non-fatal only when parsing can proceed. An unreadable or
+malformed input, or a document whose root is not `xs:schema`, raises
+{class}`~pyxsd.exceptions.PyXSDError` instead of returning a partial report.
+An undeclared instance root is recoverable: it produces an `unknown-root`
+issue and a `Document` whose `root` is `None`.
 
 ```{note}
-"Lax validator" here means *reporting is non-fatal*. It is separate from
-the **parse mode** (`Schema.compile(..., mode=...)`, `--mode`), which
-controls what is bound into the tree when a document is invalid. The
-report is always strict regardless of mode — see {doc}`binding`.
+Recoverable reporting is separate from the **parse mode**
+(`Schema.compile(..., mode=...)`, `--mode`), which controls whether invalid
+values and unrecognized content are dropped or retained in a best-effort
+bound tree. A bound tree is not necessarily complete or lossless, even in
+lax mode. See {doc}`binding`.
 ```
+
+The report collects the checks the processor supports; it is not a promise
+that every possible violation or a complete, source-faithful tree is
+returned. With facet enforcement enabled (the default), a parse mode does
+not relax facet validation merely to retain an invalid value. Setting
+`facets="off"` skips those checks, so the resulting report is not a full
+validity verdict for facet-constrained values. The known schema-legality
+limitations below also apply.
 
 ```python
 import pyxsd
@@ -30,6 +45,41 @@ if document.report.has_errors:
 Both `Schema.require_valid()` and `Document.require_valid()` raise
 {class}`~pyxsd.exceptions.ValidationError`, whose `report` attribute is
 the report that failed the check.
+
+## Resource and parser policies
+
+`pyxsd.compile(..., resource_policy=policy)` and
+`pyxsd.parse(..., resource_policy=policy)` accept an optional
+`pyxsd.resource_policy.ResourcePolicy`. The compiled schema retains this
+policy for subsequent `Schema.parse()` and `Document.revalidate()` calls.
+Without a policy, existing loading and parsing behavior is unchanged.
+
+A policy supplies two methods:
+
+- `read(source, *, base, purpose)` authorizes and loads a named resource,
+  returning `ResourceData(source_id, content)` with its original bytes.
+  `base` identifies the including document, not its directory; `purpose`
+  is `"schema"` or `"instance"`. Canonical source IDs can name virtual
+  filesystem layouts. They also determine nested dependency bases and
+  composition-cycle detection.
+- `parse(data, context)` parses admitted bytes and records namespace
+  bindings in the supplied `NamespaceContext`.
+
+Includes, imports, redefines, overrides, namespace mappings and instance
+schema hints use the same policy. Raise `ResourcePolicyError` to refuse
+access: unlike unavailable-resource errors, a denial is never downgraded
+to an ignored import or schema-hint warning.
+
+Streams pass through the policy parser too; byte streams preserve original
+encoding, whereas text streams are encoded as UTF-8. Anonymous schema
+streams have no implicit filesystem base: relative dependencies require a
+canonical stream `.name`. Already-parsed `Element` inputs are rejected
+when a policy is active, so they cannot bypass its parser.
+
+These hooks are **not a sandbox or a secure parser implementation**. A
+policy is trusted application code responsible for access checks, parser
+hardening, limits and namespace evidence. Python overlays and extensions
+remain executable application code, outside this XML-loading contract.
 
 ## Report API
 
@@ -82,6 +132,8 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `prohibited-attribute` | ERROR | A direct attribute declaration with `use="prohibited"` is present in the instance. The prohibition is not enforced when the type's effective attribute wildcard admits the attribute, and a prohibited use contributed by a referenced `attributeGroup` is not an attribute use of the type at all. |
 | `fixed-attribute` | ERROR | Attribute present with a value differing from `fixed`. |
 | `unknown-type` | ERROR | Referenced type could not be resolved: a namespaced reference into a namespace no composed schema declares, a reference into the XML Schema namespace that names no built-in, or an unqualified reference that resolves into no namespace when a same-named type is declared in another loaded namespace. An unqualified no-namespace reference with no candidate stays tolerated. |
+| `unknown-base` | WARNING | An `xs:extension` base cannot be resolved; compilation continues without that base. |
+| `unknown-component` | WARNING | A schema component lookup is missing or ambiguous. The warning is recorded when a report is active. |
 | `atomic-required` | ERROR | A `list`'s `itemType` (or inline item type) is not an atomic simple type or a union with no list type anywhere in its transitive membership, or a `union`'s member type is a complex type rather than a simple type. Atomic, list and union members are all legal union members. |
 | `invalid-base` | ERROR | A simple-type `restriction` derives from a type that is not a simple type: a complex type, or one of the ur-types (`anyType`, `anySimpleType`, `anyAtomicType`) — the base of a restriction inside an `xs:simpleType` must be a non-ur simple type. Also reported for a `simpleContent` restriction whose base is not a complex type, and, when the base's simple-content primitive is `xs:anySimpleType`, for a restriction that does not supply its own inline `simpleType`. |
 | `notation-enumeration-required` | ERROR | `xs:NOTATION` is used directly, which the Schema Component Constraint forbids: a bare `xs:NOTATION` element/attribute type or list `itemType`, or a restriction whose primitive is NOTATION that states no `enumeration` facet. A `union` member NOTATION is deliberately tolerated because the W3C test suite is self-contradictory there. |
@@ -106,13 +158,18 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `assert-failed` | ERROR | An `xs:assert` on a complex type evaluated to false for the bound element, an `xs:assertion` facet evaluated to false for the simple value (with `$value` bound to the typed value), or the evaluation raised a dynamic error — including an `xs:assertion` test that reads the XPath context, which a simple value does not define. |
 | `alternative-invalid` | ERROR | An `xs:alternative` declaration is unusable: it carries none or more than one of a `type` attribute / inline type; its `test` is outside the XSD 1.1 §3.12.6 conditional-type-assignment XPath subset, empty or statically invalid; a non-final alternative omits `test`; its type reference cannot be resolved; or its type is not validly derived from the element's declared type (`xs:error` is always admissible). |
 | `open-content-invalid` | ERROR | An `xs:openContent` declaration violates its XML representation (XSD 1.1 §3.4.2.2/§3.4.3): the `mode` is not `none`/`interleave`/`suffix`; `mode="none"` carries an `xs:any` child, or a non-`none` mode has other than exactly one `xs:any` child; or one complex type carries more than one `xs:openContent`. Also reported for an `xs:defaultOpenContent` whose `mode` is outside `interleave`/`suffix` or that lacks exactly one `xs:any` child; the default is scoped to the schema document a complex type is declared in. An illegal child wildcard is reported through the shared wildcard codes (`wildcard-invalid`/`invalid-attribute`), and occurrence attributes on it are `wildcard-invalid`, because the child is a wildcard component and not a particle. |
+| `xsd11-construct` | ERROR | An XSD 1.1-only element, attribute, or built-in type appears while compiling in XSD 1.0 mode. |
 | `versioning-invalid` | ERROR | A `vc:*` conditional-inclusion attribute carries an illegal value (XSD 1.1 §4.2.2): a `vc:minVersion`/`vc:maxVersion` that is not a valid `xs:decimal`, or a `vc:typeAvailable`/`vc:typeUnavailable`/`vc:facetAvailable`/`vc:facetUnavailable` item that is not a QName or uses a prefix not bound in scope. The selector is ignored so the rest of the document is still processed. An unrecognized attribute in the versioning namespace, or one misspelled outside the six selectors, is ignored rather than reported. |
 | `alternative-error` | ERROR | The type alternative conditionally assigned to an instance element is `xs:error`, whose value space is empty, so no content can make the element valid (XSD 1.1 §3.3.4.1). `xsi:type` takes precedence and suppresses the selection. |
 | `id-duplicate` | ERROR | Two attribute or element values of type `xs:ID` in one document are equal (XML ID uniqueness). |
 | `idref-unresolved` | ERROR | A value of type `xs:IDREF`/`xs:IDREFS` names no `xs:ID` value in the document (DTD-style reference resolution). |
 | `identity-unsupported` | WARNING | Identity-constraint XPath uses an unsupported construct. |
+| `union-member-skipped` | WARNING | An inline union member could not be built and was skipped; other members remain available. |
 | `unknown-group` | ERROR | Referenced `xs:group` missing. |
+| `circular-derivation` | ERROR | A type derives from itself directly or through a derivation cycle; the cyclic base is skipped. |
+| `conflicting-derivation` | ERROR | A simple type combines `xs:list` with restriction or extension, which cannot form one value representation. |
 | `circular-group` | ERROR | Group reference cycle. |
+| `unknown-attributeRef` | ERROR | An attribute `ref` does not resolve to a global attribute declaration. |
 | `unknown-attributeGroup` | ERROR | Referenced `xs:attributeGroup` missing. Also reported for a schema's `defaultAttributes` whose QName does not resolve to a global attribute group (XSD 1.1 §3.1.2). |
 | `duplicate-attribute` | ERROR | An attribute use is contributed twice to one complex type with the same expanded name: the schema document's `defaultAttributes` group colliding with an attribute declared on the type or pulled in by a referenced attribute group, a local declaration colliding with an `attributeGroup` contribution, two referenced groups colliding, or two uses resolving to the same global attribute through a `ref` (XSD 1.1 §3.1.2/§3.4.2.4). Two uses with one local name but different namespaces or forms are distinct. |
 | `unknown-substitution-head` | ERROR | Substitution group references a missing head. |
@@ -136,6 +193,72 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 
 `pyxsd --strict` exits with status 1 when the report contains any
 `ERROR`-severity issue. Warnings never affect the exit code.
+
+## Reports and transformed documents
+
+A `Document`'s report describes the tree as it was bound, not subsequent
+mutations. `Document.transform()` may return a bound root, `None` after an
+in-place mutation, or an arbitrary result. When it returns a `Document`,
+that document shares the historical report; `require_valid()` therefore
+checks the old report rather than proving that the changed tree is valid.
+Call `revalidate()` to serialize and parse the tree again, and check the
+fresh document's report. An unreadable or malformed serialized result still
+raises `PyXSDError`; it does not become an ordinary validation finding.
+
+## Structured and bounded reports
+
+`report.to_dict()` and `report.to_json()` expose issue severity, code, message,
+phase and optional location/constraint details. Decimal evidence is encoded as
+strings; integers outside JavaScript's exact range are strings too. Nonfinite
+floating-point evidence uses the canonical XSD strings `NaN`, `INF`, and `-INF`.
+Unsupported detail objects raise `TypeError` instead of silently becoming arbitrary text.
+
+`ValidationReport(max_issues=N)` retains at most the first `N` issue details.
+The default is unlimited. `error_count`, `warning_count` and `has_errors` include
+suppressed findings, and `suppressed_count` reports how many details are absent.
+`issues`, `errors`, `warnings`, iteration and `for_phase()` expose only retained
+details. A report can therefore be truthy with zero retained details; `len(report)`
+still counts retained details. Merging a report preserves its aggregate counts
+even when the receiving report has a different detail budget.
+
+`ValidationReport(max_message_bytes=N)` visibly truncates retained messages to at
+most `N` UTF-8 bytes without splitting a character. Truncation does not change
+issue counts or suppressed-detail accounting. The default is unlimited. Resource
+policies may optionally provide `new_report()` to apply these budgets consistently
+to schema, instance, and merged reports; policies without it retain core defaults.
+
+Location and constraint fields are optional: an absent location does not imply
+that an issue refers to the first element with that name. Facet violations expose
+typed constraint evidence at their source. Existing issue formatting and
+positional constructors remain unchanged.
+
+### Finding the offending occurrence
+
+Instance diagnostics carry an `IssueLocation` when the parser can identify the
+source occurrence. Its `path` is a tuple of `PathStep(name, index)` records:
+expanded XML names and one-based sibling indexes among elements with that exact
+name. Namespace URIs can contain slashes; do not split expanded names on `/`.
+Attribute findings can additionally name an expanded `attribute`.
+
+`issue.location_precision` distinguishes `exact`, `container`, `component` and
+`unknown` evidence. A missing required child points to its existing container,
+not an invented child. Schema findings and diagnostics outside parsing may have
+unknown locations. No source line or column is fabricated.
+
+`document.locate(issue.location)` returns a `NodeLookup` with a `status`:
+
+- `bound`: `bound` is the original bound object for that occurrence.
+- `unbound`: the source element existed, but binding discarded it.
+- `attribute`: `bound` is the original lexical attribute value.
+- `missing`: the address or attribute did not exist in this parse.
+
+Guard against `issue.location is None` before calling `locate`. These are
+parse-specific addresses, not durable identifiers: modifying the tree does not
+update them. `revalidate()` returns a freshly parsed Document with fresh
+locations. Another parse on the same Schema does not retarget the first
+Document's lookups. A manually constructed or transformed Document has no
+provenance until freshly parsed. Duplicate identity findings can include
+`details["related_locations"]` for the earlier occurrences.
 
 ## Known limitations (schema legality)
 
