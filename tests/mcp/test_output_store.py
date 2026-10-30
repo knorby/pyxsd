@@ -371,9 +371,10 @@ def test_invalid_metadata_content_types_and_closed_store_are_rejected(tmp_path, 
             def unreadable(*_args, **_kwargs):
                 raise PermissionError("denied")
 
-            monkeypatch.setattr(os, "open", unreadable)
-            with pytest.raises(ToolError, match="artifact_changed"):
-                await store.get(ref.id)
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "open", unreadable)
+                with pytest.raises(ToolError, match="artifact_changed"):
+                    await store.get(ref.id)
 
     anyio.run(scenario)
 
