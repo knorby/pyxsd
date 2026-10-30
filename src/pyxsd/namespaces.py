@@ -177,8 +177,9 @@ def parse_with_namespaces(
     ``policy`` selects an opt-in parser posture; ``None`` and
     :meth:`~pyxsd.xml_policy.XmlParserPolicy.default` keep the stdlib
     parser and its current DTD/entity behavior. ``limits`` optionally
-    bounds the supplied bytes, element depth, and element count; a
-    violation raises :class:`~pyxsd.resource_policy.ResourcePolicyError`.
+    bounds the supplied bytes (text streams are measured by their UTF-8
+    encoding), element depth, and element count; a violation raises
+    :class:`~pyxsd.resource_policy.ResourcePolicyError`.
     Defusedxml denials are converted to the same error with the original
     exception as ``__cause__``; malformed XML still raises
     :class:`xml.etree.ElementTree.ParseError`.
@@ -244,15 +245,23 @@ def _iterparse_events(
     if policy is not None and policy.use_defusedxml:
         from defusedxml import ElementTree as DefusedET
         from defusedxml.common import DefusedXmlException
+        from defusedxml.ElementTree import DefusedXMLParser
 
+        from pyxsd.xml_policy import configure_expat_security
+
+        parser = DefusedXMLParser(
+            target=ET.TreeBuilder(),
+            forbid_dtd=policy.forbid_dtd,
+            forbid_entities=policy.forbid_entities,
+            forbid_external=policy.forbid_external,
+        )
+        # Defusedxml's flags cannot reject an external SYSTEM/PUBLIC
+        # DOCTYPE while still allowing a plain internal DTD. The shared
+        # declaration guard adds exactly that check (and leaves the
+        # defused handlers, with their exception causes, intact).
+        configure_expat_security(parser, policy)
         try:
-            yield from DefusedET.iterparse(
-                source,
-                events=events,
-                forbid_dtd=policy.forbid_dtd,
-                forbid_entities=policy.forbid_entities,
-                forbid_external=policy.forbid_external,
-            )
+            yield from DefusedET.iterparse(source, events=events, parser=parser)
         except DefusedXmlException as exc:
             raise _policy_error(_defused_message(exc)) from exc
     else:
@@ -293,7 +302,10 @@ class _ByteLimitedReader:
 
     def read(self, size: int = -1) -> Any:
         data = self._stream.read(size)
-        self._seen += len(data)
+        # A text stream has no encoding of its own here; UTF-8 is the
+        # documented unit so a byte budget is not silently a character
+        # budget.
+        self._seen += len(data.encode("utf-8")) if isinstance(data, str) else len(data)
         if self._seen > self._max_bytes:
             raise _policy_error(f"the XML input exceeds max_bytes={self._max_bytes}")
         return data

@@ -112,15 +112,28 @@ def test_protected_preserves_harmless_attlist_defaults():
     assert root.get("fallback") == "defaulted"
 
 
-def test_protected_allows_an_external_doctype_without_reading_it(monkeypatch):
+def test_protected_accepts_a_plain_doctype():
+    root = parse(b"<!DOCTYPE root><root/>", policy=XmlParserPolicy.protected())
+    assert root.tag == "root"
+
+
+@pytest.mark.parametrize(
+    "doctype",
+    [
+        b'<!DOCTYPE root SYSTEM "file:///must-not-read">',
+        b'<!DOCTYPE root PUBLIC "-//EXAMPLE//DTD Test//EN" "file:///must-not-read">',
+    ],
+)
+def test_protected_rejects_external_doctype_identifiers_without_access(monkeypatch, doctype):
     def deny_access(*args, **kwargs):
         raise AssertionError("the parser tried to read a file or open a socket")
 
+    data = doctype + b"<root/>"
     with monkeypatch.context() as context:
         context.setattr("builtins.open", deny_access)
         context.setattr(socket, "socket", deny_access)
-        root = parse(EXTERNAL_DTD_DOC, policy=XmlParserPolicy.protected())
-    assert root.tag == "root"
+        with pytest.raises(ResourcePolicyError, match="external"):
+            parse(data, policy=XmlParserPolicy.protected())
 
 
 def test_protected_rejects_external_entity_declarations(monkeypatch):
@@ -151,6 +164,7 @@ def test_external_denial_without_entity_denial(monkeypatch):
     [
         b"<!DOCTYPE root><root/>",
         EXTERNAL_DTD_DOC,
+        b'<!DOCTYPE root PUBLIC "-//EXAMPLE//DTD Test//EN" "file:///must-not-read"><root/>',
         ENTITY_DOC,
         utf16(b"<!DOCTYPE root><root/>"),
     ],
@@ -211,6 +225,17 @@ def test_byte_limits_apply_to_named_paths(tmp_path):
         parse_with_namespaces(path, limits=XmlLimits(max_bytes=10))
 
 
+def test_text_stream_byte_limits_count_utf8_bytes():
+    text = "<r>" + "\u00e9" * 10 + "</r>"
+    assert len(text) == 17
+    assert len(text.encode("utf-8")) == 27
+    root = parse_with_namespaces(io.StringIO(text), limits=XmlLimits(max_bytes=27))
+    assert root.tag == "r"
+    assert root.text == "\u00e9" * 10
+    with pytest.raises(ResourcePolicyError, match="max_bytes"):
+        parse_with_namespaces(io.StringIO(text), limits=XmlLimits(max_bytes=26))
+
+
 def test_limits_and_policies_apply_together():
     with pytest.raises(ResourcePolicyError, match="max_elements"):
         parse(
@@ -222,6 +247,7 @@ def test_limits_and_policies_apply_together():
 
 def test_default_and_protected_select_their_parser_backends(monkeypatch):
     from defusedxml import ElementTree as DefusedET
+    from defusedxml.ElementTree import DefusedXMLParser
 
     stdlib_calls = []
     defused_calls = []
@@ -245,9 +271,12 @@ def test_default_and_protected_select_their_parser_backends(monkeypatch):
 
     parse(b"<r/>", policy=XmlParserPolicy.protected())
     assert len(stdlib_calls) == 1
-    assert defused_calls[0]["forbid_dtd"] is False
-    assert defused_calls[0]["forbid_entities"] is True
-    assert defused_calls[0]["forbid_external"] is True
+    assert len(defused_calls) == 1
+    parser = defused_calls[0]["parser"]
+    assert isinstance(parser, DefusedXMLParser)
+    assert parser.forbid_dtd is False
+    assert parser.forbid_entities is True
+    assert parser.forbid_external is True
 
 
 def test_default_policy_with_limits_stays_on_stdlib(monkeypatch):
@@ -276,6 +305,19 @@ def test_configure_expat_security_protected_rejects_entities():
     configure_expat_security(parser, XmlParserPolicy.protected())
     with pytest.raises(ResourcePolicyError, match="entity"):
         parser.Parse(ENTITY_DOC, True)
+
+
+def test_configure_expat_security_protected_rejects_external_doctypes():
+    parser = expat.ParserCreate()
+    configure_expat_security(parser, XmlParserPolicy.protected())
+    with pytest.raises(ResourcePolicyError, match="external"):
+        parser.Parse(EXTERNAL_DTD_DOC, True)
+
+
+def test_configure_expat_security_protected_accepts_a_plain_doctype():
+    parser = expat.ParserCreate()
+    configure_expat_security(parser, XmlParserPolicy.protected())
+    parser.Parse(b"<!DOCTYPE r><r/>", True)
 
 
 def test_configure_expat_security_rejects_unparsed_entities():

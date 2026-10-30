@@ -19,10 +19,10 @@ class XmlLimits:
     """Optional structural budgets for one XML parse.
 
     Every bound is inclusive and counted on the input as supplied:
-    ``max_bytes`` on stream/file bytes (characters for text-mode
-    streams), ``max_depth`` on element nesting (the root is depth 1),
-    and ``max_elements`` on start tags. ``None`` leaves that budget
-    unset.
+    ``max_bytes`` on file/binary-stream bytes or UTF-8 encoded bytes
+    for text-mode streams, ``max_depth`` on element nesting (the root
+    is depth 1), and ``max_elements`` on start tags. ``None`` leaves
+    that budget unset.
     """
 
     max_bytes: int | None = None
@@ -95,19 +95,36 @@ def configure_expat_security(parser: Any, policy: XmlParserPolicy) -> None:
     ``DefusedXMLParser`` (whose underlying Expat parser is ``.parser``).
     The installed handlers raise :class:`ResourcePolicyError` before any
     declaration is acted on; they never retrieve an external resource.
+
+    An existing declaration handler is left in place. A defusedxml parser
+    built with the same forbid flags has already installed its own handlers
+    (which preserve defusedxml's exception types), so this helper only adds
+    the narrow external-DOCTYPE check those flags cannot express.
     """
     expat_parser = getattr(parser, "parser", parser)
-    if policy.forbid_dtd:
+    if policy.forbid_dtd and expat_parser.StartDoctypeDeclHandler is None:
         expat_parser.StartDoctypeDeclHandler = _reject_doctype
-    if policy.forbid_entities:
+    elif policy.forbid_external and expat_parser.StartDoctypeDeclHandler is None:
+        expat_parser.StartDoctypeDeclHandler = _reject_external_doctype
+    if policy.forbid_entities and expat_parser.EntityDeclHandler is None:
         expat_parser.EntityDeclHandler = _reject_entity
+    if policy.forbid_entities and expat_parser.UnparsedEntityDeclHandler is None:
         expat_parser.UnparsedEntityDeclHandler = _reject_entity
-    if policy.forbid_external:
+    if policy.forbid_external and expat_parser.ExternalEntityRefHandler is None:
         expat_parser.ExternalEntityRefHandler = _reject_external
 
 
 def _reject_doctype(*args: Any) -> None:
     raise ResourcePolicyError("XML DOCTYPE declarations are forbidden by the parser policy")
+
+
+def _reject_external_doctype(
+    name: str, sysid: str | None, pubid: str | None, has_internal_subset: bool
+) -> None:
+    if sysid is not None or pubid is not None:
+        raise ResourcePolicyError(
+            "XML external DOCTYPE references are forbidden by the parser policy"
+        )
 
 
 def _reject_entity(*args: Any) -> None:
