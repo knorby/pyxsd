@@ -161,6 +161,7 @@ module = [
     "pyxsd.xsd_data_types",
     "pyxsd.identity",
     "pyxsd.xml_policy",
+    "pyxsd.remote",
     "pyxsd.resource_refs",
     "pyxsd.mcp.*",
     "pyxsd.writers.*",
