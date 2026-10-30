@@ -363,3 +363,85 @@ def test_configure_expat_security_strict_rejects_doctypes():
     configure_expat_security(parser, XmlParserPolicy.strict())
     with pytest.raises(ResourcePolicyError, match="DOCTYPE"):
         parser.Parse(b"<!DOCTYPE r><r/>", True)
+
+
+def test_configure_expat_security_protected_chains_an_existing_doctype_handler():
+    """The external guard must wrap a handler the parser already installs.
+
+    CPython 3.13.18+ and 3.14+ ElementTree install their own start-DOCTYPE
+    handler, so "leave an existing handler alone" silently dropped the guard
+    on those versions. This hand-installed handler reproduces that condition
+    on every interpreter.
+    """
+    seen = []
+
+    def record(name, sysid, pubid, has_internal_subset):
+        seen.append((name, sysid, pubid, has_internal_subset))
+
+    parser = expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = record
+    configure_expat_security(parser, XmlParserPolicy.protected())
+    with pytest.raises(ResourcePolicyError, match="external"):
+        parser.Parse(EXTERNAL_DTD_DOC, True)
+    assert seen == []
+
+    parser = expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = record
+    configure_expat_security(parser, XmlParserPolicy.protected())
+    parser.Parse(ATTLIST_DOC, True)
+    assert seen == [("root", None, None, True)]
+
+
+def test_configure_expat_security_strict_replaces_an_existing_doctype_handler():
+    seen = []
+
+    def record(*args):
+        seen.append(args)
+
+    parser = expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = record
+    configure_expat_security(parser, XmlParserPolicy.strict())
+    with pytest.raises(ResourcePolicyError, match="DOCTYPE"):
+        parser.Parse(b"<!DOCTYPE r><r/>", True)
+    assert seen == []
+
+
+def test_protected_parse_chains_a_parser_installed_doctype_handler(monkeypatch):
+    """End-to-end proof through the semantic parse on any interpreter."""
+    from defusedxml.ElementTree import DefusedXMLParser
+
+    seen = []
+
+    def record(name, sysid, pubid, has_internal_subset):
+        seen.append((name, sysid, pubid, has_internal_subset))
+
+    def install_doctype_handler(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self.parser.StartDoctypeDeclHandler = record
+
+    original_init = DefusedXMLParser.__init__
+    monkeypatch.setattr(DefusedXMLParser, "__init__", install_doctype_handler)
+
+    with pytest.raises(ResourcePolicyError, match="external"):
+        parse(EXTERNAL_DTD_DOC, policy=XmlParserPolicy.protected())
+    assert seen == []
+
+    root = parse(ATTLIST_DOC, policy=XmlParserPolicy.protected())
+    assert root.get("fallback") == "defaulted"
+    assert seen == [("root", None, None, True)]
+
+    with pytest.raises(ResourcePolicyError, match="DOCTYPE"):
+        parse(b"<!DOCTYPE root><root/>", policy=XmlParserPolicy.strict())
+    assert seen == [("root", None, None, True)]
+
+
+def test_the_documented_expat_version_report_is_vendor_neutral():
+    """`docs/xml-security.md` tells operators to print `pyexpat.EXPAT_VERSION`."""
+    import pyexpat
+    import re
+
+    version = expat.EXPAT_VERSION
+    assert version == pyexpat.EXPAT_VERSION
+    assert re.fullmatch(r"expat_\d+\.\d+\.\d+", version)
+    major, _, _ = version.removeprefix("expat_").split(".")
+    assert int(major) >= 2

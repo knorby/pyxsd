@@ -582,6 +582,11 @@ class RemoteResourcePolicy:
             f"pyxsd_remote_closure_{id(self)}", default=None
         )
         self._standalone = _Closure(root_pending=True)
+        # Private capability marker: ``pyxsd.schema`` discovers the
+        # per-compilation scope by this name, so a third-party policy can use
+        # "compilation" for anything else. Resolved through the instance at the
+        # end of __init__ so a subclass override still wins.
+        self._pyxsd_compilation_scope = self.compilation
 
     @contextmanager
     def compilation(self, *, root_read: bool = True) -> Iterator[None]:

@@ -268,12 +268,40 @@ def test_default_policy_keeps_internal_entities_indexable():
     assert index.extract(at(("r", 1))) == b"<r>a&v;b</r>"
 
 
-def test_parameter_entity_declared_reference_keeps_spans_exact():
-    data = b"<!DOCTYPE r [<!ENTITY % p \"<!ENTITY v 'X'>\"> %p;]><r><a>x</a>&v;<b/></r>"
+def test_parameter_entity_in_the_internal_subset_keeps_spans_exact():
+    data = b"<!DOCTYPE r [<!ENTITY % p \"<!ENTITY v 'X'>\"> %p;]><r><a>x</a><b/></r>"
     index = SourceIndex("parameter-entity.xml", data)
     assert index.extract(at(("r", 1), ("a", 1))) == b"<a>x</a>"
     assert index.extract(at(("r", 1), ("b", 1))) == b"<b/>"
-    assert index.extract(at(("r", 1))) == b"<r><a>x</a>&v;<b/></r>"
+    assert index.extract(at(("r", 1))) == b"<r><a>x</a><b/></r>"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # An internal declaration naming an external resource is skipped by
+        # Expat, but ElementTree reports "undefined entity" for the reference.
+        b'<!DOCTYPE r [<!ENTITY v SYSTEM "file:///must-not-read">]><r>&v;</r>',
+        # An external subset hides the declaration from Expat entirely.
+        b'<!DOCTYPE r SYSTEM "file:///must-not-read"><r>&v;</r>',
+        # An entity declared through a parameter entity is skipped as well.
+        b"<!DOCTYPE r [<!ENTITY % p \"<!ENTITY v 'X'>\"> %p;]><r>&v;</r>",
+        # A reference in mixed content, not only as the whole text.
+        b'<!DOCTYPE r [<!ENTITY v SYSTEM "file:///must-not-read">]><r>a&v;b</r>',
+    ],
+)
+def test_a_skipped_entity_reference_fails_closed(data):
+    with pytest.raises(PyXSDError, match=r"r\.xml: undefined entity"):
+        SourceIndex("r.xml", data)
+
+
+def test_a_skipped_parameter_entity_in_the_subset_stays_accepted():
+    # ElementTree accepts an undeclared parameter entity in the subset because
+    # this parser configuration never reads parameter entities, so the index
+    # must not turn that declaration into a failure.
+    data = b"<!DOCTYPE r [ %nope; ]><r/>"
+    index = SourceIndex("parameter.xml", data)
+    assert index.extract(at(("r", 1))) == b"<r/>"
 
 
 def test_entity_expanded_elements_have_no_addressable_span():
@@ -408,17 +436,17 @@ POLICY_IDS = ["default", "protected", "strict"]
 def test_index_matches_the_semantic_declaration_decision(data, policy):
     semantic = semantic_outcome(data, policy)
     indexed = index_outcome(data, policy)
-    # The declaration decision is the shared contract. Default policy keeps
-    # the stdlib's reference behavior qualification: an unresolved external
-    # entity is an ElementTree parse error, while Expat skips it without a
-    # fetcher; neither parser treats the declaration itself as denied.
-    assert (semantic[0] == "denied") == (indexed[0] == "denied")
+    # Both parsers must reach the same outcome: a policy denial, a rejection
+    # of the document, or an accepted tree. A skipped entity reference is a
+    # rejection in both (ElementTree: "undefined entity"; index: PyXSDError).
+    assert indexed[0] == semantic[0]
     if semantic[0] == "denied":
         assert indexed == semantic
+    elif semantic[0] == "malformed":
+        assert "undefined entity" in semantic[1]
+        assert "undefined entity" in indexed[1]
     else:
-        assert indexed[0] == "accepted"
-        if semantic[0] == "accepted":
-            assert indexed[1].extract(at((semantic[1], 1))) is not None
+        assert indexed[1].extract(at((semantic[1], 1))) is not None
 
 
 @pytest.mark.parametrize("policy", POLICIES, ids=POLICY_IDS)
@@ -437,13 +465,17 @@ def test_index_never_reads_a_file_or_opens_a_socket(monkeypatch, data, policy):
     def deny(*args, **kwargs):
         raise AssertionError("the index tried to reach an external resource")
 
-    expected = "accepted" if policy is None else "denied"
     with monkeypatch.context() as patch:
         patch.setattr("builtins.open", deny)
         patch.setattr(socket, "socket", deny)
         status, detail = index_outcome(data, policy)
-    assert status == expected
-    if expected == "denied":
+    if policy is None:
+        # The default profile installs no fetcher, so these documents either
+        # parse (the declaration alone is harmless) or fail as unresolved
+        # entities; neither outcome touches a file or a socket.
+        assert status in ("accepted", "malformed")
+    else:
+        assert status == "denied"
         assert isinstance(detail, str)
         assert "forbidden" in detail
 

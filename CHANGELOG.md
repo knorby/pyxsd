@@ -47,6 +47,25 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ### Changed
 
+- **Migration notes for the XML-resource and source-fidelity release:**
+  - `ResourcePolicy.read()` can now receive `purpose="schema-hint"` for a schema
+    the instance selected through `xsi:schemaLocation` or
+    `xsi:noNamespaceSchemaLocation` (and for hint-selected main schemas). A
+    third-party policy that switches on `purpose` must handle the new value;
+    treating it like `"schema"` keeps the old behavior, and denying it is now
+    possible without denying ordinary schema loads.
+  - The MCP `pyxsd_query_document` `result="subtree"` response is a breaking
+    shape change: the serialized `subtree` text is removed, and each element
+    result carries `encoding` (`"base64"`), `data` (exact original bytes),
+    `byte_length`, `span`, and `source_faithful`. When provenance or a span is
+    unavailable the result instead carries a per-result `fault` of
+    `source_unavailable` with null data. Clients must decode `data` rather than
+    read `subtree`.
+  - Selecting `RemoteResourcePolicy` also changes instance parsing: the compiled
+    schema retains the policy, so later `Schema.parse()` calls parse the
+    instance with `XmlParserPolicy.strict()` and cap it at
+    `limits.response_bytes`. Local instances are affected, and a DOCTYPE-bearing
+    or oversized instance is refused while the policy is attached.
 - `defusedxml` joins `elementpath` as a base dependency (both pure Python).
   `defusedxml` is loaded only when an opt-in parser profile selects it, and it
   is no longer a separate `pyxsd[mcp]` requirement.

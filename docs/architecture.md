@@ -86,9 +86,10 @@ There are two parser roles:
   `xml.parsers.expat` pass over the original bytes to record element paths and
   exact half-open byte spans. It never installs an external-resource fetcher,
   builds no second tree, and applies the same declaration policy and,
-  when supplied, structural limits. The MCP server uses it for
-  `result: "subtree"` so the returned bytes are an exact slice of the captured
-  source rather than a serialization of the bound tree.
+  when supplied, structural limits. It rejects every entity reference it cannot
+  expand, so it never accepts a document the semantic parser rejected. The MCP
+  server uses it for `result: "subtree"` so the returned bytes are an exact
+  slice of the captured source rather than a serialization of the bound tree.
 
 Neither parser role is a sandbox. Path confinement, authentication, and
 timeouts belong to the application policy or the surrounding process boundary;

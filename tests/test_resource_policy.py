@@ -508,3 +508,23 @@ def test_custom_resource_policy_owns_explicit_parser_arguments(tmp_path, kwargs)
     schema = pyxsd.compile(io.StringIO(SIMPLE), resource_policy=policy)
     with pytest.raises(ValueError, match="resource_policy"):
         schema.parse(io.StringIO("<root>4</root>"), **kwargs)
+
+
+def test_custom_policy_with_an_unrelated_compilation_attribute_compiles(tmp_path):
+    """Only the private capability marker enables per-compilation scoping."""
+
+    class NotesPolicy(RecordingPolicy):
+        # Not a hook: a third-party policy may use this name for anything.
+        compilation = "compiled once per schema"
+
+    policy = NotesPolicy(tmp_path)
+    schema = pyxsd.compile(io.StringIO(SIMPLE), resource_policy=policy)
+    assert not schema.report.has_errors
+    document = schema.parse(io.StringIO("<root>4</root>"))
+    assert document.is_valid
+
+    (tmp_path / "main.xsd").write_text(SIMPLE, encoding="utf-8")
+    policy = NotesPolicy(tmp_path)
+    schema = pyxsd.compile("main.xsd", resource_policy=policy)
+    assert not schema.report.has_errors
+    assert policy.reads[-1][2] == "schema"

@@ -559,12 +559,15 @@ compile = Schema.compile
 def _policy_compilation(policy: ResourcePolicy | None, *, root_read: bool) -> Iterator[None]:
     """Enter a policy's optional per-compilation closure scope.
 
-    Only :class:`~pyxsd.remote.RemoteResourcePolicy` defines the hook; a
-    caller's custom 3-argument policy sees no API change. ``root_read`` is
-    false for an anonymous stream schema, whose dependencies must still
-    authorize local-to-remote loading.
+    :class:`~pyxsd.remote.RemoteResourcePolicy` advertises the hook through the
+    private ``_pyxsd_compilation_scope`` capability marker, not through the
+    public ``compilation()`` method's spelling, so a custom policy may define
+    an unrelated ``compilation`` attribute without breaking compilation. A
+    policy that wants the same per-compilation state publishes the marker
+    itself. ``root_read`` is false for an anonymous stream schema, whose
+    dependencies must still authorize local-to-remote loading.
     """
-    enter = getattr(policy, "compilation", None)
+    enter = getattr(policy, "_pyxsd_compilation_scope", None)
     if enter is None:
         yield
     else:

@@ -8,6 +8,7 @@ external DTDs or entities.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -96,22 +97,42 @@ def configure_expat_security(parser: Any, policy: XmlParserPolicy) -> None:
     The installed handlers raise :class:`ResourcePolicyError` before any
     declaration is acted on; they never retrieve an external resource.
 
-    An existing declaration handler is left in place. A defusedxml parser
-    built with the same forbid flags has already installed its own handlers
-    (which preserve defusedxml's exception types), so this helper only adds
-    the narrow external-DOCTYPE check those flags cannot express.
+    A ``forbid_dtd`` policy installs its unconditional rejection even when the
+    parser already tracks DOCTYPE declarations, so a permissive or merely
+    bookkeeping handler cannot replace the denial. A ``forbid_external``
+    policy wraps any pre-existing start-DOCTYPE handler: an external
+    ``SYSTEM``/``PUBLIC`` identifier is rejected before the original handler
+    is consulted, while a plain DOCTYPE is delegated so the parser keeps its
+    own tracking (CPython 3.13.18+ and 3.14+ ElementTree rely on it). Entity
+    and external-reference handlers installed by a matching defusedxml parser
+    are left in place, preserving defusedxml's exception types.
     """
     expat_parser = getattr(parser, "parser", parser)
-    if policy.forbid_dtd and expat_parser.StartDoctypeDeclHandler is None:
+    previous_doctype = expat_parser.StartDoctypeDeclHandler
+    if policy.forbid_dtd:
         expat_parser.StartDoctypeDeclHandler = _reject_doctype
-    elif policy.forbid_external and expat_parser.StartDoctypeDeclHandler is None:
-        expat_parser.StartDoctypeDeclHandler = _reject_external_doctype
+    elif policy.forbid_external:
+        expat_parser.StartDoctypeDeclHandler = _external_doctype_guard(previous_doctype)
     if policy.forbid_entities and expat_parser.EntityDeclHandler is None:
         expat_parser.EntityDeclHandler = _reject_entity
     if policy.forbid_entities and expat_parser.UnparsedEntityDeclHandler is None:
         expat_parser.UnparsedEntityDeclHandler = _reject_entity
     if policy.forbid_external and expat_parser.ExternalEntityRefHandler is None:
         expat_parser.ExternalEntityRefHandler = _reject_external
+
+
+def _external_doctype_guard(
+    handler: Callable[..., Any] | None,
+) -> Callable[[str, str | None, str | None, bool], Any]:
+    """Wrap *handler* with the external-DOCTYPE check, keeping its plain-DTD work."""
+
+    def guarded(name: str, sysid: str | None, pubid: str | None, has_internal_subset: bool) -> Any:
+        _reject_external_doctype(name, sysid, pubid, has_internal_subset)
+        if handler is None:
+            return None
+        return handler(name, sysid, pubid, has_internal_subset)
+
+    return guarded
 
 
 def _reject_doctype(*args: Any) -> None:

@@ -827,6 +827,31 @@ def test_instance_reads_never_enter_the_remote_closure_budget(tmp_path: Any) -> 
     assert transport.requests == [ROOT]
 
 
+def test_a_local_instance_is_parsed_with_the_strict_profile(tmp_path: Any) -> None:
+    """Selecting the policy hardens instance parsing, not only schema parsing."""
+    body = SIMPLE_DOC
+    transport = FakeTransport({ROOT: response(ROOT, body)})
+    schema = pyxsd.compile(ROOT, resource_policy=remote_policy(transport))
+    instance = tmp_path / "input.xml"
+    instance.write_bytes(b'<!DOCTYPE root [<!ENTITY v "4">]><root>&v;</root>')
+    with pytest.raises(ResourcePolicyError, match="DOCTYPE"):
+        schema.parse(str(instance))
+    assert transport.requests == [ROOT]
+
+
+def test_a_local_instance_is_capped_by_response_bytes(tmp_path: Any) -> None:
+    body = SIMPLE_DOC
+    limit = len(body)
+    limits = RemoteLimits(response_bytes=limit, closure_bytes=limit, resources=1)
+    transport = FakeTransport({ROOT: response(ROOT, body)})
+    schema = pyxsd.compile(ROOT, resource_policy=remote_policy(transport, limits=limits))
+    instance = tmp_path / "input.xml"
+    instance.write_bytes(b"<root>" + b"4" * limit + b"</root>")
+    with pytest.raises(ResourcePolicyError, match=f"max_bytes={limit}"):
+        schema.parse(str(instance))
+    assert transport.requests == [ROOT]
+
+
 # --- strict parsing and XML limits -------------------------------------------
 
 

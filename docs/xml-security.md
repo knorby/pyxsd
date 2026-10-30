@@ -107,6 +107,18 @@ vulnerabilities, so run pyxsd on a current CPython patch release with the
 operating system's Expat security updates. No parser profile makes an outdated
 Expat safe. XML 1.1 documents remain unsupported.
 
+Check the Expat your interpreter actually links against, especially in a
+container image or a bundled build:
+
+```console
+$ python -c "import pyexpat; print(pyexpat.EXPAT_VERSION)"
+expat_2.6.4
+```
+
+An old or unknown Expat version is a security finding for untrusted input; no
+parser profile compensates for it. `xml.parsers.expat.EXPAT_VERSION` reports the
+same string from inside Python.
+
 ## Resource policies
 
 `pyxsd.ResourcePolicy` is a protocol for callers that need to control reads:
@@ -157,6 +169,14 @@ schema = pyxsd.Schema.compile(
     resource_policy=remote,
 )
 ```
+
+**The policy also changes instance parsing.** The compiled schema retains the
+policy, so every later `schema.parse()` reads the instance through it and parses
+it with `XmlParserPolicy.strict()`, capped at `limits.response_bytes`. That
+applies to local instance files as well: a local instance with any DOCTYPE, or
+one larger than `response_bytes`, is refused. A policy's `parse()` owns XML
+parsing, so `xml_policy`/`xml_limits` cannot override this per instance; compile
+a schema without the policy if an instance needs a different posture.
 
 ### Trust rules
 

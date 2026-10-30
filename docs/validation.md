@@ -106,6 +106,11 @@ overlays are refused. Once selected, transport/resolver failures abort the
 compile even for a document-authored include/import. Full rules, defaults, and
 the DNS-rebinding caveat are in {doc}`xml-security`.
 
+Selecting the policy also governs instance parsing: `Schema.parse()` sends the
+instance through the policy, which parses it with `XmlParserPolicy.strict()` and
+caps it at `limits.response_bytes`. Local instances are affected too, so a
+DOCTYPE-bearing or oversized instance is refused while the policy is attached.
+
 ## Report API
 
 ```{eval-rst}

@@ -43,7 +43,9 @@ class SourceIndex:
     than re-encoded. ``policy`` defaults to
     :meth:`~pyxsd.xml_policy.XmlParserPolicy.default` (the same declaration
     behavior as core parsing); ``limits`` bounds the supplied bytes, element
-    depth (the root is depth one), and start-tag count.
+    depth (the root is depth one), and start-tag count. A document that
+    references an entity the index cannot expand is rejected, so the index
+    never accepts an input the semantic parser rejected.
     """
 
     def __init__(
@@ -64,7 +66,9 @@ class SourceIndex:
         # This parser starts with no declaration handlers, so the shared
         # guards are the ones that actually decide; no fetcher is installed.
         configure_expat_security(parser, effective)
-        state = _IndexState(parser, content, unit, open_marker, close_marker, terminator, limits)
+        state = _IndexState(
+            parser, source, content, unit, open_marker, close_marker, terminator, limits
+        )
         parser.StartElementHandler = state.start
         parser.EndElementHandler = state.end
         parser.CharacterDataHandler = state.characters
@@ -72,6 +76,11 @@ class SourceIndex:
         parser.ProcessingInstructionHandler = state.processing_instruction
         parser.StartCdataSectionHandler = state.start_cdata
         parser.SkippedEntityHandler = state.skipped_entity
+        # ElementTree reports an entity reference it cannot expand as
+        # "undefined entity". Expat only reaches the default handler for such
+        # a reference, so the index fails closed the same way rather than
+        # accepting a document the semantic parser rejects.
+        parser.DefaultHandlerExpand = state.unexpanded_reference
         try:
             parser.Parse(content, True)
         except expat.ExpatError as exc:
@@ -96,6 +105,7 @@ class _IndexState:
     def __init__(
         self,
         parser: expat.XMLParserType,
+        source: str,
         content: bytes,
         unit: int,
         open_marker: bytes,
@@ -104,6 +114,7 @@ class _IndexState:
         limits: XmlLimits | None,
     ) -> None:
         self._parser = parser
+        self._source = source
         self._content = content
         self._unit = unit
         self._open_marker = open_marker
@@ -165,7 +176,26 @@ class _IndexState:
         self._advance()
 
     def skipped_entity(self, name: str, is_parameter_entity: bool) -> None:
-        self._advance()
+        """Reject a skipped entity reference; no span may be returned.
+
+        ElementTree rejects every reference it cannot expand ("undefined
+        entity"), so the index must not accept one either. This index parser
+        never enables parameter-entity reading, so an unreadable parameter
+        entity in the DTD subset is not reported here (and ElementTree accepts
+        it); only a content reference reaches this handler.
+        """
+        raise PyXSDError(f"{self._source}: undefined entity &{name};")
+
+    def unexpanded_reference(self, text: str) -> None:
+        """Reject a content entity reference Expat left unexpanded.
+
+        With every content handler installed, the default handler inside the
+        document element only sees a reference such as ``&v;`` that Expat
+        could not expand. DTD-subset text arrives before the root element
+        starts and is ignored.
+        """
+        if self._path and text.startswith("&"):
+            raise PyXSDError(f"{self._source}: undefined entity {text}")
 
     def _advance(self) -> None:
         """Close the pending element before the event at the current index."""
@@ -197,10 +227,9 @@ class _IndexState:
         closing tag and just past ``/>`` for a self-closing tag. A following
         construct at the same index therefore proves self-closing (which
         also disambiguates ``<x/></r>``, where the next bytes look like a
-        close tag). Trailing whitespace after the root and skipped entity
-        references are the only content that can appear at a later index
-        without a registered event, so the closing-tag preposition remains
-        the deciding test there.
+        close tag). Trailing whitespace after the root is the only content
+        that can appear at a later index without a registered event, so the
+        closing-tag preposition remains the deciding test there.
         """
         if next_index <= anchor:
             return anchor
