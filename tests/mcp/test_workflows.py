@@ -307,7 +307,10 @@ def test_repeated_node_repair_returns_exact_candidate(tmp_path):
                 },
             )
             assert occurred["data"]["results"][0]["location"]["path"][-1]["index"] == 2
-            assert "<value>bad</value>" in occurred["data"]["results"][0]["subtree"]
+            assert (
+                base64.b64decode(occurred["data"]["results"][0]["data"])
+                == b"<item><value>bad</value></item>"
+            )
             submitted = await _call(
                 client,
                 "pyxsd_preview_transform",

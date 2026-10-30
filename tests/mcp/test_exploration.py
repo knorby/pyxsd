@@ -1,5 +1,6 @@
 """Exploration services compose session captures, clean workers and bounded pages."""
 
+import base64
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -269,7 +270,8 @@ def test_query_exact_occurrence_subtree_external_functions_and_prefix_errors(tmp
             )
             item = result.data["results"][0]
             assert item["location"]["path"][-1]["index"] == 2
-            assert "<value>bad</value>" in item["subtree"]
+            assert item["source_faithful"] is True
+            assert base64.b64decode(item["data"]) == b"<item><value>bad</value></item>"
             summary = await service.query_document(
                 QueryDocumentRequest(
                     workspace_id=workspace,
@@ -626,24 +628,58 @@ def test_explain_issue_new_codes_known(tmp_path, code):
     anyio.run(scenario)
 
 
-def test_query_subtree_warns_serialized(tmp_path):
+def test_query_subtree_returns_exact_source_and_summary_is_unchanged(tmp_path):
     async def scenario():
         async with harness(tmp_path) as (service, inputs, _pool, workspace):
             await upload(inputs, workspace, {"schema.xsd": XSD, "doc.xml": VALID})
-            for mode in ("summary", "subtree"):
-                result = await service.query_document(
-                    QueryDocumentRequest(
-                        workspace_id=workspace,
-                        schema_ref=schema_ref(),
-                        document=FileRef(path="doc.xml"),
-                        xpath="/root",
-                        result=mode,
-                    )
+            subtree = await service.query_document(
+                QueryDocumentRequest(
+                    workspace_id=workspace,
+                    schema_ref=schema_ref(),
+                    document=FileRef(path="doc.xml"),
+                    xpath="/root",
+                    result="subtree",
                 )
-                assert bool(result.warnings) == (mode == "subtree")
-                if mode == "subtree":
-                    assert "serialized" in result.warnings[0]
-                    assert result.data["results"][0]["source_faithful"] is False
+            )
+            assert subtree.warnings == []
+            item = subtree.data["results"][0]
+            assert item["encoding"] == "base64"
+            assert item["source_faithful"] is True
+            assert item["fault"] is None
+            assert base64.b64decode(item["data"]) == VALID.encode()
+            assert item["byte_length"] == len(VALID)
+            assert item["span"] == {"start": 0, "end": len(VALID)}
+            summary = await service.query_document(
+                QueryDocumentRequest(
+                    workspace_id=workspace,
+                    schema_ref=schema_ref(),
+                    document=FileRef(path="doc.xml"),
+                    xpath="/root/item",
+                    result="summary",
+                )
+            )
+            assert summary.warnings == []
+            assert "source_faithful" not in summary.data["results"][0]
+            assert "text" in summary.data["results"][0]
+
+    anyio.run(scenario)
+
+
+def test_query_subtree_without_matches_returns_an_empty_page(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": XSD, "doc.xml": VALID})
+            result = await service.query_document(
+                QueryDocumentRequest(
+                    workspace_id=workspace,
+                    schema_ref=schema_ref(),
+                    document=FileRef(path="doc.xml"),
+                    xpath="/root/missing",
+                    result="subtree",
+                )
+            )
+            assert result.data["results"] == []
+            assert result.page.returned == 0
 
     anyio.run(scenario)
 

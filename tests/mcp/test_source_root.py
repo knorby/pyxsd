@@ -1,5 +1,6 @@
 """Production tools capture from --source-root when the workspace is empty."""
 
+import base64
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -148,6 +149,34 @@ def test_source_root_inspect_and_query(tmp_path):
                 )
             )
             assert queried.data["results"]
+
+    anyio.run(scenario)
+
+
+def test_source_root_subtree_is_exact_utf16_source_bytes(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, _inputs, _pool, workspace):
+            body = '<t:main xmlns:t="urn:t"><t:inc><t:a>caf\u00e9</t:a></t:inc></t:main>'
+            content = ('<?xml version="1.0" encoding="UTF-16"?>\n' + body + "\n").encode("utf-16")
+            encoded_body = body.encode("utf-16")[2:]
+            (tmp_path / "tree" / "data" / "utf16.xml").write_bytes(content)
+            result = await service.query_document(
+                QueryDocumentRequest(
+                    workspace_id=workspace,
+                    document=FileRef(path="data/utf16.xml"),
+                    schema_ref=main_ref(),
+                    xpath="/t:main",
+                    namespaces={"t": "urn:t"},
+                    result="subtree",
+                )
+            )
+            item = result.data["results"][0]
+            decoded = base64.b64decode(item["data"])
+            start = content.index(encoded_body)
+            assert decoded == encoded_body
+            assert item["byte_length"] == len(encoded_body)
+            assert item["span"] == {"start": start, "end": start + len(encoded_body)}
+            assert item["source_faithful"] is True
 
     anyio.run(scenario)
 

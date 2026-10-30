@@ -205,11 +205,15 @@ replacing session inputs cannot reuse deleted paths.
 `ValidationIssue.location` is a structured path with expanded names and one-based
 same-name sibling indexes. It identifies the exact occurrence, not merely the
 first element with a matching local name. Query with `result: "subtree"` to
-retrieve that occurrence's XML and location together.
-Subtrees are regenerated from bound data: formatting and comments are not
-preserved (`source_faithful: false`), and the response carries a warning.
-Missing-child diagnostics identify a container rather than a nonexistent child;
-check `location_precision` before treating an issue as an exact occurrence.
+retrieve that occurrence's source bytes and location together.
+Subtrees are exact slices of the captured source: `encoding: "base64"`, `data`,
+`byte_length`, and the byte `span` reproduce the original bytes with
+`source_faithful: true`, so prefixes, attribute layout, comments, and CDATA stay
+as written while the element's trailing tail text is excluded. An occurrence
+whose source cannot be addressed reports `source_unavailable` with null data
+instead of regenerated XML. Missing-child diagnostics identify a container
+rather than a nonexistent child; check `location_precision` before treating an
+issue as an exact occurrence.
 
 Reports distinguish aggregate counts from collection suppression and detail
 pagination. `pyxsd_validate_document` returns `report: null` and writes no report

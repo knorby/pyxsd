@@ -46,8 +46,9 @@ execution or Arrow features — check `adapters.arrow.available` and
    `report: null` and create no report artifact; invalid documents retain one.
 4. `pyxsd_query_document` follows an issue to its exact occurrence: repeated
    nodes are identified by same-name sibling indexes in `location.path`, and
-   `result: "subtree"` regenerates that occurrence's XML from bound data; it is
-   not source-faithful and does not preserve comments or formatting.
+   `result: "subtree"` slices that occurrence's exact original source bytes
+   (base64 `data` with its `span`), preserving formatting, comments, and CDATA
+   while excluding the element's trailing tail text.
 5. `pyxsd_explain_issue` gives curated guidance. Pass the retained report
    artifact to inspect one exact issue; reports remain readable after session
    inputs are released.

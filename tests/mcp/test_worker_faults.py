@@ -1,5 +1,6 @@
 """Defensive worker-boundary branches use explicit, deterministic fault injection."""
 
+import base64
 import io
 import sys
 import time
@@ -495,3 +496,209 @@ def test_introspection_may_inspect_incomplete_schema(tmp_path):
     )
     assert result["roots"] == ["element:root"]
     cache.close()
+
+
+SOURCE_XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:t="urn:t"
+    targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:complexType name="Item" mixed="true">
+    <xs:sequence><xs:element name="v" type="xs:string" minOccurs="0"/></xs:sequence>
+    <xs:attribute name="id" type="xs:string"/>
+  </xs:complexType>
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="item" type="t:Item" minOccurs="0" maxOccurs="unbounded"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+SOURCE_DOC = b"""<?xml version="1.0"?>
+<T:root   xmlns:T="urn:t">
+  <T:item
+      id="a"><!-- first --><T:v><![CDATA[x<y]]></T:v>tail one</T:item>
+  <T:item id="b"><T:v>2</T:v>tail two</T:item>
+</T:root>
+"""
+FIRST_ITEM = b'<T:item\n      id="a"><!-- first --><T:v><![CDATA[x<y]]></T:v>tail one</T:item>'
+SECOND_ITEM = b'<T:item id="b"><T:v>2</T:v>tail two</T:item>'
+
+PLAIN_XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="r" type="xs:string"/>
+</xs:schema>"""
+
+
+def source_snapshot(tmp_path, *, document=SOURCE_DOC, schema=SOURCE_XSD):
+    """Manifest two files exactly as captured, without text-mode decoding."""
+    import hashlib
+
+    from pyxsd.mcp.captures import CaptureFile, InputCapture
+
+    manifest = []
+    for name, content in (
+        ("schema.xsd", schema.encode()),
+        ("document.xml", document),
+    ):
+        (tmp_path / name).write_bytes(content)
+        manifest.append(CaptureFile(name, hashlib.sha256(content).hexdigest(), len(content)))
+    return InputCapture("workspace", 1, tmp_path, tuple(manifest))
+
+
+def query_operation(snapshot, **updates):
+    arguments = {
+        "request_id": "query",
+        "capture": workers.capture_to_wire(snapshot),
+        "schema_ref": SchemaRef(source=FileRef(path="schema.xsd")),
+        "document": FileRef(path="document.xml"),
+        "xpath": "/t:root/t:item",
+        "namespaces": {"t": "urn:t"},
+        "result": "subtree",
+    }
+    arguments.update(updates)
+    return workers.QueryOperation(**arguments)
+
+
+def test_query_subtree_slices_exact_source_bytes_with_one_index(tmp_path, monkeypatch):
+    from pyxsd.mcp.cache import SchemaCache
+
+    snapshot = source_snapshot(tmp_path)
+    cache = SchemaCache(Limits())
+    built: list[bytes] = []
+    original = worker_main.SourceIndex
+
+    def counting(source, content, **kwargs):
+        built.append(content)
+        return original(source, content, **kwargs)
+
+    monkeypatch.setattr(worker_main, "SourceIndex", counting)
+    try:
+        result = worker_main._execute(query_operation(snapshot), cache, __version__)
+    finally:
+        cache.close()
+
+    assert built == [SOURCE_DOC]
+    first, second = result["results"]
+    for item, expected in ((first, FIRST_ITEM), (second, SECOND_ITEM)):
+        assert item["encoding"] == "base64"
+        assert item["source_faithful"] is True
+        assert item["fault"] is None
+        assert "subtree" not in item
+        decoded = base64.b64decode(item["data"])
+        assert decoded == expected
+        assert item["byte_length"] == len(expected)
+        start = SOURCE_DOC.index(expected)
+        assert item["span"] == {"start": start, "end": start + len(expected)}
+        assert b"<?xml" not in decoded
+        assert b"ns0:" not in decoded
+    assert base64.b64decode(second["data"]).endswith(b"</T:item>")
+    assert b"tail two" in base64.b64decode(second["data"])
+
+
+def test_query_subtree_reports_source_unavailable_without_provenance(tmp_path, monkeypatch):
+    from pyxsd.mcp.cache import SchemaCache
+
+    snapshot = source_snapshot(tmp_path)
+    cache = SchemaCache(Limits())
+    original = worker_main._parse
+
+    def provenance_free(operation, current, processor_version):
+        document = original(operation, current, processor_version)
+        document._provenance = None
+        return document
+
+    monkeypatch.setattr(worker_main, "_parse", provenance_free)
+    try:
+        result = worker_main._execute(query_operation(snapshot), cache, __version__)
+    finally:
+        cache.close()
+
+    item = result["results"][0]
+    assert item["encoding"] == "base64"
+    assert item["data"] is None
+    assert item["byte_length"] is None
+    assert item["span"] is None
+    assert item["source_faithful"] is False
+    assert item["fault"]["code"] == "source_unavailable"
+
+
+def test_query_subtree_reports_a_missing_span_as_source_unavailable(tmp_path, monkeypatch):
+    from pyxsd.mcp.cache import SchemaCache
+
+    snapshot = source_snapshot(tmp_path)
+    cache = SchemaCache(Limits())
+
+    def mismatched(operation, current):
+        return worker_main.SourceIndex("other.xml", b'<T:root xmlns:T="urn:t"/>')
+
+    monkeypatch.setattr(worker_main, "_source_index", mismatched)
+    try:
+        result = worker_main._execute(query_operation(snapshot), cache, __version__)
+    finally:
+        cache.close()
+
+    item = result["results"][0]
+    assert item["location"]["path"][-1]["index"] == 1
+    assert item["data"] is None
+    assert item["source_faithful"] is False
+    assert item["fault"]["code"] == "source_unavailable"
+
+
+def test_query_subtree_source_change_is_a_typed_fault(tmp_path, monkeypatch):
+    from pyxsd.mcp.cache import SchemaCache
+
+    snapshot = source_snapshot(tmp_path)
+    cache = SchemaCache(Limits())
+    original = worker_main._parse
+
+    def mutate(operation, current, processor_version):
+        document = original(operation, current, processor_version)
+        (tmp_path / "document.xml").write_bytes(b'<T:root xmlns:T="urn:t"/>\n')
+        return document
+
+    monkeypatch.setattr(worker_main, "_parse", mutate)
+    try:
+        with pytest.raises(ToolError) as raised:
+            worker_main._execute(query_operation(snapshot), cache, __version__)
+    finally:
+        cache.close()
+    assert raised.value.fault.code == "source_changed"
+    assert not raised.value.fault.message.startswith("source_changed:")
+
+
+def test_query_subtree_index_applies_the_strict_parser_policy(tmp_path):
+    from pyxsd.mcp.cache import SchemaCache
+    from pyxsd.resource_policy import ResourcePolicyError
+
+    doctype = b"<!DOCTYPE r [<!ELEMENT r (#PCDATA)>]><r>x</r>"
+    snapshot = source_snapshot(tmp_path, document=doctype, schema=PLAIN_XSD)
+    cache = SchemaCache(Limits())
+    try:
+        with pytest.raises(ResourcePolicyError, match="DOCTYPE"):
+            worker_main._source_index(query_operation(snapshot, xpath="/r"), cache)
+    finally:
+        cache.close()
+
+
+def test_query_subtree_empty_page_and_summary_skip_the_source_index(tmp_path, monkeypatch):
+    from pyxsd.mcp.cache import SchemaCache
+
+    snapshot = source_snapshot(tmp_path)
+    cache = SchemaCache(Limits())
+
+    def unexpected(operation, current):
+        raise AssertionError("no source index is needed without a selected node")
+
+    monkeypatch.setattr(worker_main, "_source_index", unexpected)
+    try:
+        empty = worker_main._execute(
+            query_operation(snapshot, xpath="/t:root/t:missing"), cache, __version__
+        )
+        summary = worker_main._execute(
+            query_operation(snapshot, xpath="/t:root/t:item", result="summary"),
+            cache,
+            __version__,
+        )
+    finally:
+        cache.close()
+
+    assert empty["results"] == []
+    item = summary["results"][0]
+    assert "source_faithful" not in item
+    assert "text" in item
+    assert "data" not in item
