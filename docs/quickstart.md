@@ -2,14 +2,23 @@
 
 pyxsd maps an XML document into a Python object tree according to its XML
 Schema (XSD), reports validation issues, runs user-defined *transforms*, and
-writes the tree back out as XML. The base install's only runtime dependency
-is [elementpath](https://pypi.org/project/elementpath/), which is pure Python
-and has no compiled extensions.
+writes the tree back out as XML. The base install's runtime dependencies are
+[elementpath](https://pypi.org/project/elementpath/) (XSD regular expressions
+and XPath) and [defusedxml](https://pypi.org/project/defusedxml/), both pure
+Python with no compiled extensions. defusedxml is loaded only when an opt-in
+parser profile selects it; the default parser keeps the stdlib's speed and
+compatibility.
 
 ## Requirements
 
 - Python 3.11 or newer (3.11–3.15 tested)
-- One pure-Python dependency (`elementpath`, for XSD regular expressions)
+- Two pure-Python dependencies: `elementpath` (XSD regular expressions) and
+  `defusedxml` (opt-in parser hardening); no compiled extensions
+
+```{note}
+Parsing untrusted XML is a decision, not a default. See {doc}`xml-security` for
+`XmlParserPolicy`, `XmlLimits`, remote schema rules, and the XPath/DoS boundary.
+```
 
 ## Installation
 

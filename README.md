@@ -12,8 +12,10 @@
 Schema (XSD), reports non-fatal validation issues, runs user-defined
 *transforms*, and writes the tree back out as XML.
 
-- **Minimal dependencies** — one small, pure-Python package (`elementpath`)
-  for XSD regular expressions and XPath queries; no compiled extensions in the base install
+- **Minimal dependencies** — two small, pure-Python packages (`elementpath`
+  for XSD regular expressions and XPath queries, and `defusedxml` for the
+  opt-in parser profiles); no compiled extensions in the base install and no
+  parser overhead unless a profile is selected
 - **Optional integrations** — generated Pydantic models and schema-derived
   Arrow tables/Parquet output, independently installed with
   `pyxsd[pydantic]` and `pyxsd[arrow]`; Python 3.11+ remains supported
@@ -66,8 +68,8 @@ The local stdio server provides:
   declarations, and bounded `uses` / `used_by` graph queries
 - **XML diagnostics** — structured counts, exact repeated-node locations,
   paged issue reports, source/schema fingerprints, and curated explanations
-- **Bounded XPath queries** — scalar values, node summaries, and subtrees with
-  external-resource functions disabled
+- **Bounded XPath queries** — scalar values, node summaries, and exact source
+  subtrees with external-resource functions disabled
 - **Local session inputs** — replaceable schema/XML upload sets, private
   verified operation captures, and no arbitrary client-selected mounts
 - **Persistent outputs** — digest-verified local artifacts that survive restart
@@ -83,6 +85,18 @@ Start with the [MCP guide](https://pyxsd.knorby.com/mcp.html) for a complete
 Python client example, tool catalog, session/output lifecycle, and deployment
 boundaries. Execution is disabled in this build. The server speaks stdio only;
 there is no HTTP/OAuth mode, and remote user-code execution is not included.
+
+## XML security
+
+Parsing and schema retrieval are local and offline by default. The stdlib parser
+is kept for speed and compatibility, so protections are opt-in:
+`XmlParserPolicy.protected()` or `.strict()` select a defusedxml-backed parser,
+and `XmlLimits` bounds bytes, depth, and element count. The only built-in remote
+XSD loader is an explicit `RemoteResourcePolicy`, with HTTPS-only trust rules and
+finite per-compilation budgets; there is no persistent remote cache. The MCP
+server is stricter and always local. Read the
+[XML security guide](https://pyxsd.knorby.com/xml-security.html) before parsing
+untrusted documents or enabling remote schemas.
 
 ## Uses
 
@@ -303,6 +317,7 @@ Full documentation is published at **<https://pyxsd.knorby.com/>**:
 - [Data model](https://pyxsd.knorby.com/data-model.html)
 - [Mixin extensions](https://pyxsd.knorby.com/extensions.html)
 - [Validation and issue codes](https://pyxsd.knorby.com/validation.html)
+- [XML security and untrusted input](https://pyxsd.knorby.com/xml-security.html)
 - [Sequential parsing and Parquet datasets](docs/batch.md)
 - [Parse modes](https://pyxsd.knorby.com/binding.html)
 - [Transforms](https://pyxsd.knorby.com/transforms/)

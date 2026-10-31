@@ -5,17 +5,28 @@ from typing import TYPE_CHECKING
 __version__ = "1.2.1"
 
 __all__ = [
+    "AddressResolver",
     "BindingPolicy",
     "Document",
     "Extensions",
+    "HttpClientTransport",
     "NamespaceError",
     "ParseModes",
     "PyXSDError",
     "PyXSDWarning",
+    "RemoteLimits",
+    "RemoteResourcePolicy",
+    "RemoteResponse",
+    "RemoteTransport",
+    "RemoteTransportError",
+    "ResourcePolicy",
+    "ResourcePolicyError",
     "Schema",
     "ValidationError",
     "XMLNode",
     "XPathError",
+    "XmlLimits",
+    "XmlParserPolicy",
     "__version__",
     "compile",
     "parse",
@@ -33,7 +44,18 @@ if TYPE_CHECKING:
     )
     from pyxsd.extensions import Extensions
     from pyxsd.nodes import XMLNode
+    from pyxsd.remote import (
+        AddressResolver,
+        HttpClientTransport,
+        RemoteLimits,
+        RemoteResourcePolicy,
+        RemoteResponse,
+        RemoteTransport,
+        RemoteTransportError,
+    )
+    from pyxsd.resource_policy import ResourcePolicy, ResourcePolicyError
     from pyxsd.schema import Schema, compile, parse
+    from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 
 def __getattr__(name: str):
@@ -61,6 +83,22 @@ def __getattr__(name: str):
         from pyxsd.extensions import Extensions
 
         return Extensions
+    if name in (
+        "AddressResolver",
+        "HttpClientTransport",
+        "RemoteLimits",
+        "RemoteResourcePolicy",
+        "RemoteResponse",
+        "RemoteTransport",
+        "RemoteTransportError",
+    ):
+        from pyxsd import remote
+
+        return getattr(remote, name)
+    if name in ("ResourcePolicy", "ResourcePolicyError"):
+        from pyxsd import resource_policy
+
+        return getattr(resource_policy, name)
     if name == "Schema":
         from pyxsd.schema import Schema
 
@@ -69,6 +107,10 @@ def __getattr__(name: str):
         from pyxsd.nodes import XMLNode
 
         return XMLNode
+    if name in ("XmlLimits", "XmlParserPolicy"):
+        from pyxsd import xml_policy
+
+        return getattr(xml_policy, name)
     if name == "compile":
         from pyxsd.schema import compile
 

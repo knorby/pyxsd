@@ -318,9 +318,13 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
 
             Repeated nodes are identified by same-name sibling indexes in
             location.path, with exact line/column locations. result "subtree"
-            returns that occurrence's XML — a serialized, reindented
-            regeneration of the bound data, not the original source text.
-            Requires a complete schema closure.
+            returns that occurrence's exact original source bytes: base64 data
+            with its byte span and byte_length, not a serialized or regenerated
+            XML document, so prefixes, attribute layout, comments, and CDATA stay
+            as written. The element's trailing tail text is excluded, and an
+            occurrence whose source cannot be addressed reports a
+            source_unavailable fault instead of regenerated XML. Requires a
+            complete schema closure.
             """
             request = QueryDocumentRequest(
                 workspace_id=workspace_id,

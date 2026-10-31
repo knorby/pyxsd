@@ -1,7 +1,7 @@
 """Isolated clean-worker entry point; stdout carries only bounded JSON frames."""
 
 import argparse
-import io
+import base64
 import json
 import re
 import sys
@@ -24,7 +24,8 @@ from pyxsd.introspection import (
 )
 from pyxsd.schema_base import SchemaBase
 from pyxsd.schema_context import last_components, remember_components
-from pyxsd.writers.xml_tree_writer import XmlTreeWriter
+from pyxsd.source_spans import SourceIndex
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 from .cache import CompileRequest, SchemaCache, require_complete_schema
 from .captures import CaptureDependency, InputPolicyError, InputResourcePolicy
@@ -350,18 +351,54 @@ def _find(
         }
 
 
-def _node_summary(document: Document, node: SchemaBase, subtree: bool) -> dict[str, JsonValue]:
+_SOURCE_UNAVAILABLE = "The occurrence has no addressable original source bytes"
+
+
+def _source_index(operation: QueryOperation, cache: SchemaCache) -> SourceIndex:
+    """Index the operation document's captured bytes once, under the MCP budget."""
+    policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
+    try:
+        data = policy.read("/workspace/" + operation.document.path, base=None, purpose="instance")
+    except InputPolicyError as exc:
+        raise ToolError(exc.code, str(exc).partition(": ")[2] or str(exc)) from exc
+    limits = cache.limits
+    return SourceIndex(
+        data.source_id,
+        data.content,
+        policy=XmlParserPolicy.strict(),
+        limits=XmlLimits(
+            max_bytes=limits.xml_file_bytes,
+            max_depth=limits.xml_depth,
+            max_elements=limits.xml_elements,
+        ),
+    )
+
+
+def _node_summary(
+    document: Document, node: SchemaBase, index: SourceIndex | None
+) -> dict[str, JsonValue]:
     result: dict[str, JsonValue] = {"name": getattr(node, "_name_", None)}
     provenance = document._provenance
     location = provenance.bound_location(node) if provenance is not None else None
     result["location"] = encode_value(location)
-    if subtree:
-        result["source_faithful"] = False
-        output = io.StringIO()
-        XmlTreeWriter(node, output)
-        result["subtree"] = output.getvalue()
-    else:
+    if index is None:
         result["text"] = encode_value(getattr(node, "_value_", None))
+        return result
+    span = None if location is None else index.span(location.path)
+    result["encoding"] = "base64"
+    if location is None or span is None:
+        result["data"] = None
+        result["byte_length"] = None
+        result["span"] = None
+        result["source_faithful"] = False
+        result["fault"] = {"code": "source_unavailable", "message": _SOURCE_UNAVAILABLE}
+        return result
+    chunk = cast(bytes, index.extract(location.path))
+    result["data"] = base64.b64encode(chunk).decode("ascii")
+    result["byte_length"] = len(chunk)
+    result["span"] = {"start": span.start, "end": span.end}
+    result["source_faithful"] = True
+    result["fault"] = None
     return result
 
 
@@ -381,9 +418,10 @@ def _query(
         page = value[operation.offset : operation.offset + operation.limit]
         results: JsonValue
         if all(isinstance(item, SchemaBase) for item in page):
-            results = [
-                _node_summary(document, item, operation.result == "subtree") for item in page
-            ]
+            index = (
+                _source_index(operation, cache) if operation.result == "subtree" and page else None
+            )
+            results = [_node_summary(document, item, index) for item in page]
         else:
             results = encode_value(page)
         return {"results": results, "page": _page(len(value), operation.offset, len(page))}

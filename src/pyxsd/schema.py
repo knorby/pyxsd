@@ -14,6 +14,7 @@ import os.path
 import warnings
 import weakref
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal
 from xml.etree import ElementTree as ET
@@ -34,11 +35,14 @@ from pyxsd.namespaces import XML_NS, NamespaceContext, parse_with_namespaces
 from pyxsd.resource_policy import (
     ResourcePolicy,
     ResourcePolicyError,
+    ResourcePurpose,
     new_validation_report,
     read_resource,
     record_declarations,
     source_identifier,
+    validate_purpose,
 )
+from pyxsd.resource_refs import classify_resource, require_local_reference, resource_base
 from pyxsd.schema_base import SchemaBase
 from pyxsd.schema_checks import (
     apply_default_attributes,
@@ -83,6 +87,7 @@ from pyxsd.schema_hints import absolute_schema_location_pairs, resolve_schema_hi
 from pyxsd.validation import ValidationReport
 from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import apply_conditional_inclusion
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +195,9 @@ class Schema:
         schema_location_pairs: list[tuple[str | None, str]] | None = None,
         extensions: Extensions | None = None,
         resource_policy: ResourcePolicy | None = None,
+        xml_policy: XmlParserPolicy | None = None,
+        xml_limits: XmlLimits | None = None,
+        _source_purpose: ResourcePurpose = "schema",
     ) -> "Schema":
         """Compiles *source* into a :class:`Schema`.
 
@@ -237,74 +245,115 @@ class Schema:
           generated classes' bases at build time (``XsdType.
           getBaseList``). Without one, class generation is unchanged.
 
+        - ``resource_policy`` - a trusted application resource policy.
+          Its ``parse()`` owns XML parsing, so ``xml_policy`` and
+          ``xml_limits`` cannot be combined with it.
+
+        - ``xml_policy`` - an opt-in :class:`~pyxsd.xml_policy.
+          XmlParserPolicy` applied to the main schema and every
+          included/imported dependency. ``None`` keeps stdlib parsing
+          and its current DTD/entity behavior. The choice is compile-
+          scoped: it never becomes the default for later
+          :meth:`parse` calls.
+
+        - ``xml_limits`` - optional :class:`~pyxsd.xml_policy.
+          XmlLimits` byte/depth/element budgets for the same documents.
+
+        - ``_source_purpose`` - internal: the resource purpose the main
+          schema document reads under. :func:`pyxsd.parse` passes
+          ``"schema-hint"`` when the instance's own location hint
+          selected the schema and ``"schema"`` when the caller named it.
+
         Use :meth:`require_valid` to reject a schema whose report
         holds errors.
         """
         if xsd_version not in ("1.0", "1.1"):
             raise ValueError(f"xsd_version must be '1.0' or '1.1', not {xsd_version!r}")
-        original_source = source
-        source_data = None
-        if resource_policy is not None:
-            try:
-                source_data = read_resource(source, resource_policy, purpose="schema")
-            except OSError as exc:
-                raise PyXSDError(f"the schema file could not be opened: {exc}") from exc
-            source = source_data.source_id
-            if source == "<memory>" and any(
-                not Path(location).is_absolute()
-                for location in [
-                    *(namespace_schemas or {}).values(),
-                    *(location for _, location in schema_location_pairs or []),
-                ]
-            ):
-                raise ResourcePolicyError("a relative schema dependency needs a named source base")
-        if isinstance(source, (str, os.PathLike)):
-            xml_path = Path(source).resolve().parent
-        else:
-            xml_path = Path.cwd()
-        ctx = CompositionContext(
-            mode=mode,
-            processor_version=decimal.Decimal(xsd_version),
-            namespace_schemas=dict(namespace_schemas or {}),
-            namespace_context=(
-                namespace_context if namespace_context is not None else NamespaceContext()
-            ),
-            report=new_validation_report(resource_policy),
-            classes={},
-            xml_path=xml_path,
-            schema_context=SchemaContext(components=ComponentTable()),
-            namespace_overrides={},
-            component_namespaces={},
-            injected_builtin_ids=set(),
-            form_defaults={},
-            xpath_default_namespaces={},
-            composed_element_ids=set(),
-            composed_schema_roots={},
-            composed_schema_namespaces={},
-            directive_ids={},
-            compose_stack=[],
-            redefine_origins={},
-            override_origins={},
-            resolved_imports=set(),
-            hint_schema_paths=set(),
-            composed_target_namespaces=set(),
-            extensions=extensions,
-            resource_policy=resource_policy,
-            source_data=source_data,
-        )
-        # Without an instance document there are no schemaLocation
-        # hints of our own; the caller (:func:`parse`) may forward the
-        # instance document's own pairs. Namespace-supplied schemas
-        # still resolve relative to the schema's own directory.
-        ctx.additional_schemas = collect_additional_schemas(
-            ctx, source, schema_location_pairs or []
-        )
-        host = _CompileHost(ctx)
-        schema = _compile_into_context(ctx, source, host)
-        schema.source = original_source
-        if overlay:
-            load_overlay_classes(schema, overlay, fallback_dir=xml_path)
-        return schema
+        purpose = validate_purpose(_source_purpose)
+        _reject_parser_override(resource_policy, xml_policy, xml_limits)
+        if overlay is not None and classify_resource(overlay).kind == "remote":
+            raise ResourcePolicyError(
+                f"the overlay '{overlay}' is remote; Python overlay modules are "
+                "never retrieved remotely"
+            )
+        if (
+            overlay is not None
+            and isinstance(source, (str, os.PathLike))
+            and classify_resource(source).kind == "remote"
+        ):
+            raise ResourcePolicyError(
+                f"the remote schema '{source}' cannot load the local overlay "
+                f"'{overlay}'; Python overlays are never loaded for remote schemas"
+            )
+        with _policy_compilation(resource_policy, root_read=isinstance(source, (str, os.PathLike))):
+            original_source = source
+            source_data = None
+            if resource_policy is not None:
+                try:
+                    source_data = read_resource(source, resource_policy, purpose=purpose)
+                except OSError as exc:
+                    raise PyXSDError(f"the schema file could not be opened: {exc}") from exc
+                source = source_data.source_id
+            elif isinstance(source, (str, os.PathLike)):
+                require_local_reference(os.fspath(source), purpose=purpose)
+            main_source = resource_base(source) if isinstance(source, (str, os.PathLike)) else None
+            # A remote schema never loads a local Python overlay: that would be a
+            # remote-to-local pivot. The fallback directory (for an overlay named
+            # as a module) is derived only from a local source; a remote or
+            # memory source has no local directory to borrow.
+            overlay_dir: Path | None = None
+            if overlay is not None:
+                if main_source is not None and classify_resource(main_source).kind == "remote":
+                    raise ResourcePolicyError(
+                        f"the remote schema '{main_source}' cannot load the local overlay "
+                        f"'{overlay}'; Python overlays are never loaded for remote schemas"
+                    )
+                if main_source is None:
+                    overlay_dir = Path.cwd()
+                elif classify_resource(main_source).kind == "local":
+                    overlay_dir = Path(main_source).parent
+            ctx = CompositionContext(
+                mode=mode,
+                processor_version=decimal.Decimal(xsd_version),
+                namespace_schemas=dict(namespace_schemas or {}),
+                namespace_context=(
+                    namespace_context if namespace_context is not None else NamespaceContext()
+                ),
+                report=new_validation_report(resource_policy),
+                classes={},
+                main_source=main_source,
+                schema_context=SchemaContext(components=ComponentTable()),
+                namespace_overrides={},
+                component_namespaces={},
+                injected_builtin_ids=set(),
+                form_defaults={},
+                xpath_default_namespaces={},
+                composed_element_ids=set(),
+                composed_schema_roots={},
+                composed_schema_namespaces={},
+                directive_ids={},
+                compose_stack=[],
+                redefine_origins={},
+                override_origins={},
+                resolved_imports=set(),
+                composed_target_namespaces=set(),
+                extensions=extensions,
+                resource_policy=resource_policy,
+                source_data=source_data,
+                xml_policy=xml_policy,
+                xml_limits=xml_limits,
+            )
+            # Without an instance document there are no schemaLocation
+            # hints of our own; the caller (:func:`parse`) may forward the
+            # instance document's own pairs. Namespace-supplied schemas
+            # still resolve relative to the main schema document.
+            ctx.additional_schemas = collect_additional_schemas(ctx, schema_location_pairs or [])
+            host = _CompileHost(ctx)
+            schema = _compile_into_context(ctx, source, host)
+            schema.source = original_source
+            if overlay:
+                load_overlay_classes(schema, overlay, fallback_dir=overlay_dir)
+            return schema
 
     def require_valid(self) -> None:
         """Raises :class:`pyxsd.ValidationError` if the report has errors."""
@@ -376,7 +425,13 @@ class Schema:
 
         return iter_parse(self, sources, errors=errors)
 
-    def parse(self, xml: str | Path | os.PathLike[str] | IO[str] | ET.Element) -> "Document":
+    def parse(
+        self,
+        xml: str | Path | os.PathLike[str] | IO[str] | ET.Element,
+        *,
+        xml_policy: XmlParserPolicy | None = None,
+        xml_limits: XmlLimits | None = None,
+    ) -> "Document":
         """Binds *xml* against this schema and returns a :class:`Document`.
 
         - ``xml`` - the instance document: a file path, a file object
@@ -386,6 +441,14 @@ class Schema:
           (the fatal-input rule); content problems instead land on the
           document's report.
 
+        - ``xml_policy`` / ``xml_limits`` - opt-in parser posture and
+          structural budgets for this instance parse only. They do not
+          inherit a nondefault policy from :meth:`compile`; ``None``
+          keeps stdlib parsing and unlimited structure. They cannot be
+          combined with a custom ``resource_policy``, whose ``parse()``
+          is trusted application code. A pre-parsed ``Element`` is also
+          a caller-trusted boundary, so no parser option is applied.
+
         Each parse binds with its own fresh instance report, so a
         schema may serve many documents without their findings mixing:
         the returned document's :attr:`~pyxsd.document.Document.report`
@@ -394,6 +457,7 @@ class Schema:
         when the document root matched no global element declaration
         (the ``unknown-root`` issue records why).
         """
+        _reject_parser_override(self.resource_policy, xml_policy, xml_limits)
         if self.resource_policy is not None:
             try:
                 data = read_resource(xml, self.resource_policy, purpose="instance")
@@ -408,7 +472,12 @@ class Schema:
         else:
             logger.debug("The XML file is being parsed by the ElementTree library...")
             try:
-                tree = parse_with_namespaces(xml, self.namespace_context)
+                tree = parse_with_namespaces(
+                    xml,
+                    self.namespace_context,
+                    policy=xml_policy,
+                    limits=xml_limits,
+                )
             except OSError as e:
                 raise PyXSDError(f"the xml input could not be read: {e}") from e
             except ET.ParseError as e:
@@ -486,6 +555,39 @@ class Schema:
 compile = Schema.compile
 
 
+@contextmanager
+def _policy_compilation(policy: ResourcePolicy | None, *, root_read: bool) -> Iterator[None]:
+    """Enter a policy's optional per-compilation closure scope.
+
+    :class:`~pyxsd.remote.RemoteResourcePolicy` advertises the hook through the
+    private ``_pyxsd_compilation_scope`` capability marker, not through the
+    public ``compilation()`` method's spelling, so a custom policy may define
+    an unrelated ``compilation`` attribute without breaking compilation. A
+    policy that wants the same per-compilation state publishes the marker
+    itself. ``root_read`` is false for an anonymous stream schema, whose
+    dependencies must still authorize local-to-remote loading.
+    """
+    enter = getattr(policy, "_pyxsd_compilation_scope", None)
+    if enter is None:
+        yield
+    else:
+        with enter(root_read=root_read):
+            yield
+
+
+def _reject_parser_override(
+    resource_policy: ResourcePolicy | None,
+    xml_policy: XmlParserPolicy | None,
+    xml_limits: XmlLimits | None,
+) -> None:
+    """Refuse parser arguments that a trusted ResourcePolicy would swallow."""
+    if resource_policy is not None and (xml_policy is not None or xml_limits is not None):
+        raise ValueError(
+            "xml_policy and xml_limits cannot be combined with resource_policy: "
+            "ResourcePolicy.parse() is trusted application code"
+        )
+
+
 def parse(
     xml: str | Path | os.PathLike[str] | IO[str] | ET.Element,
     *,
@@ -494,6 +596,8 @@ def parse(
     namespace_schemas: dict[str, str | Path] | None = None,
     overlay: str | Path | os.PathLike[str] | None = None,
     resource_policy: ResourcePolicy | None = None,
+    xml_policy: XmlParserPolicy | None = None,
+    xml_limits: XmlLimits | None = None,
 ) -> "Document":
     """Parses *xml* against its schema and returns a :class:`Document`.
 
@@ -502,7 +606,11 @@ def parse(
     ``xsi:noNamespaceSchemaLocation`` hints name it, resolved relative
     to the instance document's directory (the working directory for
     stream sources). An instance that names no schema raises
-    :class:`~pyxsd.exceptions.PyXSDError`.
+    :class:`~pyxsd.exceptions.PyXSDError`. A hint naming an absolute URI
+    stays a URI and is never reinterpreted as a local path: a policy
+    reads it under purpose ``"schema-hint"`` and, without a remote-capable
+    policy, it raises
+    :class:`~pyxsd.resource_policy.ResourcePolicyError`.
 
     - ``xml`` - the instance document: a file path, a file object
       open for reading, or a parsed ``xml.etree.ElementTree.Element``
@@ -513,7 +621,18 @@ def parse(
 
     - ``mode``, ``namespace_schemas``, ``overlay`` - passed to
       :meth:`Schema.compile`.
+
+    - ``resource_policy`` - a trusted application resource policy for
+      both the instance and schema documents. Its ``parse()`` owns XML
+      parsing, so ``xml_policy``/``xml_limits`` cannot be combined with
+      it.
+
+    - ``xml_policy`` / ``xml_limits`` - opt-in parser posture and
+      structural budgets applied explicitly to the instance and to the
+      schema compile. They never become an implicit default for later
+      :meth:`Schema.parse` calls.
     """
+    _reject_parser_override(resource_policy, xml_policy, xml_limits)
     context = NamespaceContext()
     # The instance is parsed once, up front: for non-element sources
     # its prefix-to-URI bindings land in *context* (shared with the
@@ -533,7 +652,7 @@ def parse(
         tree = xml
     else:
         try:
-            tree = parse_with_namespaces(xml, context)
+            tree = parse_with_namespaces(xml, context, policy=xml_policy, limits=xml_limits)
         except (OSError, ET.ParseError) as e:
             raise PyXSDError(f"the xml input could not be read: {e}") from e
     # Extra ``xsi:schemaLocation`` pairs beyond the main schema are
@@ -542,10 +661,18 @@ def parse(
     # against the instance document's own directory.
     if resource_policy is not None:
         assert source_id is not None
-        base_dir = Path(source_id).resolve().parent if source_id != "<memory>" else None
+        base_dir = (
+            Path(source_id).resolve().parent
+            if classify_resource(source_id).kind == "local"
+            else None
+        )
     else:
         base_dir = Path(xml).resolve().parent if isinstance(xml, (str, os.PathLike)) else Path.cwd()
     pairs = [] if isinstance(xml, ET.Element) else absolute_schema_location_pairs(tree, base_dir)
+    # A schema the caller named is an application input; a schema selected
+    # from the instance's own location hint is instance-driven and reads
+    # under a separate purpose so a policy can authorize it differently.
+    source_purpose: ResourcePurpose = "schema"
     if xsd is None:
         _namespace, hint = resolve_schema_hint(tree, base_dir)
         if hint is None:
@@ -554,6 +681,7 @@ def parse(
                 "schemaLocation or noNamespaceSchemaLocation tag"
             )
         xsd = hint
+        source_purpose = "schema-hint"
     schema = Schema.compile(
         xsd,
         mode=mode,
@@ -562,6 +690,9 @@ def parse(
         namespace_context=None if isinstance(xml, ET.Element) else context,
         schema_location_pairs=pairs,
         resource_policy=resource_policy,
+        xml_policy=xml_policy,
+        xml_limits=xml_limits,
+        _source_purpose=source_purpose,
     )
     if resource_policy is not None:
         return schema._bind_tree(tree, xml, source_id=source_id)
@@ -656,7 +787,12 @@ def _compile_into_context(
         elif isinstance(xsd_file, (str, os.PathLike)):
             try:
                 with open(xsd_file, "rb") as schemaFile:
-                    root = parse_with_namespaces(schemaFile, ctx.namespace_context)
+                    root = parse_with_namespaces(
+                        schemaFile,
+                        ctx.namespace_context,
+                        policy=ctx.xml_policy,
+                        limits=ctx.xml_limits,
+                    )
             except OSError as e:
                 raise PyXSDError(f"the schema file could not be opened: {e}") from e
             except ET.ParseError as e:
@@ -666,7 +802,12 @@ def _compile_into_context(
             # without a location hint is rejected by the caller.
             assert xsd_file is not None
             try:
-                root = parse_with_namespaces(xsd_file, ctx.namespace_context)
+                root = parse_with_namespaces(
+                    xsd_file,
+                    ctx.namespace_context,
+                    policy=ctx.xml_policy,
+                    limits=ctx.xml_limits,
+                )
             except ET.ParseError as e:
                 raise PyXSDError(f"the schema file is not well-formed XML: {e}") from e
         logger.debug("Sending the schema ElementTree to the ElementRepresentative module...")
@@ -681,7 +822,7 @@ def _compile_into_context(
         if ctx.processor_version == decimal.Decimal("1.0"):
             check_xsd10_vocabulary(root, ctx.report)
 
-        baseDir, visited = schema_composition_context(ctx, xsd_file)
+        base, visited = schema_composition_context(ctx, xsd_file)
         # Documents already fully composed; their components must not be
         # spliced twice (diamond includes) and a repeat encounter is not
         # an error.
@@ -689,12 +830,14 @@ def _compile_into_context(
         # A namespace is satisfied if a schema for it was supplied up
         # front, so such a namespace-only import is not unresolved.
         ctx.resolved_imports.update(ns for ns in ctx.namespace_schemas if ns)
-        ctx.resolved_imports.update(ns for ns, _ in ctx.additional_schemas if ns)
+        ctx.resolved_imports.update(
+            item.namespace for item in ctx.additional_schemas if item.namespace
+        )
         mainTargetNamespace = root.get("targetNamespace")
         if mainTargetNamespace:
             ctx.composed_target_namespaces.add(mainTargetNamespace)
-        splice_composed_schemas(ctx, root, baseDir, visited, mainDocument=True)
-        splice_additional_schemas(ctx, root, baseDir, visited)
+        splice_composed_schemas(ctx, root, base, visited, mainDocument=True)
+        splice_additional_schemas(ctx, root, base, visited)
         if getattr(ctx.mode, "namespaces", "legacy") == "strict":
             inject_xml_namespace_attributes(ctx, root)
             inject_xsi_namespace_attributes(ctx, root)

@@ -13,7 +13,8 @@ These extras support Python 3.11–3.15. The minimum versions above target
 3.11–3.14; on 3.15 the first releases with wheels for the compiled parts are
 PyArrow 26 and Pydantic 2.14, which a resolver selects automatically. Neither
 extra requires 3.15.
-Base pyxsd still depends only on `elementpath`. Extras may install compiled
+Base pyxsd depends on `elementpath` and `defusedxml`, both pure Python; the
+latter is loaded only for opt-in parser profiles. Extras may install compiled
 packages. Importing or using one integration does not require the other.
 
 ## Generate models without instance XML

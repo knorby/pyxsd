@@ -39,13 +39,20 @@ from pyxsd.namespaces import (
 from pyxsd.resource_policy import (
     ResourceData,
     ResourcePolicy,
-    ResourcePolicyError,
+    ResourcePurpose,
     record_declarations,
+)
+from pyxsd.resource_refs import (
+    classify_resource,
+    require_local_reference,
+    resolve_reference,
+    resource_base,
 )
 from pyxsd.schema_context import SchemaContext
 from pyxsd.validation import CompileContextProtocol, ValidationReport
 from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import PROCESSOR_VERSION, apply_conditional_inclusion
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +147,24 @@ _OVERRIDE_SYMBOL_SPACES: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class AdditionalSchema:
+    """A schema document supplied outside the main schema document.
+
+    ``location`` is a canonical reference string (a local path, a policy's
+    virtual path, or an absolute URI), never a ``Path``: a URL must not be
+    reshaped by filesystem joining. ``purpose`` is the resource purpose its
+    first read runs under: ``"schema"`` for an explicit caller mapping and
+    ``"schema-hint"`` for an instance ``xsi:schemaLocation`` hint. An
+    unreadable hint document downgrades to a ``schema-hint`` warning; a
+    remote one needs the policy to authorize it.
+    """
+
+    namespace: str | None
+    location: str
+    purpose: ResourcePurpose
+
+
 @dataclass
 class CompositionContext:
     """State that lives only for the duration of one ``Schema.compile``."""
@@ -149,7 +174,10 @@ class CompositionContext:
     namespace_context: NamespaceContext
     report: ValidationReport
     classes: dict[str, Any]
-    xml_path: Path
+    #: The canonical reference of the main schema document, or ``None``
+    #: for an anonymous stream. Relative additional-schema references
+    #: resolve against it.
+    main_source: str | None
     schema_context: SchemaContext
     namespace_overrides: dict[int, str | None]
     component_namespaces: dict[int, str | None]
@@ -174,7 +202,6 @@ class CompositionContext:
     redefine_origins: dict[tuple[str, str, str], tuple[str, ...]]
     override_origins: dict[tuple[str, str, str], tuple[str, ...]]
     resolved_imports: set[str]
-    hint_schema_paths: set[str]
     composed_target_namespaces: set[str]
     #: A composed document names the XML namespace in an ``xs:import``
     #: (with or without a ``schemaLocation``). The namespace has no
@@ -183,7 +210,7 @@ class CompositionContext:
     #: document satisfied the import.
     xml_namespace_imported: bool = False
     composed_documents: set[str] = field(default_factory=set)
-    additional_schemas: list[tuple[str | None, Path]] = field(default_factory=list)
+    additional_schemas: list[AdditionalSchema] = field(default_factory=list)
     #: The declared XSD processor version (``vc:*`` selectors test against
     #: it). ``Schema.compile(xsd_version=...)`` sets it; the default is the
     #: 1.1 processor.
@@ -194,6 +221,11 @@ class CompositionContext:
     extensions: Any = None
     resource_policy: ResourcePolicy | None = None
     source_data: ResourceData | None = None
+    #: Opt-in parser posture and structural budgets for this compile.
+    #: They reach every schema document parsed through composition;
+    #: ``None`` keeps the stdlib parser and unset limits.
+    xml_policy: XmlParserPolicy | None = None
+    xml_limits: XmlLimits | None = None
     declaration_origins: weakref.WeakKeyDictionary[ET.Element, IssueLocation] = field(
         default_factory=weakref.WeakKeyDictionary
     )
@@ -202,64 +234,65 @@ class CompositionContext:
 def schema_composition_context(
     ctx: CompositionContext,
     xsd_file: str | Path | os.PathLike[str] | IO[str] | None,
-) -> tuple[Path, set[str]]:
-    """Returns the (baseDir, visited) context for schema composition.
+) -> tuple[str | None, set[str]]:
+    """Returns the (base, visited) context for schema composition.
 
-    ``baseDir`` is the directory relative to which include/import
-    locations resolve; ``visited`` starts with the main schema file
-    itself so include cycles are detected.
+    *base* is the canonical reference of the main schema document: a
+    dependency's relative location resolves against it with filesystem
+    semantics (or URI semantics when it is a remote document). It is
+    ``None`` for an anonymous stream, which keeps the legacy behavior of
+    resolving relative locations against the working directory. *visited*
+    starts with the main schema document itself so include cycles are
+    detected; an anonymous stream has no identity to record.
     """
-    if isinstance(xsd_file, (str, os.PathLike)):
-        mainPath = Path(xsd_file).resolve()
-        return mainPath.parent, {str(mainPath)}
-    return Path.cwd(), set()
+    if not isinstance(xsd_file, (str, os.PathLike)):
+        return None, set()
+    base = cast(str, resource_base(os.fspath(xsd_file)))
+    if classify_resource(base).kind == "memory":
+        return base, set()
+    return base, {base}
 
 
 def collect_additional_schemas(
     ctx: CompositionContext,
-    xsd_file: str | Path | os.PathLike[str] | IO[str] | None,
     schema_location_pairs: list[tuple[str | None, str]],
-) -> list[tuple[str | None, Path]]:
-    """Returns additional ``(namespace, path)`` schemas to load.
+) -> list[AdditionalSchema]:
+    """Returns the additional schemas to load.
 
     Sources are the explicit ``namespace_schemas`` mapping and, in
     strict mode, any extra pairs in the instance's
     ``xsi:schemaLocation`` beyond the main schema. The pairs come
     from the caller, which reads the instance document (see
     :func:`pyxsd.parse` and ``schema_location_pairs``).
+
+    Each location is kept as a canonical reference string. An explicit
+    mapping is a required caller input and reads with purpose ``"schema"``;
+    an instance pair is an advisory hint and reads with purpose
+    ``"schema-hint"``, so an unreadable document downgrades to a
+    ``schema-hint`` warning (see :func:`splice_additional_schemas`).
     """
-    additions: list[tuple[str | None, Path]] = []
+    additions: list[AdditionalSchema] = []
     seen: set[str] = set()
-    if isinstance(xsd_file, (str, os.PathLike)):
-        seen.add(str(Path(xsd_file).resolve()))
+    if ctx.main_source is not None and classify_resource(ctx.main_source).kind != "memory":
+        seen.add(ctx.main_source)
     for namespace, location in ctx.namespace_schemas.items():
-        path = Path(location)
-        if not path.is_absolute():
-            path = ctx.xml_path / path
-        path = path.resolve()
-        if str(path) in seen:
+        reference = resolve_reference(location, base=ctx.main_source)
+        if reference in seen:
             continue
-        seen.add(str(path))
-        additions.append((namespace or None, path))
+        seen.add(reference)
+        additions.append(AdditionalSchema(namespace or None, reference, "schema"))
     if getattr(ctx.mode, "namespaces", "legacy") == "strict":
         for pair_namespace, location in schema_location_pairs:
-            path = Path(location)
-            if not path.is_absolute():
-                path = ctx.xml_path / path
-            path = path.resolve()
-            if str(path) in seen:
+            reference = resolve_reference(location, base=ctx.main_source)
+            if reference in seen:
                 continue
-            seen.add(str(path))
-            # Remember the hint-derived additions: a hint that
-            # cannot be loaded downgrades to a ``schema-hint``
-            # warning (see ``splice_additional_schemas``).
-            ctx.hint_schema_paths.add(str(path))
-            additions.append((pair_namespace, path))
+            seen.add(reference)
+            additions.append(AdditionalSchema(pair_namespace, reference, "schema-hint"))
     return additions
 
 
 def splice_additional_schemas(
-    ctx: CompositionContext, schemaRoot: Any, baseDir: Path, visited: set[str]
+    ctx: CompositionContext, schemaRoot: Any, base: str | None, visited: set[str]
 ) -> None:
     """Splices schemas supplied outside the main document.
 
@@ -273,27 +306,32 @@ def splice_additional_schemas(
     warning. Document-level ``xs:import``/``xs:include`` failures
     keep their own separate severity through ``splice_composed_schemas``.
     """
-    for namespace, path in ctx.additional_schemas:
-        tag = ET.Element(clark(XSD_NS, "import"), {"schemaLocation": str(path)})
-        if namespace:
-            tag.set("namespace", namespace)
-        is_hint = str(path) in ctx.hint_schema_paths
+    for addition in ctx.additional_schemas:
+        tag = ET.Element(clark(XSD_NS, "import"), {"schemaLocation": addition.location})
+        if addition.namespace:
+            tag.set("namespace", addition.namespace)
+        is_hint = addition.purpose == "schema-hint"
         splice_included_schema(
             ctx,
             tag,
             schemaRoot,
-            baseDir,
+            base,
             visited,
             isImport=True,
             missing_severity="warning" if is_hint else "error",
             missing_code="schema-hint" if is_hint else None,
+            purpose=addition.purpose,
+            # A caller or instance supplied this reference, so a remote
+            # denial is fatal even though a missing local hint is reported
+            # as an advisory ``schema-hint`` warning.
+            advisory=False,
         )
 
 
 def splice_composed_schemas(
     ctx: CompositionContext,
     schemaRoot: Any,
-    baseDir: Path,
+    base: str | None,
     visited: set[str],
     mainDocument: bool = False,
     adoptedNS: str | None = None,
@@ -311,6 +349,9 @@ def splice_composed_schemas(
 
     The composition tags are removed from the tree afterwards so
     the ER factory does not warn about them.
+
+    ``base`` is the canonical reference of the document whose directives
+    are being spliced; a relative location resolves against it.
 
     ``mainDocument`` is true only for the top-level call: the ids of
     the main document's directives are recorded so declaration ids
@@ -332,14 +373,21 @@ def splice_composed_schemas(
         if local == "include":
             schemaRoot.remove(child)
             splice_included_schema(
-                ctx, child, schemaRoot, baseDir, visited, isImport=False, adoptedNS=adoptedNS
+                ctx,
+                child,
+                schemaRoot,
+                base,
+                visited,
+                isImport=False,
+                adoptedNS=adoptedNS,
+                advisory=True,
             )
         elif local == "redefine":
             schemaRoot.remove(child)
-            splice_redefine(ctx, child, schemaRoot, baseDir, visited, adoptedNS=adoptedNS)
+            splice_redefine(ctx, child, schemaRoot, base, visited, adoptedNS=adoptedNS)
         elif local == "override":
             schemaRoot.remove(child)
-            splice_override(ctx, child, schemaRoot, baseDir, visited, adoptedNS=adoptedNS)
+            splice_override(ctx, child, schemaRoot, base, visited, adoptedNS=adoptedNS)
         elif local == "import":
             schemaRoot.remove(child)
             if child.get("namespace") == XSD_NS:
@@ -353,11 +401,12 @@ def splice_composed_schemas(
                 ctx,
                 child,
                 schemaRoot,
-                baseDir,
+                base,
                 visited,
                 isImport=True,
                 checkImportNamespace=True,
                 adoptedNS=adoptedNS,
+                advisory=True,
             )
     return None
 
@@ -387,13 +436,15 @@ def splice_included_schema(
     ctx: CompositionContext,
     tag: Any,
     schemaRoot: Any,
-    baseDir: Path,
+    base: str | None,
     visited: set[str],
     isImport: bool,
     missing_severity: str = "warning",
     checkImportNamespace: bool = False,
     missing_code: str | None = None,
     adoptedNS: str | None = None,
+    purpose: ResourcePurpose = "schema",
+    advisory: bool = False,
 ) -> None:
     """Splices the named components of one included/imported schema.
 
@@ -412,6 +463,17 @@ def splice_included_schema(
     referenced document cannot be opened (only the not-found case;
     a document that exists but is malformed stays an error under
     the caller's regular code).
+
+    ``purpose`` is the resource purpose the referenced document is read
+    under: an ordinary dependency (a document's own include/import, or an
+    explicit caller mapping) reads as ``"schema"``, while an
+    instance-supplied ``xsi:schemaLocation`` hint reads as
+    ``"schema-hint"``.
+
+    ``advisory`` states, independently of the reported severity, that the
+    reference is a hint XSD permits a processor to skip. Only an advisory
+    remote reference is downgraded to a missing-resource report when no
+    policy can authorize it; a caller-supplied reference raises.
 
     ``checkImportNamespace`` is true for an ``xs:import`` written in
     a schema document: the import's ``namespace`` attribute must
@@ -442,11 +504,12 @@ def splice_included_schema(
             namespace = tag.get("namespace")
             if strict and namespace and namespace not in (XML_NS, XLINK_NS, XSD_NS, XSI_NS):
                 otherTargets = ctx.composed_target_namespaces - {schemaRoot.get("targetNamespace")}
+                additional = {item.namespace for item in ctx.additional_schemas}
                 supplied = (
                     namespace in ctx.namespace_schemas
                     or namespace in ctx.resolved_imports
                     or namespace in otherTargets
-                    or namespace in {ns for ns, _ in ctx.additional_schemas if ns}
+                    or namespace in additional
                 )
                 if not supplied:
                     report_unresolved_import(ctx, namespace, schemaRoot)
@@ -457,25 +520,25 @@ def splice_included_schema(
             code="schema-compose",
         )
         return None
-    includedPath = (baseDir / location).resolve()
-    key = str(includedPath)
+    key = resolve_reference(location, base=base)
     if _skip_included(ctx, key, visited, location):
         return None
     includedRoot = parse_included_schema(
         ctx,
         location,
-        baseDir,
+        base,
         error_code="import-unresolved" if isImport else "schema-compose",
         missing_severity=missing_severity,
         missing_code=missing_code,
+        purpose=purpose,
+        advisory=advisory,
     )
     if includedRoot is None:
         return None
-    includedPath = _included_source_path(ctx, includedRoot)
-    canonical_key = str(includedPath)
-    if canonical_key != key and _skip_included(ctx, canonical_key, visited, location):
+    included_source = _included_source_id(ctx, includedRoot)
+    if included_source != key and _skip_included(ctx, included_source, visited, location):
         return None
-    key = canonical_key
+    key = included_source
     # A document a chameleon adoption put in a namespace (a redefined
     # base document, whose root is not stamped) is judged by that
     # namespace here: it is what a nested chameleon include adopts.
@@ -582,9 +645,7 @@ def splice_included_schema(
         componentNamespace = includedNS if includedNS is not None else mainNS
     ctx.compose_stack.append(key)
     try:
-        splice_composed_schemas(
-            ctx, includedRoot, includedPath.parent, visited | {str(includedPath)}
-        )
+        splice_composed_schemas(ctx, includedRoot, resource_base(key), visited | {key})
     finally:
         ctx.compose_stack.pop()
     # Record provenance before the components are appended to the
@@ -610,18 +671,24 @@ def _skip_included(ctx: CompositionContext, key: str, visited: set[str], locatio
     return False
 
 
-def _included_source_path(ctx: CompositionContext, root: ET.Element) -> Path:
-    # Every successful dependency parse records a non-null canonical source.
-    return Path(cast(str, ctx.declaration_origins[root].source))
+def _included_source_id(ctx: CompositionContext, root: ET.Element) -> str:
+    """The canonical source reference of one composed document.
+
+    Every successful dependency parse records a non-null canonical source:
+    a local path, a policy's virtual path, or an absolute URI.
+    """
+    return cast(str, ctx.declaration_origins[root].source)
 
 
 def parse_included_schema(
     ctx: CompositionContext,
     location: str,
-    baseDir: Path,
+    base: str | None,
     error_code: str = "schema-compose",
     missing_severity: str = "error",
     missing_code: str | None = None,
+    purpose: ResourcePurpose = "schema",
+    advisory: bool = False,
 ) -> Any | None:
     """Parses one included schema file; returns its root or ``None``.
 
@@ -633,27 +700,40 @@ def parse_included_schema(
     while everything else keeps its regular code. A file that
     exists but is not well-formed XML is a rule violation and is
     always an error. Composition proceeds without the missing file.
+
+    ``reference`` is resolved from ``location`` and ``base`` with URI or
+    filesystem semantics, so a remote reference is never reshaped into a
+    local path. Without a resource policy a remote reference is a policy
+    denial for a caller-supplied reference; ``purpose`` is the resource
+    purpose a policy read runs under.
+
+    ``advisory`` is the explicit authority decision for that denial: a
+    document-authored or instance hint may be skipped (reported with
+    ``missing_severity``), while a caller-supplied reference must raise.
     """
-    includedPath = baseDir / location
+    reference = resolve_reference(location, base=base)
     try:
         if ctx.resource_policy is not None:
-            assert ctx.source_data is not None
-            base: str | None = (
-                ctx.compose_stack[-1] if ctx.compose_stack else ctx.source_data.source_id
+            # A memory base cannot locate a relative dependency; an absolute
+            # one is read with no base so the policy sees no directory.
+            policy_base = (
+                None if base is not None and classify_resource(base).kind == "memory" else base
             )
-            if base == "<memory>":
-                if not Path(location).is_absolute():
-                    raise ResourcePolicyError(
-                        "a relative schema dependency needs a named source base"
-                    )
-                base = None
-            data = ctx.resource_policy.read(location, base=base, purpose="schema")
+            data = ctx.resource_policy.read(location, base=policy_base, purpose=purpose)
             root = ctx.resource_policy.parse(data, ctx.namespace_context)
             origin_source = data.source_id
         else:
-            with open(includedPath, "rb") as includedFile:
-                root = parse_with_namespaces(includedFile, ctx.namespace_context)
-            origin_source = str(includedPath.resolve())
+            # No policy can authorize retrieval: a remote reference is never
+            # opened as a filesystem path.
+            local = require_local_reference(reference, purpose=purpose, advisory=advisory)
+            with open(local, "rb") as includedFile:
+                root = parse_with_namespaces(
+                    includedFile,
+                    ctx.namespace_context,
+                    policy=ctx.xml_policy,
+                    limits=ctx.xml_limits,
+                )
+            origin_source = reference
     except OSError as e:
         message = f"the schema '{location}' could not be opened: {e}"
         code = missing_code if missing_code is not None else error_code
@@ -904,7 +984,7 @@ def splice_redefine(
     ctx: CompositionContext,
     redefineTag: Any,
     schemaRoot: Any,
-    baseDir: Path,
+    base: str | None,
     visited: set[str],
     adoptedNS: str | None = None,
 ) -> None:
@@ -933,7 +1013,9 @@ def splice_redefine(
             code="schema-compose",
         )
         return None
-    includedRoot = parse_included_schema(ctx, location, baseDir, missing_severity="warning")
+    includedRoot = parse_included_schema(
+        ctx, location, base, missing_severity="warning", advisory=True
+    )
     if includedRoot is None:
         # A redefine that actually redefines a component needs its
         # base document: without it the redefined component cannot be
@@ -956,7 +1038,7 @@ def splice_redefine(
     includedNS = includedRoot.get("targetNamespace")
     if includedNS:
         ctx.composed_target_namespaces.add(includedNS)
-    includedPath = _included_source_path(ctx, includedRoot)
+    included_source = _included_source_id(ctx, includedRoot)
     if includedNS is not None and mainNS is not None and includedNS != mainNS:
         # A redefine may target a document in the redefining schema's
         # namespace (the adopted one, for a chameleon-adopted base) or a
@@ -971,7 +1053,7 @@ def splice_redefine(
             code="compose-invalid",
             phase="schema",
         )
-    if str(includedPath) in visited:
+    if included_source in visited:
         if ownNS is None:
             # A no-namespace (chameleon) redefiner caught in a cycle
             # is the disputed W3C schU1 case; it stays a skipped
@@ -1004,7 +1086,7 @@ def splice_redefine(
         if local in ("complexType", "simpleType", "group", "attributeGroup") and child.get("name"):
             redefined.append((local, child.get("name")))
     check_redefine_targets(ctx, includedRoot, location, redefined)
-    check_redefine_duplicates(ctx, includedPath, location, redefined)
+    check_redefine_duplicates(ctx, included_source, location, redefined)
     check_redefine_restrictions(ctx, includedRoot, location, redefineTag)
     redefinedNames = {name for _, name in redefined}
     for component in list(includedRoot):
@@ -1035,13 +1117,13 @@ def splice_redefine(
         # adopt it too.
         apply_chameleon_namespace(ctx, includedRoot, mainNS)
         baseAdoptedNS = mainNS
-    ctx.compose_stack.append(str(includedPath))
+    ctx.compose_stack.append(included_source)
     try:
         splice_composed_schemas(
             ctx,
             includedRoot,
-            includedPath.parent,
-            visited | {str(includedPath)},
+            resource_base(included_source),
+            visited | {included_source},
             adoptedNS=baseAdoptedNS,
         )
     finally:
@@ -1062,7 +1144,7 @@ def splice_override(
     ctx: CompositionContext,
     overrideTag: Any,
     schemaRoot: Any,
-    baseDir: Path,
+    base: str | None,
     visited: set[str],
     adoptedNS: str | None = None,
 ) -> None:
@@ -1095,7 +1177,9 @@ def splice_override(
             code="schema-compose",
         )
         return None
-    includedRoot = parse_included_schema(ctx, location, baseDir, missing_severity="warning")
+    includedRoot = parse_included_schema(
+        ctx, location, base, missing_severity="warning", advisory=True
+    )
     if includedRoot is None:
         # An override with content needs its base document: without it
         # the target set cannot be established. An override carrying
@@ -1113,7 +1197,7 @@ def splice_override(
         return None
     mainNS = schemaRoot.get("targetNamespace") or adoptedNS
     includedNS = includedRoot.get("targetNamespace")
-    includedPath = _included_source_path(ctx, includedRoot)
+    included_source = _included_source_id(ctx, includedRoot)
     if includedNS is not None and (mainNS is None or includedNS != mainNS):
         # XSD 1.1 §4.2.5 clause 2: a namespaced base may only be
         # overridden by a document with the identical target
@@ -1127,7 +1211,7 @@ def splice_override(
             code="compose-invalid",
             phase="schema",
         )
-    if str(includedPath) in visited:
+    if included_source in visited:
         ctx.report.add_warning(
             f"the schema '{location}' is already being composed; the circular override is skipped",
             code="compose-cycle",
@@ -1142,13 +1226,13 @@ def splice_override(
         includedNS = mainNS
     if includedNS:
         ctx.composed_target_namespaces.add(includedNS)
-    check_override_duplicates(ctx, includedPath, location, targets)
+    check_override_duplicates(ctx, included_source, location, targets)
     # Compose the base document first so its effective component set
     # (its own includes/overrides included) is the override's target.
-    ctx.compose_stack.append(str(includedPath))
+    ctx.compose_stack.append(included_source)
     try:
         splice_composed_schemas(
-            ctx, includedRoot, includedPath.parent, visited | {str(includedPath)}
+            ctx, includedRoot, resource_base(included_source), visited | {included_source}
         )
     finally:
         ctx.compose_stack.pop()
@@ -1195,7 +1279,7 @@ def splice_override(
     # composition treats one document once, §4.2.3). ``xs:override``
     # itself does not consult this set, so two overrides of the same
     # base are still reprocessed and reported as a conflict.
-    ctx.composed_documents.add(str(includedPath))
+    ctx.composed_documents.add(included_source)
     return None
 
 
@@ -1252,7 +1336,10 @@ def check_override_target_duplicates(
 
 
 def check_override_duplicates(
-    ctx: CompositionContext, includedPath: Path, location: str, targets: list[tuple[str, str, Any]]
+    ctx: CompositionContext,
+    included_source: str,
+    location: str,
+    targets: list[tuple[str, str, Any]],
 ) -> None:
     """Reports a base component overridden twice from unrelated ancestries.
 
@@ -1264,7 +1351,7 @@ def check_override_duplicates(
     current = tuple(ctx.compose_stack)
     seen: list[tuple[str, str, str]] = []
     for space, name, _ in targets:
-        key = (str(includedPath), space, name)
+        key = (included_source, space, name)
         origin = ctx.override_origins.get(key)
         if origin is None:
             seen.append(key)
@@ -1336,7 +1423,7 @@ def declared_component_kinds(ctx: CompositionContext, root: Any) -> set[tuple[st
 
 
 def check_redefine_duplicates(
-    ctx: CompositionContext, includedPath: Path, location: str, redefined: list[tuple[str, str]]
+    ctx: CompositionContext, included_source: str, location: str, redefined: list[tuple[str, str]]
 ) -> None:
     """Reports a base component redefined twice in the composition.
 
@@ -1353,7 +1440,7 @@ def check_redefine_duplicates(
     current = tuple(ctx.compose_stack)
     seen: list[tuple[str, str, str]] = []
     for kind, name in redefined:
-        key = (str(includedPath), kind, name)
+        key = (included_source, kind, name)
         origin = ctx.redefine_origins.get(key)
         if origin is None:
             seen.append(key)

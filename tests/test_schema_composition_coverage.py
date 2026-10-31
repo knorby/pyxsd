@@ -9,14 +9,18 @@ parsed document cannot produce.
 import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
+import pytest
+
 from pyxsd.binding import ParseModes
 from pyxsd.namespaces import XSD_NS, NamespaceContext, clark
+from pyxsd.resource_policy import ResourcePolicyError
 from pyxsd.schema import Schema
 from pyxsd.schema_composition import (
     chameleon_qname,
     check_directive_annotation,
 )
 from pyxsd.validation import IssueSeverity, ValidationReport
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
@@ -94,6 +98,16 @@ class TestAdditionalSchemaSources:
             schema_location_pairs=[("urn:x", "hint.xsd")],
         )
         assert "extra" in result.classes
+
+    def test_remote_hint_is_a_policy_error_not_a_missing_hint_warning(self, tmp_path):
+        schema = f'<xs:schema {XS}><xs:element name="root" type="xs:string"/></xs:schema>'
+        with pytest.raises(ResourcePolicyError, match="remote-capable resource policy"):
+            _compile(
+                tmp_path,
+                schema,
+                mode=ParseModes.NAMESPACED,
+                schema_location_pairs=[("urn:x", "https://schemas.example/x.xsd")],
+            )
 
 
 class TestDirectiveIds:
@@ -627,3 +641,64 @@ class TestLocalTargetNamespaces:
         )
         result = _compile(tmp_path, schema)
         assert "declaration-attribute" not in _codes(result)
+
+
+class TestComposedParserPolicies:
+    """Compile-time parser policy and limits reach dependency documents."""
+
+    @pytest.mark.parametrize("directive", ["include", "import"])
+    def test_composed_schema_parse_applies_compile_xml_limits(self, tmp_path, directive):
+        imported = directive == "import"
+        namespace = ' namespace="urn:part"' if imported else ""
+        target = ' targetNamespace="urn:part"' if imported else ""
+        main = (
+            f'<xs:schema {XS}><xs:{directive}{namespace} schemaLocation="part.xsd"/>'
+            '<xs:element name="root" type="xs:string"/></xs:schema>'
+        )
+        part = (
+            f"<xs:schema {XS}{target}><!--{'padded' * 40}-->"
+            '<xs:element name="part" type="xs:string"/></xs:schema>'
+        )
+        main_bytes = main.encode("utf-8")
+        part_bytes = part.encode("utf-8")
+        assert len(part_bytes) > len(main_bytes)
+        (tmp_path / "main.xsd").write_bytes(main_bytes)
+        (tmp_path / "part.xsd").write_bytes(part_bytes)
+        with pytest.raises(ResourcePolicyError, match="max_bytes"):
+            Schema.compile(
+                str(tmp_path / "main.xsd"),
+                xml_limits=XmlLimits(max_bytes=len(main_bytes)),
+            )
+
+    def test_composed_schema_protected_policy_rejects_dependency_entities(self, tmp_path):
+        part = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE xs:schema [<!ENTITY tns "urn:part">]>'
+            f'<xs:schema {XS} targetNamespace="&tns;">'
+            '<xs:element name="part" type="xs:string"/></xs:schema>'
+        )
+        (tmp_path / "main.xsd").write_text(
+            f'<xs:schema {XS}><xs:include schemaLocation="part.xsd"/></xs:schema>',
+            encoding="utf-8",
+        )
+        (tmp_path / "part.xsd").write_text(part, encoding="utf-8")
+        with pytest.raises(ResourcePolicyError):
+            Schema.compile(
+                str(tmp_path / "main.xsd"),
+                xml_policy=XmlParserPolicy.protected(),
+            )
+
+    def test_composed_schema_default_policy_still_expands_dependency_entities(self, tmp_path):
+        part = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE xs:schema [<!ENTITY base "xs:int">]>'
+            f'<xs:schema {XS}><xs:simpleType name="Number">'
+            '<xs:restriction base="&base;"/></xs:simpleType></xs:schema>'
+        )
+        result = _compile(
+            tmp_path,
+            f'<xs:schema {XS}><xs:include schemaLocation="part.xsd"/>'
+            '<xs:element name="root" type="Number"/></xs:schema>',
+            {"part.xsd": part},
+        )
+        assert not result.report.has_errors

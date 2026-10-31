@@ -544,10 +544,6 @@ class ExplorationService:
                     result_id=result_id,
                     offset=offset,
                 )
-                if request.result == "subtree":
-                    envelope.warnings.append(
-                        "Subtree results are serialized from bound data; source formatting and comments are not preserved."
-                    )
                 return envelope
         except BaseException:
             status = "error"

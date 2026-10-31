@@ -255,6 +255,74 @@ def test_large_results_spill_and_download_as_exact_json(tmp_path):
     anyio.run(scenario)
 
 
+def test_query_subtree_returns_exact_bytes_and_spills_large_slices(tmp_path):
+    text = "x" * 40_000
+    body = f"<root><payload>{text}</payload></root>"
+    schema = (
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:element name="root"><xs:complexType><xs:sequence>'
+        '<xs:element name="payload" type="xs:string"/>'
+        "</xs:sequence></xs:complexType></xs:element></xs:schema>"
+    )
+
+    async def scenario():
+        async with connected(tmp_path) as (client, _services):
+            workspace = await create_workspace(client)
+            await client.call_tool(
+                "pyxsd_put_files",
+                {
+                    "workspace_id": workspace,
+                    "files": [
+                        {"path": "text.xsd", "text": schema},
+                        {"path": "text.xml", "text": body},
+                        {"path": "schema.xsd", "text": XSD},
+                        {"path": "document.xml", "text": INVALID},
+                    ],
+                },
+            )
+            small = await client.call_tool(
+                "pyxsd_query_document",
+                {
+                    "workspace_id": workspace,
+                    "document": {"path": "document.xml"},
+                    "schema_ref": {"source": {"path": "schema.xsd"}},
+                    "xpath": "/root/item[2]",
+                    "result": "subtree",
+                },
+            )
+            item = structured(small)["data"]["results"][0]
+            assert item["encoding"] == "base64"
+            assert item["source_faithful"] is True
+            assert base64.b64decode(item["data"]) == b"<item><value>bad</value></item>"
+            spilled = await client.call_tool(
+                "pyxsd_query_document",
+                {
+                    "workspace_id": workspace,
+                    "document": {"path": "text.xml"},
+                    "schema_ref": {"source": {"path": "text.xsd"}},
+                    "xpath": "/root",
+                    "result": "subtree",
+                },
+            )
+            summary = structured(spilled)
+            assert summary["data"]["bytes"] > 40_000
+            ref = summary["artifacts"][0]
+            chunks = []
+            for offset in range(0, ref["size"], 8 * 1024):
+                downloaded = await client.call_tool(
+                    "pyxsd_read_artifact",
+                    {"artifact_id": ref["id"], "offset": offset},
+                )
+                assert downloaded.is_error is False
+                chunks.append(base64.b64decode(structured(downloaded)["data"]["data"]))
+            original = json.loads(b"".join(chunks))
+            result = original["data"]["results"][0]
+            assert base64.b64decode(result["data"]) == body.encode()
+            assert result["byte_length"] == len(text) + len("<root><payload></payload></root>")
+
+    anyio.run(scenario)
+
+
 def test_services_configuration_source_grants_and_shutdown(tmp_path, monkeypatch):
     from pyxsd.mcp import server as server_module
     from pyxsd.mcp.config import Limits
@@ -429,6 +497,10 @@ def test_critical_parameter_descriptions(tmp_path):
             query = _arg_schema(server, "pyxsd_query_document")
             assert "xpath" in query["properties"]
             assert query["properties"]["xpath"].get("description")
+            query_tool = server._tool_manager._tools["pyxsd_query_document"]
+            documented = " ".join((query_tool.description or "").split())
+            assert "exact original source bytes" in documented
+            assert "not a serialized or regenerated XML document" in documented
 
             model = _arg_schema(server, "pyxsd_inspect_model")
             element = model["properties"]["element"]["description"]

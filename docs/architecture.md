@@ -11,7 +11,9 @@ operates on those two artifacts.
    or `ET.Element`), resolves `xs:include`/`xs:import`/`xs:redefine` by
    splicing the composed documents into the main tree *before* any class
    generation, and registers every top-level element as a descriptor in
-   the element-representative registry.
+   the element-representative registry. Dependencies are resolved against
+   the including document and read through the active resource policy (see
+   below).
 
 2. **Class generation.** Every schema component named in the registry
    generates a Python class:
@@ -28,7 +30,8 @@ operates on those two artifacts.
    `xs:extension` produces real subclassing, so `isinstance` checks and
    inherited descriptors work the way you'd expect.
 
-3. **Instance binding.** `Schema.parse()` matches the document root
+3. **Instance binding.** `Schema.parse()` parses the instance under the
+   selected parser policy and limits, matches the document root
    against the global element declarations (honoring `xsi:type` dispatch
    and abstract-element rejection), then recursively builds instances.
    Text and attributes are validated against the declared types;
@@ -46,7 +49,51 @@ operates on those two artifacts.
 
 5. **Writers.** `Document.write()` serializes the (possibly transformed)
    tree with `XmlTreeWriter`, preserving document order and xsi
-   declarations.
+   declarations. Serialization is deterministic: the writer emits no
+   generated timestamp, so writing the same tree twice produces the same
+   bytes. `writeHeaderInfo()` is a no-op subclass hook, not a default
+   header (#48).
+
+## Resource resolution and the parser boundary
+
+Composition and instance loading share one reference model,
+`pyxsd.resource_refs`. A source is classified as a local path, a `<memory>`
+stream, or an absolute URI. `resource_base()` gives a document's canonical
+identity (resolved local path, remote URI, or `<memory>`), and
+`resolve_reference()` resolves a dependency against the *including document*,
+not its directory: a remote base follows RFC 3986 URI semantics, a local base
+uses filesystem semantics, and a `file:` URI stays a remote reference that the
+default loader refuses. The canonical base also drives composition-cycle
+detection.
+
+A `ResourcePolicy` sits between that model and the filesystem or network:
+`read()` supplies original bytes plus a canonical source ID, and `parse()`
+returns the ElementTree and records namespace bindings. The default loader is
+local-only. `RemoteResourcePolicy` is the opt-in HTTPS implementation; it
+authorizes each root, same-origin/cross-origin dependency, instance hint, and
+redirect against finite per-compilation budgets. Python overlays are never
+retrieved remotely.
+
+There are two parser roles:
+
+- **Semantic parsing.** `parse_with_namespaces` uses
+  `xml.etree.ElementTree.iterparse` with the selected `XmlParserPolicy`.
+  The default is the stdlib parser; `protected()` and `.strict()` switch to
+  defusedxml and the shared Expat declaration guards. `XmlLimits` bounds the
+  bytes, element depth, and start-tag count. This tree is what binding,
+  validation, transforms, XPath, and the writer use.
+- **Source indexing.** `pyxsd.source_spans.SourceIndex` runs a separate raw
+  `xml.parsers.expat` pass over the original bytes to record element paths and
+  exact half-open byte spans. It never installs an external-resource fetcher,
+  builds no second tree, and applies the same declaration policy and,
+  when supplied, structural limits. It rejects every entity reference it cannot
+  expand, so it never accepts a document the semantic parser rejected. The MCP
+  server uses it for `result: "subtree"` so the returned bytes are an exact
+  slice of the captured source rather than a serialization of the bound tree.
+
+Neither parser role is a sandbox. Path confinement, authentication, and
+timeouts belong to the application policy or the surrounding process boundary;
+see {doc}`xml-security`.
 
 ## The ElementRepresentative system
 

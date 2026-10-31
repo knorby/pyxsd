@@ -42,6 +42,22 @@ def test_list_skills_reports_bounded_metadata():
         assert skill.description != skill.name
 
 
+def test_mcp_skill_documents_the_exact_subtree_contract():
+    text = Path("src/pyxsd/skills/pyxsd-mcp/SKILL.md").read_text(encoding="utf-8")
+    for phrase in (
+        "exact slice of the captured original bytes",
+        "`byte_length`",
+        "`span`",
+        "`source_faithful`",
+        "`source_unavailable`",
+        "trailing tail",
+        "ancestor namespace declarations",
+        "UTF-16",
+        "results keep their old shape",
+    ):
+        assert phrase in text
+
+
 def test_exported_bundles_are_deterministic_and_self_contained(tmp_path):
     first = tmp_path / "first"
     second = tmp_path / "second"

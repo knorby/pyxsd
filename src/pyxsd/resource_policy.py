@@ -10,13 +10,37 @@ from __future__ import annotations
 import os
 import weakref
 from dataclasses import dataclass
-from typing import IO, Protocol
+from typing import IO, Final, Literal, Protocol, cast
 from xml.etree import ElementTree as ET
 
 from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.namespaces import NamespaceContext
 from pyxsd.validation import ValidationReport
+
+#: Why a resource is being read.
+#:
+#: ``"schema"`` is an explicitly supplied schema, a schema a caller mapped for
+#: a namespace, or an ordinary schema dependency; ``"schema-hint"`` is a schema
+#: an instance document selected through ``xsi:schemaLocation`` or
+#: ``xsi:noNamespaceSchemaLocation``; ``"instance"`` is an instance document.
+ResourcePurpose = Literal["schema", "schema-hint", "instance"]
+
+_PURPOSES: Final = frozenset(("schema", "schema-hint", "instance"))
+
+
+def validate_purpose(purpose: str) -> ResourcePurpose:
+    """Return *purpose* if it is a known resource purpose, else raise.
+
+    Internal callers pass the purpose of a read through several layers; an
+    unknown value is a programming error rather than an authorization
+    decision, so it is rejected before a policy can act on it.
+    """
+    if purpose not in _PURPOSES:
+        raise ValueError(
+            f"unknown resource purpose {purpose!r}; expected 'schema', 'schema-hint', or 'instance'"
+        )
+    return cast(ResourcePurpose, purpose)
 
 
 class ResourcePolicyError(PyXSDError):
@@ -34,13 +58,21 @@ class ResourceData:
 class ResourcePolicy(Protocol):
     """Application-controlled loading and parsing for a schema and its instances.
 
-    Source IDs are canonical filesystem-shaped names (including virtual paths).
-    A dependency's base is its including document, not its directory. Parsers
-    must populate the supplied namespace context. Anonymous streams use
-    ``<memory>`` and have no implicit filesystem base.
+    Source IDs are canonical strings: a local path (including a virtual path
+    a policy defines, such as ``/workspace/...``), an absolute remote URI, or
+    ``<memory>`` for an anonymous stream. A dependency's base is its
+    including document, not its directory: a policy resolves a remote base
+    with URI semantics and any other base with its own filesystem semantics.
+    ``purpose`` is a :data:`ResourcePurpose`: ``"schema"`` for an explicitly
+    supplied schema, a caller's namespace mapping, and an ordinary schema
+    dependency; ``"schema-hint"`` for a schema an instance document selected
+    through ``xsi:schemaLocation`` or ``xsi:noNamespaceSchemaLocation``; and
+    ``"instance"`` for an instance document. Parsers must populate the
+    supplied namespace context. Anonymous streams use ``<memory>`` and have
+    no implicit filesystem base.
     """
 
-    def read(self, source: str, *, base: str | None, purpose: str) -> ResourceData:
+    def read(self, source: str, *, base: str | None, purpose: ResourcePurpose) -> ResourceData:
         """Authorize and read a named resource, retaining its original bytes."""
         ...
 
@@ -69,14 +101,15 @@ def read_resource(
     source: str | os.PathLike[str] | IO[str] | IO[bytes] | ET.Element,
     policy: ResourcePolicy,
     *,
-    purpose: str,
+    purpose: ResourcePurpose,
     base: str | None = None,
 ) -> ResourceData:
     """Load paths through the policy; streams still pass through its parser."""
+    checked = validate_purpose(purpose)
     if isinstance(source, ET.Element):
         raise ResourcePolicyError("an unverified Element cannot bypass resource policy parsing")
     if isinstance(source, (str, os.PathLike)):
-        return policy.read(os.fspath(source), base=base, purpose=purpose)
+        return policy.read(os.fspath(source), base=base, purpose=checked)
     content = source.read()
     return ResourceData(
         source_identifier(source) or "<memory>",

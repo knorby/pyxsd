@@ -15,7 +15,7 @@ requires-python = ">=3.11"
 # Minimal, pure-Python base dependencies; optional extras may contain compiled packages. elementpath
 # supplies the XSD regular-expression translator used to enforce the
 # xs:pattern facet.
-dependencies = ["elementpath>=4.7,<6"]
+dependencies = ["defusedxml>=0.7.1,<1", "elementpath>=4.7,<6"]
 keywords = ["xml", "xsd", "schema", "parser", "transform", "validation"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -34,7 +34,7 @@ classifiers = [
 [project.optional-dependencies]
 pydantic = ["pydantic>=2.12.5,<3"]
 arrow = ["pyarrow>=22"]
-mcp = ["mcp>=2.3,<3", "pydantic>=2.12.5,<3", "defusedxml>=0.7.1,<1", "anyio>=4.10,<5"]
+mcp = ["mcp>=2.3,<3", "pydantic>=2.12.5,<3", "anyio>=4.10,<5"]
 
 [project.urls]
 Homepage = "https://github.com/knorby/pyxsd"
@@ -160,6 +160,10 @@ module = [
     "pyxsd.nodes",
     "pyxsd.xsd_data_types",
     "pyxsd.identity",
+    "pyxsd.xml_policy",
+    "pyxsd.source_spans",
+    "pyxsd.remote",
+    "pyxsd.resource_refs",
     "pyxsd.mcp.*",
     "pyxsd.writers.*",
     "pyxsd.transforms.*",

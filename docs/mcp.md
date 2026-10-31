@@ -145,7 +145,7 @@ and file digests; changing the inputs invalidates old pages.
 | `pyxsd_find_schema_components` | Searches literal text, kind, name and namespace filters, or traverses `uses` / `used_by` relationships. |
 | `pyxsd_validate_document` | Returns verdicts, exact issue locations, aggregate counts, paged issues, and fingerprints; retains a report artifact only for invalid documents. |
 | `pyxsd_validate_documents` | Validates a batch with per-document schemas and outcomes in one capture and worker call; retains reports only for invalid documents. |
-| `pyxsd_query_document` | Runs XPath over the bound projection and returns scalars, node summaries, exact locations or bounded subtrees. |
+| `pyxsd_query_document` | Runs XPath over the bound projection and returns scalars, node summaries, exact locations, or exact source subtrees. |
 | `pyxsd_explain_issue` | Gives curated issue-code guidance and can read an exact issue from a retained report. |
 | `pyxsd_inspect_model` | Projects JSON Schema for a selected declaration (optional Pydantic integration). |
 | `pyxsd_validate_data` | Checks JSON data against a projected contract (optional Pydantic integration). |
@@ -205,9 +205,38 @@ replacing session inputs cannot reuse deleted paths.
 `ValidationIssue.location` is a structured path with expanded names and one-based
 same-name sibling indexes. It identifies the exact occurrence, not merely the
 first element with a matching local name. Query with `result: "subtree"` to
-retrieve that occurrence's XML and location together.
-Subtrees are regenerated from bound data: formatting and comments are not
-preserved (`source_faithful: false`), and the response carries a warning.
+retrieve that occurrence's source bytes and location together.
+
+A subtree result is an exact slice of the captured source, not regenerated XML:
+
+| Key | Value |
+| --- | --- |
+| `name`, `location` | The bound node's name and its exact structured occurrence address. |
+| `encoding` | `"base64"` (also present when the source is unavailable). |
+| `data` | Base64 of the original bytes, or `null`. |
+| `byte_length` | `end - start`, or `null`. |
+| `span` | `{"start": int, "end": int}` in original-encoding bytes, or `null`. |
+| `source_faithful` | `true` for a slice, `false` when unavailable. |
+| `fault` | `null`, or `{"code": "source_unavailable", "message": ...}`. |
+
+`span` is a half-open range in the original document's encoding; `data` is those
+bytes base64-encoded, and `byte_length` equals `end - start`. The slice starts at
+the element's opening `<` and ends just past its closing tag or `/>`, so it
+carries the element's original prefixes, attribute order and quoting, comments,
+CDATA, and character data. It excludes the element's trailing tail text and any
+XML declaration, and it is **not** a standalone document in general: namespace
+prefixes may be declared on an ancestor and therefore be absent from the slice.
+Restore the in-scope declarations before parsing a slice on its own.
+
+The bytes stay in their original encoding. A UTF-16 document returns UTF-16
+bytes (with offsets counted in those bytes, not characters); pyxsd does not
+re-encode a slice to UTF-8. A `source_unavailable` fault is per result: `data`,
+`byte_length`, and `span` are null and `source_faithful` is false, with no
+fallback to a serialized or regenerated subtree. The source index is built only
+when a page actually selects nodes, under the same strict parser policy and XML
+byte/depth/element budgets as the semantic parse. Summary results are unchanged
+and do not carry the source keys.
+
 Missing-child diagnostics identify a container rather than a nonexistent child;
 check `location_precision` before treating an issue as an exact occurrence.
 

@@ -234,7 +234,7 @@ class TestMixedSerialization:
     def test_write_through_keeps_tail(self, tmp_path):
         doc = _parse(MIXED_P, self.MIXED_XML, tmp_path)
         doc.root.em = "replaced"
-        assert " between " in "".join(ET.fromstring(doc.to_string().split("\n", 1)[1]).itertext())
+        assert " between " in "".join(ET.fromstring(doc.to_string()).itertext())
 
     def test_element_only_output_byte_identical(self, tmp_path):
         body = (
@@ -245,10 +245,9 @@ class TestMixedSerialization:
         pretty = "<a>\n  <b>x</b>\n</a>"
         before = _parse(body, pretty, tmp_path).to_string()
         # reparse the serialization and confirm output is stable (legacy block
-        # layout). The first line is the writer's timestamped header, so the
-        # comparison starts past it.
+        # layout).
         again = _parse(body, before, tmp_path).to_string()
-        assert again.split("\n", 1)[1] == before.split("\n", 1)[1]
+        assert again == before
 
     def test_consumer_shape_strict_namespaces(self, tmp_path):
         ns = "urn:oii:2:content"
@@ -289,7 +288,7 @@ class TestMixedSerialization:
         assert doc.is_valid
         assert doc.root._value_ == ["a "]
         assert doc.root._children_[0]._tail_ == " c"
-        again = _parse(MIXED_WITH_ELEMENT_ONLY_CHILD, doc.to_string().split("\n", 1)[1], tmp_path)
+        again = _parse(MIXED_WITH_ELEMENT_ONLY_CHILD, doc.to_string(), tmp_path)
         assert again.is_valid
         assert again.root._value_ == ["a "]
         assert again.root._children_[0]._tail_ == " c"

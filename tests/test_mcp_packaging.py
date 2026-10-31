@@ -26,4 +26,7 @@ def test_mcp_extra_resolves_without_installing_arrow():
     base = [
         req.name for req in requirements if req.marker is None or req.marker.evaluate({"extra": ""})
     ]
-    assert base == ["elementpath"]
+    assert base == ["defusedxml", "elementpath"]
+    defusedxml = [req for req in requirements if req.name == "defusedxml"]
+    assert len(defusedxml) == 1
+    assert defusedxml[0].marker is None

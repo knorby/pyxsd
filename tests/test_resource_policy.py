@@ -8,6 +8,7 @@ import pytest
 
 import pyxsd
 from pyxsd.namespaces import parse_with_namespaces
+from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 XS = "http://www.w3.org/2001/XMLSchema"
 SIMPLE = f'<xs:schema xmlns:xs="{XS}"><xs:element name="root" type="xs:int"/></xs:schema>'
@@ -152,6 +153,106 @@ def test_instance_hints_and_namespace_mappings_are_policy_reads(tmp_path):
     ]
     assert policy.parsed[0][0] == str(tmp_path / "instances/input.xml")
     assert document.source == "instances/input.xml"
+
+
+def test_instance_selected_main_schema_and_hints_are_schema_hint_reads(tmp_path):
+    (tmp_path / "schemas").mkdir()
+    (tmp_path / "instances").mkdir()
+    (tmp_path / "schemas/main.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}" xmlns:n="urn:extra"><xs:import namespace="urn:extra"/>'
+        '<xs:element name="root" type="xs:string"/></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "schemas/extra.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}" targetNamespace="urn:extra"><xs:simpleType name="Number">'
+        '<xs:restriction base="xs:int"/></xs:simpleType></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "schemas/hint.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}" targetNamespace="urn:hint">'
+        '<xs:include schemaLocation="hint-types.xsd"/></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "schemas/hint-types.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="Hinted">'
+        '<xs:restriction base="xs:int"/></xs:simpleType></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "instances/input.xml").write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="../schemas/main.xsd" '
+        'xsi:schemaLocation="urn:hint ../schemas/hint.xsd">text</root>',
+        encoding="utf-8",
+    )
+    policy = RecordingPolicy(tmp_path)
+    document = pyxsd.parse(
+        "instances/input.xml",
+        mode=pyxsd.ParseModes.NAMESPACED,
+        namespace_schemas={"urn:extra": "extra.xsd"},
+        resource_policy=policy,
+    )
+    assert not document.report.has_errors
+    assert [(path.name, base, purpose) for path, base, purpose in policy.reads] == [
+        ("input.xml", None, "instance"),
+        ("main.xsd", None, "schema-hint"),
+        ("extra.xsd", str(tmp_path / "schemas/main.xsd"), "schema"),
+        ("hint.xsd", str(tmp_path / "schemas/main.xsd"), "schema-hint"),
+        ("hint-types.xsd", str(tmp_path / "schemas/hint.xsd"), "schema"),
+    ]
+
+
+def test_explicit_schema_with_instance_hints_uses_schema_and_hint_purposes(tmp_path):
+    (tmp_path / "schemas").mkdir()
+    (tmp_path / "instances").mkdir()
+    (tmp_path / "schemas/main.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="root" type="xs:string"/></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "schemas/hint.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}" targetNamespace="urn:hint">'
+        '<xs:include schemaLocation="hint-types.xsd"/></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "schemas/hint-types.xsd").write_text(
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="Hinted">'
+        '<xs:restriction base="xs:int"/></xs:simpleType></xs:schema>',
+        encoding="utf-8",
+    )
+    (tmp_path / "instances/input.xml").write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="../schemas/main.xsd" '
+        'xsi:schemaLocation="urn:hint ../schemas/hint.xsd">text</root>',
+        encoding="utf-8",
+    )
+    policy = RecordingPolicy(tmp_path)
+    document = pyxsd.parse(
+        "instances/input.xml",
+        xsd="schemas/main.xsd",
+        mode=pyxsd.ParseModes.NAMESPACED,
+        resource_policy=policy,
+    )
+    assert not document.report.has_errors
+    assert [(path.name, purpose) for path, _, purpose in policy.reads] == [
+        ("input.xml", "instance"),
+        ("main.xsd", "schema"),
+        ("hint.xsd", "schema-hint"),
+        ("hint-types.xsd", "schema"),
+    ]
+
+
+def test_root_remote_denial_names_the_real_purpose(tmp_path):
+    from pyxsd.resource_policy import ResourcePolicyError
+
+    remote = "https://schemas.example/main.xsd"
+    with pytest.raises(ResourcePolicyError, match="the schema reference"):
+        pyxsd.compile(remote)
+    (tmp_path / "input.xml").write_text(
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        f'xsi:noNamespaceSchemaLocation="{remote}">4</root>',
+        encoding="utf-8",
+    )
+    with pytest.raises(ResourcePolicyError, match="the schema-hint reference"):
+        pyxsd.parse(str(tmp_path / "input.xml"))
 
 
 def test_streams_and_revalidation_are_policy_parsed_without_extra_reads(tmp_path):
@@ -366,7 +467,7 @@ def test_anonymous_instance_hints_use_the_policy_root_not_cwd(tmp_path, absolute
     document = pyxsd.parse(stream, resource_policy=policy)
     assert document.is_valid
     assert document.source is stream
-    assert policy.reads == [(tmp_path / "main.xsd", None, "schema")]
+    assert policy.reads == [(tmp_path / "main.xsd", None, "schema-hint")]
 
 
 def test_advisory_instance_hint_denial_is_not_downgraded(tmp_path):
@@ -384,3 +485,46 @@ def test_advisory_instance_hint_denial_is_not_downgraded(tmp_path):
     with pytest.raises(ResourcePolicyError, match="denied"):
         pyxsd.parse("input.xml", mode=pyxsd.ParseModes.NAMESPACED, resource_policy=policy)
     assert policy.reads[-1][0] == tmp_path / "secret.xsd"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"xml_policy": XmlParserPolicy.protected()},
+        {"xml_limits": XmlLimits(max_bytes=1_000)},
+    ],
+)
+def test_custom_resource_policy_owns_explicit_parser_arguments(tmp_path, kwargs):
+    policy = RecordingPolicy(tmp_path)
+    with pytest.raises(ValueError, match="resource_policy"):
+        pyxsd.compile(io.StringIO(SIMPLE), resource_policy=policy, **kwargs)
+    with pytest.raises(ValueError, match="resource_policy"):
+        pyxsd.parse(
+            io.StringIO("<root>4</root>"),
+            xsd=io.StringIO(SIMPLE),
+            resource_policy=policy,
+            **kwargs,
+        )
+    schema = pyxsd.compile(io.StringIO(SIMPLE), resource_policy=policy)
+    with pytest.raises(ValueError, match="resource_policy"):
+        schema.parse(io.StringIO("<root>4</root>"), **kwargs)
+
+
+def test_custom_policy_with_an_unrelated_compilation_attribute_compiles(tmp_path):
+    """Only the private capability marker enables per-compilation scoping."""
+
+    class NotesPolicy(RecordingPolicy):
+        # Not a hook: a third-party policy may use this name for anything.
+        compilation = "compiled once per schema"
+
+    policy = NotesPolicy(tmp_path)
+    schema = pyxsd.compile(io.StringIO(SIMPLE), resource_policy=policy)
+    assert not schema.report.has_errors
+    document = schema.parse(io.StringIO("<root>4</root>"))
+    assert document.is_valid
+
+    (tmp_path / "main.xsd").write_text(SIMPLE, encoding="utf-8")
+    policy = NotesPolicy(tmp_path)
+    schema = pyxsd.compile("main.xsd", resource_policy=policy)
+    assert not schema.report.has_errors
+    assert policy.reads[-1][2] == "schema"

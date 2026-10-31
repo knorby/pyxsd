@@ -59,16 +59,19 @@ A policy supplies two methods:
 - `read(source, *, base, purpose)` authorizes and loads a named resource,
   returning `ResourceData(source_id, content)` with its original bytes.
   `base` identifies the including document, not its directory; `purpose`
-  is `"schema"` or `"instance"`. Canonical source IDs can name virtual
-  filesystem layouts. They also determine nested dependency bases and
-  composition-cycle detection.
+  is `"schema"` (an explicit or mapped schema, or an ordinary dependency),
+  `"schema-hint"` (a schema the instance selected through its location
+  hint), or `"instance"`. Canonical source IDs can name virtual filesystem
+  layouts. They also determine nested dependency bases and composition-cycle
+  detection.
 - `parse(data, context)` parses admitted bytes and records namespace
   bindings in the supplied `NamespaceContext`.
 
 Includes, imports, redefines, overrides, namespace mappings and instance
 schema hints use the same policy. Raise `ResourcePolicyError` to refuse
 access: unlike unavailable-resource errors, a denial is never downgraded
-to an ignored import or schema-hint warning.
+to an ignored import or schema-hint warning. A policy's `parse()` owns XML
+parsing; `xml_policy` and `xml_limits` cannot be combined with it.
 
 Streams pass through the policy parser too; byte streams preserve original
 encoding, whereas text streams are encoded as UTF-8. Anonymous schema
@@ -76,10 +79,37 @@ streams have no implicit filesystem base: relative dependencies require a
 canonical stream `.name`. Already-parsed `Element` inputs are rejected
 when a policy is active, so they cannot bypass its parser.
 
-These hooks are **not a sandbox or a secure parser implementation**. A
-policy is trusted application code responsible for access checks, parser
-hardening, limits and namespace evidence. Python overlays and extensions
-remain executable application code, outside this XML-loading contract.
+`Schema.compile` and `Schema.parse` also accept opt-in `xml_policy` and
+`xml_limits` arguments without a custom resource policy. `xml_policy=None`
+keeps the stdlib parser and its current DTD/entity behavior;
+`XmlParserPolicy.protected()` or `.strict()` selects a defusedxml-backed
+profile, and `XmlLimits` bounds bytes, depth, and start-tag count. A
+compile-time parser policy applies to the schema and its dependencies but is
+not inherited by later instance parses, so pass it per parse. These hooks are
+**not a sandbox or a secure parser implementation**. A policy is trusted
+application code responsible for access checks, parser hardening, limits and
+namespace evidence. Python overlays and extensions remain executable
+application code, outside this XML-loading contract.
+
+`pyxsd.RemoteResourcePolicy` is the built-in opt-in remote schema loader.
+Selecting it authorizes a remote main schema, whether the caller supplied it
+explicitly or the instance selected it through a location hint; a hint-selected
+remote main also requires `allow_remote_hints=True`, and as the root read it
+needs no `allowed_origins` entry. An **additional** remote hint resolved from a
+local schema is not a root read and needs **both** `allow_remote_hints=True` and
+`allow_local_remote=True`. An ordinary remote include/import from a local schema
+needs `allow_local_remote=True`; once admitted, cross-origin dependencies of a
+remote document need `allowed_origins`. Every request is HTTPS, address-checked,
+budgeted, and subject to `RemoteLimits`; there is no persistent cache. Remote
+instance documents, remote-to-local pivots, `file:` URLs, and remote Python
+overlays are refused. Once selected, transport/resolver failures abort the
+compile even for a document-authored include/import. Full rules, defaults, and
+the DNS-rebinding caveat are in {doc}`xml-security`.
+
+Selecting the policy also governs instance parsing: `Schema.parse()` sends the
+instance through the policy, which parses it with `XmlParserPolicy.strict()` and
+caps it at `limits.response_bytes`. Local instances are affected too, so a
+DOCTYPE-bearing or oversized instance is refused while the policy is attached.
 
 ## Report API
 

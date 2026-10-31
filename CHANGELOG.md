@@ -13,6 +13,20 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ### Added
 
+- Opt-in XML parser profiles: `XmlParserPolicy.protected()` forbids entity
+  declarations and external references, `.strict()` also forbids DTDs, and
+  `XmlLimits` adds byte, depth, and element budgets. Stdlib parsing remains the
+  default for speed and compatibility, and no built-in profile fetches an
+  external DTD or entity.
+- Opt-in HTTPS schema loading with `RemoteResourcePolicy` and finite
+  `RemoteLimits`: explicit root/origin rules, separately gated remote instance
+  hints, strict parsing of downloaded resources, redirect and address
+  revalidation, per-compilation budgets, and no persistent remote cache.
+  Local/offline loading remains the default.
+- Source-faithful MCP subtrees: `pyxsd_query_document` with
+  `result="subtree"` returns exact base64 original bytes with `span`,
+  `byte_length`, `source_faithful`, and per-result `source_unavailable` faults
+  instead of regenerated XML.
 - Structured, bounded validation reports with JSON-safe issue details, source
   occurrence locations, and `Document.locate()` lookups.
 - Resource-policy hooks for schema and instance reads, including virtual
@@ -31,8 +45,39 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   Execution remains disabled by default; trusted-local previews require
   explicit stdio opt-in.
 
+### Changed
+
+- **Migration notes for the XML-resource and source-fidelity release:**
+  - `ResourcePolicy.read()` can now receive `purpose="schema-hint"` for a schema
+    the instance selected through `xsi:schemaLocation` or
+    `xsi:noNamespaceSchemaLocation` (and for hint-selected main schemas). A
+    third-party policy that switches on `purpose` must handle the new value;
+    treating it like `"schema"` keeps the old behavior, and denying it is now
+    possible without denying ordinary schema loads.
+  - The MCP `pyxsd_query_document` `result="subtree"` response is a breaking
+    shape change: the serialized `subtree` text is removed, and each element
+    result carries `encoding` (`"base64"`), `data` (exact original bytes),
+    `byte_length`, `span`, and `source_faithful`. When provenance or a span is
+    unavailable the result instead carries a per-result `fault` of
+    `source_unavailable` with null data. Clients must decode `data` rather than
+    read `subtree`.
+  - Selecting `RemoteResourcePolicy` also changes instance parsing: the compiled
+    schema retains the policy, so later `Schema.parse()` calls parse the
+    instance with `XmlParserPolicy.strict()` and cap it at
+    `limits.response_bytes`. Local instances are affected, and a DOCTYPE-bearing
+    or oversized instance is refused while the policy is attached.
+- `defusedxml` joins `elementpath` as a base dependency (both pure Python).
+  `defusedxml` is loaded only when an opt-in parser profile selects it, and it
+  is no longer a separate `pyxsd[mcp]` requirement.
+- Document serialization is deterministic for the same tree: repeated writes
+  produce identical bytes, and the generated header no longer varies between
+  runs.
+
 ### Fixed
 
+- `XmlTreeWriter.writeHeaderInfo()` no longer emits a generated timestamp; the
+  default is a no-op subclass hook for callers that want their own header
+  (issue #48).
 - Schema binding indexes are released after each parse, preventing per-parse
   state from accumulating.
 

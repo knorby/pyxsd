@@ -4,15 +4,17 @@ Documentation for **pyxsd**, a Python library and CLI that maps XML
 documents into Python object trees according to an XML Schema (XSD). It
 reports validation issues, queries and exports the bound tree (`xpath` /
 `find` / `to_dict` / `to_json`), runs user-defined *transforms*, and writes
-XML. The base install has one pure-Python dependency, `elementpath`. pyxsd
-is an XSD 1.1 processor with an optional XSD 1.0 mode.
+XML. The base install has two small, pure-Python dependencies, `elementpath`
+and `defusedxml`; `defusedxml` is used only when the opt-in parser profiles are
+selected. pyxsd is an XSD 1.1 processor with an optional XSD 1.0 mode.
 
 For explicit local input sequences, see {doc}`batch`: reuse one compiled
 schema for parsing or export a new manifested Parquet dataset with the
 optional Arrow adapter. To attach methods and validation checks to generated
 classes, see {doc}`extensions`. The {doc}`api` covers schema introspection
 and filtered stubs; {doc}`validation` covers resource policies and diagnostic
-locations.
+locations; {doc}`xml-security` covers parser profiles, limits, remote loading,
+and untrusted-input boundaries.
 
 ```{toctree}
 :maxdepth: 2
@@ -26,6 +28,7 @@ mcp
 mcp-deployment
 data-model
 validation
+xml-security
 batch
 binding
 extensions
