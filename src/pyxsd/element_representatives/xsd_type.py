@@ -444,9 +444,7 @@ class XsdType(ElementRepresentative):
         """
         for refSite in self.attributeGroupRefs:
             groupName = refSite.ref.split(":")[-1]
-            group = refSite.resolveReference(
-                refSite.ref, self._globalAttributeGroupCandidates(parser=host), parser=host
-            )
+            group = refSite._resolve_group(parser=host, for_class_building=True)
             if group is None:
                 message = (
                     f"attributeGroup reference '{refSite.ref}' in type "
@@ -690,9 +688,7 @@ class XsdType(ElementRepresentative):
         collected = dict(group.attributes)
         for refSite in getattr(group, "attributeGroupRefs", []):
             nestedName = refSite.ref.split(":")[-1]
-            nested = refSite.resolveReference(
-                refSite.ref, self._globalAttributeGroupCandidates(parser=host), parser=host
-            )
+            nested = refSite._resolve_group(parser=host, for_class_building=True)
             if nested is None:
                 message = (
                     f"attributeGroup reference '{refSite.ref}' in group "

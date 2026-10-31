@@ -16,7 +16,11 @@ from collections import Counter
 import pytest
 
 from pyxsd.binding import ParseModes
-from pyxsd.element_representatives.attribute_group import _attribute_group_index
+from pyxsd.element_representatives.attribute_group import (
+    AttributeGroup,
+    _attribute_group_index,
+)
+from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.schema import Schema
 
 XSD_NS_DECL = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
@@ -288,3 +292,70 @@ def test_unbound_prefix_reference_preserves_repeated_diagnostics():
         {"unknown-namespace-prefix": 2, "unknown-attributeGroup": 2}
     )
     assert not hasattr(_ref_site(compiled), "_resolvedAttributeGroup")
+
+
+# ---------------------------------------------------------------------------
+# successful-resolution caching
+# ---------------------------------------------------------------------------
+
+NESTED = f"""<xs:schema {XSD_NS_DECL}>
+  <xs:attributeGroup name="inner">
+    <xs:attribute name="nested_value" type="xs:int"/>
+  </xs:attributeGroup>
+  <xs:attributeGroup name="outer">
+    <xs:attributeGroup ref="inner"/>
+  </xs:attributeGroup>
+  <xs:complexType name="T1"><xs:attributeGroup ref="outer"/></xs:complexType>
+  <xs:complexType name="T2"><xs:attributeGroup ref="outer"/></xs:complexType>
+</xs:schema>"""
+
+
+def test_successful_reference_resolves_once_across_compile_phases(monkeypatch):
+    calls = []
+    original = AttributeGroup.resolveReference
+
+    def recording(self, value, candidates, *, parser=None):
+        calls.append(self)
+        return original(self, value, candidates, parser=parser)
+
+    monkeypatch.setattr(AttributeGroup, "resolveReference", recording)
+    compiled = _compile(GOOD)
+
+    ref = _ref_site(compiled)
+    assert calls == [ref]
+    assert ref._resolvedAttributeGroup is _group(compiled)
+    assert ref._resolve_group() is _group(compiled)
+    assert calls == [ref]  # the explicit cache hit does not resolve again
+
+
+def test_nested_reference_reuse_resolves_each_site_once(monkeypatch):
+    calls = []
+    originalResolve = AttributeGroup.resolveReference
+
+    def recording(self, value, candidates, *, parser=None):
+        calls.append(self)
+        return originalResolve(self, value, candidates, parser=parser)
+
+    scans = []
+    originalCandidates = ElementRepresentative._globalAttributeGroupCandidates
+
+    def counting(self, *, parser=None):
+        scans.append(self)
+        return originalCandidates(self, parser=parser)
+
+    monkeypatch.setattr(AttributeGroup, "resolveReference", recording)
+    monkeypatch.setattr(ElementRepresentative, "_globalAttributeGroupCandidates", counting)
+    compiled = _compile(NESTED)
+
+    components = compiled._host.components
+    t1 = components.getFromName("T1", kind="type")
+    t2 = components.getFromName("T2", kind="type")
+    (t1_ref,) = t1.attributeGroupRefs
+    (t2_ref,) = t2.attributeGroupRefs
+    outer = components.getFromName("outer", kind="attributeGroup")
+    (nested_ref,) = outer.attributeGroupRefs
+
+    assert Counter(calls) == Counter({t1_ref: 1, t2_ref: 1, nested_ref: 1})
+    assert len(scans) == 1
+    assert "nested_value" in t1.attributes
+    assert "nested_value" in t2.attributes

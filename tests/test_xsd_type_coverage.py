@@ -260,7 +260,10 @@ def test_resolve_attribute_group_refs_without_a_host(tmp_path):
     )
     complex_type = entries_of(compiled, "ComplexType")[0]
     # A reference to a group that does not exist is reported.
-    ghost = SimpleNamespace(ref="ghost", resolveReference=lambda ref, candidates, parser=None: None)
+    ghost = SimpleNamespace(
+        ref="ghost",
+        _resolve_group=lambda *, parser=None, for_class_building=False: None,
+    )
     complex_type.attributeGroupRefs = [ghost]
     complex_type.resolveAttributeGroupRefs(compiled._host)
     assert "unknown-attributeGroup" in error_codes(compiled.report)

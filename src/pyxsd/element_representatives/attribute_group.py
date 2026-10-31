@@ -6,11 +6,19 @@ from pyxsd.namespaces import local_part
 from pyxsd.xsd_data_types import NCName
 
 
+def _bucket_by_name(candidates) -> dict:
+    """Bucket candidates by local name, preserving their input order."""
+    by_name: dict = {}
+    for candidate in candidates:
+        by_name.setdefault(candidate.name, []).append(candidate)
+    return by_name
+
+
 def _attribute_group_index(schema) -> dict:
     """The per-compile attributeGroup candidate index.
 
     Lives on the schema declaration as ``_attribute_group_index`` so
-    every ``_resolves_to_group`` call on one compile shares one table
+    every reference-site resolution on one compile shares one table
     (scanning the whole component table per reference is what made
     group-heavy schemas pay references times components per compile). The
     schema representative is a stable per-compile object, the component
@@ -22,16 +30,21 @@ def _attribute_group_index(schema) -> dict:
       component table's scan order (the order the per-call scan used;
       the historical ``attributeGroups`` dict is the source when no
       component table was built)
-    - ``by_name``: each name's candidates as a list, preserving that
-      order, so a reference consults only same-name declarations
+    - ``by_name``: each name's declaration candidates as a list,
+      preserving that order, so a reference consults only same-name
+      declarations
+    - ``class_by_name``: the class-compatible candidates (built from
+      ``_globalAttributeGroupCandidates``), bucketed once per compile by
+      :func:`_class_attribute_group_bucket`. This bucket can differ from
+      ``by_name`` for duplicate/redefine and legacy same-local-name
+      declarations; a reference site may share a declaration-time target
+      across phases only when the two same-name sequences match.
 
     There is deliberately no memo keyed by the lexical ``ref`` string:
     two reference sites spelling the same QName in different composed
     documents may bind its prefix differently, so one shared lexical
-    answer could be wrong — and each site resolves exactly once per
-    compile anyway, so the index is the entire win. Reference sites
-    never enter the index: they fail ``checkTopLevelType`` exactly as
-    they failed the scan's filter.
+    answer could be wrong. Reference sites never enter the index: they
+    fail ``checkTopLevelType`` exactly as they failed the scan's filter.
     """
     cache = getattr(schema, "_attribute_group_index", None)
     if cache is None:
@@ -44,12 +57,31 @@ def _attribute_group_index(schema) -> dict:
                         candidates.append(entry)
         else:
             candidates = list(getattr(schema, "attributeGroups", {}).values())
-        by_name: dict = {}
-        for candidate in candidates:
-            by_name.setdefault(candidate.name, []).append(candidate)
-        cache = {"candidates": candidates, "by_name": by_name}
+        cache = {
+            "candidates": candidates,
+            "by_name": _bucket_by_name(candidates),
+        }
         schema._attribute_group_index = cache
     return cache
+
+
+def _class_attribute_group_bucket(schema, local, *, parser):
+    """Return the current class-building candidates for one local name.
+
+    Class building historically selected from
+    ``_globalAttributeGroupCandidates``, whose duplicate/redefine and
+    legacy same-local-name rules are not literally identical to the
+    declaration index's component-table order. Bucket those candidates
+    once per compile, in their original order, so a reference site can
+    compare the two sequences and share a declaration-time target only
+    when they are identical.
+    """
+    index = _attribute_group_index(schema)
+    class_by_name = index.get("class_by_name")
+    if class_by_name is None:
+        class_by_name = _bucket_by_name(schema._globalAttributeGroupCandidates(parser=parser))
+        index["class_by_name"] = class_by_name
+    return class_by_name.get(local, ())
 
 
 class AttributeGroup(ElementRepresentative):
@@ -189,22 +221,44 @@ class AttributeGroup(ElementRepresentative):
                 code="unknown-attributeGroup",
             )
 
+    def _resolve_group(self, *, parser=None, for_class_building=False):
+        """Return this site's global group, caching compatible successes only.
+
+        Declaration checks and class building share one successful
+        resolution per site when both consult the same candidate
+        sequence. Class building keeps its historical
+        ``_globalAttributeGroupCandidates`` selection: when its bucket
+        differs from the declaration index's bucket, the site ignores
+        any declaration-time target and resolves against the class
+        bucket without caching the result. A failed resolution is never
+        cached, so repeated diagnostics keep flowing through
+        ``resolveReference``.
+        """
+        schema = self.getSchema()
+        if parser is None:
+            parser = getattr(schema, "host", None)
+        index = _attribute_group_index(schema)
+        local = local_part(str(self.ref).strip())
+        declaration_candidates = index["by_name"].get(local, ())
+        selected_candidates = declaration_candidates
+        cacheable = True
+        if for_class_building:
+            selected_candidates = _class_attribute_group_bucket(schema, local, parser=parser)
+            cacheable = tuple(declaration_candidates) == tuple(selected_candidates)
+        if cacheable:
+            cached = getattr(self, "_resolvedAttributeGroup", None)
+            if cached is not None:
+                return cached
+        resolved = self.resolveReference(self.ref, selected_candidates, parser=parser)
+        if cacheable and resolved is not None:
+            self._resolvedAttributeGroup = resolved
+        return resolved
+
     def _resolves_to_group(self) -> bool:
         """Whether ``self.ref`` names a global attributeGroup component.
 
-        Consults the per-compile index (see
-        ``_attribute_group_index``) instead of rescanning the whole
-        component table. The reference's local part selects the
-        same-name bucket, whose order is the scan order, so the first
-        namespace-admissible hit is the one the full scan returned; an
-        empty bucket resolves through ``resolveReference`` as before,
-        keeping its namespace-prefix reporting.
+        Delegates to :meth:`_resolve_group`, which consults the
+        per-compile index and caches a successful declaration-time
+        target for reuse by compatible class-building calls.
         """
-        schema = self.getSchema()
-        parser = getattr(schema, "host", None)
-        index = _attribute_group_index(schema)
-        local = local_part(str(self.ref).strip())
-        return (
-            self.resolveReference(self.ref, index["by_name"].get(local, ()), parser=parser)
-            is not None
-        )
+        return self._resolve_group() is not None
