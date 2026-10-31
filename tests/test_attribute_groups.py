@@ -359,3 +359,70 @@ def test_nested_reference_reuse_resolves_each_site_once(monkeypatch):
     assert len(scans) == 1
     assert "nested_value" in t1.attributes
     assert "nested_value" in t2.attributes
+
+
+def test_identical_lexical_refs_in_namespace_contexts_keep_distinct_targets(tmp_path):
+    # Two documents spell the same reference text ``G``; each default
+    # namespace makes its QName name that document's own global group.
+    # A cache keyed by lexical ``ref`` text would collapse them.
+    for ns, attribute, type_name in (
+        ("urn:a", "from_a", "TA"),
+        ("urn:b", "from_b", "TB"),
+    ):
+        (tmp_path / f"{type_name}.xsd").write_text(
+            f"""<xs:schema {XSD_NS_DECL} targetNamespace="{ns}" xmlns="{ns}">
+  <xs:attributeGroup name="G">
+    <xs:attribute name="{attribute}" type="xs:int"/>
+  </xs:attributeGroup>
+  <xs:complexType name="{type_name}">
+    <xs:attributeGroup ref="G"/>
+  </xs:complexType>
+</xs:schema>""",
+            encoding="utf-8",
+        )
+    main = f"""<xs:schema {XSD_NS_DECL} targetNamespace="urn:main"
+    xmlns:a="urn:a" xmlns:b="urn:b">
+  <xs:import namespace="urn:a"/>
+  <xs:import namespace="urn:b"/>
+</xs:schema>"""
+    compiled = Schema.compile(
+        io.StringIO(main),
+        mode=ParseModes.NAMESPACED,
+        namespace_schemas={
+            "urn:a": str(tmp_path / "TA.xsd"),
+            "urn:b": str(tmp_path / "TB.xsd"),
+        },
+    )
+
+    components = compiled._host.components
+    ta = components.getFromName("TA", kind="type", namespace="urn:a", warn=False)
+    tb = components.getFromName("TB", kind="type", namespace="urn:b", warn=False)
+    (ta_ref,) = ta.attributeGroupRefs
+    (tb_ref,) = tb.attributeGroupRefs
+
+    assert ta_ref.ref == tb_ref.ref == "G"
+    assert list(ta.attributes) == ["from_a"]
+    assert list(tb.attributes) == ["from_b"]
+    assert ta_ref._resolvedAttributeGroup is not tb_ref._resolvedAttributeGroup
+    assert not compiled.report.errors
+
+
+def test_successful_reference_cache_does_not_leak_between_compiles(monkeypatch):
+    calls = []
+    original = AttributeGroup.resolveReference
+
+    def recording(self, value, candidates, *, parser=None):
+        calls.append(self)
+        return original(self, value, candidates, parser=parser)
+
+    monkeypatch.setattr(AttributeGroup, "resolveReference", recording)
+    first = _compile(GOOD)
+    second = _compile(GOOD)
+
+    first_ref = _ref_site(first)
+    second_ref = _ref_site(second)
+    assert first_ref is not second_ref
+    assert calls == [first_ref, second_ref]
+    assert first_ref._resolvedAttributeGroup is _group(first)
+    assert second_ref._resolvedAttributeGroup is _group(second)
+    assert first_ref._resolvedAttributeGroup is not second_ref._resolvedAttributeGroup
