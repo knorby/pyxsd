@@ -1343,8 +1343,12 @@ class ElementRepresentative:
         unprefixed name with no default namespace stays in no namespace
         (AU_attrDecl00101m1_n). In ``legacy`` mode, or when the prefix
         cannot be resolved, the reference's local name selects the first
-        same-named candidate; the local name is the reference with any
-        lexical ``prefix:`` and Clark ``{uri}`` spelling removed, so
+        same-named candidate, except that a legacy reference whose
+        namespace resolved skips a candidate whose recorded authored
+        namespace is known and differs, while a candidate whose
+        provenance composition did not record keeps the local-name
+        fallback. The local name is the reference with any lexical
+        ``prefix:`` and Clark ``{uri}`` spelling removed, so
         ``xml:lang`` reaches the ``lang`` declaration an import
         composed. Returns ``None`` when nothing matches.
         """

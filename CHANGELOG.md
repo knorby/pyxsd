@@ -95,8 +95,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 - Legacy composition resolves Clark component references by recorded authored
   namespace, preventing valid chameleon group references from failing with
   `unknown-group`.
-- Attribute type prefixes resolve by URI, so rebound `xs`/`xsd` prefixes
-  cannot incorrectly select built-ins.
+- Attribute declaration type checks resolve by URI, so rebound `xs`/`xsd`
+  prefixes cannot incorrectly select built-ins; legacy runtime value typing is
+  unchanged.
 
 ## [1.2.1] - 2026-10-20
 
