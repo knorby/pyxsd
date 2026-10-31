@@ -11,6 +11,9 @@ same-named element or type never satisfies an attributeGroup ref).
 """
 
 import io
+from collections import Counter
+
+import pytest
 
 from pyxsd.binding import ParseModes
 from pyxsd.element_representatives.attribute_group import _attribute_group_index
@@ -166,3 +169,122 @@ def test_index_does_not_leak_between_compiles():
     assert dangling_index is not good_index
     assert dangling_index["candidates"] == []
     assert _ref_site(dangling)._resolves_to_group() is False
+
+
+# ---------------------------------------------------------------------------
+# class-building target compatibility
+# ---------------------------------------------------------------------------
+
+
+def _same_local_name_groups(tmp_path):
+    """Two imported namespaces with one global attributeGroup name."""
+    (tmp_path / "a.xsd").write_text(
+        f"""<xs:schema {XSD_NS_DECL} targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:attributeGroup name="G">
+    <xs:attribute name="from_a" type="xs:int"/>
+  </xs:attributeGroup>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    (tmp_path / "b.xsd").write_text(
+        f"""<xs:schema {XSD_NS_DECL} targetNamespace="urn:b" xmlns:b="urn:b">
+  <xs:attributeGroup name="G">
+    <xs:attribute name="from_b" type="xs:int"/>
+  </xs:attributeGroup>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    main = f"""<xs:schema {XSD_NS_DECL} targetNamespace="urn:main"
+    xmlns:a="urn:a" xmlns:b="urn:b">
+  <xs:import namespace="urn:a"/>
+  <xs:import namespace="urn:b"/>
+  <xs:complexType name="T"><xs:attributeGroup ref="a:G"/></xs:complexType>
+  <xs:complexType name="U"><xs:attributeGroup ref="b:G"/></xs:complexType>
+</xs:schema>"""
+    return main, {"urn:a": str(tmp_path / "a.xsd"), "urn:b": str(tmp_path / "b.xsd")}
+
+
+def _compile_same_local_groups(tmp_path, mode):
+    main, namespace_schemas = _same_local_name_groups(tmp_path)
+    return Schema.compile(io.StringIO(main), mode=mode, namespace_schemas=namespace_schemas)
+
+
+def _type(compiled, name):
+    return compiled._host.components.getFromName(
+        name, kind="type", namespace="urn:main", warn=False
+    )
+
+
+def test_same_local_groups_keep_strict_target_selection(tmp_path):
+    compiled = _compile_same_local_groups(tmp_path, ParseModes.NAMESPACED)
+
+    assert list(_type(compiled, "T").attributes) == ["from_a"]
+    assert list(_type(compiled, "U").attributes) == ["from_b"]
+    assert not compiled.report.errors
+
+
+def test_same_local_groups_keep_legacy_target_selection(tmp_path):
+    # Legacy composition merges same-local-name groups; this pins the
+    # current class-building result and its two declaration reports.
+    compiled = _compile_same_local_groups(tmp_path, ParseModes.STRICT)
+
+    assert list(_type(compiled, "T").attributes) == []
+    assert list(_type(compiled, "U").attributes) == ["from_b"]
+    assert Counter(issue.code for issue in compiled.report.errors) == Counter(
+        {"unknown-attributeGroup": 2}
+    )
+
+
+def _redefined_group_schema(tmp_path):
+    (tmp_path / "base.xsd").write_text(
+        f"""<xs:schema {XSD_NS_DECL} targetNamespace="urn:t" xmlns:t="urn:t">
+  <xs:attributeGroup name="G">
+    <xs:attribute name="original" type="xs:int"/>
+  </xs:attributeGroup>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    (tmp_path / "main.xsd").write_text(
+        f"""<xs:schema {XSD_NS_DECL} targetNamespace="urn:t" xmlns:t="urn:t">
+  <xs:redefine schemaLocation="base.xsd">
+    <xs:attributeGroup name="G">
+      <xs:attribute name="redefined" type="xs:int"/>
+    </xs:attributeGroup>
+  </xs:redefine>
+  <xs:complexType name="T"><xs:attributeGroup ref="t:G"/></xs:complexType>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+    return tmp_path / "main.xsd"
+
+
+@pytest.mark.parametrize("mode", [ParseModes.NAMESPACED, ParseModes.STRICT])
+def test_redefined_group_keeps_class_building_target(tmp_path, mode):
+    compiled = Schema.compile(str(_redefined_group_schema(tmp_path)), mode=mode)
+    t = compiled._host.components.getFromName("T", kind="type", namespace="urn:t", warn=False)
+
+    assert list(t.attributes) == ["redefined"]
+
+
+def test_dangling_reference_preserves_repeated_diagnostics():
+    compiled = _compile(DANGLING)
+
+    assert Counter(issue.code for issue in compiled.report.errors) == Counter(
+        {"unknown-attributeGroup": 2}
+    )
+    assert not hasattr(_ref_site(compiled), "_resolvedAttributeGroup")
+
+
+def test_unbound_prefix_reference_preserves_repeated_diagnostics():
+    xsd = f"""<xs:schema {XSD_NS_DECL} targetNamespace="urn:t" xmlns:t="urn:t">
+  <xs:complexType name="T">
+    <xs:attributeGroup ref="missing:G"/>
+  </xs:complexType>
+  <xs:element name="root" type="t:T"/>
+</xs:schema>"""
+    compiled = _compile(xsd)
+
+    assert Counter(issue.code for issue in compiled.report.errors) == Counter(
+        {"unknown-namespace-prefix": 2, "unknown-attributeGroup": 2}
+    )
+    assert not hasattr(_ref_site(compiled), "_resolvedAttributeGroup")
