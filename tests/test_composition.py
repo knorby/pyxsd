@@ -379,6 +379,46 @@ class TestCompositionCorrectness:
         base_names = [base.__name__ for base in doc.schema.classes["derivedType"].__mro__]
         assert "baseType" in base_names
 
+    def test_legacy_clark_group_reference_uses_authored_namespace(self, tmp_path):
+        """A legacy import's adopted Clark group reference finds its group.
+
+        ``imp.xsd`` chameleon-includes ``child.xsd``, so the group
+        reference written in ``child.xsd`` is rewritten to
+        ``{urn:imp}g``. Legacy composition reports the imported group in
+        the main schema's namespace (``urn:main``), so selecting
+        candidates by the reported namespace rejects the reference even
+        though the group's recorded authored namespace is its target.
+        The included document declares ``elementFormDefault`` so the
+        adopted group's local element is qualified in the instance.
+        """
+        (tmp_path / "child.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:element name="a" type="xs:string"/>'
+            "</xs:sequence></xs:group>"
+            '<xs:complexType name="t"><xs:sequence>'
+            '<xs:group ref="g"/>'
+            "</xs:sequence></xs:complexType>"
+            '<xs:element name="root" type="t"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "imp.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:imp" xmlns="urn:imp">'
+            '  <xs:include schemaLocation="child.xsd"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:main" xmlns:i="urn:imp">'
+            '  <xs:import namespace="urn:imp" schemaLocation="imp.xsd"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text('<root xmlns="urn:imp"><a>x</a></root>')
+        for mode in (None, ParseModes.NAMESPACED):
+            kwargs = {} if mode is None else {"mode": mode}
+            schema = Schema.compile(str(tmp_path / "schema.xsd"), **kwargs)
+            assert not schema.report.has_errors
+            assert not schema.parse(str(tmp_path / "instance.xml")).report.has_errors
+
     def test_chameleon_redefine_base_references_resolve(self, tmp_path):
         """A chameleon redefine's base document resolves its own references.
 

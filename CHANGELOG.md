@@ -92,6 +92,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   identity-constraint references now select or compare declarations by
   expanded name. Some previously accepted invalid schemas are now rejected,
   and some previously rejected valid schemas are now accepted.
+- Legacy composition resolves Clark component references by recorded authored
+  namespace, preventing valid chameleon group references from failing with
+  `unknown-group`.
 
 ## [1.2.1] - 2026-10-20
 

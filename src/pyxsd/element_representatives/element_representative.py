@@ -1386,8 +1386,17 @@ class ElementRepresentative:
             getter = getattr(candidate, "getNamespace", None)
             candidate_ns = getter() if getter is not None else None
             if uri is not None:
-                if candidate_ns != uri:
-                    continue
+                if strict:
+                    if candidate_ns != uri:
+                        continue
+                else:
+                    # Legacy reported namespaces describe the merge
+                    # result; the recorded authored namespace
+                    # identifies the document that declared the
+                    # candidate, which is what the reference targets.
+                    known = getattr(candidate, "authoredNamespaceKnown", None)
+                    if known is not None and known() and candidate.authoredNamespace() != uri:
+                        continue
             elif lexicalNamespace is not None:
                 known = getattr(candidate, "authoredNamespaceKnown", None)
                 if (
