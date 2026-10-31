@@ -379,16 +379,20 @@ class XsdType(ElementRepresentative):
             # (see ``getBaseList``); it is looked up unchanged.
             lookupName = superClassName
             namespace = None
+            lookupByNamespace = False
         else:
             resolved = self.resolveSchemaQName(superClassName)
             namespace = namespace_of(resolved)
             lookupName = local_name(resolved) if namespace is not None else local_part(resolved)
+            lookupByNamespace = True
         parser = self._effectiveParser()
         strict = getattr(getattr(parser, "mode", None), "namespaces", "legacy") == "strict"
-        if strict and namespace is not None:
+        if strict and lookupByNamespace:
             # The expanded name selects the declaration, so a
             # same-local-name type in another namespace cannot make the
-            # lookup ambiguous and hide the base's ``final`` value.
+            # lookup ambiguous and hide the base's ``final`` value. A
+            # reference that resolves to no namespace selects exactly
+            # the no-namespace declaration (``namespace=None``).
             baseER = self.getSchema().components.getFromName(
                 lookupName, kind="type", namespace=namespace, warn=False
             )

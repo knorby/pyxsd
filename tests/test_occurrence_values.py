@@ -723,6 +723,47 @@ def test_final_blocks_derivation_with_a_same_local_type_in_another_namespace(tmp
     assert "final" in codes
 
 
+def test_final_blocks_derivation_in_a_no_namespace_schema_with_a_same_local_import(tmp_path):
+    """A no-namespace reference selects the no-namespace declaration.
+
+    The schema has no ``targetNamespace`` and imports a namespaced type
+    ``base``. Its own unprefixed ``base`` (``final="extension"``) is the
+    derivation base, so a strict compile must report the ``final``
+    violation; a namespace-agnostic lookup meets both declarations,
+    gives up, and silently skips the check.
+    """
+    (tmp_path / "a.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'targetNamespace="urn:a" xmlns="urn:a">'
+        '<xs:complexType name="base"><xs:sequence/></xs:complexType>'
+        "</xs:schema>"
+    )
+    (tmp_path / "schema.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+        '<xs:import namespace="urn:a" schemaLocation="a.xsd"/>'
+        '<xs:complexType name="base" final="extension"><xs:sequence/></xs:complexType>'
+        '<xs:complexType name="derived"><xs:complexContent>'
+        '<xs:extension base="base"><xs:sequence/></xs:extension>'
+        "</xs:complexContent></xs:complexType>"
+        "</xs:schema>"
+    )
+    schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+    codes = [issue.code for issue in schema.report.errors]
+    assert "final" in codes
+
+    # Without the same-local imported declaration the check already
+    # works, so the miss above is the ambiguous local-name lookup.
+    (tmp_path / "a.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'targetNamespace="urn:a" xmlns="urn:a">'
+        '<xs:complexType name="other"><xs:sequence/></xs:complexType>'
+        "</xs:schema>"
+    )
+    schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+    codes = [issue.code for issue in schema.report.errors]
+    assert "final" in codes
+
+
 def test_final_default_blocks_derivation(tmp_path):
     """Saxon simple005: a schema's ``finalDefault`` supplies a type's
     effective ``final`` when the declaration states none."""
