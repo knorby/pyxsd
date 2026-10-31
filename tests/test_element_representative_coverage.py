@@ -365,6 +365,16 @@ def test_legacy_clark_reference_uses_recorded_authored_namespace():
     wrong = candidate("urn:other")
     right = candidate("urn:imp")
     assert reference.resolveReference("{urn:imp}g", [wrong, right], parser=parser) is right
+    # The reported namespace matching the reference is not enough: a
+    # candidate whose recorded authored namespace differs is skipped,
+    # so a "reported match OR authored match" rule would fail here.
+    reported_match = SimpleNamespace(
+        name="g",
+        getNamespace=lambda: "urn:imp",
+        authoredNamespaceKnown=lambda: True,
+        authoredNamespace=lambda: "urn:other",
+    )
+    assert reference.resolveReference("{urn:imp}g", [reported_match], parser=parser) is None
     unknown = candidate("urn:other", known=False)
     assert reference.resolveReference("{urn:imp}g", [unknown], parser=parser) is unknown
     unrecorded = SimpleNamespace(name="g", getNamespace=lambda: "urn:main")

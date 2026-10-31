@@ -17,8 +17,10 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     registry,
 )
+from pyxsd.namespaces import XSD_NS
 from pyxsd.schema import Schema
 from pyxsd.validation import IssueSeverity
+from pyxsd.xsd_data_types import String
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
@@ -1027,6 +1029,20 @@ class TestCompositionCorrectness:
             kwargs = {} if mode is None else {"mode": mode}
             schema = Schema.compile(str(tmp_path / "schema.xsd"), **kwargs)
             assert not schema.report.has_errors
+            # The clean compile must come from resolving the prefix to
+            # the XML Schema namespace, not from an unresolved name
+            # falling back to primitives: deleting the ``XSD_NS`` arm
+            # leaves ``_resolvedType`` returning ``None`` here.
+            (attribute,) = (
+                entry
+                for entries in schema.components.values()
+                for entry in entries
+                if type(entry).__name__ == "Attribute"
+                and entry.name == "a"
+                and entry.isGlobalDeclaration()
+            )
+            assert attribute.referenceNamespace("xsd:string") == XSD_NS
+            assert attribute._resolvedType("xsd:string") is String
 
 
 # ---------------------------------------------------------------------------
