@@ -8,6 +8,7 @@ key), constraint placement rules and the supported XPath subset.
 import pytest
 
 from conftest import run_parser
+from pyxsd.binding import ParseModes
 from pyxsd.element_representatives.element_representative import registry
 from pyxsd.schema import Schema
 
@@ -667,6 +668,95 @@ class TestKeyrefReferLegality:
         instance = '<t:root xmlns:t="urn:t"><t:uid val="1"/></t:root>'
         doc = _parse(schema, instance, tmp_path)
         assert not doc.report.has_errors
+
+    def test_chameleon_adopted_refer_resolves(self, tmp_path):
+        """A chameleon include's rewritten ``refer`` still resolves.
+
+        The included document declares no target namespace, so adoption
+        rewrites its namespace-less ``refer="k"`` into the including
+        namespace's Clark spelling, whose URI contains colons
+        (``{urn:cycle:test}k``). Reading that QName as if it were still
+        lexical turns ``{urn`` into an undeclared prefix and reports a
+        spurious ``identity-refer`` for a valid schema. The selectors
+        resolve against the target namespace, so a mismatching keyref
+        value must also be caught by the borrowed check.
+        """
+        (tmp_path / "child.xsd").write_text(
+            f"<xs:schema {_xs} elementFormDefault='qualified'>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="item" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="val" type="xs:string"/>\n'
+            '        <xs:attribute name="ref" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:key name="k" xpathDefaultNamespace="##targetNamespace">\n'
+            '      <xs:selector xpath="item"/>\n'
+            '      <xs:field xpath="@val"/></xs:key>\n'
+            '    <xs:keyref name="kr" refer="k" '
+            'xpathDefaultNamespace="##targetNamespace">\n'
+            '      <xs:selector xpath="item"/>\n'
+            '      <xs:field xpath="@ref"/>\n'
+            "    </xs:keyref>\n"
+            "  </xs:element>\n"
+            "</xs:schema>\n"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f"<xs:schema {_xs} targetNamespace='urn:cycle:test' "
+            "xmlns='urn:cycle:test' elementFormDefault='qualified'>\n"
+            '  <xs:include schemaLocation="child.xsd"/>\n'
+            "</xs:schema>\n"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
+
+        # ``ref="3"`` matches no key value, so the borrowed keyref check
+        # must fire; with the resolver defect it only reports the bogus
+        # "no key with that name in scope" error instead.
+        (tmp_path / "bad.xml").write_text(
+            '<root xmlns="urn:cycle:test"><item val="1" ref="3"/><item val="2" ref="1"/></root>'
+        )
+        doc = schema.parse(str(tmp_path / "bad.xml"))
+        assert [issue.code for issue in doc.report.errors] == ["identity-keyref"]
+
+        (tmp_path / "good.xml").write_text(
+            '<root xmlns="urn:cycle:test"><item val="1" ref="2"/><item val="2" ref="1"/></root>'
+        )
+        doc = schema.parse(str(tmp_path / "good.xml"))
+        assert not doc.report.has_errors
+
+    def test_chameleon_adopted_constraint_ref_resolves(self, tmp_path):
+        """An XSD 1.1 ``<xs:key ref>`` site resolves after adoption.
+
+        The reference site's ``ref`` is rewritten like the keyref's
+        ``refer``; it must resolve the adopted key instead of treating
+        ``{urn`` as an undeclared prefix.
+        """
+        (tmp_path / "child.xsd").write_text(
+            f"<xs:schema {_xs} elementFormDefault='qualified'>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="item" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="val" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:key name="k" xpathDefaultNamespace="##targetNamespace">\n'
+            '      <xs:selector xpath="item"/>\n'
+            '      <xs:field xpath="@val"/></xs:key>\n'
+            '    <xs:key ref="k"/>\n'
+            "  </xs:element>\n"
+            "</xs:schema>\n"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f"<xs:schema {_xs} targetNamespace='urn:cycle:test' "
+            "xmlns='urn:cycle:test' elementFormDefault='qualified'>\n"
+            '  <xs:include schemaLocation="child.xsd"/>\n'
+            "</xs:schema>\n"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [issue.code for issue in schema.report.errors] == []
 
     def test_invalid_xpath_default_namespace_on_keyref_is_xpath_invalid(self, tmp_path):
         """A bogus ``##`` keyword on the keyref fails like the

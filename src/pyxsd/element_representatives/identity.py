@@ -355,8 +355,17 @@ class IdentityConstraint(_DeclarationSite, ElementRepresentative):
         resolve (empty, or a prefix that is not declared); an invalid
         ``##`` keyword raises ``XPathError`` — the same error class
         the selector/field path reports as ``xpath-invalid``.
+
+        An already-expanded Clark name is returned unchanged:
+        chameleon pre-processing (XSD 1.1 Appendix F.1) rewrites
+        ``refer``/``ref`` into the adopting namespace's expanded
+        name, whose URI may itself contain colons. Reading it as a
+        lexical QName would turn ``{urn`` into an undeclared
+        prefix.
         """
         qname = qname.strip()
+        if qname.startswith("{") and "}" in qname:
+            return qname
         prefix, separator, local = qname.partition(":")
         if separator:
             namespace = self._declarationNamespaces().get(prefix)
