@@ -10,6 +10,7 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
+from pyxsd.namespaces import local_part, namespace_of
 from pyxsd.wildcards import (
     effective_attribute_wildcard,
     intersect_wildcard_specs,
@@ -936,25 +937,44 @@ class XsdType(ElementRepresentative):
             )
             return
         declared = self._declaredNotations()
-        for value in enumerations:
-            local = str(value).split(":")[-1] if value else ""
-            if local not in declared:
+        for enumeration in self._notationEnumerations():
+            value = enumeration.value
+            # An enumeration value of a NOTATION restriction is a QName
+            # (XSD 1.1 §3.14.3), so it names a notation by expanded name.
+            # It is resolved at its own element: chameleon adoption may
+            # have rewritten it to Clark form, and a legacy compile keeps
+            # the authored spelling whose prefixes still resolve through
+            # the writing document's bindings.
+            resolved = enumeration.resolveSchemaQName(value) if value else ""
+            namespace = namespace_of(resolved)
+            if namespace is None:
+                namespace = enumeration.referenceNamespace(value)
+            if (namespace, local_part(resolved)) not in declared:
                 self._report_ref_error(
                     f"enumeration value '{value}' of a NOTATION restriction "
                     "is not a declared notation",
                     code="unknown-notation",
                 )
 
+    def _notationEnumerations(self) -> list:
+        """The enumeration representatives under this type's restriction."""
+        found = []
+        for child in getattr(self, "processedChildren", None) or ():
+            for grandchild in getattr(child, "processedChildren", None) or ():
+                if type(grandchild).__name__ == "Enumeration":
+                    found.append(grandchild)
+        return found
+
     def _declaredNotations(self):
-        """Returns the local names of the schema's notation declarations."""
+        """Returns the expanded names of the schema's notations."""
         table = getattr(self.getSchema(), "components", None)
-        names: set[str] = set()
+        names: set[tuple[str | None, str]] = set()
         if table is None:
             return names
         for entries in table.values():
             for entry in entries:
                 if type(entry).__name__ == "Notation" and entry.name:
-                    names.add(str(entry.name))
+                    names.add((entry.authoredNamespace(), str(entry.name)))
         return names
 
     def _constraintNamespace(self, host, source, base, parent):
