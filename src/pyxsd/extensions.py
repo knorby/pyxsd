@@ -338,6 +338,10 @@ def run_validation_hooks(instance: Any, *, element: str | None = None) -> None:
       ``"extension-error"`` naming the unsupported type, and the rest of
       the findings are still processed.
 
+    A hook returning ``None`` or an empty iterable adds no finding; any
+    other non-iterable return — ``0`` and ``False`` included — is one
+    unsupported finding, not a silently empty result.
+
     An exception from the hook — raised or raised while its findings are
     consumed — is caught and recorded as one ``extension-error`` issue;
     binding continues.
@@ -357,13 +361,22 @@ def run_validation_hooks(instance: Any, *, element: str | None = None) -> None:
     fallback = element or getattr(instance, "_name_", None) or type(instance).__name__
     try:
         findings = hook(instance)
-        # A hook that returns a bare finding instead of an iterable of
-        # findings is recorded as that one finding, not iterated: a
-        # plain ``str`` would otherwise come out one error per
-        # character.
-        if isinstance(findings, (str, ValidationIssue)):
+        # Normalize the return shape before iterating. ``None`` is no
+        # findings, a bare finding is that one finding (a plain ``str``
+        # would otherwise come out one error per character), and any
+        # other non-iterable — ``0`` and ``False`` included — is one
+        # unsupported finding rather than a falsy result with nothing to
+        # iterate.
+        if findings is None:
+            findings = ()
+        elif isinstance(findings, (str, ValidationIssue)):
             findings = (findings,)
-        for finding in findings or ():
+        else:
+            try:
+                findings = iter(findings)
+            except TypeError:
+                findings = (findings,)
+        for finding in findings:
             if isinstance(finding, str):
                 _record(report, IssueSeverity.ERROR, "extension-validation", finding, fallback)
             elif isinstance(finding, ValidationIssue):

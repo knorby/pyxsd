@@ -188,8 +188,11 @@ contract, exactly as implemented:
   simple-typed elements alike) and converted attribute values. A
   defaulted or fixed attribute value flows through the attribute
   descriptor too, so the hook fires for it as well.
-- **Findings.** The hook returns an iterable of findings (a bare
-  `str` or single `ValidationIssue` counts as that one finding):
+- **Findings.** The hook returns an iterable of findings. `None` and
+  empty iterables produce no findings; a bare `str` or single
+  `ValidationIssue` counts as that one finding, and any other
+  non-iterable return — `0` and `False` included — is reported as one
+  unsupported finding rather than treated as an empty result:
 
   - a plain `str` becomes an **error** with code
     `extension-validation`;
