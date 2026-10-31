@@ -6,7 +6,7 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
 )
 from pyxsd.extensions import run_validation_hooks
-from pyxsd.namespaces import XSI_NS
+from pyxsd.namespaces import XSD_NS, XSI_NS, local_part
 from pyxsd.schema_context import current_context
 from pyxsd.xsd_data_types import AnySimpleType, Boolean, NCName, QName, XsdDataType
 
@@ -529,13 +529,30 @@ class Attribute(ElementRepresentative):
             )
 
     def _referredAttribute(self, ref: str) -> Any:
+        return self._globalDeclaration(ref, ("Attribute",))
+
+    def _globalDeclaration(self, reference: str, kinds: tuple[str, ...]) -> Any:
+        """Selects the global declaration *reference* names.
+
+        The reference's namespace is resolved in the document that
+        wrote it: an authored lexical QName through its in-scope prefix
+        or default namespace, and a Clark name (chameleon adoption, XSD
+        1.1 Appendix F.1) through its braces. Matching the declaration
+        by expanded name keeps a same-local-name declaration in another
+        namespace out; when no namespace resolves (an unbound prefix or
+        a bare name with no default namespace in scope) the historical
+        local-name lookup remains the fallback.
+        """
         table = getattr(self.getSchema(), "components", None)
         if table is None:
             return None
-        local = ref.split(":", 1)[-1]
-        for entry in table.get(local) or ():
-            if type(entry).__name__ == "Attribute" and entry.isGlobalDeclaration():
-                return entry
+        namespace = self.referenceNamespace(reference)
+        for entry in table.get(local_part(reference)) or ():
+            if type(entry).__name__ not in kinds or not entry.isGlobalDeclaration():
+                continue
+            if namespace is not None and entry.authoredNamespace() != namespace:
+                continue
+            return entry
         return None
 
     def _checkAttributeType(self) -> None:
@@ -631,24 +648,27 @@ class Attribute(ElementRepresentative):
     def _resolvedType(self, raw: str) -> Any:
         """Returns the datatype class or type representative named by ``raw``.
 
-        Built-ins resolve from ``_PRIMITIVE_TYPES`` (when prefixed with
-        ``xs``/``xsd`` or when no user type claims the local name); a
-        user-defined simple or complex type resolves to its
-        representative so a complex one can be rejected. Returns ``None``
-        when nothing matches.
+        The reference's namespace is resolved in the declaring document
+        (a Clark name keeps its braces' URI), so a user-defined simple or
+        complex type matches by expanded name; a same-local-name type in
+        another namespace is not selected. Built-ins resolve from
+        ``_PRIMITIVE_TYPES`` for an ``xs``/``xsd`` prefix, for the XML
+        Schema namespace, or when the reference names no namespace; a
+        reference into a user namespace never falls back to a built-in.
+        Returns ``None`` when nothing matches.
         """
-        if ":" in raw:
-            prefix, local = raw.split(":", 1)
+        local = local_part(raw)
+        if not raw.startswith("{") and ":" in raw:
+            prefix, _ = raw.split(":", 1)
             if prefix in ("xs", "xsd"):
                 return _PRIMITIVE_TYPES.get(local)
-        else:
-            local = raw
-        table = getattr(self.getSchema(), "components", None)
-        if table is not None:
-            for entry in table.get(local) or ():
-                if type(entry).__name__ in ("SimpleType", "ComplexType"):
-                    return entry
-        return _PRIMITIVE_TYPES.get(local)
+        entry = self._globalDeclaration(raw, ("SimpleType", "ComplexType"))
+        if entry is not None:
+            return entry
+        namespace = self.referenceNamespace(raw)
+        if namespace is None or namespace == XSD_NS:
+            return _PRIMITIVE_TYPES.get(local)
+        return None
 
     @staticmethod
     def _invalidQName(value: str) -> bool:
