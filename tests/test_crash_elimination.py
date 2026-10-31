@@ -756,6 +756,45 @@ class TestNotationSupport:
         )
         assert schema.report.has_errors is False
 
+    def test_chameleon_unqualified_notation_enumeration_stays_in_no_namespace(self, tmp_path):
+        """Chameleon adoption does not put an enumeration value in a namespace.
+
+        The notation declaration is adopted into ``urn:cycle:test``, but
+        ``enumeration/@value`` is a QName resolved at its own element and
+        Appendix F.1 does not rewrite it. Written in a document with no
+        default namespace, ``png`` therefore names no namespace and must
+        be reported. The prefixed and defaulted controls both resolve to
+        the adopted declaration and stay clean.
+        """
+        child = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"{bindings}>'
+            '<xs:notation name="png" public="image/png"/>'
+            '<xs:simpleType name="r"><xs:restriction base="xs:NOTATION">'
+            '<xs:enumeration value="{value}"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            'targetNamespace="urn:cycle:test" xmlns="urn:cycle:test">'
+            '<xs:include schemaLocation="child.xsd"/>'
+            "</xs:schema>"
+        )
+
+        def compile_child(bindings="", value="png"):
+            (tmp_path / "child.xsd").write_text(child.format(bindings=bindings, value=value))
+            compiled = []
+            for mode in (None, ParseModes.NAMESPACED):
+                kwargs = {} if mode is None else {"mode": mode}
+                compiled.append(Schema.compile(str(tmp_path / "schema.xsd"), **kwargs))
+            return compiled
+
+        for schema in compile_child():
+            assert "unknown-notation" in _codes(schema.report)
+        for schema in compile_child(' xmlns:p="urn:cycle:test"', "p:png"):
+            assert not schema.report.has_errors
+        for schema in compile_child(' xmlns="urn:cycle:test"'):
+            assert not schema.report.has_errors
+
 
 class TestUnreadableInputs:
     """A schema root that is not ``xs:schema`` and a missing instance

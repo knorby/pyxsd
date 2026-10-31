@@ -967,12 +967,10 @@ class XsdType(ElementRepresentative):
         declared = self._declaredNotations()
         for enumeration in self._notationEnumerations():
             value = enumeration.value
-            # An enumeration value of a NOTATION restriction is a QName
-            # (XSD 1.1 §3.14.3), so it names a notation by expanded name.
-            # It is resolved at its own element: chameleon adoption may
-            # have rewritten it to Clark form, and a legacy compile keeps
-            # the authored spelling whose prefixes still resolve through
-            # the writing document's bindings.
+            # NOTATION values use QName lexical mapping at their own element.
+            # Appendix F.1 does not rewrite enumeration/@value, so an unprefixed
+            # value with no default namespace remains no-namespace even when the
+            # notation declaration is chameleon-adopted.
             resolved = enumeration.resolveSchemaQName(value) if value else ""
             namespace = namespace_of(resolved)
             if namespace is None:

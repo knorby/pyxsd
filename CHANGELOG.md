@@ -44,8 +44,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   durable input revisions, quota ledger or publication/commit workflow.
   Execution remains disabled by default; trusted-local previews require
   explicit stdio opt-in.
-- `Extensions.for_namespace("")` selects declarations that have no namespace,
-  so a mixin can attach to a no-namespace schema's types.
+- `Extensions.for_namespace("")` and `Extensions.for_namespace(None)` select
+  declarations that have no namespace, so a mixin can attach to a no-namespace
+  schema's types.
 
 ### Changed
 
@@ -91,6 +92,12 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   identity-constraint references now select or compare declarations by
   expanded name. Some previously accepted invalid schemas are now rejected,
   and some previously rejected valid schemas are now accepted.
+- Legacy composition resolves Clark component references by recorded authored
+  namespace, preventing valid chameleon group references from failing with
+  `unknown-group`.
+- Attribute declaration type checks resolve by URI, so rebound `xs`/`xsd`
+  prefixes cannot incorrectly select built-ins; legacy runtime value typing is
+  unchanged.
 
 ## [1.2.1] - 2026-10-20
 

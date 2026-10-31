@@ -369,12 +369,12 @@ class TestReturnShapeNormalization:
         [(0, "int"), (False, "bool"), (42, "int")],
         ids=["zero", "false", "truthy-int"],
     )
-    def test_falsy_non_iterable_return_is_one_extension_error(self, returned, type_name):
-        class FalsyReturnMixin:
+    def test_non_iterable_return_is_one_extension_error(self, returned, type_name):
+        class NonIterableReturnMixin:
             def __pyxsd_validate__(self):
                 return returned
 
-        doc = _parse(FalsyReturnMixin, '<m:endpoint xmlns:m="%s">https://host/x</m:endpoint>')
+        doc = _parse(NonIterableReturnMixin, '<m:endpoint xmlns:m="%s">https://host/x</m:endpoint>')
         errors = [i for i in doc.report.issues if i.code == "extension-error"]
         assert len(errors) == 1
         issue = errors[0]

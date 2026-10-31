@@ -17,8 +17,10 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     registry,
 )
+from pyxsd.namespaces import XSD_NS
 from pyxsd.schema import Schema
 from pyxsd.validation import IssueSeverity
+from pyxsd.xsd_data_types import String
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
@@ -378,6 +380,46 @@ class TestCompositionCorrectness:
         assert "derivedType" in doc.schema.classes
         base_names = [base.__name__ for base in doc.schema.classes["derivedType"].__mro__]
         assert "baseType" in base_names
+
+    def test_legacy_clark_group_reference_uses_authored_namespace(self, tmp_path):
+        """A legacy import's adopted Clark group reference finds its group.
+
+        ``imp.xsd`` chameleon-includes ``child.xsd``, so the group
+        reference written in ``child.xsd`` is rewritten to
+        ``{urn:imp}g``. Legacy composition reports the imported group in
+        the main schema's namespace (``urn:main``), so selecting
+        candidates by the reported namespace rejects the reference even
+        though the group's recorded authored namespace is its target.
+        The included document declares ``elementFormDefault`` so the
+        adopted group's local element is qualified in the instance.
+        """
+        (tmp_path / "child.xsd").write_text(
+            f'<xs:schema {XS} elementFormDefault="qualified">'
+            '<xs:group name="g"><xs:sequence>'
+            '<xs:element name="a" type="xs:string"/>'
+            "</xs:sequence></xs:group>"
+            '<xs:complexType name="t"><xs:sequence>'
+            '<xs:group ref="g"/>'
+            "</xs:sequence></xs:complexType>"
+            '<xs:element name="root" type="t"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "imp.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:imp" xmlns="urn:imp">'
+            '  <xs:include schemaLocation="child.xsd"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:main" xmlns:i="urn:imp">'
+            '  <xs:import namespace="urn:imp" schemaLocation="imp.xsd"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "instance.xml").write_text('<root xmlns="urn:imp"><a>x</a></root>')
+        for mode in (None, ParseModes.NAMESPACED):
+            kwargs = {} if mode is None else {"mode": mode}
+            schema = Schema.compile(str(tmp_path / "schema.xsd"), **kwargs)
+            assert not schema.report.has_errors
+            assert not schema.parse(str(tmp_path / "instance.xml")).report.has_errors
 
     def test_chameleon_redefine_base_references_resolve(self, tmp_path):
         """A chameleon redefine's base document resolves its own references.
@@ -949,6 +991,58 @@ class TestCompositionCorrectness:
         )
         schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
         assert not schema.report.has_errors
+
+    def test_attribute_type_resolves_rebound_xs_prefix(self, tmp_path):
+        """A rebound ``xs`` prefix does not select a built-in type.
+
+        Built-ins belong to the XML Schema namespace whatever prefix
+        spells that URI. Here ``xs`` is bound to the target namespace,
+        so ``type="xs:int"`` names the user's complex type ``int`` and
+        the declaration must be rejected as a non-simple attribute type.
+        Reading the literal prefix instead accepts the invalid schema.
+        """
+        text = """<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns:xs="urn:user" targetNamespace="urn:user" xmlns="urn:user">
+  <xsd:complexType name="int"><xsd:sequence/></xsd:complexType>
+  <xsd:attribute name="a" type="xs:int"/>
+  <xsd:element name="root"><xsd:complexType>
+    <xsd:attribute ref="a"/>
+  </xsd:complexType></xsd:element>
+</xsd:schema>
+"""
+        (tmp_path / "schema.xsd").write_text(text)
+        for mode in (None, ParseModes.NAMESPACED):
+            kwargs = {} if mode is None else {"mode": mode}
+            schema = Schema.compile(str(tmp_path / "schema.xsd"), **kwargs)
+            assert [(issue.code, issue.message) for issue in _schema_errors(schema.report)] == [
+                (
+                    "declaration-attribute",
+                    "attribute 'a' type 'xs:int' is a complex type; attribute types must be simple",
+                )
+            ]
+
+        # The only change is the type spelling: ``xsd`` names the XML
+        # Schema namespace, so ``string`` is the built-in and a valid
+        # attribute type.
+        (tmp_path / "schema.xsd").write_text(text.replace('type="xs:int"', 'type="xsd:string"'))
+        for mode in (None, ParseModes.NAMESPACED):
+            kwargs = {} if mode is None else {"mode": mode}
+            schema = Schema.compile(str(tmp_path / "schema.xsd"), **kwargs)
+            assert not schema.report.has_errors
+            # The clean compile must come from resolving the prefix to
+            # the XML Schema namespace, not from an unresolved name
+            # falling back to primitives: deleting the ``XSD_NS`` arm
+            # leaves ``_resolvedType`` returning ``None`` here.
+            (attribute,) = (
+                entry
+                for entries in schema.components.values()
+                for entry in entries
+                if type(entry).__name__ == "Attribute"
+                and entry.name == "a"
+                and entry.isGlobalDeclaration()
+            )
+            assert attribute.referenceNamespace("xsd:string") == XSD_NS
+            assert attribute._resolvedType("xsd:string") is String
 
 
 # ---------------------------------------------------------------------------

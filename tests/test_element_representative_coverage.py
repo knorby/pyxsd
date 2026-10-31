@@ -350,6 +350,37 @@ def test_resolve_reference_none_value():
     assert element.resolveReference(None, []) is None
 
 
+def test_legacy_clark_reference_uses_recorded_authored_namespace():
+    reference = find_all(schema_tree("<xs:element name='r'/>"), "Element")[0]
+    parser = SimpleNamespace(mode=SimpleNamespace(namespaces="legacy"))
+
+    def candidate(authored, known=True):
+        return SimpleNamespace(
+            name="g",
+            getNamespace=lambda: "urn:main",
+            authoredNamespaceKnown=lambda: known,
+            authoredNamespace=lambda: authored,
+        )
+
+    wrong = candidate("urn:other")
+    right = candidate("urn:imp")
+    assert reference.resolveReference("{urn:imp}g", [wrong, right], parser=parser) is right
+    # The reported namespace matching the reference is not enough: a
+    # candidate whose recorded authored namespace differs is skipped,
+    # so a "reported match OR authored match" rule would fail here.
+    reported_match = SimpleNamespace(
+        name="g",
+        getNamespace=lambda: "urn:imp",
+        authoredNamespaceKnown=lambda: True,
+        authoredNamespace=lambda: "urn:other",
+    )
+    assert reference.resolveReference("{urn:imp}g", [reported_match], parser=parser) is None
+    unknown = candidate("urn:other", known=False)
+    assert reference.resolveReference("{urn:imp}g", [unknown], parser=parser) is unknown
+    unrecorded = SimpleNamespace(name="g", getNamespace=lambda: "urn:main")
+    assert reference.resolveReference("{urn:imp}g", [unrecorded], parser=parser) is unrecorded
+
+
 def test_simple_variety_paths():
     tree = schema_tree("<xs:element name='a' type='xs:string'/>")
     element = find_all(tree, "Element")[0]

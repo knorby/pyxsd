@@ -80,7 +80,7 @@ Only path selectors fail loudly (see [Path selectors](#path-selectors)).
 | Selector | Matches |
 | -------- | ------- |
 | `for_type(name)` | The type declaration named *name* — a plain local name (`"Code"`) or a Clark name (`"{uri}Code"`). |
-| `for_namespace(uri)` | Every type declared in namespace *uri*. An empty URI selects declarations with no namespace. |
+| `for_namespace(uri)` | Every type declared in namespace *uri*. An empty or `None` URI selects declarations that have no namespace. |
 | `for_kind(kind, derived_from=...)` | Types of *kind* — `simpleType` or `complexType` (case-insensitive). With *derived_from*, only types whose XSD base is the named type; the base name is matched by local spelling (a prefixed or Clark spelling contributes its local part). |
 | `for_path(path)` | The type of the element at an instance *path* from the document root down (see below). |
 | `where(predicate)` | Every type declaration whose element representative satisfies *predicate* — the escape hatch for anything the named selectors cannot say. |
@@ -188,11 +188,12 @@ contract, exactly as implemented:
   simple-typed elements alike) and converted attribute values. A
   defaulted or fixed attribute value flows through the attribute
   descriptor too, so the hook fires for it as well.
-- **Findings.** The hook returns an iterable of findings. `None` and
-  empty iterables produce no findings; a bare `str` or single
-  `ValidationIssue` counts as that one finding, and any other
-  non-iterable return — `0` and `False` included — is reported as one
-  unsupported finding rather than treated as an empty result:
+- **Findings.** The hook may return an iterable of findings, a bare
+  finding, or `None`. `None` and empty iterables produce no findings;
+  a bare `str` or single `ValidationIssue` counts as that one finding,
+  and any other non-iterable return — `0` and `False` included — is
+  reported as one unsupported finding rather than treated as an empty
+  result:
 
   - a plain `str` becomes an **error** with code
     `extension-validation`;
