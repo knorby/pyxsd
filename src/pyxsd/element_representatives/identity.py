@@ -356,14 +356,24 @@ class IdentityConstraint(_DeclarationSite, ElementRepresentative):
         ``##`` keyword raises ``XPathError`` — the same error class
         the selector/field path reports as ``xpath-invalid``.
 
-        An already-expanded Clark name is returned unchanged:
-        chameleon pre-processing (XSD 1.1 Appendix F.1) rewrites
-        ``refer``/``ref`` into the adopting namespace's expanded
-        name, whose URI may itself contain colons. Reading it as a
-        lexical QName would turn ``{urn`` into an undeclared
-        prefix.
+        An already-expanded Clark name is returned unchanged, but
+        only after the raw ``xpathDefaultNamespace`` keyword has been
+        checked: chameleon pre-processing (XSD 1.1 Appendix F.1)
+        rewrites ``refer``/``ref`` into the adopting namespace's
+        expanded name, whose URI may itself contain colons. Reading
+        it as a lexical QName would turn ``{urn`` into an undeclared
+        prefix, yet returning early would skip the keyword validation
+        a constraint reference site has no selector or field children
+        to perform.
         """
         qname = qname.strip()
+        default = self._rawXpathDefaultNamespace()
+        if (
+            default is not None
+            and default.startswith("##")
+            and default not in ("##defaultNamespace", "##targetNamespace", "##local")
+        ):
+            raise XPathError(f"invalid xpathDefaultNamespace value '{default}'")
         if qname.startswith("{") and "}" in qname:
             return qname
         prefix, separator, local = qname.partition(":")
@@ -372,15 +382,12 @@ class IdentityConstraint(_DeclarationSite, ElementRepresentative):
             if namespace is None:
                 return None
             return clark(namespace, local)
-        default = self._rawXpathDefaultNamespace()
         if default in (None, "", "##defaultNamespace"):
             return clark(self._declarationNamespaces().get(""), qname)
         if default == "##targetNamespace":
             return clark(self.getNamespace(), qname)
         if default == "##local":
             return qname
-        if default.startswith("##"):
-            raise XPathError(f"invalid xpathDefaultNamespace value '{default}'")
         return clark(default, qname)
 
     def _unqualifiedAttributes(self):

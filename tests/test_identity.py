@@ -758,6 +758,50 @@ class TestKeyrefReferLegality:
         schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
         assert [issue.code for issue in schema.report.errors] == []
 
+    @pytest.mark.parametrize(
+        ("keyword", "expected"),
+        [("##bogus", ["xpath-invalid"]), ("##targetNamespace", [])],
+    )
+    def test_chameleon_adopted_constraint_ref_checks_xpath_default_namespace(
+        self, tmp_path, keyword, expected
+    ):
+        """An adopted ``<xs:key ref>`` still validates its keyword.
+
+        A constraint reference site has no selector or field children
+        to validate ``xpathDefaultNamespace``, and adoption rewrites
+        its ``ref`` into a Clark name. Resolving that name must not
+        skip the keyword check: the invalid ``##bogus`` is an
+        ``xpath-invalid`` schema error, while the valid
+        ``##targetNamespace`` control resolves the adopted reference
+        and stays clean.
+        """
+        (tmp_path / "child.xsd").write_text(
+            f"<xs:schema {_xs} elementFormDefault='qualified'>\n"
+            '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
+            '    <xs:element name="item" maxOccurs="unbounded">\n'
+            "      <xs:complexType>\n"
+            '        <xs:attribute name="val" type="xs:string"/>\n'
+            "      </xs:complexType>\n"
+            "    </xs:element>\n"
+            "  </xs:sequence></xs:complexType>\n"
+            '    <xs:key name="k" xpathDefaultNamespace="##targetNamespace">\n'
+            '      <xs:selector xpath="item"/>\n'
+            '      <xs:field xpath="@val"/></xs:key>\n'
+            f'    <xs:key ref="k" xpathDefaultNamespace="{keyword}"/>\n'
+            "  </xs:element>\n"
+            "</xs:schema>\n"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f"<xs:schema {_xs} targetNamespace='urn:cycle:test' "
+            "xmlns='urn:cycle:test' elementFormDefault='qualified'>\n"
+            '  <xs:include schemaLocation="child.xsd"/>\n'
+            "</xs:schema>\n"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        codes = [issue.code for issue in schema.report.errors]
+        assert codes == expected
+        assert "identity-refer" not in codes
+
     def test_invalid_xpath_default_namespace_on_keyref_is_xpath_invalid(self, tmp_path):
         """A bogus ``##`` keyword on the keyref fails like the
         selector/field path does: ``xpath-invalid``, not
