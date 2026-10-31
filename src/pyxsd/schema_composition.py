@@ -1885,8 +1885,25 @@ def apply_local_target_namespaces(ctx: CompositionContext, schemaRoot: Any) -> N
             elif tag == "restriction":
                 childDerivation = "restriction"
                 base = child.get("base")
-                if base is not None and base.split(":")[-1] == "anyType":
-                    childAnyTypeRestriction = True
+                if base is not None:
+                    # The base is a QName value, not a local name: resolve
+                    # it in its document so an authored user ``anyType``
+                    # (unprefixed through the default namespace, or
+                    # prefixed) does not match, while chameleon adoption's
+                    # Clark spelling of the XML Schema namespace's
+                    # ``anyType`` does.
+                    try:
+                        resolvedBase = ctx.namespace_context.resolve(child, base)
+                    except NamespaceError:
+                        # An unbound prefix names nothing here; the
+                        # ordinary QName checks report it.
+                        resolvedBase = None
+                    if (
+                        resolvedBase is not None
+                        and namespace_of(resolvedBase) == XSD_NS
+                        and local_name(resolvedBase) == "anyType"
+                    ):
+                        childAnyTypeRestriction = True
             elif tag == "extension":
                 childDerivation = "extension"
             if tag in ("element", "attribute"):
