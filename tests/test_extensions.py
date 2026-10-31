@@ -135,12 +135,13 @@ class TestNamespaceSelection:
         assert ext.mixins_for(_record()) == (NsMixin,)
         assert ext.mixins_for(_patient()) == ()
 
-    def test_no_namespace_matches_schema_declarations(self):
+    @pytest.mark.parametrize("uri", ["", None], ids=["empty", "none"])
+    def test_no_namespace_matches_schema_declarations(self, uri):
         class NoNamespaceMixin:
             pass
 
         ext = Extensions()
-        ext.for_namespace("", mixin=NoNamespaceMixin)
+        ext.for_namespace(uri, mixin=NoNamespaceMixin)
         schema = Schema.compile(
             StringIO(
                 f"""<xs:schema xmlns:xs="{XSD}">
@@ -156,12 +157,13 @@ class TestNamespaceSelection:
         )
         assert issubclass(schema.classes["Note"], NoNamespaceMixin)
 
-    def test_no_namespace_does_not_match_a_namespaced_type(self):
+    @pytest.mark.parametrize("uri", ["", None], ids=["empty", "none"])
+    def test_no_namespace_does_not_match_a_namespaced_type(self, uri):
         class NoNamespaceMixin:
             pass
 
         ext = Extensions()
-        ext.for_namespace("", mixin=NoNamespaceMixin)
+        ext.for_namespace(uri, mixin=NoNamespaceMixin)
         assert ext.mixins_for(_code()) == ()
         assert ext.mixins_for(_patient()) == ()
         assert ext.mixins_for(_record()) == ()
