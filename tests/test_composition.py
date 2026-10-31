@@ -819,6 +819,137 @@ class TestCompositionCorrectness:
         base_names = [base.__name__ for base in doc.schema.classes["aType"].__mro__]
         assert "bType" in base_names
 
+    def test_chameleon_attribute_ref_fixed_override_is_checked(self, tmp_path):
+        """An adopted attribute reference's fixed override is compared.
+
+        Chameleon adoption rewrites the namespace-less ``ref`` in the
+        included document into a Clark name whose URI contains colons
+        (``{urn:cycle:test}a``). The override check must read the
+        reference's local part through those braces: a check that
+        takes the text after the first colon (``split(":", 1)[-1]``)
+        looks up ``cycle:test}a`` and silently skips the mismatch,
+        accepting an invalid schema.
+        """
+        (tmp_path / "child.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '<xs:attribute name="a" type="xs:string" fixed="x"/>'
+            '<xs:complexType name="t">'
+            '<xs:attribute ref="a" fixed="y"/>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cycle:test" xmlns="urn:cycle:test">'
+            '<xs:include schemaLocation="child.xsd"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [(issue.code, issue.message) for issue in _schema_errors(schema.report)] == [
+            (
+                "declaration-attribute",
+                "attribute reference '{urn:cycle:test}a' fixed value 'y' does not "
+                "match the referenced declaration's 'x'",
+            )
+        ]
+
+    def test_chameleon_attribute_ref_fixed_override_ignores_other_namespace(self, tmp_path):
+        """The override is compared with the declaration in its own namespace.
+
+        An imported namespace declares a same-local global attribute
+        ``a`` with a different ``fixed``. A namespace-blind lookup takes
+        the decoy and reports a false mismatch for the adopted
+        reference, which names the real declaration in the including
+        namespace. The valid schema must stay clean.
+        """
+        (tmp_path / "decoy.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:decoy" xmlns="urn:decoy">'
+            '<xs:attribute name="a" type="xs:string" fixed="decoy"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "child.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '<xs:attribute name="a" type="xs:string" fixed="real"/>'
+            '<xs:complexType name="t">'
+            '<xs:attribute ref="a" fixed="real"/>'
+            "</xs:complexType>"
+            '<xs:element name="root" type="t"/>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cycle:test" xmlns="urn:cycle:test"'
+            ' xmlns:d="urn:decoy">'
+            '<xs:import namespace="urn:decoy" schemaLocation="decoy.xsd"/>'
+            '<xs:include schemaLocation="child.xsd"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert not schema.report.has_errors
+
+    def test_chameleon_attribute_type_naming_a_complex_type_is_rejected(self, tmp_path):
+        """An adopted attribute declaration's ``type`` is still checked.
+
+        Adoption rewrites the namespace-less ``type`` in the included
+        document into ``{urn:cycle:test}ct``. Splitting that spelling at
+        its first colon reads ``{urn`` as a prefix and looks up
+        ``cycle:test}ct``, which names no type, so the schema is
+        accepted even though an attribute type must be simple.
+        """
+        (tmp_path / "child.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '<xs:complexType name="ct"><xs:sequence/></xs:complexType>'
+            '<xs:attribute name="a" type="ct"/>'
+            '<xs:element name="root">'
+            '<xs:complexType><xs:attribute ref="a"/></xs:complexType>'
+            "</xs:element>"
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cycle:test" xmlns="urn:cycle:test">'
+            '<xs:include schemaLocation="child.xsd"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert [(issue.code, issue.message) for issue in _schema_errors(schema.report)] == [
+            (
+                "declaration-attribute",
+                "attribute 'a' type '{urn:cycle:test}ct' is a complex type; "
+                "attribute types must be simple",
+            )
+        ]
+
+    def test_chameleon_attribute_type_ignores_other_namespace(self, tmp_path):
+        """The attribute's type is resolved in its own namespace.
+
+        An imported namespace declares a decoy complex type ``ct``; the
+        adopted declaration's ``type="ct"`` names the simple type in the
+        including namespace. A namespace-blind lookup finds the decoy
+        and wrongly rejects the valid schema.
+        """
+        (tmp_path / "decoy.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:decoy" xmlns="urn:decoy">'
+            '<xs:complexType name="ct"><xs:sequence/></xs:complexType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "child.xsd").write_text(
+            f"<xs:schema {XS}>"
+            '<xs:simpleType name="ct"><xs:restriction base="xs:string"/></xs:simpleType>'
+            '<xs:attribute name="a" type="ct"/>'
+            '<xs:element name="root">'
+            '<xs:complexType><xs:attribute ref="a"/></xs:complexType>'
+            "</xs:element>"
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(
+            f'<xs:schema {XS} targetNamespace="urn:cycle:test" xmlns="urn:cycle:test"'
+            ' xmlns:d="urn:decoy">'
+            '<xs:import namespace="urn:decoy" schemaLocation="decoy.xsd"/>'
+            '<xs:include schemaLocation="child.xsd"/>'
+            "</xs:schema>"
+        )
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert not schema.report.has_errors
+
 
 # ---------------------------------------------------------------------------
 # Unresolved-resource severity (Task 11)

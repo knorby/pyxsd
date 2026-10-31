@@ -700,6 +700,51 @@ class TestNotationSupport:
         )
         assert schema.report.has_errors is False
 
+    def test_notation_enumeration_matches_the_expanded_name(self, tmp_path):
+        """A NOTATION enumeration value is a QName, not a local name.
+
+        ``png`` is declared in ``urn:a`` only. ``b:png`` names
+        ``urn:b`` and must be reported even though its local part
+        matches the ``urn:a`` notation; the declared ``a:png`` stays
+        clean.
+        """
+        (tmp_path / "a.xsd").write_text(
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            'targetNamespace="urn:a" xmlns="urn:a">'
+            '<xs:notation name="png" public="image/png"/>'
+            "</xs:schema>"
+        )
+        body = (
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            'targetNamespace="urn:b" xmlns="urn:b" xmlns:a="urn:a" xmlns:b="urn:b">'
+            '<xs:import namespace="urn:a" schemaLocation="a.xsd"/>'
+            '<xs:simpleType name="r"><xs:restriction base="xs:NOTATION">'
+            '<xs:enumeration value="{value}"/></xs:restriction></xs:simpleType>'
+            "</xs:schema>"
+        )
+        (tmp_path / "schema.xsd").write_text(body.format(value="b:png"))
+        for mode in (None, ParseModes.NAMESPACED):
+            kwargs = {} if mode is None else {"mode": mode}
+            schema = Schema.compile(str(tmp_path / "schema.xsd"), **kwargs)
+            assert "unknown-notation" in _codes(schema.report)
+
+        (tmp_path / "schema.xsd").write_text(body.format(value="a:png"))
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+        assert not schema.report.has_errors
+
+    def test_notation_enumeration_with_another_facet_is_checked(self, tmp_path):
+        """A sibling facet does not hide the enumeration's name check."""
+        schema = _parse_schema(
+            tmp_path,
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            'targetNamespace="urn:b" xmlns="urn:b">'
+            '<xs:notation name="png" public="image/png"/>'
+            '<xs:simpleType name="r"><xs:restriction base="xs:NOTATION">'
+            '<xs:pattern value="[a-z]+"/><xs:enumeration value="missing"/>'
+            "</xs:restriction></xs:simpleType></xs:schema>",
+        )
+        assert "unknown-notation" in _codes(schema.report)
+
     def test_declared_notation_enumeration_ok(self, tmp_path):
         schema = _parse_schema(
             tmp_path,

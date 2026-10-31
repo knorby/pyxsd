@@ -10,6 +10,7 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
+from pyxsd.namespaces import local_name, local_part, namespace_of
 from pyxsd.wildcards import (
     effective_attribute_wildcard,
     intersect_wildcard_specs,
@@ -372,12 +373,34 @@ class XsdType(ElementRepresentative):
             return
         # The base class's ``name`` attribute is unreliable (an element
         # named 'name' can replace the metadata string), so resolve the
-        # base ER by the base reference's local name instead.
-        if superClassName.startswith("{"):
-            lookupName = superClassName.split("}", 1)[1]
+        # base ER by the base reference's expanded name instead.
+        if _isInlineTypeName(superClassName):
+            # A bookkeeping name is an identity, not a QName reference
+            # (see ``getBaseList``); it is looked up unchanged.
+            lookupName = superClassName
+            namespace = None
+            lookupByNamespace = False
         else:
-            lookupName = superClassName.split(":")[-1]
-        baseER = ElementRepresentative.getFromName(lookupName, kind="type", warn=False)
+            resolved = self.resolveSchemaQName(superClassName)
+            namespace = namespace_of(resolved)
+            lookupName = local_name(resolved) if namespace is not None else local_part(resolved)
+            lookupByNamespace = True
+        parser = self._effectiveParser()
+        strict = getattr(getattr(parser, "mode", None), "namespaces", "legacy") == "strict"
+        if strict and lookupByNamespace:
+            # The expanded name selects the declaration, so a
+            # same-local-name type in another namespace cannot make the
+            # lookup ambiguous and hide the base's ``final`` value. A
+            # reference that resolves to no namespace selects exactly
+            # the no-namespace declaration (``namespace=None``).
+            baseER = self.getSchema().components.getFromName(
+                lookupName, kind="type", namespace=namespace, warn=False
+            )
+        else:
+            # A legacy compile reports composed components in the main
+            # schema's namespace, so the historical ambiguity-tolerant
+            # local-name lookup stays the fallback.
+            baseER = ElementRepresentative.getFromName(lookupName, kind="type", warn=False)
         final = getattr(baseER, "final", None) if baseER is not None else None
         if final is None and baseER is not None:
             # A type that states no ``final`` takes the declaring schema
@@ -928,6 +951,12 @@ class XsdType(ElementRepresentative):
         """
         if base is not NOTATION:
             return
+        # ``self.enumerations`` and ``_notationEnumerations`` describe
+        # the same facets: every ``Enumeration`` ER appends its value to
+        # the containing type's list, and enumeration facets sit
+        # directly under this type's restriction (two levels of
+        # ``processedChildren``). The emptiness guard below and the walk
+        # that follows must therefore stay in step.
         enumerations = list(getattr(self, "enumerations", None) or ())
         if not enumerations:
             self._report_ref_error(
@@ -936,25 +965,44 @@ class XsdType(ElementRepresentative):
             )
             return
         declared = self._declaredNotations()
-        for value in enumerations:
-            local = str(value).split(":")[-1] if value else ""
-            if local not in declared:
+        for enumeration in self._notationEnumerations():
+            value = enumeration.value
+            # An enumeration value of a NOTATION restriction is a QName
+            # (XSD 1.1 §3.14.3), so it names a notation by expanded name.
+            # It is resolved at its own element: chameleon adoption may
+            # have rewritten it to Clark form, and a legacy compile keeps
+            # the authored spelling whose prefixes still resolve through
+            # the writing document's bindings.
+            resolved = enumeration.resolveSchemaQName(value) if value else ""
+            namespace = namespace_of(resolved)
+            if namespace is None:
+                namespace = enumeration.referenceNamespace(value)
+            if (namespace, local_part(resolved)) not in declared:
                 self._report_ref_error(
                     f"enumeration value '{value}' of a NOTATION restriction "
                     "is not a declared notation",
                     code="unknown-notation",
                 )
 
+    def _notationEnumerations(self) -> list:
+        """The enumeration representatives under this type's restriction."""
+        found = []
+        for child in getattr(self, "processedChildren", None) or ():
+            for grandchild in getattr(child, "processedChildren", None) or ():
+                if type(grandchild).__name__ == "Enumeration":
+                    found.append(grandchild)
+        return found
+
     def _declaredNotations(self):
-        """Returns the local names of the schema's notation declarations."""
+        """Returns the expanded names of the schema's notations."""
         table = getattr(self.getSchema(), "components", None)
-        names: set[str] = set()
+        names: set[tuple[str | None, str]] = set()
         if table is None:
             return names
         for entries in table.values():
             for entry in entries:
                 if type(entry).__name__ == "Notation" and entry.name:
-                    names.add(str(entry.name))
+                    names.add((entry.authoredNamespace(), str(entry.name)))
         return names
 
     def _constraintNamespace(self, host, source, base, parent):

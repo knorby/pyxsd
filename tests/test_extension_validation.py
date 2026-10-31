@@ -19,6 +19,8 @@ element ``endpoint`` text and attribute ``ref`` on element ``resource``.
 
 from io import StringIO
 
+import pytest
+
 from pyxsd.binding import ParseModes
 from pyxsd.extensions import Extensions
 from pyxsd.schema import Schema
@@ -351,6 +353,95 @@ class TestHookExceptionIsolated:
         # Binding continued: the root is present and its content bound.
         assert doc.root is not None
         assert str(doc.root) == "https://host/x"
+
+
+class TestReturnShapeNormalization:
+    """A hook's return is normalized into findings before recording.
+
+    ``None`` and empty iterables add no finding; a bare ``str`` or
+    ``ValidationIssue`` counts as that one finding; any other
+    non-iterable return is one ``extension-error`` naming its type —
+    never silently swallowed as a falsy value.
+    """
+
+    @pytest.mark.parametrize(
+        ("returned", "type_name"),
+        [(0, "int"), (False, "bool"), (42, "int")],
+        ids=["zero", "false", "truthy-int"],
+    )
+    def test_falsy_non_iterable_return_is_one_extension_error(self, returned, type_name):
+        class FalsyReturnMixin:
+            def __pyxsd_validate__(self):
+                return returned
+
+        doc = _parse(FalsyReturnMixin, '<m:endpoint xmlns:m="%s">https://host/x</m:endpoint>')
+        errors = [i for i in doc.report.issues if i.code == "extension-error"]
+        assert len(errors) == 1
+        issue = errors[0]
+        assert issue.severity is IssueSeverity.ERROR
+        assert issue.phase == "instance"
+        assert issue.element == "endpoint"
+        assert f"unsupported finding of type {type_name}" in issue.message
+        # The finding is unsupported, not an exception escaping the hook.
+        assert "raised" not in issue.message
+        assert "TypeError" not in issue.message
+        # Binding continued past the bad return.
+        assert doc.root is not None
+
+    @pytest.mark.parametrize(
+        "returned",
+        [None, [], ()],
+        ids=["none", "empty-list", "empty-tuple"],
+    )
+    def test_no_finding_return_adds_no_finding(self, returned):
+        calls = []
+
+        class NoFindingMixin:
+            def __pyxsd_validate__(self):
+                calls.append(str(self))
+                return returned
+
+        doc = _parse(NoFindingMixin, '<m:endpoint xmlns:m="%s">https://host/x</m:endpoint>')
+        assert calls == ["https://host/x"]
+        assert not doc.report.issues
+
+    def test_generator_return_is_consumed_once(self):
+        yielded = []
+
+        class GeneratorMixin:
+            def __pyxsd_validate__(self):
+                def findings():
+                    yielded.append("first")
+                    yield "generator finding"
+                    yielded.append("second")
+
+                return findings()
+
+        doc = _parse(GeneratorMixin, '<m:endpoint xmlns:m="%s">https://host/x</m:endpoint>')
+        hook_issues = [i for i in doc.report.issues if i.code == "extension-validation"]
+        assert [i.message for i in hook_issues] == ["generator finding"]
+        # The generator was iterated exactly once: both stages ran in order.
+        assert yielded == ["first", "second"]
+
+    def test_generator_raising_during_consumption_is_one_extension_error(self):
+        class ConsumingMixin:
+            def __pyxsd_validate__(self):
+                def findings():
+                    yield "first finding"
+                    raise RuntimeError("generator exploded")
+
+                return findings()
+
+        doc = _parse(ConsumingMixin, '<m:endpoint xmlns:m="%s">https://host/x</m:endpoint>')
+        hook_issues = [i for i in doc.report.issues if i.code == "extension-validation"]
+        assert [i.message for i in hook_issues] == ["first finding"]
+        errors = [i for i in doc.report.issues if i.code == "extension-error"]
+        assert len(errors) == 1
+        assert errors[0].severity is IssueSeverity.ERROR
+        assert errors[0].phase == "instance"
+        assert errors[0].element == "endpoint"
+        assert "hook raised RuntimeError: generator exploded" in errors[0].message
+        assert doc.root is not None
 
 
 class TestUnionTypeHook:
