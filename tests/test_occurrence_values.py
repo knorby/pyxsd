@@ -8,6 +8,7 @@ dispatch, and the abstract/block/final guards.
 import xml.etree.ElementTree as ET
 
 from conftest import FIXTURES_DIR
+from pyxsd.binding import ParseModes
 from pyxsd.schema import Schema
 
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
@@ -678,6 +679,47 @@ def test_final_blocks_derivation(tmp_path):
     )
     doc = _parse(schema, "<root><v>1</v><w>x</w></root>", tmp_path)
     codes = [issue.code for issue in doc.report.issues]
+    assert "final" in codes
+
+
+def test_final_blocks_derivation_with_a_same_local_type_in_another_namespace(tmp_path):
+    """The base is picked by expanded name, not by its local name.
+
+    ``urn:a`` and the main schema both declare a type ``base``; the
+    derivation names the main schema's ``base`` (``final="extension"``).
+    Looking the base up by local name alone meets two declarations,
+    gives up, and skips the ``final`` error.
+    """
+    (tmp_path / "a.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'targetNamespace="urn:a" xmlns="urn:a">'
+        '<xs:complexType name="base"><xs:sequence/></xs:complexType>'
+        "</xs:schema>"
+    )
+    (tmp_path / "schema.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'targetNamespace="urn:b" xmlns="urn:b" xmlns:a="urn:a">'
+        '<xs:import namespace="urn:a" schemaLocation="a.xsd"/>'
+        '<xs:complexType name="base" final="extension"><xs:sequence/></xs:complexType>'
+        '<xs:complexType name="derived"><xs:complexContent>'
+        '<xs:extension base="base"><xs:sequence/></xs:extension>'
+        "</xs:complexContent></xs:complexType>"
+        "</xs:schema>"
+    )
+    schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+    codes = [issue.code for issue in schema.report.errors]
+    assert "final" in codes
+
+    # Without the same-local imported declaration the check already
+    # works, so the miss above is the ambiguous local-name lookup.
+    (tmp_path / "a.xsd").write_text(
+        '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'targetNamespace="urn:a" xmlns="urn:a">'
+        '<xs:complexType name="other"><xs:sequence/></xs:complexType>'
+        "</xs:schema>"
+    )
+    schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
+    codes = [issue.code for issue in schema.report.errors]
     assert "final" in codes
 
 

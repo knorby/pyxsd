@@ -10,7 +10,7 @@ from pyxsd.element_representatives.element_representative import (
     ElementRepresentative,
     componentKind,
 )
-from pyxsd.namespaces import local_part, namespace_of
+from pyxsd.namespaces import local_name, local_part, namespace_of
 from pyxsd.wildcards import (
     effective_attribute_wildcard,
     intersect_wildcard_specs,
@@ -373,12 +373,30 @@ class XsdType(ElementRepresentative):
             return
         # The base class's ``name`` attribute is unreliable (an element
         # named 'name' can replace the metadata string), so resolve the
-        # base ER by the base reference's local name instead.
-        if superClassName.startswith("{"):
-            lookupName = superClassName.split("}", 1)[1]
+        # base ER by the base reference's expanded name instead.
+        if _isInlineTypeName(superClassName):
+            # A bookkeeping name is an identity, not a QName reference
+            # (see ``getBaseList``); it is looked up unchanged.
+            lookupName = superClassName
+            namespace = None
         else:
-            lookupName = superClassName.split(":")[-1]
-        baseER = ElementRepresentative.getFromName(lookupName, kind="type", warn=False)
+            resolved = self.resolveSchemaQName(superClassName)
+            namespace = namespace_of(resolved)
+            lookupName = local_name(resolved) if namespace is not None else local_part(resolved)
+        parser = self._effectiveParser()
+        strict = getattr(getattr(parser, "mode", None), "namespaces", "legacy") == "strict"
+        if strict and namespace is not None:
+            # The expanded name selects the declaration, so a
+            # same-local-name type in another namespace cannot make the
+            # lookup ambiguous and hide the base's ``final`` value.
+            baseER = self.getSchema().components.getFromName(
+                lookupName, kind="type", namespace=namespace, warn=False
+            )
+        else:
+            # A legacy compile reports composed components in the main
+            # schema's namespace, so the historical ambiguity-tolerant
+            # local-name lookup stays the fallback.
+            baseER = ElementRepresentative.getFromName(lookupName, kind="type", warn=False)
         final = getattr(baseER, "final", None) if baseER is not None else None
         if final is None and baseER is not None:
             # A type that states no ``final`` takes the declaring schema
