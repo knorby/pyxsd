@@ -826,8 +826,9 @@ class TestCompositionCorrectness:
         included document into a Clark name whose URI contains colons
         (``{urn:cycle:test}a``). The override check must read the
         reference's local part through those braces: a check that
-        takes the text after the last colon looks up ``test}a`` and
-        silently skips the mismatch, accepting an invalid schema.
+        takes the text after the first colon (``split(":", 1)[-1]``)
+        looks up ``cycle:test}a`` and silently skips the mismatch,
+        accepting an invalid schema.
         """
         (tmp_path / "child.xsd").write_text(
             f"<xs:schema {XS}>"
@@ -889,10 +890,10 @@ class TestCompositionCorrectness:
         """An adopted attribute declaration's ``type`` is still checked.
 
         Adoption rewrites the namespace-less ``type`` in the included
-        document into ``{urn:cycle:test}ct``. Resolving that spelling
-        by the text after its last colon finds no type at all, so the
-        schema is accepted even though an attribute type must be
-        simple.
+        document into ``{urn:cycle:test}ct``. Splitting that spelling at
+        its first colon reads ``{urn`` as a prefix and looks up
+        ``cycle:test}ct``, which names no type, so the schema is
+        accepted even though an attribute type must be simple.
         """
         (tmp_path / "child.xsd").write_text(
             f"<xs:schema {XS}>"

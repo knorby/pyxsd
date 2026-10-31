@@ -156,6 +156,16 @@ class TestNamespaceSelection:
         )
         assert issubclass(schema.classes["Note"], NoNamespaceMixin)
 
+    def test_no_namespace_does_not_match_a_namespaced_type(self):
+        class NoNamespaceMixin:
+            pass
+
+        ext = Extensions()
+        ext.for_namespace("", mixin=NoNamespaceMixin)
+        assert ext.mixins_for(_code()) == ()
+        assert ext.mixins_for(_patient()) == ()
+        assert ext.mixins_for(_record()) == ()
+
 
 class TestKindSelection:
     def test_complex_type_kind_hits_derived_and_base_not_simple(self):

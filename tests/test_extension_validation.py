@@ -366,8 +366,8 @@ class TestReturnShapeNormalization:
 
     @pytest.mark.parametrize(
         ("returned", "type_name"),
-        [(0, "int"), (False, "bool")],
-        ids=["zero", "false"],
+        [(0, "int"), (False, "bool"), (42, "int")],
+        ids=["zero", "false", "truthy-int"],
     )
     def test_falsy_non_iterable_return_is_one_extension_error(self, returned, type_name):
         class FalsyReturnMixin:

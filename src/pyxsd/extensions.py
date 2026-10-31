@@ -86,7 +86,10 @@ class Extensions:
         return self._register(matches, mixin)
 
     def for_namespace(self, uri: str, mixin: type | None = None) -> Any:
-        """Registers *mixin* for every type declared in namespace *uri*."""
+        """Registers *mixin* for every type declared in namespace *uri*.
+
+        An empty *uri* selects declarations that have no namespace.
+        """
 
         def matches(er: Any) -> bool:
             name = getattr(er, "name", None)

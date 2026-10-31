@@ -1002,6 +1002,13 @@ def test_resolved_type_falls_back_to_primitives_without_a_table(tmp_path, monkey
     assert issubclass(resolved, int)
 
 
+def test_resolved_type_in_a_user_namespace_never_uses_a_primitive(tmp_path):
+    descriptor = _descriptor(tmp_path)
+    # ``int`` is a primitive local name, but this reference names a user
+    # namespace no declaration supplies; a built-in must not be selected.
+    assert Attribute._resolvedType(descriptor, "{urn:none}int") is None
+
+
 def test_invalid_qname_detection():
     assert Attribute._invalidQName("a b") is True
     assert Attribute._invalidQName("{urn:ok}local") is False

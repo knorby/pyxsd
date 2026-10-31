@@ -44,6 +44,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   durable input revisions, quota ledger or publication/commit workflow.
   Execution remains disabled by default; trusted-local previews require
   explicit stdio opt-in.
+- `Extensions.for_namespace("")` selects declarations that have no namespace,
+  so a mixin can attach to a no-namespace schema's types.
 
 ### Changed
 
@@ -80,6 +82,15 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   (issue #48).
 - Schema binding indexes are released after each parse, preventing per-parse
   state from accumulating.
+- Mixin validation hooks that return `0`, `False`, or any other non-iterable
+  now report one `extension-error` naming the unsupported type instead of
+  being silently ignored; `None` and empty iterables still add no finding.
+- Six namespace-aware QName corrections: attribute reference and attribute
+  type selection, the `anyType` restriction base, NOTATION enumeration
+  values, `final` derivation bases (including no-namespace references), and
+  identity-constraint references now select or compare declarations by
+  expanded name. Some previously accepted invalid schemas are now rejected,
+  and some previously rejected valid schemas are now accepted.
 
 ## [1.2.1] - 2026-10-20
 

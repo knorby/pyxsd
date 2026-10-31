@@ -951,6 +951,12 @@ class XsdType(ElementRepresentative):
         """
         if base is not NOTATION:
             return
+        # ``self.enumerations`` and ``_notationEnumerations`` describe
+        # the same facets: every ``Enumeration`` ER appends its value to
+        # the containing type's list, and enumeration facets sit
+        # directly under this type's restriction (two levels of
+        # ``processedChildren``). The emptiness guard below and the walk
+        # that follows must therefore stay in step.
         enumerations = list(getattr(self, "enumerations", None) or ())
         if not enumerations:
             self._report_ref_error(
