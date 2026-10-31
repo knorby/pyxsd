@@ -21,6 +21,15 @@
   test that passes only on the newest interpreter or only on macOS is a CI
   failure.
 
+## XSTS conformance
+
+- Increasing the XSTS pass rate is a general project goal. Every durable
+  improvement counts, whether intentional or incidental. When a change
+  reproducibly flips a case to `pass`, update only that case's baseline
+  entry in the same commit and keep every previously passing case passing.
+  Follow the baseline contract in `tests/test_xsts_suite.py`; use repeated
+  runs to distinguish durable improvements from machine-speed flakiness.
+
 ## Do not depend on the developer machine's locale or filesystem
 
 Some jobs run under `LC_ALL=C` with `PYTHONUTF8=0`. On Linux the filesystem

@@ -16,7 +16,10 @@ import pytest
 import pyxsd.schema  # noqa: F401  (loads the ER stack in its safe order)
 from pyxsd.binding import ParseModes
 from pyxsd.element_representatives.attribute import Attribute
-from pyxsd.element_representatives.attribute_group import _attribute_group_index
+from pyxsd.element_representatives.attribute_group import (
+    AttributeGroup,
+    _attribute_group_index,
+)
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.element_representatives.identity import IdentityConstraint
 from pyxsd.element_representatives.list import List
@@ -277,6 +280,29 @@ def test_attribute_group_index_falls_back_without_a_component_table():
     assert index["candidates"] == [entry]
     assert index["by_name"] == {"g": [entry]}
     assert schema._attribute_group_index is index
+
+
+def test_resolve_group_uses_fallback_and_caches_success():
+    """The no-table fallback resolves once and class building reuses it."""
+    entry = SimpleNamespace(name="g")
+    schema = SimpleNamespace(attributeGroups={"g": entry}, components=None)
+    schema.getSchema = lambda: schema
+    schema._globalAttributeGroupCandidates = lambda *, parser=None: schema.attributeGroups.values()
+    site = AttributeGroup.__new__(AttributeGroup)
+    site.ref = "g"
+    site.parent = schema
+    calls = []
+
+    def resolveReference(ref, candidates, *, parser=None):
+        calls.append((ref, list(candidates)))
+        return entry if list(candidates) == [entry] else None
+
+    site.resolveReference = resolveReference
+
+    assert site._resolve_group() is entry
+    assert site._resolve_group(for_class_building=True) is entry
+    assert calls == [("g", [entry])]
+    assert site._resolvedAttributeGroup is entry
 
 
 # ---------------------------------------------------------------------------
