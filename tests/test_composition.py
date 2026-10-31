@@ -990,6 +990,44 @@ class TestCompositionCorrectness:
         schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.NAMESPACED)
         assert not schema.report.has_errors
 
+    def test_attribute_type_resolves_rebound_xs_prefix(self, tmp_path):
+        """A rebound ``xs`` prefix does not select a built-in type.
+
+        Built-ins belong to the XML Schema namespace whatever prefix
+        spells that URI. Here ``xs`` is bound to the target namespace,
+        so ``type="xs:int"`` names the user's complex type ``int`` and
+        the declaration must be rejected as a non-simple attribute type.
+        Reading the literal prefix instead accepts the invalid schema.
+        """
+        text = """<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns:xs="urn:user" targetNamespace="urn:user" xmlns="urn:user">
+  <xsd:complexType name="int"><xsd:sequence/></xsd:complexType>
+  <xsd:attribute name="a" type="xs:int"/>
+  <xsd:element name="root"><xsd:complexType>
+    <xsd:attribute ref="a"/>
+  </xsd:complexType></xsd:element>
+</xsd:schema>
+"""
+        (tmp_path / "schema.xsd").write_text(text)
+        for mode in (None, ParseModes.NAMESPACED):
+            kwargs = {} if mode is None else {"mode": mode}
+            schema = Schema.compile(str(tmp_path / "schema.xsd"), **kwargs)
+            assert [(issue.code, issue.message) for issue in _schema_errors(schema.report)] == [
+                (
+                    "declaration-attribute",
+                    "attribute 'a' type 'xs:int' is a complex type; attribute types must be simple",
+                )
+            ]
+
+        # The only change is the type spelling: ``xsd`` names the XML
+        # Schema namespace, so ``string`` is the built-in and a valid
+        # attribute type.
+        (tmp_path / "schema.xsd").write_text(text.replace('type="xs:int"', 'type="xsd:string"'))
+        for mode in (None, ParseModes.NAMESPACED):
+            kwargs = {} if mode is None else {"mode": mode}
+            schema = Schema.compile(str(tmp_path / "schema.xsd"), **kwargs)
+            assert not schema.report.has_errors
+
 
 # ---------------------------------------------------------------------------
 # Unresolved-resource severity (Task 11)

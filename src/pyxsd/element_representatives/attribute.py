@@ -652,16 +652,13 @@ class Attribute(ElementRepresentative):
         (a Clark name keeps its braces' URI), so a user-defined simple or
         complex type matches by expanded name; a same-local-name type in
         another namespace is not selected. Built-ins resolve from
-        ``_PRIMITIVE_TYPES`` for an ``xs``/``xsd`` prefix, for the XML
-        Schema namespace, or when the reference names no namespace; a
-        reference into a user namespace never falls back to a built-in.
-        Returns ``None`` when nothing matches.
+        ``_PRIMITIVE_TYPES`` for the XML Schema namespace or when the
+        reference names no namespace -- the literal prefix spelling never
+        selects one, so a rebound ``xs``/``xsd`` prefix names a user type
+        like any other; a reference into a user namespace never falls
+        back to a built-in. Returns ``None`` when nothing matches.
         """
         local = local_part(raw)
-        if not raw.startswith("{") and ":" in raw:
-            prefix, _ = raw.split(":", 1)
-            if prefix in ("xs", "xsd"):
-                return _PRIMITIVE_TYPES.get(local)
         entry = self._globalDeclaration(raw, ("SimpleType", "ComplexType"))
         if entry is not None:
             return entry
