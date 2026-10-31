@@ -10,7 +10,7 @@ from typing import Any
 from weakref import WeakKeyDictionary
 
 from pyxsd.exceptions import PyXSDError
-from pyxsd.namespaces import local_name, local_part, namespace_of
+from pyxsd.namespaces import clark, local_name, local_part, namespace_of
 from pyxsd.schema_context import active_report
 from pyxsd.validation import IssueSeverity, ValidationIssue, report_or_log
 
@@ -95,7 +95,7 @@ class Extensions:
             # against the same spelling built from *uri* compares the
             # namespace exactly (a URI containing ``}`` cannot alias a
             # prefix of another).
-            return name is not None and expanded == f"{{{uri}}}{name}"
+            return name is not None and expanded == clark(uri, name)
 
         return self._register(matches, mixin)
 

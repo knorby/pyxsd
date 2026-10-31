@@ -135,6 +135,27 @@ class TestNamespaceSelection:
         assert ext.mixins_for(_record()) == (NsMixin,)
         assert ext.mixins_for(_patient()) == ()
 
+    def test_no_namespace_matches_schema_declarations(self):
+        class NoNamespaceMixin:
+            pass
+
+        ext = Extensions()
+        ext.for_namespace("", mixin=NoNamespaceMixin)
+        schema = Schema.compile(
+            StringIO(
+                f"""<xs:schema xmlns:xs="{XSD}">
+  <xs:complexType name="Note">
+    <xs:sequence>
+      <xs:element name="body" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:element name="note" type="Note"/>
+</xs:schema>"""
+            ),
+            extensions=ext,
+        )
+        assert issubclass(schema.classes["Note"], NoNamespaceMixin)
+
 
 class TestKindSelection:
     def test_complex_type_kind_hits_derived_and_base_not_simple(self):

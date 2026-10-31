@@ -80,7 +80,7 @@ Only path selectors fail loudly (see [Path selectors](#path-selectors)).
 | Selector | Matches |
 | -------- | ------- |
 | `for_type(name)` | The type declaration named *name* — a plain local name (`"Code"`) or a Clark name (`"{uri}Code"`). |
-| `for_namespace(uri)` | Every type declared in namespace *uri*. |
+| `for_namespace(uri)` | Every type declared in namespace *uri*. An empty URI selects declarations with no namespace. |
 | `for_kind(kind, derived_from=...)` | Types of *kind* — `simpleType` or `complexType` (case-insensitive). With *derived_from*, only types whose XSD base is the named type; the base name is matched by local spelling (a prefixed or Clark spelling contributes its local part). |
 | `for_path(path)` | The type of the element at an instance *path* from the document root down (see below). |
 | `where(predicate)` | Every type declaration whose element representative satisfies *predicate* — the escape hatch for anything the named selectors cannot say. |
