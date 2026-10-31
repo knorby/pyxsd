@@ -23,12 +23,12 @@
 
 ## XSTS conformance
 
-- Increasing the XSTS pass rate is a general project goal. When an
-  intentional change flips a case to `pass`, update only that case's
-  baseline entry in the same commit and keep every previously passing case
-  passing. Follow the baseline contract in `tests/test_xsts_suite.py`;
-  unrelated environmental improvements do not require baseline edits in a
-  feature branch.
+- Increasing the XSTS pass rate is a general project goal. Every durable
+  improvement counts, whether intentional or incidental. When a change
+  reproducibly flips a case to `pass`, update only that case's baseline
+  entry in the same commit and keep every previously passing case passing.
+  Follow the baseline contract in `tests/test_xsts_suite.py`; use repeated
+  runs to distinguish durable improvements from machine-speed flakiness.
 
 ## Do not depend on the developer machine's locale or filesystem
 
