@@ -578,3 +578,220 @@ class TestCorpusScaleRepeatedSearch:
         assert content_model.match_content(self._rez003v_model(), nodes) == (True, [])
         # Pre-fast-path this shape made 50,025,003 calls (~n^2/2).
         assert calls <= 5 * self.REZ003V_NODES, calls
+
+
+def _fingerprint(particle):
+    """Identity and shape of every node, to prove the authored tree is untouched."""
+    return (
+        id(particle),
+        particle.kind,
+        particle.min_occurs,
+        particle.max_occurs,
+        particle.name,
+        particle.synthetic,
+        tuple(_fingerprint(child) for child in particle.children),
+    )
+
+
+class TestSingleChildCompositorCollapse:
+    """Matcher-view normalization of single-child ``sequence``/``choice``.
+
+    The authored particle tree stays as written: derivation, restriction
+    and EDC checks read it. Only the view handed to the matcher collapses
+    a compositor with exactly one child into that child, multiplying the
+    occurrence bounds. ``all`` particles and synthetic group-reference
+    wrappers are outside the rule.
+    """
+
+    @staticmethod
+    def _collapse(model):
+        from pyxsd import content_model
+
+        return content_model._collapse_single_child_compositors(model)
+
+    def test_single_child_compositor_nested_recursive_collapse(self):
+        model = Particle(
+            "sequence",
+            1,
+            2,
+            [
+                Particle(
+                    "choice",
+                    1,
+                    3,
+                    [Particle("sequence", 2, 4, [Particle("element", 1, 1, [], "a")])],
+                )
+            ],
+        )
+        assert self._collapse(model) == Particle("element", 2, 24, [], "a")
+
+    def test_single_child_compositor_min_occurs_multiplies(self):
+        model = Particle(
+            "sequence",
+            2,
+            3,
+            [Particle("choice", 3, 3, [Particle("element", 1, 1, [], "a")])],
+        )
+        collapsed = self._collapse(model)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (6, 9)
+        assert (collapsed.kind, collapsed.name) == ("element", "a")
+
+    def test_single_child_compositor_finite_maximum_multiplies(self):
+        model = Particle(
+            "choice",
+            2,
+            3,
+            [Particle("element", 2, 4, [], "a")],
+        )
+        collapsed = self._collapse(model)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (4, 12)
+
+    def test_single_child_compositor_unbounded_maximum_stays_unbounded(self):
+        wrapper_unbounded = Particle("sequence", 1, None, [Particle("element", 2, 3, [], "a")])
+        collapsed = self._collapse(wrapper_unbounded)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (2, None)
+        child_unbounded = Particle("sequence", 2, 4, [Particle("element", 1, None, [], "a")])
+        collapsed = self._collapse(child_unbounded)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (2, None)
+
+    def test_single_child_compositor_optional_group(self):
+        model = Particle("sequence", 0, 1, [Particle("element", 1, 1, [], "a")])
+        collapsed = self._collapse(model)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (0, 1)
+
+    def test_single_child_compositor_zero_occurrence(self):
+        model = Particle("choice", 0, 0, [Particle("element", 1, 5, [], "a")])
+        collapsed = self._collapse(model)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (0, 0)
+
+    def test_single_child_compositor_zero_times_unbounded_is_zero(self):
+        # ``maxOccurs="0"`` around an unbounded child matches nothing at all;
+        # the product must stay 0 instead of turning into "unbounded".
+        zero_wrapper = Particle("sequence", 0, 0, [Particle("element", 1, None, [], "a")])
+        collapsed = self._collapse(zero_wrapper)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (0, 0)
+        zero_child = Particle("sequence", 0, None, [Particle("element", 1, 0, [], "a")])
+        collapsed = self._collapse(zero_child)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (0, 0)
+
+    def test_single_child_compositor_multi_child_guard(self):
+        sequence = Particle(
+            "sequence",
+            1,
+            1,
+            [Particle("element", 1, 1, [], "a"), Particle("element", 1, 1, [], "b")],
+        )
+        assert self._collapse(sequence) is sequence
+        choice = Particle(
+            "choice",
+            1,
+            1,
+            [Particle("element", 1, 1, [], "a"), Particle("element", 1, 1, [], "b")],
+        )
+        assert self._collapse(choice) is choice
+
+    def test_single_child_compositor_all_guard(self):
+        model = Particle("all", 1, 1, [Particle("element", 1, 1, [], "a")])
+        assert self._collapse(model) is model
+
+    def test_single_child_compositor_synthetic_guard(self):
+        # A synthetic wrapper with a terminal child is returned untouched.
+        model = Particle("sequence", 1, 2, [Particle("element", 1, 1, [], "a")], synthetic=True)
+        assert self._collapse(model) is model
+        # A synthetic wrapper whose child is collapsible keeps its own node;
+        # only the child normalizes, so the wrapper is replaced, not folded.
+        wrapper = Particle(
+            "sequence",
+            1,
+            2,
+            [Particle("choice", 1, 1, [Particle("element", 1, 1, [], "a")])],
+            synthetic=True,
+        )
+        collapsed = self._collapse(wrapper)
+        assert collapsed is not wrapper
+        assert (collapsed.kind, collapsed.synthetic) == ("sequence", True)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (1, 2)
+        assert [child.kind for child in collapsed.children] == ["element"]
+
+    def test_single_child_compositor_leaf_unchanged(self):
+        leaf = Particle("element", 2, 3, [], "a")
+        assert self._collapse(leaf) is leaf
+
+    def test_single_child_compositor_nested_multi_child_parent(self):
+        model = Particle(
+            "sequence",
+            1,
+            1,
+            [
+                Particle("sequence", 1, 5, [Particle("element", 1, 2, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+            ],
+        )
+        collapsed = self._collapse(model)
+        assert collapsed is not model
+        assert collapsed.kind == "sequence"
+        assert len(collapsed.children) == 2
+        assert (collapsed.children[0].kind, collapsed.children[0].max_occurs) == ("element", 10)
+        assert collapsed.children[1].name == "b"
+
+    def test_single_child_compositor_terminal_metadata_identity(self):
+        from pyxsd.wildcards import WildcardSpec
+
+        descriptor = object()
+        spec = WildcardSpec(namespace="##local")
+        element = Particle("element", 1, 1, [], "a", None, descriptor)
+        collapsed_element = self._collapse(Particle("sequence", 3, 4, [element]))
+        assert collapsed_element is not element
+        assert collapsed_element.descriptor is descriptor
+        assert collapsed_element.spec is None
+        wildcard = Particle("any", 1, 1, [], None, spec)
+        collapsed_wildcard = self._collapse(Particle("choice", 2, 2, [wildcard]))
+        assert collapsed_wildcard.spec is spec
+        assert collapsed_wildcard.descriptor is None
+
+    def test_single_child_compositor_matcher_leaves_authored_tree_unchanged(self):
+        from pyxsd import content_model
+
+        model = Particle(
+            "sequence",
+            1,
+            1,
+            [
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+            ],
+        )
+        before = _fingerprint(model)
+        nodes = (
+            [ET.Element("a") for _ in range(3)]
+            + [ET.Element("b")]
+            + [ET.Element("a") for _ in range(2)]
+        )
+        complete, leftover, associations = content_model.match_content_associations(model, nodes)
+        assert complete is True and list(leftover) == []
+        assert [match.position for match in associations] == list(range(len(nodes)))
+        assert _fingerprint(model) == before
+
+    def test_single_child_compositor_z036_association_digest(self):
+        from pyxsd import content_model
+
+        model = Particle(
+            "choice",
+            1,
+            None,
+            [
+                Particle("sequence", 1, None, [Particle("element", 1, None, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+            ],
+        )
+        nodes = (
+            [ET.Element("a") for _ in range(40)]
+            + [ET.Element("b")]
+            + [ET.Element("a") for _ in range(5)]
+        )
+        complete, leftover, associations = content_model.match_content_associations(model, nodes)
+        assert complete is True and list(leftover) == []
+        assert TestCorpusScaleRepeatedSearch._digest(complete, leftover, associations) == (
+            "7138b1be9e0463fa080eb0998eda67d9ea989d8b66041416625eec63378df857"
+        )

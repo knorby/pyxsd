@@ -1137,6 +1137,46 @@ def _trace_repeated(
         _trace_one(particle, nodes, before, after, ctx, memo, out)
 
 
+def _collapse_single_child_compositors(particle: Particle) -> Particle:
+    """The matcher's view of *particle* with single-child groups collapsed.
+
+    A ``sequence`` or ``choice`` with exactly one child is language-
+    identical to that child repeated as often as the wrapper: one
+    occurrence of the group consumes one occurrence of the child, so the
+    bounds multiply: a zero maximum on either side makes the product zero,
+    and otherwise ``None`` (unbounded) on either side keeps it unbounded.
+    Collapsing removes a layer the matcher would
+    otherwise walk once per occurrence (Z034/Z036 repeat a single-element
+    ``sequence`` inside another repeated group).
+
+    Normalization is post-order: children are collapsed first, so nested
+    single-child compositors fold into one terminal particle. Only the
+    view changes; the authored tree is returned untouched when nothing
+    collapses and is never mutated, because derivation, restriction and
+    EDC checks read its compositor structure. ``all`` and the synthetic
+    wrapper around a group reference are excluded: both are significant
+    to those checks (and to the open-content attribution pass), and
+    ``all`` is unordered rather than a plain repetition.
+    """
+    children = [_collapse_single_child_compositors(child) for child in particle.children]
+    if any(new is not old for new, old in zip(children, particle.children, strict=True)):
+        particle = replace(particle, children=children)
+    if particle.synthetic or particle.kind not in ("sequence", "choice"):
+        return particle
+    if len(particle.children) != 1:
+        return particle
+    child = particle.children[0]
+    minimum = particle.min_occurs * child.min_occurs
+    if particle.max_occurs == 0 or child.max_occurs == 0:
+        # Zero times anything is zero, including zero times unbounded.
+        maximum = 0
+    elif particle.max_occurs is None or child.max_occurs is None:
+        maximum = None
+    else:
+        maximum = particle.max_occurs * child.max_occurs
+    return replace(child, min_occurs=minimum, max_occurs=maximum)
+
+
 def match_content_associations(
     model: Particle,
     nodes: list[Any],
@@ -1179,12 +1219,13 @@ def match_content_associations(
         member_heads,
     )
     memo: dict[Any, EndSet] = {}
-    ends = _ends_repeated(model, nodes, 0, ctx, memo, 0)
+    view = _collapse_single_child_compositors(model)
+    ends = _ends_repeated(view, nodes, 0, ctx, memo, 0)
     complete = len(nodes) in ends
     target = len(nodes) if complete else max(ends, default=0)
     out: list[ChildMatch] = []
-    if complete or target > 0 or model.min_occurs == 0:
-        _trace_repeated(model, nodes, 0, target, ctx, memo, out)
+    if complete or target > 0 or view.min_occurs == 0:
+        _trace_repeated(view, nodes, 0, target, ctx, memo, out)
     out.sort(key=lambda match: match.position)
     if complete:
         return True, [], out
