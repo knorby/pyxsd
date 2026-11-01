@@ -22,10 +22,33 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v10.1.0
 
+      - name: Resolve the pinned xsdtests corpus commit
+        id: corpus
+        run: >
+          echo "sha=$(git rev-parse HEAD:tests/xsts/corpus)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the xsdtests corpus submodule
+        uses: actions/cache@v6
+        with:
+          path: |
+            tests/xsts/corpus
+            .git/modules/tests/xsts/corpus
+          key: xsdtests-${{ runner.os }}-${{ steps.corpus.outputs.sha }}
+
+      - name: Check out the xsdtests corpus
+        run: git submodule update --init --depth 1 tests/xsts/corpus
+
+      - name: Sync environment
+        run: uv sync --group docs
+
+      # Freshness gate: the generated XSTS fragments must match the
+      # checked-in baselines, the pinned corpus, and dispositions.toml.
+      # Runs before Sphinx so a stale table fails the build directly.
+      - name: Check generated XSTS documentation
+        run: uv run python tests/report_xsts_docs.py --check
+
       - name: Build documentation
-        run: |
-          uv sync --group docs
-          uv run sphinx-build -W --keep-going -b html docs docs/_build/html
+        run: uv run sphinx-build -W --keep-going -b html docs docs/_build/html
 
       - name: Setup Pages
         if: github.ref == 'refs/heads/develop' && github.event_name != 'pull_request'
