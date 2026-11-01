@@ -7,7 +7,7 @@ corpus:
 
 | Profile | Passed | Checked | Agreement on checked |
 |:--|--:|--:|--:|
-| XSD 1.1 | 41,515 | 41,605 | 99.7837% |
+| XSD 1.1 | 41,524 | 41,605 | 99.8053% |
 | XSD 1.0 | 39,285 | 39,438 | 99.6120% |
 
 Checked cases are `pass + fail`; agreement is `100 * pass / (pass + fail)`.

@@ -101,6 +101,13 @@ class NamespaceContext:
     scope resolves correctly there while the outer binding remains valid
     for its own scope. One context can accumulate several documents (a
     schema, its includes and imports, and the instance).
+
+    The context also records, weakly, how each root it produced can be
+    read again (see :meth:`record_root_source`): a path string or a
+    seekable stream. That provenance is what lets a later phase re-read a
+    document's prolog -- for DTD declaration evidence -- after the tree
+    was already parsed. Elements and streams are held weakly on both
+    sides, so a long-lived context retains neither.
     """
 
     def __init__(self) -> None:
@@ -108,6 +115,46 @@ class NamespaceContext:
             weakref.WeakKeyDictionary()
         )
         self.root_bindings: dict[str, str] = {}
+        # Root elements of documents this context parsed, mapped to a
+        # re-readable source: a path string, or a weak reference to a
+        # seekable stream. Values stay weak for streams so the context
+        # never keeps one alive.
+        self._root_sources: weakref.WeakKeyDictionary[ET.Element, Any] = weakref.WeakKeyDictionary()
+
+    def record_root_source(self, root: ET.Element, source: Any) -> None:
+        """Record, best effort, how the document rooted at *root* re-reads.
+
+        A path-like *source* is recorded as its filesystem path (it can be
+        reopened); a seekable stream is recorded by weak reference (it can
+        be rewound); anything else -- a non-seekable stream, an
+        unweakreffable object -- records nothing, and the root later
+        resolves to no provenance. Failure is silent by design: the
+        ordinary parse already succeeded without this information.
+        """
+        if isinstance(source, (str, os.PathLike)):
+            self._root_sources[root] = os.fspath(source)
+            return
+        seekable = getattr(source, "seekable", None)
+        if seekable is None or not seekable():
+            return
+        try:
+            self._root_sources[root] = weakref.ref(source)
+        except TypeError:
+            # An unweakreffable stream is deliberately not retained.
+            return
+
+    def root_source(self, root: ET.Element) -> Any:
+        """The re-readable source recorded for *root*: path, stream, or None.
+
+        Reopening or rewinding happens strictly after the original parse,
+        so the source may have changed or vanished since; callers must
+        treat any failure to re-read as "no evidence" rather than an
+        error. A stream whose weak reference died also resolves to None.
+        """
+        provenance = self._root_sources.get(root)
+        if provenance is None or isinstance(provenance, str):
+            return provenance
+        return provenance()
 
     def record(self, element: ET.Element, frame: dict[str, str]) -> None:
         """Record ``element``'s in-scope ``prefix -> uri`` bindings."""
@@ -183,12 +230,23 @@ def parse_with_namespaces(
     Defusedxml denials are converted to the same error with the original
     exception as ``__cause__``; malformed XML still raises
     :class:`xml.etree.ElementTree.ParseError`.
+
+    The returned root's re-read provenance is recorded on *ctx* when the
+    source admits it (path or seekable stream). Re-reading happens later
+    and best effort: a source that changed or vanished since the parse
+    yields no evidence, never an error.
     """
     ctx = context if context is not None else NamespaceContext()
     if limits is not None and limits.max_bytes is not None:
         with _byte_limited_source(source, limits.max_bytes) as bounded:
-            return _parse_events(bounded, ctx, policy, limits)
-    return _parse_events(source, ctx, policy, limits)
+            root = _parse_events(bounded, ctx, policy, limits)
+    else:
+        root = _parse_events(source, ctx, policy, limits)
+    # Record the caller's original source (not a byte-limited wrapper):
+    # the wrapper is exhausted and unseekable, while the original path or
+    # stream is what a later prolog re-read can use.
+    ctx.record_root_source(root, source)
+    return root
 
 
 def _parse_events(

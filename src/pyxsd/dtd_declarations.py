@@ -12,19 +12,37 @@ Denials installed by
 behavior and ordering: the collector chains every handler it replaces.
 Ordinary prolog parse failures become ``None`` so the ordinary parser can
 report them in its own vocabulary; policy denials propagate unchanged.
+
+The per-parse evidence carrier lives here too: :func:`declaration_context`
+installs one :class:`DocumentDeclarations` around ``bind_instance`` (never
+process-global state), and the ``ENTITY``/``ENTITIES`` datatypes consult
+it through :func:`active_declaration_evidence` after their lexical checks.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, BinaryIO
+from typing import IO, Any, BinaryIO, Protocol
 from xml.parsers import expat
 
 from pyxsd.xml_policy import XmlParserPolicy, configure_expat_security
 
 #: Bytes fed to Expat per read when *source* is a binary stream.
 _CHUNK_SIZE = 65536
+
+
+class ChunkSource(Protocol):
+    """Anything whose ``read`` yields ``bytes``/``str`` chunks.
+
+    Expat accepts either chunk kind per call, so a replay reader that
+    serves buffered chunks before a wrapped stream collects without
+    re-encoding.
+    """
+
+    def read(self, size: int = -1) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -40,12 +58,62 @@ class DocumentDeclarations:
     complete: bool
 
 
+class _DeclarationEvidence:
+    """Per-parse declaration evidence plus flags for the reporting layer.
+
+    ``external_subset_skipped`` is set (idempotently) when an
+    ENTITY/ENTITIES value was left lexical-only because an unretrieved
+    external subset could have declared it. The parse layer that owns the
+    report converts the flag into a single ``dtd-external-skipped``
+    warning -- never one issue per value.
+    """
+
+    __slots__ = ("declarations", "external_subset_skipped")
+
+    def __init__(self, declarations: DocumentDeclarations) -> None:
+        self.declarations = declarations
+        self.external_subset_skipped = False
+
+
+#: Ambient declaration evidence for the parse in progress. ``None`` (the
+#: default) means no evidence: datatype construction stays lexical-only,
+#: which is the behaviour outside any parse.
+_DECLARATION_EVIDENCE: ContextVar[_DeclarationEvidence | None] = ContextVar(
+    "pyxsd_declaration_evidence", default=None
+)
+
+
+def active_declaration_evidence() -> _DeclarationEvidence | None:
+    """The declaration evidence installed for the current parse, if any."""
+    return _DECLARATION_EVIDENCE.get()
+
+
+@contextmanager
+def declaration_context(
+    declarations: DocumentDeclarations | None,
+) -> Iterator[_DeclarationEvidence | None]:
+    """Install *declarations* for the duration of one instance binding.
+
+    ``None`` installs nothing, leaving datatype construction lexical-only.
+    The previous value is always restored, including when binding raises.
+    """
+    if declarations is None:
+        yield None
+        return
+    evidence = _DeclarationEvidence(declarations)
+    token = _DECLARATION_EVIDENCE.set(evidence)
+    try:
+        yield evidence
+    finally:
+        _DECLARATION_EVIDENCE.reset(token)
+
+
 class _PrologComplete(Exception):
     """Raised at the first root start tag to stop the prolog parse."""
 
 
 def collect_document_declarations(
-    source: bytes | BinaryIO, *, policy: XmlParserPolicy
+    source: bytes | BinaryIO | IO[str] | ChunkSource, *, policy: XmlParserPolicy
 ) -> DocumentDeclarations | None:
     """Collect unparsed-entity declarations from *source*'s prolog.
 
@@ -55,6 +123,9 @@ def collect_document_declarations(
     prolog itself is not well-formed, leaving the diagnosis to the
     ordinary parser; policy denials raise as they would without this
     collector.
+
+    Streams may yield ``bytes`` or ``str`` chunks; Expat accepts either
+    per call, so a text stream collects without re-encoding.
     """
     parser = expat.ParserCreate()
     configure_expat_security(parser, policy)

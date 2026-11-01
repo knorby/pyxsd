@@ -199,3 +199,67 @@ def test_protected_still_collects_from_a_doctype_without_entity_declarations():
         NO_ENTITY_DTD_DOC,
         policy=XmlParserPolicy.protected(),
     ) == DocumentDeclarations(frozenset(), True)
+
+
+def test_collects_from_a_text_stream():
+    """Text-stream chunks feed Expat directly, without re-encoding."""
+    document = (
+        '<?xml version="1.0" encoding="ascii"?>'
+        '<!DOCTYPE r [<!NOTATION n SYSTEM "n"><!ENTITY logo SYSTEM "logo" NDATA n>]>'
+        "<r/>"
+    )
+    assert collect_document_declarations(
+        io.StringIO(document), policy=XmlParserPolicy.default()
+    ) == DocumentDeclarations(frozenset({"logo"}), True)
+
+
+def test_declaration_context_installs_and_restores_evidence():
+    from pyxsd.dtd_declarations import (
+        active_declaration_evidence,
+        declaration_context,
+    )
+
+    assert active_declaration_evidence() is None
+    with declaration_context(DocumentDeclarations(frozenset({"logo"}), True)) as evidence:
+        installed = active_declaration_evidence()
+        assert installed is evidence
+        assert installed.declarations == DocumentDeclarations(frozenset({"logo"}), True)
+        assert installed.external_subset_skipped is False
+    assert active_declaration_evidence() is None
+
+
+def test_declaration_context_without_evidence_installs_nothing():
+    from pyxsd.dtd_declarations import (
+        active_declaration_evidence,
+        declaration_context,
+    )
+
+    with declaration_context(None) as evidence:
+        assert evidence is None
+        assert active_declaration_evidence() is None
+
+
+def test_declaration_context_restores_after_an_exception():
+    from pyxsd.dtd_declarations import (
+        active_declaration_evidence,
+        declaration_context,
+    )
+
+    with (
+        pytest.raises(RuntimeError, match="stop"),
+        declaration_context(DocumentDeclarations(frozenset(), True)),
+    ):
+        raise RuntimeError("stop")
+    assert active_declaration_evidence() is None
+
+
+def test_external_subset_flag_is_set_idempotently():
+    from pyxsd.dtd_declarations import declaration_context
+
+    incomplete = DocumentDeclarations(frozenset({"logo"}), False)
+    with declaration_context(incomplete) as evidence:
+        # Two suppressed values set the same flag; the reporting layer
+        # converts it into one advisory per parse.
+        evidence.external_subset_skipped = True
+        evidence.external_subset_skipped = True
+        assert evidence.external_subset_skipped is True

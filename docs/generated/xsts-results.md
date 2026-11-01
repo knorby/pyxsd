@@ -33,13 +33,13 @@ baseline metadata, never from the generation time.
 | engines | pyxsd, xmlschema |
 | timeout_seconds | 180.0 |
 | jobs | 8 |
-| command | python tests/report_xsts.py --profile xsd11 --engine both --jobs 8 --timeout 180 --baseline tests/xsts/baseline-xsd11.toml --write-baseline tests/xsts/baseline-xsd11.toml --json |
-| source_revision | 9b346107604492e10b8a3ab59230fafea41eb240 |
+| command | python tests/report_xsts.py --profile xsd11 --engine both --jobs 8 --timeout 180 --write-baseline tests/xsts/baseline-xsd11.toml |
+| source_revision | bd70ef5c27688215007ca33210bf48aa0e59a783 |
 | corpus_revision | 7bc3365c652a322f3d762021b3879eb92dae7e30 |
 | python_version | 3.11.16 |
 | platform | macOS-27.0.1-arm64-arm-64bit |
 | engine_versions | elementpath==5.1.4, pyxsd==1.2.1, xmlschema==4.3.2 |
-| run_completed_at | 2026-11-01T07:49:24.408858+00:00 |
+| run_completed_at | 2026-11-01T18:21:47.557518+00:00 |
 
 ### XSD 1.0
 
@@ -52,13 +52,13 @@ baseline metadata, never from the generation time.
 | engines | pyxsd |
 | timeout_seconds | 180.0 |
 | jobs | 8 |
-| command | python tests/report_xsts.py --profile xsd10 --engine pyxsd --jobs 8 --timeout 180 --baseline tests/xsts/baseline-xsd10.toml --write-baseline tests/xsts/baseline-xsd10.toml --json |
-| source_revision | 9b346107604492e10b8a3ab59230fafea41eb240 |
+| command | python tests/report_xsts.py --profile xsd10 --engine pyxsd --jobs 8 --timeout 180 --write-baseline tests/xsts/baseline-xsd10.toml |
+| source_revision | bd70ef5c27688215007ca33210bf48aa0e59a783 |
 | corpus_revision | 7bc3365c652a322f3d762021b3879eb92dae7e30 |
 | python_version | 3.11.16 |
 | platform | macOS-27.0.1-arm64-arm-64bit |
 | engine_versions | elementpath==5.1.4, pyxsd==1.2.1 |
-| run_completed_at | 2026-11-01T07:50:41.984922+00:00 |
+| run_completed_at | 2026-11-01T18:22:57.780381+00:00 |
 
 ## Outcomes and checked agreement
 
@@ -67,8 +67,8 @@ verdicts; every other outcome is outside the checked denominator.
 
 | Outcome | XSD 1.1 pyxsd | XSD 1.1 xmlschema | XSD 1.0 pyxsd |
 |:--|--:|--:|--:|
-| pass | 41,515 | 41,448 | 39,285 |
-| fail | 90 | 105 | 153 |
+| pass | 41,524 | 41,448 | 39,285 |
+| fail | 81 | 105 | 153 |
 | not-applicable | 107 | 107 | 2,258 |
 | not-checkable | 14 | 14 | 15 |
 | adapter-gap | 9 | 60 | 24 |
@@ -77,7 +77,7 @@ verdicts; every other outcome is outside the checked denominator.
 | error | 0 | 1 | 0 |
 | **Total** | 41,735 | 41,735 | 41,735 |
 | **Checked (pass + fail)** | 41,605 | 41,553 | 39,438 |
-| **Agreement on checked** | 99.7837% | 99.7473% | 99.6120% |
+| **Agreement on checked** | 99.8053% | 99.7473% | 99.6120% |
 
 ## Schema and instance splits
 
@@ -86,7 +86,7 @@ Cases and checked verdicts within each emitted test kind.
 | Profile | Engine | Kind | Cases | pass | fail | Checked | Agreement |
 |:--|:--|:--|--:|--:|--:|--:|--:|
 | XSD 1.1 | pyxsd | schema | 15,378 | 15,308 | 26 | 15,334 | 99.8304% |
-| XSD 1.1 | pyxsd | instance | 26,357 | 26,207 | 64 | 26,271 | 99.7564% |
+| XSD 1.1 | pyxsd | instance | 26,357 | 26,216 | 55 | 26,271 | 99.7906% |
 | XSD 1.1 | xmlschema | schema | 15,378 | 15,317 | 17 | 15,334 | 99.8891% |
 | XSD 1.1 | xmlschema | instance | 26,357 | 26,131 | 88 | 26,219 | 99.6644% |
 | XSD 1.0 | pyxsd | schema | 15,378 | 14,300 | 93 | 14,393 | 99.3539% |
@@ -101,8 +101,8 @@ corpus expectation and the observed verdict, never from a disposition.
 | Profile | Engine | Kind | False accepts | False rejects | No direction | Failures |
 |:--|:--|:--|--:|--:|--:|--:|
 | XSD 1.1 | pyxsd | schema | 24 | 2 | 0 | 26 |
-| XSD 1.1 | pyxsd | instance | 47 | 17 | 0 | 64 |
-| XSD 1.1 | pyxsd | **Total** | 71 | 19 | 0 | 90 |
+| XSD 1.1 | pyxsd | instance | 38 | 17 | 0 | 55 |
+| XSD 1.1 | pyxsd | **Total** | 62 | 19 | 0 | 81 |
 | XSD 1.1 | xmlschema | schema | 15 | 2 | 0 | 17 |
 | XSD 1.1 | xmlschema | instance | 68 | 20 | 0 | 88 |
 | XSD 1.1 | xmlschema | **Total** | 83 | 22 | 0 | 105 |
@@ -234,7 +234,7 @@ a case that starts passing leaves this view without a disposition edit.
 
 | Profile | Checked failures | Classified | Unclassified |
 |:--|--:|--:|--:|
-| XSD 1.1 | 90 | 42 | 48 |
+| XSD 1.1 | 81 | 33 | 48 |
 | XSD 1.0 | 153 | 22 | 131 |
 
 ### Reviewed disposition entries
@@ -243,7 +243,6 @@ a case that starts passing leaves this view without a disposition edit.
 |:--|:--|:--|--:|:--|
 | xsd10-regex-version-switch | version-switch-candidate | XSD 1.0 | 16 | XSD 1.0 regex grammar differences the corpus versions intentionally |
 | xsts-astral-regex-queried | queried-corpus | XSD 1.1 | 22 | Astral-plane XSD regex tests the corpus marks queried (W3C bug 4113) |
-| xsts-dtd-unparsed-entities | implementation-gap | XSD 1.1 | 9 | ENTITY/ENTITIES values cannot name DTD-declared unparsed entities |
 | xsts-type-only-root-xsi-type | implementation-gap | XSD 1.1, XSD 1.0 | 12 | Document roots governed only by xsi:type have no global element declaration |
 | xsts-xml11-lexer-floor | platform-limit | XSD 1.1 | 5 | XML 1.1 documents cannot be lexed by the expat-based parser |
 
@@ -262,15 +261,6 @@ reviewed disposition claims the case.
 | XSD 1.1 | Complex/complex017/complex017.xsd | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | Complex/complex018/complex018.xsd | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | ConditionalInclusion/s4_2_2si01/s4_2_2si01s | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | Id/id017/id017.n01.xml | instance | fail | same-invalid | xsts-dtd-unparsed-entities |
-| XSD 1.1 | Id/id018/id018.n01.xml | instance | fail | same-invalid | xsts-dtd-unparsed-entities |
-| XSD 1.1 | Id/id018/id018.n02.xml | instance | fail | same-invalid | xsts-dtd-unparsed-entities |
-| XSD 1.1 | Id/id019/id019.n01.xml | instance | fail | same-invalid | xsts-dtd-unparsed-entities |
-| XSD 1.1 | Id/id019/id019.n02.xml | instance | fail | same-invalid | xsts-dtd-unparsed-entities |
-| XSD 1.1 | Id/id020/id020.n01.xml | instance | fail | same-invalid | xsts-dtd-unparsed-entities |
-| XSD 1.1 | Id/id020/id020.n02.xml | instance | fail | same-invalid | xsts-dtd-unparsed-entities |
-| XSD 1.1 | Id/id021/id021.n01.xml | instance | fail | same-invalid | xsts-dtd-unparsed-entities |
-| XSD 1.1 | Id/id021/id021.n02.xml | instance | fail | same-invalid | xsts-dtd-unparsed-entities |
 | XSD 1.1 | MS-Additional2006-07-15/addB142/addB142.i | instance | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-Additional2006-07-15/addB159/addB159.i | instance | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-Additional2006-07-15/addB161/addB161.i | instance | fail | same-invalid | unclassified |
