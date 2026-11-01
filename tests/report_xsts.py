@@ -16,20 +16,29 @@ and 99.61% of XSD 1.0.  Run it locally when changing schema handling.
 ``--write-baseline`` rewrites the whole file: never regenerate wholesale to
 make a gate green -- move only the entries an intentional behavior change
 actually flips, in that change's commit.
+
+Every run also records provenance -- profile, engines, timeout, jobs, the
+exact command, source and corpus revisions, versions, and a UTC completion
+timestamp -- in ``--json`` output (``provenance``) and in baselines written
+by ``--write-baseline`` (``[meta]``).  ``complete = false`` marks a
+``--filter``/``--limit`` slice; the metadata, not a refusal, identifies it.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from xsts import baseline, report
 from xsts.drivers import PyXSDDriver, XmlSchemaDriver
+from xsts.provenance import collect_provenance
 from xsts.runner import (
     Runner,
     build_cases,
@@ -39,6 +48,11 @@ from xsts.runner import (
     run_parallel,
 )
 from xsts.selection import PROFILES
+
+
+def reproducible_command(argv: Sequence[str]) -> str:
+    """The canonical command line for a run, rebuilt from the raw arguments."""
+    return shlex.join(["python", "tests/report_xsts.py", *argv])
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -90,7 +104,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    args = parse_args(raw_argv)
     if args.enforce and args.baseline is None:
         print("--enforce requires --baseline", file=sys.stderr)
         return 2
@@ -109,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         cases = [case for case in cases if args.filter in case.test_id]
     if args.limit is not None:
         cases = cases[: args.limit]
+    complete = args.filter is None and args.limit is None
 
     if args.list_only:
         print(f"{len(cases)} cases would run under profile {profile.name}")
@@ -116,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_logging()
     oracle_enabled = args.engine in ("xmlschema", "both")
+    selected_engines = {
+        "pyxsd": ["pyxsd"],
+        "xmlschema": ["xmlschema"],
+        "both": ["pyxsd", "xmlschema"],
+    }[args.engine]
 
     with tempfile.TemporaryDirectory(prefix="pyxsd-xsts-") as workdir:
         if args.jobs > 1:
@@ -158,18 +179,25 @@ def main(argv: list[str] | None = None) -> int:
         diff = baseline.diff(baseline.load(args.baseline), report.results_to_keys(results))
     summary = report.summarize(results, diff=diff)
 
+    provenance = collect_provenance(
+        profile=profile.name,
+        suite_file="suite.xml",
+        case_count=len(cases),
+        complete=complete,
+        engines=selected_engines,
+        timeout=args.timeout,
+        jobs=args.jobs,
+        command=reproducible_command(raw_argv),
+    )
+
     if args.write_baseline is not None:
-        meta = {
-            "profile": profile.name,
-            "case_count": len(cases),
-        }
-        baseline.save(args.write_baseline, report.results_to_keys(results), meta)
+        baseline.save(args.write_baseline, report.results_to_keys(results), provenance)
         print(
             f"wrote baseline with {len(results)} entries to {args.write_baseline}", file=sys.stderr
         )
 
     if args.json:
-        print(report.render_json(summary))
+        print(report.render_json(summary, provenance=provenance))
     else:
         print(report.render_text(summary, max_failures=args.max_failures))
 

@@ -95,6 +95,31 @@ it changes what future runs treat as the status quo.
 The baseline is a large generated file; review it by looking at the change
 count and the `regression`/`improvement` breakdown, not by reading every line.
 
+## Run metadata
+
+Every run records how it was produced, both in `--json` output (under
+`provenance`) and in baselines written with `--write-baseline` (under
+`[meta]`): `profile`, `suite_file`, `case_count`, `complete`, `engines`,
+`timeout_seconds`, `jobs`, `command`, `source_revision`, `corpus_revision`,
+`python_version`, `platform`, `engine_versions`, and `run_completed_at`.
+
+- `source_revision` is the repository commit; `corpus_revision` is the pinned
+  submodule commit recorded for `tests/xsts/corpus`.
+- `command` is rebuilt from the raw argument list, so a slice can be re-run
+  exactly as it was recorded.
+- `engine_versions` lists `name==version` strings: pyxsd and elementpath
+  always, and xmlschema only when it was selected and installed.
+- `run_completed_at` is the UTC timestamp captured when the run finished.
+  Timestamps come from the run, never from report generation, so rebuilding
+  output from a baseline stays deterministic.
+
+`complete` is true only for a run with no `--filter` and no `--limit` — the
+whole `suite.xml` profile (41,735 cases per profile). A filtered or limited
+slice records `complete = false` with its own `case_count` and `command`.
+Writing a baseline from a slice is still allowed; the `complete = false`
+metadata is what identifies it as partial, so prefer regenerating the
+checked-in baselines from complete runs.
+
 ## Scope and honest limits
 
 Passing this suite is evidence, not certification:
@@ -130,12 +155,14 @@ The corpus submodule is cached by its pinned commit, so repeat dispatches skip
 the clone. Regenerate a baseline locally only after reviewing the diff:
 
 ```bash
-uv run python tests/report_xsts.py --profile xsd11 --engine pyxsd --timeout 180 \
+uv run python tests/report_xsts.py --profile xsd11 --engine both --timeout 180 \
     --write-baseline tests/xsts/baseline-xsd11.toml
 uv run python tests/report_xsts.py --profile xsd10 --engine pyxsd --timeout 180 \
     --write-baseline tests/xsts/baseline-xsd10.toml
 ```
 
-`baseline-xsd11.toml` records both engines; `baseline-xsd10.toml` records
-pyxsd only, so keep `--engine pyxsd` for the XSD 1.0 gate (or regenerate it
-with both engines first).
+`baseline-xsd11.toml` records both engines and must be regenerated with
+`--engine both` (a pyxsd-only rewrite would drop every recorded xmlschema
+entry); `baseline-xsd10.toml` records pyxsd only. The dispatch gate may still
+enforce either baseline with `--engine pyxsd`: enforcement ignores unobserved
+keys, so the recorded oracle entries still anchor the comparison.
