@@ -622,11 +622,18 @@ def test_truncated_nonseekable_prolog_is_reported_by_the_ordinary_parser(
     tmp_path: Path,
 ) -> None:
     from pyxsd.exceptions import PyXSDError
+    from pyxsd.xml_policy import XmlLimits
 
     schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
 
+    # The capped collector reads to EOF without crossing the budget, so
+    # the empty-read arm of the adapter runs and collection still defers
+    # the malformed-prolog diagnosis to the ordinary parser.
     with pytest.raises(PyXSDError, match="not well-formed"):
-        schema.parse(NonSeekableBytes(b"<!DOCTYPE r [<!ENTITY a"))
+        schema.parse(
+            NonSeekableBytes(b"<!DOCTYPE r [<!ENTITY a"),
+            xml_limits=XmlLimits(max_bytes=128),
+        )
 
 
 def test_replay_reader_reconstructs_the_document_exactly() -> None:
@@ -706,3 +713,147 @@ def test_reaches_guard_ignores_non_type_candidates() -> None:
     from pyxsd.schema import _reaches_unparsed_entity_types
 
     assert _reaches_unparsed_entity_types("not-a-type", set()) is False
+
+
+# ---------------------------------------------------------------------------
+# Byte-budget boundary: declaration collection honours xml_limits.max_bytes
+# ---------------------------------------------------------------------------
+
+
+class CollectorReadSpy:
+    """Counts the bytes the declaration collector reads from its source."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.collector_read = 0
+        self.real = pyxsd.schema.collect_document_declarations
+        spy = self
+
+        class Counting:
+            def __init__(self, source: Any) -> None:
+                self._source = source
+
+            def read(self, size: int = -1) -> Any:
+                data = self._source.read(size)
+                spy.collector_read += len(data)
+                return data
+
+        def counted(source: Any, *, policy: Any) -> DocumentDeclarations | None:
+            return spy.real(Counting(source), policy=policy)
+
+        monkeypatch.setattr(pyxsd.schema, "collect_document_declarations", counted)
+
+
+def test_nonseekable_collection_is_capped_by_max_bytes(tmp_path: Path, monkeypatch) -> None:
+    from pyxsd import dtd_declarations
+    from pyxsd.resource_policy import ResourcePolicyError
+    from pyxsd.xml_policy import XmlLimits
+
+    monkeypatch.setattr(dtd_declarations, "_CHUNK_SIZE", 32)
+    spy = CollectorReadSpy(monkeypatch)
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    padding = "<!--" + ("p" * 400) + "-->"
+    instance = f"{doctype('r', ('alpha',))}{padding}<r>alpha</r>".encode()
+
+    # The prolog alone crosses the budget: collection must stop at the
+    # cap, and the ordinary parser reports the standard limit failure.
+    with pytest.raises(ResourcePolicyError, match="max_bytes"):
+        schema.parse(BareReader(instance), xml_limits=XmlLimits(max_bytes=100))
+
+    assert spy.collector_read <= 100 + 32
+
+
+def test_seekable_rewind_collection_is_capped_by_max_bytes(tmp_path: Path, monkeypatch) -> None:
+    from pyxsd import dtd_declarations
+    from pyxsd.xml_policy import XmlLimits
+
+    monkeypatch.setattr(dtd_declarations, "_CHUNK_SIZE", 32)
+    spy = CollectorReadSpy(monkeypatch)
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    instance = f"{doctype('r', ('alpha',))}<r>alpha</r>".encode()
+    filler = b"<!--" + (b"f" * 512) + b"-->"  # a rootless oversized prolog
+
+    class GrownOnRewind:
+        """A seekable source whose bytes changed once collection rewinds."""
+
+        def __init__(self) -> None:
+            self._serving = io.BytesIO(instance)
+
+        def read(self, size: int = -1) -> bytes:
+            return self._serving.read(size)
+
+        def seekable(self) -> bool:
+            return True
+
+        def tell(self) -> int:
+            return self._serving.tell()
+
+        def seek(self, offset: int, whence: int = 0) -> None:
+            if offset == 0 and whence == 0:
+                self._serving = io.BytesIO(filler)
+            else:
+                self._serving.seek(offset, whence)
+
+    document = schema.parse(GrownOnRewind(), xml_limits=XmlLimits(max_bytes=len(instance)))
+
+    assert not document.report.has_errors
+    assert spy.collector_read <= len(instance) + 32
+
+
+def test_top_level_limits_reach_element_collection(tmp_path: Path, monkeypatch) -> None:
+    from pyxsd import dtd_declarations
+    from pyxsd.xml_policy import XmlLimits
+
+    monkeypatch.setattr(dtd_declarations, "_CHUNK_SIZE", 32)
+    spy = CollectorReadSpy(monkeypatch)
+    schema_path = write(tmp_path, "schema.xsd", _ENTITY_ROOT_XSD)
+    instance = f"{doctype('r', ('alpha',))}<r>alpha</r>".encode()
+    # The caller's budget must cover both the schema document and the
+    # instance; the oversized replacement prolog is far beyond it.
+    filler = b"<!--" + (b"f" * 8192) + b"-->"
+
+    class GrownOnRewind(io.RawIOBase):
+        """Seekable: the real document first, oversized bytes after seek(0)."""
+
+        def __init__(self) -> None:
+            self._serving = io.BytesIO(instance)
+
+        def readable(self) -> bool:
+            return True
+
+        def seekable(self) -> bool:
+            return True
+
+        def read(self, size: int = -1) -> bytes:
+            return self._serving.read(size)
+
+        def tell(self) -> int:
+            return self._serving.tell()
+
+        def seek(self, target: int, whence: int = 0) -> int:
+            if target == 0 and whence == 0:
+                self._serving = io.BytesIO(filler)
+                return 0
+            return self._serving.seek(target, whence)
+
+    document = parse(GrownOnRewind(), xsd=schema_path, xml_limits=XmlLimits(max_bytes=4096))
+
+    # Evidence degrades to lexical-only (the re-read crossed the budget),
+    # but the collection itself never streamed past the caller's budget.
+    assert not document.report.has_errors
+    assert spy.collector_read <= 4096 + 32
+
+
+def test_collection_collects_normally_at_the_exact_byte_budget(tmp_path: Path, monkeypatch) -> None:
+    from pyxsd import dtd_declarations
+    from pyxsd.xml_policy import XmlLimits
+
+    monkeypatch.setattr(dtd_declarations, "_CHUNK_SIZE", 32)
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+
+    valid = f"{doctype('r', ('alpha',))}<r>alpha</r>".encode()
+    document = schema.parse(BareReader(valid), xml_limits=XmlLimits(max_bytes=len(valid)))
+    assert not document.report.has_errors
+
+    invalid = f"{doctype('r', ('alpha',))}<r>omega</r>".encode()  # same length
+    rejected = schema.parse(BareReader(invalid), xml_limits=XmlLimits(max_bytes=len(invalid)))
+    assert rejected.report.has_errors

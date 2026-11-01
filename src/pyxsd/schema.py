@@ -159,6 +159,49 @@ def _stream_is_seekable(stream: Any) -> bool:
     return seekable is not None and seekable()
 
 
+def _max_bytes(limits: XmlLimits | None) -> int | None:
+    """The byte budget ``limits`` declares, or ``None`` for unlimited."""
+    return None if limits is None else limits.max_bytes
+
+
+class _CollectionByteLimitReached(Exception):
+    """Declaration collection crossed the caller's ``max_bytes`` budget."""
+
+
+class _ByteCappedSource:
+    """Read adapter enforcing ``xml_limits.max_bytes`` during collection.
+
+    The semantic parse enforces the byte budget through its own limited
+    reader; this adapter guarantees the declaration read -- which happens
+    beside it, before or after the parse -- can never stream past the same
+    budget. Crossing the cap aborts collection (the caller degrades the
+    evidence to ``None``) while the ordinary parser stays responsible for
+    the standard limit failure. Chunks are measured the way
+    ``namespaces._ByteLimitedReader`` measures them: bytes by length,
+    text by its UTF-8 encoding.
+    """
+
+    def __init__(self, stream: Any, max_bytes: int) -> None:
+        self._stream = stream
+        self._remaining = max_bytes
+
+    def read(self, size: int = -1) -> Any:
+        data = self._stream.read(size)
+        if data:
+            measured = len(data.encode("utf-8")) if isinstance(data, str) else len(data)
+            self._remaining -= measured
+            if self._remaining < 0:
+                raise _CollectionByteLimitReached("declaration read exceeded max_bytes")
+        return data
+
+
+def _capped_for_collection(stream: Any, max_bytes: int | None) -> Any:
+    """Wrap *stream* for collection, or pass it through without a budget."""
+    if max_bytes is None:
+        return stream
+    return _ByteCappedSource(stream, max_bytes)
+
+
 class _PrologReplay:
     """A non-seekable stream that replays prolog bytes the collector read.
 
@@ -510,16 +553,17 @@ class Schema:
         return self._entity_declarations_needed
 
     def _collect_root_declarations(
-        self, root: ET.Element, policy: XmlParserPolicy
+        self, root: ET.Element, policy: XmlParserPolicy, max_bytes: int | None = None
     ) -> DocumentDeclarations | None:
         """Collect declaration evidence for an already-parsed *root*.
 
         The re-read source comes from the root's recorded provenance (a
         path to reopen, a seekable stream to rewind). This runs strictly
         after a successful instance parse, so any failure to re-read --
-        the source vanished, a rewind broke, a policy denial -- degrades
-        to ``None`` (lexical-only) instead of turning the parse into a
-        fatal read error. Roots without provenance (caller-supplied
+        the source vanished, a rewind broke, a policy denial, or the
+        re-read crossing ``max_bytes`` -- degrades to ``None``
+        (lexical-only) instead of turning the parse into a fatal read
+        error. Roots without provenance (caller-supplied
         elements, non-seekable discovery streams) return ``None``.
         """
         if not self._needs_entity_declarations():
@@ -530,11 +574,15 @@ class Schema:
         try:
             if isinstance(source, str):
                 with open(source, "rb") as stream:
-                    return collect_document_declarations(stream, policy=policy)
+                    return collect_document_declarations(
+                        _capped_for_collection(stream, max_bytes), policy=policy
+                    )
             marker = source.tell()
             try:
                 source.seek(0)
-                return collect_document_declarations(source, policy=policy)
+                return collect_document_declarations(
+                    _capped_for_collection(source, max_bytes), policy=policy
+                )
             finally:
                 source.seek(marker)
         except Exception:
@@ -647,7 +695,9 @@ class Schema:
             # bytes, so declaration evidence stays unavailable.
             return self._bind_tree(tree, xml, source_id=data.source_id)
         if isinstance(xml, ET.Element):
-            declarations = self._collect_root_declarations(xml, collection_policy)
+            declarations = self._collect_root_declarations(
+                xml, collection_policy, _max_bytes(xml_limits)
+            )
             return self._bind_tree(
                 xml,
                 xml,
@@ -664,10 +714,21 @@ class Schema:
         ):
             # A non-seekable stream cannot be reopened or rewound, so the
             # collector runs first and the semantic parser then consumes
-            # the replayed prolog followed by the remaining stream.
+            # the replayed prolog followed by the remaining stream. The
+            # collector never reads past the caller's byte budget: when
+            # the prolog alone crosses it, collection stops (evidence
+            # stays unavailable) and the semantic parser raises the
+            # standard limit failure over the replayed bytes.
             replay = _PrologReplay(xml)
-            declarations = collect_document_declarations(replay, policy=collection_policy)
-            replay.finish_collection()
+            try:
+                declarations = collect_document_declarations(
+                    _capped_for_collection(replay, _max_bytes(xml_limits)),
+                    policy=collection_policy,
+                )
+            except _CollectionByteLimitReached:
+                declarations = None
+            finally:
+                replay.finish_collection()
             parse_source = replay
         logger.debug("The XML file is being parsed by the ElementTree library...")
         try:
@@ -683,7 +744,9 @@ class Schema:
             raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
         logger.debug("XML file parsed by the ElementTree library successfully...")
         if declarations is None:
-            declarations = self._collect_root_declarations(tree, collection_policy)
+            declarations = self._collect_root_declarations(
+                tree, collection_policy, _max_bytes(xml_limits)
+            )
         return self._bind_tree(
             tree,
             original,
@@ -925,7 +988,11 @@ def parse(
     )
     if resource_policy is not None:
         return schema._bind_tree(tree, xml, source_id=source_id)
-    return schema.parse(tree)
+    # The caller's parser posture and budget were applied to the discovery
+    # parse above; they are handed to the element bind so the declaration
+    # re-read honors the same byte budget and effective policy (the
+    # pre-parsed element itself is never re-parsed).
+    return schema.parse(tree, xml_policy=xml_policy, xml_limits=xml_limits)
 
 
 def load_overlay_classes(
