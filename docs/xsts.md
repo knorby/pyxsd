@@ -194,9 +194,10 @@ The generated census shows any cases that still fail in either profile.
 [`xs:ENTITY`][entity] values must name unparsed entities declared in the
 instance document's DTD; [`xs:ENTITIES`][entities] is a nonempty list of those
 values. An `NCName` lexical check alone cannot establish that requirement.
-The ElementTree/Expat path does not retain the declaration information needed
-by pyxsd's datatype check. The failures in this cluster were therefore false
-accepts, not corpus errors. An unparsed entity declaration identifies an
+The residual mechanism was that the ElementTree/Expat path did not retain the
+declaration information needed by pyxsd's datatype check. The failures in this
+cluster were therefore false accepts, not corpus errors. An unparsed entity
+declaration identifies an
 external resource, but checking its name does not require fetching it.
 
 This is distinct from DTD validation and from internal parsed-entity
@@ -209,8 +210,8 @@ policies, not alternative DTD-validation modes. See {doc}`xsd-validation` and
 
 ### Other reviewed mechanisms
 
-The classified XSD 1.0 regex schema failures in this cluster are version-switch
-candidates within the intentional split: pyxsd accepts grammar that the
+The classified XSD 1.0 regex schema failures in this cluster were version-switch
+candidates within the intentional split: pyxsd accepted grammar that the
 corpus expects rejected under 1.0. Compare the [1.0][regex10] and
 [1.1][regex11] regex definitions. The queried astral-plane regex cases link
 to [W3C bug 4113][bug4113]; challenged metadata is not permission to rewrite
