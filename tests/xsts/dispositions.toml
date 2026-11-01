@@ -1,0 +1,147 @@
+# Residual dispositions for checked-in XSTS failures.
+#
+# Contract (see tests/xsts/dispositions.py and the reporting design):
+# - A disposition explains a failure; it never rewrites an outcome. The raw
+#   checked denominator stays pass + fail and the headline agreement rate is
+#   always 100 * pass / (pass + fail).
+# - Validation reads only pyxsd: baseline keys, never xmlschema outcomes.
+# - Case IDs are explicit; no pattern may silently classify a new failure.
+#   Every failure not listed here stays visibly unclassified in the census.
+# - Entries explain only current failures in generated reports. A case that
+#   starts passing leaves the active report without an edit to this file.
+# - `links` carries public specification/upstream URLs only; internal
+#   adjudication paths appear as comments, never in emitted data.
+# - Categories come from the closed vocabulary: implementation-gap,
+#   version-switch-candidate, platform-limit, queried-corpus,
+#   spec-correct-divergence, adapter-limit.
+
+# Adjudication: docs/superpowers/2026-09-20-xsts-dtd-review.md (residual
+# audit, "XSD-regex astral" cluster). The corpus itself marks all 22
+# instance tests status="queried" against W3C bug 4113.
+[[dispositions]]
+id = "xsts-astral-regex-queried"
+title = "Astral-plane XSD regex tests the corpus marks queried (W3C bug 4113)"
+category = "queried-corpus"
+profiles = ["xsd11"]
+cases = [
+  "MS-Regex2006-07-15/reJ11/reJ11.i",
+  "MS-Regex2006-07-15/reJ13/reJ13.i",
+  "MS-Regex2006-07-15/reJ19/reJ19.i",
+  "MS-Regex2006-07-15/reJ21/reJ21.i",
+  "MS-Regex2006-07-15/reJ23/reJ23.i",
+  "MS-Regex2006-07-15/reJ25/reJ25.i",
+  "MS-Regex2006-07-15/reJ29/reJ29.i",
+  "MS-Regex2006-07-15/reJ31/reJ31.i",
+  "MS-Regex2006-07-15/reJ33/reJ33.i",
+  "MS-Regex2006-07-15/reJ35/reJ35.i",
+  "MS-Regex2006-07-15/reJ61/reJ61.i",
+  "MS-Regex2006-07-15/reJ69/reJ69.i",
+  "MS-Regex2006-07-15/reJ75/reJ75.i",
+  "MS-Regex2006-07-15/reJ77/reJ77.i",
+  "MS-Regex2006-07-15/reL98/reL98.i",
+  "MS-Regex2006-07-15/reL99/reL99.i",
+  "MS-Regex2006-07-15/reM98/reM98.i",
+  "MS-Regex2006-07-15/reN99/reN99.i",
+  "MS-Regex2006-07-15/reS21/reS21.i",
+  "MS-Regex2006-07-15/reS42/reS42.i",
+  "MS-Regex2006-07-15/reT63/reT63.i",
+  "MS-Regex2006-07-15/reT84/reT84.i",
+]
+links = ["https://www.w3.org/Bugs/Public/show_bug.cgi?id=4113"]
+rationale = "The corpus expects these instances invalid while marking each test queried against W3C bug 4113: the XSD regex language defines character classes over Unicode code points, and the corpus expectations predate clarification of astral-plane characters. pyxsd and the xmlschema oracle both accept the documents, so the failures are recorded as a queried-corpus disposition rather than a pyxsd defect. The raw failures stay in the checked denominator."
+
+# Adjudication: docs/superpowers/2026-09-20-xsts-dtd-review.md, section 3
+# ("The DTD gap, precisely").
+[[dispositions]]
+id = "xsts-dtd-unparsed-entities"
+title = "ENTITY/ENTITIES values cannot name DTD-declared unparsed entities"
+category = "implementation-gap"
+profiles = ["xsd11"]
+cases = [
+  "Id/id017/id017.n01.xml",
+  "Id/id018/id018.n01.xml",
+  "Id/id018/id018.n02.xml",
+  "Id/id019/id019.n01.xml",
+  "Id/id019/id019.n02.xml",
+  "Id/id020/id020.n01.xml",
+  "Id/id020/id020.n02.xml",
+  "Id/id021/id021.n01.xml",
+  "Id/id021/id021.n02.xml",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema11-2/#ENTITY",
+  "https://www.w3.org/TR/xmlschema11-2/#ENTITIES",
+]
+rationale = "XSD requires xs:ENTITY and xs:ENTITIES values to name unparsed entities declared in the document's DTD. pyxsd parses through ElementTree/expat, which discards declaration-level DTD information, so only the lexical form is validated and these expected-invalid Saxon Id instances are false accepts. The xmlschema oracle fails the same nine. A candidate fix (an expat internal-subset declaration pre-pass) is tracked in the DTD review; until then this is a genuine implementation gap, not a corpus error."
+
+# Adjudication: docs/superpowers/2026-09-20-xsts-dtd-review.md, section 3
+# tail ("The adjacent-but-different XML 1.1 floor").
+[[dispositions]]
+id = "xsts-xml11-lexer-floor"
+title = "XML 1.1 documents cannot be lexed by the expat-based parser"
+category = "platform-limit"
+profiles = ["xsd11"]
+cases = [
+  "XmlVersions/xv001/xv001.v01.xml",
+  "XmlVersions/xv003/xv003.v01.xml",
+  "XmlVersions/xv004/xv004.v01.xml",
+  "XmlVersions/xv006/xv006.v01.xml",
+  "XmlVersions/xv008/xv008.v01.xml",
+]
+links = [
+  "https://www.w3.org/TR/REC-xml11/",
+  "https://docs.python.org/3/library/xml.parsers.expat.html",
+]
+rationale = "These instances are well-formed XML 1.1 documents using name characters or character references that XML 1.0 lexing rejects. CPython's expat, which pyxsd's parse path builds on, is an XML 1.0-only lexer, so binding fails before schema assessment; the xmlschema oracle fails four of the five identically. Supporting XML 1.1 would require a different lexer, which is a platform limitation, not an XSD conformance defect. This is independent of pyxsd's XSD 1.0/1.1 processor modes."
+
+# Adjudication: docs/superpowers/2026-10-31-xsts-type-only-root-xsi-type.md
+# (deferred implementation tracker; the six IDs fail in both profiles).
+[[dispositions]]
+id = "xsts-type-only-root-xsi-type"
+title = "Document roots governed only by xsi:type have no global element declaration"
+category = "implementation-gap"
+profiles = ["xsd10", "xsd11"]
+cases = [
+  "CType/targetns00101m/targetNS00101m1_p",
+  "SType/st_name00401m/ST_name00401m1_p",
+  "SType/st_targetns00101m/ST_targetNS00101m1_p",
+  "SType/st_targetns00101m/ST_targetNS00101m2_p",
+  "SType/st_targetns00201m/ST_targetNS00201m1_p",
+  "MS-Additional2006-07-15/addB187/addB187.v",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema11-1/structures.html#cvc-assess-elt",
+]
+rationale = "Each schema defines named types but no global element declaration matching the instance root; the root carries xsi:type naming the governing type. XSD 1.1 Structures cvc-assess-elt allows strict assessment against an instance-specified type definition when no governing element declaration exists, but pyxsd's bind_instance rejects the root as unknown before xsi:type dispatch runs. These are false rejects in both profiles and stay raw failures; the deferred tracker records the type-only-root design and acceptance controls."
+
+# Adjudication: docs/superpowers/specs/2026-10-31-xsts-conformance-reporting-design.md
+# ("XSD 1.0 reporting decision"): sixteen regex schema cases inside the 71
+# invalid-in-1.0/valid-in-1.1 corpus version split.
+[[dispositions]]
+id = "xsd10-regex-version-switch"
+title = "XSD 1.0 regex grammar differences the corpus versions intentionally"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "MS-Regex2006-07-15/reF20/reF20",
+  "MS-Regex2006-07-15/reF21/reF21",
+  "MS-Regex2006-07-15/reF22/reF22",
+  "MS-Regex2006-07-15/reF23/reF23",
+  "MS-Regex2006-07-15/reG26/reG26",
+  "MS-Regex2006-07-15/reG27/reG27",
+  "MS-Regex2006-07-15/reG28/reG28",
+  "MS-Regex2006-07-15/reG29/reG29",
+  "MS-Regex2006-07-15/reG30/reG30",
+  "MS-Regex2006-07-15/reG31/reG31",
+  "MS-Regex2006-07-15/reG32/reG32",
+  "MS-Regex2006-07-15/reG33/reG33",
+  "MS-Regex2006-07-15/reH19/reH19",
+  "MS-Regex2006-07-15/reH20/reH20",
+  "MS-Regex2006-07-15/reH21/reH21",
+  "MS-Regex2006-07-15/reK88/reK88",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-2/#regexs",
+  "https://www.w3.org/TR/xmlschema11-2/#regexs",
+]
+rationale = "The corpus expects each of these schema documents invalid under XSD 1.0 and valid under XSD 1.1 (for example, character-class and Unicode-block constructs the 1.1 regex grammar liberalized). pyxsd's XSD 1.0 mode compiles them, so the xsd10 run applies 1.1 regex semantics where the corpus expects a 1.0 verdict. They belong to the intentional corpus version split and are candidates for version-specific regex-grammar work, not accepted passes; the raw xsd10 failures remain in the checked denominator."

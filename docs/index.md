@@ -34,7 +34,10 @@ binding
 extensions
 transforms/index
 supported
+xsd-validation
+xsts
 comparison-xmlschema
+comparison-libxml2
 api
 integrations
 data-workflows

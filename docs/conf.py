@@ -31,7 +31,8 @@ extensions = [
 templates_path = ["_templates"]
 # superpowers/ holds untracked local working notes; excluding it keeps
 # local -W builds clean when the directory is present.
-exclude_patterns = ["_build", "superpowers/**", "_templates", "_static"]
+# generated/ contains include-only fragments, not standalone source documents.
+exclude_patterns = ["_build", "superpowers/**", "generated/**", "_templates", "_static"]
 
 # --- MyST -----------------------------------------------------------------
 myst_enable_extensions = [
