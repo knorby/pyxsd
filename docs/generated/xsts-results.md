@@ -229,7 +229,7 @@ a case that starts passing leaves this view without a disposition edit.
 | xsd10-anyuri-value-space | version-switch-candidate | XSD 1.0 | 4 | XSD 1.0 anyURI value space is not enforced |
 | xsd10-attribute-group-circularity | version-switch-candidate | XSD 1.0 | 4 | XSD 1.0 forbids circular attributeGroup references outside redefine |
 | xsd10-attribute-wildcard-errata | version-switch-candidate | XSD 1.0 | 1 | XSD 1.0 attribute wildcard intersection and union errata case |
-| xsd10-complex-content-from-simple-content | spec-correct-divergence | XSD 1.0 | 1 | complexContent from simpleContent conflicts with the XSD 1.0 derivation rule |
+| xsd10-complex-content-from-simple-content | version-switch-candidate | XSD 1.0 | 1 | XSD 1.0 accepts an empty complexContent extension of a simpleContent base |
 | xsd10-conditional-inclusion | version-switch-candidate | XSD 1.0 | 1 | XSD 1.0 profile does not evaluate vc: conditional inclusion |
 | xsd10-float-double-positive-inf | version-switch-candidate | XSD 1.0 | 2 | XSD 1.0 float and double lexical spaces reject +INF |
 | xsd10-id-value-constraints | version-switch-candidate | XSD 1.0 | 15 | XSD 1.0 must reject value constraints on ID-typed elements and attributes |

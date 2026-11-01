@@ -526,15 +526,17 @@ rationale = "These four schemas are expected valid under XSD 1.0 and invalid und
 # ("xsd10-complex-content-from-simple-content").
 [[dispositions]]
 id = "xsd10-complex-content-from-simple-content"
-title = "complexContent from simpleContent conflicts with the XSD 1.0 derivation rule"
-category = "spec-correct-divergence"
+title = "XSD 1.0 accepts an empty complexContent extension of a simpleContent base"
+category = "version-switch-candidate"
 profiles = ["xsd10"]
 cases = ["MS-Particles2006-07-15/particlesZ031/particlesZ031"]
 links = [
+  "https://www.w3.org/TR/xmlschema-1/#Complex_Type_Definitions",
   "https://www.w3.org/TR/xmlschema-1/#cos-ct-extends",
+  "https://www.w3.org/TR/xmlschema11-1/#cos-ct-extends",
   "https://www.w3.org/Bugs/Public/show_bug.cgi?id=15629",
 ]
-rationale = "particlesZ031 expects the schema valid under XSD 1.0 and invalid under XSD 1.1, but the group annotation says deriving complexContent from simpleContent is not allowed in XSD 1.0, and XSD 1.0 Structures 3.4.6.2 Derivation Valid (Extension) clause 1.4 supports that: a complexContent extension that adds no particle cannot extend a base whose content type is a simple type definition. Bug 15629 resolved duplicate expected elements by selecting valid in 1.0 and invalid in 1.1. pyxsd rejects in both profiles: its 1.0 rejection matches the annotation and the 1.0 rule, and its 1.1 rejection matches the selected invalid expectation. The 1.0 failure is a spec-correct divergence from the accepted corpus value, not a version-switch implementation gap."
+rationale = "particlesZ031 defines Type2 as a complexContent extension of Type1, a simpleContent type over xs:string, with no added particle. XSD 1.0 Structures 3.4.2's content-type mapping clause 3.2.1 assigns an extension with empty effective content the base type's content type, so Type2's 1.0 content type is Type1's simple type and Derivation Valid (Extension) 3.4.6 clause 1.4.1 holds; the corpus's valid-in-1.0 expectation is spec-consistent. XSD 1.1's 3.4.2 mapping clause 4.2.1 instead produces empty content, so the 1.1 Derivation Valid (Extension) 3.4.6 clause 1.4 does not hold and the schema is invalid, matching the corpus. pyxsd rejects in both profiles because report_complex_content_from_simple_base is not version-gated, so its 1.0 rejection is a version-switch gap. Bug 15629 resolved the duplicate expected elements to this valid-in-1.0/invalid-in-1.1 pair."
 
 # Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
 # ("xsd10-conditional-inclusion").
