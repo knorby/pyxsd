@@ -101,6 +101,25 @@ DTD syntax and entity declarations are different decisions:
 - Any entity declaration is refused by `protected()` and `strict()`.
 - Any DOCTYPE at all is refused by `strict()`.
 
+For schemas that can validate `xs:ENTITY`/`xs:ENTITIES` values, pyxsd lazily
+collects unparsed (`NDATA`) entity declarations from the instance prolog and
+internal subset. It checks entity names, not the resources they identify;
+collection adds no external fetcher and never replaces the parser's security
+handlers. Schemas unrelated to these types skip the declaration-collection
+parse entirely. The profiles above keep the same behavior: `protected()`
+still refuses entity declarations, and `strict()` still refuses any DOCTYPE.
+
+An unretrieved external subset leaves declaration evidence incomplete. A
+name absent from the internal declarations then remains lexical-only, with
+one `dtd-external-skipped` advisory per document if a check needs the missing
+evidence. Caller-parsed trees and custom-policy parser results have no core
+declaration evidence and remain lexical-only. Top-level schema discovery
+from a non-seekable stream has the same limitation; this is not a security
+feature. A compiled `Schema.parse()` can instead replay that stream's prolog
+when declaration checking is needed. See {doc}`validation` for input and
+reread limitations. None of this performs DTD validation or hardens the
+default parser.
+
 The parser protections are Python-level declaration interception. They do not
 replace a patched Expat. Expat has had memory-safety and entity-expansion
 vulnerabilities, so run pyxsd on a current CPython patch release with the
