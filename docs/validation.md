@@ -155,8 +155,8 @@ Declaration evidence also depends on the input path:
   valid value declared in the original document stays valid, complete
   evidence still rejects an undeclared replacement, and an incomplete
   external subset keeps its advisory. A document parsed without evidence
-  (a caller-supplied `Element`, a custom policy parse) revalidates
-  lexical-only rather than inventing an empty declaration set.
+  (an `Element` without pyxsd source provenance, a custom policy parse)
+  revalidates lexical-only rather than inventing an empty declaration set.
 
 Collection preserves the selected parser's declaration guards; it never
 replaces security handlers. The default, protected, and strict profiles are
