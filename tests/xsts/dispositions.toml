@@ -145,3 +145,425 @@ links = [
   "https://www.w3.org/TR/xmlschema11-2/#regexs",
 ]
 rationale = "The corpus expects each of these schema documents invalid under XSD 1.0 and valid under XSD 1.1 (for example, character-class and Unicode-block constructs the 1.1 regex grammar liberalized). pyxsd's XSD 1.0 mode compiles them, so the xsd10 run applies 1.1 regex semantics where the corpus expects a 1.0 verdict. They belong to the intentional corpus version split and are candidates for version-specific regex-grammar work, not accepted passes; the raw xsd10 failures remain in the checked denominator."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("import-namespace-mismatch").
+[[dispositions]]
+id = "xsts-import-namespace-mismatch"
+title = "An import namespace that disagrees with the imported schema's target namespace is accepted"
+category = "implementation-gap"
+profiles = ["xsd10", "xsd11"]
+cases = ["MS-Schema2006-07-15/schF6/schF6"]
+links = ["https://www.w3.org/TR/xmlschema-1/#src-import"]
+rationale = "schF6_a.xsd imports namespace ns-c from schF6_c.xsd, whose targetNamespace is ns-a; schF6_b.xsd imports the same document as ns-a. XSD 1.0 Structures 4.2.6 clause 3.1 requires the import namespace to be identical to the resolved schema document's target namespace when the schemaLocation resolves. pyxsd composes the document and accepts the schema, so the expected-invalid case is a false accept. The direct-import audit checks component references, not the namespace identity of an import target; this is a separate import-resolution check."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("no-namespace-type-reference").
+[[dispositions]]
+id = "xsts-no-namespace-type-reference"
+title = "Unprefixed type references in a no-namespace schema resolve to same-named types in another namespace"
+category = "implementation-gap"
+profiles = ["xsd10", "xsd11"]
+cases = [
+  "MS-Schema2006-07-15/schF2/schF2.v",
+  "MS-Schema2006-07-15/schG2/schG2.v",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#src-resolve",
+  "https://www.w3.org/TR/xmlschema-1/#cElement_Declarations",
+]
+rationale = "schF2.v and schG2.v each bind a no-target-namespace document whose type=ct-A reference must resolve to the no-namespace ct-A declaration. pyxsd's merged lookup instead selects the same-local-name ct-A from ns-a or ns-b, so the valid instances are rejected against the wrong type (a1/a2 order and datatypes). The Task 4 import audit rejects an unimported namespace but does not make same-local-name lookups namespace-correct when the reference itself has no namespace."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("duplicate-global-element").
+[[dispositions]]
+id = "xsts-duplicate-global-element"
+title = "Duplicate global element declarations from two imported documents are accepted"
+category = "implementation-gap"
+profiles = ["xsd10", "xsd11"]
+cases = [
+  "MS-Schema2006-07-15/schG6/schG6",
+  "MS-Schema2006-07-15/schG11/schG11",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#Schemas",
+  "https://www.w3.org/Bugs/Public/show_bug.cgi?id=4133",
+]
+rationale = "schG6 imports two documents that both declare e1 and ct-A in ns-b; schG11 reaches two documents that both declare foo in ns-a through an import cycle. XSD 1.0 Structures 3.15.6 clause 2 forbids two components with the same name and target namespace. pyxsd composes both documents and skips duplicate-name checks for composed components, so it accepts. The corpus marks these queried under bug 4133 because schemaLocation is a hint and an implementation may not load the second document; pyxsd does load it, so the queried status explains why another implementation may differ, not why this composed schema is valid."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("duplicate-global-attribute-group").
+[[dispositions]]
+id = "xsts-duplicate-global-attribute-group"
+title = "Duplicate global attributeGroup declarations from two imported documents are accepted"
+category = "implementation-gap"
+profiles = ["xsd10", "xsd11"]
+cases = ["MS-AttributeGroup2006-07-15/attgB013/attgB013"]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#Schemas",
+  "https://www.w3.org/TR/xmlschema-1/#cAttribute_Group_Definitions",
+]
+rationale = "attgB013 imports two documents that both declare attributeGroup car in http://importedXSD. XSD 1.0 Structures 3.15.6 clause 2 applies to the attribute-group symbol space as well. pyxsd's composed-document duplicate-name exemption lets the second declaration coexist; unlike schG6 and schG11 this case carries no queried annotation."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("redefine-attribute-group-restriction").
+[[dispositions]]
+id = "xsts-redefine-attribute-group-restriction"
+title = "A redefined attribute group is not checked as a valid restriction of the original"
+category = "implementation-gap"
+profiles = ["xsd10", "xsd11"]
+cases = ["MS-AttributeGroup2006-07-15/attgC028/attgC028"]
+links = ["https://www.w3.org/TR/xmlschema-1/#src-redefine"]
+rationale = "attgC028 redefines attributeGroup foo (attributes att, att1, att2) with a reference to car (foo1, foo2). XSD 1.0 Structures 4.2.4 clause 7.2 requires the redefined group's attribute uses to be a valid restriction of the original, with no inheritance. pyxsd accepts because check_redefine_restrictions skips a non-self attributeGroup reference, so the expected-invalid schema is a false accept."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("redefine-attribute-group-merge").
+[[dispositions]]
+id = "xsts-redefine-attribute-group-merge"
+title = "A self-referential redefined attribute group can introduce duplicate attribute uses"
+category = "implementation-gap"
+profiles = ["xsd10", "xsd11"]
+cases = ["MS-AttributeGroup2006-07-15/attgD017/attgD017"]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#src-redefine",
+  "https://www.w3.org/TR/xmlschema-1/#cAttribute_Group_Definitions",
+]
+rationale = "attgD017 redefines attg by keeping its self-reference and adding attributeGroup attg1 and attribute ref foo; the original attg also references foo, so the composed group has duplicate foo uses. XSD 1.0 Structures 3.6.2 clause 2 forbids two attribute uses with the same expanded name. check_redefine_restrictions skips when an attribute ref is present, so pyxsd accepts the expected-invalid schema."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("redefine-simple-type-enforcement").
+[[dispositions]]
+id = "xsts-redefine-simple-type-enforcement"
+title = "A redefined simpleType's restriction is not enforced on instances"
+category = "implementation-gap"
+profiles = ["xsd10", "xsd11"]
+cases = ["MS-SimpleType2006-07-15/stZ033/stZ033.i"]
+links = ["https://www.w3.org/TR/xmlschema-1/#src-redefine"]
+rationale = "stZ033 redefines simpleType B with enumeration 3, but the schema compiles and the instance value 2 validates. XSD 1.0 Structures 4.2.4 clause 5 requires the redefining simpleType to restrict the original, and the resulting B must carry the new enumeration. The redefined-type construction after rebind_redefine_references does not enforce it."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("redefine-default-attributes-apply").
+[[dispositions]]
+id = "xsts-redefine-default-attributes-apply"
+title = "defaultAttributesApply on a redefined complexType does not reach the composed type"
+category = "implementation-gap"
+profiles = ["xsd11"]
+cases = ["defaultAttributesApply/s3_4_2_4ii06/s3_4_2_4ii06i"]
+links = [
+  "https://www.w3.org/TR/xmlschema11-1/#dcl.ctd.attuses",
+  "https://www.w3.org/TR/xmlschema11-1/#src-redefine",
+]
+rationale = "s3_4_2_4ii06 declares defaultAttributes tns:defaultAttrGroup and redefines c1 with defaultAttributesApply=false; the corpus, following bug 12129, expects the instance valid with dv:defaultAttr present. pyxsd rejects it as an unexpected, unparsed attribute, so the redefined type did not receive the effective default-attribute treatment. This is the XSD 1.1 default-attribute-group plus redefine seam, not the XSD 1.0 version deltas."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("circular-redefine-underspecified").
+[[dispositions]]
+id = "xsts-circular-redefine-underspecified"
+title = "Circular redefine groups remain accepted where the corpus expects invalid instances"
+category = "queried-corpus"
+profiles = ["xsd10", "xsd11"]
+cases = [
+  "MS-Schema2006-07-15/schU4/schU4.i",
+  "MS-Schema2006-07-15/schU5/schU5.i",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#src-redefine",
+  "https://www.w3.org/Bugs/Public/show_bug.cgi?id=4136",
+]
+rationale = "schU4 and schU5 form circular include/import/redefine graphs. The corpus records their schema expectations as indeterminate and annotates the groups that the WG decided the spec is underspecified in this area, so implementations may reasonably differ (bug 4136, resolved fixed with that metadata). The dependent instances expect invalid, but the definitions those instances see depend on the underspecified cycle handling. pyxsd emits a compose-cycle advisory and accepts. The failures stay raw; this is a queried expectation, not a confirmed defect."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("override-composition").
+[[dispositions]]
+id = "xsts-override-composition"
+title = "Circular and no-op xs:override documents are accepted"
+category = "implementation-gap"
+profiles = ["xsd11"]
+cases = [
+  "Override/over024/over024.bad.xsd",
+  "Override/over026/over026.bad.xsd",
+]
+links = ["https://www.w3.org/TR/xmlschema11-1/#src-override"]
+rationale = "over024 has two documents that override each other; over026 overrides nothing with zonedDate, so the override child is ignored and the remaining reference dangles. Both schemas are expected invalid under XSD 1.1 Structures 4.2.7, and pyxsd compiles both. The seam is splice_override and override pre-processing in schema_composition.py."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("identity-constraint-global-reference").
+[[dispositions]]
+id = "xsts-identity-constraint-global-reference"
+title = "A keyref refer QName can resolve to a non-global identity constraint"
+category = "implementation-gap"
+profiles = ["xsd10", "xsd11"]
+cases = ["MS-IdentityConstraint2006-07-15/idC019/idC019"]
+links = ["https://www.w3.org/TR/xmlschema-1/#cIdentity-constraint_Definitions"]
+rationale = "idC019.xsd declares a local xs:key named keyName inside root; the imported idC017a.xsd has keyref refer=keyName in diffNS. XSD 1.0 Structures 3.11.1 requires a keyref's referenced key to be an identity-constraint definition, a global key or unique component; the only keyName is local and not a valid target. The corpus records the unimported-QName decision as stable under bug 4057. pyxsd accepts because Keyref._checkRefer only checks that refer is non-empty."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-id-value-constraints").
+[[dispositions]]
+id = "xsd10-id-value-constraints"
+title = "XSD 1.0 must reject value constraints on ID-typed elements and attributes"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "ElemDecl/valueconstraint01001m2/valueConstraint01001m2",
+  "ElemDecl/valueconstraint01001m3/valueConstraint01001m3",
+  "ElemDecl/valueconstraint01001m5/valueConstraint01001m5",
+  "ElemDecl/valueconstraint01001m6/valueConstraint01001m6",
+  "MS-Additional2006-07-15/addB078/addB078",
+  "MS-Additional2006-07-15/addB078A/addB078A",
+  "MS-Additional2006-07-15/addB078B/addB078B",
+  "MS-Additional2006-07-15/isDefault060_2/isDefault060_2",
+  "MS-Additional2006-07-15/isDefault069/isDefault069",
+  "MS-Attribute2006-07-15/attZ013a/attZ013a",
+  "MS-Attribute2006-07-15/attZ013b/attZ013b",
+  "MS-DataTypes2006-07-15/dtZ107447_a_2245/dtZ107447_a_2245",
+  "MS-Element2006-07-15/elemZ032a/elemZ032a",
+  "MS-Element2006-07-15/elemZ032b/elemZ032b",
+  "MS-IdentityConstraint2006-07-15/idZ011/idZ011",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#cElement_Declarations",
+  "https://www.w3.org/TR/xmlschema-1/#cAttribute_Declarations",
+  "https://www.w3.org/TR/xmlschema11-1/#cElement_Declarations",
+  "https://www.w3.org/TR/xmlschema11-1/#cAttribute_Declarations",
+]
+rationale = "The corpus expects these schemas invalid under XSD 1.0 and valid under XSD 1.1 (category xsd1_1-ID-IDREF-DefaultValsForElemOrAttrOfTypeID). XSD 1.0 Structures 3.3.6 clause 5 and 3.2.6 clause 3 forbid a value constraint when the type is or is derived from ID; XSD 1.1 removed both restrictions and keeps only default-validity checks. pyxsd's XSD 1.0 mode accepts the schemas, so the failures are false accepts at the 1.0 version gate. The raw xsd10 failures remain in the checked denominator."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-multiple-id-attributes").
+[[dispositions]]
+id = "xsd10-multiple-id-attributes"
+title = "XSD 1.0 must reject multiple ID-typed attributes and duplicate ID values"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "ElemDecl/idconstrdefs00301m/idConstrDefs00301m2_n",
+  "MS-Attribute2006-07-15/attZ014a/attZ014a.i",
+  "MS-Attribute2006-07-15/attZ014b/attZ014b.i",
+  "MS-ComplexType2006-07-15/ctM004/ctM004",
+  "MS-Element2006-07-15/elemZ016/elemZ016.i",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#ct-props-correct",
+  "https://www.w3.org/TR/xmlschema-1/#cAttribute_Group_Definitions",
+  "https://www.w3.org/TR/xmlschema11-1/#ct-props-correct",
+  "https://www.w3.org/TR/xmlschema11-1/#sec-cvc-id",
+]
+rationale = "The corpus expects these schemas and instances invalid under XSD 1.0 and valid under XSD 1.1 (category xsd1_1-ID-IDREF-MultipleAttrsOfTypeID). XSD 1.0 Complex Type Definition Properties Correct clause 5 and Attribute Group Definition Properties Correct clause 3 forbid two distinct attribute uses both of type ID; XSD 1.1 removed both clauses and keeps only the same-expanded-name rule. XSD 1.1 Validation Root Valid (ID/IDREF) also permits multiple ID bindings that resolve to the same element. pyxsd's 1.0 mode accepts them."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-anyuri-value-space").
+[[dispositions]]
+id = "xsd10-anyuri-value-space"
+title = "XSD 1.0 anyURI value space is not enforced"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "MS-DataTypes2006-07-15/anyURI_a001_1336/anyURI_a001_1336",
+  "MS-DataTypes2006-07-15/anyURI_a003_1338/anyURI_a003_1338",
+  "MS-DataTypes2006-07-15/anyURI_b004_1354/anyURI_b004_1354",
+  "MS-DataTypes2006-07-15/anyURI_b006_1356/anyURI_b006_1356",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-2/#anyURI",
+  "https://www.w3.org/TR/xmlschema11-2/#anyURI",
+]
+rationale = "The corpus expects these schemas invalid under XSD 1.0 and valid under XSD 1.1 (category xsd1_1-Misc-AnyURIValueSpace; anyURI_a001 is the sibling TSTF decision under bug 15865). XSD 1.0 anyURI has a URI-reference value space; XSD 1.1 made its value space all strings. pyxsd's 1.0 mode accepts the 1.0-invalid schemas, so this is a version-gate gap in the anyURI datatype."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-float-double-positive-inf").
+[[dispositions]]
+id = "xsd10-float-double-positive-inf"
+title = "XSD 1.0 float and double lexical spaces reject +INF"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "MS-DataTypes2006-07-15/double018_1956/double018_1956.i",
+  "MS-DataTypes2006-07-15/float018_1917/float018_1917.i",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-2/#float",
+  "https://www.w3.org/TR/xmlschema11-2/#float",
+]
+rationale = "The corpus expects these instances invalid under XSD 1.0 and valid under XSD 1.1 (category xsd1_1-Misc-LexicalRepForFloatAndDouble). XSD 1.1 added +INF to the float and double lexical spaces; XSD 1.0 accepts only INF, -INF and NaN for infinities. pyxsd's 1.0 mode accepts +INF, so the instances are false accepts at the datatype version gate."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-year-zero").
+[[dispositions]]
+id = "xsd10-year-zero"
+title = "XSD 1.0 dateTime rejects year zero"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = ["MS-DataTypes2006-07-15/dateTime011_2008/dateTime011_2008.i"]
+links = [
+  "https://www.w3.org/TR/xmlschema-2/#dateTime",
+  "https://www.w3.org/TR/xmlschema11-2/#dateTime",
+]
+rationale = "The corpus expects this instance invalid under XSD 1.0 and valid under XSD 1.1 (category xsd1_1-DateTimeTypes-AllowYearZero). XSD 1.1 permits year 0000 in dateTime; XSD 1.0 does not. pyxsd's 1.0 mode accepts 0000-01-01T00:00:00, so the instance is a version-gate false accept."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-wildcard-upa-relaxation").
+[[dispositions]]
+id = "xsd10-wildcard-upa-relaxation"
+title = "XSD 1.0 UPA rejects element and wildcard competition"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "MS-Additional2006-07-15/addB121/addB121",
+  "MS-Additional2006-07-15/addB153/addB153",
+  "MS-Particles2006-07-15/particlesFb003/particlesFb003",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#cos-nonambig",
+  "https://www.w3.org/TR/xmlschema11-1/#cos-nonambig",
+]
+rationale = "The corpus expects these schemas invalid under XSD 1.0 and valid under XSD 1.1 (category xsd1_1-Wildcards-RelaxationOfUPA). XSD 1.0 Unique Particle Attribution forbids the element/wildcard competition they contain; XSD 1.1 relaxed UPA for that competition. pyxsd's 1.0 mode compiles the schemas, so the failures are 1.0 false accepts."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-all-group-relaxations").
+[[dispositions]]
+id = "xsd10-all-group-relaxations"
+title = "XSD 1.0 xs:all restrictions are not enforced"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "MGroup/particles00104m1/particles00104m1",
+  "MS-ModelGroups2006-07-15/mgA016/mgA016",
+  "MS-ModelGroups2006-07-15/mgO001/mgO001",
+  "MS-ModelGroups2006-07-15/mgO018/mgO018",
+  "MS-Schema2006-07-15/schL3/schL3",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#coss-modelGroup",
+  "https://www.w3.org/TR/xmlschema11-1/#coss-modelGroup",
+]
+rationale = "The corpus expects these schemas invalid under XSD 1.0 and valid under XSD 1.1 (categories xsd1_1-AllGroups-WildcardsAllowed, -DerivationByExtension and -NamedModelGroupRef; mgO001 and mgO018 cite bug 15926). XSD 1.0 All Group Limited forbids wildcards, named group references inside xs:all and extension from an xs:all base, and limits the zero-occurrence shapes the mgO cases exercise; XSD 1.1 relaxed them. pyxsd's 1.0 mode accepts them."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-intensional-restriction").
+[[dispositions]]
+id = "xsd10-intensional-restriction"
+title = "XSD 1.0 intensional restriction rules are not enforced"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "MS-Additional2006-07-15/addB118/addB118",
+  "MS-Group2006-07-15/groupH021v/groupH021v",
+  "MS-Particles2006-07-15/particlesHa161/particlesHa161",
+  "MS-Particles2006-07-15/particlesHb008/particlesHb008",
+  "MS-Particles2006-07-15/particlesHb011/particlesHb011",
+  "MS-Particles2006-07-15/particlesS002/particlesS002",
+  "MS-Particles2006-07-15/particlesT002/particlesT002",
+  "MS-Particles2006-07-15/particlesT009/particlesT009",
+  "MS-Particles2006-07-15/particlesZ001/particlesZ001.i",
+  "MS-Particles2006-07-15/particlesZ023/particlesZ023",
+  "MS-Particles2006-07-15/particlesZ024/particlesZ024",
+  "MS-Particles2006-07-15/particlesZ028/particlesZ028",
+  "MS-Schema2006-07-15/schL5/schL5",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#cos-particle-restrict",
+  "https://www.w3.org/TR/xmlschema11-1/#sec-derivation-ok-restriction",
+]
+rationale = "The corpus expects these schemas and one instance invalid under XSD 1.0 and valid under XSD 1.1 (category xsd1_1-RestrictionComplexTypes-IntensionalRestr). XSD 1.1's intensional restriction allows derivations that 1.0 rejected (pointless-particle elimination, all/choice/sequence recurrences and the RecurseAsIfGroup rule). pyxsd's 1.0 mode accepts them, so the failures are 1.0 false accepts at the particle-derivation gate."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-attribute-group-circularity").
+[[dispositions]]
+id = "xsd10-attribute-group-circularity"
+title = "XSD 1.0 forbids circular attributeGroup references outside redefine"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "MS-AttributeGroup2006-07-15/attgC010/attgC010",
+  "MS-AttributeGroup2006-07-15/attgC020/attgC020",
+  "MS-AttributeGroup2006-07-15/attgC031/attgC031",
+  "MS-AttributeGroup2006-07-15/attgD015/attgD015",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#cAttribute_Group_Definitions",
+  "https://www.w3.org/TR/xmlschema11-1/#cAttribute_Group_Definitions",
+]
+rationale = "The corpus expects these schemas invalid under XSD 1.0 and valid under XSD 1.1. XSD 1.0 Structures 3.6.3 clause 3 disallows direct and indirect circular attributeGroup references outside xs:redefine; XSD 1.1 explicitly allows them and takes the transitive closure. pyxsd's 1.0 mode accepts the circular groups, so the failures are 1.0 false accepts."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-inline-schema-composition").
+[[dispositions]]
+id = "xsd10-inline-schema-composition"
+title = "XSD 1.0 rejects a schema location or inline schema seen after an item from its target namespace"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "MS-Additional2006-07-15/addB156/addB156.i",
+  "MS-Additional2006-07-15/addB158/addB158.i",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#src-include",
+  "https://www.w3.org/TR/xmlschema11-1/#src-include",
+]
+rationale = "The corpus expects these instances invalid under XSD 1.0 and valid under XSD 1.1 (stable under bug 4078). The group documents an inline or schemaLocation schema encountered after an item from the schema's target namespace; the corpus records that ordering as an XSD 1.0 error removed in XSD 1.1. pyxsd's 1.0 mode accepts the instances. The reporting runner synthesizes a permissive schema for this group, and both cases are recorded as fail in the XSD 1.0 baseline."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-valid-type-constructs").
+[[dispositions]]
+id = "xsd10-valid-type-constructs"
+title = "XSD 1.0 mode rejects type constructs that XSD 1.0 accepts"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = [
+  "MS-Particles2006-07-15/particlesZ031/particlesZ031",
+  "MS-SimpleType2006-07-15/stE053/stE053",
+  "MS-SimpleType2006-07-15/stZ007/stZ007",
+  "MS-SimpleType2006-07-15/stZ047/stZ047",
+  "MS-SimpleType2006-07-15/stZ055/stZ055",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#Simple_Type_Definitions",
+  "https://www.w3.org/TR/xmlschema11-1/#Simple_Type_Definitions",
+]
+rationale = "These five schemas are expected valid under XSD 1.0 and invalid under XSD 1.1. pyxsd's 1.0 mode rejects them while its 1.1 mode accepts, so it applies a 1.1-only constraint in 1.0: a union member that is an xs:simpleType (stE053), a complexType renamed to anySimpleType and restricted (stZ007), anySimpleType as a substitution-group head (stZ047 and stZ055), and complexContent derived from simpleContent (particlesZ031). The corpus has no 1.1 category anchor for these; the expectations supply the direction."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-conditional-inclusion").
+[[dispositions]]
+id = "xsd10-conditional-inclusion"
+title = "XSD 1.0 profile does not evaluate vc: conditional inclusion"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = ["VC/vc024-11/vc024-11.xsd"]
+links = ["https://www.w3.org/TR/xmlschema11-1/#cip"]
+rationale = "The corpus expects this schema valid in both profiles because vc:facetAvailable=xs:assertion makes the xs:assert conditional and ignored by a processor without the xs:assertion facet (the annotation says the assertion is ignored under XSD 1.0). pyxsd does not evaluate vc: conditional inclusion, so its XSD 1.0 mode rejects the 1.1-only xs:assert while its XSD 1.1 mode accepts it. The corpus expectation is the intended conditional-inclusion behavior, so this is a version-gated implementation gap, not a corpus defect."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-unversioned-11-wildcard-vocabulary").
+[[dispositions]]
+id = "xsd10-unversioned-11-wildcard-vocabulary"
+title = "XSD 1.0 profile rejects unversioned XSD 1.1-only wildcard vocabulary that the corpus expects valid"
+category = "spec-correct-divergence"
+profiles = ["xsd10"]
+cases = [
+  "anyAttribute/s3_10_6ii01/s3_10_6v01s",
+  "anyAttribute/s3_10_6ii02/s3_10_6v02s",
+  "anyAttribute/s3_10_6ii04/s3_10_6v04s",
+  "wildcard/s3_10_1ii08/s3_10_1ii08s",
+  "wildcard/s3_10_1ii09/s3_10_1ii09s",
+]
+links = [
+  "https://www.w3.org/TR/xmlschema11-1/#Wildcard_details",
+  "https://www.w3.org/TR/xmlschema11-1/#coss-wildcard",
+]
+rationale = "These five tests use XSD 1.1-only wildcard vocabulary: xs:anyAttribute notQName and notNamespace, and the definedSibling namespace keyword. They carry no XSD 1.1 version token, so the xsd10 profile selects the same valid expectation as xsd11. pyxsd's XSD 1.0 mode correctly rejects vocabulary that does not exist in XSD 1.0 and its 1.1 mode accepts. The divergence is in corpus applicability metadata, not in the 1.0 processor, so this is a spec-correct divergence rather than a version-switch implementation gap."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-attribute-wildcard-errata").
+[[dispositions]]
+id = "xsd10-attribute-wildcard-errata"
+title = "XSD 1.0 attribute wildcard intersection and union errata case"
+category = "version-switch-candidate"
+profiles = ["xsd10"]
+cases = ["MS-Wildcards2006-07-15/wildZ013/wildZ013"]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#Wildcards",
+  "https://www.w3.org/TR/xmlschema11-1/#coss-wildcard",
+]
+rationale = "wildZ013 exercises the attribute-wildcard intersection and union rules of XSD 1.0 Errata E1-10 in a schema set; the corpus expects it invalid under XSD 1.0 and valid under XSD 1.1 (accepted, bug 15629). pyxsd's 1.0 mode accepts the schema, so it is a 1.0 false accept at the wildcard constraint."

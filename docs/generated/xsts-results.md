@@ -153,61 +153,61 @@ outcomes differ across profiles.
 
 | Case | Kind | Disposition |
 |:--|:--|:--|
-| ElemDecl/idconstrdefs00301m/idConstrDefs00301m2_n | instance | unclassified |
-| ElemDecl/valueconstraint01001m2/valueConstraint01001m2 | schema | unclassified |
-| ElemDecl/valueconstraint01001m3/valueConstraint01001m3 | schema | unclassified |
-| ElemDecl/valueconstraint01001m5/valueConstraint01001m5 | schema | unclassified |
-| ElemDecl/valueconstraint01001m6/valueConstraint01001m6 | schema | unclassified |
-| MGroup/particles00104m1/particles00104m1 | schema | unclassified |
-| MS-Additional2006-07-15/addB078/addB078 | schema | unclassified |
-| MS-Additional2006-07-15/addB078A/addB078A | schema | unclassified |
-| MS-Additional2006-07-15/addB078B/addB078B | schema | unclassified |
-| MS-Additional2006-07-15/addB118/addB118 | schema | unclassified |
-| MS-Additional2006-07-15/addB121/addB121 | schema | unclassified |
-| MS-Additional2006-07-15/addB153/addB153 | schema | unclassified |
-| MS-Additional2006-07-15/addB156/addB156.i | instance | unclassified |
-| MS-Additional2006-07-15/addB158/addB158.i | instance | unclassified |
-| MS-Additional2006-07-15/isDefault060_2/isDefault060_2 | schema | unclassified |
-| MS-Additional2006-07-15/isDefault069/isDefault069 | schema | unclassified |
-| MS-Attribute2006-07-15/attZ013a/attZ013a | schema | unclassified |
-| MS-Attribute2006-07-15/attZ013b/attZ013b | schema | unclassified |
-| MS-Attribute2006-07-15/attZ014a/attZ014a.i | instance | unclassified |
-| MS-Attribute2006-07-15/attZ014b/attZ014b.i | instance | unclassified |
-| MS-AttributeGroup2006-07-15/attgC010/attgC010 | schema | unclassified |
-| MS-AttributeGroup2006-07-15/attgC020/attgC020 | schema | unclassified |
-| MS-AttributeGroup2006-07-15/attgC031/attgC031 | schema | unclassified |
-| MS-AttributeGroup2006-07-15/attgD015/attgD015 | schema | unclassified |
-| MS-ComplexType2006-07-15/ctM004/ctM004 | schema | unclassified |
-| MS-DataTypes2006-07-15/anyURI_a001_1336/anyURI_a001_1336 | schema | unclassified |
-| MS-DataTypes2006-07-15/anyURI_a003_1338/anyURI_a003_1338 | schema | unclassified |
-| MS-DataTypes2006-07-15/anyURI_b004_1354/anyURI_b004_1354 | schema | unclassified |
-| MS-DataTypes2006-07-15/anyURI_b006_1356/anyURI_b006_1356 | schema | unclassified |
-| MS-DataTypes2006-07-15/dateTime011_2008/dateTime011_2008.i | instance | unclassified |
-| MS-DataTypes2006-07-15/double018_1956/double018_1956.i | instance | unclassified |
-| MS-DataTypes2006-07-15/dtZ107447_a_2245/dtZ107447_a_2245 | schema | unclassified |
-| MS-DataTypes2006-07-15/float018_1917/float018_1917.i | instance | unclassified |
-| MS-Element2006-07-15/elemZ016/elemZ016.i | instance | unclassified |
-| MS-Element2006-07-15/elemZ032a/elemZ032a | schema | unclassified |
-| MS-Element2006-07-15/elemZ032b/elemZ032b | schema | unclassified |
-| MS-Group2006-07-15/groupH021v/groupH021v | schema | unclassified |
-| MS-IdentityConstraint2006-07-15/idZ011/idZ011 | schema | unclassified |
-| MS-ModelGroups2006-07-15/mgA016/mgA016 | schema | unclassified |
-| MS-ModelGroups2006-07-15/mgO001/mgO001 | schema | unclassified |
-| MS-ModelGroups2006-07-15/mgO018/mgO018 | schema | unclassified |
-| MS-Particles2006-07-15/particlesFb003/particlesFb003 | schema | unclassified |
-| MS-Particles2006-07-15/particlesHa161/particlesHa161 | schema | unclassified |
-| MS-Particles2006-07-15/particlesHb008/particlesHb008 | schema | unclassified |
-| MS-Particles2006-07-15/particlesHb011/particlesHb011 | schema | unclassified |
-| MS-Particles2006-07-15/particlesS002/particlesS002 | schema | unclassified |
-| MS-Particles2006-07-15/particlesT002/particlesT002 | schema | unclassified |
-| MS-Particles2006-07-15/particlesT009/particlesT009 | schema | unclassified |
-| MS-Particles2006-07-15/particlesZ001/particlesZ001.i | instance | unclassified |
-| MS-Particles2006-07-15/particlesZ023/particlesZ023 | schema | unclassified |
-| MS-Particles2006-07-15/particlesZ024/particlesZ024 | schema | unclassified |
-| MS-Particles2006-07-15/particlesZ028/particlesZ028 | schema | unclassified |
-| MS-Schema2006-07-15/schL3/schL3 | schema | unclassified |
-| MS-Schema2006-07-15/schL5/schL5 | schema | unclassified |
-| MS-Wildcards2006-07-15/wildZ013/wildZ013 | schema | unclassified |
+| ElemDecl/idconstrdefs00301m/idConstrDefs00301m2_n | instance | xsd10-multiple-id-attributes |
+| ElemDecl/valueconstraint01001m2/valueConstraint01001m2 | schema | xsd10-id-value-constraints |
+| ElemDecl/valueconstraint01001m3/valueConstraint01001m3 | schema | xsd10-id-value-constraints |
+| ElemDecl/valueconstraint01001m5/valueConstraint01001m5 | schema | xsd10-id-value-constraints |
+| ElemDecl/valueconstraint01001m6/valueConstraint01001m6 | schema | xsd10-id-value-constraints |
+| MGroup/particles00104m1/particles00104m1 | schema | xsd10-all-group-relaxations |
+| MS-Additional2006-07-15/addB078/addB078 | schema | xsd10-id-value-constraints |
+| MS-Additional2006-07-15/addB078A/addB078A | schema | xsd10-id-value-constraints |
+| MS-Additional2006-07-15/addB078B/addB078B | schema | xsd10-id-value-constraints |
+| MS-Additional2006-07-15/addB118/addB118 | schema | xsd10-intensional-restriction |
+| MS-Additional2006-07-15/addB121/addB121 | schema | xsd10-wildcard-upa-relaxation |
+| MS-Additional2006-07-15/addB153/addB153 | schema | xsd10-wildcard-upa-relaxation |
+| MS-Additional2006-07-15/addB156/addB156.i | instance | xsd10-inline-schema-composition |
+| MS-Additional2006-07-15/addB158/addB158.i | instance | xsd10-inline-schema-composition |
+| MS-Additional2006-07-15/isDefault060_2/isDefault060_2 | schema | xsd10-id-value-constraints |
+| MS-Additional2006-07-15/isDefault069/isDefault069 | schema | xsd10-id-value-constraints |
+| MS-Attribute2006-07-15/attZ013a/attZ013a | schema | xsd10-id-value-constraints |
+| MS-Attribute2006-07-15/attZ013b/attZ013b | schema | xsd10-id-value-constraints |
+| MS-Attribute2006-07-15/attZ014a/attZ014a.i | instance | xsd10-multiple-id-attributes |
+| MS-Attribute2006-07-15/attZ014b/attZ014b.i | instance | xsd10-multiple-id-attributes |
+| MS-AttributeGroup2006-07-15/attgC010/attgC010 | schema | xsd10-attribute-group-circularity |
+| MS-AttributeGroup2006-07-15/attgC020/attgC020 | schema | xsd10-attribute-group-circularity |
+| MS-AttributeGroup2006-07-15/attgC031/attgC031 | schema | xsd10-attribute-group-circularity |
+| MS-AttributeGroup2006-07-15/attgD015/attgD015 | schema | xsd10-attribute-group-circularity |
+| MS-ComplexType2006-07-15/ctM004/ctM004 | schema | xsd10-multiple-id-attributes |
+| MS-DataTypes2006-07-15/anyURI_a001_1336/anyURI_a001_1336 | schema | xsd10-anyuri-value-space |
+| MS-DataTypes2006-07-15/anyURI_a003_1338/anyURI_a003_1338 | schema | xsd10-anyuri-value-space |
+| MS-DataTypes2006-07-15/anyURI_b004_1354/anyURI_b004_1354 | schema | xsd10-anyuri-value-space |
+| MS-DataTypes2006-07-15/anyURI_b006_1356/anyURI_b006_1356 | schema | xsd10-anyuri-value-space |
+| MS-DataTypes2006-07-15/dateTime011_2008/dateTime011_2008.i | instance | xsd10-year-zero |
+| MS-DataTypes2006-07-15/double018_1956/double018_1956.i | instance | xsd10-float-double-positive-inf |
+| MS-DataTypes2006-07-15/dtZ107447_a_2245/dtZ107447_a_2245 | schema | xsd10-id-value-constraints |
+| MS-DataTypes2006-07-15/float018_1917/float018_1917.i | instance | xsd10-float-double-positive-inf |
+| MS-Element2006-07-15/elemZ016/elemZ016.i | instance | xsd10-multiple-id-attributes |
+| MS-Element2006-07-15/elemZ032a/elemZ032a | schema | xsd10-id-value-constraints |
+| MS-Element2006-07-15/elemZ032b/elemZ032b | schema | xsd10-id-value-constraints |
+| MS-Group2006-07-15/groupH021v/groupH021v | schema | xsd10-intensional-restriction |
+| MS-IdentityConstraint2006-07-15/idZ011/idZ011 | schema | xsd10-id-value-constraints |
+| MS-ModelGroups2006-07-15/mgA016/mgA016 | schema | xsd10-all-group-relaxations |
+| MS-ModelGroups2006-07-15/mgO001/mgO001 | schema | xsd10-all-group-relaxations |
+| MS-ModelGroups2006-07-15/mgO018/mgO018 | schema | xsd10-all-group-relaxations |
+| MS-Particles2006-07-15/particlesFb003/particlesFb003 | schema | xsd10-wildcard-upa-relaxation |
+| MS-Particles2006-07-15/particlesHa161/particlesHa161 | schema | xsd10-intensional-restriction |
+| MS-Particles2006-07-15/particlesHb008/particlesHb008 | schema | xsd10-intensional-restriction |
+| MS-Particles2006-07-15/particlesHb011/particlesHb011 | schema | xsd10-intensional-restriction |
+| MS-Particles2006-07-15/particlesS002/particlesS002 | schema | xsd10-intensional-restriction |
+| MS-Particles2006-07-15/particlesT002/particlesT002 | schema | xsd10-intensional-restriction |
+| MS-Particles2006-07-15/particlesT009/particlesT009 | schema | xsd10-intensional-restriction |
+| MS-Particles2006-07-15/particlesZ001/particlesZ001.i | instance | xsd10-intensional-restriction |
+| MS-Particles2006-07-15/particlesZ023/particlesZ023 | schema | xsd10-intensional-restriction |
+| MS-Particles2006-07-15/particlesZ024/particlesZ024 | schema | xsd10-intensional-restriction |
+| MS-Particles2006-07-15/particlesZ028/particlesZ028 | schema | xsd10-intensional-restriction |
+| MS-Schema2006-07-15/schL3/schL3 | schema | xsd10-all-group-relaxations |
+| MS-Schema2006-07-15/schL5/schL5 | schema | xsd10-intensional-restriction |
+| MS-Wildcards2006-07-15/wildZ013/wildZ013 | schema | xsd10-attribute-wildcard-errata |
 
 ## Residual dispositions
 
@@ -218,14 +218,39 @@ a case that starts passing leaves this view without a disposition edit.
 
 | Profile | Checked failures | Classified | Unclassified |
 |:--|--:|--:|--:|
-| XSD 1.1 | 75 | 33 | 42 |
-| XSD 1.0 | 132 | 6 | 126 |
+| XSD 1.1 | 75 | 48 | 27 |
+| XSD 1.0 | 132 | 84 | 48 |
 
 ### Reviewed disposition entries
 
 | ID | Category | Profiles | Cases | Title |
 |:--|:--|:--|--:|:--|
+| xsd10-all-group-relaxations | version-switch-candidate | XSD 1.0 | 5 | XSD 1.0 xs:all restrictions are not enforced |
+| xsd10-anyuri-value-space | version-switch-candidate | XSD 1.0 | 4 | XSD 1.0 anyURI value space is not enforced |
+| xsd10-attribute-group-circularity | version-switch-candidate | XSD 1.0 | 4 | XSD 1.0 forbids circular attributeGroup references outside redefine |
+| xsd10-attribute-wildcard-errata | version-switch-candidate | XSD 1.0 | 1 | XSD 1.0 attribute wildcard intersection and union errata case |
+| xsd10-conditional-inclusion | version-switch-candidate | XSD 1.0 | 1 | XSD 1.0 profile does not evaluate vc: conditional inclusion |
+| xsd10-float-double-positive-inf | version-switch-candidate | XSD 1.0 | 2 | XSD 1.0 float and double lexical spaces reject +INF |
+| xsd10-id-value-constraints | version-switch-candidate | XSD 1.0 | 15 | XSD 1.0 must reject value constraints on ID-typed elements and attributes |
+| xsd10-inline-schema-composition | version-switch-candidate | XSD 1.0 | 2 | XSD 1.0 rejects a schema location or inline schema seen after an item from its target namespace |
+| xsd10-intensional-restriction | version-switch-candidate | XSD 1.0 | 13 | XSD 1.0 intensional restriction rules are not enforced |
+| xsd10-multiple-id-attributes | version-switch-candidate | XSD 1.0 | 5 | XSD 1.0 must reject multiple ID-typed attributes and duplicate ID values |
+| xsd10-unversioned-11-wildcard-vocabulary | spec-correct-divergence | XSD 1.0 | 5 | XSD 1.0 profile rejects unversioned XSD 1.1-only wildcard vocabulary that the corpus expects valid |
+| xsd10-valid-type-constructs | version-switch-candidate | XSD 1.0 | 5 | XSD 1.0 mode rejects type constructs that XSD 1.0 accepts |
+| xsd10-wildcard-upa-relaxation | version-switch-candidate | XSD 1.0 | 3 | XSD 1.0 UPA rejects element and wildcard competition |
+| xsd10-year-zero | version-switch-candidate | XSD 1.0 | 1 | XSD 1.0 dateTime rejects year zero |
 | xsts-astral-regex-queried | queried-corpus | XSD 1.1 | 22 | Astral-plane XSD regex tests the corpus marks queried (W3C bug 4113) |
+| xsts-circular-redefine-underspecified | queried-corpus | XSD 1.1, XSD 1.0 | 4 | Circular redefine groups remain accepted where the corpus expects invalid instances |
+| xsts-duplicate-global-attribute-group | implementation-gap | XSD 1.1, XSD 1.0 | 2 | Duplicate global attributeGroup declarations from two imported documents are accepted |
+| xsts-duplicate-global-element | implementation-gap | XSD 1.1, XSD 1.0 | 4 | Duplicate global element declarations from two imported documents are accepted |
+| xsts-identity-constraint-global-reference | implementation-gap | XSD 1.1, XSD 1.0 | 2 | A keyref refer QName can resolve to a non-global identity constraint |
+| xsts-import-namespace-mismatch | implementation-gap | XSD 1.1, XSD 1.0 | 2 | An import namespace that disagrees with the imported schema's target namespace is accepted |
+| xsts-no-namespace-type-reference | implementation-gap | XSD 1.1, XSD 1.0 | 4 | Unprefixed type references in a no-namespace schema resolve to same-named types in another namespace |
+| xsts-override-composition | implementation-gap | XSD 1.1 | 2 | Circular and no-op xs:override documents are accepted |
+| xsts-redefine-attribute-group-merge | implementation-gap | XSD 1.1, XSD 1.0 | 2 | A self-referential redefined attribute group can introduce duplicate attribute uses |
+| xsts-redefine-attribute-group-restriction | implementation-gap | XSD 1.1, XSD 1.0 | 2 | A redefined attribute group is not checked as a valid restriction of the original |
+| xsts-redefine-default-attributes-apply | implementation-gap | XSD 1.1 | 1 | defaultAttributesApply on a redefined complexType does not reach the composed type |
+| xsts-redefine-simple-type-enforcement | implementation-gap | XSD 1.1, XSD 1.0 | 2 | A redefined simpleType's restriction is not enforced on instances |
 | xsts-type-only-root-xsi-type | implementation-gap | XSD 1.1, XSD 1.0 | 12 | Document roots governed only by xsi:type have no global element declaration |
 | xsts-xml11-lexer-floor | platform-limit | XSD 1.1 | 5 | XML 1.1 documents cannot be lexed by the expat-based parser |
 
@@ -253,16 +278,16 @@ reviewed disposition claims the case.
 | XSD 1.1 | MS-Additional2006-07-15/addB181/addB181.i | instance | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-Additional2006-07-15/addB187/addB187.v | instance | fail | same-valid | xsts-type-only-root-xsi-type |
 | XSD 1.1 | MS-Additional2006-07-15/addB191/addB191.v | instance | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-AttributeGroup2006-07-15/attgB013/attgB013 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-AttributeGroup2006-07-15/attgC028/attgC028 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-AttributeGroup2006-07-15/attgD017/attgD017 | schema | fail | same-invalid | unclassified |
+| XSD 1.1 | MS-AttributeGroup2006-07-15/attgB013/attgB013 | schema | fail | same-invalid | xsts-duplicate-global-attribute-group |
+| XSD 1.1 | MS-AttributeGroup2006-07-15/attgC028/attgC028 | schema | fail | same-invalid | xsts-redefine-attribute-group-restriction |
+| XSD 1.1 | MS-AttributeGroup2006-07-15/attgD017/attgD017 | schema | fail | same-invalid | xsts-redefine-attribute-group-merge |
 | XSD 1.1 | MS-DataTypes2006-07-15/anyURI_a004_1339/anyURI_a004_1339.i | instance | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-DataTypes2006-07-15/gMonth002_2061/gMonth002_2061.v | instance | fail | same-valid | unclassified |
 | XSD 1.1 | MS-DataTypes2006-07-15/gMonth004_2063/gMonth004_2063.v | instance | fail | same-valid | unclassified |
 | XSD 1.1 | MS-Element2006-07-15/elemM002/elemM002 | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-Element2006-07-15/elemZ026/elemZ026 | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-IdentityConstraint2006-07-15/idB005/idB005 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-IdentityConstraint2006-07-15/idC019/idC019 | schema | fail | same-invalid | unclassified |
+| XSD 1.1 | MS-IdentityConstraint2006-07-15/idC019/idC019 | schema | fail | same-invalid | xsts-identity-constraint-global-reference |
 | XSD 1.1 | MS-Regex2006-07-15/reJ11/reJ11.i | instance | fail | same-invalid | xsts-astral-regex-queried |
 | XSD 1.1 | MS-Regex2006-07-15/reJ13/reJ13.i | instance | fail | same-invalid | xsts-astral-regex-queried |
 | XSD 1.1 | MS-Regex2006-07-15/reJ19/reJ19.i | instance | fail | same-invalid | xsts-astral-regex-queried |
@@ -285,18 +310,18 @@ reviewed disposition claims the case.
 | XSD 1.1 | MS-Regex2006-07-15/reS42/reS42.i | instance | fail | same-invalid | xsts-astral-regex-queried |
 | XSD 1.1 | MS-Regex2006-07-15/reT63/reT63.i | instance | fail | same-invalid | xsts-astral-regex-queried |
 | XSD 1.1 | MS-Regex2006-07-15/reT84/reT84.i | instance | fail | same-invalid | xsts-astral-regex-queried |
-| XSD 1.1 | MS-Schema2006-07-15/schF2/schF2.v | instance | fail | same-valid | unclassified |
-| XSD 1.1 | MS-Schema2006-07-15/schF6/schF6 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-Schema2006-07-15/schG11/schG11 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-Schema2006-07-15/schG2/schG2.v | instance | fail | same-valid | unclassified |
-| XSD 1.1 | MS-Schema2006-07-15/schG6/schG6 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-Schema2006-07-15/schU4/schU4.i | instance | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-Schema2006-07-15/schU5/schU5.i | instance | fail | same-invalid | unclassified |
+| XSD 1.1 | MS-Schema2006-07-15/schF2/schF2.v | instance | fail | same-valid | xsts-no-namespace-type-reference |
+| XSD 1.1 | MS-Schema2006-07-15/schF6/schF6 | schema | fail | same-invalid | xsts-import-namespace-mismatch |
+| XSD 1.1 | MS-Schema2006-07-15/schG11/schG11 | schema | fail | same-invalid | xsts-duplicate-global-element |
+| XSD 1.1 | MS-Schema2006-07-15/schG2/schG2.v | instance | fail | same-valid | xsts-no-namespace-type-reference |
+| XSD 1.1 | MS-Schema2006-07-15/schG6/schG6 | schema | fail | same-invalid | xsts-duplicate-global-element |
+| XSD 1.1 | MS-Schema2006-07-15/schU4/schU4.i | instance | fail | same-invalid | xsts-circular-redefine-underspecified |
+| XSD 1.1 | MS-Schema2006-07-15/schU5/schU5.i | instance | fail | same-invalid | xsts-circular-redefine-underspecified |
 | XSD 1.1 | MS-SimpleType2006-07-15/stE012/stE012 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-SimpleType2006-07-15/stZ033/stZ033.i | instance | fail | same-invalid | unclassified |
+| XSD 1.1 | MS-SimpleType2006-07-15/stZ033/stZ033.i | instance | fail | same-invalid | xsts-redefine-simple-type-enforcement |
 | XSD 1.1 | MS-SimpleType2006-07-15/ste110/ste110 | schema | fail | same-valid | unclassified |
-| XSD 1.1 | Override/over024/over024.bad.xsd | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | Override/over026/over026.bad.xsd | schema | fail | same-invalid | unclassified |
+| XSD 1.1 | Override/over024/over024.bad.xsd | schema | fail | same-invalid | xsts-override-composition |
+| XSD 1.1 | Override/over026/over026.bad.xsd | schema | fail | same-invalid | xsts-override-composition |
 | XSD 1.1 | SType/st_name00401m/ST_name00401m1_p | instance | fail | same-valid | xsts-type-only-root-xsi-type |
 | XSD 1.1 | SType/st_targetns00101m/ST_targetNS00101m1_p | instance | fail | same-valid | xsts-type-only-root-xsi-type |
 | XSD 1.1 | SType/st_targetns00101m/ST_targetNS00101m2_p | instance | fail | same-valid | xsts-type-only-root-xsi-type |
@@ -311,24 +336,24 @@ reviewed disposition claims the case.
 | XSD 1.1 | XmlVersions/xv008/xv008.v01.xml | instance | fail | same-valid | xsts-xml11-lexer-floor |
 | XSD 1.1 | assertion/d4_3_15ii31/d4_3_15ii31i | instance | fail | same-invalid | unclassified |
 | XSD 1.1 | assertion/d4_3_15ii32/d4_3_15ii32i | instance | fail | same-invalid | unclassified |
-| XSD 1.1 | defaultAttributesApply/s3_4_2_4ii06/s3_4_2_4ii06i | instance | fail | same-valid | unclassified |
+| XSD 1.1 | defaultAttributesApply/s3_4_2_4ii06/s3_4_2_4ii06i | instance | fail | same-valid | xsts-redefine-default-attributes-apply |
 | XSD 1.0 | CType/targetns00101m/targetNS00101m1_p | instance | fail | same-valid | xsts-type-only-root-xsi-type |
 | XSD 1.0 | Complex/complex017/complex017.xsd | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | ElemDecl/idconstrdefs00301m/idConstrDefs00301m2_n | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | ElemDecl/valueconstraint01001m2/valueConstraint01001m2 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | ElemDecl/valueconstraint01001m3/valueConstraint01001m3 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | ElemDecl/valueconstraint01001m5/valueConstraint01001m5 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | ElemDecl/valueconstraint01001m6/valueConstraint01001m6 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MGroup/particles00104m1/particles00104m1 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/addB078/addB078 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/addB078A/addB078A | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/addB078B/addB078B | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/addB118/addB118 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/addB121/addB121 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
+| XSD 1.0 | ElemDecl/idconstrdefs00301m/idConstrDefs00301m2_n | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-multiple-id-attributes |
+| XSD 1.0 | ElemDecl/valueconstraint01001m2/valueConstraint01001m2 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | ElemDecl/valueconstraint01001m3/valueConstraint01001m3 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | ElemDecl/valueconstraint01001m5/valueConstraint01001m5 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | ElemDecl/valueconstraint01001m6/valueConstraint01001m6 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MGroup/particles00104m1/particles00104m1 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-all-group-relaxations |
+| XSD 1.0 | MS-Additional2006-07-15/addB078/addB078 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-Additional2006-07-15/addB078A/addB078A | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-Additional2006-07-15/addB078B/addB078B | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-Additional2006-07-15/addB118/addB118 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Additional2006-07-15/addB121/addB121 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-wildcard-upa-relaxation |
 | XSD 1.0 | MS-Additional2006-07-15/addB142/addB142.i | instance | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/addB153/addB153 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/addB156/addB156.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/addB158/addB158.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
+| XSD 1.0 | MS-Additional2006-07-15/addB153/addB153 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-wildcard-upa-relaxation |
+| XSD 1.0 | MS-Additional2006-07-15/addB156/addB156.i | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-inline-schema-composition |
+| XSD 1.0 | MS-Additional2006-07-15/addB158/addB158.i | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-inline-schema-composition |
 | XSD 1.0 | MS-Additional2006-07-15/addB159/addB159.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Additional2006-07-15/addB161/addB161.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Additional2006-07-15/addB162/addB162.i | instance | fail | same-invalid | unclassified |
@@ -337,56 +362,56 @@ reviewed disposition claims the case.
 | XSD 1.0 | MS-Additional2006-07-15/addB181/addB181.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Additional2006-07-15/addB187/addB187.v | instance | fail | same-valid | xsts-type-only-root-xsi-type |
 | XSD 1.0 | MS-Additional2006-07-15/addB191/addB191.v | instance | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/isDefault060_2/isDefault060_2 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Additional2006-07-15/isDefault069/isDefault069 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
+| XSD 1.0 | MS-Additional2006-07-15/isDefault060_2/isDefault060_2 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-Additional2006-07-15/isDefault069/isDefault069 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
 | XSD 1.0 | MS-Attribute2006-07-15/attP031/attP031.i | instance | fail | not-comparable | unclassified |
-| XSD 1.0 | MS-Attribute2006-07-15/attZ013a/attZ013a | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Attribute2006-07-15/attZ013b/attZ013b | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Attribute2006-07-15/attZ014a/attZ014a.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Attribute2006-07-15/attZ014b/attZ014b.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-AttributeGroup2006-07-15/attgB013/attgB013 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-AttributeGroup2006-07-15/attgC010/attgC010 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-AttributeGroup2006-07-15/attgC020/attgC020 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-AttributeGroup2006-07-15/attgC028/attgC028 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-AttributeGroup2006-07-15/attgC031/attgC031 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-AttributeGroup2006-07-15/attgD015/attgD015 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-AttributeGroup2006-07-15/attgD017/attgD017 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-ComplexType2006-07-15/ctM004/ctM004 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-DataTypes2006-07-15/anyURI_a001_1336/anyURI_a001_1336 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-DataTypes2006-07-15/anyURI_a003_1338/anyURI_a003_1338 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
+| XSD 1.0 | MS-Attribute2006-07-15/attZ013a/attZ013a | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-Attribute2006-07-15/attZ013b/attZ013b | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-Attribute2006-07-15/attZ014a/attZ014a.i | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-multiple-id-attributes |
+| XSD 1.0 | MS-Attribute2006-07-15/attZ014b/attZ014b.i | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-multiple-id-attributes |
+| XSD 1.0 | MS-AttributeGroup2006-07-15/attgB013/attgB013 | schema | fail | same-invalid | xsts-duplicate-global-attribute-group |
+| XSD 1.0 | MS-AttributeGroup2006-07-15/attgC010/attgC010 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-attribute-group-circularity |
+| XSD 1.0 | MS-AttributeGroup2006-07-15/attgC020/attgC020 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-attribute-group-circularity |
+| XSD 1.0 | MS-AttributeGroup2006-07-15/attgC028/attgC028 | schema | fail | same-invalid | xsts-redefine-attribute-group-restriction |
+| XSD 1.0 | MS-AttributeGroup2006-07-15/attgC031/attgC031 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-attribute-group-circularity |
+| XSD 1.0 | MS-AttributeGroup2006-07-15/attgD015/attgD015 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-attribute-group-circularity |
+| XSD 1.0 | MS-AttributeGroup2006-07-15/attgD017/attgD017 | schema | fail | same-invalid | xsts-redefine-attribute-group-merge |
+| XSD 1.0 | MS-ComplexType2006-07-15/ctM004/ctM004 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-multiple-id-attributes |
+| XSD 1.0 | MS-DataTypes2006-07-15/anyURI_a001_1336/anyURI_a001_1336 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-anyuri-value-space |
+| XSD 1.0 | MS-DataTypes2006-07-15/anyURI_a003_1338/anyURI_a003_1338 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-anyuri-value-space |
 | XSD 1.0 | MS-DataTypes2006-07-15/anyURI_a004_1339/anyURI_a004_1339.i | instance | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-DataTypes2006-07-15/anyURI_b004_1354/anyURI_b004_1354 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-DataTypes2006-07-15/anyURI_b006_1356/anyURI_b006_1356 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-DataTypes2006-07-15/dateTime011_2008/dateTime011_2008.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-DataTypes2006-07-15/double018_1956/double018_1956.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-DataTypes2006-07-15/dtZ107447_a_2245/dtZ107447_a_2245 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-DataTypes2006-07-15/float018_1917/float018_1917.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
+| XSD 1.0 | MS-DataTypes2006-07-15/anyURI_b004_1354/anyURI_b004_1354 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-anyuri-value-space |
+| XSD 1.0 | MS-DataTypes2006-07-15/anyURI_b006_1356/anyURI_b006_1356 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-anyuri-value-space |
+| XSD 1.0 | MS-DataTypes2006-07-15/dateTime011_2008/dateTime011_2008.i | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-year-zero |
+| XSD 1.0 | MS-DataTypes2006-07-15/double018_1956/double018_1956.i | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-float-double-positive-inf |
+| XSD 1.0 | MS-DataTypes2006-07-15/dtZ107447_a_2245/dtZ107447_a_2245 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-DataTypes2006-07-15/float018_1917/float018_1917.i | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-float-double-positive-inf |
 | XSD 1.0 | MS-DataTypes2006-07-15/gMonth002_2061/gMonth002_2061.v | instance | fail | same-valid | unclassified |
 | XSD 1.0 | MS-DataTypes2006-07-15/gMonth004_2063/gMonth004_2063.v | instance | fail | same-valid | unclassified |
 | XSD 1.0 | MS-Element2006-07-15/elemM002/elemM002 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Element2006-07-15/elemZ016/elemZ016.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
+| XSD 1.0 | MS-Element2006-07-15/elemZ016/elemZ016.i | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-multiple-id-attributes |
 | XSD 1.0 | MS-Element2006-07-15/elemZ026/elemZ026 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Element2006-07-15/elemZ032a/elemZ032a | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Element2006-07-15/elemZ032b/elemZ032b | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Group2006-07-15/groupH021v/groupH021v | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
+| XSD 1.0 | MS-Element2006-07-15/elemZ032a/elemZ032a | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-Element2006-07-15/elemZ032b/elemZ032b | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-Group2006-07-15/groupH021v/groupH021v | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
 | XSD 1.0 | MS-IdentityConstraint2006-07-15/idB005/idB005 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-IdentityConstraint2006-07-15/idC019/idC019 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-IdentityConstraint2006-07-15/idZ011/idZ011 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-ModelGroups2006-07-15/mgA016/mgA016 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-ModelGroups2006-07-15/mgO001/mgO001 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-ModelGroups2006-07-15/mgO018/mgO018 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesFb003/particlesFb003 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesHa161/particlesHa161 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesHb008/particlesHb008 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesHb011/particlesHb011 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesS002/particlesS002 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesT002/particlesT002 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesT009/particlesT009 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesZ001/particlesZ001.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesZ023/particlesZ023 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesZ024/particlesZ024 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesZ028/particlesZ028 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Particles2006-07-15/particlesZ031/particlesZ031 | schema | fail | valid-in-1.0-invalid-in-1.1 | unclassified |
+| XSD 1.0 | MS-IdentityConstraint2006-07-15/idC019/idC019 | schema | fail | same-invalid | xsts-identity-constraint-global-reference |
+| XSD 1.0 | MS-IdentityConstraint2006-07-15/idZ011/idZ011 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-id-value-constraints |
+| XSD 1.0 | MS-ModelGroups2006-07-15/mgA016/mgA016 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-all-group-relaxations |
+| XSD 1.0 | MS-ModelGroups2006-07-15/mgO001/mgO001 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-all-group-relaxations |
+| XSD 1.0 | MS-ModelGroups2006-07-15/mgO018/mgO018 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-all-group-relaxations |
+| XSD 1.0 | MS-Particles2006-07-15/particlesFb003/particlesFb003 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-wildcard-upa-relaxation |
+| XSD 1.0 | MS-Particles2006-07-15/particlesHa161/particlesHa161 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesHb008/particlesHb008 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesHb011/particlesHb011 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesS002/particlesS002 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesT002/particlesT002 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesT009/particlesT009 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesZ001/particlesZ001.i | instance | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesZ023/particlesZ023 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesZ024/particlesZ024 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesZ028/particlesZ028 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Particles2006-07-15/particlesZ031/particlesZ031 | schema | fail | valid-in-1.0-invalid-in-1.1 | xsd10-valid-type-constructs |
 | XSD 1.0 | MS-Regex2006-07-15/reJ11/reJ11.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reJ13/reJ13.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reJ19/reJ19.i | instance | fail | same-invalid | unclassified |
@@ -409,22 +434,22 @@ reviewed disposition claims the case.
 | XSD 1.0 | MS-Regex2006-07-15/reS42/reS42.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reT63/reT63.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reT84/reT84.i | instance | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schF2/schF2.v | instance | fail | same-valid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schF6/schF6 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schG11/schG11 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schG2/schG2.v | instance | fail | same-valid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schG6/schG6 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schL3/schL3 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schL5/schL5 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schU4/schU4.i | instance | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schU5/schU5.i | instance | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-SimpleType2006-07-15/stE053/stE053 | schema | fail | valid-in-1.0-invalid-in-1.1 | unclassified |
-| XSD 1.0 | MS-SimpleType2006-07-15/stZ007/stZ007 | schema | fail | valid-in-1.0-invalid-in-1.1 | unclassified |
-| XSD 1.0 | MS-SimpleType2006-07-15/stZ033/stZ033.i | instance | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-SimpleType2006-07-15/stZ047/stZ047 | schema | fail | valid-in-1.0-invalid-in-1.1 | unclassified |
-| XSD 1.0 | MS-SimpleType2006-07-15/stZ055/stZ055 | schema | fail | valid-in-1.0-invalid-in-1.1 | unclassified |
+| XSD 1.0 | MS-Schema2006-07-15/schF2/schF2.v | instance | fail | same-valid | xsts-no-namespace-type-reference |
+| XSD 1.0 | MS-Schema2006-07-15/schF6/schF6 | schema | fail | same-invalid | xsts-import-namespace-mismatch |
+| XSD 1.0 | MS-Schema2006-07-15/schG11/schG11 | schema | fail | same-invalid | xsts-duplicate-global-element |
+| XSD 1.0 | MS-Schema2006-07-15/schG2/schG2.v | instance | fail | same-valid | xsts-no-namespace-type-reference |
+| XSD 1.0 | MS-Schema2006-07-15/schG6/schG6 | schema | fail | same-invalid | xsts-duplicate-global-element |
+| XSD 1.0 | MS-Schema2006-07-15/schL3/schL3 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-all-group-relaxations |
+| XSD 1.0 | MS-Schema2006-07-15/schL5/schL5 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
+| XSD 1.0 | MS-Schema2006-07-15/schU4/schU4.i | instance | fail | same-invalid | xsts-circular-redefine-underspecified |
+| XSD 1.0 | MS-Schema2006-07-15/schU5/schU5.i | instance | fail | same-invalid | xsts-circular-redefine-underspecified |
+| XSD 1.0 | MS-SimpleType2006-07-15/stE053/stE053 | schema | fail | valid-in-1.0-invalid-in-1.1 | xsd10-valid-type-constructs |
+| XSD 1.0 | MS-SimpleType2006-07-15/stZ007/stZ007 | schema | fail | valid-in-1.0-invalid-in-1.1 | xsd10-valid-type-constructs |
+| XSD 1.0 | MS-SimpleType2006-07-15/stZ033/stZ033.i | instance | fail | same-invalid | xsts-redefine-simple-type-enforcement |
+| XSD 1.0 | MS-SimpleType2006-07-15/stZ047/stZ047 | schema | fail | valid-in-1.0-invalid-in-1.1 | xsd10-valid-type-constructs |
+| XSD 1.0 | MS-SimpleType2006-07-15/stZ055/stZ055 | schema | fail | valid-in-1.0-invalid-in-1.1 | xsd10-valid-type-constructs |
 | XSD 1.0 | MS-SimpleType2006-07-15/ste110/ste110 | schema | fail | same-valid | unclassified |
-| XSD 1.0 | MS-Wildcards2006-07-15/wildZ013/wildZ013 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
+| XSD 1.0 | MS-Wildcards2006-07-15/wildZ013/wildZ013 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-attribute-wildcard-errata |
 | XSD 1.0 | Missing/missing002/missing001.xsd | schema | fail | same-valid | unclassified |
 | XSD 1.0 | Missing/missing003/missing003.xsd | schema | fail | same-valid | unclassified |
 | XSD 1.0 | Missing/missing006/missing006.xsd | schema | fail | same-valid | unclassified |
@@ -432,15 +457,15 @@ reviewed disposition claims the case.
 | XSD 1.0 | SType/st_targetns00101m/ST_targetNS00101m1_p | instance | fail | same-valid | xsts-type-only-root-xsi-type |
 | XSD 1.0 | SType/st_targetns00101m/ST_targetNS00101m2_p | instance | fail | same-valid | xsts-type-only-root-xsi-type |
 | XSD 1.0 | SType/st_targetns00201m/ST_targetNS00201m1_p | instance | fail | same-valid | xsts-type-only-root-xsi-type |
-| XSD 1.0 | VC/vc024-11/vc024-11.xsd | schema | fail | same-valid | unclassified |
+| XSD 1.0 | VC/vc024-11/vc024-11.xsd | schema | fail | same-valid | xsd10-conditional-inclusion |
 | XSD 1.0 | VC/vc902/vc902.xsd | schema | fail | same-valid | unclassified |
 | XSD 1.0 | XmlVersions/xv001/xv001.v01.xml | instance | fail | same-valid | unclassified |
 | XSD 1.0 | XmlVersions/xv003/xv003.v01.xml | instance | fail | same-valid | unclassified |
 | XSD 1.0 | XmlVersions/xv004/xv004.v01.xml | instance | fail | same-valid | unclassified |
 | XSD 1.0 | XmlVersions/xv006/xv006.v01.xml | instance | fail | same-valid | unclassified |
 | XSD 1.0 | XmlVersions/xv008/xv008.v01.xml | instance | fail | same-valid | unclassified |
-| XSD 1.0 | anyAttribute/s3_10_6ii01/s3_10_6v01s | schema | fail | same-valid | unclassified |
-| XSD 1.0 | anyAttribute/s3_10_6ii02/s3_10_6v02s | schema | fail | same-valid | unclassified |
-| XSD 1.0 | anyAttribute/s3_10_6ii04/s3_10_6v04s | schema | fail | same-valid | unclassified |
-| XSD 1.0 | wildcard/s3_10_1ii08/s3_10_1ii08s | schema | fail | same-valid | unclassified |
-| XSD 1.0 | wildcard/s3_10_1ii09/s3_10_1ii09s | schema | fail | same-valid | unclassified |
+| XSD 1.0 | anyAttribute/s3_10_6ii01/s3_10_6v01s | schema | fail | same-valid | xsd10-unversioned-11-wildcard-vocabulary |
+| XSD 1.0 | anyAttribute/s3_10_6ii02/s3_10_6v02s | schema | fail | same-valid | xsd10-unversioned-11-wildcard-vocabulary |
+| XSD 1.0 | anyAttribute/s3_10_6ii04/s3_10_6v04s | schema | fail | same-valid | xsd10-unversioned-11-wildcard-vocabulary |
+| XSD 1.0 | wildcard/s3_10_1ii08/s3_10_1ii08s | schema | fail | same-valid | xsd10-unversioned-11-wildcard-vocabulary |
+| XSD 1.0 | wildcard/s3_10_1ii09/s3_10_1ii09s | schema | fail | same-valid | xsd10-unversioned-11-wildcard-vocabulary |
