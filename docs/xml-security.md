@@ -112,9 +112,10 @@ still refuses entity declarations, and `strict()` still refuses any DOCTYPE.
 An unretrieved external subset leaves declaration evidence incomplete. A
 name absent from the internal declarations then remains lexical-only, with
 one `dtd-external-skipped` advisory per document if a check needs the missing
-evidence. Caller-parsed trees and custom-policy parser results have no core
-declaration evidence and remain lexical-only. Top-level schema discovery
-from a non-seekable stream has the same limitation; this is not a security
+evidence. Caller-supplied trees without pyxsd source provenance and
+custom-policy parser results have no core declaration evidence and remain
+lexical-only. Top-level `pyxsd.parse()` with a non-seekable instance stream
+has the same limitation, even with an explicit schema; this is not a security
 feature. A compiled `Schema.parse()` can instead replay that stream's prolog
 when declaration checking is needed. See {doc}`validation` for input and
 reread limitations. None of this performs DTD validation or hardens the

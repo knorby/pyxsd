@@ -111,10 +111,10 @@ pyxsd audits cross-namespace XSD component references against the referencing
 document's own direct imports and effective target namespace, with built-in
 vocabulary exemptions. Neither a driver's import nor a caller mapping or
 instance hint satisfies that document's import duty; a missing import is
-`import-required`. Annotation payloads, foreign markup, and QName-shaped
-values that are not component references are outside this audit. It leaves
-global component resolution unchanged, rather than isolating each document's
-component table.
+`import-required`. Wildcard `notQName` is intentionally not audited;
+annotation payloads, foreign markup, QName-valued defaults/fixed values, and
+XPath expressions are also excluded. The audit leaves global component
+resolution unchanged, rather than isolating each document's component table.
 
 ### Time budgets
 
@@ -214,11 +214,14 @@ an external resource, but checking its name does not fetch it.
 
 External subsets remain unfetched and make the evidence incomplete: missing
 names stay lexical-only, with one advisory when a declaration check is skipped.
-Caller-parsed/custom-policy trees and non-seekable top-level schema-discovery
-streams remain lexical-only too; compiled `Schema.parse()` supports prolog
-replay for non-seekable streams. See {doc}`validation` for provenance and
-reread limits. Collection preserves security handlers and the default,
-protected, and strict profiles. This is neither DTD validation nor a change to
+Caller-supplied trees without pyxsd source provenance, custom-policy parser
+results, and non-seekable instance streams passed to top-level `pyxsd.parse()`
+remain lexical-only too, even with an explicit schema. Compiled `Schema.parse()`
+supports prolog replay for those streams. `Document.revalidate()` currently
+loses DTD evidence and can falsely reject valid entity values. See
+{doc}`validation` for provenance and reread limits. Collection preserves
+security handlers and the default, protected, and strict profiles. This is
+neither DTD validation nor a change to
 entity expansion or parser hardening; see {doc}`xsd-validation` and
 {doc}`xml-security`. Resolved cases leave the generated active census
 automatically; remaining limitations are not claimed fixed.

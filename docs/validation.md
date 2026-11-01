@@ -139,14 +139,21 @@ Declaration evidence also depends on the input path:
   collection; a failed reread leaves values lexical-only.
 - `Schema.parse()` can collect and replay the prolog of a non-seekable
   stream when its compiled schema needs declarations. Top-level
-  `pyxsd.parse()` schema discovery consumes a non-seekable stream before
-  that need is known, so that path remains lexical-only. This is an input
-  provenance limitation, not a security protection.
-- Caller-supplied, pre-parsed `Element` trees and custom `ResourcePolicy`
-  parser results remain lexical-only. A tree parsed by pyxsd can retain
-  source provenance in its `NamespaceContext`; when that context is reused
-  for compilation and the source remains readable, collection is possible.
+  `pyxsd.parse()` consumes a non-seekable instance stream before binding,
+  even when an explicit schema is supplied, so that path remains
+  lexical-only. Use compiled `Schema.parse()` for prolog replay. This is an
+  input provenance limitation, not a security protection.
+- Caller-supplied `Element` trees without pyxsd source provenance and custom
+  `ResourcePolicy` parser results remain lexical-only. A tree parsed by
+  pyxsd can retain source provenance in its `NamespaceContext`; when that
+  context is reused for compilation and the source remains readable,
+  `Schema.parse(Element)` can collect declarations from that source.
   Direct datatype construction outside a document parse is lexical-only too.
+- `Document.revalidate()` currently serializes and reparses the bound tree
+  without preserving its DOCTYPE or declaration evidence. The new parse
+  therefore sees an empty, complete declaration set and can report a valid
+  `ENTITY`/`ENTITIES` value as undeclared. Revalidation is not currently a
+  reliable validity check for these declaration-dependent documents.
 
 Collection preserves the selected parser's declaration guards; it never
 replaces security handlers. The default, protected, and strict profiles are
@@ -254,7 +261,7 @@ Codes are stable strings. `ERROR`-level codes fail under `--strict` or
 | `schema-hint` | WARNING | Malformed schemaLocation hint in the instance document. |
 | `schema-compose` | ERROR / WARNING | A composition directive is invalid or its referenced schema cannot be used. ERROR for a missing `schemaLocation` attribute, a malformed referenced schema, a repeated `annotation` on `xs:include`/`xs:import`, or an `xs:redefine`/`xs:override` whose base schema cannot be opened. WARNING when an `xs:include`/`xs:import`/`xs:redefine`/`xs:override` `schemaLocation` names a document that does not exist (an unresolvable location is a hint, not a rule violation). |
 | `import-unresolved` | ERROR / WARNING | An `xs:import` could not be satisfied from a `schemaLocation` or `namespace_schemas` (namespaced mode). WARNING for a namespace-only import that is merely a hint; ERROR when a component from that namespace is referenced by the importing document. An instance- or caller-supplied schema that is missing remains an ERROR. |
-| `import-required` | ERROR | An XSD-language component reference names a foreign namespace that the referencing schema document did not directly import. The audit honors the document's effective target namespace and built-in vocabularies; transitive imports and caller- or hint-supplied schemas do not satisfy its authored import duty. Annotation payloads, foreign markup, QName-valued defaults/fixed values, and XPath expressions are not component references audited by this check. |
+| `import-required` | ERROR | An XSD-language component reference names a foreign namespace that the referencing schema document did not directly import. The audit honors the document's effective target namespace and built-in vocabularies; transitive imports and caller- or hint-supplied schemas do not satisfy its authored import duty. Wildcard `notQName` is intentionally not audited; annotation payloads, foreign markup, QName-valued defaults/fixed values, and XPath expressions are also outside this check. |
 | `compose-cycle` | WARNING | A repeated include/redefine was deduplicated. |
 | `compose-namespace` | ERROR | Include target namespace mismatch. |
 | `compose-invalid` | ERROR | A composition rule violation beyond a missing resource: an `xs:import` whose `namespace` does not match the imported document's target namespace; an `xs:redefine` of a component the base document does not define, or in a namespace other than the redefining schema's; the same component of one base document redefined twice; an unqualified self reference in a chameleon redefine; a cyclic `xs:redefine` chain (XSD 1.1 §4.2.4); an `xs:override` whose base document's target namespace differs from the overriding schema's; and an attributeGroup redefine that is not a valid restriction (adds or reorders attributes, drops a `fixed` value, changes a non-optional `use`, or duplicates an attribute pulled in by its self reference). |
@@ -278,6 +285,8 @@ checks the old report rather than proving that the changed tree is valid.
 Call `revalidate()` to serialize and parse the tree again, and check the
 fresh document's report. An unreadable or malformed serialized result still
 raises `PyXSDError`; it does not become an ordinary validation finding.
+The declaration-dependent `ENTITY`/`ENTITIES` limitation above also applies:
+revalidation currently loses the original DTD evidence.
 
 ## Structured and bounded reports
 

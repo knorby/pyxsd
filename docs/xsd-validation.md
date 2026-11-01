@@ -72,9 +72,12 @@ Unrelated schemas skip this declaration-collection parse.
 No built-in profile retrieves external DTD subsets or entities. An external
 subset makes declaration evidence incomplete, so a missing name remains
 lexical-only with one advisory per document when a check needs the missing
-evidence. Caller-parsed and custom-policy trees lack core declaration
-evidence. Non-seekable top-level schema-discovery streams also remain
-lexical-only; compiled `Schema.parse()` can collect and replay their prolog.
+evidence. Caller-supplied trees without pyxsd source provenance and
+custom-policy parser results lack core declaration evidence. Non-seekable
+instance streams passed to top-level `pyxsd.parse()` also remain lexical-only,
+even with an explicit schema; compiled `Schema.parse()` can collect and
+replay their prolog. `Document.revalidate()` currently loses the DOCTYPE and
+declaration evidence, so it can falsely reject valid entity values.
 These are implementation limits, not alternative validity rules or security
 protections. See {doc}`validation` for source-provenance and reread limits.
 
@@ -120,8 +123,11 @@ namespace are separate concerns. pyxsd audits XSD-language component QNames
 against each referencing document's direct authored imports, effective
 target namespace, and built-in vocabularies. A component supplied transitively,
 by a caller mapping, or by an instance hint does not excuse a missing
-authored import (`import-required`). This audit leaves global component
-lookup in place; it does not establish complete composition conformance.
+authored import (`import-required`). Wildcard `notQName` is intentionally
+not audited; annotation payloads, foreign markup, QName-valued defaults/fixed
+values, and XPath expressions are also excluded. This audit leaves global
+component lookup in place; it does not establish complete composition
+conformance.
 
 Binding determines which Python objects and values an application receives.
 An invalid document can still yield a best-effort bound tree and a report

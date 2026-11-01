@@ -74,7 +74,7 @@ authorizes each root, same-origin/cross-origin dependency, instance hint, and
 redirect against finite per-compilation budgets. Python overlays are never
 retrieved remotely.
 
-There are two parser roles:
+The parser roles are:
 
 - **Semantic parsing.** `parse_with_namespaces` uses
   `xml.etree.ElementTree.iterparse` with the selected `XmlParserPolicy`.
@@ -82,6 +82,16 @@ There are two parser roles:
   defusedxml and the shared Expat declaration guards. `XmlLimits` bounds the
   bytes, element depth, and start-tag count. This tree is what binding,
   validation, transforms, XPath, and the writer use.
+- **DTD declaration collection.** When the compiled schema can validate
+  `ENTITY`/`ENTITIES`, `pyxsd.dtd_declarations.collect_document_declarations`
+  uses raw Expat to collect unparsed-entity declarations from the instance
+  prolog/internal subset, stopping at the first element start. It builds no
+  second tree and does not validate the document body or DTD. Reopenable or
+  rewindable sources supply a prolog reread; non-seekable streams passed to
+  compiled `Schema.parse()` use prolog collection and replay. Unrelated
+  schemas skip this pass. Collection preserves the selected declaration
+  guards and installs no external fetcher. Missing provenance and external
+  subsets limit the evidence; see {doc}`validation`.
 - **Source indexing.** `pyxsd.source_spans.SourceIndex` runs a separate raw
   `xml.parsers.expat` pass over the original bytes to record element paths and
   exact half-open byte spans. It never installs an external-resource fetcher,
@@ -91,7 +101,7 @@ There are two parser roles:
   server uses it for `result: "subtree"` so the returned bytes are an exact
   slice of the captured source rather than a serialization of the bound tree.
 
-Neither parser role is a sandbox. Path confinement, authentication, and
+None of these parser roles is a sandbox. Path confinement, authentication, and
 timeouts belong to the application policy or the surrounding process boundary;
 see {doc}`xml-security`.
 

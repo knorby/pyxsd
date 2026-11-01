@@ -159,8 +159,9 @@ machinery (the built-in datatype constructors) or need case-specific
 identity-constraint and name-resolution work rather than a clean version
 switch:
 
-- the 1.0-only lexical forms around year `0000` and the `+INF`
-  spelling (the shared datatype constructors are version-agnostic);
+- year `0000` and the `+INF` spelling are permitted in 1.1, not 1.0,
+  but the shared, version-agnostic datatype constructors still accept them
+  in 1.0 mode;
 - keyref cardinality under 1.0;
 - several 1.0 name-resolution edge cases in cross-namespace references.
 
@@ -205,7 +206,7 @@ for expectation relationships and reviewed dispositions, and
 * - DTD entities
   - `ENTITY` / `ENTITIES` values
   - partial
-  - Lazy prolog/internal-subset collection checks unparsed (`NDATA`) entity names, including derived types and defaults, when declaration evidence is complete. No built-in profile retrieves external subsets or entities; incomplete external-subset evidence leaves missing names lexical-only with one advisory when a check is skipped. Caller-parsed and custom-policy trees, and non-seekable top-level schema discovery, remain lexical-only. Compiled `Schema.parse()` supports prolog replay for non-seekable streams. Parser profiles are unchanged; see {doc}`validation` and {doc}`xml-security` for the boundaries.
+  - Lazy prolog/internal-subset collection checks unparsed (`NDATA`) entity names, including derived types and defaults, when declaration evidence is complete. No built-in profile retrieves external subsets or entities; incomplete external-subset evidence leaves missing names lexical-only with one advisory when a check is skipped. Caller-supplied trees without pyxsd source provenance, custom-policy parser results, and non-seekable instance streams passed to top-level `pyxsd.parse()` remain lexical-only. Compiled `Schema.parse()` supports prolog replay for non-seekable streams. `Document.revalidate()` currently loses the DTD evidence and can falsely reject valid entity values. Parser profiles are unchanged; see {doc}`validation` and {doc}`xml-security` for the boundaries.
 * - XML 1.1 documents
   - `<?xml version="1.1"?>`
   - unsupported
