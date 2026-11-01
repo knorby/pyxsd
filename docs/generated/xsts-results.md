@@ -229,7 +229,8 @@ outcomes differ across profiles.
 
 Dispositions are reviewed metadata. They never change `pass`, `fail`,
 or the checked denominator, and no adjusted agreement rate is computed
-from them.
+from them. Entries and case counts below include only current failures;
+a case that starts passing leaves this view without a disposition edit.
 
 | Profile | Checked failures | Classified | Unclassified |
 |:--|--:|--:|--:|
@@ -243,7 +244,7 @@ from them.
 | xsd10-regex-version-switch | version-switch-candidate | XSD 1.0 | 16 | XSD 1.0 regex grammar differences the corpus versions intentionally |
 | xsts-astral-regex-queried | queried-corpus | XSD 1.1 | 22 | Astral-plane XSD regex tests the corpus marks queried (W3C bug 4113) |
 | xsts-dtd-unparsed-entities | implementation-gap | XSD 1.1 | 9 | ENTITY/ENTITIES values cannot name DTD-declared unparsed entities |
-| xsts-type-only-root-xsi-type | implementation-gap | XSD 1.1, XSD 1.0 | 6 | Document roots governed only by xsi:type have no global element declaration |
+| xsts-type-only-root-xsi-type | implementation-gap | XSD 1.1, XSD 1.0 | 12 | Document roots governed only by xsi:type have no global element declaration |
 | xsts-xml11-lexer-floor | platform-limit | XSD 1.1 | 5 | XML 1.1 documents cannot be lexed by the expat-based parser |
 
 ### Failure census

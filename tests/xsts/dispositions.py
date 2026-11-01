@@ -5,13 +5,14 @@ only: loading and validating dispositions never rewrites an outcome, and the
 raw checked denominator stays ``pass + fail`` regardless of what is
 classified here.  Validation reads only ``pyxsd:`` baseline keys -- never
 ``xmlschema`` oracle outcomes -- so a disposition cannot borrow agreement
-from the differential engine, and an entry whose case no longer fails is
-reported as stale instead of being silently kept.
+from the differential engine. An entry whose case no longer fails remains
+valid historical metadata but does not describe an active residual.
 
 The failure census is deliberately explicit: every entry lists case IDs, and
 every current failure that no entry claims is returned by
 :func:`unclassified_failures` so it stays visibly unclassified rather than
-being absorbed by a broad pattern match.
+being absorbed by a broad pattern match. Cases that start passing need no
+corresponding disposition edit.
 """
 
 from __future__ import annotations
@@ -124,12 +125,12 @@ def validate_dispositions(
 ) -> None:
     """Check every disposition against the current baselines and corpus.
 
-    Raises :class:`DispositionError` listing every problem (so one stale
+    Raises :class:`DispositionError` listing every problem (so one invalid
     entry does not hide the others) when an entry has a blank required
     field, a category outside the closed vocabulary, an unknown profile or
-    case, a case claimed twice, or a case whose ``pyxsd:`` baseline outcome
-    is missing or no longer ``fail``.  Outcomes themselves are never
-    modified.
+    case, a case claimed twice, or a case missing from the ``pyxsd:``
+    baseline. Any recorded outcome other than ``fail`` is allowed: the case
+    simply leaves the active residual view. Outcomes are never modified.
     """
     problems: list[str] = []
     seen_ids: set[str] = set()
@@ -180,11 +181,8 @@ def validate_dispositions(
                     )
                     continue
                 key = f"{ENGINE}:{case_id}:{case.kind}"
-                outcome = baseline.results.get(key)
-                if outcome is None:
+                if key not in baseline.results:
                     problems.append(f"{label}: {key} is not recorded in the {profile} baseline")
-                elif outcome != Outcome.FAIL.value:
-                    problems.append(f"{label}: {key} is no longer a failure (baseline: {outcome})")
     if problems:
         raise DispositionError("\n".join(problems))
 

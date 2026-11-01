@@ -107,6 +107,17 @@ it changes what future runs treat as the status quo.
 
 The baseline is a large generated file; review it by looking at the change
 count and the `regression`/`improvement` breakdown, not by reading every line.
+After updating a baseline, regenerate the public results in the same change:
+
+```bash
+uv run python tests/report_xsts_docs.py
+```
+
+Cases moving from `fail` to `pass` leave the active disposition report
+automatically. Do not update residual-count assertions or remove resolved
+cases from `dispositions.toml` just to make reporting pass. CI checks that the
+committed fragments match the current baselines with `report_xsts_docs.py
+--check`.
 
 ## Run metadata
 

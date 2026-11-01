@@ -17,7 +17,6 @@ import pytest
 
 import report_xsts_docs
 from xsts.baseline import load as load_baseline
-from xsts.dispositions import DispositionError
 from xsts.documentation import (
     PublicationError,
     build_headline_fragment,
@@ -672,7 +671,7 @@ def test_main_delegates_to_run_with_the_configured_repository(
 # ---------------------------------------------------------- real-data contract
 
 
-def test_checked_in_baselines_publish_the_design_denominators() -> None:
+def test_checked_in_baselines_publish_complete_main_suite_results() -> None:
     repo = Path(__file__).resolve().parents[1]
     if not (repo / "tests" / "xsts" / "corpus" / "suite.xml").is_file():
         pytest.skip("the xsdtests corpus submodule is not checked out")
@@ -682,7 +681,8 @@ def test_checked_in_baselines_publish_the_design_denominators() -> None:
 
     # The engine contract holds in the checked-in data itself: exactly the
     # required engines per profile, and 41,735 results (one per main-suite
-    # case) for each of them.
+    # case) for each of them. Current residual totals are deliberately not
+    # pinned: fixing a case must not break this structural contract.
     for profile_name, expected_counts in (
         ("xsd11", {"pyxsd": 41735, "xmlschema": 41735}),
         ("xsd10", {"pyxsd": 41735}),
@@ -691,38 +691,37 @@ def test_checked_in_baselines_publish_the_design_denominators() -> None:
         counts = Counter(key.split(":", 1)[0] for key in recorded.results)
         assert counts == expected_counts
     assert "| **Total** | 41,735 | 41,735 | 41,735 |" in _lines(fragment)
-
-    assert "| Checked in at least one profile | 41,626 |" in flat
-    assert "| Checked in neither profile | 109 |" in flat
-    assert "| invalid-in-1.0-valid-in-1.1 | 71 | 0 | 0 | 71 |" in flat
-    assert "| same-valid | 6 | 16 | 4 | 26 |" in flat
-    assert "| valid-in-1.0-invalid-in-1.1 | 5 | 0 | 0 | 5 |" in flat
-    # Task 8 backfilled full-run provenance into both checked-in baselines:
-    # the legacy placeholder is gone and each profile publishes complete
-    # main-suite metadata -- both engines for XSD 1.1, pyxsd-only for 1.0.
     assert "full-run provenance not recorded" not in flat
     assert flat.count("| complete | true |") == 2
     assert flat.count("| suite_file | suite.xml |") == 2
     assert "| engines | pyxsd, xmlschema |" in flat
     assert "| engines | pyxsd |" in flat
 
-    section = fragment.split("### Intentional version-split failures\n", 1)[1]
-    split_rows = [
-        line
-        for line in section.split("\n## ", 1)[0].splitlines()
-        if line.startswith("| ") and line != "| Case | Kind | Disposition |"
-    ]
-    assert len(split_rows) == 71
-    assert sum("| xsd10-regex-version-switch |" in row for row in split_rows) == 16
-    assert "This view lists 71 checked XSD 1.0 failures" in flat
+
+def test_a_partially_fixed_disposition_counts_only_current_failures(tmp_path: Path) -> None:
+    results = dict(XSD10_RESULTS)
+    results["pyxsd:Mini/g1/i1:instance"] = "pass"
+    repo = make_repo(tmp_path, xsd10_results=results)
+
+    fragment = build_results_fragment(repo)
+
+    residual = fragment.split("## Residual dispositions\n", 1)[1]
+    assert "| fixture-gap | implementation-gap | XSD 1.0 | 1 | A reviewed fixture gap |" in residual
+    census = residual.split("### Failure census\n", 1)[1]
+    assert "Mini/g1/i1" not in census
+    assert "| XSD 1.0 | Mini/g2/s2 | schema | fail | same-valid | fixture-gap |" in census
 
 
-def test_checked_in_baselines_reject_a_stale_disposition(tmp_path: Path) -> None:
-    repo = make_repo(tmp_path)
-    (repo / "tests" / "xsts" / "dispositions.toml").write_text(
-        DISPOSITION_BLOCKS[0].replace('"Mini/g2/s2"', '"Mini/g1/s1"'),
-        encoding="utf-8",
-    )
+def test_a_fully_fixed_disposition_leaves_the_active_report(tmp_path: Path) -> None:
+    results = dict(XSD10_RESULTS)
+    results["pyxsd:Mini/g1/i1:instance"] = "pass"
+    results["pyxsd:Mini/g2/s2:schema"] = "pass"
+    repo = make_repo(tmp_path, xsd10_results=results)
 
-    with pytest.raises(DispositionError, match="no longer a failure"):
-        build_results_fragment(repo)
+    fragment = build_results_fragment(repo)
+
+    residual = fragment.split("## Residual dispositions\n", 1)[1]
+    assert "| fixture-gap |" not in residual
+    census = residual.split("### Failure census\n", 1)[1]
+    assert "Mini/g1/i1" not in census
+    assert "| XSD 1.0 | Mini/g2/s2 |" not in census

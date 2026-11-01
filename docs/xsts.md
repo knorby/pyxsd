@@ -158,33 +158,36 @@ The generated tables at the end of this page keep three facts separate:
    divergence, or adapter limitation. A case without reviewed classification
    remains visibly `unclassified`.
 
-The cross-profile table includes the **71/6/5 split** among XSD 1.0 failures
-that pass under XSD 1.1: 71 expect invalid in 1.0 and valid in 1.1; six expect
-valid in both; five expect valid in 1.0 and invalid in 1.1. The first group is
-an intentional corpus version split and a candidate for version-specific
-implementation work. The six same-expectation cases cannot inherit that label
-just because their observed outcomes differ. The reverse split also needs its
-selected 1.0 verdict. **All three groups remain raw XSD 1.0 failures.**
+The generated cross-profile table separates intentional corpus version splits
+from same-expectation and reverse-split cases. An intentional split expects
+invalid in 1.0 and valid in 1.1 and is a candidate for version-specific
+implementation work. A same-expectation case cannot inherit that label merely
+because its observed outcomes differ. A reverse split needs its selected 1.0
+verdict. Every case in these views remains a raw XSD 1.0 failure while it is
+listed.
 
 The generated census lists explicit case IDs, classification counts, and
-unclassified cases. Disposition validation rejects nonexistent cases, stale
-classifications of fixed cases, and unsupported categories. Classification
-neither changes applicability nor removes failures from `pass + fail`.
+unclassified cases. Disposition validation rejects nonexistent cases,
+duplicate claims, missing baseline results, and unsupported categories. It
+accepts a case whose outcome has improved; that case leaves the active census
+without a disposition edit. Classification neither changes applicability nor
+removes failures from `pass + fail`. Regenerate these tables after every
+reviewed baseline update so the published counts remain current.
 
 ### Type-only document roots
 
-Six instance cases in each profile define named types but no global element
-declaration matching the document root. Their `xsi:type` supplies a governing
+The type-only-root cases define named types but no global element declaration
+matching the document root. Their `xsi:type` supplies a governing
 type. [XSD 1.1 Structures §3.3.4.6][root-assessment] permits strict assessment
 against a known governing type even when there is no governing element
 declaration. This is not permission to accept every undeclared root.
 
-pyxsd currently reports `unknown-root` before its existing declared-root
-`xsi:type` dispatch can run, so these are false rejects and an implementation
-gap. Supporting them needs type-only root assessment and binding without
-inventing element-declaration properties such as nillability or defaults.
-Ordinary `xsi:type` handling on declared roots is a different path. The
-generated census retains the failures in both profiles.
+The residual mechanism was an `unknown-root` error before pyxsd's existing
+declared-root `xsi:type` dispatch could run, producing false rejects.
+Supporting this case shape requires type-only root assessment and binding
+without inventing element-declaration properties such as nillability or
+defaults. Ordinary `xsi:type` handling on declared roots is a different path.
+The generated census shows any cases that still fail in either profile.
 
 ### DTD-dependent ENTITY and ENTITIES values
 
@@ -192,8 +195,8 @@ generated census retains the failures in both profiles.
 instance document's DTD; [`xs:ENTITIES`][entities] is a nonempty list of those
 values. An `NCName` lexical check alone cannot establish that requirement.
 The ElementTree/Expat path does not retain the declaration information needed
-by pyxsd's datatype check. The nine classified XSD 1.1 cases are therefore
-false accepts, not corpus errors. An unparsed entity declaration identifies an
+by pyxsd's datatype check. The failures in this cluster were therefore false
+accepts, not corpus errors. An unparsed entity declaration identifies an
 external resource, but checking its name does not require fetching it.
 
 This is distinct from DTD validation and from internal parsed-entity
@@ -206,7 +209,7 @@ policies, not alternative DTD-validation modes. See {doc}`xsd-validation` and
 
 ### Other reviewed mechanisms
 
-The sixteen classified XSD 1.0 regex schema failures are version-switch
+The classified XSD 1.0 regex schema failures in this cluster are version-switch
 candidates within the intentional split: pyxsd accepts grammar that the
 corpus expects rejected under 1.0. Compare the [1.0][regex10] and
 [1.1][regex11] regex definitions. The queried astral-plane regex cases link

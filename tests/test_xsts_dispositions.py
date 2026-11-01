@@ -1,10 +1,10 @@
 """Residual dispositions and cross-profile expectation relations.
 
 Dispositions explain *why* a checked-in failure is understood without ever
-changing its outcome: validation reads only ``pyxsd:`` baseline keys, so an
-entry whose case no longer fails is stale and must be removed.  The census
-keeps every other failure visibly unclassified rather than inventing a
-rationale for it.
+changing its outcome. Validation reads only ``pyxsd:`` baseline keys, and an
+entry whose case starts passing remains valid without describing an active
+residual. The census keeps every other current failure visibly unclassified
+rather than inventing a rationale for it.
 """
 
 from __future__ import annotations
@@ -288,16 +288,12 @@ def test_validate_rejects_case_missing_from_baseline() -> None:
         validate_dispositions((make_entry(),), baselines, {"xsd11": cases})
 
 
-def test_validate_rejects_case_that_no_longer_fails() -> None:
+def test_validate_allows_a_case_that_no_longer_fails() -> None:
     baselines, cases_by_profile = make_world(
         fails={}, extra_results={"pyxsd:A/g1/t1:instance": "pass"}
     )
 
-    with pytest.raises(
-        DispositionError,
-        match=r"pyxsd:A/g1/t1:instance is no longer a failure \(baseline: pass\)",
-    ):
-        validate_dispositions((make_entry(),), baselines, cases_by_profile)
+    assert validate_dispositions((make_entry(),), baselines, cases_by_profile) is None
 
 
 def test_validate_rejects_invalid_category() -> None:
@@ -567,44 +563,44 @@ def test_unclassified_census_keeps_other_failures_visible(
 
     census = unclassified_failures(entries, real_baselines)
 
-    # Every failure outside the seeded sets stays visibly unclassified.
-    assert len(census["xsd10"]) == 131
-    assert len(census["xsd11"]) == 48
-    assert "MS-Schema2006-07-15/schZ004/schZ004" in census["xsd10"]
-    assert "MS-Schema2006-07-15/schZ004/schZ004" in census["xsd11"]
-    assert "Assert/assert011/assert011.xsd" in census["xsd11"]
-    assert not set(TYPE_ONLY_ROOT_CASES) & set(census["xsd10"])
-    assert not set(TYPE_ONLY_ROOT_CASES) & set(census["xsd11"])
+    # Derive the census from current outcomes, not a pinned failure total.
+    for profile, baseline in real_baselines.items():
+        claimed = {
+            case_id for entry in entries if profile in entry.profiles for case_id in entry.cases
+        }
+        failing = {
+            key.removeprefix("pyxsd:").rsplit(":", 1)[0]
+            for key, outcome in baseline.results.items()
+            if key.startswith("pyxsd:") and outcome == "fail"
+        }
+        assert census[profile] == tuple(sorted(failing - claimed))
 
 
 @pytestmark_real
-def test_version_split_xsd10_failures_remain_raw_with_expected_relations(
+def test_expectation_relations_do_not_change_raw_baseline_outcomes(
     real_baselines: dict[str, Baseline],
     real_cases_by_profile: dict[str, dict[str, Case]],
 ) -> None:
     baseline10 = real_baselines["xsd10"].results
     baseline11 = real_baselines["xsd11"].results
+    before10 = dict(baseline10)
+    before11 = dict(baseline11)
+    relations = set()
 
-    def pyxsd_outcome(results: dict[str, str], case: Case) -> str | None:
-        return results.get(f"pyxsd:{case.test_id}:{case.kind}")
-
-    relations: dict[str, int] = {}
-    checked = 0
     for case10 in real_cases_by_profile["xsd10"].values():
-        if pyxsd_outcome(baseline10, case10) != "fail":
-            continue
         case11 = real_cases_by_profile["xsd11"][case10.test_id]
-        if pyxsd_outcome(baseline11, case11) != "pass":
-            continue
-        checked += 1
         relation = expectation_relation(case10, case11)
-        relations[relation] = relations.get(relation, 0) + 1
+        relations.add(relation)
+        if relation == INVALID_IN_1_0_VALID_IN_1_1:
+            assert case10.expected_valid is False
+            assert case11.expected_valid is True
 
-    # The design's 71/6/5 split of XSD 1.0 failures that pass under 1.1;
-    # every one of them stays a raw failure in the checked denominator.
-    assert checked == 82
-    assert relations == {
-        INVALID_IN_1_0_VALID_IN_1_1: 71,
-        SAME_VALID: 6,
-        VALID_IN_1_0_INVALID_IN_1_1: 5,
+    assert relations <= {
+        INVALID_IN_1_0_VALID_IN_1_1,
+        NOT_COMPARABLE,
+        SAME_INVALID,
+        SAME_VALID,
+        VALID_IN_1_0_INVALID_IN_1_1,
     }
+    assert baseline10 == before10
+    assert baseline11 == before11

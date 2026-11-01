@@ -726,21 +726,36 @@ def _profile_list(profiles: Sequence[str]) -> str:
 
 def _render_residuals(model: _Model) -> list[str]:
     dispositions = _disposition_map(model.dispositions)
+    failures_by_profile = {data.name: _failing_ids(data) for data in model.profiles}
     summary_rows: list[list[object]] = []
     for data in model.profiles:
-        failures = _failing_ids(data)
+        failures = failures_by_profile[data.name]
         unclassified = len(model.unclassified[data.name])
         summary_rows.append([data.label, len(failures), len(failures) - unclassified, unclassified])
-    entry_rows = [
-        [
-            entry.id,
-            entry.category,
-            _profile_list(entry.profiles),
-            len(entry.cases),
-            entry.title,
-        ]
-        for entry in sorted(model.dispositions, key=lambda item: item.id)
-    ]
+    entry_rows: list[list[object]] = []
+    for entry in sorted(model.dispositions, key=lambda item: item.id):
+        active_profiles = tuple(
+            data.name
+            for data in model.profiles
+            if data.name in entry.profiles
+            and any(case_id in failures_by_profile[data.name] for case_id in entry.cases)
+        )
+        if not active_profiles:
+            continue
+        active_cases = sum(
+            case_id in failures_by_profile[profile]
+            for profile in active_profiles
+            for case_id in entry.cases
+        )
+        entry_rows.append(
+            [
+                entry.id,
+                entry.category,
+                _profile_list(active_profiles),
+                active_cases,
+                entry.title,
+            ]
+        )
     census_rows: list[list[object]] = []
     for data in model.profiles:
         for test_id in _failing_ids(data):
@@ -760,7 +775,8 @@ def _render_residuals(model: _Model) -> list[str]:
         "",
         "Dispositions are reviewed metadata. They never change `pass`, `fail`,",
         "or the checked denominator, and no adjusted agreement rate is computed",
-        "from them.",
+        "from them. Entries and case counts below include only current failures;",
+        "a case that starts passing leaves this view without a disposition edit.",
         "",
         *_table(
             ["Profile", "Checked failures", "Classified", "Unclassified"],

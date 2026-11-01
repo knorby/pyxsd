@@ -7,6 +7,8 @@
 # - Validation reads only pyxsd: baseline keys, never xmlschema outcomes.
 # - Case IDs are explicit; no pattern may silently classify a new failure.
 #   Every failure not listed here stays visibly unclassified in the census.
+# - Entries explain only current failures in generated reports. A case that
+#   starts passing leaves the active report without an edit to this file.
 # - `links` carries public specification/upstream URLs only; internal
 #   adjudication paths appear as comments, never in emitted data.
 # - Categories come from the closed vocabulary: implementation-gap,

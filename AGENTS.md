@@ -29,6 +29,13 @@
   entry in the same commit and keep every previously passing case passing.
   Follow the baseline contract in `tests/test_xsts_suite.py`; use repeated
   runs to distinguish durable improvements from machine-speed flakiness.
+- Keep improvements cheap to land. After reviewing and updating the affected
+  baseline entries, run `uv run python tests/report_xsts_docs.py` and commit
+  the regenerated fragments with the fix. A case moving from `fail` to `pass`
+  must require no disposition cleanup or edits to current-count assertions.
+  Dispositions apply only to current failures; resolved cases leave the active
+  report automatically. Pin reporting behavior with synthetic fixtures and
+  structural invariants, not the current failure totals.
 
 ## Do not depend on the developer machine's locale or filesystem
 
