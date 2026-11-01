@@ -34,6 +34,7 @@ from pyxsd.element_representatives.element_representative import (
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError
 from pyxsd.extensions import Extensions
+from pyxsd.import_visibility import audit_direct_imports
 from pyxsd.instance_binding import bind_instance
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import XML_NS, NamespaceContext, parse_with_namespaces
@@ -1137,6 +1138,11 @@ def _compile_into_context(
             ctx.composed_target_namespaces.add(mainTargetNamespace)
         splice_composed_schemas(ctx, root, base, visited, mainDocument=True)
         splice_additional_schemas(ctx, root, base, visited)
+        # Post-composition audit (XSD 1.1 §4.2.6): every QName
+        # component reference is judged by its own document's authored
+        # imports, before any injected built-in declarations join the
+        # tree and before the ER run snapshots it.
+        audit_direct_imports(ctx, root)
         if getattr(ctx.mode, "namespaces", "legacy") == "strict":
             inject_xml_namespace_attributes(ctx, root)
             inject_xsi_namespace_attributes(ctx, root)

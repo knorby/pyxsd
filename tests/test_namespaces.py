@@ -393,6 +393,7 @@ class TestXsiTypeNamespaces:
 
 _MAIN_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" xmlns:o="urn:o"
     targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:import namespace="urn:o"/>
   <xs:complexType name="Holder">
     <xs:sequence><xs:element name="thing" type="o:Thing"/></xs:sequence>
   </xs:complexType>
@@ -408,6 +409,7 @@ _OTHER_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:o="urn:o"
 
 _MAIN_REF_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t" xmlns:o="urn:o"
     targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:import namespace="urn:o"/>
   <xs:complexType name="Holder">
     <xs:sequence><xs:element ref="o:thing"/></xs:sequence>
   </xs:complexType>

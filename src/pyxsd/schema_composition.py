@@ -22,6 +22,7 @@ from typing import IO, Any, cast
 from xml.etree import ElementTree as ET
 
 from pyxsd.binding import BindingPolicy
+from pyxsd.import_visibility import record_authored_document
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import (
     XLINK_NS,
@@ -209,6 +210,31 @@ class CompositionContext:
     #: in legacy mode they are registered when this flag is set and no
     #: document satisfied the import.
     xml_namespace_imported: bool = False
+    #: The namespaces each composed document authorized with its own
+    #: direct ``xs:import`` directives, keyed by the document root's
+    #: ``id``. Recorded before composition removes the directives, so
+    #: only an import the document actually wrote counts - never the
+    #: synthetic import a caller-supplied or instance-hint schema
+    #: creates. ``None`` in a set is an authored import of the absent
+    #: namespace (an ``xs:import`` with no ``namespace`` attribute).
+    #: Consumed by the post-composition import-visibility audit
+    #: (:mod:`pyxsd.import_visibility`).
+    authored_import_namespaces: dict[int, set[str | None]] = field(default_factory=dict)
+    #: Each composed document's effective target namespace (its own
+    #: ``targetNamespace``, or the chameleon-adopted namespace for a
+    #: redefined base whose root is not stamped), keyed by root id.
+    authored_effective_namespaces: dict[int, str | None] = field(default_factory=dict)
+    #: The authored document of elements whose value defaults and whose
+    #: reference visibility belong to different documents. Only the
+    #: declarations written inside ``xs:override`` need this: they are
+    #: authored by the overriding document (their QNames resolve in
+    #: *its* namespace context), while the defaults they inherit are the
+    #: overridden document's, which ``composed_schema_roots`` keeps for
+    #: them. Everything else is attributed there already - a redefine
+    #: block is appended without a prior mapping and is picked up by the
+    #: enclosing document's provenance walk. The import audit reads this
+    #: map first and falls back to ``composed_schema_roots``.
+    authored_element_roots: dict[int, Any] = field(default_factory=dict)
     composed_documents: set[str] = field(default_factory=set)
     additional_schemas: list[AdditionalSchema] = field(default_factory=list)
     #: The declared XSD processor version (``vc:*`` selectors test against
@@ -366,6 +392,10 @@ def splice_composed_schemas(
     components would stay in no namespace while the base document's
     rewritten references name the adopted one.
     """
+    # Recorded before the loop below removes the directives: the
+    # document's own xs:import children and effective namespace are
+    # what its elements are audited against later (import_visibility).
+    record_authored_document(ctx, schemaRoot, adopted_namespace=adoptedNS)
     for child in list(schemaRoot):
         local = child.tag.split("}")[-1]
         if local in ("include", "redefine", "override", "import") and mainDocument:
@@ -1273,6 +1303,12 @@ def splice_override(
             # them (open043/open045).
             for element in child.iter():
                 ctx.composed_schema_roots.setdefault(id(element), includedRoot)
+                # Reference visibility is different (XSD 1.1 §4.2.5,
+                # W3C bug 17574, Saxon over029): the override block is
+                # authored by the *overriding* document, so its QNames
+                # resolve in that document's context and its own
+                # imports authorize them.
+                ctx.authored_element_roots.setdefault(id(element), schemaRoot)
             schemaRoot.append(child)
     # The base document has been composed; a later include/import of
     # the same document must not splice it a second time (XSD

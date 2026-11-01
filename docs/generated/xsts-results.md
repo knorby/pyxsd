@@ -34,12 +34,12 @@ baseline metadata, never from the generation time.
 | timeout_seconds | 180.0 |
 | jobs | 8 |
 | command | python tests/report_xsts.py --profile xsd11 --engine both --jobs 8 --timeout 180 --write-baseline tests/xsts/baseline-xsd11.toml |
-| source_revision | 5536e85da46bd56855159dcf612359e4f0e7de0b |
+| source_revision | 544f45c9b06b704a09e45153793737fdd410421d |
 | corpus_revision | 7bc3365c652a322f3d762021b3879eb92dae7e30 |
 | python_version | 3.11.16 |
 | platform | macOS-27.0.1-arm64-arm-64bit |
 | engine_versions | elementpath==5.1.4, pyxsd==1.2.1, xmlschema==4.3.2 |
-| run_completed_at | 2026-11-01T19:02:02.296810+00:00 |
+| run_completed_at | 2026-11-01T19:47:07.042972+00:00 |
 
 ### XSD 1.0
 
@@ -53,12 +53,12 @@ baseline metadata, never from the generation time.
 | timeout_seconds | 180.0 |
 | jobs | 8 |
 | command | python tests/report_xsts.py --profile xsd10 --engine pyxsd --jobs 8 --timeout 180 --write-baseline tests/xsts/baseline-xsd10.toml |
-| source_revision | 5536e85da46bd56855159dcf612359e4f0e7de0b |
+| source_revision | 544f45c9b06b704a09e45153793737fdd410421d |
 | corpus_revision | 7bc3365c652a322f3d762021b3879eb92dae7e30 |
 | python_version | 3.11.16 |
 | platform | macOS-27.0.1-arm64-arm-64bit |
 | engine_versions | elementpath==5.1.4, pyxsd==1.2.1 |
-| run_completed_at | 2026-11-01T19:02:57.386508+00:00 |
+| run_completed_at | 2026-11-01T19:48:03.456705+00:00 |
 
 ## Outcomes and checked agreement
 
@@ -67,8 +67,8 @@ verdicts; every other outcome is outside the checked denominator.
 
 | Outcome | XSD 1.1 pyxsd | XSD 1.1 xmlschema | XSD 1.0 pyxsd |
 |:--|--:|--:|--:|
-| pass | 41,524 | 41,448 | 39,301 |
-| fail | 81 | 105 | 137 |
+| pass | 41,530 | 41,448 | 39,306 |
+| fail | 75 | 105 | 132 |
 | not-applicable | 107 | 107 | 2,258 |
 | not-checkable | 14 | 14 | 15 |
 | adapter-gap | 9 | 60 | 24 |
@@ -77,7 +77,7 @@ verdicts; every other outcome is outside the checked denominator.
 | error | 0 | 1 | 0 |
 | **Total** | 41,735 | 41,735 | 41,735 |
 | **Checked (pass + fail)** | 41,605 | 41,553 | 39,438 |
-| **Agreement on checked** | 99.8053% | 99.7473% | 99.6526% |
+| **Agreement on checked** | 99.8197% | 99.7473% | 99.6653% |
 
 ## Schema and instance splits
 
@@ -85,11 +85,11 @@ Cases and checked verdicts within each emitted test kind.
 
 | Profile | Engine | Kind | Cases | pass | fail | Checked | Agreement |
 |:--|:--|:--|--:|--:|--:|--:|--:|
-| XSD 1.1 | pyxsd | schema | 15,378 | 15,308 | 26 | 15,334 | 99.8304% |
+| XSD 1.1 | pyxsd | schema | 15,378 | 15,314 | 20 | 15,334 | 99.8696% |
 | XSD 1.1 | pyxsd | instance | 26,357 | 26,216 | 55 | 26,271 | 99.7906% |
 | XSD 1.1 | xmlschema | schema | 15,378 | 15,317 | 17 | 15,334 | 99.8891% |
 | XSD 1.1 | xmlschema | instance | 26,357 | 26,131 | 88 | 26,219 | 99.6644% |
-| XSD 1.0 | pyxsd | schema | 15,378 | 14,316 | 77 | 14,393 | 99.4650% |
+| XSD 1.0 | pyxsd | schema | 15,378 | 14,321 | 72 | 14,393 | 99.4998% |
 | XSD 1.0 | pyxsd | instance | 26,357 | 24,985 | 60 | 25,045 | 99.7604% |
 
 ## Failure directions
@@ -100,15 +100,15 @@ corpus expectation and the observed verdict, never from a disposition.
 
 | Profile | Engine | Kind | False accepts | False rejects | No direction | Failures |
 |:--|:--|:--|--:|--:|--:|--:|
-| XSD 1.1 | pyxsd | schema | 24 | 2 | 0 | 26 |
+| XSD 1.1 | pyxsd | schema | 18 | 2 | 0 | 20 |
 | XSD 1.1 | pyxsd | instance | 38 | 17 | 0 | 55 |
-| XSD 1.1 | pyxsd | **Total** | 62 | 19 | 0 | 81 |
+| XSD 1.1 | pyxsd | **Total** | 56 | 19 | 0 | 75 |
 | XSD 1.1 | xmlschema | schema | 15 | 2 | 0 | 17 |
 | XSD 1.1 | xmlschema | instance | 68 | 20 | 0 | 88 |
 | XSD 1.1 | xmlschema | **Total** | 83 | 22 | 0 | 105 |
-| XSD 1.0 | pyxsd | schema | 61 | 16 | 0 | 77 |
+| XSD 1.0 | pyxsd | schema | 56 | 16 | 0 | 72 |
 | XSD 1.0 | pyxsd | instance | 44 | 16 | 0 | 60 |
-| XSD 1.0 | pyxsd | **Total** | 105 | 32 | 0 | 137 |
+| XSD 1.0 | pyxsd | **Total** | 100 | 32 | 0 | 132 |
 
 ## Combined-profile applicability
 
@@ -131,16 +131,16 @@ This view covers the checked pyxsd failures in XSD 1.0. The relation
 comes from each profile's selected corpus expectations, never from an
 outcome.
 
-Of the 137 checked XSD 1.0 failures, 66 pass under XSD 1.1, 66 fail, and 5 are not checked.
+Of the 132 checked XSD 1.0 failures, 66 pass under XSD 1.1, 61 fail, and 5 are not checked.
 
 | Relation | Pass in 1.1 | Fail in 1.1 | Not checked | Total |
 |:--|--:|--:|--:|--:|
 | invalid-in-1.0-valid-in-1.1 | 55 | 0 | 0 | 55 |
 | same-valid | 6 | 16 | 4 | 26 |
 | valid-in-1.0-invalid-in-1.1 | 5 | 0 | 0 | 5 |
-| same-invalid | 0 | 50 | 0 | 50 |
+| same-invalid | 0 | 45 | 0 | 45 |
 | not-comparable | 0 | 0 | 1 | 1 |
-| **Total** | **66** | **66** | **5** | **137** |
+| **Total** | **66** | **61** | **5** | **132** |
 
 ### Intentional version-split failures
 
@@ -218,8 +218,8 @@ a case that starts passing leaves this view without a disposition edit.
 
 | Profile | Checked failures | Classified | Unclassified |
 |:--|--:|--:|--:|
-| XSD 1.1 | 81 | 33 | 48 |
-| XSD 1.0 | 137 | 6 | 131 |
+| XSD 1.1 | 75 | 33 | 42 |
+| XSD 1.0 | 132 | 6 | 126 |
 
 ### Reviewed disposition entries
 
@@ -260,8 +260,6 @@ reviewed disposition claims the case.
 | XSD 1.1 | MS-DataTypes2006-07-15/gMonth002_2061/gMonth002_2061.v | instance | fail | same-valid | unclassified |
 | XSD 1.1 | MS-DataTypes2006-07-15/gMonth004_2063/gMonth004_2063.v | instance | fail | same-valid | unclassified |
 | XSD 1.1 | MS-Element2006-07-15/elemM002/elemM002 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-Element2006-07-15/elemZ006/elemZ006 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-Element2006-07-15/elemZ007/elemZ007 | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-Element2006-07-15/elemZ026/elemZ026 | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-IdentityConstraint2006-07-15/idB005/idB005 | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-IdentityConstraint2006-07-15/idC019/idC019 | schema | fail | same-invalid | unclassified |
@@ -292,11 +290,8 @@ reviewed disposition claims the case.
 | XSD 1.1 | MS-Schema2006-07-15/schG11/schG11 | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-Schema2006-07-15/schG2/schG2.v | instance | fail | same-valid | unclassified |
 | XSD 1.1 | MS-Schema2006-07-15/schG6/schG6 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-Schema2006-07-15/schG9/schG9 | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-Schema2006-07-15/schU4/schU4.i | instance | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-Schema2006-07-15/schU5/schU5.i | instance | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-Schema2006-07-15/schZ004/schZ004 | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | MS-Schema2006-07-15/schZ005/schZ005 | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-SimpleType2006-07-15/stE012/stE012 | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-SimpleType2006-07-15/stZ033/stZ033.i | instance | fail | same-invalid | unclassified |
 | XSD 1.1 | MS-SimpleType2006-07-15/ste110/ste110 | schema | fail | same-valid | unclassified |
@@ -309,7 +304,6 @@ reviewed disposition claims the case.
 | XSD 1.1 | Simple/simple012/simple012.v02.xml | instance | fail | same-valid | unclassified |
 | XSD 1.1 | Simple/simple093/simple093.xsd | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | UnitsLength/d2_4_1_3si01/d2_4_1_3si01s | schema | fail | same-invalid | unclassified |
-| XSD 1.1 | XSImportReference/s4_2_6si01/s4_2_6si01s | schema | fail | same-invalid | unclassified |
 | XSD 1.1 | XmlVersions/xv001/xv001.v01.xml | instance | fail | same-valid | xsts-xml11-lexer-floor |
 | XSD 1.1 | XmlVersions/xv003/xv003.v01.xml | instance | fail | same-valid | xsts-xml11-lexer-floor |
 | XSD 1.1 | XmlVersions/xv004/xv004.v01.xml | instance | fail | same-valid | xsts-xml11-lexer-floor |
@@ -370,8 +364,6 @@ reviewed disposition claims the case.
 | XSD 1.0 | MS-DataTypes2006-07-15/gMonth002_2061/gMonth002_2061.v | instance | fail | same-valid | unclassified |
 | XSD 1.0 | MS-DataTypes2006-07-15/gMonth004_2063/gMonth004_2063.v | instance | fail | same-valid | unclassified |
 | XSD 1.0 | MS-Element2006-07-15/elemM002/elemM002 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Element2006-07-15/elemZ006/elemZ006 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Element2006-07-15/elemZ007/elemZ007 | schema | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Element2006-07-15/elemZ016/elemZ016.i | instance | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
 | XSD 1.0 | MS-Element2006-07-15/elemZ026/elemZ026 | schema | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Element2006-07-15/elemZ032a/elemZ032a | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
@@ -422,13 +414,10 @@ reviewed disposition claims the case.
 | XSD 1.0 | MS-Schema2006-07-15/schG11/schG11 | schema | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Schema2006-07-15/schG2/schG2.v | instance | fail | same-valid | unclassified |
 | XSD 1.0 | MS-Schema2006-07-15/schG6/schG6 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schG9/schG9 | schema | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Schema2006-07-15/schL3/schL3 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
 | XSD 1.0 | MS-Schema2006-07-15/schL5/schL5 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
 | XSD 1.0 | MS-Schema2006-07-15/schU4/schU4.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Schema2006-07-15/schU5/schU5.i | instance | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schZ004/schZ004 | schema | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Schema2006-07-15/schZ005/schZ005 | schema | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-SimpleType2006-07-15/stE053/stE053 | schema | fail | valid-in-1.0-invalid-in-1.1 | unclassified |
 | XSD 1.0 | MS-SimpleType2006-07-15/stZ007/stZ007 | schema | fail | valid-in-1.0-invalid-in-1.1 | unclassified |
 | XSD 1.0 | MS-SimpleType2006-07-15/stZ033/stZ033.i | instance | fail | same-invalid | unclassified |
