@@ -1187,6 +1187,55 @@ def _collapse_single_child_compositors(particle: Particle) -> Particle:
     return replace(child, min_occurs=minimum, max_occurs=maximum)
 
 
+def _match_content_impl(
+    model: Particle,
+    nodes: list[Any],
+    member_head_map: dict[str, str] | None,
+    name_of: Any,
+    target_namespace: str | None,
+    namespace_checked: bool,
+    defined: frozenset[str] | None,
+    open_blocked: frozenset[int],
+    member_heads: dict[str, frozenset[str]] | None,
+    *,
+    collect_associations: bool,
+) -> tuple[bool, list[Any], list[ChildMatch]]:
+    """Shared matcher for the Boolean and association entry points.
+
+    Computes the reachable end positions, the best partial target and the
+    complete/leftover verdict. The association trace walk runs only when
+    ``collect_associations`` is true: it reconstructs a feasible path
+    through the memoized end sets, work the Boolean caller discards. The
+    matcher-view normalization happens here, once, so both entry points
+    match the same collapsed view. ``associations`` is empty when it was
+    not collected.
+    """
+    member_head_map = member_head_map or {}
+    if member_heads is None:
+        member_heads = _head_closure(member_head_map)
+    ctx = _MatchContext(
+        member_head_map,
+        name_of,
+        target_namespace,
+        namespace_checked,
+        defined,
+        open_blocked,
+        member_heads,
+    )
+    memo: dict[Any, EndSet] = {}
+    view = _collapse_single_child_compositors(model)
+    ends = _ends_repeated(view, nodes, 0, ctx, memo, 0)
+    complete = len(nodes) in ends
+    target = len(nodes) if complete else max(ends, default=0)
+    out: list[ChildMatch] = []
+    if collect_associations and (complete or target > 0 or model.min_occurs == 0):
+        _trace_repeated(view, nodes, 0, target, ctx, memo, out)
+    out.sort(key=lambda match: match.position)
+    if complete:
+        return True, [], out
+    return False, list(nodes[target:]), out
+
+
 def match_content_associations(
     model: Particle,
     nodes: list[Any],
@@ -1216,10 +1265,9 @@ def match_content_associations(
     ``associations`` maps each consumed node index to the element or
     wildcard particle that admitted it.
     """
-    member_head_map = member_head_map or {}
-    if member_heads is None:
-        member_heads = _head_closure(member_head_map)
-    ctx = _MatchContext(
+    return _match_content_impl(
+        model,
+        nodes,
         member_head_map,
         name_of,
         target_namespace,
@@ -1227,19 +1275,8 @@ def match_content_associations(
         defined,
         open_blocked,
         member_heads,
+        collect_associations=True,
     )
-    memo: dict[Any, EndSet] = {}
-    view = _collapse_single_child_compositors(model)
-    ends = _ends_repeated(view, nodes, 0, ctx, memo, 0)
-    complete = len(nodes) in ends
-    target = len(nodes) if complete else max(ends, default=0)
-    out: list[ChildMatch] = []
-    if complete or target > 0 or model.min_occurs == 0:
-        _trace_repeated(view, nodes, 0, target, ctx, memo, out)
-    out.sort(key=lambda match: match.position)
-    if complete:
-        return True, [], out
-    return False, list(nodes[target:]), out
 
 
 def match_content(
@@ -1256,9 +1293,9 @@ def match_content(
 
     Returns ``(complete, leftover)``; see
     :func:`match_content_associations` for the association records that
-    binding consumes.
+    binding consumes. Associations are never collected here.
     """
-    complete, leftover, _ = match_content_associations(
+    complete, leftover, _ = _match_content_impl(
         model,
         nodes,
         member_head_map,
@@ -1266,7 +1303,9 @@ def match_content(
         target_namespace,
         namespace_checked,
         defined,
-        member_heads=member_heads,
+        frozenset(),
+        member_heads,
+        collect_associations=False,
     )
     return complete, leftover
 

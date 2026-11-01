@@ -580,6 +580,69 @@ class TestCorpusScaleRepeatedSearch:
         assert calls <= 5 * self.REZ003V_NODES, calls
 
 
+class TestBooleanMatchingWithoutTrace:
+    """``match_content`` must not collect associations it discards.
+
+    Tracing reconstructs the per-node associations binding consumes. The
+    Boolean entry point only needs the complete/leftover verdict, so it
+    must never enter the trace walk; the association entry point must
+    still trace and reproduce the exact Z034 digest.
+    """
+
+    @staticmethod
+    def _forbid(*args, **kwargs):
+        raise AssertionError("Boolean matching must not trace associations")
+
+    def test_boolean_matching_skips_trace(self, monkeypatch):
+        from pyxsd import content_model
+
+        monkeypatch.setattr(content_model, "_trace_repeated", self._forbid)
+        assert content_model.match_content(
+            TestRepeatedParticleSearchCost._model(),
+            TestRepeatedParticleSearchCost._nodes(),
+        ) == (True, [])
+
+    def test_boolean_partial_match_skips_trace(self, monkeypatch):
+        from pyxsd import content_model
+
+        monkeypatch.setattr(content_model, "_trace_repeated", self._forbid)
+        model = Particle(
+            "sequence",
+            1,
+            1,
+            [
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+            ],
+        )
+        nodes = [ET.Element("a"), ET.Element("a"), ET.Element("b"), ET.Element("a")]
+        complete, leftover = content_model.match_content(model, nodes)
+        assert complete is False
+        assert [node.tag for node in leftover] == ["a"]
+
+    def test_association_matching_keeps_trace(self, monkeypatch):
+        from pyxsd import content_model
+
+        calls = 0
+        original = content_model._trace_repeated
+
+        def counting(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(content_model, "_trace_repeated", counting)
+        complete, leftover, associations = content_model.match_content_associations(
+            TestCorpusScaleRepeatedSearch._z034_model(),
+            TestCorpusScaleRepeatedSearch._z034_nodes(),
+        )
+        assert calls >= 1
+        assert complete is True and list(leftover) == []
+        assert TestCorpusScaleRepeatedSearch._digest(complete, leftover, associations) == (
+            "fa9fd6f373748d73a76ecdbe410ce07d5e35b7818d1c36a788741d037050236b"
+        )
+
+
 def _fingerprint(particle):
     """Identity and shape of every node, to prove the authored tree is untouched."""
     return (
