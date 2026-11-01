@@ -2,8 +2,13 @@
 
 This package runs the official [W3C XML Schema Test Suite][suite]
 (`w3c/xsdtests`) against pyxsd, with
-[`xmlschema`](https://xmlschema.readthedocs.io/) as an independent oracle.
+[`xmlschema`](https://xmlschema.readthedocs.io/) as a full-XSTS comparison engine.
 It is test infrastructure: it does not change `src/pyxsd/`.
+
+The public [XSTS methodology and results guide](../../docs/xsts.md) is the
+authoritative explanation of selection, adapters, raw checked-case agreement,
+residual dispositions, the extra-suite boundary, and both xmlschema roles.
+This README keeps the contributor commands and baseline-update contract.
 
 [suite]: https://github.com/w3c/xsdtests
 
@@ -72,13 +77,17 @@ measurement.
   version-tagged one, the version-tagged one wins for a matching profile.
 - **Multi-document schemas.** pyxsd takes one schema path, so a group listing
   several documents is driven by an otherwise-empty schema that imports
-  namespaced documents and includes chameleons, in listed order. Documents
-  are referenced by absolute path so their own relative includes still
-  resolve.
-- **No schema.** A group with only instance tests is an `adapter-gap`:
-  pyxsd cannot validate without a schema.
-- **Oracle.** The `xmlschema` result is compared to the suite's expectations
-  too. Where the oracle disagrees with the suite, that is an oracle-erratum
+  namespaced principal documents and includes chameleons, in listed order.
+  Documents another member already composes are not loaded twice. Documents
+  are referenced by absolute path so their own relative includes still resolve.
+- **No schema.** The reporting runner and PR gate enable pyxsd's permissive
+  wrapper synthesis for instance-only groups: normally the root is declared
+  as `xs:anyType`; a resolvable schema hint that already declares it prevents
+  a duplicate declaration. Synthesis is an adapter approximation, not a new
+  corpus case. The xmlschema adapter does not synthesize; those groups remain
+  `adapter-gap` for that engine.
+- **Comparison engine.** The `xmlschema` result is compared to the suite's
+  expectations too. Where the oracle disagrees with the suite, that is an oracle-erratum
   candidate, not proof the suite is wrong.
 
 ## Baseline
@@ -88,6 +97,10 @@ It is how the suite becomes a regression gate without requiring pyxsd to be
 correct everywhere. Any change — a pass turning into a fail, or a known fail
 turning into a pass — fails the `--baseline` comparison until the baseline is
 intentionally regenerated.
+
+An ordinary local report without `--baseline` does not fail just because it
+contains failures. The required PR test asserts an exact baseline match for
+both engines; the dispatch workflow uses the looser `--enforce` rule below.
 
 Regenerate only after reviewing the diff. A new pass is usually good news but
 it changes what future runs treat as the status quo.
