@@ -878,8 +878,8 @@ class _RunEnds:
     The generic memo stores a ``frozenset`` per position, which for a
     document-length run retains O(n^2) integers (reZ003v: 3.4 GiB at
     n=10,000). Storing the interval keeps that memo O(n) while behaving
-    like a set for the matcher's membership, iteration, ordering and
-    intersection uses.
+    like a set for the matcher's membership tests and ``sorted()``
+    iteration.
     """
 
     __slots__ = ("_range",)
@@ -896,13 +896,6 @@ class _RunEnds:
     def __len__(self) -> int:
         return len(self._range)
 
-    def __and__(self, other: Any) -> frozenset[int]:
-        if isinstance(other, (set, frozenset, range, _RunEnds)):
-            return frozenset(value for value in other if value in self._range)
-        return NotImplemented
-
-    __rand__ = __and__
-
     def __eq__(self, other: object) -> bool:
         if isinstance(other, _RunEnds):
             return self._range == other._range
@@ -915,6 +908,28 @@ class _RunEnds:
 
 
 EndSet = frozenset[int] | _RunEnds
+
+
+def _end_sets_intersect(left: EndSet, right: set[int]) -> bool:
+    """Whether *left* and *right* share a position, probing the smaller side.
+
+    The trace feasibility walk only needs the Boolean answer, so probing
+    avoids materializing ``left & right`` for every ``(child, position)``
+    pair. Membership tests stop at the first common position; the
+    ``_RunEnds`` interval answers them without building a set.
+    """
+    # A generator-based ``any`` and ``set.isdisjoint`` both measured
+    # slower on the Z034 trace path (+6.7% and +8.5% respectively); the
+    # explicit loop short-circuits without their per-element overhead.
+    if len(left) <= len(right):
+        for position in left:  # noqa: SIM110 - measured faster than any()
+            if position in right:
+                return True
+        return False
+    for position in right:  # noqa: SIM110 - measured faster than any()
+        if position in left:
+            return True
+    return False
 
 
 def _ends_repeated_single_node(
@@ -1065,7 +1080,9 @@ def _trace_one(
         can[-1] = {target}
         for i in range(len(children) - 1, -1, -1):
             for position in range(start, target + 1):
-                if _ends_repeated(children[i], nodes, position, ctx, memo, 0) & can[i + 1]:
+                if _end_sets_intersect(
+                    _ends_repeated(children[i], nodes, position, ctx, memo, 0), can[i + 1]
+                ):
                     can[i].add(position)
         position = start
         for index, child in enumerate(children):
@@ -1137,6 +1154,139 @@ def _trace_repeated(
         _trace_one(particle, nodes, before, after, ctx, memo, out)
 
 
+def _can_match_empty(particle: Particle) -> bool:
+    """Whether *particle*'s language contains the empty sequence.
+
+    The check is structural and conservative: an occurrence count of
+    zero matches nothing, an ``element`` or ``any`` particle consumes
+    one node per occurrence, and a compositor matches empty only when
+    every child (``sequence``, ``all``) or at least one child
+    (``choice``) does. A ``choice`` or ``sequence`` with
+    ``min_occurs=1`` can therefore still match zero nodes, which is why
+    the occurrence minimum alone cannot decide whether a wrapper's
+    bounds may be multiplied.
+    """
+    if particle.min_occurs == 0 or particle.max_occurs == 0:
+        return True
+    if particle.kind in ("sequence", "all"):
+        return all(_can_match_empty(child) for child in particle.children)
+    if particle.kind == "choice":
+        return any(_can_match_empty(child) for child in particle.children)
+    return False
+
+
+def _collapse_single_child_compositors(particle: Particle) -> Particle:
+    """The matcher's view of *particle* with single-child groups collapsed.
+
+    A ``sequence`` or ``choice`` with exactly one child collapses into
+    that child only under two preconditions:
+
+    - the child's ``min_occurs`` is 1, and
+    - either the wrapper's ``min_occurs`` is 0 or the child cannot match
+      the empty sequence (:func:`_can_match_empty`).
+
+    Under those preconditions the wrapper's k occurrences consume
+    ``k .. k * child.max_occurs`` items, and those per-occurrence ranges
+    overlap as k grows, so the union is the contiguous
+    ``wrapper.min_occurs .. wrapper.max_occurs * child.max_occurs``. With
+    a larger child minimum the k-fold sums have gaps
+    (``sequence{1,2}[b{2,2}]`` admits two or four ``b`` elements, never
+    three), so multiplying the endpoints would accept documents the
+    authored model rejects. A nullable child (for example
+    ``choice{1,unbounded}[a{0,1}]``) breaks the product differently: the
+    wrapper's finite maximum would become ``None`` while the collapsed
+    minimum stays the wrapper's, and the unbounded repetition walk caps
+    itself at ``len(nodes) + 1`` — below that minimum for small
+    documents — so the view would reject inputs the authored tree
+    accepts. A zero wrapper minimum keeps the collapsed range starting
+    at 0, which stays exact even for a nullable child. Both conditions
+    are structural, not a check on the wrapper alone. Within them the
+    bounds multiply, a zero maximum on either side makes the product
+    zero, and otherwise ``None`` (unbounded) on either side keeps it
+    unbounded. Collapsing removes a layer the matcher would otherwise
+    walk once per occurrence (Z034/Z036 repeat a single-element
+    ``sequence`` inside another repeated group).
+
+    Normalization is post-order: children are collapsed first, so nested
+    single-child compositors fold into one terminal particle. Only the
+    view changes; the authored tree is returned untouched when nothing
+    collapses and is never mutated, because derivation, restriction and
+    EDC checks read its compositor structure. ``all`` particles and the
+    synthetic wrapper around a group reference are excluded: both are
+    significant to those checks (and to the open-content attribution
+    pass), and ``all`` is unordered rather than a plain repetition.
+    """
+    children = [_collapse_single_child_compositors(child) for child in particle.children]
+    if any(new is not old for new, old in zip(children, particle.children, strict=True)):
+        particle = replace(particle, children=children)
+    if particle.synthetic or particle.kind not in ("sequence", "choice"):
+        return particle
+    if len(particle.children) != 1:
+        return particle
+    child = particle.children[0]
+    if child.min_occurs != 1 or (particle.min_occurs > 0 and _can_match_empty(child)):
+        return particle
+    minimum = particle.min_occurs
+    if particle.max_occurs == 0 or child.max_occurs == 0:
+        # Zero times anything is zero, including zero times unbounded.
+        maximum = 0
+    elif particle.max_occurs is None or child.max_occurs is None:
+        maximum = None
+    else:
+        maximum = particle.max_occurs * child.max_occurs
+    return replace(child, min_occurs=minimum, max_occurs=maximum)
+
+
+def _match_content_impl(
+    model: Particle,
+    nodes: list[Any],
+    member_head_map: dict[str, str] | None,
+    name_of: Any,
+    target_namespace: str | None,
+    namespace_checked: bool,
+    defined: frozenset[str] | None,
+    open_blocked: frozenset[int],
+    member_heads: dict[str, frozenset[str]] | None,
+    *,
+    collect_associations: bool,
+) -> tuple[bool, list[Any], list[ChildMatch]]:
+    """Shared matcher for the Boolean and association entry points.
+
+    Computes the reachable end positions, the best partial target and the
+    complete/leftover verdict. The association trace walk runs only when
+    ``collect_associations`` is true: it reconstructs a feasible path
+    through the memoized end sets, work the Boolean caller discards. The
+    matcher-view normalization happens here, once, so both entry points
+    match the same collapsed view. ``associations`` is empty when it was
+    not collected.
+    """
+    member_head_map = member_head_map or {}
+    if member_heads is None:
+        member_heads = _head_closure(member_head_map)
+    ctx = _MatchContext(
+        member_head_map,
+        name_of,
+        target_namespace,
+        namespace_checked,
+        defined,
+        open_blocked,
+        member_heads,
+    )
+    memo: dict[Any, EndSet] = {}
+    view = _collapse_single_child_compositors(model)
+    ends = _ends_repeated(view, nodes, 0, ctx, memo, 0)
+    complete = len(nodes) in ends
+    target = len(nodes) if complete else max(ends, default=0)
+    out: list[ChildMatch] = []
+    if collect_associations:
+        if complete or target > 0 or model.min_occurs == 0:
+            _trace_repeated(view, nodes, 0, target, ctx, memo, out)
+        out.sort(key=lambda match: match.position)
+    if complete:
+        return True, [], out
+    return False, list(nodes[target:]), out
+
+
 def match_content_associations(
     model: Particle,
     nodes: list[Any],
@@ -1166,10 +1316,9 @@ def match_content_associations(
     ``associations`` maps each consumed node index to the element or
     wildcard particle that admitted it.
     """
-    member_head_map = member_head_map or {}
-    if member_heads is None:
-        member_heads = _head_closure(member_head_map)
-    ctx = _MatchContext(
+    return _match_content_impl(
+        model,
+        nodes,
         member_head_map,
         name_of,
         target_namespace,
@@ -1177,18 +1326,8 @@ def match_content_associations(
         defined,
         open_blocked,
         member_heads,
+        collect_associations=True,
     )
-    memo: dict[Any, EndSet] = {}
-    ends = _ends_repeated(model, nodes, 0, ctx, memo, 0)
-    complete = len(nodes) in ends
-    target = len(nodes) if complete else max(ends, default=0)
-    out: list[ChildMatch] = []
-    if complete or target > 0 or model.min_occurs == 0:
-        _trace_repeated(model, nodes, 0, target, ctx, memo, out)
-    out.sort(key=lambda match: match.position)
-    if complete:
-        return True, [], out
-    return False, list(nodes[target:]), out
 
 
 def match_content(
@@ -1205,9 +1344,9 @@ def match_content(
 
     Returns ``(complete, leftover)``; see
     :func:`match_content_associations` for the association records that
-    binding consumes.
+    binding consumes. Associations are never collected here.
     """
-    complete, leftover, _ = match_content_associations(
+    complete, leftover, _ = _match_content_impl(
         model,
         nodes,
         member_head_map,
@@ -1215,7 +1354,9 @@ def match_content(
         target_namespace,
         namespace_checked,
         defined,
+        open_blocked=frozenset(),
         member_heads=member_heads,
+        collect_associations=False,
     )
     return complete, leftover
 

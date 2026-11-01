@@ -60,7 +60,7 @@ jobs:
         if: inputs.profiles != 'xsd10'
         run: >
           uv run python tests/report_xsts.py --profile xsd11 --engine pyxsd --json
-          --baseline tests/xsts/baseline-xsd11.toml --enforce
+          --baseline tests/xsts/baseline-xsd11.toml --enforce --timeout 180
           ${{ inputs.limit != '' && format('--limit {0}', inputs.limit) || '' }}
           > xsts-report-xsd11.json
 
@@ -68,7 +68,7 @@ jobs:
         if: inputs.profiles != 'xsd11'
         run: >
           uv run python tests/report_xsts.py --profile xsd10 --engine pyxsd --json
-          --baseline tests/xsts/baseline-xsd10.toml --enforce
+          --baseline tests/xsts/baseline-xsd10.toml --enforce --timeout 180
           ${{ inputs.limit != '' && format('--limit {0}', inputs.limit) || '' }}
           > xsts-report-xsd10.json
 

@@ -15,6 +15,11 @@ from pyxsd.schema import Schema
 
 XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
+#: Association digest for the Z034 shape at
+#: :attr:`TestCorpusScaleRepeatedSearch.Z034_NODES` nodes, shared by the
+#: corpus-scale pin and the two instrumentation tests.
+Z034_ASSOCIATION_DIGEST = "fa9fd6f373748d73a76ecdbe410ce07d5e35b7818d1c36a788741d037050236b"
+
 
 def _parse(schema_body, instance, tmp_path):
     schema = f"<xs:schema {XS}>{schema_body}</xs:schema>"
@@ -527,9 +532,7 @@ class TestCorpusScaleRepeatedSearch:
             self._z034_model(), nodes
         )
         assert complete is True and list(leftover) == []
-        assert self._digest(complete, leftover, associations) == (
-            "fa9fd6f373748d73a76ecdbe410ce07d5e35b7818d1c36a788741d037050236b"
-        )
+        assert self._digest(complete, leftover, associations) == Z034_ASSOCIATION_DIGEST
 
     def test_rez003v_associations_are_preserved(self):
         from pyxsd import content_model
@@ -578,3 +581,647 @@ class TestCorpusScaleRepeatedSearch:
         assert content_model.match_content(self._rez003v_model(), nodes) == (True, [])
         # Pre-fast-path this shape made 50,025,003 calls (~n^2/2).
         assert calls <= 5 * self.REZ003V_NODES, calls
+
+
+class TestBooleanMatchingWithoutTrace:
+    """``match_content`` must not collect associations it discards.
+
+    Tracing reconstructs the per-node associations binding consumes. The
+    Boolean entry point only needs the complete/leftover verdict, so it
+    must never enter the trace walk; the association entry point must
+    still trace and reproduce the exact Z034 digest.
+    """
+
+    @staticmethod
+    def _forbid(*args, **kwargs):
+        raise AssertionError("Boolean matching must not trace associations")
+
+    def test_boolean_matching_skips_trace(self, monkeypatch):
+        from pyxsd import content_model
+
+        monkeypatch.setattr(content_model, "_trace_repeated", self._forbid)
+        assert content_model.match_content(
+            TestRepeatedParticleSearchCost._model(),
+            TestRepeatedParticleSearchCost._nodes(),
+        ) == (True, [])
+
+    def test_boolean_partial_match_skips_trace(self, monkeypatch):
+        from pyxsd import content_model
+
+        monkeypatch.setattr(content_model, "_trace_repeated", self._forbid)
+        model = Particle(
+            "sequence",
+            1,
+            1,
+            [
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+            ],
+        )
+        nodes = [ET.Element("a"), ET.Element("a"), ET.Element("b"), ET.Element("a")]
+        complete, leftover = content_model.match_content(model, nodes)
+        assert complete is False
+        assert [node.tag for node in leftover] == ["a"]
+
+    def test_association_matching_keeps_trace(self, monkeypatch):
+        from pyxsd import content_model
+
+        calls = 0
+        original = content_model._trace_repeated
+
+        def counting(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(content_model, "_trace_repeated", counting)
+        complete, leftover, associations = content_model.match_content_associations(
+            TestCorpusScaleRepeatedSearch._z034_model(),
+            TestCorpusScaleRepeatedSearch._z034_nodes(),
+        )
+        assert calls >= 1
+        assert complete is True and list(leftover) == []
+        assert (
+            TestCorpusScaleRepeatedSearch._digest(complete, leftover, associations)
+            == Z034_ASSOCIATION_DIGEST
+        )
+
+
+class TestEndSetsIntersectionProbe:
+    """Feasibility checks must probe the smaller side instead of building sets.
+
+    ``_trace_one`` only needs to know whether a child's end set meets the
+    remaining feasibility positions. Constructing the intersection
+    allocates a set per ``(child, position)`` pair; membership probing
+    stops at the first common position and handles both ``frozenset`` and
+    the compact ``_RunEnds`` interval.
+    """
+
+    def test_end_sets_intersect_empty_left(self):
+        from pyxsd import content_model
+
+        assert content_model._end_sets_intersect(frozenset(), {1, 2}) is False
+        assert content_model._end_sets_intersect(content_model._RunEnds(0, 0), {1, 2}) is False
+
+    def test_end_sets_intersect_empty_right(self):
+        from pyxsd import content_model
+
+        assert content_model._end_sets_intersect(frozenset({1}), set()) is False
+        assert content_model._end_sets_intersect(content_model._RunEnds(0, 3), set()) is False
+
+    def test_end_sets_intersect_disjoint_inputs(self):
+        from pyxsd import content_model
+
+        assert content_model._end_sets_intersect(frozenset({1, 2}), {3, 4}) is False
+        assert content_model._end_sets_intersect(content_model._RunEnds(0, 2), {2, 3}) is False
+
+    def test_end_sets_intersect_run_ends_larger_than_candidate(self):
+        from pyxsd import content_model
+
+        run = content_model._RunEnds(0, 100)
+        assert content_model._end_sets_intersect(run, {50}) is True
+        assert content_model._end_sets_intersect(run, {100}) is False
+
+    def test_end_sets_intersect_run_ends_multi_element_candidate_miss_then_hit(self):
+        from pyxsd import content_model
+
+        # The interval (2 positions) is smaller than the candidate (3), so
+        # the loop probes the interval: 10 misses, 11 hits.
+        run = content_model._RunEnds(10, 12)
+        assert content_model._end_sets_intersect(run, {9, 20, 11}) is True
+
+    def test_end_sets_intersect_run_ends_smaller_than_candidate(self):
+        from pyxsd import content_model
+
+        run = content_model._RunEnds(10, 12)
+        assert content_model._end_sets_intersect(run, {9, 11, 20}) is True
+        assert content_model._end_sets_intersect(run, {8, 9, 20}) is False
+
+    def test_end_sets_intersect_frozenset_size_branches(self):
+        from pyxsd import content_model
+
+        # Left side no larger than the candidate set: probe left.
+        assert content_model._end_sets_intersect(frozenset({1}), {1, 2, 3}) is True
+        assert content_model._end_sets_intersect(frozenset({4}), {1, 2, 3}) is False
+        # Left side larger: probe the candidate set instead.
+        assert content_model._end_sets_intersect(frozenset({1, 2, 3}), {3}) is True
+        assert content_model._end_sets_intersect(frozenset({1, 2, 3}), {4}) is False
+
+    def test_trace_uses_intersection_probe_and_keeps_z034_digest(self, monkeypatch):
+        from pyxsd import content_model
+
+        calls = 0
+        original = content_model._end_sets_intersect
+
+        def counting(left, right):
+            nonlocal calls
+            calls += 1
+            return original(left, right)
+
+        monkeypatch.setattr(content_model, "_end_sets_intersect", counting)
+        complete, leftover, associations = content_model.match_content_associations(
+            TestCorpusScaleRepeatedSearch._z034_model(),
+            TestCorpusScaleRepeatedSearch._z034_nodes(),
+        )
+        assert calls >= 1
+        assert complete is True and list(leftover) == []
+        assert (
+            TestCorpusScaleRepeatedSearch._digest(complete, leftover, associations)
+            == Z034_ASSOCIATION_DIGEST
+        )
+
+
+def _fingerprint(particle):
+    """Identity and shape of every node, to prove the authored tree is untouched."""
+    return (
+        id(particle),
+        particle.kind,
+        particle.min_occurs,
+        particle.max_occurs,
+        particle.name,
+        particle.synthetic,
+        tuple(_fingerprint(child) for child in particle.children),
+    )
+
+
+class TestSingleChildCompositorCollapse:
+    """Matcher-view normalization of single-child ``sequence``/``choice``.
+
+    The authored particle tree stays as written: derivation, restriction
+    and EDC checks read it. Only the view handed to the matcher collapses
+    a compositor with exactly one child into that child, multiplying the
+    occurrence bounds — and only when the child's ``min_occurs`` is 1,
+    because a larger child minimum makes the repeated sums gappy, and
+    when a non-zero wrapper minimum does not wrap a nullable child, whose
+    collapsed minimum could exceed the unbounded walk's step cap.
+    ``all`` particles and synthetic group-reference wrappers are outside
+    the rule.
+    """
+
+    @staticmethod
+    def _collapse(model):
+        from pyxsd import content_model
+
+        return content_model._collapse_single_child_compositors(model)
+
+    def test_single_child_compositor_nested_recursive_collapse(self):
+        model = Particle(
+            "sequence",
+            1,
+            2,
+            [
+                Particle(
+                    "choice",
+                    1,
+                    3,
+                    [Particle("sequence", 1, 4, [Particle("element", 1, 1, [], "a")])],
+                )
+            ],
+        )
+        assert self._collapse(model) == Particle("element", 1, 24, [], "a")
+
+    def test_single_child_compositor_min_occurs_carries_over(self):
+        # The child's minimum must be 1 for the collapse; the wrapper's
+        # minimum is then the collapsed minimum.
+        model = Particle(
+            "sequence",
+            2,
+            3,
+            [
+                Particle(
+                    "choice",
+                    1,
+                    3,
+                    [Particle("element", 1, 1, [], "a"), Particle("element", 1, 1, [], "b")],
+                )
+            ],
+        )
+        collapsed = self._collapse(model)
+        assert (collapsed.kind, collapsed.name) == ("choice", None)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (2, 9)
+        assert [child.name for child in collapsed.children] == ["a", "b"]
+
+    def test_single_child_compositor_finite_maximum_multiplies(self):
+        model = Particle(
+            "choice",
+            2,
+            3,
+            [Particle("element", 1, 4, [], "a")],
+        )
+        collapsed = self._collapse(model)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (2, 12)
+
+    def test_single_child_compositor_unbounded_maximum_stays_unbounded(self):
+        wrapper_unbounded = Particle("sequence", 1, None, [Particle("element", 1, 3, [], "a")])
+        collapsed = self._collapse(wrapper_unbounded)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (1, None)
+        child_unbounded = Particle("sequence", 2, 4, [Particle("element", 1, None, [], "a")])
+        collapsed = self._collapse(child_unbounded)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (2, None)
+
+    def test_single_child_compositor_optional_group(self):
+        model = Particle("sequence", 0, 1, [Particle("element", 1, 1, [], "a")])
+        collapsed = self._collapse(model)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (0, 1)
+
+    def test_single_child_compositor_zero_occurrence(self):
+        model = Particle("choice", 0, 0, [Particle("element", 1, 5, [], "a")])
+        collapsed = self._collapse(model)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (0, 0)
+
+    def test_single_child_compositor_zero_times_unbounded_is_zero(self):
+        # ``maxOccurs="0"`` around an unbounded child matches nothing at all;
+        # the product must stay 0 instead of turning into "unbounded".
+        zero_wrapper = Particle("sequence", 0, 0, [Particle("element", 1, None, [], "a")])
+        collapsed = self._collapse(zero_wrapper)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (0, 0)
+        zero_child = Particle("sequence", 0, None, [Particle("element", 1, 0, [], "a")])
+        collapsed = self._collapse(zero_child)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (0, 0)
+
+    def test_single_child_compositor_min_occurs_gt_one_blocks_collapse(self):
+        # Multiplying endpoints over-accepts when the child's minimum is 2+:
+        # the k-fold sums have gaps (``sequence{1,2}[b{2,2}]`` admits 2 or 4
+        # b elements, never 3), so the wrapper must survive.
+        shapes = [
+            Particle("sequence", 1, 2, [Particle("element", 2, 2, [], "b")]),
+            Particle("sequence", 0, 3, [Particle("element", 2, 2, [], "b")]),
+            Particle("choice", 0, 1, [Particle("element", 2, 3, [], "b")]),
+            Particle("sequence", 0, 1, [Particle("element", 2, 2, [], "b")]),
+        ]
+        for model in shapes:
+            assert self._collapse(model) is model
+
+    def test_single_child_compositor_min_occurs_gt_one_keeps_authored_verdicts(self):
+        from pyxsd import content_model
+
+        cases = [
+            (
+                Particle("sequence", 1, 2, [Particle("element", 2, 2, [], "b")]),
+                [ET.Element("b")] * 3,
+            ),
+            (
+                Particle("sequence", 0, 3, [Particle("element", 2, 2, [], "b")]),
+                [ET.Element("b")],
+            ),
+            (
+                Particle("sequence", 0, 3, [Particle("element", 2, 2, [], "b")]),
+                [ET.Element("b")] * 3,
+            ),
+            (
+                Particle("choice", 0, 1, [Particle("element", 2, 3, [], "b")]),
+                [ET.Element("b")],
+            ),
+            (
+                Particle("sequence", 0, 1, [Particle("element", 2, 2, [], "b")]),
+                [ET.Element("b")],
+            ),
+        ]
+        for model, nodes in cases:
+            complete, leftover, _associations = content_model.match_content_associations(
+                model, nodes
+            )
+            assert complete is False
+            assert [node.tag for node in leftover] == ["b"]
+        # A zero-width child stays authored too: the wrapper's minimum is
+        # unreachable through the walk's step cap, and the collapsed form
+        # used to bypass that cap and report a complete match.
+        zero_width = Particle(
+            "sequence",
+            2,
+            None,
+            [Particle("all", 0, 1, [Particle("element", 1, 1, [], "c")])],
+        )
+        assert content_model.match_content_associations(zero_width, []) == (False, [], [])
+
+    def test_single_child_compositor_min_occurs_gt_one_schema_verdicts(self, tmp_path):
+        # The reviewer's shapes through Schema.compile + parse: the authored
+        # model rejects each instance, so the matcher must too.
+        cases = [
+            (
+                '<xs:sequence minOccurs="1" maxOccurs="2">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="2"/></xs:sequence>',
+                "<r><b/><b/><b/></r>",
+                "occurrence-max",
+            ),
+            (
+                '<xs:sequence minOccurs="0" maxOccurs="3">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="2"/></xs:sequence>',
+                "<r><b/></r>",
+                "occurrence-min",
+            ),
+            (
+                '<xs:sequence minOccurs="0" maxOccurs="3">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="2"/></xs:sequence>',
+                "<r><b/><b/><b/></r>",
+                "occurrence-max",
+            ),
+            (
+                '<xs:choice minOccurs="0" maxOccurs="1">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="3"/></xs:choice>',
+                "<r><b/></r>",
+                "occurrence-min",
+            ),
+            (
+                '<xs:sequence minOccurs="0">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="2"/></xs:sequence>',
+                "<r><b/></r>",
+                "occurrence-min",
+            ),
+            (
+                '<xs:sequence minOccurs="0"><xs:element name="b" minOccurs="2"/></xs:sequence>',
+                "<r><b/></r>",
+                "occurrence-min",
+            ),
+        ]
+        for body, instance, expected in cases:
+            doc = _parse(_root(body), instance, tmp_path)
+            codes = [issue.code for issue in doc.report.errors]
+            assert expected in codes, (body, instance, codes)
+
+    def test_single_child_compositor_nullable_child_blocks_collapse(self):
+        # A child with ``min_occurs=1`` can still match zero nodes. Its
+        # wrapper's finite maximum would then turn into ``None`` while the
+        # collapsed minimum stays the wrapper's, and the unbounded walk
+        # caps itself below that minimum on small documents.
+        nullable = [
+            Particle("choice", 1, None, [Particle("element", 0, 1, [], "a")]),
+            Particle("sequence", 1, None, [Particle("element", 0, 1, [], "a")]),
+            Particle("choice", 1, 1, [Particle("element", 0, 1, [], "a")]),
+            Particle("all", 1, 1, [Particle("element", 0, 1, [], "a")]),
+        ]
+        for child in nullable:
+            for kind, minimum, maximum in (
+                ("sequence", 2, 2),
+                ("choice", 2, 2),
+                ("sequence", 4, 4),
+                ("choice", 1, 3),
+            ):
+                model = Particle(kind, minimum, maximum, [child])
+                assert self._collapse(model) is model
+        # A non-nullable child with the same bounds still collapses.
+        collapsed = self._collapse(Particle("sequence", 2, 2, [Particle("element", 1, 1, [], "a")]))
+        assert collapsed == Particle("element", 2, 2, [], "a")
+
+    def test_single_child_compositor_nullable_child_keeps_authored_verdicts(self):
+        from pyxsd import content_model
+
+        cases = [
+            (
+                Particle(
+                    "sequence",
+                    2,
+                    2,
+                    [Particle("choice", 1, None, [Particle("element", 0, 1, [], "a")])],
+                ),
+                [],
+            ),
+            (
+                Particle(
+                    "sequence",
+                    3,
+                    3,
+                    [Particle("sequence", 1, None, [Particle("element", 0, 1, [], "a")])],
+                ),
+                [ET.Element("a")],
+            ),
+            (
+                Particle(
+                    "sequence",
+                    4,
+                    4,
+                    [Particle("sequence", 1, None, [Particle("element", 0, 1, [], "a")])],
+                ),
+                [ET.Element("a"), ET.Element("a")],
+            ),
+        ]
+        ctx = content_model._MatchContext({}, content_model._name_of, None, False, None)
+        for model, nodes in cases:
+            ends = content_model._ends_repeated(model, nodes, 0, ctx, {}, 0)
+            assert len(nodes) in ends
+            assert content_model.match_content(model, nodes) == (True, [])
+            complete, leftover, _ = content_model.match_content_associations(model, nodes)
+            assert complete is True and list(leftover) == []
+
+    def test_single_child_compositor_nullable_child_schema_verdicts(self, tmp_path):
+        # The primary reproduction through Schema.compile + parse: the
+        # authored model accepts these instances, so the matcher must too.
+        nullable_choice = (
+            '<xs:sequence minOccurs="2" maxOccurs="2">'
+            '<xs:choice minOccurs="1" maxOccurs="unbounded">'
+            '<xs:element name="a" minOccurs="0"/></xs:choice></xs:sequence>'
+        )
+        nullable_sequence = (
+            '<xs:sequence minOccurs="3" maxOccurs="3">'
+            '<xs:sequence minOccurs="1" maxOccurs="unbounded">'
+            '<xs:element name="a" minOccurs="0"/></xs:sequence></xs:sequence>'
+        )
+        cases = [
+            (nullable_choice, "<r/>"),
+            (nullable_choice, "<r><a/><a/></r>"),
+            (nullable_sequence, "<r><a/></r>"),
+        ]
+        for body, instance in cases:
+            doc = _parse(_root(body), instance, tmp_path)
+            codes = [issue.code for issue in doc.report.errors]
+            assert codes == [], (body, instance, codes)
+
+    def test_single_child_compositor_differential_end_sets_and_verdicts(self, monkeypatch):
+        # Enumerate representative authored shapes and assert the matcher
+        # view never changes an end set or a public verdict. The authored
+        # verdict is measured with the collapse helper patched to the
+        # identity, so this compares the view against the tree as written.
+        from pyxsd import content_model
+
+        children = [
+            Particle("element", 0, 1, [], "a"),
+            Particle("element", 1, 1, [], "a"),
+            Particle("element", 1, 2, [], "a"),
+            Particle("element", 2, 2, [], "b"),
+            Particle("choice", 1, None, [Particle("element", 0, 1, [], "a")]),
+            Particle("sequence", 1, None, [Particle("element", 0, 1, [], "a")]),
+            Particle(
+                "choice",
+                1,
+                1,
+                [Particle("element", 1, 1, [], "a"), Particle("element", 1, 1, [], "b")],
+            ),
+            Particle("all", 0, 1, [Particle("element", 1, 1, [], "a")]),
+            Particle("all", 1, 1, [Particle("element", 1, 1, [], "a")]),
+        ]
+        bounds = ((0, 1), (1, 1), (1, 2), (2, 2), (1, None), (3, 3))
+        node_lists = (
+            [],
+            [ET.Element("a")],
+            [ET.Element("a"), ET.Element("a")],
+            [ET.Element("a"), ET.Element("b")],
+        )
+        ctx = content_model._MatchContext({}, content_model._name_of, None, False, None)
+        original = content_model._collapse_single_child_compositors
+
+        def authored_verdict(model, nodes):
+            monkeypatch.setattr(content_model, "_collapse_single_child_compositors", lambda p: p)
+            try:
+                return content_model.match_content(model, nodes)
+            finally:
+                monkeypatch.setattr(content_model, "_collapse_single_child_compositors", original)
+
+        cases = 0
+
+        def check(model, nodes):
+            nonlocal cases
+            view = self._collapse(model)
+            assert content_model._ends_repeated(model, nodes, 0, ctx, {}, 0) == (
+                content_model._ends_repeated(view, nodes, 0, ctx, {}, 0)
+            )
+            assert content_model.match_content(view, nodes) == authored_verdict(model, nodes)
+            cases += 1
+
+        for kind in ("sequence", "choice"):
+            for minimum, maximum in bounds:
+                for child in children:
+                    model = Particle(kind, minimum, maximum, [child])
+                    for nodes in node_lists:
+                        check(model, nodes)
+
+        # Two-level shapes: an inner single-child wrapper inside an outer
+        # one, with nullable and non-nullable leaves at the bottom.
+        two_level = [
+            Particle("element", 0, 1, [], "a"),
+            Particle("choice", 1, None, [Particle("element", 0, 1, [], "a")]),
+            Particle("all", 0, 1, [Particle("element", 1, 1, [], "a")]),
+        ]
+        for outer in (("sequence", 2, 2), ("choice", 1, None)):
+            for inner in (("sequence", 1, 1), ("choice", 1, 1)):
+                for child in two_level:
+                    model = Particle(
+                        outer[0],
+                        outer[1],
+                        outer[2],
+                        [Particle(inner[0], inner[1], inner[2], [child])],
+                    )
+                    for nodes in node_lists:
+                        check(model, nodes)
+        assert cases == 480
+
+    def test_single_child_compositor_multi_child_guard(self):
+        sequence = Particle(
+            "sequence",
+            1,
+            1,
+            [Particle("element", 1, 1, [], "a"), Particle("element", 1, 1, [], "b")],
+        )
+        assert self._collapse(sequence) is sequence
+        choice = Particle(
+            "choice",
+            1,
+            1,
+            [Particle("element", 1, 1, [], "a"), Particle("element", 1, 1, [], "b")],
+        )
+        assert self._collapse(choice) is choice
+
+    def test_single_child_compositor_all_guard(self):
+        model = Particle("all", 1, 1, [Particle("element", 1, 1, [], "a")])
+        assert self._collapse(model) is model
+
+    def test_single_child_compositor_synthetic_guard(self):
+        # A synthetic wrapper with a terminal child is returned untouched.
+        model = Particle("sequence", 1, 2, [Particle("element", 1, 1, [], "a")], synthetic=True)
+        assert self._collapse(model) is model
+        # A synthetic wrapper whose child is collapsible keeps its own node;
+        # only the child normalizes, so the wrapper is replaced, not folded.
+        wrapper = Particle(
+            "sequence",
+            1,
+            2,
+            [Particle("choice", 1, 1, [Particle("element", 1, 1, [], "a")])],
+            synthetic=True,
+        )
+        collapsed = self._collapse(wrapper)
+        assert collapsed is not wrapper
+        assert (collapsed.kind, collapsed.synthetic) == ("sequence", True)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (1, 2)
+        assert [child.kind for child in collapsed.children] == ["element"]
+
+    def test_single_child_compositor_leaf_unchanged(self):
+        leaf = Particle("element", 2, 3, [], "a")
+        assert self._collapse(leaf) is leaf
+
+    def test_single_child_compositor_nested_multi_child_parent(self):
+        model = Particle(
+            "sequence",
+            1,
+            1,
+            [
+                Particle("sequence", 1, 5, [Particle("element", 1, 2, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+            ],
+        )
+        collapsed = self._collapse(model)
+        assert collapsed is not model
+        assert collapsed.kind == "sequence"
+        assert len(collapsed.children) == 2
+        assert (collapsed.children[0].kind, collapsed.children[0].max_occurs) == ("element", 10)
+        assert collapsed.children[1].name == "b"
+
+    def test_single_child_compositor_terminal_metadata_identity(self):
+        from pyxsd.wildcards import WildcardSpec
+
+        descriptor = object()
+        spec = WildcardSpec(namespace="##local")
+        element = Particle("element", 1, 1, [], "a", None, descriptor)
+        collapsed_element = self._collapse(Particle("sequence", 3, 4, [element]))
+        assert collapsed_element is not element
+        assert collapsed_element.descriptor is descriptor
+        assert collapsed_element.spec is None
+        wildcard = Particle("any", 1, 1, [], None, spec)
+        collapsed_wildcard = self._collapse(Particle("choice", 2, 2, [wildcard]))
+        assert collapsed_wildcard.spec is spec
+        assert collapsed_wildcard.descriptor is None
+
+    def test_single_child_compositor_matcher_leaves_authored_tree_unchanged(self):
+        from pyxsd import content_model
+
+        model = Particle(
+            "sequence",
+            1,
+            1,
+            [
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+                Particle("sequence", 1, 100, [Particle("element", 1, None, [], "a")]),
+            ],
+        )
+        before = _fingerprint(model)
+        nodes = (
+            [ET.Element("a") for _ in range(3)]
+            + [ET.Element("b")]
+            + [ET.Element("a") for _ in range(2)]
+        )
+        complete, leftover, associations = content_model.match_content_associations(model, nodes)
+        assert complete is True and list(leftover) == []
+        assert [match.position for match in associations] == list(range(len(nodes)))
+        assert _fingerprint(model) == before
+
+    def test_single_child_compositor_z036_association_digest(self):
+        from pyxsd import content_model
+
+        model = Particle(
+            "choice",
+            1,
+            None,
+            [
+                Particle("sequence", 1, None, [Particle("element", 1, None, [], "a")]),
+                Particle("element", 1, 1, [], "b"),
+            ],
+        )
+        nodes = (
+            [ET.Element("a") for _ in range(40)]
+            + [ET.Element("b")]
+            + [ET.Element("a") for _ in range(5)]
+        )
+        complete, leftover, associations = content_model.match_content_associations(model, nodes)
+        assert complete is True and list(leftover) == []
+        assert TestCorpusScaleRepeatedSearch._digest(complete, leftover, associations) == (
+            "7138b1be9e0463fa080eb0998eda67d9ea989d8b66041416625eec63378df857"
+        )

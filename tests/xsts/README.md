@@ -37,10 +37,10 @@ uv run python tests/report_xsts.py --profile xsd11 --limit 500
 
 # Full run, parallel across CPUs, comparing against the checked-in baseline
 uv run python tests/report_xsts.py --profile xsd11 \
-    --baseline tests/xsts/baseline-xsd11.toml
+    --baseline tests/xsts/baseline-xsd11.toml --timeout 180
 
 # Regenerate the baseline after reviewing the differences
-uv run python tests/report_xsts.py --profile xsd11 \
+uv run python tests/report_xsts.py --profile xsd11 --timeout 180 \
     --write-baseline tests/xsts/baseline-xsd11.toml
 ```
 
@@ -49,7 +49,11 @@ Useful flags: `--jobs N` (default: one per CPU), `--engine pyxsd|xmlschema|both`
 `--enforce`.
 
 A full XSD 1.1 run over 41,735 cases takes roughly three minutes on a modern
-laptop with `--jobs 8`.
+laptop with `--jobs 8`. Full runs are timing-sensitive: `particlesZ036_b1`
+now passes in roughly 38 s on a modern laptop, which is close to the 60 s
+default budget. Use `--timeout 180` (as CI does) when matching CI or running
+on a loaded machine. A timeout is a harness outcome, not a verdict; a case
+that crosses the budget should be profiled rather than silently re-budgeted.
 
 When re-running by hand, use a clean bytecode cache
 (`PYTHONPYCACHEPREFIX=$(mktemp -d)`). A same-length source edit can leave a
@@ -114,8 +118,8 @@ The XSD 1.0 profile and ad-hoc slices stay on the dispatch-only
 (Actions → xsts → Run workflow). Choose one profile or both, and
 optionally cap the case count with `limit`.
 
-The workflow runs `--engine pyxsd` and `--enforce` against each checked-in
-baseline. `--enforce` exits `2` when a recorded pass no longer passes
+The workflow runs `--engine pyxsd`, `--enforce`, and `--timeout 180` against
+each checked-in baseline. `--enforce` exits `2` when a recorded pass no longer passes
 (a regression) or a newly observed case is a failure, and `0` otherwise. It
 ignores cases the run did not observe (a `--limit` slice, or an engine that
 was not selected), so a partial run does not fail on the thousands of
@@ -126,9 +130,9 @@ The corpus submodule is cached by its pinned commit, so repeat dispatches skip
 the clone. Regenerate a baseline locally only after reviewing the diff:
 
 ```bash
-uv run python tests/report_xsts.py --profile xsd11 --engine pyxsd \
+uv run python tests/report_xsts.py --profile xsd11 --engine pyxsd --timeout 180 \
     --write-baseline tests/xsts/baseline-xsd11.toml
-uv run python tests/report_xsts.py --profile xsd10 --engine pyxsd \
+uv run python tests/report_xsts.py --profile xsd10 --engine pyxsd --timeout 180 \
     --write-baseline tests/xsts/baseline-xsd10.toml
 ```
 

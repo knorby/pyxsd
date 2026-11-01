@@ -60,7 +60,9 @@ def test_full_run_matches_the_baseline(tmp_path: Path) -> None:
     # The dev default is 60 s because the repeated-particle fast path
     # moved the regex cases (reZ005/reZ006) to a 24-43 s band on a dev
     # machine: at 30 they still straddle the budget and report timeouts
-    # on a loaded machine.
+    # on a loaded machine. particlesZ036_b1 now passes at about 38 s on a
+    # modern laptop, also close to the default; set PYXSD_XSTS_TIMEOUT=180
+    # when running locally under load or when matching CI.
     case_timeout = float(os.environ.get("PYXSD_XSTS_TIMEOUT", "60"))
     results = run_parallel(
         cases,
