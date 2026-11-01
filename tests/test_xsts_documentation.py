@@ -630,7 +630,14 @@ def test_checked_in_baselines_publish_the_design_denominators() -> None:
     assert "| invalid-in-1.0-valid-in-1.1 | 71 | 0 | 0 | 71 |" in flat
     assert "| same-valid | 6 | 16 | 4 | 26 |" in flat
     assert "| valid-in-1.0-invalid-in-1.1 | 5 | 0 | 0 | 5 |" in flat
-    assert "full-run provenance not recorded" in flat
+    # Task 8 backfilled full-run provenance into both checked-in baselines:
+    # the legacy placeholder is gone and each profile publishes complete
+    # main-suite metadata -- both engines for XSD 1.1, pyxsd-only for 1.0.
+    assert "full-run provenance not recorded" not in flat
+    assert flat.count("| complete | true |") == 2
+    assert flat.count("| suite_file | suite.xml |") == 2
+    assert "| engines | pyxsd, xmlschema |" in flat
+    assert "| engines | pyxsd |" in flat
 
     section = fragment.split("### Intentional version-split failures\n", 1)[1]
     split_rows = [

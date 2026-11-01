@@ -24,11 +24,41 @@ baseline metadata, never from the generation time.
 
 ### XSD 1.1
 
-full-run provenance not recorded
+| Field | Value |
+|:--|:--|
+| profile | xsd11 |
+| suite_file | suite.xml |
+| case_count | 41735 |
+| complete | true |
+| engines | pyxsd, xmlschema |
+| timeout_seconds | 180.0 |
+| jobs | 8 |
+| command | python tests/report_xsts.py --profile xsd11 --engine both --jobs 8 --timeout 180 --baseline tests/xsts/baseline-xsd11.toml --write-baseline tests/xsts/baseline-xsd11.toml --json |
+| source_revision | 9b346107604492e10b8a3ab59230fafea41eb240 |
+| corpus_revision | 7bc3365c652a322f3d762021b3879eb92dae7e30 |
+| python_version | 3.11.16 |
+| platform | macOS-27.0.1-arm64-arm-64bit |
+| engine_versions | elementpath==5.1.4, pyxsd==1.2.1, xmlschema==4.3.2 |
+| run_completed_at | 2026-11-01T07:49:24.408858+00:00 |
 
 ### XSD 1.0
 
-full-run provenance not recorded
+| Field | Value |
+|:--|:--|
+| profile | xsd10 |
+| suite_file | suite.xml |
+| case_count | 41735 |
+| complete | true |
+| engines | pyxsd |
+| timeout_seconds | 180.0 |
+| jobs | 8 |
+| command | python tests/report_xsts.py --profile xsd10 --engine pyxsd --jobs 8 --timeout 180 --baseline tests/xsts/baseline-xsd10.toml --write-baseline tests/xsts/baseline-xsd10.toml --json |
+| source_revision | 9b346107604492e10b8a3ab59230fafea41eb240 |
+| corpus_revision | 7bc3365c652a322f3d762021b3879eb92dae7e30 |
+| python_version | 3.11.16 |
+| platform | macOS-27.0.1-arm64-arm-64bit |
+| engine_versions | elementpath==5.1.4, pyxsd==1.2.1 |
+| run_completed_at | 2026-11-01T07:50:41.984922+00:00 |
 
 ## Outcomes and checked agreement
 
