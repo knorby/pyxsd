@@ -169,6 +169,13 @@ class _CollectionByteLimitReached(Exception):
     """Declaration collection crossed the caller's ``max_bytes`` budget."""
 
 
+class _CollectDeclarations:
+    """Sentinel: :meth:`Schema.parse` collects declaration evidence itself."""
+
+
+_COLLECT_DECLARATIONS = _CollectDeclarations()
+
+
 class _ByteCappedSource:
     """Read adapter enforcing ``xml_limits.max_bytes`` during collection.
 
@@ -682,8 +689,34 @@ class Schema:
         when the document root matched no global element declaration
         (the ``unknown-root`` issue records why).
         """
+        return self._parse_instance(xml, xml_policy=xml_policy, xml_limits=xml_limits)
+
+    def _parse_instance(
+        self,
+        xml: str | Path | os.PathLike[str] | IO[str] | ET.Element,
+        *,
+        xml_policy: XmlParserPolicy | None = None,
+        xml_limits: XmlLimits | None = None,
+        declarations: DocumentDeclarations | _CollectDeclarations | None = _COLLECT_DECLARATIONS,
+    ) -> "Document":
+        """One instance bind; *declarations* is internal revalidation evidence.
+
+        Omitted, this parse collects declaration evidence itself. A
+        :class:`~pyxsd.document.Document` revalidating its serialized tree
+        passes the evidence its original parse recorded -- including
+        ``None`` -- because the serialized text has no DOCTYPE to
+        recollect from. ``None`` therefore means lexical-only, never an
+        empty, complete set.
+        """
         _reject_parser_override(self.resource_policy, xml_policy, xml_limits)
         collection_policy = xml_policy if xml_policy is not None else XmlParserPolicy.default()
+        collected: DocumentDeclarations | None
+        if isinstance(declarations, _CollectDeclarations):
+            collected = None
+            collect_declarations = True
+        else:
+            collected = declarations
+            collect_declarations = False
         if self.resource_policy is not None:
             try:
                 data = read_resource(xml, self.resource_policy, purpose="instance")
@@ -696,20 +729,21 @@ class Schema:
             # bytes, so declaration evidence stays unavailable.
             return self._bind_tree(tree, xml, source_id=data.source_id)
         if isinstance(xml, ET.Element):
-            declarations = self._collect_root_declarations(
-                xml, collection_policy, _max_bytes(xml_limits)
-            )
+            if collect_declarations:
+                collected = self._collect_root_declarations(
+                    xml, collection_policy, _max_bytes(xml_limits)
+                )
             return self._bind_tree(
                 xml,
                 xml,
                 source_id=source_identifier(xml),
-                declarations=declarations,
+                declarations=collected,
             )
         original = xml
         parse_source: Any = xml
-        declarations = None
         if (
-            self._needs_entity_declarations()
+            collect_declarations
+            and self._needs_entity_declarations()
             and not isinstance(xml, (str, os.PathLike))
             and not _stream_is_seekable(xml)
         ):
@@ -722,12 +756,12 @@ class Schema:
             # standard limit failure over the replayed bytes.
             replay = _PrologReplay(xml)
             try:
-                declarations = collect_document_declarations(
+                collected = collect_document_declarations(
                     _capped_for_collection(replay, _max_bytes(xml_limits)),
                     policy=collection_policy,
                 )
             except _CollectionByteLimitReached:
-                declarations = None
+                collected = None
             finally:
                 replay.finish_collection()
             parse_source = replay
@@ -744,15 +778,15 @@ class Schema:
         except ET.ParseError as e:
             raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
         logger.debug("XML file parsed by the ElementTree library successfully...")
-        if declarations is None:
-            declarations = self._collect_root_declarations(
+        if collect_declarations and collected is None:
+            collected = self._collect_root_declarations(
                 tree, collection_policy, _max_bytes(xml_limits)
             )
         return self._bind_tree(
             tree,
             original,
             source_id=source_identifier(original),
-            declarations=declarations,
+            declarations=collected,
         )
 
     def _bind_tree(
@@ -841,7 +875,14 @@ class Schema:
         merged = new_validation_report(self.resource_policy)
         merged.extend(self.report)
         merged.extend(instance_report)
-        return Document(schema=self, root=root, source=source, report=merged, provenance=provenance)
+        return Document(
+            schema=self,
+            root=root,
+            source=source,
+            report=merged,
+            provenance=provenance,
+            declarations=declarations,
+        )
 
 
 #: :meth:`Schema.compile` exposed as a module-level function.

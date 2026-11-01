@@ -76,8 +76,11 @@ evidence. Caller-supplied trees without pyxsd source provenance and
 custom-policy parser results lack core declaration evidence. Non-seekable
 instance streams passed to top-level `pyxsd.parse()` also remain lexical-only,
 even with an explicit schema; compiled `Schema.parse()` can collect and
-replay their prolog. `Document.revalidate()` currently loses the DOCTYPE and
-declaration evidence, so it can falsely reject valid entity values.
+replay their prolog. `Document.revalidate()` serializes the tree without its
+DOCTYPE, so it carries the original parse's declaration evidence into the
+reparse instead of recollecting: a declared value stays valid, complete
+evidence still rejects an undeclared replacement, and evidence the original
+parse lacked stays lexical-only.
 These are implementation limits, not alternative validity rules or security
 protections. See {doc}`validation` for source-provenance and reread limits.
 

@@ -20,7 +20,7 @@ from xml.etree import ElementTree as ET
 import pytest
 
 import pyxsd.schema
-from pyxsd import ParseModes, Schema, parse
+from pyxsd import Document, ParseModes, Schema, parse
 from pyxsd.dtd_declarations import DocumentDeclarations, collect_document_declarations
 from pyxsd.namespaces import NamespaceContext, parse_with_namespaces
 from pyxsd.resource_policy import ResourceData
@@ -857,3 +857,143 @@ def test_collection_collects_normally_at_the_exact_byte_budget(tmp_path: Path, m
     invalid = f"{doctype('r', ('alpha',))}<r>omega</r>".encode()  # same length
     rejected = schema.parse(BareReader(invalid), xml_limits=XmlLimits(max_bytes=len(invalid)))
     assert rejected.report.has_errors
+
+
+# ---------------------------------------------------------------------------
+# Revalidation keeps the original parse's declaration evidence
+# ---------------------------------------------------------------------------
+
+
+def test_revalidate_preserves_a_declared_entity(tmp_path: Path) -> None:
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    document = parse_root_value(schema, tmp_path, "alpha", ("alpha",), "entity.xml")
+    assert not document.report.has_errors
+    # The serialized form carries no DOCTYPE; the evidence must come from
+    # the original parse, not from what revalidation writes out.
+    assert "<!DOCTYPE" not in document.to_string()
+
+    again = document.revalidate()
+
+    assert not again.report.has_errors
+    assert not again.report.warnings
+
+
+def test_revalidate_preserves_a_declared_entities_list(tmp_path: Path) -> None:
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITIES")
+    document = parse_root_value(schema, tmp_path, "alpha beta", ("alpha", "beta"), "entities.xml")
+    assert not document.report.has_errors
+
+    again = document.revalidate()
+
+    assert not again.report.has_errors
+    assert not again.report.warnings
+
+
+COMPLEX_ENTITY_XSD = (
+    f"<?xml version='1.0'?>\n<xs:schema {XSD_NS}>\n"
+    '  <xs:element name="doc"><xs:complexType><xs:sequence>\n'
+    '    <xs:element name="note" type="xs:string"/>\n'
+    '    <xs:element name="e" type="xs:ENTITY"/>\n'
+    "  </xs:sequence></xs:complexType></xs:element>\n"
+    "</xs:schema>\n"
+)
+
+
+def complex_entity_document(tmp_path: Path) -> Document:
+    schema = Schema.compile(
+        write(tmp_path, "schema.xsd", COMPLEX_ENTITY_XSD), mode=ParseModes.NAMESPACED
+    )
+    document = schema.parse(
+        write(
+            tmp_path,
+            "entity.xml",
+            f"{doctype('doc', ('alpha',))}<doc><note>n</note><e>alpha</e></doc>",
+        )
+    )
+    assert not document.report.has_errors
+    return document
+
+
+def test_revalidate_after_a_transform_keeps_a_declared_entity(tmp_path: Path) -> None:
+    document = complex_entity_document(tmp_path)
+
+    def edit(tree: Any) -> Any:
+        tree.note._value_ = ["changed"]
+        return tree
+
+    transformed = document.transform(edit)
+    assert isinstance(transformed, Document)
+
+    again = transformed.revalidate()
+
+    assert not again.report.has_errors
+
+
+def test_revalidate_keeps_complete_evidence_for_replaced_values(tmp_path: Path) -> None:
+    """The carried evidence still rejects a new value it does not declare."""
+    document = complex_entity_document(tmp_path)
+
+    def replace(tree: Any) -> Any:
+        tree.e._value_ = ["omega"]
+        return tree
+
+    transformed = document.transform(replace)
+    assert isinstance(transformed, Document)
+
+    again = transformed.revalidate()
+
+    assert again.report.has_errors
+
+
+def test_revalidate_without_evidence_stays_lexical_only(tmp_path: Path) -> None:
+    """A document parsed without declaration evidence invents none."""
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    tree = ET.fromstring(f"{doctype('r', ('alpha',))}<r>omega</r>")
+    document = schema.parse(tree)
+    assert not document.report.has_errors
+
+    again = document.revalidate()
+
+    assert not again.report.has_errors
+
+
+def test_revalidate_carries_incomplete_external_subset_evidence(tmp_path: Path) -> None:
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    document = schema.parse(
+        write(tmp_path, "external.xml", '<!DOCTYPE r SYSTEM "external.dtd"><r>omega</r>')
+    )
+    assert not document.report.has_errors
+    assert [issue.code for issue in document.report.warnings].count("dtd-external-skipped") == 1
+
+    again = document.revalidate()
+
+    assert not again.report.has_errors
+    assert [issue.code for issue in again.report.warnings].count("dtd-external-skipped") == 1
+
+
+def test_revalidate_does_not_recollect_from_the_serialized_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    document = parse_root_value(schema, tmp_path, "alpha", ("alpha",), "entity.xml")
+    spy = CollectionSpy(monkeypatch)
+
+    document.revalidate()
+
+    assert spy.calls == 0
+
+
+def test_explicit_declarations_replace_element_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Carried evidence is used for a pre-parsed Element, not collected."""
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    tree = ET.fromstring(f"{doctype('r', ('alpha',))}<r>omega</r>")
+    spy = CollectionSpy(monkeypatch)
+
+    document = schema._parse_instance(
+        tree, declarations=DocumentDeclarations(frozenset({"alpha"}), True)
+    )
+
+    assert spy.calls == 0
+    assert document.report.has_errors

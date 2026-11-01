@@ -15,7 +15,9 @@ writer can serialize it.
 After a transform changes the tree's shape, revalidate the transformed
 document with `Document.revalidate()` — it re-parses the serialized tree
 against the same schema and returns a fresh document whose report
-reflects the new structure.
+reflects the new structure. It also carries the original parse's DTD
+declaration evidence, so a declared `ENTITY`/`ENTITIES` value does not
+become invalid merely because serialization drops the DOCTYPE.
 
 ## Transform syntax
 

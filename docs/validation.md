@@ -149,11 +149,14 @@ Declaration evidence also depends on the input path:
   context is reused for compilation and the source remains readable,
   `Schema.parse(Element)` can collect declarations from that source.
   Direct datatype construction outside a document parse is lexical-only too.
-- `Document.revalidate()` currently serializes and reparses the bound tree
-  without preserving its DOCTYPE or declaration evidence. The new parse
-  therefore sees an empty, complete declaration set and can report a valid
-  `ENTITY`/`ENTITIES` value as undeclared. Revalidation is not currently a
-  reliable validity check for these declaration-dependent documents.
+- `Document.revalidate()` serializes the bound tree, which has no DOCTYPE.
+  It cannot recollect declarations from that serialized text, so it carries
+  the original parse's declaration evidence into the reparse instead: a
+  valid value declared in the original document stays valid, complete
+  evidence still rejects an undeclared replacement, and an incomplete
+  external subset keeps its advisory. A document parsed without evidence
+  (a caller-supplied `Element`, a custom policy parse) revalidates
+  lexical-only rather than inventing an empty declaration set.
 
 Collection preserves the selected parser's declaration guards; it never
 replaces security handlers. The default, protected, and strict profiles are
@@ -285,8 +288,9 @@ checks the old report rather than proving that the changed tree is valid.
 Call `revalidate()` to serialize and parse the tree again, and check the
 fresh document's report. An unreadable or malformed serialized result still
 raises `PyXSDError`; it does not become an ordinary validation finding.
-The declaration-dependent `ENTITY`/`ENTITIES` limitation above also applies:
-revalidation currently loses the original DTD evidence.
+Revalidation carries the original parse's `ENTITY`/`ENTITIES` declaration
+evidence (see the input-path limitations above), so it does not turn a valid
+declared value invalid; a document parsed without evidence stays lexical-only.
 
 ## Structured and bounded reports
 

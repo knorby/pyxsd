@@ -217,11 +217,12 @@ names stay lexical-only, with one advisory when a declaration check is skipped.
 Caller-supplied trees without pyxsd source provenance, custom-policy parser
 results, and non-seekable instance streams passed to top-level `pyxsd.parse()`
 remain lexical-only too, even with an explicit schema. Compiled `Schema.parse()`
-supports prolog replay for those streams. `Document.revalidate()` currently
-loses DTD evidence and can falsely reject valid entity values. See
-{doc}`validation` for provenance and reread limits. Collection preserves
-security handlers and the default, protected, and strict profiles. This is
-neither DTD validation nor a change to
+supports prolog replay for those streams. `Document.revalidate()` carries the
+original parse's declaration evidence across the serialized reparse, so a
+declared value stays valid; a document parsed without evidence stays
+lexical-only. See {doc}`validation` for provenance and reread limits.
+Collection preserves security handlers and the default, protected, and strict
+profiles. This is neither DTD validation nor a change to
 entity expansion or parser hardening; see {doc}`xsd-validation` and
 {doc}`xml-security`. Resolved cases leave the generated active census
 automatically; remaining limitations are not claimed fixed.
