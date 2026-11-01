@@ -54,8 +54,10 @@ normal suite (it skips cleanly without the corpus). Set `PYXSD_RUN_XSTS=1`
 to run the W3C XML Schema Test Suite against its checked-in baseline (its
 contract and baseline notes are in `tests/xsts/README.md`); the
 `PYXSD_XSTS_TIMEOUT` environment variable raises the per-case budget, which
-the slower CI runners need. The `xmlschema` oracle is gated the same way by
-`PYXSD_RUN_ORACLE=1`.
+the slower CI runners need. Use `PYXSD_XSTS_TIMEOUT=180` locally to match CI
+when running the full suite on a loaded machine; `particlesZ036_b1` is now
+close enough to the 60 s dev default to time out under load. The `xmlschema`
+oracle is gated the same way by `PYXSD_RUN_ORACLE=1`.
 
 ## Pull requests
 

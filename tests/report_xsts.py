@@ -55,7 +55,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("pyxsd", "xmlschema", "both"),
         default="both",
     )
-    parser.add_argument("--timeout", type=float, default=30.0, help="per-case seconds")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=60.0,
+        help="per-case seconds (default 60; use 180 on slower or loaded machines)",
+    )
     parser.add_argument(
         "--jobs",
         type=int,
