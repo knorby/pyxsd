@@ -89,9 +89,10 @@ options are applied to it, so validate or harden it before handing it over.
 
 The default backend processes the internal DTD subset as far as Expat exposes
 it: internal entity declarations are expanded, and `ATTLIST` defaults can apply.
-It installs no external-resource resolver, so an external subset or external
-entity is not fetched. The document is nevertheless untrusted input: an internal
-entity can expand exponentially, and entity replacement text can consume memory.
+It installs no external-resource resolver, so an external subset, external
+parameter entity, or other external entity is not fetched. The document is
+nevertheless untrusted input: an internal entity can expand exponentially,
+and entity replacement text can consume memory.
 That is what `protected()` and `strict()` are for.
 
 DTD syntax and entity declarations are different decisions:
@@ -109,10 +110,12 @@ handlers. Schemas unrelated to these types skip the declaration-collection
 parse entirely. The profiles above keep the same behavior: `protected()`
 still refuses entity declarations, and `strict()` still refuses any DOCTYPE.
 
-An unretrieved external subset leaves declaration evidence incomplete. A
-name absent from the internal declarations then remains lexical-only, with
-one `dtd-external-skipped` advisory per document if a check needs the missing
-evidence. Caller-supplied trees without pyxsd source provenance and
+An unretrieved external subset or skipped external parameter entity leaves
+declaration evidence incomplete. A name absent from the internal declarations
+then remains lexical-only, with one `dtd-external-skipped` advisory per
+document if a check needs the missing evidence. Internal parameter entities
+are expanded so their declarations are collected; no external parameter
+entity is retrieved. Caller-supplied trees without pyxsd source provenance and
 custom-policy parser results have no core declaration evidence and remain
 lexical-only. Top-level `pyxsd.parse()` with a non-seekable instance stream
 has the same limitation, even with an explicit schema; this is not a security

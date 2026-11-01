@@ -97,9 +97,11 @@ declaration-dependent checks and input limitations.
 - direct authored-import checks for cross-namespace XSD component references
   (`import-required`): transitive imports and synthetic imports from caller
   mappings or instance hints do not satisfy the referencing document's duty
-  to import. This audit does not replace global component lookup or fix the
-  remaining duplicate-global, import-target, and redefine/binding gaps listed
-  in {doc}`validation`.
+  to import. A reference that resolves to no namespace is allowed regardless
+  of authored imports, matching lenient bare-name lookup, so no-namespace
+  enforcement is incomplete. This audit does not replace global component
+  lookup or fix the remaining duplicate-global, import-target, and
+  redefine/binding gaps listed in {doc}`validation`.
 - `xs:key`, `xs:unique`, `xs:keyref` with the XSD identity-constraint XPath
   subset: namespace-qualified child and attribute steps, `.//` descendants,
   wildcards, `.`, union paths, and `xpathDefaultNamespace`
@@ -206,7 +208,7 @@ for expectation relationships and reviewed dispositions, and
 * - DTD entities
   - `ENTITY` / `ENTITIES` values
   - partial
-  - Lazy prolog/internal-subset collection checks unparsed (`NDATA`) entity names, including derived types and defaults, when declaration evidence is complete. No built-in profile retrieves external subsets or entities; incomplete external-subset evidence leaves missing names lexical-only with one advisory when a check is skipped. Caller-supplied trees without pyxsd source provenance, custom-policy parser results, and non-seekable instance streams passed to top-level `pyxsd.parse()` remain lexical-only. Compiled `Schema.parse()` supports prolog replay for non-seekable streams. `Document.revalidate()` serializes the tree without its DOCTYPE, so it carries the original parse's evidence into the reparse instead of recollecting: a declared value stays valid, complete evidence still rejects an undeclared replacement, and evidence the original parse lacked stays lexical-only. Parser profiles are unchanged; see {doc}`validation` and {doc}`xml-security` for the boundaries.
+  - Lazy prolog/internal-subset collection checks unparsed (`NDATA`) entity names, including derived types and defaults, when declaration evidence is complete. Internal parameter entities are expanded; external parameter entities are skipped without retrieval. No built-in profile retrieves external subsets or entities; incomplete external-subset or external-parameter-entity evidence leaves missing names lexical-only with one advisory when a check is skipped. Caller-supplied trees without pyxsd source provenance, custom-policy parser results, and non-seekable instance streams passed to top-level `pyxsd.parse()` remain lexical-only. Compiled `Schema.parse()` supports prolog replay for non-seekable streams. `Document.revalidate()` serializes the tree without its DOCTYPE, so it carries the original parse's evidence into the reparse instead of recollecting: a declared value stays valid, complete evidence still rejects an undeclared replacement, and evidence the original parse lacked stays lexical-only. Parser profiles are unchanged; see {doc}`validation` and {doc}`xml-security` for the boundaries.
 * - XML 1.1 documents
   - `<?xml version="1.1"?>`
   - unsupported

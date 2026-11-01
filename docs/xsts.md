@@ -113,8 +113,11 @@ vocabulary exemptions. Neither a driver's import nor a caller mapping or
 instance hint satisfies that document's import duty; a missing import is
 `import-required`. Wildcard `notQName` is intentionally not audited;
 annotation payloads, foreign markup, QName-valued defaults/fixed values, and
-XPath expressions are also excluded. The audit leaves global component
-resolution unchanged, rather than isolating each document's component table.
+XPath expressions are also excluded. A reference that resolves to no namespace
+is allowed regardless of authored imports, matching pyxsd's lenient bare-name
+lookup, so no-namespace enforcement is incomplete. The audit leaves global
+component resolution unchanged, rather than isolating each document's
+component table.
 
 ### Time budgets
 
@@ -212,10 +215,12 @@ undeclared names; no DOCTYPE means an empty, complete set. Unrelated schemas
 skip the declaration-collection parse. An unparsed entity declaration names
 an external resource, but checking its name does not fetch it.
 
-External subsets remain unfetched and make the evidence incomplete: missing
-names stay lexical-only, with one advisory when a declaration check is skipped.
-Caller-supplied trees without pyxsd source provenance, custom-policy parser
-results, and non-seekable instance streams passed to top-level `pyxsd.parse()`
+External subsets and external parameter entities remain unfetched and make
+the evidence incomplete: missing names stay lexical-only, with one advisory
+when a declaration check is skipped. Internal parameter entities are expanded,
+so declarations they carry are collected. Caller-supplied trees without pyxsd
+source provenance, custom-policy parser results, and non-seekable instance
+streams passed to top-level `pyxsd.parse()`
 remain lexical-only too, even with an explicit schema. Compiled `Schema.parse()`
 supports prolog replay for those streams. `Document.revalidate()` carries the
 original parse's declaration evidence across the serialized reparse, so a

@@ -35,6 +35,18 @@ EXTERNAL_AND_INTERNAL_DOC = (
     b'<!DOCTYPE r SYSTEM "file:///must-not-read" [<!NOTATION n SYSTEM "n">'
     b'<!ENTITY logo SYSTEM "logo" NDATA n>]><r/>'
 )
+INTERNAL_PARAMETER_ENTITY_DOC = (
+    b"<!DOCTYPE r [<!ENTITY % declarations \"<!NOTATION n SYSTEM 'n'>"
+    b"<!ENTITY logo SYSTEM 'logo' NDATA n>\">%declarations;]><r/>"
+)
+STANDALONE_PARAMETER_ENTITY_DOC = (
+    b'<?xml version="1.0" standalone="yes"?>'
+    b"<!DOCTYPE r [<!ENTITY % declarations \"<!NOTATION n SYSTEM 'n'>"
+    b"<!ENTITY logo SYSTEM 'logo' NDATA n>\">%declarations;]><r/>"
+)
+EXTERNAL_PARAMETER_ENTITY_DOC = (
+    b'<!DOCTYPE r [<!ENTITY % external SYSTEM "file:///must-not-read">%external;]><r/>'
+)
 
 
 def utf16(document: bytes) -> bytes:
@@ -104,6 +116,53 @@ def test_an_external_subset_does_not_hide_internal_declarations():
     with no_external_resources():
         assert collect_document_declarations(
             EXTERNAL_AND_INTERNAL_DOC,
+            policy=XmlParserPolicy.default(),
+        ) == DocumentDeclarations(frozenset({"logo"}), False)
+
+
+def test_internal_parameter_entity_declarations_are_collected():
+    assert collect_document_declarations(
+        INTERNAL_PARAMETER_ENTITY_DOC,
+        policy=XmlParserPolicy.default(),
+    ) == DocumentDeclarations(frozenset({"logo"}), True)
+
+
+def test_internal_parameter_entity_declarations_are_collected_when_standalone():
+    assert collect_document_declarations(
+        STANDALONE_PARAMETER_ENTITY_DOC,
+        policy=XmlParserPolicy.default(),
+    ) == DocumentDeclarations(frozenset({"logo"}), True)
+
+
+def test_external_parameter_entity_marks_evidence_incomplete_without_retrieval():
+    with no_external_resources():
+        assert collect_document_declarations(
+            EXTERNAL_PARAMETER_ENTITY_DOC,
+            policy=XmlParserPolicy.default(),
+        ) == DocumentDeclarations(frozenset(), False)
+
+
+def test_external_parameter_entity_is_incomplete_when_standalone():
+    data = (
+        b'<?xml version="1.0" standalone="yes"?>'
+        b'<!DOCTYPE r [<!ENTITY % external SYSTEM "file:///must-not-read">%external;]><r/>'
+    )
+    with no_external_resources():
+        assert collect_document_declarations(
+            data,
+            policy=XmlParserPolicy.default(),
+        ) == DocumentDeclarations(frozenset(), False)
+
+
+def test_external_parameter_entity_does_not_hide_internal_declarations():
+    data = (
+        b'<!DOCTYPE r [<!NOTATION n SYSTEM "n">'
+        b'<!ENTITY logo SYSTEM "logo" NDATA n>'
+        b'<!ENTITY % external SYSTEM "file:///must-not-read">%external;]><r/>'
+    )
+    with no_external_resources():
+        assert collect_document_declarations(
+            data,
             policy=XmlParserPolicy.default(),
         ) == DocumentDeclarations(frozenset({"logo"}), False)
 
@@ -185,9 +244,35 @@ def test_protected_denies_external_subsets_instead_of_collecting():
         )
 
 
+def test_protected_denies_parameter_entity_declarations():
+    with pytest.raises(ResourcePolicyError, match="entity"):
+        collect_document_declarations(
+            INTERNAL_PARAMETER_ENTITY_DOC,
+            policy=XmlParserPolicy.protected(),
+        )
+
+
+def test_forbid_external_denies_external_parameter_entity_references():
+    """The collector chains the policy handler; denial ordering survives."""
+    with (
+        no_external_resources(),
+        pytest.raises(ResourcePolicyError, match="external"),
+    ):
+        collect_document_declarations(
+            EXTERNAL_PARAMETER_ENTITY_DOC,
+            policy=XmlParserPolicy(use_defusedxml=True, forbid_external=True),
+        )
+
+
 @pytest.mark.parametrize(
     "data",
-    [UNPARSED_DOC, PLAIN_DOCTYPE_DOC, utf16(PLAIN_DOCTYPE_DOC)],
+    [
+        UNPARSED_DOC,
+        PLAIN_DOCTYPE_DOC,
+        INTERNAL_PARAMETER_ENTITY_DOC,
+        EXTERNAL_PARAMETER_ENTITY_DOC,
+        utf16(PLAIN_DOCTYPE_DOC),
+    ],
 )
 def test_strict_denies_every_doctype(data):
     with pytest.raises(ResourcePolicyError, match="DOCTYPE"):

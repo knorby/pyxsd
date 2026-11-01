@@ -94,11 +94,13 @@ denominator, and the reviewed baselines used for the generated results.
 - **DTD-dependent checks have limited evidence.** When a compiled schema can
   validate `ENTITY`/`ENTITIES`, pyxsd lazily collects unparsed (`NDATA`)
   declarations from the prolog/internal subset and rejects undeclared names
-  when that evidence is complete. External subsets are never fetched;
-  incomplete external-subset evidence leaves missing names lexical-only with
-  one advisory when a check is skipped. Caller-supplied trees without pyxsd
-  source provenance, custom-policy parser results, and non-seekable instance
-  streams passed to top-level `pyxsd.parse()` remain lexical-only. Compiled
+  when that evidence is complete. Internal parameter entities are expanded;
+  external subsets and external parameter entities are never fetched, and
+  either makes the evidence incomplete. Incomplete evidence leaves missing
+  names lexical-only with one advisory when a check is skipped.
+  Caller-supplied trees without pyxsd source provenance, custom-policy parser
+  results, and non-seekable instance streams passed to top-level
+  `pyxsd.parse()` remain lexical-only. Compiled
   `Schema.parse()` supports prolog replay for those streams. Unrelated schemas
   skip declaration collection. The default still expands internal parsed
   entities and can apply `ATTLIST` defaults; `protected()` and `strict()`

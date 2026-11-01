@@ -4,8 +4,9 @@ When a compiled schema can validate ``ENTITY``/``ENTITIES`` values, the
 declaration evidence has to come from the document's DTD. This module
 collects it with a raw :mod:`xml.parsers.expat` parser that stops at the
 first root start tag, so the instance body is never expanded or parsed a
-second time. External subsets and entities are never retrieved: an
-external subset only makes the collected evidence incomplete.
+second time. Internal parameter entities are expanded, so declarations
+carried through them are collected. External subsets and external entities
+are never retrieved: they only make the collected evidence incomplete.
 
 Denials installed by
 :func:`pyxsd.xml_policy.configure_expat_security` keep their existing
@@ -118,11 +119,12 @@ def collect_document_declarations(
     """Collect unparsed-entity declarations from *source*'s prolog.
 
     Only the prolog and internal subset are examined: parsing stops at the
-    root start tag, and the instance body is never expanded. External
-    subsets and entities are never retrieved. Returns ``None`` when the
-    prolog itself is not well-formed, leaving the diagnosis to the
-    ordinary parser; policy denials raise as they would without this
-    collector.
+    root start tag, and the instance body is never expanded. Internal
+    parameter entities are expanded; an external subset or parameter entity
+    is never retrieved and only makes the evidence incomplete. Returns
+    ``None`` when the prolog itself is not well-formed, leaving the
+    diagnosis to the ordinary parser; policy denials raise as they would
+    without this collector.
 
     Streams may yield ``bytes`` or ``str`` chunks; Expat accepts either
     per call, so a text stream collects without re-encoding.
@@ -130,22 +132,23 @@ def collect_document_declarations(
     parser = expat.ParserCreate()
     configure_expat_security(parser, policy)
     entities: set[str] = set()
-    external_subset = False
+    external_declarations = False
     # configure_expat_security may have installed policy handlers; chain
     # them so denial behavior and ordering survive the bookkeeping.
     # Typeshed's handler signatures narrow optional Expat arguments, so
     # chain through ``Callable[..., Any]`` exactly as xml_policy does.
     previous_doctype: Callable[..., Any] | None = parser.StartDoctypeDeclHandler
     previous_unparsed: Callable[..., Any] | None = parser.UnparsedEntityDeclHandler
+    previous_external: Callable[..., Any] | None = parser.ExternalEntityRefHandler
 
     def record_doctype(
         name: str, sysid: str | None, pubid: str | None, has_internal_subset: bool
     ) -> None:
-        nonlocal external_subset
+        nonlocal external_declarations
         if previous_doctype is not None:
             previous_doctype(name, sysid, pubid, has_internal_subset)
         if sysid is not None or pubid is not None:
-            external_subset = True
+            external_declarations = True
 
     def record_unparsed_entity(
         entity_name: str,
@@ -159,9 +162,27 @@ def collect_document_declarations(
         # Expat reports an entity here only when it has an NDATA notation.
         entities.add(entity_name)
 
+    def skip_external_entity(*args: Any) -> int:
+        """Mark skipped external declarations incomplete; never retrieve them."""
+        nonlocal external_declarations
+        # A policy's denial handler keeps its ordering and runs first; it
+        # raises rather than returning. Otherwise the skip is reported as
+        # handled so Expat continues with the internal subset.
+        if previous_external is not None:
+            previous_external(*args)
+        external_declarations = True
+        return 1
+
     parser.StartDoctypeDeclHandler = record_doctype
     parser.UnparsedEntityDeclHandler = record_unparsed_entity
+    parser.ExternalEntityRefHandler = skip_external_entity
     parser.StartElementHandler = _stop_at_root
+    # Expand internal parameter entities so declarations nested inside
+    # them are visible. External parameter entities reach the chained
+    # handler above and are skipped without retrieval. ALWAYS (rather
+    # than UNLESS_STANDALONE) also collects internal declarations when a
+    # standalone document declares an internal parameter entity.
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_ALWAYS)
 
     try:
         if isinstance(source, (bytes, bytearray, memoryview)):
@@ -177,7 +198,7 @@ def collect_document_declarations(
         pass
     except expat.ExpatError:
         return None
-    return DocumentDeclarations(frozenset(entities), not external_subset)
+    return DocumentDeclarations(frozenset(entities), not external_declarations)
 
 
 def _stop_at_root(*args: object) -> None:

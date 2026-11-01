@@ -85,9 +85,11 @@ The parser roles are:
 - **DTD declaration collection.** When the compiled schema can validate
   `ENTITY`/`ENTITIES`, `pyxsd.dtd_declarations.collect_document_declarations`
   uses raw Expat to collect unparsed-entity declarations from the instance
-  prolog/internal subset, stopping at the first element start. It builds no
-  second tree and does not validate the document body or DTD. Reopenable or
-  rewindable sources supply a prolog reread; non-seekable streams passed to
+  prolog/internal subset, stopping at the first element start. Internal
+  parameter entities are expanded; external parameter entities are skipped
+  without retrieval. It builds no second tree and does not validate the
+  document body or DTD. Reopenable or rewindable sources supply a prolog
+  reread; non-seekable streams passed to
   compiled `Schema.parse()` use prolog collection and replay. Unrelated
   schemas skip this pass. Collection preserves the selected declaration
   guards and installs no external fetcher. Missing provenance and external

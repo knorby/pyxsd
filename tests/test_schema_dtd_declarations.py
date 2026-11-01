@@ -240,6 +240,72 @@ def test_external_subset_warning_is_per_document_not_per_value(
     assert warnings.count("dtd-external-skipped") == 1
 
 
+def test_internal_parameter_entity_declarations_are_validated(tmp_path: Path) -> None:
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    instance = (
+        "<!DOCTYPE r [<!ENTITY % declarations \"<!NOTATION n SYSTEM 'n'>"
+        "<!ENTITY alpha SYSTEM 'a.gif' NDATA n>\">%declarations;]><r>alpha</r>"
+    )
+
+    document = schema.parse(write(tmp_path, "parameter-entity.xml", instance))
+
+    assert not document.report.has_errors
+    assert not document.report.warnings
+
+
+def test_internal_parameter_entity_declarations_are_validated_when_standalone(
+    tmp_path: Path,
+) -> None:
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    instance = (
+        '<?xml version="1.0" standalone="yes"?>'
+        "<!DOCTYPE r [<!ENTITY % declarations \"<!NOTATION n SYSTEM 'n'>"
+        "<!ENTITY alpha SYSTEM 'a.gif' NDATA n>\">%declarations;]><r>alpha</r>"
+    )
+
+    document = schema.parse(write(tmp_path, "standalone-parameter-entity.xml", instance))
+
+    assert not document.report.has_errors
+    assert not document.report.warnings
+
+
+def test_external_parameter_entity_stays_lexical_only_with_a_located_advisory(
+    tmp_path: Path,
+) -> None:
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    instance = '<!DOCTYPE r [<!ENTITY % external SYSTEM "missing.dtd">%external;]><r>omega</r>'
+    path = write(tmp_path, "external-parameter-entity.xml", instance)
+
+    document = schema.parse(path)
+
+    assert not document.report.has_errors
+    advisories = [
+        issue for issue in document.report.warnings if issue.code == "dtd-external-skipped"
+    ]
+    assert len(advisories) == 1
+    assert advisories[0].location is not None
+    assert advisories[0].location.source.endswith("external-parameter-entity.xml")
+
+
+def test_external_subset_advisory_carries_the_source_location(tmp_path: Path) -> None:
+    schema = compile_entity_schema(tmp_path, "", "xs:ENTITY")
+    path = write(
+        tmp_path,
+        "external-subset.xml",
+        '<!DOCTYPE r SYSTEM "external.dtd"><r>omega</r>',
+    )
+
+    document = schema.parse(path)
+
+    assert not document.report.has_errors
+    advisories = [
+        issue for issue in document.report.warnings if issue.code == "dtd-external-skipped"
+    ]
+    assert len(advisories) == 1
+    assert advisories[0].location is not None
+    assert advisories[0].location.source.endswith("external-subset.xml")
+
+
 def test_direct_datatype_construction_outside_a_parse_is_unchanged() -> None:
     assert str(ENTITY("undeclared")) == "undeclared"
     assert str(ENTITIES("undeclared names")) == "undeclared names"

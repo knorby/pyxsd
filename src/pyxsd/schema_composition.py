@@ -224,6 +224,11 @@ class CompositionContext:
     #: ``targetNamespace``, or the chameleon-adopted namespace for a
     #: redefined base whose root is not stamped), keyed by root id.
     authored_effective_namespaces: dict[int, str | None] = field(default_factory=dict)
+    #: The authored ``xs:schema`` root element of each composed document,
+    #: keyed by root id. Composition splices a document's children into the
+    #: main tree and discards its root, so this map is how the import audit
+    #: still reaches root-owned reference attributes (``defaultAttributes``).
+    authored_document_roots: dict[int, Any] = field(default_factory=dict)
     #: The authored document of elements whose value defaults and whose
     #: reference visibility belong to different documents. Only the
     #: declarations written inside ``xs:override`` need this: they are

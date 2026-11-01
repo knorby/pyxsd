@@ -67,12 +67,15 @@ and can apply `ATTLIST` defaults. When the compiled schema can validate
 from the prolog/internal subset. Complete evidence lets it reject undeclared
 names, including values supplied by XSD defaults or checked through derived
 types. An absent DOCTYPE supplies an empty, complete declaration set.
-Unrelated schemas skip this declaration-collection parse.
+Internal parameter entities are expanded; external parameter entities are
+skipped without retrieval. Unrelated schemas skip this declaration-collection
+parse.
 
 No built-in profile retrieves external DTD subsets or entities. An external
-subset makes declaration evidence incomplete, so a missing name remains
-lexical-only with one advisory per document when a check needs the missing
-evidence. Caller-supplied trees without pyxsd source provenance and
+subset or skipped external parameter entity makes declaration evidence
+incomplete, so a missing name remains lexical-only with one advisory per
+document when a check needs the missing evidence. Caller-supplied trees
+without pyxsd source provenance and
 custom-policy parser results lack core declaration evidence. Non-seekable
 instance streams passed to top-level `pyxsd.parse()` also remain lexical-only,
 even with an explicit schema; compiled `Schema.parse()` can collect and
@@ -128,9 +131,11 @@ target namespace, and built-in vocabularies. A component supplied transitively,
 by a caller mapping, or by an instance hint does not excuse a missing
 authored import (`import-required`). Wildcard `notQName` is intentionally
 not audited; annotation payloads, foreign markup, QName-valued defaults/fixed
-values, and XPath expressions are also excluded. This audit leaves global
-component lookup in place; it does not establish complete composition
-conformance.
+values, and XPath expressions are also excluded. A reference that resolves to
+no namespace is allowed regardless of the document's authored imports, matching
+pyxsd's lenient bare-name lookup, so no-namespace enforcement is incomplete.
+This audit leaves global component lookup in place; it does not establish
+complete composition conformance.
 
 Binding determines which Python objects and values an application receives.
 An invalid document can still yield a best-effort bound tree and a report

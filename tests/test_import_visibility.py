@@ -188,6 +188,201 @@ class TestDirectReferenceObligations:
         assert any("c:ct" in message for message in messages)
 
 
+class TestAuthoredDocumentRootDefaultAttributes:
+    """Each authored schema root's own ``defaultAttributes`` is audited.
+
+    Composition splices a document's children, not its ``xs:schema`` root,
+    so a composed root escapes the ordinary tree walk. The audit must read
+    every recorded authored root exactly once, with that root's own
+    effective namespace, authored imports, and declaration origin.
+    """
+
+    def test_main_root_default_attributes_requires_direct_import(self, tmp_path):
+        _write(tmp_path, "c.xsd", _C_DOC)
+        main = _write(
+            tmp_path,
+            "a.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:c="urn:c"
+  defaultAttributes="c:ag">
+  <xs:element name="x" type="xs:string"/>
+</xs:schema>""",
+        )
+        result = Schema.compile(str(main), mode=ParseModes.NAMESPACED)
+        issues = [issue for issue in _errors(result.report) if issue.code == "import-required"]
+        assert len(issues) == 1
+        assert "c:ag" in issues[0].message
+        assert issues[0].location is not None
+        assert issues[0].location.source.endswith("a.xsd")
+
+    def test_main_root_default_attributes_with_its_own_import(self, tmp_path):
+        _write(tmp_path, "c.xsd", _C_DOC)
+        main = _write(
+            tmp_path,
+            "a.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:c="urn:c"
+  defaultAttributes="c:ag">
+  <xs:import namespace="urn:c" schemaLocation="c.xsd"/>
+  <xs:element name="x" type="xs:string"/>
+</xs:schema>""",
+        )
+        result = Schema.compile(str(main), mode=ParseModes.NAMESPACED)
+        assert not [issue for issue in _errors(result.report) if issue.code == "import-required"]
+
+    def test_included_root_default_attributes_requires_its_own_import(self, tmp_path):
+        _write(tmp_path, "c.xsd", _C_DOC)
+        _write(
+            tmp_path,
+            "ch.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:c="urn:c"
+  defaultAttributes="c:ag">
+  <xs:complexType name="chType">
+    <xs:sequence><xs:element name="n" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+</xs:schema>""",
+        )
+        main = _write(
+            tmp_path,
+            "a.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a" xmlns:c="urn:c">
+  <xs:import namespace="urn:c" schemaLocation="c.xsd"/>
+  <xs:include schemaLocation="ch.xsd"/>
+  <xs:element name="root" type="a:chType"/>
+</xs:schema>""",
+        )
+        result = Schema.compile(str(main), mode=ParseModes.NAMESPACED)
+        issues = [issue for issue in _errors(result.report) if issue.code == "import-required"]
+        assert len(issues) == 1
+        assert "c:ag" in issues[0].message
+        assert issues[0].location is not None
+        assert issues[0].location.source.endswith("ch.xsd")
+
+    def test_included_root_default_attributes_with_its_own_import(self, tmp_path):
+        _write(tmp_path, "c.xsd", _C_DOC)
+        _write(
+            tmp_path,
+            "ch.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:c="urn:c"
+  defaultAttributes="c:ag">
+  <xs:import namespace="urn:c" schemaLocation="c.xsd"/>
+  <xs:complexType name="chType">
+    <xs:sequence><xs:element name="n" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+</xs:schema>""",
+        )
+        main = _write(
+            tmp_path,
+            "a.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:include schemaLocation="ch.xsd"/>
+  <xs:element name="root" type="a:chType"/>
+</xs:schema>""",
+        )
+        result = Schema.compile(str(main), mode=ParseModes.NAMESPACED)
+        assert not [issue for issue in _errors(result.report) if issue.code == "import-required"]
+
+    def test_imported_root_default_attributes_requires_its_own_import(self, tmp_path):
+        _write(tmp_path, "c.xsd", _C_DOC)
+        _write(
+            tmp_path,
+            "b.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:b" xmlns:c="urn:c"
+  defaultAttributes="c:ag">
+  <xs:complexType name="bType">
+    <xs:sequence><xs:element name="n" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+</xs:schema>""",
+        )
+        main = _write(
+            tmp_path,
+            "a.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:import namespace="urn:b" schemaLocation="b.xsd"/>
+  <xs:import namespace="urn:c" schemaLocation="c.xsd"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>""",
+        )
+        result = Schema.compile(str(main), mode=ParseModes.NAMESPACED)
+        issues = [issue for issue in _errors(result.report) if issue.code == "import-required"]
+        assert len(issues) == 1
+        assert "c:ag" in issues[0].message
+        assert issues[0].location is not None
+        assert issues[0].location.source.endswith("b.xsd")
+
+    def test_imported_root_default_attributes_with_its_own_import(self, tmp_path):
+        _write(tmp_path, "c.xsd", _C_DOC)
+        _write(
+            tmp_path,
+            "b.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:b" xmlns:c="urn:c"
+  defaultAttributes="c:ag">
+  <xs:import namespace="urn:c" schemaLocation="c.xsd"/>
+  <xs:complexType name="bType">
+    <xs:sequence><xs:element name="n" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+</xs:schema>""",
+        )
+        main = _write(
+            tmp_path,
+            "a.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:import namespace="urn:b" schemaLocation="b.xsd"/>
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>""",
+        )
+        result = Schema.compile(str(main), mode=ParseModes.NAMESPACED)
+        assert not [issue for issue in _errors(result.report) if issue.code == "import-required"]
+
+    def test_chameleon_root_default_attributes_requires_its_own_import(self, tmp_path):
+        _write(tmp_path, "c.xsd", _C_DOC)
+        _write(
+            tmp_path,
+            "ch.xsd",
+            f"""<xs:schema {XS} xmlns:c="urn:c" defaultAttributes="c:ag">
+  <xs:complexType name="chType">
+    <xs:sequence><xs:element name="n" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+</xs:schema>""",
+        )
+        main = _write(
+            tmp_path,
+            "a.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a" xmlns:c="urn:c">
+  <xs:import namespace="urn:c" schemaLocation="c.xsd"/>
+  <xs:include schemaLocation="ch.xsd"/>
+  <xs:element name="root" type="a:chType"/>
+</xs:schema>""",
+        )
+        result = Schema.compile(str(main), mode=ParseModes.NAMESPACED)
+        issues = [issue for issue in _errors(result.report) if issue.code == "import-required"]
+        assert len(issues) == 1
+        assert "c:ag" in issues[0].message
+        assert issues[0].location is not None
+        assert issues[0].location.source.endswith("ch.xsd")
+
+    def test_chameleon_root_default_attributes_with_its_own_import(self, tmp_path):
+        _write(tmp_path, "c.xsd", _C_DOC)
+        _write(
+            tmp_path,
+            "ch.xsd",
+            f"""<xs:schema {XS} xmlns:c="urn:c" defaultAttributes="c:ag">
+  <xs:import namespace="urn:c" schemaLocation="c.xsd"/>
+  <xs:complexType name="chType">
+    <xs:sequence><xs:element name="n" type="xs:string"/></xs:sequence>
+  </xs:complexType>
+</xs:schema>""",
+        )
+        main = _write(
+            tmp_path,
+            "a.xsd",
+            f"""<xs:schema {XS} targetNamespace="urn:a" xmlns:a="urn:a">
+  <xs:include schemaLocation="ch.xsd"/>
+  <xs:element name="root" type="a:chType"/>
+</xs:schema>""",
+        )
+        result = Schema.compile(str(main), mode=ParseModes.NAMESPACED)
+        assert not [issue for issue in _errors(result.report) if issue.code == "import-required"]
+
+
 class TestPerDocumentProvenance:
     """The audit judges each element by its own document's records."""
 
@@ -824,6 +1019,7 @@ class TestHelperGuards:
             authored_element_roots={},
             authored_import_namespaces={},
             authored_effective_namespaces={},
+            authored_document_roots={},
             declaration_origins=weakref.WeakKeyDictionary(),
         )
 
@@ -838,6 +1034,7 @@ class TestHelperGuards:
         record_authored_document(ctx, root)
         assert ctx.authored_import_namespaces[id(root)] == {"urn:c", None}
         assert ctx.authored_effective_namespaces[id(root)] == "urn:a"
+        assert ctx.authored_document_roots[id(root)] is root
 
     def test_record_prefers_declared_namespace_over_adopted(self):
         root = ET.Element(clark(XSD_NS, "schema"), {"targetNamespace": "urn:own"})

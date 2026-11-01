@@ -87,6 +87,7 @@ def record_authored_document(
         imports.add(child.get("namespace"))
     ctx.authored_import_namespaces[id(root)] = imports
     ctx.authored_effective_namespaces[id(root)] = root.get("targetNamespace") or adopted_namespace
+    ctx.authored_document_roots[id(root)] = root
 
 
 def audit_direct_imports(ctx: "CompositionContext", main_root: Any) -> None:
@@ -103,6 +104,13 @@ def audit_direct_imports(ctx: "CompositionContext", main_root: Any) -> None:
     built-in vocabulary namespaces (``xs``/``xml``/``xsi``/``xlink``),
     or one the document imported itself. Anything else is
     reported as ``import-required`` at the declaration's origin.
+
+    Composed documents retain only their spliced children in the main
+    tree, so a composed ``xs:schema`` root's own ``defaultAttributes``
+    is not reached by the tree walk. Every recorded authored root is
+    audited once for that attribute, with its own namespace context,
+    effective namespace, authored imports, and declaration origin; the
+    main root is already covered by the walk and is skipped here.
 
     Only XSD-language elements are audited: annotation payloads and
     foreign markup are skipped, whatever QName-shaped attributes they
@@ -126,6 +134,18 @@ def audit_direct_imports(ctx: "CompositionContext", main_root: Any) -> None:
             if value:
                 for token in value.split():
                     _audit_reference(ctx, element, token, effective, imports)
+    for root in ctx.authored_document_roots.values():
+        if root is main_root:
+            continue
+        default_attributes = root.get("defaultAttributes")
+        if default_attributes:
+            _audit_reference(
+                ctx,
+                root,
+                default_attributes,
+                ctx.authored_effective_namespaces[id(root)],
+                ctx.authored_import_namespaces[id(root)],
+            )
 
 
 def _iter_schema_elements(root: Any):

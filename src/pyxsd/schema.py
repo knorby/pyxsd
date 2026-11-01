@@ -856,15 +856,18 @@ class Schema:
                 host._elementParents.clear()
                 host._elementTypes.clear()
 
-        # The report-owning layer turns "an external subset could have
-        # declared a missing name" into exactly one advisory per parse,
-        # never one issue per suppressed value.
+        # The report-owning layer turns "unavailable external declarations
+        # could have declared a missing name" into exactly one advisory per
+        # parse, never one issue per suppressed value. It carries the
+        # document root's source address: the skipped external declaration
+        # has no occurrence of its own in the admitted bytes.
         if entity_evidence is not None and entity_evidence.external_subset_skipped:
             instance_report.add_warning(
-                "the document's external DTD subset was not retrieved, so "
+                "the document's external DTD declarations were not retrieved, so "
                 "ENTITY/ENTITIES values undeclared in the internal subset "
                 "could not be rejected",
                 code="dtd-external-skipped",
+                location=provenance.source_location(tree),
             )
 
         # One merged report per document: the schema phase's issues
