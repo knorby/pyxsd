@@ -229,6 +229,7 @@ a case that starts passing leaves this view without a disposition edit.
 | xsd10-anyuri-value-space | version-switch-candidate | XSD 1.0 | 4 | XSD 1.0 anyURI value space is not enforced |
 | xsd10-attribute-group-circularity | version-switch-candidate | XSD 1.0 | 4 | XSD 1.0 forbids circular attributeGroup references outside redefine |
 | xsd10-attribute-wildcard-errata | version-switch-candidate | XSD 1.0 | 1 | XSD 1.0 attribute wildcard intersection and union errata case |
+| xsd10-complex-content-from-simple-content | spec-correct-divergence | XSD 1.0 | 1 | complexContent from simpleContent conflicts with the XSD 1.0 derivation rule |
 | xsd10-conditional-inclusion | version-switch-candidate | XSD 1.0 | 1 | XSD 1.0 profile does not evaluate vc: conditional inclusion |
 | xsd10-float-double-positive-inf | version-switch-candidate | XSD 1.0 | 2 | XSD 1.0 float and double lexical spaces reject +INF |
 | xsd10-id-value-constraints | version-switch-candidate | XSD 1.0 | 15 | XSD 1.0 must reject value constraints on ID-typed elements and attributes |
@@ -236,20 +237,20 @@ a case that starts passing leaves this view without a disposition edit.
 | xsd10-intensional-restriction | version-switch-candidate | XSD 1.0 | 13 | XSD 1.0 intensional restriction rules are not enforced |
 | xsd10-multiple-id-attributes | version-switch-candidate | XSD 1.0 | 5 | XSD 1.0 must reject multiple ID-typed attributes and duplicate ID values |
 | xsd10-unversioned-11-wildcard-vocabulary | spec-correct-divergence | XSD 1.0 | 5 | XSD 1.0 profile rejects unversioned XSD 1.1-only wildcard vocabulary that the corpus expects valid |
-| xsd10-valid-type-constructs | version-switch-candidate | XSD 1.0 | 5 | XSD 1.0 mode rejects type constructs that XSD 1.0 accepts |
+| xsd10-valid-type-constructs | version-switch-candidate | XSD 1.0 | 4 | XSD 1.0 mode rejects type constructs that XSD 1.0 accepts |
 | xsd10-wildcard-upa-relaxation | version-switch-candidate | XSD 1.0 | 3 | XSD 1.0 UPA rejects element and wildcard competition |
 | xsd10-year-zero | version-switch-candidate | XSD 1.0 | 1 | XSD 1.0 dateTime rejects year zero |
 | xsts-astral-regex-queried | queried-corpus | XSD 1.1 | 22 | Astral-plane XSD regex tests the corpus marks queried (W3C bug 4113) |
 | xsts-circular-redefine-underspecified | queried-corpus | XSD 1.1, XSD 1.0 | 4 | Circular redefine groups remain accepted where the corpus expects invalid instances |
 | xsts-duplicate-global-attribute-group | implementation-gap | XSD 1.1, XSD 1.0 | 2 | Duplicate global attributeGroup declarations from two imported documents are accepted |
 | xsts-duplicate-global-element | implementation-gap | XSD 1.1, XSD 1.0 | 4 | Duplicate global element declarations from two imported documents are accepted |
-| xsts-identity-constraint-global-reference | implementation-gap | XSD 1.1, XSD 1.0 | 2 | A keyref refer QName can resolve to a non-global identity constraint |
+| xsts-identity-constraint-global-reference | implementation-gap | XSD 1.1, XSD 1.0 | 2 | A keyref refer QName is not required to name a global key or unique |
 | xsts-import-namespace-mismatch | implementation-gap | XSD 1.1, XSD 1.0 | 2 | An import namespace that disagrees with the imported schema's target namespace is accepted |
 | xsts-no-namespace-type-reference | implementation-gap | XSD 1.1, XSD 1.0 | 4 | Unprefixed type references in a no-namespace schema resolve to same-named types in another namespace |
 | xsts-override-composition | implementation-gap | XSD 1.1 | 2 | Circular and no-op xs:override documents are accepted |
 | xsts-redefine-attribute-group-merge | implementation-gap | XSD 1.1, XSD 1.0 | 2 | A self-referential redefined attribute group can introduce duplicate attribute uses |
 | xsts-redefine-attribute-group-restriction | implementation-gap | XSD 1.1, XSD 1.0 | 2 | A redefined attribute group is not checked as a valid restriction of the original |
-| xsts-redefine-default-attributes-apply | implementation-gap | XSD 1.1 | 1 | defaultAttributesApply on a redefined complexType does not reach the composed type |
+| xsts-redefine-default-attributes-apply | implementation-gap | XSD 1.1 | 1 | A base type's default attribute group is not applied through a redefine extension |
 | xsts-redefine-simple-type-enforcement | implementation-gap | XSD 1.1, XSD 1.0 | 2 | A redefined simpleType's restriction is not enforced on instances |
 | xsts-type-only-root-xsi-type | implementation-gap | XSD 1.1, XSD 1.0 | 12 | Document roots governed only by xsi:type have no global element declaration |
 | xsts-xml11-lexer-floor | platform-limit | XSD 1.1 | 5 | XML 1.1 documents cannot be lexed by the expat-based parser |
@@ -411,7 +412,7 @@ reviewed disposition claims the case.
 | XSD 1.0 | MS-Particles2006-07-15/particlesZ023/particlesZ023 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
 | XSD 1.0 | MS-Particles2006-07-15/particlesZ024/particlesZ024 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
 | XSD 1.0 | MS-Particles2006-07-15/particlesZ028/particlesZ028 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-intensional-restriction |
-| XSD 1.0 | MS-Particles2006-07-15/particlesZ031/particlesZ031 | schema | fail | valid-in-1.0-invalid-in-1.1 | xsd10-valid-type-constructs |
+| XSD 1.0 | MS-Particles2006-07-15/particlesZ031/particlesZ031 | schema | fail | valid-in-1.0-invalid-in-1.1 | xsd10-complex-content-from-simple-content |
 | XSD 1.0 | MS-Regex2006-07-15/reJ11/reJ11.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reJ13/reJ13.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reJ19/reJ19.i | instance | fail | same-invalid | unclassified |

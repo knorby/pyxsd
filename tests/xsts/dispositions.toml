@@ -172,7 +172,7 @@ links = [
   "https://www.w3.org/TR/xmlschema-1/#src-resolve",
   "https://www.w3.org/TR/xmlschema-1/#cElement_Declarations",
 ]
-rationale = "schF2.v and schG2.v each bind a no-target-namespace document whose type=ct-A reference must resolve to the no-namespace ct-A declaration. pyxsd's merged lookup instead selects the same-local-name ct-A from ns-a or ns-b, so the valid instances are rejected against the wrong type (a1/a2 order and datatypes). The Task 4 import audit rejects an unimported namespace but does not make same-local-name lookups namespace-correct when the reference itself has no namespace."
+rationale = "schF2.v and schG2.v each bind a no-target-namespace document whose type=ct-A reference must resolve to the no-namespace ct-A declaration. The generated class map registers every type under its bare local name and its expanded name, so a later same-local-name type in another namespace overwrites the bare ct-A key; Element.getType returns that class from the map before the namespace-aware type lookup runs. The no-namespace e1 is validated against ns-b ct-A (schF2) or ns-c ct-A (schG2), rejecting the valid instances on a1/a2 order and datatypes. The Task 4 import audit rejects an unimported namespace but does not make the generated class map namespace-disjoint."
 
 # Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
 # ("duplicate-global-element").
@@ -228,7 +228,7 @@ links = [
   "https://www.w3.org/TR/xmlschema-1/#src-redefine",
   "https://www.w3.org/TR/xmlschema-1/#cAttribute_Group_Definitions",
 ]
-rationale = "attgD017 redefines attg by keeping its self-reference and adding attributeGroup attg1 and attribute ref foo; the original attg also references foo, so the composed group has duplicate foo uses. XSD 1.0 Structures 3.6.2 clause 2 forbids two attribute uses with the same expanded name. check_redefine_restrictions skips when an attribute ref is present, so pyxsd accepts the expected-invalid schema."
+rationale = "attgD017 redefines attg by keeping its self-reference and adding attributeGroup attg1 and attribute ref foo; the original attg also references foo, so the composed group has duplicate foo uses. XSD 1.0 Structures 3.6.6 clause 2 forbids two attribute uses with the same expanded name. check_redefine_restrictions skips when an attribute ref is present, so pyxsd accepts the expected-invalid schema."
 
 # Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
 # ("redefine-simple-type-enforcement").
@@ -245,7 +245,7 @@ rationale = "stZ033 redefines simpleType B with enumeration 3, but the schema co
 # ("redefine-default-attributes-apply").
 [[dispositions]]
 id = "xsts-redefine-default-attributes-apply"
-title = "defaultAttributesApply on a redefined complexType does not reach the composed type"
+title = "A base type's default attribute group is not applied through a redefine extension"
 category = "implementation-gap"
 profiles = ["xsd11"]
 cases = ["defaultAttributesApply/s3_4_2_4ii06/s3_4_2_4ii06i"]
@@ -253,7 +253,7 @@ links = [
   "https://www.w3.org/TR/xmlschema11-1/#dcl.ctd.attuses",
   "https://www.w3.org/TR/xmlschema11-1/#src-redefine",
 ]
-rationale = "s3_4_2_4ii06 declares defaultAttributes tns:defaultAttrGroup and redefines c1 with defaultAttributesApply=false; the corpus, following bug 12129, expects the instance valid with dv:defaultAttr present. pyxsd rejects it as an unexpected, unparsed attribute, so the redefined type did not receive the effective default-attribute treatment. This is the XSD 1.1 default-attribute-group plus redefine seam, not the XSD 1.0 version deltas."
+rationale = "s3_4_2_4ii06 declares defaultAttributes tns:defaultAttrGroup and redefines c1 with defaultAttributesApply=false; the corpus, following bug 12129, expects the instance valid with dv:defaultAttr present. The false on the redefinition is correct: the attribute is expected from the original c1|base, whose schema-scoped default group still applies and is inherited through the extension. A focused compile shows c1|base has defaultAttributeGroup=AttributeGroup[defaultAttrGroup], but its generated class has no defaultAttr descriptor, so the attached group never becomes an effective attribute use. pyxsd rejects the instance attribute as unexpected and unparsed. The seam is apply_default_attributes plus the class-build/attribute-use ordering, not propagation of the redefinition's false."
 
 # Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
 # ("circular-redefine-underspecified").
@@ -290,7 +290,7 @@ rationale = "over024 has two documents that override each other; over026 overrid
 # ("identity-constraint-global-reference").
 [[dispositions]]
 id = "xsts-identity-constraint-global-reference"
-title = "A keyref refer QName can resolve to a non-global identity constraint"
+title = "A keyref refer QName is not required to name a global key or unique"
 category = "implementation-gap"
 profiles = ["xsd10", "xsd11"]
 cases = ["MS-IdentityConstraint2006-07-15/idC019/idC019"]
@@ -434,8 +434,8 @@ cases = [
   "MS-Schema2006-07-15/schL3/schL3",
 ]
 links = [
-  "https://www.w3.org/TR/xmlschema-1/#coss-modelGroup",
-  "https://www.w3.org/TR/xmlschema11-1/#coss-modelGroup",
+  "https://www.w3.org/TR/xmlschema-1/#cos-all-limited",
+  "https://www.w3.org/TR/xmlschema11-1/#cos-all-limited",
 ]
 rationale = "The corpus expects these schemas invalid under XSD 1.0 and valid under XSD 1.1 (categories xsd1_1-AllGroups-WildcardsAllowed, -DerivationByExtension and -NamedModelGroupRef; mgO001 and mgO018 cite bug 15926). XSD 1.0 All Group Limited forbids wildcards, named group references inside xs:all and extension from an xs:all base, and limits the zero-occurrence shapes the mgO cases exercise; XSD 1.1 relaxed them. pyxsd's 1.0 mode accepts them."
 
@@ -511,7 +511,6 @@ title = "XSD 1.0 mode rejects type constructs that XSD 1.0 accepts"
 category = "version-switch-candidate"
 profiles = ["xsd10"]
 cases = [
-  "MS-Particles2006-07-15/particlesZ031/particlesZ031",
   "MS-SimpleType2006-07-15/stE053/stE053",
   "MS-SimpleType2006-07-15/stZ007/stZ007",
   "MS-SimpleType2006-07-15/stZ047/stZ047",
@@ -521,7 +520,21 @@ links = [
   "https://www.w3.org/TR/xmlschema-1/#Simple_Type_Definitions",
   "https://www.w3.org/TR/xmlschema11-1/#Simple_Type_Definitions",
 ]
-rationale = "These five schemas are expected valid under XSD 1.0 and invalid under XSD 1.1. pyxsd's 1.0 mode rejects them while its 1.1 mode accepts, so it applies a 1.1-only constraint in 1.0: a union member that is an xs:simpleType (stE053), a complexType renamed to anySimpleType and restricted (stZ007), anySimpleType as a substitution-group head (stZ047 and stZ055), and complexContent derived from simpleContent (particlesZ031). The corpus has no 1.1 category anchor for these; the expectations supply the direction."
+rationale = "These four schemas are expected valid under XSD 1.0 and invalid under XSD 1.1. pyxsd's 1.0 mode rejects them while its 1.1 mode accepts, so it applies a 1.1-only constraint in 1.0: a union member that is an xs:simpleType (stE053), a complexType renamed to anySimpleType and restricted (stZ007), and anySimpleType as a substitution-group head (stZ047 and stZ055). The corpus has no 1.1 category anchor for these; the expectations supply the direction."
+
+# Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
+# ("xsd10-complex-content-from-simple-content").
+[[dispositions]]
+id = "xsd10-complex-content-from-simple-content"
+title = "complexContent from simpleContent conflicts with the XSD 1.0 derivation rule"
+category = "spec-correct-divergence"
+profiles = ["xsd10"]
+cases = ["MS-Particles2006-07-15/particlesZ031/particlesZ031"]
+links = [
+  "https://www.w3.org/TR/xmlschema-1/#cos-ct-extends",
+  "https://www.w3.org/Bugs/Public/show_bug.cgi?id=15629",
+]
+rationale = "particlesZ031 expects the schema valid under XSD 1.0 and invalid under XSD 1.1, but the group annotation says deriving complexContent from simpleContent is not allowed in XSD 1.0, and XSD 1.0 Structures 3.4.6.2 Derivation Valid (Extension) clause 1.4 supports that: a complexContent extension that adds no particle cannot extend a base whose content type is a simple type definition. Bug 15629 resolved duplicate expected elements by selecting valid in 1.0 and invalid in 1.1. pyxsd rejects in both profiles: its 1.0 rejection matches the annotation and the 1.0 rule, and its 1.1 rejection matches the selected invalid expectation. The 1.0 failure is a spec-correct divergence from the accepted corpus value, not a version-switch implementation gap."
 
 # Adjudication: docs/superpowers/ledgers/2026-11-01-xsts-remaining-semantic-clusters.md
 # ("xsd10-conditional-inclusion").
