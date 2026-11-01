@@ -11,8 +11,9 @@ This local runner is not the required CI gate itself (CI runs the pytest
 suite in ``tests/test_xsts_suite.py``); use it to explore slices, compare
 both engines, regenerate baselines, and drive the dispatch-only
 ``.github/workflows/xsts.yml`` workflow, which covers the XSD 1.0 profile.
-Against the checked-in baselines pyxsd passes 99.78% of the XSD 1.1 profile
-and 99.61% of XSD 1.0.  Run it locally when changing schema handling.
+For current checked-case agreement, denominators, and methodology, see
+https://pyxsd.knorby.com/xsts.html (source: ``docs/xsts.md``).
+Run it locally when changing schema handling.
 ``--write-baseline`` rewrites the whole file: never regenerate wholesale to
 make a gate green -- move only the entries an intentional behavior change
 actually flips, in that change's commit.
