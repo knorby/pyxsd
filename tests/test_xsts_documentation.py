@@ -10,11 +10,13 @@ baseline metadata instead of presenting it as a full run.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
 import report_xsts_docs
+from xsts.baseline import load as load_baseline
 from xsts.dispositions import DispositionError
 from xsts.documentation import (
     PublicationError,
@@ -122,6 +124,10 @@ XSD10_RESULTS = {
     "pyxsd:Mini/g5/i5:instance": "not-checkable",
 }
 
+#: A complete XSD 1.1 set: one result per main-suite case for *both*
+#: required engines.  ``i5`` belongs to the instance-only group ``g5``, whose
+#: wrapper the xmlschema adapter does not synthesize, so its comparison
+#: result is ``adapter-gap`` exactly as the real harness records it.
 XSD11_RESULTS = {
     "pyxsd:Mini/g1/s1:schema": "pass",
     "pyxsd:Mini/g1/i1:instance": "pass",
@@ -132,9 +138,15 @@ XSD11_RESULTS = {
     "pyxsd:Mini/g4/s4:schema": "fail",
     "pyxsd:Mini/g4/i4:instance": "pass",
     "pyxsd:Mini/g5/i5:instance": "fail",
+    "xmlschema:Mini/g1/s1:schema": "pass",
     "xmlschema:Mini/g1/i1:instance": "pass",
     "xmlschema:Mini/g2/s2:schema": "fail",
+    "xmlschema:Mini/g2/i2:instance": "pass",
+    "xmlschema:Mini/g3/s3:schema": "fail",
+    "xmlschema:Mini/g3/i3:instance": "pass",
     "xmlschema:Mini/g4/s4:schema": "fail",
+    "xmlschema:Mini/g4/i4:instance": "pass",
+    "xmlschema:Mini/g5/i5:instance": "adapter-gap",
 }
 
 DISPOSITION_BLOCKS = (
@@ -243,17 +255,17 @@ def test_results_report_exact_outcome_counts_and_denominators(tmp_path: Path) ->
 
     for line in [
         "| Outcome | XSD 1.1 pyxsd | XSD 1.1 xmlschema | XSD 1.0 pyxsd |",
-        "| pass | 5 | 1 | 3 |",
-        "| fail | 3 | 2 | 4 |",
+        "| pass | 5 | 5 | 3 |",
+        "| fail | 3 | 3 | 4 |",
         "| not-applicable | 0 | 0 | 1 |",
         "| not-checkable | 0 | 0 | 1 |",
-        "| adapter-gap | 1 | 0 | 0 |",
+        "| adapter-gap | 1 | 1 | 0 |",
         "| metadata-error | 0 | 0 | 0 |",
         "| timeout | 0 | 0 | 0 |",
         "| error | 0 | 0 | 0 |",
-        "| **Total** | 9 | 3 | 9 |",
-        "| **Checked (pass + fail)** | 8 | 3 | 7 |",
-        "| **Agreement on checked** | 62.5000% | 33.3333% | 42.8571% |",
+        "| **Total** | 9 | 9 | 9 |",
+        "| **Checked (pass + fail)** | 8 | 8 | 7 |",
+        "| **Agreement on checked** | 62.5000% | 62.5000% | 42.8571% |",
     ]:
         assert line in lines
 
@@ -265,8 +277,8 @@ def test_results_split_schema_and_instance_outcomes(tmp_path: Path) -> None:
     for line in [
         "| XSD 1.1 | pyxsd | schema | 4 | 1 | 2 | 3 | 33.3333% |",
         "| XSD 1.1 | pyxsd | instance | 5 | 4 | 1 | 5 | 80.0000% |",
-        "| XSD 1.1 | xmlschema | schema | 2 | 0 | 2 | 2 | 0.0000% |",
-        "| XSD 1.1 | xmlschema | instance | 1 | 1 | 0 | 1 | 100.0000% |",
+        "| XSD 1.1 | xmlschema | schema | 4 | 1 | 3 | 4 | 25.0000% |",
+        "| XSD 1.1 | xmlschema | instance | 5 | 4 | 0 | 4 | 100.0000% |",
         "| XSD 1.0 | pyxsd | schema | 4 | 1 | 3 | 4 | 25.0000% |",
         "| XSD 1.0 | pyxsd | instance | 5 | 2 | 1 | 3 | 66.6667% |",
     ]:
@@ -281,9 +293,9 @@ def test_results_count_false_accepts_and_rejects_by_kind(tmp_path: Path) -> None
         "| XSD 1.1 | pyxsd | schema | 1 | 1 | 0 | 2 |",
         "| XSD 1.1 | pyxsd | instance | 0 | 1 | 0 | 1 |",
         "| XSD 1.1 | pyxsd | **Total** | 1 | 2 | 0 | 3 |",
-        "| XSD 1.1 | xmlschema | schema | 1 | 1 | 0 | 2 |",
+        "| XSD 1.1 | xmlschema | schema | 2 | 1 | 0 | 3 |",
         "| XSD 1.1 | xmlschema | instance | 0 | 0 | 0 | 0 |",
-        "| XSD 1.1 | xmlschema | **Total** | 1 | 1 | 0 | 2 |",
+        "| XSD 1.1 | xmlschema | **Total** | 2 | 1 | 0 | 3 |",
         "| XSD 1.0 | pyxsd | schema | 1 | 2 | 0 | 3 |",
         "| XSD 1.0 | pyxsd | instance | 1 | 0 | 0 | 1 |",
         "| XSD 1.0 | pyxsd | **Total** | 2 | 2 | 0 | 4 |",
@@ -486,6 +498,49 @@ def test_baseline_without_pyxsd_results_is_rejected(tmp_path: Path) -> None:
         build_results_fragment(repo)
 
 
+def test_publication_rejects_one_missing_required_engine_result(tmp_path: Path) -> None:
+    results = {
+        key: value for key, value in XSD11_RESULTS.items() if key != "xmlschema:Mini/g5/i5:instance"
+    }
+    repo = make_repo(tmp_path, xsd11_results=results)
+
+    with pytest.raises(PublicationError) as excinfo:
+        build_results_fragment(repo)
+
+    message = str(excinfo.value)
+    assert "missing 1 of 9 xmlschema results" in message
+    assert "'xmlschema:Mini/g5/i5:instance'" in message
+
+
+def test_publication_rejects_a_legacy_baseline_missing_a_result(tmp_path: Path) -> None:
+    results = {
+        key: value for key, value in XSD10_RESULTS.items() if key != "pyxsd:Mini/g4/i4:instance"
+    }
+    repo = make_repo(tmp_path, xsd10_results=results)
+
+    with pytest.raises(PublicationError, match="missing 1 of 9 pyxsd results"):
+        build_results_fragment(repo)
+
+
+def test_publication_rejects_an_unexpected_engine(tmp_path: Path) -> None:
+    results = dict(XSD10_RESULTS)
+    results["xmlschema:Mini/g1/i1:instance"] = "pass"
+    repo = make_repo(tmp_path, xsd10_results=results)
+
+    with pytest.raises(PublicationError, match="unexpected engine xmlschema"):
+        build_results_fragment(repo)
+
+
+def test_publication_rejects_a_pyxsd_only_xsd11_rewrite(tmp_path: Path) -> None:
+    # Dropping every xmlschema result and rewriting the metadata to match
+    # must not publish an XSD 1.1 report without the comparison engine.
+    results = {key: value for key, value in XSD11_RESULTS.items() if key.startswith("pyxsd:")}
+    repo = make_repo(tmp_path, xsd11_meta=FULL_META | {"engines": ["pyxsd"]}, xsd11_results=results)
+
+    with pytest.raises(PublicationError, match="records no xmlschema results"):
+        build_results_fragment(repo)
+
+
 @pytest.mark.parametrize(
     ("key", "value", "message"),
     [
@@ -624,6 +679,18 @@ def test_checked_in_baselines_publish_the_design_denominators() -> None:
 
     fragment = build_results_fragment(repo)
     flat = _flat(fragment)
+
+    # The engine contract holds in the checked-in data itself: exactly the
+    # required engines per profile, and 41,735 results (one per main-suite
+    # case) for each of them.
+    for profile_name, expected_counts in (
+        ("xsd11", {"pyxsd": 41735, "xmlschema": 41735}),
+        ("xsd10", {"pyxsd": 41735}),
+    ):
+        recorded = load_baseline(repo / "tests" / "xsts" / f"baseline-{profile_name}.toml")
+        counts = Counter(key.split(":", 1)[0] for key in recorded.results)
+        assert counts == expected_counts
+    assert "| **Total** | 41,735 | 41,735 | 41,735 |" in _lines(fragment)
 
     assert "| Checked in at least one profile | 41,626 |" in flat
     assert "| Checked in neither profile | 109 |" in flat

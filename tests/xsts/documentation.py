@@ -10,7 +10,11 @@ Publication deliberately refuses a baseline whose metadata marks it
 ``complete = false`` or whose provenance is only partly recorded.  A legacy
 baseline with no full-run metadata at all still renders -- with the exact
 text ``full-run provenance not recorded`` -- so old data is inspectable but
-never presented as a fresh full run.  Dispositions are validated through the
+never presented as a fresh full run.  Publication also enforces the
+per-profile engine contract from the results themselves: XSD 1.1 publishes
+exactly pyxsd and the xmlschema comparison engine, XSD 1.0 exactly pyxsd,
+each with one result per main-suite case, so dropping engine results cannot
+shrink a published denominator.  Dispositions are validated through the
 Task 3 interface and never change an outcome or the checked denominator.
 """
 
@@ -46,6 +50,16 @@ PROFILE_ORDER = ("xsd11", "xsd10")
 
 #: Public labels for the two profiles.
 PROFILE_LABELS = {"xsd11": "XSD 1.1", "xsd10": "XSD 1.0"}
+
+#: The engines each profile publishes, as an exact set.  XSD 1.1 records
+#: pyxsd and the xmlschema comparison engine; XSD 1.0 records pyxsd only.
+#: Publication enforces this contract from the recorded results, never from
+#: metadata alone, so rewriting ``engines`` cannot legitimise a baseline
+#: whose engine data is incomplete.
+PROFILE_ENGINES = {
+    "xsd11": frozenset({"pyxsd", "xmlschema"}),
+    "xsd10": frozenset({"pyxsd"}),
+}
 
 #: Test-kind order used by every table.
 KIND_ORDER = ("schema", "instance")
@@ -208,6 +222,51 @@ def _baseline_results(
     return tuple(results)
 
 
+def _require_engine_coverage(
+    profile: str,
+    results: tuple[CaseResult, ...],
+    cases: Mapping[str, Case],
+) -> None:
+    """Enforce the per-profile engine contract over the recorded results.
+
+    Publication requires exactly the engines :data:`PROFILE_ENGINES` names
+    and, for each of them, the exact emitted ``{engine:test_id:kind}`` set:
+    one result per main-suite case.  The contract is checked against the
+    results, not the metadata, and applies to legacy and full-provenance
+    baselines alike, so deleting an engine's results -- or dropping every
+    xmlschema entry and rewriting ``engines`` to match -- is a publication
+    error rather than a smaller denominator.  Keys outside the emitted set
+    cannot reach this check, because ``_baseline_results`` already rejects
+    unknown cases and mismatched kinds for every engine; exact set equality
+    therefore reduces to the engine contract plus the missing-key
+    comparison below.
+    """
+    required = PROFILE_ENGINES[profile]
+    recorded = {result.engine for result in results}
+    missing = sorted(required - recorded)
+    if missing:
+        raise PublicationError(
+            f"{profile} baseline records no {', '.join(missing)} results; "
+            f"publication requires exactly {', '.join(sorted(required))}"
+        )
+    unexpected = sorted(recorded - required)
+    if unexpected:
+        raise PublicationError(
+            f"{profile} baseline records results for unexpected engine "
+            f"{', '.join(unexpected)}; publication requires exactly "
+            f"{', '.join(sorted(required))}"
+        )
+    for engine in sorted(required):
+        emitted = {f"{engine}:{case.test_id}:{case.kind}" for case in cases.values()}
+        recorded_keys = {result.key for result in results if result.engine == engine}
+        absent = sorted(emitted - recorded_keys)
+        if absent:
+            raise PublicationError(
+                f"{profile} baseline is missing {len(absent)} of {len(emitted)} "
+                f"{engine} results for the main {MAIN_SUITE} run, e.g. {absent[0]!r}"
+            )
+
+
 def _publication_provenance(
     profile: str,
     meta: Mapping[str, object],
@@ -279,9 +338,8 @@ def _load_model(repo_root: Path) -> _Model:
         cases = {case.test_id: case for case in build_cases(catalog, PROFILES[name])}
         baseline = load_baseline(root / XSTS_DIR / f"baseline-{name}.toml")
         results = _baseline_results(name, baseline, cases)
+        _require_engine_coverage(name, results, cases)
         engines = tuple(sorted({result.engine for result in results}))
-        if "pyxsd" not in engines:
-            raise PublicationError(f"{name} baseline records no pyxsd results")
         provenance = _publication_provenance(name, baseline.meta, len(cases), engines)
         profiles.append(
             _Profile(

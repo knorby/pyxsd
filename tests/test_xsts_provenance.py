@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import platform
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
@@ -421,3 +422,41 @@ def test_main_oracle_only_run_still_records_the_dependencies(
         "pyxsd==1.2.3",
         "xmlschema==4.7.0",
     ]
+
+
+def test_main_reads_the_process_argument_list_when_argv_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _pin_environment(monkeypatch)
+    _patch_runner(monkeypatch, [_case(index) for index in (1, 2, 3)])
+    monkeypatch.setattr(
+        sys, "argv", ["tests/report_xsts.py", "--profile", "xsd11", "--jobs", "1", "--json"]
+    )
+
+    assert report_xsts.main(None) == 0
+
+    recorded = json.loads(capsys.readouterr().out)["provenance"]
+    assert recorded["complete"] is True
+    assert recorded["case_count"] == 3
+    assert recorded["command"] == "python tests/report_xsts.py --profile xsd11 --jobs 1 --json"
+
+
+def test_main_none_argv_marks_a_limited_run_from_the_process_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _pin_environment(monkeypatch)
+    _patch_runner(monkeypatch, [_case(index) for index in (1, 2, 3)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["tests/report_xsts.py", "--profile", "xsd11", "--limit", "2", "--jobs", "1", "--json"],
+    )
+
+    assert report_xsts.main(None) == 0
+
+    recorded = json.loads(capsys.readouterr().out)["provenance"]
+    assert recorded["complete"] is False
+    assert recorded["case_count"] == 2
+    assert "--limit 2" in recorded["command"]

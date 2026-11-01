@@ -87,8 +87,8 @@ measurement.
   corpus case. The xmlschema adapter does not synthesize; those groups remain
   `adapter-gap` for that engine.
 - **Comparison engine.** The `xmlschema` result is compared to the suite's
-  expectations too. Where the oracle disagrees with the suite, that is an oracle-erratum
-  candidate, not proof the suite is wrong.
+  expectations too. Where the comparison engine disagrees with the suite,
+  that is an oracle-erratum candidate, not proof the suite is wrong.
 
 ## Baseline
 
