@@ -878,7 +878,8 @@ class _RunEnds:
     The generic memo stores a ``frozenset`` per position, which for a
     document-length run retains O(n^2) integers (reZ003v: 3.4 GiB at
     n=10,000). Storing the interval keeps that memo O(n) while behaving
-    like a set for the matcher's membership, iteration and ordering uses.
+    like a set for the matcher's membership tests and ``sorted()``
+    iteration.
     """
 
     __slots__ = ("_range",)
@@ -1153,34 +1154,67 @@ def _trace_repeated(
         _trace_one(particle, nodes, before, after, ctx, memo, out)
 
 
+def _can_match_empty(particle: Particle) -> bool:
+    """Whether *particle*'s language contains the empty sequence.
+
+    The check is structural and conservative: an occurrence count of
+    zero matches nothing, an ``element`` or ``any`` particle consumes
+    one node per occurrence, and a compositor matches empty only when
+    every child (``sequence``, ``all``) or at least one child
+    (``choice``) does. A ``choice`` or ``sequence`` with
+    ``min_occurs=1`` can therefore still match zero nodes, which is why
+    the occurrence minimum alone cannot decide whether a wrapper's
+    bounds may be multiplied.
+    """
+    if particle.min_occurs == 0 or particle.max_occurs == 0:
+        return True
+    if particle.kind in ("sequence", "all"):
+        return all(_can_match_empty(child) for child in particle.children)
+    if particle.kind == "choice":
+        return any(_can_match_empty(child) for child in particle.children)
+    return False
+
+
 def _collapse_single_child_compositors(particle: Particle) -> Particle:
     """The matcher's view of *particle* with single-child groups collapsed.
 
-    A ``sequence`` or ``choice`` with exactly one child is language-
-    identical to that child repeated as often as the wrapper only when the
-    child's ``min_occurs`` is 1: the wrapper's k occurrences then consume
+    A ``sequence`` or ``choice`` with exactly one child collapses into
+    that child only under two preconditions:
+
+    - the child's ``min_occurs`` is 1, and
+    - either the wrapper's ``min_occurs`` is 0 or the child cannot match
+      the empty sequence (:func:`_can_match_empty`).
+
+    Under those preconditions the wrapper's k occurrences consume
     ``k .. k * child.max_occurs`` items, and those per-occurrence ranges
     overlap as k grows, so the union is the contiguous
-    ``wrapper.min_occurs .. wrapper.max_occurs * child.max_occurs``. With a
-    larger child minimum the k-fold sums have gaps
+    ``wrapper.min_occurs .. wrapper.max_occurs * child.max_occurs``. With
+    a larger child minimum the k-fold sums have gaps
     (``sequence{1,2}[b{2,2}]`` admits two or four ``b`` elements, never
     three), so multiplying the endpoints would accept documents the
-    authored model rejects. A zero-minimum child is also excluded: its
-    zero-width repetitions interact with the end-set walk's step cap.
-    Within the guard the bounds multiply, a zero maximum on either side
-    makes the product zero, and otherwise ``None`` (unbounded) on either
-    side keeps it unbounded. Collapsing removes a layer the matcher would
-    otherwise walk once per occurrence (Z034/Z036 repeat a single-element
+    authored model rejects. A nullable child (for example
+    ``choice{1,unbounded}[a{0,1}]``) breaks the product differently: the
+    wrapper's finite maximum would become ``None`` while the collapsed
+    minimum stays the wrapper's, and the unbounded repetition walk caps
+    itself at ``len(nodes) + 1`` — below that minimum for small
+    documents — so the view would reject inputs the authored tree
+    accepts. A zero wrapper minimum keeps the collapsed range starting
+    at 0, which stays exact even for a nullable child. Both conditions
+    are structural, not a check on the wrapper alone. Within them the
+    bounds multiply, a zero maximum on either side makes the product
+    zero, and otherwise ``None`` (unbounded) on either side keeps it
+    unbounded. Collapsing removes a layer the matcher would otherwise
+    walk once per occurrence (Z034/Z036 repeat a single-element
     ``sequence`` inside another repeated group).
 
     Normalization is post-order: children are collapsed first, so nested
     single-child compositors fold into one terminal particle. Only the
     view changes; the authored tree is returned untouched when nothing
     collapses and is never mutated, because derivation, restriction and
-    EDC checks read its compositor structure. ``all`` and the synthetic
-    wrapper around a group reference are excluded: both are significant
-    to those checks (and to the open-content attribution pass), and
-    ``all`` is unordered rather than a plain repetition.
+    EDC checks read its compositor structure. ``all`` particles and the
+    synthetic wrapper around a group reference are excluded: both are
+    significant to those checks (and to the open-content attribution
+    pass), and ``all`` is unordered rather than a plain repetition.
     """
     children = [_collapse_single_child_compositors(child) for child in particle.children]
     if any(new is not old for new, old in zip(children, particle.children, strict=True)):
@@ -1190,7 +1224,7 @@ def _collapse_single_child_compositors(particle: Particle) -> Particle:
     if len(particle.children) != 1:
         return particle
     child = particle.children[0]
-    if child.min_occurs != 1:
+    if child.min_occurs != 1 or (particle.min_occurs > 0 and _can_match_empty(child)):
         return particle
     minimum = particle.min_occurs
     if particle.max_occurs == 0 or child.max_occurs == 0:
@@ -1244,9 +1278,10 @@ def _match_content_impl(
     complete = len(nodes) in ends
     target = len(nodes) if complete else max(ends, default=0)
     out: list[ChildMatch] = []
-    if collect_associations and (complete or target > 0 or model.min_occurs == 0):
-        _trace_repeated(view, nodes, 0, target, ctx, memo, out)
-    out.sort(key=lambda match: match.position)
+    if collect_associations:
+        if complete or target > 0 or model.min_occurs == 0:
+            _trace_repeated(view, nodes, 0, target, ctx, memo, out)
+        out.sort(key=lambda match: match.position)
     if complete:
         return True, [], out
     return False, list(nodes[target:]), out
@@ -1319,8 +1354,8 @@ def match_content(
         target_namespace,
         namespace_checked,
         defined,
-        frozenset(),
-        member_heads,
+        open_blocked=frozenset(),
+        member_heads=member_heads,
         collect_associations=False,
     )
     return complete, leftover
