@@ -5,18 +5,21 @@ The report deliberately separates:
 - tests the profile did not claim,
 - tests with non-Boolean expectations the suite does not decide,
 - cases the harness cannot drive,
-- and outstanding per-test failures grouped by contributor and by kind.
+- outstanding per-test failures grouped by contributor and by kind,
+- and the direction of each settled failure (false accept or false reject).
 """
 
 from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from .baseline import BaselineDiff
 from .outcomes import Outcome
 from .runner import CaseResult
+from .selection import expected_is_valid
 
 #: Outcomes that represent a settled, checkable verdict.
 CHECKED = frozenset({Outcome.PASS, Outcome.FAIL})
@@ -48,6 +51,27 @@ class EngineSummary:
     def failed(self) -> int:
         return self.outcomes[Outcome.FAIL.value]
 
+    def failure_directions(self) -> Counter[str]:
+        """Count settled failures by false accept and false reject.
+
+        Direction comes only from the corpus expectation and the observed
+        verdict, so a disposition cannot reclassify a failure or move it out
+        of the raw checked denominator.  A failure whose expectation is not
+        Boolean, or whose metadata is missing, is not forced into a direction.
+        """
+        directions: Counter[str] = Counter()
+        for failure in self.failures:
+            if failure.expected is None or failure.actual is None:
+                continue
+            expected_valid = expected_is_valid(failure.expected)
+            if expected_valid is None:
+                continue
+            if failure.actual is True and expected_valid is False:
+                directions["false-accept"] += 1
+            elif failure.actual is False and expected_valid is True:
+                directions["false-reject"] += 1
+        return directions
+
 
 @dataclass
 class Summary:
@@ -55,6 +79,7 @@ class Summary:
 
     engines: dict[str, EngineSummary] = field(default_factory=dict)
     diff: BaselineDiff | None = None
+    results: list[CaseResult] = field(default_factory=list)
 
     def engines_sorted(self) -> list[EngineSummary]:
         return [self.engines[name] for name in sorted(self.engines)]
@@ -62,7 +87,7 @@ class Summary:
 
 def summarize(results: list[CaseResult], diff: BaselineDiff | None = None) -> Summary:
     """Fold per-case results into per-engine counts."""
-    summary = Summary(diff=diff)
+    summary = Summary(diff=diff, results=list(results))
     for result in results:
         engine = summary.engines.setdefault(result.engine, EngineSummary(result.engine))
         engine.outcomes[result.outcome.value] += 1
@@ -109,17 +134,40 @@ def render_text(summary: Summary, *, max_failures: int = 20) -> str:
     return "\n".join(lines)
 
 
-def render_json(summary: Summary) -> str:
-    """A machine-readable report."""
+def _ordered_counts(counts: Counter[str]) -> dict[str, int]:
+    """Observed counts in outcome-taxonomy order, for deterministic output."""
+    return {outcome.value: counts[outcome.value] for outcome in Outcome if counts[outcome.value]}
+
+
+def render_json(summary: Summary, *, provenance: Mapping[str, object] | None = None) -> str:
+    """A machine-readable report.
+
+    Every engine reports its checked denominator, kind split, failure
+    directions, and full result map in the same key format as a baseline.
+    ``provenance`` is published verbatim when supplied and omitted otherwise,
+    so existing consumers keep their shape.
+    """
+    if provenance is not None and not isinstance(provenance, Mapping):
+        raise TypeError("provenance must be a mapping")
     payload: dict[str, object] = {"engines": {}}
     engines: dict[str, object] = {}
     for engine in summary.engines_sorted():
+        engine_results = results_to_keys(
+            [result for result in summary.results if result.engine == engine.engine]
+        )
         engines[engine.engine] = {
             "total": engine.total,
-            "outcomes": dict(engine.outcomes),
-            "by_contributor": {
-                name: dict(counts) for name, counts in engine.by_contributor.items()
+            "checked": engine.checked,
+            "outcomes": _ordered_counts(engine.outcomes),
+            "by_kind": {
+                kind: _ordered_counts(engine.by_kind[kind]) for kind in sorted(engine.by_kind)
             },
+            "by_contributor": {
+                name: _ordered_counts(counts)
+                for name, counts in sorted(engine.by_contributor.items())
+            },
+            "failure_directions": dict(sorted(engine.failure_directions().items())),
+            "results": dict(sorted(engine_results.items())),
             "failures": [
                 {
                     "test_id": failure.test_id,
@@ -132,6 +180,8 @@ def render_json(summary: Summary) -> str:
             ],
         }
     payload["engines"] = engines
+    if provenance is not None:
+        payload["provenance"] = dict(provenance)
     if summary.diff is not None:
         payload["baseline_changes"] = [
             {
