@@ -643,6 +643,81 @@ class TestBooleanMatchingWithoutTrace:
         )
 
 
+class TestEndSetsIntersectionProbe:
+    """Feasibility checks must probe the smaller side instead of building sets.
+
+    ``_trace_one`` only needs to know whether a child's end set meets the
+    remaining feasibility positions. Constructing the intersection
+    allocates a set per ``(child, position)`` pair; membership probing
+    stops at the first common position and handles both ``frozenset`` and
+    the compact ``_RunEnds`` interval.
+    """
+
+    def test_end_sets_intersect_empty_left(self):
+        from pyxsd import content_model
+
+        assert content_model._end_sets_intersect(frozenset(), {1, 2}) is False
+        assert content_model._end_sets_intersect(content_model._RunEnds(0, 0), {1, 2}) is False
+
+    def test_end_sets_intersect_empty_right(self):
+        from pyxsd import content_model
+
+        assert content_model._end_sets_intersect(frozenset({1}), set()) is False
+        assert content_model._end_sets_intersect(content_model._RunEnds(0, 3), set()) is False
+
+    def test_end_sets_intersect_disjoint_inputs(self):
+        from pyxsd import content_model
+
+        assert content_model._end_sets_intersect(frozenset({1, 2}), {3, 4}) is False
+        assert content_model._end_sets_intersect(content_model._RunEnds(0, 2), {2, 3}) is False
+
+    def test_end_sets_intersect_run_ends_larger_than_candidate(self):
+        from pyxsd import content_model
+
+        run = content_model._RunEnds(0, 100)
+        assert content_model._end_sets_intersect(run, {50}) is True
+        assert content_model._end_sets_intersect(run, {100}) is False
+
+    def test_end_sets_intersect_run_ends_smaller_than_candidate(self):
+        from pyxsd import content_model
+
+        run = content_model._RunEnds(10, 12)
+        assert content_model._end_sets_intersect(run, {9, 11, 20}) is True
+        assert content_model._end_sets_intersect(run, {8, 9, 20}) is False
+
+    def test_end_sets_intersect_frozenset_size_branches(self):
+        from pyxsd import content_model
+
+        # Left side no larger than the candidate set: probe left.
+        assert content_model._end_sets_intersect(frozenset({1}), {1, 2, 3}) is True
+        assert content_model._end_sets_intersect(frozenset({4}), {1, 2, 3}) is False
+        # Left side larger: probe the candidate set instead.
+        assert content_model._end_sets_intersect(frozenset({1, 2, 3}), {3}) is True
+        assert content_model._end_sets_intersect(frozenset({1, 2, 3}), {4}) is False
+
+    def test_trace_uses_intersection_probe_and_keeps_z034_digest(self, monkeypatch):
+        from pyxsd import content_model
+
+        calls = 0
+        original = content_model._end_sets_intersect
+
+        def counting(left, right):
+            nonlocal calls
+            calls += 1
+            return original(left, right)
+
+        monkeypatch.setattr(content_model, "_end_sets_intersect", counting)
+        complete, leftover, associations = content_model.match_content_associations(
+            TestCorpusScaleRepeatedSearch._z034_model(),
+            TestCorpusScaleRepeatedSearch._z034_nodes(),
+        )
+        assert calls >= 1
+        assert complete is True and list(leftover) == []
+        assert TestCorpusScaleRepeatedSearch._digest(complete, leftover, associations) == (
+            "fa9fd6f373748d73a76ecdbe410ce07d5e35b7818d1c36a788741d037050236b"
+        )
+
+
 def _fingerprint(particle):
     """Identity and shape of every node, to prove the authored tree is untouched."""
     return (

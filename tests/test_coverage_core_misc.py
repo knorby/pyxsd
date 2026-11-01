@@ -98,7 +98,6 @@ def test_run_ends_compares_as_a_set_and_renders_its_interval():
 
 def test_run_ends_yields_not_implemented_for_foreign_operands():
     run = _RunEnds(0, 2)
-    assert run.__and__(object()) is NotImplemented
     assert run.__eq__(object()) is NotImplemented
 
 

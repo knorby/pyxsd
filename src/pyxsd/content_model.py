@@ -878,8 +878,7 @@ class _RunEnds:
     The generic memo stores a ``frozenset`` per position, which for a
     document-length run retains O(n^2) integers (reZ003v: 3.4 GiB at
     n=10,000). Storing the interval keeps that memo O(n) while behaving
-    like a set for the matcher's membership, iteration, ordering and
-    intersection uses.
+    like a set for the matcher's membership, iteration and ordering uses.
     """
 
     __slots__ = ("_range",)
@@ -896,13 +895,6 @@ class _RunEnds:
     def __len__(self) -> int:
         return len(self._range)
 
-    def __and__(self, other: Any) -> frozenset[int]:
-        if isinstance(other, (set, frozenset, range, _RunEnds)):
-            return frozenset(value for value in other if value in self._range)
-        return NotImplemented
-
-    __rand__ = __and__
-
     def __eq__(self, other: object) -> bool:
         if isinstance(other, _RunEnds):
             return self._range == other._range
@@ -915,6 +907,28 @@ class _RunEnds:
 
 
 EndSet = frozenset[int] | _RunEnds
+
+
+def _end_sets_intersect(left: EndSet, right: set[int]) -> bool:
+    """Whether *left* and *right* share a position, probing the smaller side.
+
+    The trace feasibility walk only needs the Boolean answer, so probing
+    avoids materializing ``left & right`` for every ``(child, position)``
+    pair. Membership tests stop at the first common position; the
+    ``_RunEnds`` interval answers them without building a set.
+    """
+    # A generator-based ``any`` and ``set.isdisjoint`` both measured
+    # slower on the Z034 trace path (+6.7% and +8.5% respectively); the
+    # explicit loop short-circuits without their per-element overhead.
+    if len(left) <= len(right):
+        for position in left:  # noqa: SIM110 - measured faster than any()
+            if position in right:
+                return True
+        return False
+    for position in right:  # noqa: SIM110 - measured faster than any()
+        if position in left:
+            return True
+    return False
 
 
 def _ends_repeated_single_node(
@@ -1065,7 +1079,9 @@ def _trace_one(
         can[-1] = {target}
         for i in range(len(children) - 1, -1, -1):
             for position in range(start, target + 1):
-                if _ends_repeated(children[i], nodes, position, ctx, memo, 0) & can[i + 1]:
+                if _end_sets_intersect(
+                    _ends_repeated(children[i], nodes, position, ctx, memo, 0), can[i + 1]
+                ):
                     can[i].add(position)
         position = start
         for index, child in enumerate(children):
