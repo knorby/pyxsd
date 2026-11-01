@@ -1,5 +1,3 @@
-:orphan:
-
 # XML and XSD validation
 
 “Is this XML valid?” needs a qualification: valid against which rules, using
@@ -56,18 +54,18 @@ These effects follow XML's rules for [attribute defaults][xml-defaults],
 datatype whitespace processing, which apply during schema assessment.
 
 There is also a direct DTD dependency in the XSD datatypes
-[`xs:ENTITY`][xsd10-entity] and [`xs:ENTITIES`][xsd11-entities]. An `ENTITY`
+[`xs:ENTITY`][xsd11-entity] and [`xs:ENTITIES`][xsd11-entities]. An `ENTITY`
 value must name an **unparsed entity declared in the instance document's DTD**;
 `ENTITIES` is a nonempty list of such values. Checking only that each token is
 an `NCName` checks its lexical form, not this declaration-dependent requirement.
 An unparsed entity, declared with `NDATA`, is not a parsed entity reference to
 expand into XML text. Naming it does not require fetching its resource.
 
-pyxsd's default ElementTree/Expat backend processes internal entity expansion
-and DTD attribute defaults, but pyxsd does not track unparsed-entity
-declarations for complete `ENTITY`/`ENTITIES` checking. No built-in parser
-profile retrieves external DTD subsets or external entities. See
-{doc}`supported` for implementation limits.
+pyxsd's default ElementTree/Expat backend processes the internal subset as far
+as Expat exposes it: internal entities can be expanded and `ATTLIST` defaults
+can apply. pyxsd does not track unparsed-entity declarations for complete
+`ENTITY`/`ENTITIES` checking. No built-in parser profile retrieves external
+DTD subsets or external entities. See {doc}`supported` for implementation limits.
 
 Parser policy is a separate decision from validity. The protected profile
 rejects entity declarations and external identifiers; the strict profile
@@ -232,6 +230,10 @@ uncheckable cases define the measurement's scope. Disagreements need analysis
 against the specifications and test metadata; another implementation's answer
 is useful evidence, not normative authority.
 
+Continue with {doc}`xsts` for case selection, outcome definitions, baseline
+provenance, current results, and residual failures. For engine-selection
+tradeoffs, see {doc}`comparison-xmlschema` and {doc}`comparison-libxml2`.
+
 ## Primary specifications
 
 The language definitions are the W3C Recommendations:
@@ -257,10 +259,10 @@ and {doc}`xml-security`.
 [infoset]: https://www.w3.org/TR/xml-infoset/
 [xsd10-structures]: https://www.w3.org/TR/xmlschema-1/
 [xsd10-datatypes]: https://www.w3.org/TR/xmlschema-2/
-[xsd10-entity]: https://www.w3.org/TR/xmlschema-2/#ENTITY
 [xsd10-psvi]: https://www.w3.org/TR/xmlschema-1/#key-psvi
 [xsd11-structures]: https://www.w3.org/TR/xmlschema11-1/
 [xsd11-datatypes]: https://www.w3.org/TR/xmlschema11-2/
+[xsd11-entity]: https://www.w3.org/TR/xmlschema11-2/#ENTITY
 [xsd11-entities]: https://www.w3.org/TR/xmlschema11-2/#ENTITIES
 [xsd11-composition]: https://www.w3.org/TR/xmlschema11-1/#composition
 [xsd11-xml-dependencies]: https://www.w3.org/TR/xmlschema11-1/#ch_specs

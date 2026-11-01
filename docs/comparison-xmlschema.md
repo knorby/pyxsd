@@ -4,8 +4,8 @@
 Python library for XML Schema work, and the natural reference point for
 pyxsd. This page describes where the two overlap, where they differ, and
 which is the better fit for a given task. It is a design comparison, not a
-benchmark; the numbers quoted are from each project's own conformance
-runs and are explained in [Supported features](supported.md).
+benchmark. {doc}`xsts` describes the shared corpus, each engine's checked
+denominator, and the reviewed baselines used for the generated results.
 
 ## At a glance
 
@@ -93,10 +93,11 @@ runs and are explained in [Supported features](supported.md).
   content.
 - **DTD is internal-subset only, and the default is unobserved.** Declarations
   beyond what expat exposes (notably unparsed `NDATA` entities) are not tracked;
-  external subsets are never fetched. The stdlib default neither processes nor
-  reports a doctype declaration. The opt-in `protected()` / `strict()` profiles
-  can forbid entity declarations or all DOCTYPEs, but that is a parser choice,
-  not DTD validation.
+  external subsets are never fetched. The stdlib default does not report
+  DOCTYPE declarations; internal entities can expand and `ATTLIST` defaults
+  can apply as far as Expat exposes them. The opt-in `protected()` / `strict()`
+  profiles can forbid entity declarations or all DOCTYPEs, but that is a parser
+  choice, not DTD validation.
 - **One parse at a time per `Schema`.** The compiled schema holds per-parse
   indexes on a shared host, so concurrent parses against the same `Schema`
   are not supported.
@@ -105,15 +106,32 @@ runs and are explained in [Supported features](supported.md).
 
 ## Using them together
 
-The two are complements in a test suite: pyxsd's own conformance harness runs
-`xmlschema` as an oracle over the W3C XSTS corpus and compares each case's
-verdict, so the libraries are exercised side by side rather than treated as
-mutually exclusive. If both are installed, `xmlschema`'s oracle can be
-enabled with `PYXSD_RUN_ORACLE=1` for the conformance run.
+pyxsd uses xmlschema in two distinct test roles:
+
+- **Manifest differential oracle.** `tests/test_oracle.py`, enabled by
+  `PYXSD_RUN_ORACLE=1`, compares the engines' schema and available instance
+  verdicts over the curated manifest. It selects `XMLSchema11` only for cases
+  marked `xsd11`; other cases use the XSD 1.0 class. Documented case-specific
+  divergences are skipped, while unexpected exceptions are harness failures,
+  not agreement.
+- **Full-XSTS comparison engine.** `tests/report_xsts.py --engine both` scores
+  each engine independently against the pinned main-suite expectations and
+  selected profile, retaining its adapter gaps and other non-verdict outcomes.
+  The XSD 1.1 baseline records both engines; the XSD 1.0 baseline currently
+  records pyxsd only. `PYXSD_RUN_ORACLE` does not select this runner's engines.
+
+Neither role makes xmlschema normative truth. A disagreement prompts
+specification-based adjudication; it does not prove that either engine or the
+corpus is wrong. The required XSTS PR gate checks the recorded baseline, not
+pairwise agreement. See [Two distinct xmlschema roles](xsts.md#two-distinct-xmlschema-roles)
+for the populations, skips, scoring rules, and reproduction commands.
 
 ## See also
 
-- [Supported features](supported.md) — pyxsd's coverage and known gaps.
+- {doc}`supported` — pyxsd's feature inventory and known gaps.
+- {doc}`xsts` — verdict-agreement methodology, provenance, and results.
+- {doc}`xsd-validation` — XML/XSD versions and validation terminology.
+- {doc}`comparison-libxml2` — C-engine scope and preliminary XSD 1.0 evidence.
 - [Data model](data-model.md) — the bound tree, `to_dict`/`to_json`, and the
   projection used by `xpath`/`find`.
 - [xmlschema documentation](https://xmlschema.readthedocs.io/) — the

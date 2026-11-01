@@ -1,5 +1,3 @@
-:orphan:
-
 # XSTS methodology and results
 
 pyxsd measures agreement with the W3C XML Schema Test Suite (XSTS) on
@@ -264,6 +262,10 @@ checked denominators, shown explicitly below.
 The PR gate checks recorded XSTS outcomes against the baseline; it does not
 require pyxsd to agree with xmlschema's verdict on every case. The generated
 engine columns are scoped measurements, not an engine ranking.
+
+See {doc}`comparison-xmlschema` for Python API and feature tradeoffs, and
+{doc}`comparison-libxml2` for engine scope and a separately dated preliminary
+XSD 1.0 probe. That probe is not part of the generated pyxsd headline.
 
 ## Reproducing reports and baseline gates
 
