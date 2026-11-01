@@ -8,7 +8,7 @@ corpus:
 | Profile | Passed | Checked | Agreement on checked |
 |:--|--:|--:|--:|
 | XSD 1.1 | 41,524 | 41,605 | 99.8053% |
-| XSD 1.0 | 39,285 | 39,438 | 99.6120% |
+| XSD 1.0 | 39,301 | 39,438 | 99.6526% |
 
 Checked cases are `pass + fail`; agreement is `100 * pass / (pass + fail)`.
 Main-suite cases only: `extra-suite.xml` is excluded, and no combined

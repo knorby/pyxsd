@@ -31,7 +31,7 @@ import decimal
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from elementpath import translate_pattern
 from elementpath.exceptions import ElementPathError
@@ -78,8 +78,8 @@ from pyxsd.xsd_data_types import (
     xsd_comparable_key,
 )
 
-#: The pattern translation mode.  The suite runs the XSD 1.1 profile and the
-#: 1.1 grammar accepts everything 1.0 does.
+#: The default pattern translation grammar.  Direct helper calls keep the
+#: XSD 1.1 grammar; schema compilation passes the selected processor version.
 PATTERN_XSD_VERSION = "1.1"
 
 
@@ -790,14 +790,16 @@ def _base_explicit_timezone(base: type | None, parent: FacetConstraints | None) 
     return None
 
 
-def compile_pattern(text: str) -> re.Pattern[str]:
+def compile_pattern(text: str, *, xsd_version: str = PATTERN_XSD_VERSION) -> re.Pattern[str]:
     """Translate and compile one XSD pattern.
 
     Public entry point for XSD pattern translation: the returned
     :class:`re.Pattern` is the same compiled pattern the validator
-    applies, translated from the XSD pattern dialect (XSD 1.1 profile,
-    via elementpath).  Raises :class:`ValueError` when the pattern is
-    not legal XSD, so the caller can report it as a schema problem.
+    applies, translated from the XSD pattern dialect selected by
+    *xsd_version* (via elementpath).  Direct calls default to the XSD 1.1
+    grammar; schema compilation passes its processor version.  Raises
+    :class:`ValueError` when the pattern is not legal XSD, so the caller
+    can report it as a schema problem.
     """
     prepared = _xml11_name_classes(text)
     # ``\p{Is}`` is not a legal category/block escape; reject it before
@@ -806,7 +808,7 @@ def compile_pattern(text: str) -> re.Pattern[str]:
     try:
         translated = translate_pattern(
             prepared,
-            xsd_version=PATTERN_XSD_VERSION,
+            xsd_version=xsd_version,
             anchors=False,
             back_references=False,
             lazy_quantifiers=False,
@@ -831,19 +833,24 @@ def build_constraints(
     base: type | None,
     parent: FacetConstraints | None,
     *,
-    base_factory: Callable[[str], Any],
+    base_factory: Callable[[str], Any] | None = None,
+    xsd_version: str = PATTERN_XSD_VERSION,
 ) -> FacetBuildResult:
     """Build the effective constraints for one simple type.
 
     ``source`` is the SimpleType element representative (its facet
     attributes are read directly); ``base`` is the resolved base class
     used to type-check facet literals; ``parent`` carries the constraints
-    inherited from a derived-from type.  Problems are returned as strings
-    rather than raised, because a malformed facet should be a schema
-    error while the rest of the schema still compiles.
+    inherited from a derived-from type.  *xsd_version* selects the XSD
+    pattern grammar applied to this step's patterns.  Problems are
+    returned as strings rather than raised, because a malformed facet
+    should be a schema error while the rest of the schema still compiles.
     """
     errors: list[str] = []
     conflicts: list[str] = []
+    # A caller that supplies no literals to parse may omit the factory; the
+    # parsing helpers below still require a callable when one is reached.
+    factory = cast("Callable[[str], Any]", base_factory)
     parent = parent or FacetConstraints()
     allowed: set[str] = set()
     if base is not None:
@@ -942,7 +949,7 @@ def build_constraints(
     own_level: list[re.Pattern[str]] = []
     for pattern_text in raw_patterns:
         try:
-            own_level.append(compile_pattern(str(pattern_text)))
+            own_level.append(compile_pattern(str(pattern_text), xsd_version=xsd_version))
         except ValueError as exc:
             errors.append(str(exc))
     # Sibling patterns in this restriction step are alternatives
@@ -988,7 +995,7 @@ def build_constraints(
         parsed: list[tuple[Any, Any]] = []
         for raw_value in raw_enumerations:
             try:
-                parsed.append(_parse_enumeration_pair(base_factory, str(raw_value)))
+                parsed.append(_parse_enumeration_pair(factory, str(raw_value)))
             except (TypeError, ValueError) as exc:
                 errors.append(
                     f"enumeration value {raw_value!r} is not valid for its base type: {exc}"
@@ -1008,7 +1015,7 @@ def build_constraints(
         if text is None:
             return None
         try:
-            value = _parse_bound(base_factory, text)
+            value = _parse_bound(factory, text)
         except (TypeError, ValueError) as exc:
             # A restatement of the base's own *exclusive* bound lies on the
             # excluded boundary, so it is outside the base's value space but
@@ -1020,7 +1027,7 @@ def build_constraints(
             )
             if inherited is not None:
                 try:
-                    restated = _parse_bound(_bound_literal_factory(base, base_factory), text)
+                    restated = _parse_bound(_bound_literal_factory(base, factory), text)
                 except (TypeError, ValueError):
                     restated = None
                 if restated is not None and restated == inherited:

@@ -7,12 +7,12 @@ engines = ["pyxsd", "xmlschema"]
 timeout_seconds = 180.0
 jobs = 8
 command = "python tests/report_xsts.py --profile xsd11 --engine both --jobs 8 --timeout 180 --write-baseline tests/xsts/baseline-xsd11.toml"
-source_revision = "bd70ef5c27688215007ca33210bf48aa0e59a783"
+source_revision = "5536e85da46bd56855159dcf612359e4f0e7de0b"
 corpus_revision = "7bc3365c652a322f3d762021b3879eb92dae7e30"
 python_version = "3.11.16"
 platform = "macOS-27.0.1-arm64-arm-64bit"
 engine_versions = ["elementpath==5.1.4", "pyxsd==1.2.1", "xmlschema==4.3.2"]
-run_completed_at = "2026-11-01T18:21:47.557518+00:00"
+run_completed_at = "2026-11-01T19:02:02.296810+00:00"
 
 [results]
 "pyxsd:AGroupDef/ag_attrusens00101m1_n/AG_attrUseNS00101m1_n:schema" = "pass"

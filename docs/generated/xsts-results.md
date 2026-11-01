@@ -34,12 +34,12 @@ baseline metadata, never from the generation time.
 | timeout_seconds | 180.0 |
 | jobs | 8 |
 | command | python tests/report_xsts.py --profile xsd11 --engine both --jobs 8 --timeout 180 --write-baseline tests/xsts/baseline-xsd11.toml |
-| source_revision | bd70ef5c27688215007ca33210bf48aa0e59a783 |
+| source_revision | 5536e85da46bd56855159dcf612359e4f0e7de0b |
 | corpus_revision | 7bc3365c652a322f3d762021b3879eb92dae7e30 |
 | python_version | 3.11.16 |
 | platform | macOS-27.0.1-arm64-arm-64bit |
 | engine_versions | elementpath==5.1.4, pyxsd==1.2.1, xmlschema==4.3.2 |
-| run_completed_at | 2026-11-01T18:21:47.557518+00:00 |
+| run_completed_at | 2026-11-01T19:02:02.296810+00:00 |
 
 ### XSD 1.0
 
@@ -53,12 +53,12 @@ baseline metadata, never from the generation time.
 | timeout_seconds | 180.0 |
 | jobs | 8 |
 | command | python tests/report_xsts.py --profile xsd10 --engine pyxsd --jobs 8 --timeout 180 --write-baseline tests/xsts/baseline-xsd10.toml |
-| source_revision | bd70ef5c27688215007ca33210bf48aa0e59a783 |
+| source_revision | 5536e85da46bd56855159dcf612359e4f0e7de0b |
 | corpus_revision | 7bc3365c652a322f3d762021b3879eb92dae7e30 |
 | python_version | 3.11.16 |
 | platform | macOS-27.0.1-arm64-arm-64bit |
 | engine_versions | elementpath==5.1.4, pyxsd==1.2.1 |
-| run_completed_at | 2026-11-01T18:22:57.780381+00:00 |
+| run_completed_at | 2026-11-01T19:02:57.386508+00:00 |
 
 ## Outcomes and checked agreement
 
@@ -67,8 +67,8 @@ verdicts; every other outcome is outside the checked denominator.
 
 | Outcome | XSD 1.1 pyxsd | XSD 1.1 xmlschema | XSD 1.0 pyxsd |
 |:--|--:|--:|--:|
-| pass | 41,524 | 41,448 | 39,285 |
-| fail | 81 | 105 | 153 |
+| pass | 41,524 | 41,448 | 39,301 |
+| fail | 81 | 105 | 137 |
 | not-applicable | 107 | 107 | 2,258 |
 | not-checkable | 14 | 14 | 15 |
 | adapter-gap | 9 | 60 | 24 |
@@ -77,7 +77,7 @@ verdicts; every other outcome is outside the checked denominator.
 | error | 0 | 1 | 0 |
 | **Total** | 41,735 | 41,735 | 41,735 |
 | **Checked (pass + fail)** | 41,605 | 41,553 | 39,438 |
-| **Agreement on checked** | 99.8053% | 99.7473% | 99.6120% |
+| **Agreement on checked** | 99.8053% | 99.7473% | 99.6526% |
 
 ## Schema and instance splits
 
@@ -89,7 +89,7 @@ Cases and checked verdicts within each emitted test kind.
 | XSD 1.1 | pyxsd | instance | 26,357 | 26,216 | 55 | 26,271 | 99.7906% |
 | XSD 1.1 | xmlschema | schema | 15,378 | 15,317 | 17 | 15,334 | 99.8891% |
 | XSD 1.1 | xmlschema | instance | 26,357 | 26,131 | 88 | 26,219 | 99.6644% |
-| XSD 1.0 | pyxsd | schema | 15,378 | 14,300 | 93 | 14,393 | 99.3539% |
+| XSD 1.0 | pyxsd | schema | 15,378 | 14,316 | 77 | 14,393 | 99.4650% |
 | XSD 1.0 | pyxsd | instance | 26,357 | 24,985 | 60 | 25,045 | 99.7604% |
 
 ## Failure directions
@@ -106,9 +106,9 @@ corpus expectation and the observed verdict, never from a disposition.
 | XSD 1.1 | xmlschema | schema | 15 | 2 | 0 | 17 |
 | XSD 1.1 | xmlschema | instance | 68 | 20 | 0 | 88 |
 | XSD 1.1 | xmlschema | **Total** | 83 | 22 | 0 | 105 |
-| XSD 1.0 | pyxsd | schema | 77 | 16 | 0 | 93 |
+| XSD 1.0 | pyxsd | schema | 61 | 16 | 0 | 77 |
 | XSD 1.0 | pyxsd | instance | 44 | 16 | 0 | 60 |
-| XSD 1.0 | pyxsd | **Total** | 121 | 32 | 0 | 153 |
+| XSD 1.0 | pyxsd | **Total** | 105 | 32 | 0 | 137 |
 
 ## Combined-profile applicability
 
@@ -131,20 +131,20 @@ This view covers the checked pyxsd failures in XSD 1.0. The relation
 comes from each profile's selected corpus expectations, never from an
 outcome.
 
-Of the 153 checked XSD 1.0 failures, 82 pass under XSD 1.1, 66 fail, and 5 are not checked.
+Of the 137 checked XSD 1.0 failures, 66 pass under XSD 1.1, 66 fail, and 5 are not checked.
 
 | Relation | Pass in 1.1 | Fail in 1.1 | Not checked | Total |
 |:--|--:|--:|--:|--:|
-| invalid-in-1.0-valid-in-1.1 | 71 | 0 | 0 | 71 |
+| invalid-in-1.0-valid-in-1.1 | 55 | 0 | 0 | 55 |
 | same-valid | 6 | 16 | 4 | 26 |
 | valid-in-1.0-invalid-in-1.1 | 5 | 0 | 0 | 5 |
 | same-invalid | 0 | 50 | 0 | 50 |
 | not-comparable | 0 | 0 | 1 | 1 |
-| **Total** | **82** | **66** | **5** | **153** |
+| **Total** | **66** | **66** | **5** | **137** |
 
 ### Intentional version-split failures
 
-This view lists 71 checked XSD 1.0 failures with a corpus
+This view lists 55 checked XSD 1.0 failures with a corpus
 expectation that is invalid under XSD 1.0, valid under XSD 1.1, and a
 passing XSD 1.1 outcome. They remain raw failures, not accepted passes,
 and are candidates for version-specific implementation work.
@@ -205,22 +205,6 @@ outcomes differ across profiles.
 | MS-Particles2006-07-15/particlesZ023/particlesZ023 | schema | unclassified |
 | MS-Particles2006-07-15/particlesZ024/particlesZ024 | schema | unclassified |
 | MS-Particles2006-07-15/particlesZ028/particlesZ028 | schema | unclassified |
-| MS-Regex2006-07-15/reF20/reF20 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reF21/reF21 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reF22/reF22 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reF23/reF23 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reG26/reG26 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reG27/reG27 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reG28/reG28 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reG29/reG29 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reG30/reG30 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reG31/reG31 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reG32/reG32 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reG33/reG33 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reH19/reH19 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reH20/reH20 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reH21/reH21 | schema | xsd10-regex-version-switch |
-| MS-Regex2006-07-15/reK88/reK88 | schema | xsd10-regex-version-switch |
 | MS-Schema2006-07-15/schL3/schL3 | schema | unclassified |
 | MS-Schema2006-07-15/schL5/schL5 | schema | unclassified |
 | MS-Wildcards2006-07-15/wildZ013/wildZ013 | schema | unclassified |
@@ -235,13 +219,12 @@ a case that starts passing leaves this view without a disposition edit.
 | Profile | Checked failures | Classified | Unclassified |
 |:--|--:|--:|--:|
 | XSD 1.1 | 81 | 33 | 48 |
-| XSD 1.0 | 153 | 22 | 131 |
+| XSD 1.0 | 137 | 6 | 131 |
 
 ### Reviewed disposition entries
 
 | ID | Category | Profiles | Cases | Title |
 |:--|:--|:--|--:|:--|
-| xsd10-regex-version-switch | version-switch-candidate | XSD 1.0 | 16 | XSD 1.0 regex grammar differences the corpus versions intentionally |
 | xsts-astral-regex-queried | queried-corpus | XSD 1.1 | 22 | Astral-plane XSD regex tests the corpus marks queried (W3C bug 4113) |
 | xsts-type-only-root-xsi-type | implementation-gap | XSD 1.1, XSD 1.0 | 12 | Document roots governed only by xsi:type have no global element declaration |
 | xsts-xml11-lexer-floor | platform-limit | XSD 1.1 | 5 | XML 1.1 documents cannot be lexed by the expat-based parser |
@@ -412,21 +395,6 @@ reviewed disposition claims the case.
 | XSD 1.0 | MS-Particles2006-07-15/particlesZ024/particlesZ024 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
 | XSD 1.0 | MS-Particles2006-07-15/particlesZ028/particlesZ028 | schema | fail | invalid-in-1.0-valid-in-1.1 | unclassified |
 | XSD 1.0 | MS-Particles2006-07-15/particlesZ031/particlesZ031 | schema | fail | valid-in-1.0-invalid-in-1.1 | unclassified |
-| XSD 1.0 | MS-Regex2006-07-15/reF20/reF20 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reF21/reF21 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reF22/reF22 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reF23/reF23 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reG26/reG26 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reG27/reG27 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reG28/reG28 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reG29/reG29 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reG30/reG30 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reG31/reG31 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reG32/reG32 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reG33/reG33 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reH19/reH19 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reH20/reH20 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
-| XSD 1.0 | MS-Regex2006-07-15/reH21/reH21 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
 | XSD 1.0 | MS-Regex2006-07-15/reJ11/reJ11.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reJ13/reJ13.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reJ19/reJ19.i | instance | fail | same-invalid | unclassified |
@@ -441,7 +409,6 @@ reviewed disposition claims the case.
 | XSD 1.0 | MS-Regex2006-07-15/reJ69/reJ69.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reJ75/reJ75.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reJ77/reJ77.i | instance | fail | same-invalid | unclassified |
-| XSD 1.0 | MS-Regex2006-07-15/reK88/reK88 | schema | fail | invalid-in-1.0-valid-in-1.1 | xsd10-regex-version-switch |
 | XSD 1.0 | MS-Regex2006-07-15/reL98/reL98.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reL99/reL99.i | instance | fail | same-invalid | unclassified |
 | XSD 1.0 | MS-Regex2006-07-15/reM98/reM98.i | instance | fail | same-invalid | unclassified |

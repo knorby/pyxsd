@@ -7,9 +7,12 @@ conforming value is silent.
 """
 
 import io
+from types import SimpleNamespace
 
 import pytest
 
+from pyxsd import facets
+from pyxsd import xsd_data_types as dt
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.schema import Schema
 
@@ -19,9 +22,9 @@ SCHEMA = """\
 </xs:schema>"""
 
 
-def parse(body, xml, mode=ParseModes.NAMESPACED):
+def parse(body, xml, mode=ParseModes.NAMESPACED, *, xsd_version="1.1"):
     return (
-        Schema.compile(io.StringIO(SCHEMA.format(body=body)), mode=mode)
+        Schema.compile(io.StringIO(SCHEMA.format(body=body)), mode=mode, xsd_version=xsd_version)
         .parse(io.StringIO(xml))
         .report
     )
@@ -219,6 +222,80 @@ def test_illegal_pattern_is_a_schema_error():
 def test_lazy_quantifier_is_a_schema_error():
     report = parse(element("xs:string", '<xs:pattern value="a+?"/>'), "<r>a</r>")
     assert "facet" in [code for code, _ in errors(report)]
+
+
+#: Pattern forms the XSD 1.1 grammar liberalized and XSD 1.0 rejects.
+VERSION_SPLIT_PATTERNS = (
+    r"[^a-d-b-c]",
+    r"[a-c-1-4x-z-7-9]*",
+    r"[a-a-x-x]+",
+    r"\p{IsaA0-a9}",
+)
+
+
+def _pattern_source(pattern):
+    """A stand-in SimpleType representative carrying one pattern."""
+    return SimpleNamespace(patterns=[pattern], enumerations=[])
+
+
+@pytest.mark.parametrize("pattern", VERSION_SPLIT_PATTERNS)
+def test_version_split_pattern_binds_to_the_1_1_grammar(pattern):
+    # The direct helper keeps the historical XSD 1.1 default.
+    assert facets.compile_pattern(pattern) is not None
+    with pytest.raises(ValueError, match="illegal XSD pattern"):
+        facets.compile_pattern(pattern, xsd_version="1.0")
+
+
+@pytest.mark.parametrize("pattern", VERSION_SPLIT_PATTERNS)
+def test_build_constraints_threads_the_requested_version(pattern):
+    source = _pattern_source(pattern)
+    default = facets.build_constraints(source, None, None, base_factory=dt.String)
+    assert default.errors == ()
+    rejected = facets.build_constraints(
+        source, None, None, base_factory=dt.String, xsd_version="1.0"
+    )
+    assert len(rejected.errors) == 1
+    assert "illegal XSD pattern" in rejected.errors[0]
+
+
+def test_build_constraints_factory_is_optional_for_patterns():
+    # A step with no enumeration or bound literal never needs the factory.
+    result = facets.build_constraints(_pattern_source("[a-z]+"), None, None)
+    assert result.errors == ()
+
+
+@pytest.mark.parametrize("pattern", VERSION_SPLIT_PATTERNS)
+def test_schema_compilation_applies_the_selected_processor_version(pattern):
+    body = element("xs:string", f'<xs:pattern value="{pattern}"/>')
+    schema = Schema.compile(io.StringIO(SCHEMA.format(body=body)), xsd_version="1.1")
+    assert schema.report.errors == []
+    schema = Schema.compile(io.StringIO(SCHEMA.format(body=body)), xsd_version="1.0")
+    assert [issue.code for issue in schema.report.errors] == ["facet"]
+
+
+@pytest.mark.parametrize("xsd_version", ["1.0", "1.1"])
+def test_ordinary_pattern_is_unchanged_by_processor_version(xsd_version):
+    body = element("xs:string", '<xs:pattern value="[0-9]{3}"/>')
+    assert errors(parse(body, "<r>123</r>", xsd_version=xsd_version)) == []
+    assert errors(parse(body, "<r>1234</r>", xsd_version=xsd_version))
+
+
+@pytest.mark.parametrize("xsd_version", ["1.0", "1.1"])
+@pytest.mark.parametrize("pattern", [r"(a)\1", "a+?"])
+def test_invalid_pattern_is_a_value_error_in_both_versions(pattern, xsd_version):
+    with pytest.raises(ValueError, match="illegal XSD pattern"):
+        facets.compile_pattern(pattern, xsd_version=xsd_version)
+    body = element("xs:string", f'<xs:pattern value="{pattern}"/>')
+    assert "facet" in [
+        code for code, _ in errors(parse(body, "<r>aa</r>", xsd_version=xsd_version))
+    ]
+
+
+@pytest.mark.parametrize("xsd_version", ["1.0", "1.1"])
+def test_xsd_shorthand_is_rewritten_in_both_versions(xsd_version):
+    body = element("xs:string", r'<xs:pattern value="\d+"/>')
+    assert errors(parse(body, "<r>123</r>", xsd_version=xsd_version)) == []
+    assert errors(parse(body, "<r>12x</r>", xsd_version=xsd_version))
 
 
 # --- schema-time legality --------------------------------------------------

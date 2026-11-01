@@ -1031,7 +1031,16 @@ class XsdType(ElementRepresentative):
             except Exception:  # pragma: no cover - defensive
                 bindings = None
         with qname_context(bindings):
-            result = facets.build_constraints(source, base, parent, base_factory=base)
+            # A detached host (an ER built in isolation by a unit test) has
+            # no processor version; it keeps the XSD 1.1 default.
+            processor_version = getattr(host, "processor_version", facets.PATTERN_XSD_VERSION)
+            result = facets.build_constraints(
+                source,
+                base,
+                parent,
+                base_factory=base,
+                xsd_version=str(processor_version),
+            )
         for message in result.errors:
             self._report_ref_error(message, code="facet")
         for message in result.conflicts:
