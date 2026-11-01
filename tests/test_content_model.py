@@ -599,8 +599,10 @@ class TestSingleChildCompositorCollapse:
     The authored particle tree stays as written: derivation, restriction
     and EDC checks read it. Only the view handed to the matcher collapses
     a compositor with exactly one child into that child, multiplying the
-    occurrence bounds. ``all`` particles and synthetic group-reference
-    wrappers are outside the rule.
+    occurrence bounds — and only when the child's ``min_occurs`` is 1,
+    because a larger child minimum makes the repeated sums gappy.
+    ``all`` particles and synthetic group-reference wrappers are outside
+    the rule.
     """
 
     @staticmethod
@@ -619,37 +621,47 @@ class TestSingleChildCompositorCollapse:
                     "choice",
                     1,
                     3,
-                    [Particle("sequence", 2, 4, [Particle("element", 1, 1, [], "a")])],
+                    [Particle("sequence", 1, 4, [Particle("element", 1, 1, [], "a")])],
                 )
             ],
         )
-        assert self._collapse(model) == Particle("element", 2, 24, [], "a")
+        assert self._collapse(model) == Particle("element", 1, 24, [], "a")
 
-    def test_single_child_compositor_min_occurs_multiplies(self):
+    def test_single_child_compositor_min_occurs_carries_over(self):
+        # The child's minimum must be 1 for the collapse; the wrapper's
+        # minimum is then the collapsed minimum.
         model = Particle(
             "sequence",
             2,
             3,
-            [Particle("choice", 3, 3, [Particle("element", 1, 1, [], "a")])],
+            [
+                Particle(
+                    "choice",
+                    1,
+                    3,
+                    [Particle("element", 1, 1, [], "a"), Particle("element", 1, 1, [], "b")],
+                )
+            ],
         )
         collapsed = self._collapse(model)
-        assert (collapsed.min_occurs, collapsed.max_occurs) == (6, 9)
-        assert (collapsed.kind, collapsed.name) == ("element", "a")
+        assert (collapsed.kind, collapsed.name) == ("choice", None)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (2, 9)
+        assert [child.name for child in collapsed.children] == ["a", "b"]
 
     def test_single_child_compositor_finite_maximum_multiplies(self):
         model = Particle(
             "choice",
             2,
             3,
-            [Particle("element", 2, 4, [], "a")],
+            [Particle("element", 1, 4, [], "a")],
         )
         collapsed = self._collapse(model)
-        assert (collapsed.min_occurs, collapsed.max_occurs) == (4, 12)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (2, 12)
 
     def test_single_child_compositor_unbounded_maximum_stays_unbounded(self):
-        wrapper_unbounded = Particle("sequence", 1, None, [Particle("element", 2, 3, [], "a")])
+        wrapper_unbounded = Particle("sequence", 1, None, [Particle("element", 1, 3, [], "a")])
         collapsed = self._collapse(wrapper_unbounded)
-        assert (collapsed.min_occurs, collapsed.max_occurs) == (2, None)
+        assert (collapsed.min_occurs, collapsed.max_occurs) == (1, None)
         child_unbounded = Particle("sequence", 2, 4, [Particle("element", 1, None, [], "a")])
         collapsed = self._collapse(child_unbounded)
         assert (collapsed.min_occurs, collapsed.max_occurs) == (2, None)
@@ -673,6 +685,106 @@ class TestSingleChildCompositorCollapse:
         zero_child = Particle("sequence", 0, None, [Particle("element", 1, 0, [], "a")])
         collapsed = self._collapse(zero_child)
         assert (collapsed.min_occurs, collapsed.max_occurs) == (0, 0)
+
+    def test_single_child_compositor_min_occurs_gt_one_blocks_collapse(self):
+        # Multiplying endpoints over-accepts when the child's minimum is 2+:
+        # the k-fold sums have gaps (``sequence{1,2}[b{2,2}]`` admits 2 or 4
+        # b elements, never 3), so the wrapper must survive.
+        shapes = [
+            Particle("sequence", 1, 2, [Particle("element", 2, 2, [], "b")]),
+            Particle("sequence", 0, 3, [Particle("element", 2, 2, [], "b")]),
+            Particle("choice", 0, 1, [Particle("element", 2, 3, [], "b")]),
+            Particle("sequence", 0, 1, [Particle("element", 2, 2, [], "b")]),
+        ]
+        for model in shapes:
+            assert self._collapse(model) is model
+
+    def test_single_child_compositor_min_occurs_gt_one_keeps_authored_verdicts(self):
+        from pyxsd import content_model
+
+        cases = [
+            (
+                Particle("sequence", 1, 2, [Particle("element", 2, 2, [], "b")]),
+                [ET.Element("b")] * 3,
+            ),
+            (
+                Particle("sequence", 0, 3, [Particle("element", 2, 2, [], "b")]),
+                [ET.Element("b")],
+            ),
+            (
+                Particle("sequence", 0, 3, [Particle("element", 2, 2, [], "b")]),
+                [ET.Element("b")] * 3,
+            ),
+            (
+                Particle("choice", 0, 1, [Particle("element", 2, 3, [], "b")]),
+                [ET.Element("b")],
+            ),
+            (
+                Particle("sequence", 0, 1, [Particle("element", 2, 2, [], "b")]),
+                [ET.Element("b")],
+            ),
+        ]
+        for model, nodes in cases:
+            complete, leftover, _associations = content_model.match_content_associations(
+                model, nodes
+            )
+            assert complete is False
+            assert [node.tag for node in leftover] == ["b"]
+        # A zero-width child stays authored too: the wrapper's minimum is
+        # unreachable through the walk's step cap, and the collapsed form
+        # used to bypass that cap and report a complete match.
+        zero_width = Particle(
+            "sequence",
+            2,
+            None,
+            [Particle("all", 0, 1, [Particle("element", 1, 1, [], "c")])],
+        )
+        assert content_model.match_content_associations(zero_width, []) == (False, [], [])
+
+    def test_single_child_compositor_min_occurs_gt_one_schema_verdicts(self, tmp_path):
+        # The reviewer's shapes through Schema.compile + parse: the authored
+        # model rejects each instance, so the matcher must too.
+        cases = [
+            (
+                '<xs:sequence minOccurs="1" maxOccurs="2">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="2"/></xs:sequence>',
+                "<r><b/><b/><b/></r>",
+                "occurrence-max",
+            ),
+            (
+                '<xs:sequence minOccurs="0" maxOccurs="3">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="2"/></xs:sequence>',
+                "<r><b/></r>",
+                "occurrence-min",
+            ),
+            (
+                '<xs:sequence minOccurs="0" maxOccurs="3">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="2"/></xs:sequence>',
+                "<r><b/><b/><b/></r>",
+                "occurrence-max",
+            ),
+            (
+                '<xs:choice minOccurs="0" maxOccurs="1">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="3"/></xs:choice>',
+                "<r><b/></r>",
+                "occurrence-min",
+            ),
+            (
+                '<xs:sequence minOccurs="0">'
+                '<xs:element name="b" minOccurs="2" maxOccurs="2"/></xs:sequence>',
+                "<r><b/></r>",
+                "occurrence-min",
+            ),
+            (
+                '<xs:sequence minOccurs="0"><xs:element name="b" minOccurs="2"/></xs:sequence>',
+                "<r><b/></r>",
+                "occurrence-min",
+            ),
+        ]
+        for body, instance, expected in cases:
+            doc = _parse(_root(body), instance, tmp_path)
+            codes = [issue.code for issue in doc.report.errors]
+            assert expected in codes, (body, instance, codes)
 
     def test_single_child_compositor_multi_child_guard(self):
         sequence = Particle(

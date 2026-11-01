@@ -1141,11 +1141,19 @@ def _collapse_single_child_compositors(particle: Particle) -> Particle:
     """The matcher's view of *particle* with single-child groups collapsed.
 
     A ``sequence`` or ``choice`` with exactly one child is language-
-    identical to that child repeated as often as the wrapper: one
-    occurrence of the group consumes one occurrence of the child, so the
-    bounds multiply: a zero maximum on either side makes the product zero,
-    and otherwise ``None`` (unbounded) on either side keeps it unbounded.
-    Collapsing removes a layer the matcher would
+    identical to that child repeated as often as the wrapper only when the
+    child's ``min_occurs`` is 1: the wrapper's k occurrences then consume
+    ``k .. k * child.max_occurs`` items, and those per-occurrence ranges
+    overlap as k grows, so the union is the contiguous
+    ``wrapper.min_occurs .. wrapper.max_occurs * child.max_occurs``. With a
+    larger child minimum the k-fold sums have gaps
+    (``sequence{1,2}[b{2,2}]`` admits two or four ``b`` elements, never
+    three), so multiplying the endpoints would accept documents the
+    authored model rejects. A zero-minimum child is also excluded: its
+    zero-width repetitions interact with the end-set walk's step cap.
+    Within the guard the bounds multiply, a zero maximum on either side
+    makes the product zero, and otherwise ``None`` (unbounded) on either
+    side keeps it unbounded. Collapsing removes a layer the matcher would
     otherwise walk once per occurrence (Z034/Z036 repeat a single-element
     ``sequence`` inside another repeated group).
 
@@ -1166,7 +1174,9 @@ def _collapse_single_child_compositors(particle: Particle) -> Particle:
     if len(particle.children) != 1:
         return particle
     child = particle.children[0]
-    minimum = particle.min_occurs * child.min_occurs
+    if child.min_occurs != 1:
+        return particle
+    minimum = particle.min_occurs
     if particle.max_occurs == 0 or child.max_occurs == 0:
         # Zero times anything is zero, including zero times unbounded.
         maximum = 0
@@ -1224,7 +1234,7 @@ def match_content_associations(
     complete = len(nodes) in ends
     target = len(nodes) if complete else max(ends, default=0)
     out: list[ChildMatch] = []
-    if complete or target > 0 or view.min_occurs == 0:
+    if complete or target > 0 or model.min_occurs == 0:
         _trace_repeated(view, nodes, 0, target, ctx, memo, out)
     out.sort(key=lambda match: match.position)
     if complete:
