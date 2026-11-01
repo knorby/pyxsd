@@ -44,6 +44,8 @@ from typing import Any, ClassVar, Self
 
 from elementpath import datatypes as _ep
 
+from pyxsd.dtd_declarations import active_declaration_evidence
+
 __all__ = [
     "ENTITIES",
     "ENTITY",
@@ -362,10 +364,43 @@ class IDREF(NCName):
     name = "IDREF"
 
 
+def _check_unparsed_entity_name(name: str) -> None:
+    """Reject *name* unless the document's DTD declares it as unparsed.
+
+    Only runs when per-parse declaration evidence is installed (a parse
+    of a schema that can validate ENTITY/ENTITIES values). Without
+    evidence -- direct datatype construction outside a parse, pre-parsed
+    elements without provenance -- the name stays lexical-only. A missing
+    name is rejected only when the evidence is complete; an unretrieved
+    external subset (incomplete evidence) leaves the name lexical-only
+    and flags the parse for a single advisory.
+    """
+    evidence = active_declaration_evidence()
+    if evidence is None:
+        return
+    declarations = evidence.declarations
+    if name in declarations.unparsed_entities:
+        return
+    if declarations.complete:
+        raise TypeError(f"the unparsed entity {name!r} is not declared in the document")
+    evidence.external_subset_skipped = True
+
+
 class ENTITY(NCName):
-    """``xs:ENTITY``: an unparsed entity name, lexically an NCName."""
+    """``xs:ENTITY``: an unparsed entity name, lexically an NCName.
+
+    After the NCName lexical check, a name missing from the document's
+    declared unparsed entities is rejected when declaration evidence is
+    complete (XSD 1.1 §3.3.6 entity declarations); with incomplete or no
+    evidence the value stays lexical-only.
+    """
 
     name = "ENTITY"
+
+    def __new__(cls, val: str) -> Self:
+        instance: Self = super().__new__(cls, val)
+        _check_unparsed_entity_name(str(instance))
+        return instance
 
 
 class NMTOKEN(_PatternString):
@@ -501,10 +536,20 @@ class IDREFS(_ListString):
 
 
 class ENTITIES(_ListString):
-    """``xs:ENTITIES``: whitespace-separated entity names."""
+    """``xs:ENTITIES``: whitespace-separated entity names.
+
+    Every token must pass the same declaration check as ``xs:ENTITY``;
+    see :class:`ENTITY`.
+    """
 
     name = "ENTITIES"
     _token_pattern = NCName._pattern
+
+    def __new__(cls, val: str) -> Self:
+        instance: Self = super().__new__(cls, val)
+        for token in instance.tokens:
+            _check_unparsed_entity_name(token)
+        return instance
 
 
 class NMTOKENS(_ListString):

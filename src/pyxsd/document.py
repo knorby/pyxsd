@@ -27,6 +27,7 @@ from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 
 if TYPE_CHECKING:
+    from pyxsd.dtd_declarations import DocumentDeclarations
     from pyxsd.schema import Schema
 
 logger = logging.getLogger(__name__)
@@ -70,12 +71,14 @@ class Document:
         report: ValidationReport,
         *,
         provenance: ParseProvenance | None = None,
+        declarations: DocumentDeclarations | None = None,
     ) -> None:
         self.schema = schema
         self.root = root
         self.source = source
         self._report = report
         self._provenance = provenance
+        self._declarations = declarations
 
     def locate(self, location: IssueLocation) -> NodeLookup:
         """Resolve a source occurrence in this parse, not by value or local name.
@@ -180,6 +183,7 @@ class Document:
                 root=result,
                 source=self.source,
                 report=self._report,
+                declarations=self._declarations,
             )
         return result
 
@@ -189,9 +193,17 @@ class Document:
         The bound tree is written out and parsed again against the same
         schema, so the returned document carries a fresh instance report
         for the tree's current shape (transforms may have changed it).
-        The :attr:`source` is carried over.
+        The :attr:`source` is carried over, and so is the original
+        parse's DTD declaration evidence: serialization drops the
+        DOCTYPE, so rebinding with the recorded evidence keeps a declared
+        ``ENTITY``/``ENTITIES`` value valid, while complete evidence
+        still rejects an undeclared replacement value. A document with no
+        evidence (a caller-built tree, a custom policy parse) stays
+        lexical-only instead of inventing an empty declaration set.
         """
-        again = self.schema.parse(StringIO(self.to_string()))
+        again = self.schema._parse_instance(
+            StringIO(self.to_string()), declarations=self._declarations
+        )
         again.source = self.source
         return again
 

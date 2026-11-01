@@ -106,6 +106,19 @@ temporary copy without those hints. It does not strip hints from synthesized
 contexts. Missing resources or unrepresentable bundles can prevent adapter
 execution; they are not silently discarded from the report.
 
+Synthetic loading context is not an authored import in another document.
+pyxsd audits cross-namespace XSD component references against the referencing
+document's own direct imports and effective target namespace, with built-in
+vocabulary exemptions. Neither a driver's import nor a caller mapping or
+instance hint satisfies that document's import duty; a missing import is
+`import-required`. Wildcard `notQName` is intentionally not audited;
+annotation payloads, foreign markup, QName-valued defaults/fixed values, and
+XPath expressions are also excluded. A reference that resolves to no namespace
+is allowed regardless of authored imports, matching pyxsd's lenient bare-name
+lookup, so no-namespace enforcement is incomplete. The audit leaves global
+component resolution unchanged, rather than isolating each document's
+component table.
+
 ### Time budgets
 
 The reporting CLI defaults to `--timeout 60`; CI uses `--timeout 180` for
@@ -194,30 +207,50 @@ The generated census shows any cases that still fail in either profile.
 [`xs:ENTITY`][entity] values must name unparsed entities declared in the
 instance document's DTD; [`xs:ENTITIES`][entities] is a nonempty list of those
 values. An `NCName` lexical check alone cannot establish that requirement.
-The residual mechanism was that the ElementTree/Expat path did not retain the
-declaration information needed by pyxsd's datatype check. The failures in this
-cluster were therefore false accepts, not corpus errors. An unparsed entity
-declaration identifies an
-external resource, but checking its name does not require fetching it.
+The earlier false accepts came from missing declaration information, not
+corpus errors. pyxsd now lazily collects unparsed-entity declarations from
+the instance prolog/internal subset when the compiled schema can validate
+these types, including derived types and defaults. Complete evidence rejects
+undeclared names; no DOCTYPE means an empty, complete set. Unrelated schemas
+skip the declaration-collection parse. An unparsed entity declaration names
+an external resource, but checking its name does not fetch it.
 
-This is distinct from DTD validation and from internal parsed-entity
-expansion or attribute defaults. Any future declaration collection must
-preserve the existing parser-policy checks; it must not add external-subset
-fetching or bypass entity/DOCTYPE rejection. Protected and strict profiles
-reject the relevant input before datatype checking; they are security
-policies, not alternative DTD-validation modes. See {doc}`xsd-validation` and
-{doc}`xml-security` for those boundaries and the default profile's exposure.
+External subsets and external parameter entities remain unfetched and make
+the evidence incomplete: missing names stay lexical-only, with one advisory
+when a declaration check is skipped. Internal parameter entities are expanded,
+so declarations they carry are collected. Caller-supplied trees without pyxsd
+source provenance, custom-policy parser results, and non-seekable instance
+streams passed to top-level `pyxsd.parse()`
+remain lexical-only too, even with an explicit schema. Compiled `Schema.parse()`
+supports prolog replay for those streams. `Document.revalidate()` carries the
+original parse's declaration evidence across the serialized reparse, so a
+declared value stays valid; a document parsed without evidence stays
+lexical-only. See {doc}`validation` for provenance and reread limits.
+Collection preserves security handlers and the default, protected, and strict
+profiles. This is neither DTD validation nor a change to
+entity expansion or parser hardening; see {doc}`xsd-validation` and
+{doc}`xml-security`. Resolved cases leave the generated active census
+automatically; remaining limitations are not claimed fixed.
 
 ### Other reviewed mechanisms
 
-The classified XSD 1.0 regex schema failures in this cluster were version-switch
-candidates within the intentional split: pyxsd accepted grammar that the
-corpus expects rejected under 1.0. Compare the [1.0][regex10] and
-[1.1][regex11] regex definitions. The queried astral-plane regex cases link
-to [W3C bug 4113][bug4113]; challenged metadata is not permission to rewrite
+Pattern-facet compilation now uses the selected processor version's regex
+grammar, rejecting XSD 1.1-only forms in 1.0 mode. Direct
+`pyxsd.facets.compile_pattern()` calls still default to 1.1. Compare the
+[1.0][regex10] and [1.1][regex11] definitions; this fixes the reviewed grammar
+version-switch mechanism, not every regex disagreement. The queried
+astral-plane regex cases link to [W3C bug 4113][bug4113]; challenged metadata
+is not permission to rewrite
 its expected verdict. The XML 1.1 cases reflect the Expat lexer limitation,
 independent of the XSD processor mode. Each mechanism keeps its recorded raw
 outcome; agreement by another engine does not settle a specification dispute.
+
+Direct-import enforcement likewise does not fix adjacent composition defects.
+Cross-document duplicate globals, redefine/override merge and restriction
+gaps, import-target namespace mismatch (`schF6`), and no-namespace type binding
+(`schF2.v`, `schG2.v`) remain limitations. The generated census below is the
+source for current residual case IDs and counts, rather than a fixed total
+in this prose.
 
 ## Why extra-suite.xml is separate
 

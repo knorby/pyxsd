@@ -541,16 +541,32 @@ def test_checked_in_dispositions_validate_against_real_baselines(
 @pytestmark_real
 def test_checked_in_seeds_match_the_adjudicated_case_sets() -> None:
     entries = load_dispositions(DISPOSITIONS)
-    by_key = {(entry.category, entry.profiles): entry.cases for entry in entries}
+    by_id = {entry.id: entry for entry in entries}
 
-    assert by_key[("queried-corpus", ("xsd11",))] == ASTRAL_REGEX_CASES
-    assert by_key[("implementation-gap", ("xsd11",))] == DTD_ENTITY_CASES
-    assert by_key[("platform-limit", ("xsd11",))] == XML11_LEXER_CASES
-    assert sorted(by_key[("implementation-gap", ("xsd10", "xsd11"))]) == sorted(
-        TYPE_ONLY_ROOT_CASES
-    )
-    assert by_key[("version-switch-candidate", ("xsd10",))] == REGEX_VERSION_SWITCH_CASES
-    assert len(entries) == 5
+    seeds = {
+        "xsts-astral-regex-queried": ("queried-corpus", ("xsd11",), ASTRAL_REGEX_CASES),
+        "xsts-dtd-unparsed-entities": (
+            "implementation-gap",
+            ("xsd11",),
+            DTD_ENTITY_CASES,
+        ),
+        "xsts-xml11-lexer-floor": ("platform-limit", ("xsd11",), XML11_LEXER_CASES),
+        "xsts-type-only-root-xsi-type": (
+            "implementation-gap",
+            ("xsd10", "xsd11"),
+            TYPE_ONLY_ROOT_CASES,
+        ),
+        "xsd10-regex-version-switch": (
+            "version-switch-candidate",
+            ("xsd10",),
+            REGEX_VERSION_SWITCH_CASES,
+        ),
+    }
+    for seed_id, (category, profiles, cases) in seeds.items():
+        entry = by_id[seed_id]
+        assert entry.category == category
+        assert entry.profiles == profiles
+        assert sorted(entry.cases) == sorted(cases)
 
 
 @pytestmark_real

@@ -91,13 +91,22 @@ denominator, and the reviewed baselines used for the generated results.
   XPath queries, but the dict export can only concatenate the character
   data under `$`, and the Arrow/Pydantic integrations reject mixed
   content.
-- **DTD is internal-subset only, and the default is unobserved.** Declarations
-  beyond what expat exposes (notably unparsed `NDATA` entities) are not tracked;
-  external subsets are never fetched. The stdlib default does not report
-  DOCTYPE declarations; internal entities can expand and `ATTLIST` defaults
-  can apply as far as Expat exposes them. The opt-in `protected()` / `strict()`
-  profiles can forbid entity declarations or all DOCTYPEs, but that is a parser
-  choice, not DTD validation.
+- **DTD-dependent checks have limited evidence.** When a compiled schema can
+  validate `ENTITY`/`ENTITIES`, pyxsd lazily collects unparsed (`NDATA`)
+  declarations from the prolog/internal subset and rejects undeclared names
+  when that evidence is complete. Internal parameter entities are expanded;
+  external subsets and external parameter entities are never fetched, and
+  either makes the evidence incomplete. Incomplete evidence leaves missing
+  names lexical-only with one advisory when a check is skipped.
+  Caller-supplied trees without pyxsd source provenance, custom-policy parser
+  results, and non-seekable instance streams passed to top-level
+  `pyxsd.parse()` remain lexical-only. Compiled
+  `Schema.parse()` supports prolog replay for those streams. Unrelated schemas
+  skip declaration collection. The default still expands internal parsed
+  entities and can apply `ATTLIST` defaults; `protected()` and `strict()`
+  retain their declaration/DOCTYPE refusals. These are not DTD-validation
+  modes. See {doc}`validation` for provenance and revalidation limitations,
+  and {doc}`xml-security` for the unchanged parser profiles.
 - **One parse at a time per `Schema`.** The compiled schema holds per-parse
   indexes on a shared host, so concurrent parses against the same `Schema`
   are not supported.

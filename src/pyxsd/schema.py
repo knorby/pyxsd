@@ -22,6 +22,11 @@ from xml.etree import ElementTree as ET
 from pyxsd.binding import ParseModes
 from pyxsd.cli import _load_module_from_file
 from pyxsd.document import Document
+from pyxsd.dtd_declarations import (
+    DocumentDeclarations,
+    collect_document_declarations,
+    declaration_context,
+)
 from pyxsd.element_representatives.element_representative import (
     ComponentTable,
     ElementRepresentative,
@@ -29,6 +34,7 @@ from pyxsd.element_representatives.element_representative import (
 )
 from pyxsd.exceptions import PyXSDError, PyXSDWarning, ValidationError
 from pyxsd.extensions import Extensions
+from pyxsd.import_visibility import audit_direct_imports
 from pyxsd.instance_binding import bind_instance
 from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import XML_NS, NamespaceContext, parse_with_namespaces
@@ -88,8 +94,183 @@ from pyxsd.validation import ValidationReport
 from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import apply_conditional_inclusion
 from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
+from pyxsd.xsd_data_types import ENTITIES, ENTITY
 
 logger = logging.getLogger(__name__)
+
+
+def _reaches_unparsed_entity_types(candidate: Any, visited: set[int]) -> bool:
+    """Whether *candidate* is, or reaches, an ENTITY/ENTITIES datatype.
+
+    Reaches through inheritance (direct use, restrictions, simple-content
+    extensions), through a union's ``_unionMembers`` (the class's own or
+    an inherited member tuple), and through a schema list's ``itemType``.
+    *visited* makes the walk terminate on cycles that no XSD document
+    could express but a synthetic class graph can.
+    """
+    if not isinstance(candidate, type):
+        return False
+    if id(candidate) in visited:
+        return False
+    visited.add(id(candidate))
+    if issubclass(candidate, (ENTITY, ENTITIES)):
+        return True
+    members = getattr(candidate, "_unionMembers", None)
+    if members is not None and any(
+        _reaches_unparsed_entity_types(member, visited) for member in members
+    ):
+        return True
+    item = getattr(candidate, "itemType", None)
+    return item is not None and _reaches_unparsed_entity_types(item, visited)
+
+
+def _schema_validates_unparsed_entities(schema: "Schema") -> bool:
+    """Whether *schema* can validate any ENTITY/ENTITIES value.
+
+    Walks every generated class and every element/attribute descriptor
+    installed on one: a declaration typed directly by the built-in
+    ``xs:ENTITY``/``xs:ENTITIES`` produces no generated datatype class of
+    its own, so the descriptors' resolved types are the entry points the
+    class walk would otherwise miss. A descriptor whose type cannot be
+    resolved cannot validate anything and is skipped. The built-in
+    datatype registry alone never activates anything.
+    """
+    visited: set[int] = set()
+    candidates: list[Any] = []
+    for cls in schema.classes.values():
+        candidates.append(cls)
+        for descriptor in vars(cls).values():
+            # ``getType`` is an Element/Attribute declaration feature,
+            # not part of the shared representative base.
+            resolver = getattr(descriptor, "getType", None)
+            if resolver is None:
+                continue
+            try:
+                resolved = resolver()
+            except Exception:
+                continue
+            if resolved is not None:
+                candidates.append(resolved)
+    return any(_reaches_unparsed_entity_types(candidate, visited) for candidate in candidates)
+
+
+def _stream_is_seekable(stream: Any) -> bool:
+    """Whether *stream* can rewind; a stream without the method cannot."""
+    seekable = getattr(stream, "seekable", None)
+    return seekable is not None and seekable()
+
+
+def _max_bytes(limits: XmlLimits | None) -> int | None:
+    """The byte budget ``limits`` declares, or ``None`` for unlimited."""
+    return None if limits is None else limits.max_bytes
+
+
+class _CollectionByteLimitReached(Exception):
+    """Declaration collection crossed the caller's ``max_bytes`` budget."""
+
+
+class _CollectDeclarations:
+    """Sentinel: :meth:`Schema.parse` collects declaration evidence itself."""
+
+
+_COLLECT_DECLARATIONS = _CollectDeclarations()
+
+
+class _ByteCappedSource:
+    """Read adapter enforcing ``xml_limits.max_bytes`` during collection.
+
+    The semantic parse enforces the byte budget through its own limited
+    reader; this adapter guarantees the declaration read -- which happens
+    beside it, before or after the parse -- can never stream past the same
+    budget. Crossing the cap aborts collection (the caller degrades the
+    evidence to ``None``) while the ordinary parser stays responsible for
+    the standard limit failure. Chunks are measured the way
+    ``namespaces._ByteLimitedReader`` measures them: bytes by length,
+    text by its UTF-8 encoding.
+    """
+
+    def __init__(self, stream: Any, max_bytes: int) -> None:
+        self._stream = stream
+        self._remaining = max_bytes
+
+    def read(self, size: int = -1) -> Any:
+        data = self._stream.read(size)
+        if data:
+            measured = len(data.encode("utf-8")) if isinstance(data, str) else len(data)
+            self._remaining -= measured
+            if self._remaining < 0:
+                raise _CollectionByteLimitReached("declaration read exceeded max_bytes")
+        return data
+
+
+def _capped_for_collection(stream: Any, max_bytes: int | None) -> Any:
+    """Wrap *stream* for collection, or pass it through without a budget."""
+    if max_bytes is None:
+        return stream
+    return _ByteCappedSource(stream, max_bytes)
+
+
+class _PrologReplay:
+    """A non-seekable stream that replays prolog bytes the collector read.
+
+    The declaration collector stops at the root start tag but consumes
+    stream data up to the end of that chunk. Before the semantic parse
+    runs, this reader serves those buffered bytes/str back first, then
+    chains the remaining stream -- the complete document stays bound and
+    nothing beyond the collector's chunk window is buffered.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self._chunks: list[Any] = []
+        self._chunk_index = 0
+        self._offset = 0
+        self._collecting = True
+
+    def read(self, size: int = -1) -> Any:
+        if self._collecting:
+            data = self._stream.read(size)
+            if data:
+                self._chunks.append(data)
+            return data
+        return self._replay_read(size)
+
+    def finish_collection(self) -> None:
+        """Switch from recording the collector's reads to replaying them."""
+        self._collecting = False
+
+    def seekable(self) -> bool:
+        return False
+
+    def _replay_read(self, size: int) -> Any:
+        parts: list[Any] = []
+        remaining: int | None = None if size < 0 else size
+        while self._chunk_index < len(self._chunks):
+            chunk = self._chunks[self._chunk_index]
+            piece = (
+                chunk[self._offset :]
+                if remaining is None
+                else chunk[self._offset : self._offset + remaining]
+            )
+            parts.append(piece)
+            self._offset += len(piece)
+            if remaining is not None:
+                remaining -= len(piece)
+            if self._offset >= len(chunk):
+                self._chunk_index += 1
+                self._offset = 0
+            if remaining is not None and remaining <= 0:
+                break
+        if self._chunk_index >= len(self._chunks):
+            tail = self._stream.read(-1 if remaining is None else remaining)
+            if tail:
+                parts.append(tail)
+        if not parts:
+            # Both the buffer and the stream are exhausted; hand the
+            # caller the same emptiness the underlying stream would.
+            return self._stream.read(0)
+        return parts[0][:0].join(parts)
+
 
 if TYPE_CHECKING:
     from pyxsd.batch import DocumentSource, ParseOutcome
@@ -176,6 +357,10 @@ class Schema:
         self.source = source
         self._schema_context = schema_context
         self._host = None
+        # Lazily computed: whether any generated class can validate
+        # ENTITY/ENTITIES values. ``None`` means "not computed yet";
+        # ``load_overlay_classes`` resets it so late overlays re-activate.
+        self._entity_declarations_needed: bool | None = None
         self.resource_policy: ResourcePolicy | None = None
         self._introspection_index: _Index | None = None
         self.declaration_origins: weakref.WeakKeyDictionary[ET.Element, IssueLocation] = (
@@ -364,6 +549,53 @@ class Schema:
                 self.report,
             )
 
+    def _needs_entity_declarations(self) -> bool:
+        """Whether this schema's classes can validate ENTITY/ENTITIES values.
+
+        Computed once per schema (after overlays may have been loaded) and
+        cached; a schema that cannot validate such values never runs a
+        declaration collection.
+        """
+        if self._entity_declarations_needed is None:
+            self._entity_declarations_needed = _schema_validates_unparsed_entities(self)
+        return self._entity_declarations_needed
+
+    def _collect_root_declarations(
+        self, root: ET.Element, policy: XmlParserPolicy, max_bytes: int | None = None
+    ) -> DocumentDeclarations | None:
+        """Collect declaration evidence for an already-parsed *root*.
+
+        The re-read source comes from the root's recorded provenance (a
+        path to reopen, a seekable stream to rewind). This runs strictly
+        after a successful instance parse, so any failure to re-read --
+        the source vanished, a rewind broke, a policy denial, or the
+        re-read crossing ``max_bytes`` -- degrades to ``None``
+        (lexical-only) instead of turning the parse into a fatal read
+        error. Roots without provenance (caller-supplied
+        elements, non-seekable discovery streams) return ``None``.
+        """
+        if not self._needs_entity_declarations():
+            return None
+        source = self.namespace_context.root_source(root)
+        if source is None:
+            return None
+        try:
+            if isinstance(source, str):
+                with open(source, "rb") as stream:
+                    return collect_document_declarations(
+                        _capped_for_collection(stream, max_bytes), policy=policy
+                    )
+            marker = source.tell()
+            try:
+                source.seek(0)
+                return collect_document_declarations(
+                    _capped_for_collection(source, max_bytes), policy=policy
+                )
+            finally:
+                source.seek(marker)
+        except Exception:
+            return None
+
     def stub(
         self,
         *,
@@ -457,7 +689,34 @@ class Schema:
         when the document root matched no global element declaration
         (the ``unknown-root`` issue records why).
         """
+        return self._parse_instance(xml, xml_policy=xml_policy, xml_limits=xml_limits)
+
+    def _parse_instance(
+        self,
+        xml: str | Path | os.PathLike[str] | IO[str] | ET.Element,
+        *,
+        xml_policy: XmlParserPolicy | None = None,
+        xml_limits: XmlLimits | None = None,
+        declarations: DocumentDeclarations | _CollectDeclarations | None = _COLLECT_DECLARATIONS,
+    ) -> "Document":
+        """One instance bind; *declarations* is internal revalidation evidence.
+
+        Omitted, this parse collects declaration evidence itself. A
+        :class:`~pyxsd.document.Document` revalidating its serialized tree
+        passes the evidence its original parse recorded -- including
+        ``None`` -- because the serialized text has no DOCTYPE to
+        recollect from. ``None`` therefore means lexical-only, never an
+        empty, complete set.
+        """
         _reject_parser_override(self.resource_policy, xml_policy, xml_limits)
+        collection_policy = xml_policy if xml_policy is not None else XmlParserPolicy.default()
+        collected: DocumentDeclarations | None
+        if isinstance(declarations, _CollectDeclarations):
+            collected = None
+            collect_declarations = True
+        else:
+            collected = declarations
+            collect_declarations = False
         if self.resource_policy is not None:
             try:
                 data = read_resource(xml, self.resource_policy, purpose="instance")
@@ -466,28 +725,84 @@ class Schema:
                 raise PyXSDError(f"the xml input could not be read: {exc}") from exc
             except ET.ParseError as exc:
                 raise PyXSDError(f"the xml file is not well-formed XML: {exc}") from exc
+            # A trusted policy parse is a caller boundary: no core-admitted
+            # bytes, so declaration evidence stays unavailable.
             return self._bind_tree(tree, xml, source_id=data.source_id)
         if isinstance(xml, ET.Element):
-            tree = xml
-        else:
-            logger.debug("The XML file is being parsed by the ElementTree library...")
-            try:
-                tree = parse_with_namespaces(
-                    xml,
-                    self.namespace_context,
-                    policy=xml_policy,
-                    limits=xml_limits,
+            if collect_declarations:
+                collected = self._collect_root_declarations(
+                    xml, collection_policy, _max_bytes(xml_limits)
                 )
-            except OSError as e:
-                raise PyXSDError(f"the xml input could not be read: {e}") from e
-            except ET.ParseError as e:
-                raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
-            logger.debug("XML file parsed by the ElementTree library successfully...")
+            return self._bind_tree(
+                xml,
+                xml,
+                source_id=source_identifier(xml),
+                declarations=collected,
+            )
+        original = xml
+        parse_source: Any = xml
+        if (
+            collect_declarations
+            and self._needs_entity_declarations()
+            and not isinstance(xml, (str, os.PathLike))
+            and not _stream_is_seekable(xml)
+        ):
+            # A non-seekable stream cannot be reopened or rewound, so the
+            # collector runs first and the semantic parser then consumes
+            # the replayed prolog followed by the remaining stream. The
+            # collector never reads past the caller's byte budget: when
+            # the prolog alone crosses it, collection stops (evidence
+            # stays unavailable) and the semantic parser raises the
+            # standard limit failure over the replayed bytes.
+            replay = _PrologReplay(xml)
+            try:
+                collected = collect_document_declarations(
+                    _capped_for_collection(replay, _max_bytes(xml_limits)),
+                    policy=collection_policy,
+                )
+            except _CollectionByteLimitReached:
+                collected = None
+            finally:
+                replay.finish_collection()
+            parse_source = replay
+        logger.debug("The XML file is being parsed by the ElementTree library...")
+        try:
+            tree = parse_with_namespaces(
+                parse_source,
+                self.namespace_context,
+                policy=xml_policy,
+                limits=xml_limits,
+            )
+        except OSError as e:
+            raise PyXSDError(f"the xml input could not be read: {e}") from e
+        except ET.ParseError as e:
+            raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
+        logger.debug("XML file parsed by the ElementTree library successfully...")
+        if collect_declarations and collected is None:
+            collected = self._collect_root_declarations(
+                tree, collection_policy, _max_bytes(xml_limits)
+            )
+        return self._bind_tree(
+            tree,
+            original,
+            source_id=source_identifier(original),
+            declarations=collected,
+        )
 
-        return self._bind_tree(tree, xml, source_id=source_identifier(xml))
+    def _bind_tree(
+        self,
+        tree: ET.Element,
+        source: Any,
+        *,
+        source_id: str | None,
+        declarations: DocumentDeclarations | None = None,
+    ) -> "Document":
+        """Bind an already verified tree; public policy inputs cannot use this path.
 
-    def _bind_tree(self, tree: ET.Element, source: Any, *, source_id: str | None) -> "Document":
-        """Bind an already verified tree; public policy inputs cannot use this path."""
+        ``declarations`` is this parse's DTD declaration evidence (or
+        ``None`` for lexical-only ENTITY/ENTITIES validation); it is
+        installed around ``bind_instance`` only, never left behind.
+        """
 
         instance_report = new_validation_report(self.resource_policy)
         from pyxsd.locations import ParseProvenance
@@ -531,6 +846,7 @@ class Schema:
                 active_context(context),
                 context_report(context, instance_report),
                 context_provenance(context, provenance),
+                declaration_context(declarations) as entity_evidence,
                 instance_report._at(provenance.source_location(tree)),
             ):
                 root = bind_instance(self, tree, instance_report)
@@ -540,6 +856,20 @@ class Schema:
                 host._elementParents.clear()
                 host._elementTypes.clear()
 
+        # The report-owning layer turns "unavailable external declarations
+        # could have declared a missing name" into exactly one advisory per
+        # parse, never one issue per suppressed value. It carries the
+        # document root's source address: the skipped external declaration
+        # has no occurrence of its own in the admitted bytes.
+        if entity_evidence is not None and entity_evidence.external_subset_skipped:
+            instance_report.add_warning(
+                "the document's external DTD declarations were not retrieved, so "
+                "ENTITY/ENTITIES values undeclared in the internal subset "
+                "could not be rejected",
+                code="dtd-external-skipped",
+                location=provenance.source_location(tree),
+            )
+
         # One merged report per document: the schema phase's issues
         # followed by this parse's instance issues. Issue objects are
         # shared, so the phase tags recorded when each was found ride
@@ -548,7 +878,14 @@ class Schema:
         merged = new_validation_report(self.resource_policy)
         merged.extend(self.report)
         merged.extend(instance_report)
-        return Document(schema=self, root=root, source=source, report=merged, provenance=provenance)
+        return Document(
+            schema=self,
+            root=root,
+            source=source,
+            report=merged,
+            provenance=provenance,
+            declarations=declarations,
+        )
 
 
 #: :meth:`Schema.compile` exposed as a module-level function.
@@ -696,7 +1033,11 @@ def parse(
     )
     if resource_policy is not None:
         return schema._bind_tree(tree, xml, source_id=source_id)
-    return schema.parse(tree)
+    # The caller's parser posture and budget were applied to the discovery
+    # parse above; they are handed to the element bind so the declaration
+    # re-read honors the same byte budget and effective policy (the
+    # pre-parsed element itself is never re-parsed).
+    return schema.parse(tree, xml_policy=xml_policy, xml_limits=xml_limits)
 
 
 def load_overlay_classes(
@@ -749,6 +1090,9 @@ def load_overlay_classes(
     schema.classes.update(newClasses)
     for cls in newClasses.values():
         cls.schema = schema
+    # Overlay classes can introduce or remove ENTITY/ENTITIES reachability,
+    # so the lazily cached activation decision is recomputed on next use.
+    schema._entity_declarations_needed = None
 
 
 def _compile_into_context(
@@ -838,6 +1182,11 @@ def _compile_into_context(
             ctx.composed_target_namespaces.add(mainTargetNamespace)
         splice_composed_schemas(ctx, root, base, visited, mainDocument=True)
         splice_additional_schemas(ctx, root, base, visited)
+        # Post-composition audit (XSD 1.1 §4.2.6): every QName
+        # component reference is judged by its own document's authored
+        # imports, before any injected built-in declarations join the
+        # tree and before the ER run snapshots it.
+        audit_direct_imports(ctx, root)
         if getattr(ctx.mode, "namespaces", "legacy") == "strict":
             inject_xml_namespace_attributes(ctx, root)
             inject_xsi_namespace_attributes(ctx, root)

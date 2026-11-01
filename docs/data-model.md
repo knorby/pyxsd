@@ -405,9 +405,9 @@ generated or simple type:
   that step's sibling `xs:pattern` facets, any of which may match
   (OR) — exactly the merge rule validation applies. The compiled
   `re.Pattern` objects are the same ones validation matches,
-  translated from the XSD pattern dialect (the XSD 1.1 profile) by
-  elementpath; the translation embeds its own anchors, so a pattern
-  matches the whole value however you call it.
+  translated by elementpath using the schema's selected XSD processor
+  version (`xsd_version="1.0"` or `"1.1"`); the translation embeds its own
+  anchors, so a pattern matches the whole value however you call it.
 - `XsdDataType.enumerations()` returns `tuple[Any, ...]`: the
   effective enumeration values after intersection across restriction
   steps, as instances of the restriction's base datatype.
@@ -415,10 +415,13 @@ generated or simple type:
 Both return `()` when the type declares no such facets. Use them to
 mirror a schema's constraints in your own checks, or to show a caller
 the exact patterns a rejected value had to match.
-`pyxsd.facets.compile_pattern(text)` compiles one standalone XSD
-pattern through the same translation (raising `ValueError` on an
-illegal XSD pattern), so a schema-authored pattern can be applied
-outside pyxsd's validation.
+`pyxsd.facets.compile_pattern(text, *, xsd_version="1.1")` compiles one
+standalone XSD pattern through the same translation, raising `ValueError`
+when translation or compilation rejects it. Pass `xsd_version="1.0"` to
+select the 1.0 grammar; schema compilation passes its selected version
+through `build_constraints` to this helper. Version selection does not
+establish complete regex conformance; see {doc}`xsts` for remaining
+disagreements.
 
 ### Static typing
 

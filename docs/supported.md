@@ -32,6 +32,11 @@ ranges, decimal, float/double (including `INF`/`-INF`/`NaN`), the date/time fami
 gDay), base64Binary, hexBinary, anySimpleType/anyType, and the list types
 NMTOKENS/IDREFS/ENTITIES.
 
+Document parsing additionally checks `ENTITY`/`ENTITIES` against unparsed
+entity declarations when complete evidence is available. Direct datatype
+construction alone checks lexical form; see {doc}`validation` for the
+declaration-dependent checks and input limitations.
+
 ## Structural schema elements
 
 - `xs:sequence`, `xs:choice`, `xs:all` content models with order and
@@ -89,6 +94,14 @@ NMTOKENS/IDREFS/ENTITIES.
   components in namespaced mode, including imports without a
   `schemaLocation` when the namespace is supplied), and `xs:redefine`,
   including chained redefinitions
+- direct authored-import checks for cross-namespace XSD component references
+  (`import-required`): transitive imports and synthetic imports from caller
+  mappings or instance hints do not satisfy the referencing document's duty
+  to import. A reference that resolves to no namespace is allowed regardless
+  of authored imports, matching lenient bare-name lookup, so no-namespace
+  enforcement is incomplete. This audit does not replace global component
+  lookup or fix the remaining duplicate-global, import-target, and
+  redefine/binding gaps listed in {doc}`validation`.
 - `xs:key`, `xs:unique`, `xs:keyref` with the XSD identity-constraint XPath
   subset: namespace-qualified child and attribute steps, `.//` descendants,
   wildcards, `.`, union paths, and `xpathDefaultNamespace`
@@ -133,19 +146,24 @@ the declared version, and in 1.0 mode it reports XSD 1.1-only vocabulary
 `notNamespace`, `notQName`, `defaultAttributes`, `inheritable`,
 `xpathDefaultNamespace`, `dateTimeStamp`, `dayTimeDuration`,
 `yearMonthDuration`, `anyAtomicType`) as the schema error
-`xsd11-construct`. Three 1.0/1.1 semantic differences are also enforced:
+`xsd11-construct`. Version-specific checks also cover
 the 1.0 `xs:all` 0..1 child-occurrence cap (`all-rule`), the 1.0
 requirement that a union declare at least one member type
-(`declaration-child`), and the 1.1 prohibition on `use="prohibited"`
-together with `fixed`.
+(`declaration-child`), the 1.1 prohibition on `use="prohibited"`
+together with `fixed`, and the pattern-facet regex grammar. Schema
+compilation passes the selected processor version to regex translation;
+for example, `[^a-d-b-c]` is rejected in 1.0 mode but accepted in 1.1 mode.
+An illegal pattern is a schema-phase `facet` error. Direct
+`pyxsd.facets.compile_pattern()` calls default to the XSD 1.1 grammar.
 
 Some XSD 1.0 differences remain unswitched because they live in shared
 machinery (the built-in datatype constructors) or need case-specific
 identity-constraint and name-resolution work rather than a clean version
 switch:
 
-- the 1.0-only lexical forms around year `0000` and the `+INF`/`-INF`
-  spelling (the shared datatype constructors are version-agnostic);
+- year `0000` and the `+INF` spelling are permitted in 1.1, not 1.0,
+  but the shared, version-agnostic datatype constructors still accept them
+  in 1.0 mode;
 - keyref cardinality under 1.0;
 - several 1.0 name-resolution edge cases in cross-namespace references.
 
@@ -190,7 +208,7 @@ for expectation relationships and reviewed dispositions, and
 * - DTD entities
   - `ENTITY` / `ENTITIES` values
   - partial
-  - Validation considers the internal DTD subset only, and only as far as expat's built-in entity expansion and default-attribute handling go. No built-in profile retrieves an external subset or external entity. The stdlib default keeps that behavior for speed and compatibility and neither fetches nor reports a DOCTYPE declaration; `XmlParserPolicy.protected()` forbids entity declarations and external DOCTYPE identifiers, and `.strict()` forbids any DOCTYPE. Unparsed-entity (`NDATA`) declarations are not tracked, so an `ENTITY` value referring to one can be accepted when it should be rejected.
+  - Lazy prolog/internal-subset collection checks unparsed (`NDATA`) entity names, including derived types and defaults, when declaration evidence is complete. Internal parameter entities are expanded; external parameter entities are skipped without retrieval. No built-in profile retrieves external subsets or entities; incomplete external-subset or external-parameter-entity evidence leaves missing names lexical-only with one advisory when a check is skipped. Caller-supplied trees without pyxsd source provenance, custom-policy parser results, and non-seekable instance streams passed to top-level `pyxsd.parse()` remain lexical-only. Compiled `Schema.parse()` supports prolog replay for non-seekable streams. `Document.revalidate()` serializes the tree without its DOCTYPE, so it carries the original parse's evidence into the reparse instead of recollecting: a declared value stays valid, complete evidence still rejects an undeclared replacement, and evidence the original parse lacked stays lexical-only. Parser profiles are unchanged; see {doc}`validation` and {doc}`xml-security` for the boundaries.
 * - XML 1.1 documents
   - `<?xml version="1.1"?>`
   - unsupported
@@ -201,9 +219,8 @@ for expectation relationships and reviewed dispositions, and
   - A compiled `Schema` keeps per-parse parent/type indexes on its shared host. Parse one document at a time per schema instance; compile a separate `Schema` (or serialize calls) to parallelize.
 ```
 
-This table is maintained as machine-readable data in
-`tests/conformance/unsupported.toml`, which also feeds the conformance
-report.
+A machine-readable gap inventory in `tests/conformance/unsupported.toml`
+also feeds the conformance report.
 
 ```{note}
 **Free-threaded builds.** pyxsd is pure Python and runs on free-threaded

@@ -1,0 +1,212 @@
+"""Prolog-only DTD declaration collection.
+
+When a compiled schema can validate ``ENTITY``/``ENTITIES`` values, the
+declaration evidence has to come from the document's DTD. This module
+collects it with a raw :mod:`xml.parsers.expat` parser that stops at the
+first root start tag, so the instance body is never expanded or parsed a
+second time. Internal parameter entities are expanded, so declarations
+carried through them are collected. External subsets and external entities
+are never retrieved: they only make the collected evidence incomplete.
+
+Denials installed by
+:func:`pyxsd.xml_policy.configure_expat_security` keep their existing
+behavior and ordering: the collector chains every handler it replaces.
+Ordinary prolog parse failures become ``None`` so the ordinary parser can
+report them in its own vocabulary; policy denials propagate unchanged.
+
+The per-parse evidence carrier lives here too: :func:`declaration_context`
+installs one :class:`DocumentDeclarations` around ``bind_instance`` (never
+process-global state), and the ``ENTITY``/``ENTITIES`` datatypes consult
+it through :func:`active_declaration_evidence` after their lexical checks.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import IO, Any, BinaryIO, Protocol
+from xml.parsers import expat
+
+from pyxsd.xml_policy import XmlParserPolicy, configure_expat_security
+
+#: Bytes fed to Expat per read when *source* is a binary stream.
+_CHUNK_SIZE = 65536
+
+
+class ChunkSource(Protocol):
+    """Anything whose ``read`` yields ``bytes``/``str`` chunks.
+
+    Expat accepts either chunk kind per call, so a replay reader that
+    serves buffered chunks before a wrapped stream collects without
+    re-encoding.
+    """
+
+    def read(self, size: int = -1) -> Any: ...
+
+
+@dataclass(frozen=True)
+class DocumentDeclarations:
+    """Unparsed-entity declaration evidence from one document prolog.
+
+    ``complete`` is ``False`` when the DOCTYPE carries an external
+    ``SYSTEM``/``PUBLIC`` subset that may add declarations; such a subset
+    is never retrieved. An absent DOCTYPE yields an empty, complete set.
+    """
+
+    unparsed_entities: frozenset[str]
+    complete: bool
+
+
+class _DeclarationEvidence:
+    """Per-parse declaration evidence plus flags for the reporting layer.
+
+    ``external_subset_skipped`` is set (idempotently) when an
+    ENTITY/ENTITIES value was left lexical-only because an unretrieved
+    external subset could have declared it. The parse layer that owns the
+    report converts the flag into a single ``dtd-external-skipped``
+    warning -- never one issue per value.
+    """
+
+    __slots__ = ("declarations", "external_subset_skipped")
+
+    def __init__(self, declarations: DocumentDeclarations) -> None:
+        self.declarations = declarations
+        self.external_subset_skipped = False
+
+
+#: Ambient declaration evidence for the parse in progress. ``None`` (the
+#: default) means no evidence: datatype construction stays lexical-only,
+#: which is the behaviour outside any parse.
+_DECLARATION_EVIDENCE: ContextVar[_DeclarationEvidence | None] = ContextVar(
+    "pyxsd_declaration_evidence", default=None
+)
+
+
+def active_declaration_evidence() -> _DeclarationEvidence | None:
+    """The declaration evidence installed for the current parse, if any."""
+    return _DECLARATION_EVIDENCE.get()
+
+
+@contextmanager
+def declaration_context(
+    declarations: DocumentDeclarations | None,
+) -> Iterator[_DeclarationEvidence | None]:
+    """Install *declarations* for the duration of one instance binding.
+
+    ``None`` installs nothing, leaving datatype construction lexical-only.
+    The previous value is always restored, including when binding raises.
+    """
+    if declarations is None:
+        yield None
+        return
+    evidence = _DeclarationEvidence(declarations)
+    token = _DECLARATION_EVIDENCE.set(evidence)
+    try:
+        yield evidence
+    finally:
+        _DECLARATION_EVIDENCE.reset(token)
+
+
+class _PrologComplete(Exception):
+    """Raised at the first root start tag to stop the prolog parse."""
+
+
+def collect_document_declarations(
+    source: bytes | BinaryIO | IO[str] | ChunkSource, *, policy: XmlParserPolicy
+) -> DocumentDeclarations | None:
+    """Collect unparsed-entity declarations from *source*'s prolog.
+
+    Only the prolog and internal subset are examined: parsing stops at the
+    root start tag, and the instance body is never expanded. Internal
+    parameter entities are expanded; an external subset or parameter entity
+    is never retrieved and only makes the evidence incomplete. Returns
+    ``None`` when the prolog itself is not well-formed, leaving the
+    diagnosis to the ordinary parser; policy denials raise as they would
+    without this collector.
+
+    Streams may yield ``bytes`` or ``str`` chunks; Expat accepts either
+    per call, so a text stream collects without re-encoding.
+    """
+    parser = expat.ParserCreate()
+    configure_expat_security(parser, policy)
+    entities: set[str] = set()
+    external_declarations = False
+    # configure_expat_security may have installed policy handlers; chain
+    # them so denial behavior and ordering survive the bookkeeping.
+    # Typeshed's handler signatures narrow optional Expat arguments, so
+    # chain through ``Callable[..., Any]`` exactly as xml_policy does.
+    previous_doctype: Callable[..., Any] | None = parser.StartDoctypeDeclHandler
+    previous_unparsed: Callable[..., Any] | None = parser.UnparsedEntityDeclHandler
+    previous_external: Callable[..., Any] | None = parser.ExternalEntityRefHandler
+
+    def record_doctype(
+        name: str, sysid: str | None, pubid: str | None, has_internal_subset: bool
+    ) -> None:
+        nonlocal external_declarations
+        if previous_doctype is not None:
+            previous_doctype(name, sysid, pubid, has_internal_subset)
+        if sysid is not None or pubid is not None:
+            external_declarations = True
+
+    def record_unparsed_entity(
+        entity_name: str,
+        base: str | None,
+        system_id: str | None,
+        public_id: str | None,
+        notation_name: str | None,
+    ) -> None:
+        if previous_unparsed is not None:
+            previous_unparsed(entity_name, base, system_id, public_id, notation_name)
+        # Expat reports an entity here only when it has an NDATA notation.
+        entities.add(entity_name)
+
+    def skip_external_entity(*args: Any) -> int:
+        """Mark skipped external declarations incomplete; never retrieve them."""
+        nonlocal external_declarations
+        # A policy's denial handler keeps its ordering and runs first; it
+        # raises rather than returning. Otherwise the skip is reported as
+        # handled so Expat continues with the internal subset.
+        if previous_external is not None:
+            previous_external(*args)
+        external_declarations = True
+        return 1
+
+    parser.StartDoctypeDeclHandler = record_doctype
+    parser.UnparsedEntityDeclHandler = record_unparsed_entity
+    parser.ExternalEntityRefHandler = skip_external_entity
+    parser.StartElementHandler = _stop_at_root
+    # Expand internal parameter entities so declarations nested inside
+    # them are visible. External parameter entities reach the chained
+    # handler above and are skipped without retrieval. ALWAYS (rather
+    # than UNLESS_STANDALONE) also collects internal declarations when a
+    # standalone document declares an internal parameter entity.
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_ALWAYS)
+
+    try:
+        if isinstance(source, (bytes, bytearray, memoryview)):
+            parser.Parse(source, True)
+        else:
+            while True:
+                chunk = source.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                parser.Parse(chunk, False)
+            parser.Parse(b"", True)
+    except _PrologComplete:
+        pass
+    except expat.ExpatError:
+        return None
+    return DocumentDeclarations(frozenset(entities), not external_declarations)
+
+
+def _stop_at_root(*args: object) -> None:
+    """End collection: the body after the root start is never parsed."""
+    raise _PrologComplete
+
+
+__all__ = [
+    "DocumentDeclarations",
+    "collect_document_declarations",
+]
