@@ -154,6 +154,10 @@ def map_problem(builder, entry, path, report):
     observation = child(relations[0], "observation") if len(relations) == 1 else None
     if (
         observation is None
+        or attr(act, "negationInd") in ("true", "1")
+        or attr(act, "moodCode") != "EVN"
+        or attr(relations[0], "typeCode") != "SUBJ"
+        or attr(relations[0], "inversionInd") in ("true", "1")
         or attr(observation, "negationInd") in ("true", "1")
         or attr(child(act, "statusCode"), "code") != "active"
         or attr(observation, "moodCode") != "EVN"

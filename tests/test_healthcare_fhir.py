@@ -254,3 +254,56 @@ def test_duplicate_output_stems_are_rejected_before_work(tmp_path):
     with pytest.raises(SystemExit) as exc:
         main(["a/same.xml", "b/same.xml", "--output-dir", str(tmp_path)])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("lexical", ["true", "false"])
+def test_negated_findings_are_never_positive_conditions_or_measurements(cda, fhir, lexical):
+    from examples.healthcare.cda_to_fhir.convert import convert_document
+
+    xml = (
+        document_path("discharge")
+        .read_text(encoding="utf-8")
+        .replace(
+            'classCode="OBS" moodCode="EVN"',
+            f'classCode="OBS" moodCode="EVN" negationInd="{lexical}"',
+        )
+    )
+    document = parse(cda, xml)
+    assert document.report.error_count == 0
+    result = convert_document(document, fhir=fhir)
+    assert result.report.resources.get("Condition", 0) == (0 if lexical == "true" else 2)
+    assert result.report.resources.get("Observation", 0) == (0 if lexical == "true" else 5)
+    assert len(result.report.unsupported_entries) == (6 if lexical == "true" else 0)
+
+
+@pytest.mark.parametrize(
+    "context", ["negated-act", "intent-act", "reversed-subject", "different-relationship"]
+)
+def test_problem_parent_context_must_not_change_the_finding(cda, fhir, context):
+    from examples.healthcare.cda_to_fhir.convert import convert_document
+
+    xml = document_path("discharge").read_text(encoding="utf-8")
+    if context == "negated-act":
+        xml = xml.replace(
+            '<act classCode="ACT" moodCode="EVN">',
+            '<act classCode="ACT" moodCode="EVN" negationInd="true">',
+        )
+    elif context == "intent-act":
+        xml = xml.replace(
+            '<act classCode="ACT" moodCode="EVN">', '<act classCode="ACT" moodCode="INT">'
+        )
+    elif context == "reversed-subject":
+        xml = xml.replace(
+            '<entryRelationship typeCode="SUBJ">',
+            '<entryRelationship typeCode="SUBJ" inversionInd="true">',
+        )
+    else:
+        xml = xml.replace(
+            '<entryRelationship typeCode="SUBJ">', '<entryRelationship typeCode="REFR">'
+        )
+    document = parse(cda, xml)
+    assert document.report.error_count == 0
+    result = convert_document(document, fhir=fhir)
+    assert result.report.resources.get("Condition", 0) == 0
+    assert result.report.resources["Observation"] == 5
+    assert len(result.report.unsupported_entries) == 2

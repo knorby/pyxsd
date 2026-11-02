@@ -77,3 +77,17 @@ def test_mixins_bind_derived_types_and_exact_values():
     ts = schema.classes["TS"]()
     ts.nullFlavor = "UNK"
     assert ts.as_datetime().null_flavor == "UNK"
+
+
+@pytest.mark.parametrize(
+    "root, expected",
+    [
+        ("c6f88321-67ad-11db-bd13-0800200c9a66", "urn:uuid:c6f88321-67ad-11db-bd13-0800200c9a66"),
+        ("local-identifier-root", None),
+        (None, None),
+    ],
+)
+def test_identifier_roots_are_not_fabricated_oid_uris(root, expected):
+    from examples.healthcare.common.cda_datatypes import system_uri
+
+    assert system_uri(root) == expected

@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 from pyxsd import Extensions
 
@@ -42,7 +43,16 @@ def text(node) -> str:
 
 
 def system_uri(root: str | None) -> str | None:
-    return SYSTEMS.get(root, f"urn:oid:{root}" if root else None)
+    if root in SYSTEMS:
+        return SYSTEMS[root]
+    if not root:
+        return None
+    if re.fullmatch(r"[0-2](?:\.\d+)+", root):
+        return f"urn:oid:{root}"
+    try:
+        return UUID(root).urn
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
