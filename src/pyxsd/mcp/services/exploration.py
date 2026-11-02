@@ -40,6 +40,14 @@ from ..worker_protocol import (
 from ..workers import WorkerPool, capture_to_wire
 
 _EXPLANATIONS: dict[str, dict[str, JsonValue]] = {
+    "compose-cycle": {
+        "summary": "A schema include/import cycle reached a dependency already being composed.",
+        "actions": [
+            "Inspect the schema dependency chain and confirm its includes/imports are intentional.",
+            "Check the complete compilation report before relying on the resulting schema.",
+        ],
+        "uncertainty": "A schema-cycle warning alone does not justify editing the instance document.",
+    },
     "order": {
         "summary": "Child elements do not match the declared content-model order.",
         "actions": ["Compare the parent's children with its declared sequence or choice."],
@@ -115,25 +123,29 @@ def _valid_report(report: JsonValue) -> bool:
     return isinstance(counts, dict) and counts.get("error") == 0
 
 
-def _required_paths(refs: tuple[FileRef | SchemaRef, ...]) -> list[str]:
-    paths: list[str] = []
+def _required_paths(refs: tuple[FileRef | SchemaRef, ...]) -> list[tuple[str, str]]:
+    paths: list[tuple[str, str]] = []
     for ref in refs:
         if isinstance(ref, SchemaRef):
-            paths.append(ref.source.path)
-            paths.extend(item.path for item in ref.options.namespace_schemas.values())
+            paths.append((ref.source.path, "schema"))
+            paths.extend((item.path, "schema") for item in ref.options.namespace_schemas.values())
         else:
-            paths.append(ref.path)
+            paths.append((ref.path, "document"))
     return paths
 
 
-def _require_present(capture: InputCapture, paths: list[str]) -> None:
+def _require_present(capture: InputCapture, paths: list[tuple[str, str]]) -> None:
     present = {item.path for item in capture.files}
-    missing = sorted({path for path in paths if path not in present})
+    missing = sorted({path for path, _role in paths if path not in present})
     if missing:
         raise ToolError(
             "not_found",
             "Required file is not present in the workspace inputs",
-            details={"path": missing[0], "missing": [str(path) for path in missing]},
+            details={
+                "role": next(role for path, role in paths if path == missing[0]),
+                "path": missing[0],
+                "missing": [str(path) for path in missing],
+            },
         )
 
 
@@ -363,7 +375,7 @@ class ExplorationService:
                 )
                 if isinstance(envelope.data, dict) and envelope.data.get("valid") is True:
                     envelope = envelope.model_copy(
-                        update={"data": {**envelope.data, "report": None}}
+                        update={"data": {**envelope.data, "report": None}, "page": None}
                     )
                     report_data = None
                 if (

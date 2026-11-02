@@ -110,6 +110,10 @@ Call `pyxsd_manage_workspace` with `action: "create"`, upload files with
 atomically adds or replaces the supplied paths; omitted files remain in the
 session input set. An invalid batch leaves the previous set intact.
 An empty upload is a no-op and returns the unchanged generation and manifest.
+Uploads encode `text` as UTF-8 without rewriting declarations. UTF-8 declarations
+and ASCII/US-ASCII declarations with ASCII-only bytes are accepted unchanged.
+Conflicting declarations are rejected; use `--source-root` for original bytes in
+other encodings. The text upload API has no arbitrary-byte upload field.
 `action: "release"` removes only session input scratch. It never removes output
 artifacts.
 
@@ -133,6 +137,11 @@ revision pins. Each operation copies the current uploaded set into a private
 temporary capture, verifies its manifest, and deletes it when the operation ends.
 Page cursors are bound to the request result identity and to the input generation
 and file digests; changing the inputs invalidates old pages.
+The provenance field `schema_fingerprint` is a conservative fingerprint of the
+complete captured input manifest plus the schema reference/options, not a
+standalone hash of the schema closure. It can change when an instance or unrelated
+uploaded file changes. Use the per-source digest for document identity; do not
+infer a schema revision from a changed capture fingerprint alone.
 
 ## Tool catalog
 
@@ -189,6 +198,9 @@ references. Its `bytes` field measures the serialized envelope, not a source fil
 `pyxsd_list_artifacts` puts `returned`, `next_cursor`, and `truncated` in the
 envelope's `page`, so a spilled listing remains pageable without first reading
 its full-result artifact.
+Listing entries are in `data.artifacts`; the envelope's top-level `artifacts`
+references outputs produced by that call (including a spilled listing). These
+fields have different roles and need not contain the same references.
 
 Resources include `pyxsd://issue-codes`, `pyxsd://capabilities`, and
 `pyxsd://artifacts/{artifact_id}`. The three prompts are `pyxsd_diagnose_xml`,
@@ -242,17 +254,24 @@ check `location_precision` before treating an issue as an exact occurrence.
 
 Reports distinguish aggregate counts from collection suppression and detail
 pagination. `pyxsd_validate_document` returns `report: null` and writes no report
-artifact for a valid document; for an invalid document it retains the full report
-so `pyxsd_explain_issue` can inspect an issue after session inputs are released.
+artifact or issue page for a valid document. For an invalid document each page
+retains that page's issues with aggregate counts, so `pyxsd_explain_issue` can
+inspect an issue after session inputs are released. Pass that page's report
+artifact and a page-local issue index; a same-code issue on a different page
+cannot be distinguished by the code check alone.
 Invalid XML is a successful validation with `data.valid=false`;
 malformed XML is an `invalid_xml` fault.
 
 Missing inputs fault with `not_found`; unresolved schema dependencies fault with
 `schema_incomplete`, and schema report errors fault with `invalid_schema`.
+Missing uploaded input faults identify `role`, `path`, and `missing`. Malformed
+XML faults retain the parser's diagnosis and line/column when available.
 Validation, queries, projection, comparison, and transform validation require
 complete schemas; schema inspection remains available to diagnose missing pieces.
 `pyxsd_explain_issue` rejects a supplied code that disagrees with a report's issue.
 Curated guidance covers both `occurrence-min` and `occurrence-max`.
+`compose-cycle` guidance concerns the schema dependency chain, not instance
+repair. Unrecognized issue codes return `known: false` and no curated actions.
 
 ### Batch validation
 

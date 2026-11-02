@@ -80,10 +80,14 @@ def admit_inline(files: Sequence[InlineFile], limits: Limits) -> tuple[AdmittedF
                 encoding = re.search(
                     r"\bencoding\s*=\s*(['\"])([^'\"]*)\1", item.text[start.end() : end]
                 )
-                if encoding is not None and encoding[2].lower() not in ("utf-8", "utf8"):
+                if encoding is not None and not (
+                    encoding[2].lower() in ("utf-8", "utf8")
+                    or (encoding[2].lower() in ("ascii", "us-ascii") and content.isascii())
+                ):
                     raise ToolError(
                         "invalid_encoding",
-                        "Inline XML must declare UTF-8; upload original bytes otherwise",
+                        "Inline XML must match UTF-8 bytes (ASCII requires ASCII-only text); "
+                        "use --source-root for original bytes in other encodings",
                     )
         admitted.append(AdmittedFile(item.path, content))
     return tuple(admitted)

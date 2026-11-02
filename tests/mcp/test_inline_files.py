@@ -22,7 +22,7 @@ def test_inline_xml_preserves_utf8_bytes(encoding):
 
 @pytest.mark.parametrize("encoding", ["UTF-16", "ISO-8859-1", "US-ASCII", "", "unknown"])
 def test_inline_conflicting_encoding_is_rejected(encoding):
-    text = f"<?xml version='1.0' encoding = '{encoding}'?><r/>"
+    text = f"<?xml version='1.0' encoding = '{encoding}'?><r>caf\u00e9</r>"
     with pytest.raises(ToolError, match="invalid_encoding"):
         safe_io.admit_inline([contracts.InlineFile(path="data.xml", text=text)], Limits())
 
