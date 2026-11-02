@@ -34,12 +34,11 @@ def child(node, name: str):
 
 
 def text(node) -> str:
-    return (
-        ""
-        if node is None
-        else str(getattr(node, "_value_", "") or "")
-        + "".join(text(n) + str(getattr(n, "_tail_", "") or "") for n in node._children_)
-    )
+    if node is None:
+        return ""
+    value = getattr(node, "_value_", "") or ""
+    leading = "".join(map(str, value)) if isinstance(value, list) else str(value)
+    return leading + "".join(text(n) + str(getattr(n, "_tail_", "") or "") for n in node._children_)
 
 
 def system_uri(root: str | None) -> str | None:
