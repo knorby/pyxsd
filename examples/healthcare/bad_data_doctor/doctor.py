@@ -41,6 +41,8 @@ class DoctorReport:
     selected_issue: DoctorIssue | None
     occurrence_xml: str | None
     explanation: str | None
+    occurrence_base64: str | None = None
+    occurrence_note: str | None = None
 
 
 def occurrence_query(location: dict) -> tuple[str, dict[str, str]]:
@@ -77,7 +79,9 @@ async def collect_diagnostics(
 ) -> DoctorReport:
     capabilities = await call(session, "pyxsd_capabilities", {})
     if not capabilities["data"].get("source_root"):
-        raise DoctorError("This walkthrough requires --source-root")
+        raise DoctorError(
+            "This automated client requires --source-root; use the uploaded-workspace walkthrough for other servers"
+        )
     created = await call(session, "pyxsd_manage_workspace", {"action": "create"})
     workspace = created["data"]["id"]
     arguments = {
@@ -123,7 +127,7 @@ async def collect_diagnostics(
         if not 0 <= issue_index < len(issues):
             raise DoctorError("Issue index is out of range")
         item, reference, local_index = evidence[issue_index]
-        occurrence = None
+        occurrence = occurrence_base64 = occurrence_note = None
         if item.get("location"):
             xpath, namespaces = occurrence_query(item["location"])
             response = await call(
@@ -133,7 +137,20 @@ async def collect_diagnostics(
             )
             matches = response["data"]["results"]
             if matches and matches[0].get("source_faithful"):
-                occurrence = base64.b64decode(matches[0]["data"], validate=True).decode("utf-8")
+                occurrence_base64 = matches[0]["data"]
+                raw = base64.b64decode(occurrence_base64, validate=True)
+                try:
+                    occurrence = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    occurrence = None
+                # UTF-16 slices often lack their document's BOM. Do not mistake
+                # their NUL-interleaved ASCII bytes for a usable UTF-8 text view.
+                if occurrence is None or "\x00" in occurrence:
+                    occurrence = None
+                    occurrence_note = (
+                        "Original bytes retained in occurrence_base64; decode using the "
+                        "document's original encoding, not an inferred UTF-8 view."
+                    )
         explain_args = {"code": item["code"]}
         if reference is not None:
             explain_args.update(report=reference, issue_index=local_index)
@@ -146,6 +163,8 @@ async def collect_diagnostics(
             issues[issue_index],
             occurrence,
             explanation,
+            occurrence_base64,
+            occurrence_note,
         )
     finally:
         await call(

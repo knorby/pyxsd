@@ -17,8 +17,10 @@ Check capabilities, including the artifact store location, before proceeding. Wo
 
 ## Expected evidence
 
-At the pinned revisions, the CCD produces 10 errors plus a schema composition warning: `order` and `unexpected-element` errors include unfamiliar `sdtc:raceCode` content. Counts are reconnaissance evidence, not a compatibility promise. The command pages through all findings, inspects the first located one, and prints exact occurrence XML plus curated guidance. Use `--issue N` to inspect a particular zero-based finding (including schema findings), or `--document relative/path.xml` for another file within the healthcare root.
+At the pinned revisions, the CCD produces 10 errors plus a schema composition warning: `order` and `unexpected-element` errors include unfamiliar `sdtc:raceCode` content. Counts are reconnaissance evidence, not a compatibility promise. The command pages through all findings, inspects the first located one, and prints occurrence evidence plus curated guidance. `occurrence_base64` preserves exact bytes; `occurrence_xml` is only a UTF-8 text view. Other encodings retain the bytes and an explanatory `occurrence_note`, not a guessed decoding. Use `--issue N` to inspect a particular zero-based finding (including schema findings), or `--document relative/path.xml` for another file within the healthcare root.
 
 An invalid document is a successful MCP validation response with `valid=false`. `invalid_xml`, `schema_incomplete`, missing input, and response-budget faults are different failures. The client rejects suppressed or spilled issue responses rather than presenting an incomplete inventory. A valid response has no report artifact; the server omits its diagnostic counts, so the displayed zero counts mean no invalid report was returned, not proof that no warnings occurred.
 
 Follow [the walkthrough](walkthrough.md) to classify findings, inspect declarations, and validate a new candidate after an external edit. Neither the server nor this client has a general repair tool. This checks base CDA XSD, not C-CDA template/Schematron rules or clinical correctness.
+
+The automated command starts its own source-root server. If an existing client is connected to a server with `source_root: null`, use the walkthrough's uploaded-workspace alternative; that configuration does not prevent manual diagnosis.

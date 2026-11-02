@@ -265,6 +265,40 @@ def test_partial_diagnostics_do_not_invent_occurrences(kind):
     assert session.calls[-1][1]["action"] == "release"
 
 
+@pytest.mark.parametrize(
+    "encoding,text",
+    [
+        ("utf-16", "caf\u00e9"),
+        ("utf-16-le", "caf\u00e9"),
+        ("utf-16-be", "caf\u00e9"),
+        ("iso-8859-1", "caf\u00e9"),
+        ("utf-16-le", "plain"),
+        ("utf-16-be", "plain"),
+    ],
+)
+def test_non_utf8_occurrence_preserves_bytes_without_guessing_text(encoding, text):
+    from examples.healthcare.bad_data_doctor.doctor import collect_diagnostics
+
+    raw = f'<item id="2">{text}</item>'.encode(encoding)
+    encoded = base64.b64encode(raw).decode("ascii")
+
+    class Encoded(FakeSession):
+        async def call_tool(self, name, arguments):
+            result = await super().call_tool(name, arguments)
+            if name == "pyxsd_query_document":
+                result.structured_content["data"]["results"][0]["data"] = encoded
+            return result
+
+    session = Encoded()
+    result = asyncio.run(
+        collect_diagnostics(session, schema_path="s.xsd", document_path="d.xml", issue_index=1)
+    )
+    assert result.occurrence_xml is None
+    assert base64.b64decode(result.occurrence_base64) == raw
+    assert "encoding" in result.occurrence_note
+    assert session.calls[-1][1]["action"] == "release"
+
+
 def test_unqualified_and_multiple_namespace_paths():
     from examples.healthcare.bad_data_doctor.doctor import occurrence_query
 
