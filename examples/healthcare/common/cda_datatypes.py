@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from uuid import UUID
 
 from pyxsd import Extensions
 
@@ -49,10 +48,11 @@ def system_uri(root: str | None) -> str | None:
         return None
     if re.fullmatch(r"[0-2](?:\.\d+)+", root):
         return f"urn:oid:{root}"
-    try:
-        return UUID(root).urn
-    except ValueError:
-        return None
+    # CDA UUID roots use the hyphenated lexical form. Python's UUID parser also
+    # accepts compact hexadecimal RUIDs, which are not globally scoped UUIDs.
+    if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", root, re.IGNORECASE):
+        return f"urn:uuid:{root.lower()}"
+    return None
 
 
 @dataclass(frozen=True)

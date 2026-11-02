@@ -86,16 +86,26 @@ def test_missing_or_ambiguous_problem_shapes_are_not_conditions():
 
 def test_unusable_vitals_are_not_measurements():
     status = node("statusCode", code="completed")
-    for code, components in [
-        (None, []),
-        (coded(), []),
-        (coded(), [node("component", node("observation"))]),
-        (coded(), [node("component", node("observation", coded(), node("value")))]),
+    for code, components, reason in [
+        (None, [], "coding datatype"),
+        (coded(), [], None),
+        (coded(), [node("component", node("observation"))], "coding datatype"),
+        (coded(), [node("component", node("observation", coded()))], "quantity datatype"),
+        (
+            coded(),
+            [node("component", node("observation", coded(), node("value")))],
+            "quantity datatype",
+        ),
     ]:
-        organizer = node("organizer", status, *([code] if code else []), *components)
+        organizer = node(
+            "organizer", status, *([code] if code else []), *components, moodCode="EVN"
+        )
         result = report()
         assert mapping.map_vitals(None, node("entry", organizer), "entry[1]", result) == []
-        assert result.unsupported_entries or not components
+        if reason:
+            assert any(reason in entry["reason"] for entry in result.unsupported_entries)
+        else:
+            assert result.unsupported_entries == []
 
 
 def test_patient_without_usable_identity_is_rejected():

@@ -61,7 +61,7 @@ def convert_document(
     )
     report.source_findings = cda.report.to_dict()["issues"]
     doc_id = required(cda.root, "id").as_identifier()
-    if not doc_id.root or not doc_id.value or doc_id.null_flavor:
+    if not doc_id.root or not doc_id.value or doc_id.null_flavor or not doc_id.system:
         raise ConversionError("Missing required document identifier")
     builder = Builder(fhir, doc_id.root, doc_id.extension or "")
     date = timestamp(

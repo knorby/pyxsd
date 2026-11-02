@@ -84,6 +84,7 @@ def test_mixins_bind_derived_types_and_exact_values():
     [
         ("c6f88321-67ad-11db-bd13-0800200c9a66", "urn:uuid:c6f88321-67ad-11db-bd13-0800200c9a66"),
         ("local-identifier-root", None),
+        ("abcdefabcdefabcdefabcdefabcdefab", None),
         (None, None),
     ],
 )

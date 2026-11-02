@@ -60,7 +60,13 @@ def patient_resource(builder, role, report):
         )
         if parts:
             fields.append(builder.node("HumanName", "name", *parts))
-    gender = attr(child(patient, "administrativeGenderCode"), "code")
+    gender_node = child(patient, "administrativeGenderCode")
+    gender_null = attr(gender_node, "nullFlavor")
+    gender = None if gender_null else attr(gender_node, "code")
+    if gender_null:
+        report.notes.append(
+            {"path": "patient/gender", "reason": f"unsupported gender nullFlavor={gender_null}"}
+        )
     if gender in ("F", "M", "UN"):
         fields.append(
             builder.primitive(
@@ -154,16 +160,31 @@ def map_problem(builder, entry, path, report):
     observation = child(relations[0], "observation") if len(relations) == 1 else None
     if (
         observation is None
+        or attr(act, "nullFlavor")
+        or attr(observation, "nullFlavor")
+        or attr(act, "classCode") != "ACT"
         or attr(act, "negationInd") in ("true", "1")
         or attr(act, "moodCode") != "EVN"
         or attr(relations[0], "typeCode") != "SUBJ"
         or attr(relations[0], "inversionInd") in ("true", "1")
+        or attr(relations[0], "negationInd") in ("true", "1")
+        or attr(relations[0], "contextConductionInd") == "false"
+        or child(act, "subject") is not None
+        or child(observation, "subject") is not None
         or attr(observation, "negationInd") in ("true", "1")
         or attr(child(act, "statusCode"), "code") != "active"
         or attr(observation, "moodCode") != "EVN"
     ):
         report.unsupported_entries.append(
-            {"path": path, "reason": "unsupported problem structure/status/negation/mood"}
+            {
+                "path": path,
+                "reason": "unsupported problem context/status/nullFlavor/subject/negation/mood",
+            }
+        )
+        return []
+    if len(children(observation, "value")) > 1:
+        report.unsupported_entries.append(
+            {"path": path, "reason": "unsupported problem value cardinality"}
         )
         return []
     coding = supported_coding(child(observation, "value"), report, path)
@@ -183,8 +204,15 @@ def map_problem(builder, entry, path, report):
 
 def map_vitals(builder, entry, path, report):
     organizer = child(entry, "organizer")
-    if attr(child(organizer, "statusCode"), "code") != "completed":
-        report.unsupported_entries.append({"path": path, "reason": "unsupported panel status"})
+    if (
+        attr(child(organizer, "statusCode"), "code") != "completed"
+        or attr(organizer, "moodCode") != "EVN"
+        or attr(organizer, "nullFlavor")
+        or child(organizer, "subject") is not None
+    ):
+        report.unsupported_entries.append(
+            {"path": path, "reason": "unsupported panel status/mood/nullFlavor/subject"}
+        )
         return []
     panel_code = supported_coding(child(organizer, "code"), report, path)
     if panel_code is None:
@@ -196,6 +224,11 @@ def map_vitals(builder, entry, path, report):
         coding = supported_coding(child(observation, "code"), report, occurrence)
         value = child(observation, "value")
         if coding is None:
+            continue
+        if len(children(observation, "value")) > 1:
+            report.unsupported_entries.append(
+                {"path": occurrence, "reason": "unsupported measurement value cardinality"}
+            )
             continue
         if value is None or not hasattr(value, "as_quantity"):
             report.unsupported_entries.append(
@@ -210,6 +243,8 @@ def map_vitals(builder, entry, path, report):
             or attr(child(observation, "statusCode"), "code") != "completed"
             or attr(observation, "negationInd") in ("true", "1")
             or attr(observation, "moodCode") != "EVN"
+            or attr(observation, "nullFlavor")
+            or child(observation, "subject") is not None
         ):
             report.unsupported_entries.append(
                 {
