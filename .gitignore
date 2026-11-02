@@ -38,6 +38,8 @@ docs/_build/
 examples/docx/schemas/
 examples/gpx/schemas/
 examples/musicxml/schemas/
+examples/healthcare/.cache/
+examples/healthcare/out/
 
 # CLI transform output written next to the input file (the default
 # -d/--directoryTransformed and -p/--parsedOutput filenames)
