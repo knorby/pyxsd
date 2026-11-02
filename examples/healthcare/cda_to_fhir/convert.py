@@ -118,17 +118,27 @@ def convert_document(
 
 
 def main(argv=None) -> int:
+    from examples.healthcare.common.sources import resolve_document
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("documents", nargs="+", type=Path)
+    parser.add_argument(
+        "documents",
+        nargs="*",
+        default=["discharge"],
+        help="local XML paths, named examples, or repo:relative/path",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--allow-source-issue", action="append", default=[])
     args = parser.parse_args(argv)
-    if len({path.stem for path in args.documents}) != len(args.documents):
+    if len({Path(value).stem for value in args.documents}) != len(args.documents):
         parser.error("input filenames must have distinct stems")
-    cda, fhir = compile_cda(), compile_fhir()
     results = []
     try:
-        for path in args.documents:
+        paths = [resolve_document(value) for value in args.documents]
+        if len({path.stem for path in paths}) != len(paths):
+            parser.error("input filenames must have distinct stems")
+        cda, fhir = compile_cda(), compile_fhir()
+        for path in paths:
             document = cda.parse(path, xml_policy=XmlParserPolicy.protected())
             results.append(
                 (

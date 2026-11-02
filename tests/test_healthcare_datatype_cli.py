@@ -2,8 +2,8 @@
 
 import json
 
-from examples.healthcare.common.sources import document_path
 from tests.healthcare_support import cda as cda
+from tests.healthcare_support import document_path
 
 from pyxsd import XmlParserPolicy
 

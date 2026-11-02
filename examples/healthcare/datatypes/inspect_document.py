@@ -15,6 +15,7 @@ if __package__ in (None, ""):
 
 from examples.healthcare.common.cda_datatypes import CDA, attr, child, children
 from examples.healthcare.common.schemas import compile_cda
+from examples.healthcare.common.sources import resolve_document
 
 
 def inspect(document: Document) -> dict[str, object]:
@@ -63,10 +64,15 @@ def inspect(document: Document) -> dict[str, object]:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("document", type=Path)
+    parser.add_argument(
+        "document",
+        nargs="?",
+        default="discharge",
+        help="local XML path, named example, or repo:relative/path",
+    )
     args = parser.parse_args(argv)
     schema = compile_cda()
-    document = schema.parse(args.document, xml_policy=XmlParserPolicy.protected())
+    document = schema.parse(resolve_document(args.document), xml_policy=XmlParserPolicy.protected())
     print(json.dumps(inspect(document), sort_keys=True, indent=2))
     return 0
 

@@ -4,10 +4,12 @@ From the repository root:
 
 ```sh
 uv run python examples/healthcare/download_sources.py
-uv run python examples/healthcare/cda_to_fhir/convert.py examples/healthcare/documents/hl7-discharge-summary.xml --output-dir examples/healthcare/out
+uv run python examples/healthcare/cda_to_fhir/convert.py discharge --output-dir examples/healthcare/out
 ```
 
-The unchanged [HL7 CC0 Discharge Summary](../documents/README.md) produces a document Bundle with **one Composition, one Patient, two Conditions, and five Observations** (a vital-sign panel and four measurements). The report records **19 unsupported sections**. The output names are `hl7-discharge-summary.fhir.xml` and `hl7-discharge-summary.report.json`. Repeating the command produces byte-identical XML. Multiple distinct input stems can be passed in one invocation; both schemas compile only once.
+The unchanged [HL7 CC0 Discharge Summary](../SOURCES.md), read from the fetched repository, produces a document Bundle with **one Composition, one Patient, two Conditions, and five Observations** (a vital-sign panel and four measurements). The report records **19 unsupported sections**. The output names are `Discharge_Summary.fhir.xml` and `Discharge_Summary.report.json`. Repeating the command produces byte-identical XML. Multiple distinct input stems can be passed in one invocation; both schemas compile only once.
+
+Select other HL7, ONC, or vendor inputs using `repo:path` selectors from the [repository inventory](../README.md#discover-and-use-repository-inputs), or pass local paths from an existing clone. Omitting input arguments selects `discharge`. Discovery identifies full CDA roots, not mapping compatibility: inputs outside this slice may fail or produce unsupported-content reports.
 
 ## What is mapped
 

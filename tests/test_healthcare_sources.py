@@ -74,10 +74,10 @@ def test_missing_entry_and_document_provenance(tmp_path, monkeypatch):
             },
             root=tmp_path,
         )
+    from tests.healthcare_support import document_path
+
     for name, spec in sources.manifest()["documents"].items():
-        assert (
-            hashlib.sha256(sources.document_path(name).read_bytes()).hexdigest() == spec["sha256"]
-        )
+        assert hashlib.sha256(document_path(name).read_bytes()).hexdigest() == spec["sha256"]
     with pytest.raises(KeyError):
         sources.document_path("../untrusted")
 
@@ -174,11 +174,11 @@ def test_fetch_selected_corpora_and_schema_paths(tmp_path, monkeypatch):
         return target
 
     monkeypatch.setattr(sources, "install", install)
-    assert len(sources.fetch_sources()) == 2
+    assert len(sources.fetch_sources()) == 3
     assert sources.cda_schema_path().is_file() and sources.fhir_schema_path().is_file()
-    assert len(sources.fetch_sources(include_onc=True, include_vendor=True, force=True)) == 4
+    assert len(sources.fetch_sources(include_onc=True, include_vendor=True, force=True)) == 5
     assert [spec["revision"] for spec, force in calls[-2:]] == [
         specs["onc"]["revision"],
         specs["vendor"]["revision"],
     ]
-    assert all(force for _, force in calls[-4:])
+    assert all(force for _, force in calls[-5:])

@@ -164,11 +164,11 @@ def test_valid_document_needs_no_report_or_query():
 def test_real_stdio_doctor_preserves_source_and_inspects_occurrence(cda):
     pytest.importorskip("mcp")
     from examples.healthcare.bad_data_doctor.doctor import run
-    from examples.healthcare.common.sources import document_path
+    from tests.healthcare_support import document_path
 
     source = document_path("ccd-with-issues")
     before = source.read_bytes()
-    report = asyncio.run(run("documents/hl7-ccd-with-issues.xml", None))
+    report = asyncio.run(run(str(source.resolve()), None))
     assert report.error_count > 0
     assert {"order", "unexpected-element"} <= {i.code for i in report.issues}
     assert report.occurrence_xml and "raceCode" in report.occurrence_xml

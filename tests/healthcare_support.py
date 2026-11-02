@@ -1,6 +1,17 @@
 """Download-dependent schema fixtures shared by healthcare example tests."""
 
+from pathlib import Path
+
 import pytest
+
+
+def document_path(name):
+    """Use unchanged offline test fixtures, never a developer's downloaded corpus."""
+    filenames = {
+        "discharge": "hl7-discharge-summary.xml",
+        "ccd-with-issues": "hl7-ccd-with-issues.xml",
+    }
+    return Path(__file__).parent / "fixtures" / "healthcare" / filenames[name]
 
 
 @pytest.fixture(scope="module")

@@ -24,7 +24,38 @@ def manifest() -> dict:
 
 
 def document_path(name: str) -> Path:
-    return HEALTHCARE_ROOT / manifest()["documents"][name]["destination"]
+    spec = manifest()["documents"][name]
+    return resolve_document(f"{spec['repository']}:{spec['path']}")
+
+
+def corpus_root(name: str) -> Path:
+    """Return a fetched repository root, not the archive's outer cache directory."""
+    spec = manifest()[name]
+    entry = HEALTHCARE_ROOT / ".cache" / spec["destination"] / spec["entry"]
+    if not entry.is_file():
+        raise FileNotFoundError(
+            f"Missing {name} repository. Run: uv run python "
+            "examples/healthcare/download_sources.py --all-corpora"
+        )
+    return entry.parent.resolve()
+
+
+def resolve_document(value: str | Path) -> Path:
+    """Resolve a named example, repo:relative/path, or an explicit local file."""
+    text = str(value)
+    if text in manifest()["documents"]:
+        return document_path(text)
+    name, separator, relative = text.partition(":")
+    if separator and name in ("hl7", "onc", "vendor"):
+        root = corpus_root(name)
+        candidate = (root / relative).resolve()
+        if Path(relative).is_absolute() or not candidate.is_relative_to(root):
+            raise ValueError("document path escapes repository")
+    else:
+        candidate = Path(value).resolve()
+    if not candidate.is_file():
+        raise FileNotFoundError(candidate)
+    return candidate
 
 
 def _schema_path(name: str) -> Path:
@@ -103,7 +134,7 @@ def install(spec: dict, *, root: Path, force: bool = False) -> Path:
 
 def fetch_sources(*, include_onc=False, include_vendor=False, force=False) -> list[Path]:
     specs = manifest()
-    names = ["cda", "fhir"]
+    names = ["cda", "fhir", "hl7"]
     if include_onc:
         names.append("onc")
     if include_vendor:

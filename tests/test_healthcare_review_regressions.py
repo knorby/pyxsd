@@ -5,8 +5,8 @@ from io import StringIO
 from unittest.mock import patch
 
 import pytest
-from examples.healthcare.common.sources import document_path
 from tests.healthcare_support import cda as cda
+from tests.healthcare_support import document_path
 from tests.healthcare_support import fhir as fhir
 
 C = {"c": "urn:hl7-org:v3"}

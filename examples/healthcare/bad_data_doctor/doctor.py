@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import base64
 import json
+import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Protocol
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from examples.healthcare.common.sources import HEALTHCARE_ROOT, cda_schema_path
+from examples.healthcare.common.sources import cda_schema_path, resolve_document
 
 
 class ToolSession(Protocol):
@@ -176,15 +177,18 @@ async def run(document_path: str, issue_index: int | None) -> DoctorReport:
     # MCP SDK 2.x Client manages initialization and subprocess shutdown.
     from mcp import Client, StdioServerParameters
 
+    document = resolve_document(document_path)
+    schema = cda_schema_path().resolve()
+    source_root = Path(os.path.commonpath((document.parent, schema.parent)))
     server = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "pyxsd.mcp", "--source-root", str(HEALTHCARE_ROOT), "--no-persist"],
+        args=["-m", "pyxsd.mcp", "--source-root", str(source_root), "--no-persist"],
     )
     async with Client(server) as session:
         return await collect_diagnostics(
             session,
-            schema_path=cda_schema_path().relative_to(HEALTHCARE_ROOT).as_posix(),
-            document_path=document_path,
+            schema_path=schema.relative_to(source_root).as_posix(),
+            document_path=document.relative_to(source_root).as_posix(),
             issue_index=issue_index,
         )
 
@@ -193,8 +197,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--document",
-        default="documents/hl7-ccd-with-issues.xml",
-        help="path relative to the healthcare source root",
+        default="ccd-with-issues",
+        help="local XML path, named example, or repo:relative/path",
     )
     parser.add_argument(
         "--issue", type=int, default=None, help="zero-based index; default is first located finding"
@@ -208,7 +212,7 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 2
-    except DoctorError as exc:
+    except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     print(json.dumps(asdict(report), indent=2, sort_keys=True))
