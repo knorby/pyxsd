@@ -174,3 +174,108 @@ def test_real_stdio_doctor_preserves_source_and_inspects_occurrence(cda):
     assert report.occurrence_xml and "raceCode" in report.occurrence_xml
     assert report.explanation
     assert source.read_bytes() == before
+
+
+def test_oversized_envelope_is_not_mistaken_for_a_valid_document():
+    from examples.healthcare.bad_data_doctor.doctor import DoctorError, call
+
+    class Spilled:
+        async def call_tool(self, *args):
+            return envelope(
+                {
+                    "summary": "Full result is stored in the attached JSON artifact.",
+                    "bytes": 999999,
+                },
+                artifacts=[{"kind": "result"}],
+            )
+
+    with pytest.raises(DoctorError, match="spilled"):
+        asyncio.run(call(Spilled(), "pyxsd_validate_document", {}))
+
+
+def test_absent_structured_data_and_source_root_are_explicit_faults():
+    from examples.healthcare.bad_data_doctor.doctor import DoctorError, call, collect_diagnostics
+
+    class Empty:
+        async def call_tool(self, *args):
+            return SimpleNamespace(structured_content=None)
+
+    with pytest.raises(DoctorError, match="structured"):
+        asyncio.run(call(Empty(), "anything", {}))
+
+    class NoRoot:
+        async def call_tool(self, *args):
+            return envelope({"source_root": None})
+
+    with pytest.raises(DoctorError, match="source-root"):
+        asyncio.run(collect_diagnostics(NoRoot(), schema_path="s.xsd", document_path="d.xml"))
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["suppressed", "no-location", "no-reference", "unavailable", "empty-matches", "out-of-range"],
+)
+def test_partial_diagnostics_do_not_invent_occurrences(kind):
+    from examples.healthcare.bad_data_doctor.doctor import DoctorError, collect_diagnostics
+
+    class Altered(FakeSession):
+        async def call_tool(self, name, arguments):
+            if name == "pyxsd_query_document":
+                return envelope(
+                    {
+                        "results": []
+                        if kind == "empty-matches"
+                        else [{"source_faithful": False, "fault": {"code": "source_unavailable"}}]
+                    }
+                )
+            if name == "pyxsd_explain_issue":
+                return envelope({"summary": "Review it"})
+            result = await super().call_tool(name, arguments)
+            if name == "pyxsd_validate_document":
+                body = result.structured_content
+                body["page"]["next_cursor"] = None
+                if kind == "suppressed":
+                    body["data"]["report"]["suppressed_count"] = 1
+                if kind == "no-location":
+                    body["data"]["report"]["issues"][0]["location"] = None
+                if kind == "no-reference":
+                    body["artifacts"] = []
+            return result
+
+    session = Altered()
+    if kind in ("suppressed", "out-of-range"):
+        with pytest.raises(
+            DoctorError, match="suppressed" if kind == "suppressed" else "out of range"
+        ):
+            asyncio.run(
+                collect_diagnostics(
+                    session,
+                    schema_path="s.xsd",
+                    document_path="d.xml",
+                    issue_index=99 if kind == "out-of-range" else None,
+                )
+            )
+    else:
+        result = asyncio.run(
+            collect_diagnostics(session, schema_path="s.xsd", document_path="d.xml")
+        )
+        assert result.selected_issue.code == "order"
+        assert result.occurrence_xml is None
+        assert "Review it" in result.explanation
+    assert session.calls[-1][1]["action"] == "release"
+
+
+def test_unqualified_and_multiple_namespace_paths():
+    from examples.healthcare.bad_data_doctor.doctor import occurrence_query
+
+    path, namespaces = occurrence_query(
+        {
+            "path": [
+                {"name": "root", "index": 1},
+                {"name": "{urn:a}one", "index": 2},
+                {"name": "{urn:b}two", "index": 3},
+            ]
+        }
+    )
+    assert path == "/root[1]/n0:one[2]/n1:two[3]"
+    assert namespaces == {"n0": "urn:a", "n1": "urn:b"}

@@ -73,7 +73,7 @@ def test_null_and_unknown_code_system_are_reported(cda, fhir):
 
     xml = (
         document_path("discharge")
-        .read_text()
+        .read_text(encoding="utf-8")
         .replace('value="177" unit="cm"', 'nullFlavor="UNK"')
         .replace(
             'code="35064005" codeSystem="2.16.840.1.113883.6.96"',
@@ -97,7 +97,7 @@ def test_source_findings_require_classification(cda, fhir):
 
     xml = (
         document_path("discharge")
-        .read_text()
+        .read_text(encoding="utf-8")
         .replace("</ClinicalDocument>", '<extra xmlns="urn:example:extension"/></ClinicalDocument>')
     )
     document = parse(cda, xml)
@@ -121,7 +121,7 @@ def test_unusable_input_writes_no_bundle(cda, fhir, tmp_path, monkeypatch, xml):
     from examples.healthcare.cda_to_fhir import convert
 
     source = tmp_path / "source.xml"
-    source.write_text(xml)
+    source.write_text(xml, encoding="utf-8")
     output = tmp_path / "output"
     monkeypatch.setattr(convert, "compile_cda", lambda: cda)
     monkeypatch.setattr(convert, "compile_fhir", lambda: fhir)
@@ -167,7 +167,7 @@ def test_quantity_lexical_precision_survives_real_cda_binding(cda, fhir):
 
     xml = (
         document_path("discharge")
-        .read_text()
+        .read_text(encoding="utf-8")
         .replace('value="177" unit="cm"', 'value="0.100000000000000001" unit="cm"')
     )
     result = convert_document(parse(cda, xml), fhir=fhir)
@@ -181,7 +181,7 @@ def test_quantity_lexical_precision_survives_real_cda_binding(cda, fhir):
 def test_unfinished_panel_is_not_reported_final(cda, fhir):
     from examples.healthcare.cda_to_fhir.convert import convert_document
 
-    xml = document_path("discharge").read_text()
+    xml = document_path("discharge").read_text(encoding="utf-8")
     start = xml.index('<organizer classCode="CLUSTER"')
     xml = xml[:start] + xml[start:].replace(
         '<statusCode code="completed"/>', '<statusCode code="active"/>', 1
@@ -199,3 +199,58 @@ def test_failed_fresh_output_validation_is_fatal(cda, fhir, monkeypatch):
     monkeypatch.setattr(Builder, "validate", lambda self, bundle: invalid)
     with pytest.raises(ConversionError, match="fresh validation"):
         convert_document(parse(cda), fhir=fhir)
+
+
+@pytest.mark.parametrize("missing", ["id-value", "target", "title", "author-id"])
+def test_required_header_fields_cannot_be_invented(cda, fhir, missing):
+    from examples.healthcare.cda_to_fhir.convert import ConversionError, convert_document
+    from examples.healthcare.common.cda_datatypes import child, children
+
+    document = parse(cda)
+    root = document.root
+    if missing == "id-value":
+        child(root, "id").nullFlavor = "NI"
+    elif missing == "target":
+        root._children_ = [n for n in root._children_ if n not in children(root, "recordTarget")]
+    elif missing == "title":
+        child(root, "title")._value_ = []
+    else:
+        child(child(child(root, "author"), "assignedAuthor"), "id").nullFlavor = "NI"
+    with pytest.raises(ConversionError, match=r"identifier|recordTarget|title/code|author"):
+        convert_document(document, fhir=fhir)
+
+
+def test_optional_patient_values_are_not_fabricated(cda, fhir):
+    from examples.healthcare.cda_to_fhir.fhir_build import Builder
+    from examples.healthcare.cda_to_fhir.mapping import patient_resource
+    from examples.healthcare.common.cda_datatypes import child, children
+    from examples.healthcare.common.conversion_report import ConversionReport
+
+    document = parse(cda)
+    role = child(child(document.root, "recordTarget"), "patientRole")
+    patient = child(role, "patient")
+    children(role, "id")[1].nullFlavor = "UNK"
+    child(patient, "administrativeGenderCode").code = "X"
+    child(patient, "birthTime").nullFlavor = "UNK"
+    name = child(patient, "name")
+    name._children_ = [n for n in name._children_ if n not in children(name, "family")]
+    for given in children(name, "given"):
+        given._value_ = []
+    result = ConversionReport("test", {})
+    resource = patient_resource(Builder(fhir, "root", "ext"), role, result)
+    assert len(result.notes) == 3
+    assert all(
+        n._name_.split("}")[-1] not in ("name", "gender", "birthDate") for n in resource._children_
+    )
+    patient._children_ = []
+    result = ConversionReport("test", {})
+    resource = patient_resource(Builder(fhir, "root", "ext"), role, result)
+    assert len(result.notes) == 1
+
+
+def test_duplicate_output_stems_are_rejected_before_work(tmp_path):
+    from examples.healthcare.cda_to_fhir.convert import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["a/same.xml", "b/same.xml", "--output-dir", str(tmp_path)])
+    assert exc.value.code == 2

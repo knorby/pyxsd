@@ -64,11 +64,11 @@ async def call(session, name, arguments) -> dict:
     envelope = result.structured_content
     if not isinstance(envelope, dict) or not isinstance(envelope.get("data"), dict):
         raise DoctorError("Missing structured tool envelope")
+    if any(artifact["kind"] == "result" for artifact in envelope["artifacts"]):
+        raise DoctorError("Response spilled to an artifact; inspect it with pyxsd_read_artifact")
     if envelope["status"] == "error":
         fault = envelope["data"]["fault"]
         raise DoctorError(f"{fault['code']}: {fault['message']}")
-    if "artifact" in envelope["data"]:
-        raise DoctorError("Response spilled to an artifact; inspect it with pyxsd_read_artifact")
     return envelope
 
 
