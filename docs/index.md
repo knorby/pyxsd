@@ -41,6 +41,7 @@ comparison-libxml2
 api
 integrations
 data-workflows
+showcase
 skills
 migration-1.0
 history/index

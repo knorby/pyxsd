@@ -174,8 +174,8 @@ The interface is organized around these routes:
 The server reuses the domain renderers rather than maintaining a second
 transformation pipeline. Treat it as a local example, not a deployment recipe
 for untrusted uploads; see {doc}`xml-security` for parser policies and resource
-limits. Server-specific setup and behavior belong in
-`examples/showcase/server/README.md` as that interface is completed.
+limits. Server-specific setup, endpoint details, and limitations are documented
+in `examples/showcase/server/README.md`.
 
 ## Sources and licensing
 
