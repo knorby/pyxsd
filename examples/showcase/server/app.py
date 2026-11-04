@@ -14,9 +14,10 @@ from xml.etree.ElementTree import ParseError
 from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
 from examples.showcase.common.sources import CACHE_ROOT, SETUP_HINT
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
 SHOWCASE_ROOT = Path(__file__).resolve().parents[1]
 MAX_XML_BYTES = 8 * 1024 * 1024
@@ -164,6 +165,9 @@ def _variant(domain: str, data: bytes) -> str | None:
 
 
 def _diagnostic(exc: Exception) -> dict:
+    report = getattr(exc, "report", None)
+    if report is not None and report.issues:
+        return {"valid": False, "issues": _issues(report)}
     return {
         "valid": False,
         "issues": [
@@ -176,6 +180,40 @@ def _diagnostic(exc: Exception) -> dict:
             }
         ],
     }
+
+
+def _issues(report) -> list[dict]:
+    return [
+        {
+            "severity": issue.severity.value,
+            "code": issue.code,
+            "message": issue.message,
+            "element": issue.element,
+            "phase": issue.phase,
+        }
+        for issue in report.issues
+    ]
+
+
+def _validate(application: FastAPI, domain: str, data: bytes) -> dict:
+    from pyxsd import PyXSDError, XmlLimits, XmlParserPolicy
+
+    try:
+        with application.state.schema_lock:
+            schema = _schema(application, domain, _variant(domain, data))
+            document = schema.parse(
+                BytesIO(data),
+                xml_policy=XmlParserPolicy.strict(),
+                xml_limits=XmlLimits(max_bytes=MAX_XML_BYTES, max_depth=128, max_elements=200_000),
+            )
+            result = {"valid": not document.report.has_errors, "issues": _issues(document.report)}
+            if result["valid"]:
+                result["facts"] = application.state.registry[domain]["facts"](document)
+            return result
+    except FileNotFoundError as exc:
+        raise _unavailable(exc) from exc
+    except (PyXSDError, ValueError, ParseError, DefusedXmlException) as exc:
+        return _diagnostic(exc)
 
 
 def _artifact(document, spec: dict) -> Response:
@@ -310,6 +348,18 @@ def create_app(registry: dict | None = None) -> FastAPI:
             ) from exc
         except (PyXSDError, ValueError, ParseError, DefusedXmlException) as exc:
             return JSONResponse(_diagnostic(exc), status_code=422)
+
+    @application.post("/validate/{domain}")
+    async def validate(domain: str, request: Request) -> dict:
+        if domain not in application.state.registry:
+            raise HTTPException(404, "Unknown domain")
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > MAX_XML_BYTES:
+                raise HTTPException(413, "XML exceeds the 8 MB limit")
+            data.extend(chunk)
+        # Reading the bounded body is async; compilation/binding is blocking.
+        return await run_in_threadpool(_validate, application, domain, bytes(data))
 
     return application
 
