@@ -165,16 +165,27 @@ def _variant(domain: str, data: bytes) -> str | None:
 
 
 def _diagnostic(exc: Exception) -> dict:
+    from pyxsd import PyXSDError
+
     report = getattr(exc, "report", None)
     if report is not None and report.issues:
         return {"valid": False, "issues": _issues(report)}
+    # pyxsd diagnostics are single-line and written for the document
+    # author, so they are safe to surface; other exceptions (parser
+    # errors, lookup failures) can embed paths or interpreter detail,
+    # so only their type name is reported back (CodeQL: information
+    # exposure through an exception).
+    if isinstance(exc, PyXSDError):
+        message = str(exc)
+    else:
+        message = f"{type(exc).__name__}: the XML input could not be processed"
     return {
         "valid": False,
         "issues": [
             {
                 "severity": "error",
                 "code": "xml-input",
-                "message": str(exc),
+                "message": message,
                 "element": None,
                 "phase": "instance",
             }
