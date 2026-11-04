@@ -34,13 +34,17 @@ Sources are fetched with ``examples/showcase/download_sources.py``; see
 
 from __future__ import annotations
 
+import argparse
 import math
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from examples.showcase.common import render
+from examples.showcase.common.schemas import compile_schema
 
 _PRIMITIVES = ("line", "arc", "spiral", "poly3", "paramPoly3")
 _PALETTE = (
@@ -378,3 +382,99 @@ def road_paths(document) -> list[dict]:
     return result
 
 
+def _path_data(points: list[tuple[float, float]], project) -> str:
+    first_x, first_y = project(*points[0])
+    parts = [f"M{render.num(first_x)} {render.num(first_y)}"]
+    parts.extend(f"L{render.num(x)} {render.num(y)}" for x, y in (project(*p) for p in points[1:]))
+    return "".join(parts)
+
+
+def render_map(document, *, width: int = 1000) -> str:
+    """Render the reference lines and lane boundaries as a standalone SVG."""
+    paths = road_paths(document)
+    all_points = [point for path in paths for point in path["centerline"]]
+    all_points.extend(point for path in paths for lane in path["lanes"] for point in lane["points"])
+    if not all_points:
+        return render.svg("", width=width, height=120)
+
+    min_x = min(x for x, _ in all_points)
+    max_x = max(x for x, _ in all_points)
+    min_y = min(y for _, y in all_points)
+    max_y = max(y for _, y in all_points)
+    span_x = max(max_x - min_x, _EPSILON)
+    span_y = max(max_y - min_y, _EPSILON)
+
+    margin = 24.0
+    scale = (width - 2 * margin) / span_x
+    if span_y * scale + 2 * margin > 4 * width:
+        scale = (4 * width - 2 * margin) / span_y
+    height = max(140, round(span_y * scale + 2 * margin))
+    offset_x = margin + ((width - 2 * margin) - span_x * scale) / 2
+    offset_y = margin + ((height - 2 * margin) - span_y * scale) / 2
+
+    def project(x: float, y: float) -> tuple[float, float]:
+        return (offset_x + (x - min_x) * scale, offset_y + (max_y - y) * scale)
+
+    body = [
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#f8fafc"/>',
+        '<g fill="none" stroke-linecap="round" stroke-linejoin="round">',
+    ]
+    for path in paths:
+        for lane in path["lanes"]:
+            if lane["points"]:
+                body.append(
+                    f'<path class="lane" data-road="{render.esc(path["road_id"])}" '
+                    f'stroke="#cbd5e1" stroke-width="0.6" d="{_path_data(lane["points"], project)}"/>'
+                )
+    for color, path in zip(_PALETTE * ((len(paths) // len(_PALETTE)) + 1), paths, strict=False):
+        if path["centerline"]:
+            body.append(
+                f'<path class="centerline" data-road="{render.esc(path["road_id"])}" '
+                f'stroke="{color}" stroke-width="1.1" d="{_path_data(path["centerline"], project)}"/>'
+            )
+    body.append("</g>")
+
+    font_size = max(8, width // 80)
+    for color, path in zip(_PALETTE * ((len(paths) // len(_PALETTE)) + 1), paths, strict=False):
+        if not path["centerline"]:
+            continue
+        label_x, label_y = project(*path["centerline"][0])
+        body.append(
+            f'<text class="road-label" x="{render.num(label_x)}" y="{render.num(label_y)}" '
+            f'font-family="sans-serif" font-size="{font_size}" fill="{color}">'
+            f"{render.esc(path['road_id'])}</text>"
+        )
+    return render.svg("".join(body), width=width, height=height)
+
+
+def _schema_variant(path: Path) -> str:
+    """Pick the pinned schema entry from the instance header's revMinor."""
+    root = ET.parse(path).getroot()
+    header = next((child for child in root if child.tag.rsplit("}", 1)[-1] == "header"), None)
+    minor = "4" if header is None else header.get("revMinor", "4")
+    return {"4": "1.4", "5": "1.5"}.get(minor, "1.7")
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Render an OpenDRIVE .xodr file as SVG.")
+    parser.add_argument("document", type=Path, help="path to an .xodr file")
+    parser.add_argument("-o", "--output", type=Path, help="SVG destination (default: ../out/)")
+    args = parser.parse_args(argv)
+
+    schema = compile_schema("opendrive", _schema_variant(args.document))
+    document = schema.parse(args.document)
+    output = args.output or Path(__file__).resolve().parents[1] / "out" / (
+        f"{args.document.stem}.svg"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_map(document), encoding="utf-8")
+    print(f"wrote {output}")
+    if document.report.has_errors:
+        print(
+            f"{document.report.error_count} validation error(s) in {args.document}", file=sys.stderr
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

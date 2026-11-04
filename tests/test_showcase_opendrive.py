@@ -342,3 +342,15 @@ def test_road_paths_offsets_lane_edges_and_samples_arc(tmp_path):
     assert offset_lanes[1] == [(float(index), 2.5) for index in range(5)]
 
 
+def test_render_map_labels_roads_and_is_deterministic(tmp_path):
+    document = _parse_subset(tmp_path)
+    first = render_map.render_map(document, width=800)
+    second = render_map.render_map(document, width=800)
+
+    assert first == second
+    assert first.startswith("<svg")
+    assert first.count('class="centerline"') == 3
+    assert 'class="lane"' in first
+    assert '<text class="road-label"' in first
+    for road_id in ("7", "8", "9"):
+        assert f">{road_id}</text>" in first
