@@ -1,7 +1,9 @@
-"""Tests for the showcase score workflow (MusicXML to WAV).
+"""Tests for the showcase score workflow (MusicXML to WAV and SVG preview).
 
 Offline tests build a minimal partwise schema in the test file, following
 the ``GPX_SUBSET_SCHEMA`` precedent in ``tests/test_example_applications.py``.
+The real-score tests skip until the pinned MusicXML 4.0 schema is fetched
+into ``examples/showcase/.cache/``.
 """
 
 from __future__ import annotations
@@ -9,9 +11,12 @@ from __future__ import annotations
 import io
 import wave
 from functools import cache
+from pathlib import Path
 
 import pytest
-from examples.showcase.score import synthesize
+from examples.showcase.common.schemas import compile_schema
+from examples.showcase.common.sources import require_cache
+from examples.showcase.score import render_preview, synthesize
 
 from pyxsd import Schema
 from pyxsd.binding import ParseModes
@@ -380,3 +385,99 @@ class TestSynthesize:
             synthesize.synthesize(document, tmp_path / "x.wav", tempo_qpm=0)
         with pytest.raises(ValueError, match="sample_rate"):
             synthesize.synthesize(document, tmp_path / "x.wav", sample_rate=0)
+
+
+class TestPreview:
+    def test_draws_one_staff_per_part_and_one_notehead_per_note(self):
+        svg = render_preview.render_preview(_parse(FOUR_PART_SCORE))
+        assert svg.startswith("<svg")
+        assert svg.count('class="staff"') == 4
+        assert svg.count('class="staff-line"') == 20
+        assert svg.count("<ellipse") == 4
+        assert "Soprano" in svg
+        assert "Bass" in svg
+
+    def test_marks_accidentals(self):
+        svg = render_preview.render_preview(_parse(PITCH_SCORE))
+        assert svg.count("<ellipse") == 3
+        assert "♯" in svg
+        assert "♭" in svg
+
+    def test_draws_ties_as_arcs(self):
+        svg = render_preview.render_preview(_parse(TIED_SCORE))
+        assert svg.count("<ellipse") == 2
+        assert svg.count('class="tie"') == 1
+        assert "<path" in svg
+
+    def test_is_deterministic_and_honours_width(self):
+        document = _parse(FOUR_PART_SCORE)
+        first = render_preview.render_preview(document, width=640)
+        assert first == render_preview.render_preview(document, width=640)
+        assert 'width="640"' in first
+        assert render_preview.render_preview(document) != first
+
+    def test_rejects_non_positive_width(self):
+        with pytest.raises(ValueError, match="width"):
+            render_preview.render_preview(_parse(TWO_NOTE_SCORE), width=0)
+
+
+INSTANCE = Path(__file__).resolve().parents[1] / "examples" / "musicxml" / "instance.xml"
+
+
+def _musicxml_schema_ready() -> bool:
+    try:
+        require_cache("musicxml-schema")
+    except FileNotFoundError:
+        return False
+    return True
+
+
+requires_musicxml_schema = pytest.mark.skipif(
+    not _musicxml_schema_ready(),
+    reason=(
+        "MusicXML 4.0 schema not fetched; run: "
+        "uv run python examples/showcase/download_sources.py --only musicxml-schema"
+    ),
+)
+
+
+@pytest.fixture(scope="module")
+def chorale():
+    schema = compile_schema("musicxml")
+    return schema.parse(INSTANCE)
+
+
+@requires_musicxml_schema
+def test_real_score_validates_with_no_errors(chorale):
+    assert chorale.report.error_count == 0
+    assert INSTANCE.is_file()
+
+
+@requires_musicxml_schema
+def test_real_score_has_pinned_merged_note_count(chorale):
+    found = synthesize.notes(chorale)
+    # 165 notated notes in the chorale; the P1 and P3 tie pairs each merge
+    # two notated notes into one sounding span (165 - 2 = 163).
+    assert len(found) == 163
+    assert {note["part"] for note in found} == {"P1", "P2", "P3", "P4"}
+
+
+@requires_musicxml_schema
+def test_real_score_synthesizes_22_5_seconds(chorale, tmp_path):
+    dest = synthesize.synthesize(chorale, tmp_path / "chorale.wav")
+    with wave.open(str(dest), "rb") as handle:
+        frames = handle.getnframes()
+        rate = handle.getframerate()
+    # 36 sounding quarters at 96 qpm: 22.5 s exactly at the default rate.
+    assert frames == 496_125
+    assert abs(frames / rate - 22.5) <= 0.1
+
+
+@requires_musicxml_schema
+def test_real_score_preview_draws_four_staves(chorale):
+    svg = render_preview.render_preview(chorale)
+    assert svg.startswith("<svg")
+    assert svg.count('class="staff"') == 4
+    assert svg.count('class="staff-line"') == 20
+    assert svg.count("<ellipse") == 165
+    assert svg.count('class="tie"') == 2
