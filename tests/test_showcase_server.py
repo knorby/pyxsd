@@ -95,3 +95,96 @@ def test_apps_do_not_share_schemas(registry):
     with TestClient(second) as client:
         client.get("/render/fake/one")
     assert first.state.schemas[("fake", None)] is not second.state.schemas[("fake", None)]
+
+
+def test_default_registry_is_curated_and_missing_cache_is_lazy(monkeypatch, tmp_path):
+    from examples.showcase.server import app as module
+
+    monkeypatch.setattr(module, "CACHE_ROOT", tmp_path)
+    application = create_app()
+    assert application.state.schemas == {}
+    with TestClient(application) as client:
+        items = client.get("/api/samples").json()
+        assert {item["domain"] for item in items} == {
+            "citygml",
+            "opendrive",
+            "bpmn",
+            "ubl",
+            "score",
+        }
+        assert {item["sample"] for item in items if item["domain"] == "bpmn"} == {
+            "starter",
+            "simple",
+            "sequence-flows",
+            "nested-subprocesses",
+        }
+        assert len(items) >= 12
+        response = client.get("/render/ubl/01.01a-INVOICE_ubl")
+        assert response.status_code == 503 and "download_sources" in response.text
+
+
+@pytest.mark.parametrize(
+    "media_type,extension", [("image/png", "png"), ("application/pdf", "pdf"), ("audio/wav", "wav")]
+)
+def test_file_response_and_temporary_cleanup(registry, media_type, extension):
+    destinations = []
+
+    def write(document, destination):
+        destinations.append(destination)
+        destination.write_bytes(b"artifact")
+        return destination
+
+    registry["fake"]["samples"]["one"]["formats"] = {
+        extension: {"renderer": write, "media_type": media_type, "suffix": "." + extension}
+    }
+    with TestClient(create_app(registry=registry)) as client:
+        response = client.get("/render/fake/one", params={"format": extension})
+        assert response.status_code == 200
+        assert response.headers["content-type"] == media_type
+        assert response.content == b"artifact"
+        assert not destinations[0].exists()
+        assert not destinations[0].parent.exists()
+        assert client.get("/render/fake/one?format=unknown").status_code == 400
+
+
+def test_file_renderer_failure_cleans_up(registry):
+    destinations = []
+
+    def fail(document, destination):
+        destinations.append(destination)
+        raise ValueError("bad geometry")
+
+    registry["fake"]["samples"]["one"].update(renderer=fail, suffix=".png", media_type="image/png")
+    with TestClient(create_app(registry=registry)) as client:
+        response = client.get("/render/fake/one")
+    assert response.status_code == 422
+    assert not destinations[0].parent.exists()
+
+
+@pytest.mark.parametrize("minor,variant", [(4, "1.4"), (5, "1.5"), (6, "1.7"), (7, "1.7")])
+def test_opendrive_version_sniff(minor, variant):
+    from examples.showcase.server.app import _variant
+
+    xml = f'<OpenDRIVE><header revMajor="1" revMinor="{minor}"/></OpenDRIVE>'.encode()
+    assert _variant("opendrive", xml) == variant
+    assert _variant("bpmn", b"ignored") is None
+
+
+@pytest.mark.parametrize(
+    "xml",
+    [
+        b"garbage",
+        b"<OpenDRIVE/>",
+        b'<OpenDRIVE><header revMajor="2" revMinor="4"/></OpenDRIVE>',
+        b'<OpenDRIVE><header revMajor="1" revMinor="9"/></OpenDRIVE>',
+        b'<!DOCTYPE OpenDRIVE [<!ENTITY x "bad">]><OpenDRIVE>&x;</OpenDRIVE>',
+    ],
+)
+def test_opendrive_bad_version_input(xml):
+    from xml.etree.ElementTree import ParseError
+
+    from defusedxml.common import DefusedXmlException
+    from examples.showcase.server.app import _variant
+
+    with pytest.raises((ValueError, ParseError, DefusedXmlException)):
+        _variant("opendrive", xml)
