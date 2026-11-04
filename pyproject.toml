@@ -74,6 +74,9 @@ docs = [
 # published extras and must never be installed by library users implicitly.
 examples-duckdb = ["duckdb>=1.4,<2"]
 examples-polars = ["polars>=1.32,<2"]
+examples-matplotlib = ["matplotlib>=3.9,<4"]
+examples-fastapi = ["fastapi>=0.115,<1", "uvicorn>=0.32,<1"]
+examples-reportlab = ["reportlab>=4,<5"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyxsd"]
