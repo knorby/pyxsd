@@ -12,13 +12,22 @@ import math
 from pathlib import Path
 
 import pytest
+from examples.showcase.common.schemas import compile_schema
 from examples.showcase.opendrive import render_map
+from examples.showcase.opendrive.plot_profiles import plot_profiles, profile_samples
 
 from pyxsd.schema import Schema
 
 SHOWCASE_ROOT = Path(__file__).resolve().parents[1] / "examples" / "showcase"
 DATA_DIR = SHOWCASE_ROOT / ".cache" / "opendrive-data"
 SCHEMA_DIR = SHOWCASE_ROOT / ".cache" / "opendrive-schemas"
+
+requires_sources = pytest.mark.skipif(
+    not (DATA_DIR / "Town01.xodr").is_file()
+    or not (SCHEMA_DIR / "OpenDRIVE_1.4H.xsd").is_file()
+    or not (SCHEMA_DIR / "opendrive_17_core.xsd").is_file(),
+    reason="run `uv run python examples/showcase/download_sources.py` to fetch OpenDRIVE sources",
+)
 
 # Only the pieces the renderer touches: geometry primitives, lane widths,
 # elevation and superelevation. Namespace-free, like every real .xodr file.
@@ -342,6 +351,18 @@ def test_road_paths_offsets_lane_edges_and_samples_arc(tmp_path):
     assert offset_lanes[1] == [(float(index), 2.5) for index in range(5)]
 
 
+def test_profile_samples_evaluate_cubic_exactly(tmp_path):
+    profiles = profile_samples(_parse_subset(tmp_path), step=1.0)
+    assert len(profiles) == 1
+    profile = profiles[0]
+    assert profile["road_id"] == "7"
+    elevation = dict(profile["elevation"])
+    assert elevation[0.0] == 100.0
+    assert elevation[2.0] == 103.0
+    assert elevation[10.0] == 100.0 + 5.0 + 25.0 + 125.0
+    assert dict(profile["superelevation"])[2.0] == 0.05
+
+
 def test_render_map_labels_roads_and_is_deterministic(tmp_path):
     document = _parse_subset(tmp_path)
     first = render_map.render_map(document, width=800)
@@ -354,3 +375,43 @@ def test_render_map_labels_roads_and_is_deterministic(tmp_path):
     assert '<text class="road-label"' in first
     for road_id in ("7", "8", "9"):
         assert f">{road_id}</text>" in first
+
+
+@requires_sources
+def test_town01_parses_and_renders():
+    schema = compile_schema("opendrive")
+    document = schema.parse(DATA_DIR / "Town01.xodr")
+    assert document.report.error_count == 0
+
+    paths = render_map.road_paths(document)
+    assert len(paths) == 98
+    assert all(path["centerline"] for path in paths)
+
+    svg = render_map.render_map(document)
+    assert svg.startswith("<svg")
+    assert svg.count('class="centerline"') == 98
+
+
+@requires_sources
+def test_soderleden_parses_with_the_1_7_schema():
+    schema = compile_schema("opendrive", "1.7")
+    document = schema.parse(DATA_DIR / "soderleden.xodr")
+    assert document.report.error_count == 0
+
+    paths = render_map.road_paths(document)
+    assert len(paths) == 5
+    assert all(len(path["centerline"]) > 1 for path in paths)
+
+
+@requires_sources
+def test_profiles_render_to_png(tmp_path):
+    pytest.importorskip("matplotlib")
+    schema = compile_schema("opendrive")
+    document = schema.parse(DATA_DIR / "curves_elevation.xodr")
+    assert document.report.error_count == 0
+
+    dest = plot_profiles(document, tmp_path / "profiles.png")
+    assert dest == tmp_path / "profiles.png"
+    assert dest.is_file()
+    assert dest.stat().st_size > 1000
+    assert dest.read_bytes().startswith(b"\x89PNG")
