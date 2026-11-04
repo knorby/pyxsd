@@ -20,12 +20,12 @@ Python, so the example also shows how much of a CAD/GIS pipeline is just
 From a pyxsd checkout:
 
 ```sh
-uv run python examples/showcase/download_sources.py \
+uv run python examples/opendrive/download_sources.py \
     --only opendrive-schema --only opendrive-data
 ```
 
 That verifies and installs the pinned XSDs and sample networks under
-`examples/showcase/.cache/` (gitignored). The matplotlib extra is only
+`examples/opendrive/.cache/` (gitignored). The matplotlib extra is only
 needed for the profile plot:
 
 ```sh
@@ -34,23 +34,23 @@ uv sync --group examples-matplotlib
 
 ## Run
 
-Render a map (the default output is `examples/showcase/out/<name>.svg`):
+Render a map (the default output is `examples/opendrive/out/<name>.svg`):
 
 ```sh
-uv run python examples/showcase/opendrive/render_map.py \
-    examples/showcase/.cache/opendrive-data/Town01.xodr
+uv run python examples/opendrive/render_map.py \
+    examples/opendrive/.cache/opendrive-data/Town01.xodr
 
-uv run python examples/showcase/opendrive/render_map.py \
-    examples/showcase/.cache/opendrive-data/soderleden.xodr \
+uv run python examples/opendrive/render_map.py \
+    examples/opendrive/.cache/opendrive-data/soderleden.xodr \
     -o /tmp/soderleden.svg
 ```
 
 Plot the profiles (default output is
-`examples/showcase/out/<name>-profiles.png`):
+`examples/opendrive/out/<name>-profiles.png`):
 
 ```sh
-uv run python examples/showcase/opendrive/plot_profiles.py \
-    examples/showcase/.cache/opendrive-data/curves_elevation.xodr
+uv run python examples/opendrive/plot_profiles.py \
+    examples/opendrive/.cache/opendrive-data/curves_elevation.xodr
 ```
 
 Pinned samples:
@@ -86,7 +86,7 @@ boundaries* (cumulative widths along the local left normal), and
 
 ## How it works
 
-1. `compile_schema("opendrive")` compiles the pinned 1.4H XSD in LAX mode.
+1. `compile_schema()` compiles the pinned 1.4H XSD in LAX mode.
    OpenDRIVE instances are unqualified: there is no `xmlns` on
    `<OpenDRIVE>`, and the official XSDs declare no `targetNamespace`.
 2. `document.to_dict()` gives a stable, JSON-shaped tree. Child-element
@@ -116,7 +116,7 @@ The instance header is the only reliable version signal:
 The pinned `sources.toml` entries expose variants `"1.4"`, `"1.5"`, and
 `"1.7"`. The CLIs map `revMinor` 4 to 1.4, 5 to 1.5, and 6 or later to
 1.7 (1.5-1.7 only add elements and attributes, so 1.6 documents validate
-against the 1.7 schema). Both `compile_schema("opendrive")` and the CLI's
+against the 1.7 schema). Both `compile_schema()` and the CLI's
 default select the single-file 1.4H schema; pass `"1.7"` explicitly for
 `soderleden.xodr`.
 
@@ -155,5 +155,5 @@ cleanly. Warnings are not validation errors.
 Every schema and `.xodr` file is downloaded at runtime, digest-verified,
 and never committed. Provenance, revisions, and verbatim license evidence
 (CARLA MIT, esmini MPL-2.0, ASAM schema terms) live in
-[`../SOURCES.md`](../SOURCES.md); the pinned URLs and SHA-256 digests are
+[`SOURCES.md`](SOURCES.md); the pinned URLs and SHA-256 digests are
 in [`../sources.toml`](../sources.toml).

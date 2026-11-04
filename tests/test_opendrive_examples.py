@@ -3,7 +3,7 @@
 The offline tests run a synthetic, namespace-free OpenDRIVE subset through
 pyxsd, then check the geometry sampler and lane offsetting analytically.
 The cache-gated tests use the pinned real schemas and road networks fetched
-by ``examples/showcase/download_sources.py``.
+by ``examples/opendrive/download_sources.py``.
 """
 
 from __future__ import annotations
@@ -12,21 +12,21 @@ import math
 from pathlib import Path
 
 import pytest
-from examples.showcase.common.schemas import compile_schema
-from examples.showcase.opendrive import render_map
-from examples.showcase.opendrive.plot_profiles import plot_profiles, profile_samples
+from examples.opendrive import render_map
+from examples.opendrive.common.schemas import compile_schema
+from examples.opendrive.plot_profiles import plot_profiles, profile_samples
 
 from pyxsd.schema import Schema
 
-SHOWCASE_ROOT = Path(__file__).resolve().parents[1] / "examples" / "showcase"
-DATA_DIR = SHOWCASE_ROOT / ".cache" / "opendrive-data"
-SCHEMA_DIR = SHOWCASE_ROOT / ".cache" / "opendrive-schemas"
+FAMILY_ROOT = Path(__file__).resolve().parents[1] / "examples" / "opendrive"
+DATA_DIR = FAMILY_ROOT / ".cache" / "opendrive-data"
+SCHEMA_DIR = FAMILY_ROOT / ".cache" / "opendrive-schemas"
 
 requires_sources = pytest.mark.skipif(
     not (DATA_DIR / "Town01.xodr").is_file()
     or not (SCHEMA_DIR / "OpenDRIVE_1.4H.xsd").is_file()
     or not (SCHEMA_DIR / "opendrive_17_core.xsd").is_file(),
-    reason="run `uv run python examples/showcase/download_sources.py` to fetch OpenDRIVE sources",
+    reason="run `uv run python examples/opendrive/download_sources.py` to fetch OpenDRIVE sources",
 )
 
 # Only the pieces the renderer touches: geometry primitives, lane widths,
@@ -379,7 +379,7 @@ def test_render_map_labels_roads_and_is_deterministic(tmp_path):
 
 @requires_sources
 def test_town01_parses_and_renders():
-    schema = compile_schema("opendrive")
+    schema = compile_schema()
     document = schema.parse(DATA_DIR / "Town01.xodr")
     assert document.report.error_count == 0
 
@@ -394,7 +394,7 @@ def test_town01_parses_and_renders():
 
 @requires_sources
 def test_soderleden_parses_with_the_1_7_schema():
-    schema = compile_schema("opendrive", "1.7")
+    schema = compile_schema("1.7")
     document = schema.parse(DATA_DIR / "soderleden.xodr")
     assert document.report.error_count == 0
 
@@ -406,7 +406,7 @@ def test_soderleden_parses_with_the_1_7_schema():
 @requires_sources
 def test_profiles_render_to_png(tmp_path):
     pytest.importorskip("matplotlib")
-    schema = compile_schema("opendrive")
+    schema = compile_schema()
     document = schema.parse(DATA_DIR / "curves_elevation.xodr")
     assert document.report.error_count == 0
 

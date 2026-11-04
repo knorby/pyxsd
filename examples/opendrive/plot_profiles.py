@@ -22,8 +22,8 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from examples.showcase.common.schemas import compile_schema
-from examples.showcase.opendrive.render_map import (
+from examples.opendrive.common.schemas import compile_schema
+from examples.opendrive.render_map import (
     _as_list,
     _node,
     _number,
@@ -174,7 +174,7 @@ def main(argv=None) -> int:
     parser.add_argument("-o", "--output", type=Path, help="PNG destination (default: ../out/)")
     args = parser.parse_args(argv)
 
-    schema = compile_schema("opendrive", _schema_variant(args.document))
+    schema = compile_schema(_schema_variant(args.document))
     document = schema.parse(args.document)
     output = args.output or Path(__file__).resolve().parents[1] / "out" / (
         f"{args.document.stem}-profiles.png"

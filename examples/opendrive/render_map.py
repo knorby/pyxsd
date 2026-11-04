@@ -25,11 +25,11 @@ geometry attributes.
 
 Run the map renderer from a checkout::
 
-    uv run python examples/showcase/opendrive/render_map.py \\
-        examples/showcase/.cache/opendrive-data/Town01.xodr
+    uv run python examples/opendrive/render_map.py \\
+        examples/opendrive/.cache/opendrive-data/Town01.xodr
 
-Sources are fetched with ``examples/showcase/download_sources.py``; see
-``../SOURCES.md`` for provenance and licenses.
+Sources are fetched with ``examples/opendrive/download_sources.py``; see
+``SOURCES.md`` for provenance and licenses.
 """
 
 from __future__ import annotations
@@ -43,8 +43,8 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from examples.showcase.common import render
-from examples.showcase.common.schemas import compile_schema
+from examples.opendrive.common import render
+from examples.opendrive.common.schemas import compile_schema
 
 _PRIMITIVES = ("line", "arc", "spiral", "poly3", "paramPoly3")
 _PALETTE = (
@@ -461,7 +461,7 @@ def main(argv=None) -> int:
     parser.add_argument("-o", "--output", type=Path, help="SVG destination (default: ../out/)")
     args = parser.parse_args(argv)
 
-    schema = compile_schema("opendrive", _schema_variant(args.document))
+    schema = compile_schema(_schema_variant(args.document))
     document = schema.parse(args.document)
     output = args.output or Path(__file__).resolve().parents[1] / "out" / (
         f"{args.document.stem}.svg"

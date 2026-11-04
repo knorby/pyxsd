@@ -1,0 +1,92 @@
+# Pinned upstream sources for the opendrive example family.
+#
+# Every entry carries its upstream URL, the license that governs it, and a
+# SHA-256 digest; download_sources.py verifies digests before anything is
+# used. Nothing listed here is committed to the repository: the cache lives
+# under the gitignored .cache/ directory and can be rebuilt at any time.
+# License evidence and attribution live in SOURCES.md next to this file.
+[opendrive-schema]
+kind = "files"
+revision = "asam-ev/qc-opendrive @ 8baf0a5ccd8d7867427d66c874d713af1d8e3491"
+entry = "OpenDRIVE_1.4H.xsd"
+destination = "opendrive-schemas"
+license = "MPL-2.0 (mirror); schemas Copyright ASAM e.V."
+role = "ASAM OpenDRIVE XSDs from ASAM's own repository: 1.4H, 1.5M, and the 1.7.0 module set"
+
+[[opendrive-schema.files]]
+path = "OpenDRIVE_1.4H.xsd"
+url = "https://raw.githubusercontent.com/asam-ev/qc-opendrive/8baf0a5ccd8d7867427d66c874d713af1d8e3491/qc_opendrive/schema/1.4/OpenDRIVE_1.4H.xsd"
+sha256 = "4faba810eee3a31baa5b226f26ea57f35fcb5046159567a84a621c410f6626e2"
+
+[[opendrive-schema.files]]
+path = "OpenDRIVE_1.5M.xsd"
+url = "https://raw.githubusercontent.com/asam-ev/qc-opendrive/8baf0a5ccd8d7867427d66c874d713af1d8e3491/qc_opendrive/schema/1.5/OpenDRIVE_1.5M.xsd"
+sha256 = "c72d012accbd0c6a2462af15c21cc395238a46bad248425c3c384b5223b22f71"
+
+[[opendrive-schema.files]]
+path = "opendrive_17_core.xsd"
+url = "https://raw.githubusercontent.com/asam-ev/qc-opendrive/8baf0a5ccd8d7867427d66c874d713af1d8e3491/qc_opendrive/schema/1.7.0/opendrive_17_core.xsd"
+sha256 = "cbcd9400f222435ca6cf62f9a57d5ef72dff7b54313b697dc47d4d54da047aa6"
+
+[[opendrive-schema.files]]
+path = "opendrive_17_junction.xsd"
+url = "https://raw.githubusercontent.com/asam-ev/qc-opendrive/8baf0a5ccd8d7867427d66c874d713af1d8e3491/qc_opendrive/schema/1.7.0/opendrive_17_junction.xsd"
+sha256 = "0368e5b29f1c6ad4bcfc7f36477b64a63dadfc3e2f45daa88e7498fb6c35e7e6"
+
+[[opendrive-schema.files]]
+path = "opendrive_17_lane.xsd"
+url = "https://raw.githubusercontent.com/asam-ev/qc-opendrive/8baf0a5ccd8d7867427d66c874d713af1d8e3491/qc_opendrive/schema/1.7.0/opendrive_17_lane.xsd"
+sha256 = "58eb512802282d5f1b9ad5c23f16382867ca426ccedea9c45382ba26a1c40de2"
+
+[[opendrive-schema.files]]
+path = "opendrive_17_object.xsd"
+url = "https://raw.githubusercontent.com/asam-ev/qc-opendrive/8baf0a5ccd8d7867427d66c874d713af1d8e3491/qc_opendrive/schema/1.7.0/opendrive_17_object.xsd"
+sha256 = "e0a73391a5184450a98f1784d1a10a7db1d8eda09ad88e707ea6abc90c611a7a"
+
+[[opendrive-schema.files]]
+path = "opendrive_17_railroad.xsd"
+url = "https://raw.githubusercontent.com/asam-ev/qc-opendrive/8baf0a5ccd8d7867427d66c874d713af1d8e3491/qc_opendrive/schema/1.7.0/opendrive_17_railroad.xsd"
+sha256 = "90752714e6958cba306dff2b94dc0cc9551733ced1a6b2041b8a55f0645bfb56"
+
+[[opendrive-schema.files]]
+path = "opendrive_17_road.xsd"
+url = "https://raw.githubusercontent.com/asam-ev/qc-opendrive/8baf0a5ccd8d7867427d66c874d713af1d8e3491/qc_opendrive/schema/1.7.0/opendrive_17_road.xsd"
+sha256 = "f988a164ec5549eb8c152e7a6c0503c862af3fdb83e9ae388cf8e1e21f774df6"
+
+[[opendrive-schema.files]]
+path = "opendrive_17_signal.xsd"
+url = "https://raw.githubusercontent.com/asam-ev/qc-opendrive/8baf0a5ccd8d7867427d66c874d713af1d8e3491/qc_opendrive/schema/1.7.0/opendrive_17_signal.xsd"
+sha256 = "33d06647acd07369a4ba8cd8bab25dc88c7af746f590a7938372ead901182345"
+
+[opendrive-data]
+kind = "files"
+revision = "carla-simulator/opendrive-test-files @ 5929b67cc414b611b701ad251fe1e6d30f465bba; esmini/esmini @ d1d4423bf1104473840f59855a3b12bd6618a170"
+entry = "Town01.xodr"
+destination = "opendrive-data"
+license = "MIT (CARLA files); MPL-2.0 (esmini files)"
+role = "Real road networks: CARLA Town01/Town02 (v1.4, dense junctions) and esmini feature demos (spirals, paramPoly3, elevation)"
+
+[[opendrive-data.files]]
+path = "Town01.xodr"
+url = "https://raw.githubusercontent.com/carla-simulator/opendrive-test-files/5929b67cc414b611b701ad251fe1e6d30f465bba/OpenDrive/Town01.xodr"
+sha256 = "15794f0dff5911837e6059ed628618ad666b3526748b698c0be25cdef7b27f70"
+
+[[opendrive-data.files]]
+path = "Town02.xodr"
+url = "https://raw.githubusercontent.com/carla-simulator/opendrive-test-files/5929b67cc414b611b701ad251fe1e6d30f465bba/OpenDrive/Town02.xodr"
+sha256 = "a6f47c763e09cdf34e759540eef8ef9399e2d899d8eaa33054a5203bceb5494b"
+
+[[opendrive-data.files]]
+path = "curves_elevation.xodr"
+url = "https://raw.githubusercontent.com/esmini/esmini/d1d4423bf1104473840f59855a3b12bd6618a170/resources/xodr/curves_elevation.xodr"
+sha256 = "f1c6ea2c39dc979b87bcae2bec36d6c5dddde7ccfe04f1205d7e670c4af6ab9e"
+
+[[opendrive-data.files]]
+path = "fabriksgatan.xodr"
+url = "https://raw.githubusercontent.com/esmini/esmini/d1d4423bf1104473840f59855a3b12bd6618a170/resources/xodr/fabriksgatan.xodr"
+sha256 = "dbb33d400c90845092275d7e4b4ffef336cc2599215e64b66b1b579756129a67"
+
+[[opendrive-data.files]]
+path = "soderleden.xodr"
+url = "https://raw.githubusercontent.com/esmini/esmini/d1d4423bf1104473840f59855a3b12bd6618a170/resources/xodr/soderleden.xodr"
+sha256 = "1ddfb98678f31521ceb2d9015fc5e35e78f30d636e8932752a0be8cc07fbc05e"
