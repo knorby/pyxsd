@@ -3,7 +3,7 @@
 One five-line staff per part, measure bars, noteheads at their diatonic
 staff positions, written accidentals (``♯``/``♭``) and tie arcs. The
 preview reads the same pitch/time walk as the WAV renderer in
-:mod:`examples.showcase.score.synthesize`, so what you see and what you
+:mod:`examples.musicxml.synthesize`, so what you see and what you
 hear cannot disagree.
 
 The bundled example score is Bach's *Christ unser Herr zum Jordan kam*,
@@ -11,7 +11,7 @@ BWV 66.6, a public-domain work from the BSD-licensed music21 corpus.
 
 Run it from the repository root::
 
-    uv run python examples/showcase/score/render_preview.py [-o out.svg]
+    uv run python examples/musicxml/render_preview.py [-o out.svg]
 """
 
 from __future__ import annotations
@@ -21,13 +21,13 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from examples.showcase.common.render import esc, num, svg
-from examples.showcase.common.schemas import compile_schema
-from examples.showcase.score.synthesize import STEP_INDEX, _score_parts
+from examples.musicxml.common.render import esc, num, svg
+from examples.musicxml.common.schemas import compile_schema
+from examples.musicxml.synthesize import STEP_INDEX, _score_parts
 
-_DEFAULT_INPUT = Path(__file__).resolve().parents[2] / "musicxml" / "instance.xml"
+_DEFAULT_INPUT = Path(__file__).resolve().parents[1] / "instance.xml"
 _DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "out" / "score-preview.svg"
 
 _LINE_GAP = 8.0
@@ -193,13 +193,13 @@ def main(argv: list[str] | None = None) -> int:
         "--output",
         type=Path,
         default=_DEFAULT_OUTPUT,
-        help="destination SVG (default: examples/showcase/out/score-preview.svg)",
+        help="destination SVG (default: examples/musicxml/out/score-preview.svg)",
     )
     parser.add_argument("--width", type=int, default=1000, help="image width in pixels")
     args = parser.parse_args(argv)
 
     try:
-        schema = compile_schema("musicxml")
+        schema = compile_schema()
     except FileNotFoundError as exc:
         parser.error(str(exc))
     document = schema.parse(args.input)

@@ -1,9 +1,9 @@
-"""Tests for the showcase score workflow (MusicXML to WAV and SVG preview).
+"""Tests for this family score workflow (MusicXML to WAV and SVG preview).
 
 Offline tests build a minimal partwise schema in the test file, following
 the ``GPX_SUBSET_SCHEMA`` precedent in ``tests/test_example_applications.py``.
 The real-score tests skip until the pinned MusicXML 4.0 schema is fetched
-into ``examples/showcase/.cache/``.
+into ``examples/musicxml/.cache/``.
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ from functools import cache
 from pathlib import Path
 
 import pytest
-from examples.showcase.common.schemas import compile_schema
-from examples.showcase.common.sources import require_cache
-from examples.showcase.score import render_preview, synthesize
+from examples.musicxml import render_preview, synthesize
+from examples.musicxml.common.schemas import compile_schema
+from examples.musicxml.common.sources import require_cache
 
 from pyxsd import Schema
 from pyxsd.binding import ParseModes
@@ -436,14 +436,14 @@ requires_musicxml_schema = pytest.mark.skipif(
     not _musicxml_schema_ready(),
     reason=(
         "MusicXML 4.0 schema not fetched; run: "
-        "uv run python examples/showcase/download_sources.py --only musicxml-schema"
+        "uv run python examples/musicxml/download_sources.py --only musicxml-schema"
     ),
 )
 
 
 @pytest.fixture(scope="module")
 def chorale():
-    schema = compile_schema("musicxml")
+    schema = compile_schema()
     return schema.parse(INSTANCE)
 
 

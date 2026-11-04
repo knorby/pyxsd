@@ -3,7 +3,7 @@
 The workflow is short on purpose:
 
 1. pyxsd validates the score against the official MusicXML 4.0 schema
-   (see :mod:`examples.showcase.common.schemas`).
+   (see :mod:`examples.musicxml.common.schemas`).
 2. :func:`notes` reads the bound tree into absolute-pitch, absolute-time
    note spans: ties merged, ``<forward>`` advancing time as silence.
 3. :func:`schedule` converts quarter-note positions to seconds and MIDI
@@ -16,7 +16,7 @@ BWV 66.6, a public-domain work from the BSD-licensed music21 corpus.
 
 Run it from the repository root::
 
-    uv run python examples/showcase/score/synthesize.py [-o out.wav]
+    uv run python examples/musicxml/synthesize.py [-o out.wav]
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ from array import array
 from pathlib import Path
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from examples.showcase.common.schemas import compile_schema
+from examples.musicxml.common.schemas import compile_schema
 
 #: Semitone offset of each natural pitch class within an octave (C4 = 60).
 STEP_SEMITONES = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
@@ -46,7 +46,7 @@ _PER_NOTE_GAIN = 0.22
 _PEAK = 0.89
 _HARMONICS = ((1.0, 1), (0.35, 2), (0.15, 3))
 
-_DEFAULT_INPUT = Path(__file__).resolve().parents[2] / "musicxml" / "instance.xml"
+_DEFAULT_INPUT = Path(__file__).resolve().parents[1] / "instance.xml"
 _DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "out" / "chorale.wav"
 
 
@@ -132,7 +132,7 @@ def _walk_part(part_node: object) -> dict:
     """Read one ``<part>`` into pitch/time events and measure spans.
 
     Notes stay unmerged here; :func:`notes` merges ties and
-    :mod:`examples.showcase.score.render_preview` needs the notated
+    :mod:`examples.musicxml.render_preview` needs the notated
     notes so it can draw a notehead at each end of a tie.
     """
     part_id = _attribute(part_node, "id") or ""
@@ -346,14 +346,14 @@ def main(argv: list[str] | None = None) -> int:
         "--output",
         type=Path,
         default=_DEFAULT_OUTPUT,
-        help="destination WAV (default: examples/showcase/out/chorale.wav)",
+        help="destination WAV (default: examples/musicxml/out/chorale.wav)",
     )
     parser.add_argument("--tempo", type=float, default=96.0, help="quarter notes per minute")
     parser.add_argument("--sample-rate", type=int, default=22_050, help="samples per second")
     args = parser.parse_args(argv)
 
     try:
-        schema = compile_schema("musicxml")
+        schema = compile_schema()
     except FileNotFoundError as exc:
         parser.error(str(exc))
     document = schema.parse(args.input)

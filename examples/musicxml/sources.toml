@@ -1,0 +1,20 @@
+# Pinned upstream sources for the musicxml example family.
+#
+# Every entry carries its upstream URL, the license that governs it, and a
+# SHA-256 digest; download_sources.py verifies digests before anything is
+# used. Nothing listed here is committed to the repository: the cache lives
+# under the gitignored .cache/ directory and can be rebuilt at any time.
+# License evidence and attribution live in SOURCES.md next to this file.
+[musicxml-schema]
+kind = "archive"
+url = "https://github.com/w3c-cg/musicxml/releases/download/v4.0/musicxml-4.0.zip"
+revision = "release v4.0"
+sha256 = "4c815790c6cdcceef6b5c6a3c17b7229f52c2754eb31b61a63d30f60ef41acbc"
+entry = "schema/musicxml.xsd"
+destination = "musicxml-schemas"
+license = "W3C Community Final Specification Agreement (MusicXML 4.0, W3C Music Notation Community Group)"
+role = "MusicXML 4.0 schema; its absolute xml.xsd/xlink.xsd imports are rewritten to the zip's local copies"
+
+[musicxml-schema.rewrite]
+"http://www.musicxml.org/xsd/xml.xsd" = "xml.xsd"
+"http://www.musicxml.org/xsd/xlink.xsd" = "xlink.xsd"
