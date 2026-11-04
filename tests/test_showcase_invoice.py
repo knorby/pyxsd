@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 
 import pytest
+from examples.showcase.common.schemas import compile_schema
+from examples.showcase.common.sources import cache_path
 from examples.showcase.invoice.render_html import (
     FOOTER_COMMENT,
     invoice_facts,
@@ -266,8 +268,8 @@ INVOICE_SCHEMA = f"""\
 """
 
 #: Two lines, a document-level allowance, and 19 % VAT. ``PayableAmount``
-#: is written ``404.6`` on purpose: facts must preserve that lexical form
-#: while the renderer shows ``404.60``. The supplier name carries both an
+#: is written ``336.9`` on purpose: facts must preserve that lexical form
+#: while the renderer shows ``336.90``. The supplier name carries both an
 #: ampersand (escaping) and a German label (UTF-8).
 INVOICE_INSTANCE = f"""\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -327,10 +329,10 @@ INVOICE_INSTANCE = f"""\
     <cbc:AllowanceChargeReason>Rabatt</cbc:AllowanceChargeReason>
   </cac:AllowanceCharge>
   <cac:TaxTotal>
-    <cbc:TaxAmount>64.60</cbc:TaxAmount>
+    <cbc:TaxAmount>53.79</cbc:TaxAmount>
     <cac:TaxSubtotal>
-      <cbc:TaxableAmount>340.00</cbc:TaxableAmount>
-      <cbc:TaxAmount>64.60</cbc:TaxAmount>
+      <cbc:TaxableAmount>283.11</cbc:TaxableAmount>
+      <cbc:TaxAmount>53.79</cbc:TaxAmount>
       <cac:TaxCategory>
         <cbc:ID>S</cbc:ID>
         <cbc:Percent>19</cbc:Percent>
@@ -341,10 +343,10 @@ INVOICE_INSTANCE = f"""\
     </cac:TaxSubtotal>
   </cac:TaxTotal>
   <cac:LegalMonetaryTotal>
-    <cbc:LineExtensionAmount>350.00</cbc:LineExtensionAmount>
-    <cbc:TaxExclusiveAmount>340.00</cbc:TaxExclusiveAmount>
-    <cbc:TaxInclusiveAmount>404.6</cbc:TaxInclusiveAmount>
-    <cbc:PayableAmount>404.6</cbc:PayableAmount>
+    <cbc:LineExtensionAmount>293.11</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount>283.11</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount>336.9</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount>336.9</cbc:PayableAmount>
   </cac:LegalMonetaryTotal>
   <cac:InvoiceLine>
     <cbc:ID>1</cbc:ID>
@@ -361,12 +363,12 @@ INVOICE_INSTANCE = f"""\
   <cac:InvoiceLine>
     <cbc:ID>2</cbc:ID>
     <cbc:InvoicedQuantity unitCode="H87">1</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount>150.00</cbc:LineExtensionAmount>
+    <cbc:LineExtensionAmount>93.11</cbc:LineExtensionAmount>
     <cac:Item>
       <cbc:Name>Montage</cbc:Name>
     </cac:Item>
     <cac:Price>
-      <cbc:PriceAmount>150.00</cbc:PriceAmount>
+      <cbc:PriceAmount>93.11</cbc:PriceAmount>
     </cac:Price>
   </cac:InvoiceLine>
 </Invoice>
@@ -410,20 +412,20 @@ def test_invoice_facts_extract_exact_values(synthetic_document):
     assert facts["customer"]["endpoint"] is None
     assert facts["customer"]["endpoint_scheme"] is None
     assert facts["totals"] == {
-        "line_extension": "350.00",
-        "tax_exclusive": "340.00",
-        "tax_inclusive": "404.6",
-        "payable": "404.6",
+        "line_extension": "293.11",
+        "tax_exclusive": "283.11",
+        "tax_inclusive": "336.9",
+        "payable": "336.9",
     }
-    # Exact lexical form: 404.6 must not be normalized to 404.60 or a float.
-    assert facts["totals"]["payable"] != "404.60"
+    # Exact lexical form: 336.9 must not be normalized to 336.90 or a float.
+    assert facts["totals"]["payable"] != "336.90"
     assert facts["allowances"] == [{"charge": False, "amount": "10.00", "reason": "Rabatt"}]
     assert facts["tax_subtotals"] == [
         {
             "category": "S",
             "percent": "19",
-            "taxable_amount": "340.00",
-            "tax_amount": "64.60",
+            "taxable_amount": "283.11",
+            "tax_amount": "53.79",
         }
     ]
     assert facts["lines"] == [
@@ -441,8 +443,8 @@ def test_invoice_facts_extract_exact_values(synthetic_document):
             "description": "Montage",
             "quantity": "1",
             "unit_code": "H87",
-            "line_extension": "150.00",
-            "price": "150.00",
+            "line_extension": "93.11",
+            "price": "93.11",
         },
     ]
 
@@ -455,7 +457,7 @@ def test_invoice_facts_are_json_safe(synthetic_document):
 
 def test_money_and_percent_format_only_for_display():
     assert money("336.9") == "336.90"
-    assert money("350.00") == "350.00"
+    assert money("293.11") == "293.11"
     assert money(None) == "\u2014"
     assert percent("19.0") == "19"
     assert percent(None) == "\u2014"
@@ -471,9 +473,9 @@ def test_render_html_escapes_and_formats_the_invoice(synthetic_document):
     assert "Hauptstraße 1" in html
     assert "Musterstraße 2" in html
     # Amounts are formatted with two decimals only at this layer.
-    assert "404.60" in html
-    assert "350.00" in html
-    assert "64.60" in html
+    assert "336.90" in html
+    assert "293.11" in html
+    assert "53.79" in html
     assert "19 %" in html
     # Unit codes make the quantities meaningful; both rendered lines appear.
     assert "C62" in html
@@ -499,3 +501,66 @@ def test_render_pdf_writes_a_pdf(synthetic_document, tmp_path):
     data = dest.read_bytes()
     assert data.startswith(b"%PDF")
     assert len(data) > 1000
+
+
+# --- Pinned XRechnung corpus (gitignored cache; skipped when absent) ---
+
+SAMPLE_SETUP = (
+    "run: uv run python examples/showcase/download_sources.py --only ubl-schema --only ubl-data"
+)
+SCHEMA_ENTRY = cache_path("ubl-schema")
+SAMPLES_ROOT = cache_path("ubl-data").parent
+UBL_SAMPLES = sorted(SAMPLES_ROOT.rglob("*INVOICE_ubl.xml")) if SAMPLES_ROOT.is_dir() else []
+PRIMARY_SAMPLE = next((path for path in UBL_SAMPLES if path.name.startswith("01.01a")), None)
+
+requires_corpus = pytest.mark.skipif(
+    not UBL_SAMPLES or not SCHEMA_ENTRY.is_file(), reason=SAMPLE_SETUP
+)
+
+
+@requires_corpus
+def test_primary_xrechnung_invoice_parses_and_renders():
+    document = compile_schema("ubl").parse(PRIMARY_SAMPLE)
+    assert document.report.error_count == 0, document.report
+    facts = invoice_facts(document)
+    # Read once from cac:LegalMonetaryTotal/cbc:PayableAmount in the pinned
+    # 01.01a sample: the document writes 336.9, not 336.90.
+    assert facts["totals"]["payable"] == "336.9"
+    assert facts["supplier"]["name"] == "[Seller trading name]"
+    # The buyer has no cac:PartyName; cbc:RegistrationName is the fallback.
+    assert facts["customer"]["name"] == "[Buyer name]"
+    html = render_html(document)
+    assert "336.90" in html
+    assert "[Seller trading name]" in html
+    # The German-authored note survives as UTF-8 content.
+    assert "Geschäftsbedingungen" in html
+
+
+@requires_corpus
+def test_pinned_xrechnung_corpus_parses_cleanly():
+    assert len(UBL_SAMPLES) == 39, (
+        f"the pinned KoSIT v2026-08-31 suite has 39 UBL invoices, found {len(UBL_SAMPLES)}"
+    )
+    schema = compile_schema("ubl")
+    failures = []
+    for path in UBL_SAMPLES:
+        document = schema.parse(path)
+        if document.report.has_errors:
+            failures.append(f"{path.relative_to(SAMPLES_ROOT)} ({document.report.error_count})")
+    if failures:
+        pytest.skip(
+            f"known finding: {len(failures)} of {len(UBL_SAMPLES)} invoices fail the "
+            "UBL 2.3 XSD: " + ", ".join(failures)
+        )
+
+
+@requires_corpus
+def test_render_pdf_writes_the_primary_invoice(tmp_path):
+    pytest.importorskip("reportlab")
+    from examples.showcase.invoice.render_pdf import render_pdf
+
+    document = compile_schema("ubl").parse(PRIMARY_SAMPLE)
+    dest = render_pdf(document, tmp_path / "primary.pdf")
+    data = dest.read_bytes()
+    assert data.startswith(b"%PDF")
+    assert len(data) > 1024

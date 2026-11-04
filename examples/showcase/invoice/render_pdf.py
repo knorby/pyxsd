@@ -28,6 +28,7 @@ if __package__ in (None, ""):
 from examples.showcase.common.render import esc
 from examples.showcase.invoice.render_html import (
     _DASH,
+    DEFAULT_SAMPLE,
     FOOTER_COMMENT,
     default_sample,
     invoice_facts,
@@ -302,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         "invoice",
         nargs="?",
         type=Path,
-        help="UBL XML file (default: the canonical XRechnung sample in .cache/)",
+        help=f"UBL XML file (default: the pinned {DEFAULT_SAMPLE})",
     )
     parser.add_argument(
         "--out",
