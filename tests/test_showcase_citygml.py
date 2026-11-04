@@ -13,6 +13,7 @@ from io import StringIO
 
 import pytest
 from examples.showcase.citygml import plan_svg, plot_city3d
+from examples.showcase.common.schemas import compile_schema
 from examples.showcase.common.sources import SHOWCASE_ROOT
 
 from pyxsd import ParseModes, Schema
@@ -195,6 +196,14 @@ LOD2_SAMPLE = CITYGML_BUILDING_DIR / "Building_LOD2-EPSG25832.gml"
 LOD1_SAMPLE = CITYGML_BUILDING_DIR / "Building_LOD1-EPSG25832.gml"
 GARAGE_SAMPLE = CITYGML_BUILDING_DIR / "Building_and_garage_LOD2-EPSG25832.gml"
 
+requires_cache = pytest.mark.skipif(
+    not LOD2_SAMPLE.is_file(),
+    reason=(
+        "CityGML examples are not installed; run: "
+        "uv run python examples/showcase/download_sources.py"
+    ),
+)
+
 
 @pytest.fixture(scope="module")
 def subset_schema():
@@ -204,6 +213,11 @@ def subset_schema():
 @pytest.fixture(scope="module")
 def subset_document(subset_schema):
     return subset_schema.parse(StringIO(CITYGML_SUBSET_INSTANCE))
+
+
+@pytest.fixture(scope="module")
+def citygml_schema():
+    return compile_schema("citygml")
 
 
 def _polygon_tags(svg: str) -> list[str]:
@@ -294,10 +308,75 @@ def test_plot_city_3d_writes_png(tmp_path, subset_document):
     assert dest.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
+@requires_cache
+def test_scripts_run_from_the_command_line(tmp_path):
+    svg_path = tmp_path / "plan.svg"
+    assert plan_svg.main([str(LOD2_SAMPLE), "-o", str(svg_path)]) == 0
+    assert svg_path.read_text(encoding="utf-8").startswith("<svg")
+
+    pytest.importorskip("matplotlib")
+    png_path = tmp_path / "city3d.png"
+    assert plot_city3d.main([str(LOD2_SAMPLE), "-o", str(png_path)]) == 0
+    assert png_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
 def test_missing_sample_reports_setup_hint(tmp_path, capsys):
     missing = tmp_path / "absent.gml"
     assert plan_svg.main([str(missing)]) == 2
     assert "download_sources.py" in capsys.readouterr().err
+
+
+@requires_cache
+def test_real_lod2_building_geometry(citygml_schema):
+    document = citygml_schema.parse(LOD2_SAMPLE)
+    buildings = plan_svg.collect_buildings(document)
+    assert len(buildings) >= 1
+    building = buildings[0]
+    assert len(building["rings"]) >= 6
+    assert building["measured_height"] == pytest.approx(5.0)
+    assert all(ring[0] == ring[-1] for ring in building["rings"])
+
+
+@requires_cache
+def test_real_lod2_known_schema_findings(citygml_schema):
+    """Stock GML 3.1.1 closure findings, plus the instance's three errors."""
+    report = citygml_schema.parse(LOD2_SAMPLE).report
+    assert report.error_count <= 30
+    codes = {issue.code for issue in report.issues}
+    assert {"particle-restriction", "unknown-attributeRef", "order"} <= codes
+
+
+@requires_cache
+def test_real_lod1_building_geometry(citygml_schema):
+    document = citygml_schema.parse(LOD1_SAMPLE)
+    buildings = plan_svg.collect_buildings(document)
+    assert len(buildings) >= 1
+    assert len(buildings[0]["rings"]) >= 6
+    assert buildings[0]["measured_height"] == pytest.approx(5.0)
+    assert "<polygon" in plan_svg.render_plan(document)
+
+
+@requires_cache
+def test_real_garage_model_lists_building_part(citygml_schema):
+    document = citygml_schema.parse(GARAGE_SAMPLE)
+    buildings = plan_svg.collect_buildings(document)
+    assert len(buildings) == 2
+    assert buildings[1]["measured_height"] == pytest.approx(2.5)
+    assert sum(len(building["rings"]) for building in buildings) >= 12
+
+
+@requires_cache
+def test_real_model_renders_svg_and_png(citygml_schema, tmp_path):
+    document = citygml_schema.parse(LOD2_SAMPLE)
+    svg = plan_svg.render_plan(document)
+    assert "<svg" in svg
+    assert "<polygon" in svg
+    assert svg == plan_svg.render_plan(document)
+
+    pytest.importorskip("matplotlib")
+    dest = tmp_path / "lod2.png"
+    plot_city3d.plot_city_3d(document, dest)
+    assert dest.stat().st_size > 0
 
 
 def test_sample_paths_are_ascii():
