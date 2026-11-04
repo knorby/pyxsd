@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET
 
 import pytest
 from examples.showcase.bpmn.render_svg import di_edges, di_shapes, render_svg
+from examples.showcase.common.schemas import compile_schema
+from examples.showcase.common.sources import CACHE_ROOT
 
 from pyxsd.binding import ParseModes
 from pyxsd.schema import Schema
@@ -310,3 +312,79 @@ def test_render_svg_flips_the_bpmn_y_axis(synthetic):
 
 def test_render_svg_is_deterministic(synthetic):
     assert render_svg(synthetic, width=800) == render_svg(synthetic, width=800)
+
+
+BPMN_DATA = CACHE_ROOT / "bpmn-data"
+SAMPLE_NAMES = (
+    "starter.bpmn",
+    "nested-subprocesses.bpmn",
+    "simple.bpmn",
+    "sequence-flows.bpmn",
+)
+requires_bpmn_sources = pytest.mark.skipif(
+    not (CACHE_ROOT / "bpmn-schemas" / "BPMN20.xsd").is_file()
+    or not all((BPMN_DATA / name).is_file() for name in SAMPLE_NAMES),
+    reason=(
+        "run `uv run python examples/showcase/download_sources.py "
+        "--only bpmn-schema --only bpmn-data` to fetch the pinned schema and samples"
+    ),
+)
+
+
+@pytest.fixture(scope="module")
+def real_schema():
+    return compile_schema("bpmn")
+
+
+@requires_bpmn_sources
+def test_real_samples_parse_against_the_pinned_schema(real_schema):
+    for name in SAMPLE_NAMES:
+        document = real_schema.parse(BPMN_DATA / name)
+        assert not document.report.has_errors, (name, document.report.issues)
+
+
+@requires_bpmn_sources
+def test_starter_shapes_and_edges_match_the_di(real_schema):
+    document = real_schema.parse(BPMN_DATA / "starter.bpmn")
+    shapes = di_shapes(document)
+    assert len(shapes) == 8  # participant, lane, 2 tasks, 2 gateways, 2 events
+    assert [shape["kind"] for shape in shapes] == [
+        "participant",
+        "lane",
+        "task",
+        "task",
+        "start_event",
+        "end_event",
+        "gateway",
+        "gateway",
+    ]
+    assert next(shape for shape in shapes if shape["kind"] == "lane")["is_horizontal"]
+    edges = di_edges(document)
+    assert len(edges) == 6
+    assert {edge["label"] for edge in edges} >= {"Yes", "No"}
+
+
+@requires_bpmn_sources
+def test_starter_renders_labels_and_is_deterministic(real_schema):
+    document = real_schema.parse(BPMN_DATA / "starter.bpmn")
+    first = render_svg(document)
+    assert first == render_svg(document)
+    assert first.startswith('<svg xmlns="http://www.w3.org/2000/svg" width="1000"')
+    assert first.count("<marker") == 1
+    for text in ("Customer", "Scan QR code", "Scan successful?", "Yes", "No"):
+        assert text in first
+    assert len(_elements(first, "polyline")) == 6
+    assert len(_elements(first, "rect")) >= 4
+    assert int(ET.fromstring(first).get("height")) > 0
+
+
+@requires_bpmn_sources
+def test_nested_subprocesses_get_the_plus_badge(real_schema):
+    document = real_schema.parse(BPMN_DATA / "nested-subprocesses.bpmn")
+    svg = render_svg(document)
+    subprocesses = [
+        rect for rect in _elements(svg, "rect") if rect.get("data-kind") == "subprocess"
+    ]
+    assert len(subprocesses) == 2
+    # Each [+] badge is a small rect with one horizontal and one vertical line.
+    assert len(_elements(svg, "line")) == 4

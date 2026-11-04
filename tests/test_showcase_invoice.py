@@ -488,3 +488,14 @@ def test_render_html_is_deterministic(synthetic_document):
     first = render_html(synthetic_document).encode("utf-8")
     second = render_html(synthetic_document).encode("utf-8")
     assert first == second
+
+
+def test_render_pdf_writes_a_pdf(synthetic_document, tmp_path):
+    pytest.importorskip("reportlab")
+    from examples.showcase.invoice.render_pdf import render_pdf
+
+    dest = render_pdf(synthetic_document, tmp_path / "invoice.pdf")
+    assert dest == tmp_path / "invoice.pdf"
+    data = dest.read_bytes()
+    assert data.startswith(b"%PDF")
+    assert len(data) > 1000
