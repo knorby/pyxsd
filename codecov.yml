@@ -7,26 +7,21 @@
 fixes:
   - ".venv/lib/*/site-packages/pyxsd/::src/pyxsd/"
 
-codecov:
-  # Project status must wait for the whole CI matrix: the coverage jobs
-  # upload per-Python-version reports (plus the oracle and adapter
-  # reports) over several minutes, and a status computed from the first
-  # uploads alone sees a partial merge whose version-gated branches read
-  # as uncovered.
-  require_ci_to_pass: true
-
 coverage:
   status:
     project:
       default:
-        # The enforced floor lives in pyproject.toml (fail_under = 98)
-        # and runs in every CI coverage job; per-PR patch coverage is
-        # enforced by the patch status below. Project status only guards
-        # against regressions larger than merge noise between flag
-        # uploads, so allow a small drop instead of failing on any
-        # decrease (a PR that adds skipped-in-CI example tests otherwise
-        # fails here without touching library coverage).
-        threshold: 0.5%
+        # Informational, not gating. Coverage arrives as ~21 separate
+        # uploads from three workflows (the ci.yml Python matrix, the
+        # oracle job, the adapters matrix, and the optional mcp-arrow
+        # matrix), and Codecov posts this status after every upload,
+        # evaluating whatever partial flag merge exists at that moment.
+        # Early posts swing by more than a percent, and an exact
+        # after_n_builds count would break whenever a workflow is
+        # skipped. The enforced gates live elsewhere: the coverage floor
+        # is fail_under = 98 in pyproject.toml (every CI coverage job
+        # fails below it) and per-PR patch coverage below stays strict.
+        informational: true
     patch:
       default:
         # Every modified, coverable line must be covered (the repo's
