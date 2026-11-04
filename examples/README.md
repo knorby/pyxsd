@@ -19,12 +19,17 @@
 - [`healthcare/`](healthcare/) — real C-CDA documents with datatype mixins,
   a scoped CDA-to-FHIR R4 XML pipeline, and an MCP diagnostic walkthrough.
   One verified source-fetch command supplies both schema trees.
-- [`showcase/`](showcase/) — five real external formats rendered end to end:
-  CityGML buildings (SVG plan + 3D plot), BPMN 2.0 diagrams from their DI
-  layout, OpenDRIVE road networks (lane maps + elevation profiles), UBL 2.3 /
-  XRechnung invoices (HTML + PDF), and MusicXML synthesis to WAV, plus a
-  FastAPI server that renders samples and validates uploaded XML. See
-  [`docs/showcase.md`](../docs/showcase.md).
+- [`citygml/`](citygml/), [`bpmn/`](bpmn/), [`opendrive/`](opendrive/),
+  [`xrechnung/`](xrechnung/), [`musicxml/`](musicxml/) — five self-contained
+  example families, each organized around one real data source and rendering
+  it end to end: CityGML buildings (SVG plan + 3D plot), BPMN 2.0 diagrams
+  from their DI layout, OpenDRIVE road networks (lane maps + elevation
+  profiles), UBL 2.3 / XRechnung invoices (HTML + PDF), and MusicXML
+  synthesis to WAV. Each family pins and verifies its own upstream sources.
+  See [`docs/rendering-examples.md`](../docs/rendering-examples.md).
+- [`server/`](server/) — a FastAPI app that mounts the five families
+  behind a sample browser, server-side render routes, and a validation
+  route for submitted XML.
 - [`pydantic/assess_orders.py`](pydantic/assess_orders.py) — the purchase-order
   assessment application from the same guide: schema-generated snapshots,
   synthetic policy, and deterministic reason codes. The directory's

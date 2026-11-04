@@ -1,6 +1,6 @@
 # Browse XML, render on the server
 
-One local FastAPI app mounts the five showcase workflows: CityGML building
+One local FastAPI app mounts the five example-family workflows: CityGML building
 plans, OpenDRIVE road maps, BPMN diagrams, UBL invoices, and a MusicXML
 chorale you can hear. The renderers consume pyxsd's bound documents rather
 than raw XML strings. **Server-side rendering replaces browser XSLT**:
@@ -12,8 +12,8 @@ depends on a browser XSLT engine.
 From the repository root:
 
 ```sh
-uv run python examples/showcase/download_sources.py
-uv run --group examples-fastapi uvicorn examples.showcase.server.app:app --port 8000
+uv run python examples/citygml/download_sources.py   # and the other families
+uv run --group examples-fastapi uvicorn examples.server.app:app --port 8000
 ```
 
 Open <http://127.0.0.1:8000/> for sample links and copyable upload commands.
@@ -32,7 +32,7 @@ command so uv retains those dependencies:
 
 ```sh
 uv run --group examples-fastapi --group examples-matplotlib --group examples-reportlab \
-    uvicorn examples.showcase.server.app:app --port 8000
+    uvicorn examples.server.app:app --port 8000
 ```
 
 ## Endpoints
@@ -115,9 +115,9 @@ not user configuration. Landing-page values and renderer text are escaped.
 ## Tests
 
 ```sh
-uv run --group examples-fastapi --with httpx pytest tests/test_showcase_server.py -q
-uvx ruff@0.16.6 check examples/showcase/server tests/test_showcase_server.py
-uvx ruff@0.16.6 format --check examples/showcase/server tests/test_showcase_server.py
+uv run --group examples-fastapi --with httpx pytest tests/test_render_server.py -q
+uvx ruff@0.16.6 check examples/server tests/test_render_server.py
+uvx ruff@0.16.6 format --check examples/server tests/test_render_server.py
 ```
 
 The test module skips when FastAPI or a supported TestClient HTTP client
@@ -125,4 +125,4 @@ is absent (`httpx` on older Starlette, `httpx2` on newer releases). Offline
 tests need no downloads. Real-schema smoke tests skip with the setup
 command when their caches are missing; optional PNG/PDF tests also skip
 without their rendering dependencies. Sources, terms, and attribution
-remain in [`../SOURCES.md`](../SOURCES.md).
+remain in [`SOURCES.md`](SOURCES.md).

@@ -40,8 +40,6 @@ examples/gpx/schemas/
 examples/musicxml/schemas/
 examples/healthcare/.cache/
 examples/healthcare/out/
-examples/showcase/.cache/
-examples/showcase/out/
 examples/citygml/.cache/
 examples/citygml/out/
 examples/bpmn/.cache/

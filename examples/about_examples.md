@@ -45,18 +45,21 @@ The family has focused `tests/test_healthcare_*.py` coverage, including
 offline helpers and download-dependent real-schema cases. Base-XSD validation
 does not establish template, profile, terminology, or clinical conformance.
 
-## Showcase renderings
+## Rendering example families
 
-[`showcase/`](showcase/README.md) applies the same pinned-source discipline to
-five rendering pipelines over real external formats — CityGML 2.0, BPMN 2.0,
-ASAM OpenDRIVE, OASIS UBL 2.3 (XRechnung), and MusicXML 4.0 — each compiling
-its official schema and transforming real documents into SVG, PNG, HTML, PDF,
-or WAV, with a FastAPI server mounting all of them for server-side rendering
-and upload validation. One `download_sources.py` verifies every section;
-nothing downloaded is committed, and [`showcase/SOURCES.md`](showcase/SOURCES.md)
-records the attribution and license evidence. Focused
-`tests/test_showcase_*.py` coverage follows the same offline-plus-skip-gated
-real-schema pattern.
+Five self-contained families, each organized around one real data source,
+apply the same pinned-source discipline to a rendering pipeline:
+[`citygml/`](citygml/), [`bpmn/`](bpmn/), [`opendrive/`](opendrive/),
+[`xrechnung/`](xrechnung/), and [`musicxml/`](musicxml/) — CityGML 2.0,
+BPMN 2.0, ASAM OpenDRIVE, OASIS UBL 2.3 (XRechnung), and MusicXML 4.0 —
+each compiling its official schema and transforming real documents into
+SVG, PNG, HTML, PDF, or WAV. Each family's own `download_sources.py`
+verifies its manifest; nothing downloaded is committed, and each
+family's `SOURCES.md` records the attribution and license evidence. The
+[`server/`](server/) family mounts all five behind a FastAPI app for
+server-side rendering and upload validation. Focused
+`tests/test_<family>_examples.py` and `tests/test_render_server.py`
+coverage follows the same offline-plus-skip-gated real-schema pattern.
 
 ## Transform templates
 
