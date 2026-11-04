@@ -6,3 +6,29 @@
 # merges them with the reports taken from the repository source.
 fixes:
   - ".venv/lib/*/site-packages/pyxsd/::src/pyxsd/"
+
+codecov:
+  # Project status must wait for the whole CI matrix: the coverage jobs
+  # upload per-Python-version reports (plus the oracle and adapter
+  # reports) over several minutes, and a status computed from the first
+  # uploads alone sees a partial merge whose version-gated branches read
+  # as uncovered.
+  require_ci_to_pass: true
+
+coverage:
+  status:
+    project:
+      default:
+        # The enforced floor lives in pyproject.toml (fail_under = 98)
+        # and runs in every CI coverage job; per-PR patch coverage is
+        # enforced by the patch status below. Project status only guards
+        # against regressions larger than merge noise between flag
+        # uploads, so allow a small drop instead of failing on any
+        # decrease (a PR that adds skipped-in-CI example tests otherwise
+        # fails here without touching library coverage).
+        threshold: 0.5%
+    patch:
+      default:
+        # Every modified, coverable line must be covered (the repo's
+        # coverage contract in AGENTS.md).
+        threshold: 0%
