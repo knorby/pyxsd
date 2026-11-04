@@ -1,7 +1,6 @@
 """Offline HTTP contracts, with optional pinned-corpus smoke tests."""
 
 from importlib.util import find_spec
-from pathlib import Path
 
 import pytest
 
@@ -10,7 +9,14 @@ fastapi = pytest.importorskip("fastapi")
 pytest.importorskip("httpx2" if find_spec("httpx2") else "httpx")
 TestClient = pytest.importorskip("fastapi.testclient").TestClient
 
+from pathlib import Path  # noqa: E402
+
+from examples.bpmn.common.sources import CACHE_ROOT as BPMN_CACHE_ROOT  # noqa: E402
+from examples.citygml.common.sources import CACHE_ROOT as CITYGML_CACHE_ROOT  # noqa: E402
+from examples.musicxml.common.sources import CACHE_ROOT as MUSICXML_CACHE_ROOT  # noqa: E402
+from examples.opendrive.common.sources import CACHE_ROOT as OPENDRIVE_CACHE_ROOT  # noqa: E402
 from examples.server.app import create_app  # noqa: E402
+from examples.xrechnung.common.sources import CACHE_ROOT as XRECHNUNG_CACHE_ROOT  # noqa: E402
 
 XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
 <xs:element name="item" type="xs:integer"/></xs:schema>"""
@@ -174,7 +180,7 @@ def test_default_registry_is_curated_and_missing_cache_is_lazy(monkeypatch, tmp_
             "nested-subprocesses",
         }
         assert len(items) >= 12
-        response = client.get("/render/ubl/01.01a-INVOICE_ubl")
+        response = client.get("/render/xrechnung/01.01a-INVOICE_ubl")
         assert response.status_code == 503 and "download_sources" in response.text
 
 
@@ -376,14 +382,21 @@ def test_exception_diagnostics_retain_validation_report(registry):
     }
 
 
-ROOT = Path(__file__).resolve().parents[1] / "examples"
-CACHE = ROOT / ".cache"
+FAMILY_CACHES = {
+    "bpmn": BPMN_CACHE_ROOT,
+    "citygml": CITYGML_CACHE_ROOT,
+    "musicxml": MUSICXML_CACHE_ROOT,
+    "opendrive": OPENDRIVE_CACHE_ROOT,
+    "xrechnung": XRECHNUNG_CACHE_ROOT,
+}
+INSTANCE_XML = Path(__file__).resolve().parents[1] / "examples/musicxml/instance.xml"
+
 SETUP = "run each family's download_sources.py (see examples/<family>/README.md)"
 
 
 @pytest.mark.skipif(
-    not (CACHE / "bpmn-schemas/BPMN20.xsd").is_file()
-    or not (CACHE / "bpmn-data/starter.bpmn").is_file(),
+    not (BPMN_CACHE_ROOT / "bpmn-schemas/BPMN20.xsd").is_file()
+    or not (BPMN_CACHE_ROOT / "bpmn-data/starter.bpmn").is_file(),
     reason=SETUP,
 )
 def test_real_bpmn_render_and_validate():
@@ -393,31 +406,35 @@ def test_real_bpmn_render_and_validate():
         assert response.headers["content-type"].startswith("image/svg+xml")
         assert "<svg" in response.text
         response = client.post(
-            "/validate/bpmn", content=(CACHE / "bpmn-data/starter.bpmn").read_bytes()
+            "/validate/bpmn", content=(BPMN_CACHE_ROOT / "bpmn-data/starter.bpmn").read_bytes()
         )
         assert response.json()["valid"]
         assert response.json()["facts"]["shapes"] > 0
         assert response.json()["facts"]["edges"] > 0
 
 
-INVOICES = sorted((CACHE / "ubl-data").rglob("01.01a-INVOICE_ubl.xml"))
+INVOICES = sorted((XRECHNUNG_CACHE_ROOT / "ubl-data").rglob("01.01a-INVOICE_ubl.xml"))
 
 
 @pytest.mark.skipif(
-    not INVOICES or not (CACHE / "ubl-schemas/maindoc/UBL-Invoice-2.3.xsd").is_file(), reason=SETUP
+    not INVOICES
+    or not (XRECHNUNG_CACHE_ROOT / "ubl-schemas/maindoc/UBL-Invoice-2.3.xsd").is_file(),
+    reason=SETUP,
 )
 def test_real_invoice_render_and_validate():
     with TestClient(create_app()) as client:
-        response = client.get("/render/ubl/01.01a-INVOICE_ubl")
+        response = client.get("/render/xrechnung/01.01a-INVOICE_ubl")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/html")
         assert "<!DOCTYPE html>" in response.text
-        response = client.post("/validate/ubl", content=INVOICES[0].read_bytes())
+        response = client.post("/validate/xrechnung", content=INVOICES[0].read_bytes())
         assert response.status_code == 200 and response.json()["valid"]
         assert response.json()["facts"]["payable"] == "336.9"
 
 
-@pytest.mark.skipif(not (CACHE / "musicxml-schemas/schema/musicxml.xsd").is_file(), reason=SETUP)
+@pytest.mark.skipif(
+    not (MUSICXML_CACHE_ROOT / "musicxml-schemas/schema/musicxml.xsd").is_file(), reason=SETUP
+)
 def test_real_score_render_and_validate():
     with TestClient(create_app()) as client:
         response = client.get("/render/musicxml/chorale")
@@ -425,7 +442,7 @@ def test_real_score_render_and_validate():
         assert response.headers["content-type"] == "audio/wav"
         assert response.content[:4] == b"RIFF" and response.content[8:12] == b"WAVE"
         assert client.get("/render/musicxml/chorale?format=svg").text.startswith("<svg")
-        raw = (ROOT.parent / "musicxml/instance.xml").read_bytes()
+        raw = INSTANCE_XML.read_bytes()
         # Uploads use the strict parser profile: unlike the trusted render
         # source, the stock score's legacy external DOCTYPE is not accepted.
         assert not client.post("/validate/musicxml", content=raw).json()["valid"]
@@ -453,14 +470,15 @@ def test_real_score_render_and_validate():
     ],
 )
 def test_real_geospatial_render_and_facts(domain, sample, schema_path, sample_path):
-    if not (CACHE / schema_path).is_file() or not (CACHE / sample_path).is_file():
+    cache = FAMILY_CACHES[domain]
+    if not (cache / schema_path).is_file() or not (cache / sample_path).is_file():
         pytest.skip(SETUP)
     application = create_app()
     with TestClient(application) as client:
         response = client.get(f"/render/{domain}/{sample}")
         assert response.status_code == 200 and "<svg" in response.text
         result = client.post(
-            f"/validate/{domain}", content=(CACHE / sample_path).read_bytes()
+            f"/validate/{domain}", content=(cache / sample_path).read_bytes()
         ).json()
         if domain == "citygml":
             # Published GML has documented schema/instance findings; rendering
