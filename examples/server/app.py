@@ -290,7 +290,10 @@ def _schema(application: FastAPI, domain: str, variant: str | None = None):
 
 
 def _unavailable(exc: Exception) -> HTTPException:
-    return HTTPException(503, f"{exc}; run: {SETUP_HINT}")
+    # The exception text can carry absolute local paths; only the setup
+    # hint is actionable for the caller, so nothing else is surfaced
+    # (CodeQL: information exposure through an exception).
+    return HTTPException(503, f"example sources not installed; {SETUP_HINT}")
 
 
 def create_app(registry: dict | None = None) -> FastAPI:
