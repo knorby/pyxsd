@@ -2,7 +2,7 @@
 
 ## Every change needs tests that cover its added lines
 
-- Overall branch coverage has an enforced floor (`fail_under = 98` in
+- Overall branch coverage has an enforced floor (`fail_under = 99` in
   `pyproject.toml`). Passing the floor does **not** prove a change is
   covered: Codecov evaluates *patch* coverage on the PR diff, and every
   uncovered added line is a defect.
