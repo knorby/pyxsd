@@ -82,13 +82,7 @@ def _semantic_index(document) -> dict[str, dict[str, str]]:
     """
     index: dict[str, dict[str, str]] = {}
 
-    def walk(node: object) -> None:
-        if isinstance(node, list):
-            for item in node:
-                walk(item)
-            return
-        if not isinstance(node, dict):
-            return
+    def walk(node: dict) -> None:
         for key, value in node.items():
             if not key.startswith("{"):
                 continue
