@@ -387,7 +387,7 @@ def render_svg(document, *, width: int = 1000) -> str:
     # Pools and lanes are backdrops: draw them before the flow elements so
     # their frames never cover a task or an edge.
     backdrops = [shape for shape in shapes if shape["kind"] in {"participant", "lane"}]
-    flow_shapes = [shape for shape in shapes if shape not in backdrops]
+    flow_shapes = [shape for shape in shapes if shape["kind"] not in {"participant", "lane"}]
     body.extend(_shape_svg(shape, sx, sy, scale, font) for shape in backdrops)
     body.extend(_shape_svg(shape, sx, sy, scale, font) for shape in flow_shapes)
     body.extend(_edge_svg(edge, sx, sy, font) for edge in edges)
