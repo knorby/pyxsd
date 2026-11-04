@@ -1,0 +1,201 @@
+# Pinned upstream sources for the citygml example family.
+#
+# Every entry carries its upstream URL, the license that governs it, and a
+# SHA-256 digest; download_sources.py verifies digests before anything is
+# used. Nothing listed here is committed to the repository: the cache lives
+# under the gitignored .cache/ directory and can be rebuilt at any time.
+# License evidence and attribution live in SOURCES.md next to this file.
+[citygml-schema]
+kind = "archive"
+url = "https://schemas.opengis.net/citygml/citygml-2_0_0.zip"
+revision = "archive dated 2012-03-09 (OGC CityGML 2.0, OGC 12-019)"
+sha256 = "bc716b2578c16fde3de96587c8b0ff9302bb10ca244b384535a4bec4af587e62"
+entry = "citygml/building/2.0/building.xsd"
+destination = "citygml-schemas"
+localize = true
+license = "OGC copyright notice (Copyright (c) 2012 Open Geospatial Consortium); no SPDX identifier is published"
+role = "Official CityGML 2.0 XSD modules, the xAL schema, and the OGC example city models under citygml/examples/2.0/"
+
+[citygml-gml]
+kind = "files"
+revision = "server copy as of 2026-11-03 (content pinned by SHA-256)"
+entry = "gml/3.1.1/base/gml.xsd"
+destination = "citygml-schemas"
+license = "OGC copyright notice (GML 3.1.1); W3C documents under their notices; OASIS xAL notice"
+role = "GML 3.1.1 schema closure imported by CityGML, mirrored from schemas.opengis.net, w3.org, and docs.oasis-open.org"
+localize = true
+
+[[citygml-gml.files]]
+path = "1999/xlink.xsd"
+url = "http://www.w3.org/1999/xlink.xsd"
+sha256 = "c3dbbaa28b884377ecd4a6c49d1f12566d8227cb0dce8ced10c0f66f8fa266e3"
+
+[[citygml-gml.files]]
+path = "2001/xml.xsd"
+url = "http://www.w3.org/2001/xml.xsd"
+sha256 = "61960fb3131e38022caad5360e2f33a3382578ab3c80cd58bd74320ede61b20c"
+
+[[citygml-gml.files]]
+path = "2009/01/xml.xsd"
+url = "http://www.w3.org/2009/01/xml.xsd"
+sha256 = "cc701736c42cc64126fad063bb95f94484b5de3b5f808a86ea098b0957aff829"
+
+[[citygml-gml.files]]
+path = "election/external/xAL.xsd"
+url = "https://docs.oasis-open.org/election/external/xAL.xsd"
+sha256 = "cc8353e803f2ccb594cea247b00935477d672f2c5b5affc95a04cb3721a50f0e"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/basicTypes.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/basicTypes.xsd"
+sha256 = "1ad3ab76ce16b5d272d3b2adad25144eef5c340dcf4709f360ecbc092dc9111e"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/coordinateOperations.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/coordinateOperations.xsd"
+sha256 = "31e238a7625bb6f08d3b7f2d8cadd3817e0ccb269279ce0d4134d5848ad824b3"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/coordinateReferenceSystems.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/coordinateReferenceSystems.xsd"
+sha256 = "5d194502380d66f6750c481f68ffbabefb4a8790dbebb4e3047135a871b29f83"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/coordinateSystems.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/coordinateSystems.xsd"
+sha256 = "ba5d4d351d1ecc275abaa88bc3f4e263526e869056ec8d11b6b4cfa6cf1eb5fd"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/coverage.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/coverage.xsd"
+sha256 = "68f46c8de0c0ccd9ccd02b0f490117edc2ca8d57c0609796173f2f4c658dabb3"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/dataQuality.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/dataQuality.xsd"
+sha256 = "5e0398809ebf1885b04f413df12569a7eddc7773975db1ad3e57329b844a8151"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/datums.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/datums.xsd"
+sha256 = "68b341e83a6b7132e1ee63f8fcffadc5125a2bdbdda2e7d1a5611d8162ae4649"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/defaultStyle.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/defaultStyle.xsd"
+sha256 = "365b26485e119440901a25dd46886de12cfd2b0f27d8b465f1c506afa275d5a3"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/dictionary.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/dictionary.xsd"
+sha256 = "0c031a4cf085a1e495a85762172a13c5221c25af23007b3328f95ecc63601b79"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/direction.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/direction.xsd"
+sha256 = "6dcede87a2fec8d9daa1fcd605a5596481c528147990ca0856c33e60bee066f7"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/dynamicFeature.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/dynamicFeature.xsd"
+sha256 = "a17d6b052cb75ed6b342f9d7526b642daf31b715e588bc3b72cb0068a18b6afe"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/feature.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/feature.xsd"
+sha256 = "36dd578e74bfc913e7b8f78e1003a98bbabaadb693ea7d577dcb7ae8b5d86806"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/geometryAggregates.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/geometryAggregates.xsd"
+sha256 = "b438f20abb5697b87d68979c44021117a859bbb8f0bdf44488c68bfc8145ca2b"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/geometryBasic0d1d.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/geometryBasic0d1d.xsd"
+sha256 = "addfe8997866b9b19e06dcab4c36ec99a23cc352c9d66ca0c0dbac9b245d8421"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/geometryBasic2d.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/geometryBasic2d.xsd"
+sha256 = "f70d60629adf0e6cb17a735c0aa1367d4073458822c4a89e1034cfffebd050a9"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/geometryComplexes.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/geometryComplexes.xsd"
+sha256 = "2ce094104fa5bde175fe1246e2c2612ae16862bd730b16896e04146954f7cb3d"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/geometryPrimitives.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/geometryPrimitives.xsd"
+sha256 = "298d359d83610e0c0efd4ae14bdd3d38ab6167e08b065bfb72e66a209cac70fe"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/gml.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/gml.xsd"
+sha256 = "b7fcaf63660b8f9505c383edaf7ed4aa25d0750129eeb3819e1654dd996ff755"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/gmlBase.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/gmlBase.xsd"
+sha256 = "5853e7faf42272adeb8dea0c7739243fc5221228dd4ac2f16ea4eaf30ac67709"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/grids.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/grids.xsd"
+sha256 = "184a953eb4ee6bfe17c62e2a407446af602782d167916f1b7b2c0529f22114cd"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/measures.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/measures.xsd"
+sha256 = "c53bf83033bf989baa6ca50d956a46f90b23862ae2463879b9051d779ecdfaec"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/observation.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/observation.xsd"
+sha256 = "000a77173d4979e2cad9d696d173abad2d30c807e197f2cf05c45dc9e294187d"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/referenceSystems.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/referenceSystems.xsd"
+sha256 = "d07424782a210b1719e3131a104a1f95dbd84ee789a9e8fed4f7d2a6c11c2b57"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/temporal.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/temporal.xsd"
+sha256 = "208f43442ebcf91666885396d2cac5dc06cb8da880a30bf26902d56fe2acbfe3"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/temporalReferenceSystems.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/temporalReferenceSystems.xsd"
+sha256 = "a849439f6cf97b6f1ddc5ec6d0eace9d96d234cd6003277eab6787855b330e6e"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/temporalTopology.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/temporalTopology.xsd"
+sha256 = "c507feed9f9393e616c887189a6ad4dfb227e0cb51d9410a2f80dce395266925"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/topology.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/topology.xsd"
+sha256 = "08cbe50aa848765dfecda183106a91cc533e9615f46e0feebcc9d6d03d9ab23e"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/units.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/units.xsd"
+sha256 = "d7044a7aac4f4ed239dc5d6075cb9d8ce3cbf821472fb9bc3ac0007037052055"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/base/valueObjects.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/base/valueObjects.xsd"
+sha256 = "3e2eb6a488ec4ed70089b9ec8edc0d830305dd5efc8c754b6dec57566332679d"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/smil/smil20-language.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/smil/smil20-language.xsd"
+sha256 = "71a6af850b0701b34c594ba749ed42ce621cf669b3cb0ec339ce9dd254314787"
+
+[[citygml-gml.files]]
+path = "gml/3.1.1/smil/smil20.xsd"
+url = "http://schemas.opengis.net/gml/3.1.1/smil/smil20.xsd"
+sha256 = "3e5224ef365247c202680e64d8e7bba4882697bc38442bbb883a8dd12cb86315"

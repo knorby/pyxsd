@@ -42,6 +42,16 @@ examples/healthcare/.cache/
 examples/healthcare/out/
 examples/showcase/.cache/
 examples/showcase/out/
+examples/citygml/.cache/
+examples/citygml/out/
+examples/bpmn/.cache/
+examples/bpmn/out/
+examples/opendrive/.cache/
+examples/opendrive/out/
+examples/xrechnung/.cache/
+examples/xrechnung/out/
+examples/musicxml/.cache/
+examples/musicxml/out/
 
 # CLI transform output written next to the input file (the default
 # -d/--directoryTransformed and -p/--parsedOutput filenames)
