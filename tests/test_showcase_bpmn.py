@@ -8,8 +8,10 @@ with a setup hint in a clean checkout.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
+
 import pytest
-from examples.showcase.bpmn.render_svg import di_edges, di_shapes
+from examples.showcase.bpmn.render_svg import di_edges, di_shapes, render_svg
 
 from pyxsd.binding import ParseModes
 from pyxsd.schema import Schema
@@ -144,7 +146,7 @@ INSTANCE = f"""\
     <startEvent id="start" name="Start"/>
     <task id="task_a" name="Do work"/>
     <exclusiveGateway id="gw" name="OK?"/>
-    <task id="task_b" name="Finish"/>
+    <task id="task_b" name="Finish &amp; sign off"/>
     <endEvent id="end" name="End"/>
     <sequenceFlow id="f1" name="go" sourceRef="start" targetRef="task_a"/>
     <sequenceFlow id="f2" sourceRef="task_a" targetRef="gw"/>
@@ -252,3 +254,59 @@ def test_di_edges_carry_waypoints_and_semantic_labels(synthetic):
         "f3": "yes",
         "f4": "",
     }
+
+
+SVG = "{http://www.w3.org/2000/svg}"
+
+
+def _elements(svg: str, tag: str) -> list:
+    return list(ET.fromstring(svg).iter(f"{SVG}{tag}"))
+
+
+def test_render_svg_draws_each_glyph_and_one_arrowhead(synthetic):
+    svg = render_svg(synthetic, width=800)
+    assert svg.startswith("<svg ")
+    assert svg.count("<marker") == 1
+    assert "<defs>" in svg
+
+    tasks = [rect for rect in _elements(svg, "rect") if rect.get("data-kind") == "task"]
+    assert len(tasks) == 2
+    assert all(rect.get("rx") for rect in tasks)
+    assert len(_elements(svg, "polygon")) == 1  # the gateway diamond
+    circles = {circle.get("data-kind"): circle for circle in _elements(svg, "circle")}
+    assert set(circles) == {"start_event", "end_event"}
+    assert float(circles["end_event"].get("stroke-width")) > float(
+        circles["start_event"].get("stroke-width")
+    )
+    assert any(rect.get("data-kind") == "lane" for rect in _elements(svg, "rect"))
+    polylines = _elements(svg, "polyline")
+    assert len(polylines) == 4
+    assert all(polyline.get("marker-end") == "url(#bpmn-arrow)" for polyline in polylines)
+
+
+def test_render_svg_writes_labels_and_escapes_text(synthetic):
+    svg = render_svg(synthetic, width=800)
+    labels = [element.text for element in _elements(svg, "text")]
+    assert "Do work" in labels
+    assert "OK?" in labels
+    assert "Lane" in labels
+    assert "go" in labels
+    assert "yes" in labels
+    assert "Finish &amp; sign off" in svg
+    assert "Finish & sign off" not in svg
+
+
+def test_render_svg_flips_the_bpmn_y_axis(synthetic):
+    svg = render_svg(synthetic, width=800)
+    by_element = {
+        element.get("data-element"): element
+        for element in _elements(svg, "rect")
+        if element.get("data-element")
+    }
+    # task_a sits at DI y=80, task_b at y=300: the larger DI y is nearer the
+    # SVG top, so task_a's SVG y is the larger of the two.
+    assert float(by_element["task_a"].get("y")) > float(by_element["task_b"].get("y"))
+
+
+def test_render_svg_is_deterministic(synthetic):
+    assert render_svg(synthetic, width=800) == render_svg(synthetic, width=800)
