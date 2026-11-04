@@ -1,4 +1,6 @@
-"""Read a validated MusicXML partwise score into note spans and time them.
+"""Turn a validated MusicXML partwise score into a deterministic mono WAV.
+
+The workflow is short on purpose:
 
 1. pyxsd validates the score against the official MusicXML 4.0 schema
    (see :mod:`examples.showcase.common.schemas`).
@@ -6,17 +8,46 @@
    note spans: ties merged, ``<forward>`` advancing time as silence.
 3. :func:`schedule` converts quarter-note positions to seconds and MIDI
    numbers to equal-tempered frequencies.
+4. :func:`synthesize` renders an additive-sine WAV with only the standard
+   library (``wave``, ``array``, ``math``).
 
 The bundled example score is Bach's *Christ unser Herr zum Jordan kam*,
 BWV 66.6, a public-domain work from the BSD-licensed music21 corpus.
+
+Run it from the repository root::
+
+    uv run python examples/showcase/score/synthesize.py [-o out.wav]
 """
 
 from __future__ import annotations
+
+import argparse
+import math
+import sys
+import wave
+from array import array
+from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from examples.showcase.common.schemas import compile_schema
 
 #: Semitone offset of each natural pitch class within an octave (C4 = 60).
 STEP_SEMITONES = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 #: Diatonic index of each natural pitch class, used for staff placement.
 STEP_INDEX = {"C": 0, "D": 1, "E": 2, "F": 3, "G": 4, "A": 5, "B": 6}
+
+#: Synthesis constants; all fixed so the same score gives the same bytes.
+_ATTACK_SECONDS = 0.015
+_RELEASE_SECONDS = 0.06
+_RELEASE_SHARE = 0.3
+_PER_NOTE_GAIN = 0.22
+_PEAK = 0.89
+_HARMONICS = ((1.0, 1), (0.35, 2), (0.15, 3))
+
+_DEFAULT_INPUT = Path(__file__).resolve().parents[2] / "musicxml" / "instance.xml"
+_DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "out" / "chorale.wav"
 
 
 def midi_to_freq(midi: int) -> float:
@@ -232,3 +263,116 @@ def schedule(notes: list[dict], *, tempo_qpm: float = 96.0) -> list[tuple[float,
         )
         for note in notes
     ]
+
+
+def synthesize(
+    document: object,
+    dest: Path,
+    *,
+    tempo_qpm: float = 96.0,
+    sample_rate: int = 22_050,
+) -> Path:
+    """Render the score to a mono 16-bit WAV and return the written path.
+
+    The audio is the last note's end (trailing score padding is not
+    rendered): a 36-quarter score at 96 qpm is 22.5 seconds. Each note
+    is a sine plus second and third harmonics under a 15 ms linear
+    attack and a release clamped to 30% of the note length, so short
+    notes cannot click. The mix is peak-normalized to 0.89. No
+    randomness or timestamps are involved, so repeated calls write
+    identical bytes.
+    """
+    if tempo_qpm <= 0:
+        raise ValueError("tempo_qpm must be positive")
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive")
+
+    spans = schedule(notes(document), tempo_qpm=tempo_qpm)
+    total_seconds = max((t0 + dur for t0, dur, _ in spans), default=0.0)
+    frames = max(0, round(total_seconds * sample_rate))
+    buffer = [0.0] * frames
+
+    attack_samples = max(1, round(_ATTACK_SECONDS * sample_rate))
+    two_pi = 2.0 * math.pi
+    for t0, dur, freq in spans:
+        start = min(round(t0 * sample_rate), frames)
+        count = min(round(dur * sample_rate), frames - start)
+        if count <= 0:
+            continue
+        release_samples = max(1, round(min(_RELEASE_SECONDS, _RELEASE_SHARE * dur) * sample_rate))
+        release_samples = min(release_samples, count)
+        attack = min(attack_samples, count)
+        step = two_pi * freq / sample_rate
+        for index in range(count):
+            envelope = 1.0
+            if index < attack:
+                envelope = index / attack
+            if index >= count - release_samples:
+                envelope = min(envelope, (count - index) / release_samples)
+            sample = 0.0
+            for amplitude, harmonic in _HARMONICS:
+                sample += amplitude * math.sin(step * harmonic * index)
+            buffer[start + index] += _PER_NOTE_GAIN * envelope * sample
+
+    peak = max((abs(value) for value in buffer), default=0.0)
+    scale = _PEAK / peak if peak else 0.0
+    samples = array(
+        "h",
+        (max(-32768, min(32767, round(value * scale * 32767))) for value in buffer),
+    )
+
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(dest), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(samples.tobytes())
+    return dest
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Command-line entry point: validate a score, then synthesize it."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "-i",
+        "--input",
+        type=Path,
+        default=_DEFAULT_INPUT,
+        help="MusicXML partwise score (default: the bundled Bach chorale)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=_DEFAULT_OUTPUT,
+        help="destination WAV (default: examples/showcase/out/chorale.wav)",
+    )
+    parser.add_argument("--tempo", type=float, default=96.0, help="quarter notes per minute")
+    parser.add_argument("--sample-rate", type=int, default=22_050, help="samples per second")
+    args = parser.parse_args(argv)
+
+    try:
+        schema = compile_schema("musicxml")
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+    document = schema.parse(args.input)
+    report = document.report
+    print(
+        f"validated {args.input}: {report.error_count} error(s), {report.warning_count} warning(s)"
+    )
+    destination = synthesize(
+        document,
+        args.output,
+        tempo_qpm=args.tempo,
+        sample_rate=args.sample_rate,
+    )
+    with wave.open(str(destination), "rb") as handle:
+        frames = handle.getnframes()
+        rate = handle.getframerate()
+    print(f"wrote {destination}: {frames} frames, {frames / rate:.2f} s")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

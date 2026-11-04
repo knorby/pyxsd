@@ -1,4 +1,4 @@
-"""Tests for the showcase score workflow (MusicXML note and timing model).
+"""Tests for the showcase score workflow (MusicXML to WAV).
 
 Offline tests build a minimal partwise schema in the test file, following
 the ``GPX_SUBSET_SCHEMA`` precedent in ``tests/test_example_applications.py``.
@@ -7,8 +7,10 @@ the ``GPX_SUBSET_SCHEMA`` precedent in ``tests/test_example_applications.py``.
 from __future__ import annotations
 
 import io
+import wave
 from functools import cache
 
+import pytest
 from examples.showcase.score import synthesize
 
 from pyxsd import Schema
@@ -346,3 +348,35 @@ class TestSchedule:
             tempo_qpm=120.0,
         )
         assert spans == [(1.0, 0.5, 440.0)]
+
+
+class TestSynthesize:
+    def test_writes_exact_wav_length_and_is_deterministic(self, tmp_path):
+        document = _parse(TWO_NOTE_SCORE)
+        first = synthesize.synthesize(document, tmp_path / "first.wav", sample_rate=8000)
+        second = synthesize.synthesize(document, tmp_path / "second.wav", sample_rate=8000)
+
+        # Two quarter notes at 96 qpm are 1.25 s at 8000 Hz.
+        frames = round(2 * (60 / 96) * 8000)
+        assert frames == 10_000
+        assert len(first.read_bytes()) == 44 + frames * 2
+        assert first.read_bytes() == second.read_bytes()
+
+        with wave.open(str(first), "rb") as handle:
+            assert handle.getnchannels() == 1
+            assert handle.getsampwidth() == 2
+            assert handle.getframerate() == 8000
+            assert handle.getnframes() == frames
+
+    def test_empty_score_writes_a_header_only_wav(self, tmp_path):
+        dest = synthesize.synthesize(_parse(EMPTY_SCORE), tmp_path / "empty.wav", sample_rate=8000)
+        assert len(dest.read_bytes()) == 44
+        with wave.open(str(dest), "rb") as handle:
+            assert handle.getnframes() == 0
+
+    def test_rejects_non_positive_parameters(self, tmp_path):
+        document = _parse(TWO_NOTE_SCORE)
+        with pytest.raises(ValueError, match="tempo_qpm"):
+            synthesize.synthesize(document, tmp_path / "x.wav", tempo_qpm=0)
+        with pytest.raises(ValueError, match="sample_rate"):
+            synthesize.synthesize(document, tmp_path / "x.wav", sample_rate=0)
