@@ -1,6 +1,6 @@
 """Turn a bound UBL invoice into business facts and a standalone HTML page.
 
-This is the showcase's "server-side XSLT replacement" story: compile the
+This is this family's "server-side XSLT replacement" story: compile the
 OASIS UBL 2.3 schema once, bind an EN 16931 / XRechnung invoice, extract a
 small typed view with :func:`invoice_facts`, and render it with plain
 Python. No stylesheet, no XSLT engine -- and the same facts drive the PDF
@@ -26,9 +26,9 @@ from pyxsd import Document
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from examples.showcase.common.render import esc
-from examples.showcase.common.schemas import compile_schema
-from examples.showcase.common.sources import SETUP_HINT, require_cache
+from examples.xrechnung.common.render import esc
+from examples.xrechnung.common.schemas import compile_schema
+from examples.xrechnung.common.sources import SETUP_HINT, require_cache
 
 CBC = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
 CAC = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
@@ -487,7 +487,7 @@ def render_html(document: Document) -> str:
 
 def load_invoice(source: Path) -> Document:
     """Compile the pinned UBL schema (once per process) and parse *source*."""
-    return compile_schema("ubl").parse(source)
+    return compile_schema().parse(source)
 
 
 def default_sample() -> Path:

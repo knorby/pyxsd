@@ -3,7 +3,7 @@
 Optional example extra: this module imports reportlab at module level, so
 import it only when the extra is installed (``uv sync --group
 examples-reportlab``). ``render_html.py`` stays dependency-free. Both
-renderers share :func:`~examples.showcase.invoice.render_html.invoice_facts`
+renderers share :func:`~examples.xrechnung.render_html.invoice_facts`
 and the same render-time amount formatting.
 """
 
@@ -25,8 +25,8 @@ from pyxsd import Document
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from examples.showcase.common.render import esc
-from examples.showcase.invoice.render_html import (
+from examples.xrechnung.common.render import esc
+from examples.xrechnung.render_html import (
     _DASH,
     DEFAULT_SAMPLE,
     FOOTER_COMMENT,

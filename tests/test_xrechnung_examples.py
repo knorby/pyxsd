@@ -1,4 +1,4 @@
-"""Tests for the invoice showcase workflow (UBL 2.3 / EN 16931).
+"""Tests for the XRechnung invoice workflow (UBL 2.3 / EN 16931).
 
 The offline half builds a tiny UBL-shaped schema in ``tmp_path`` so the
 facts and HTML renderer stay covered in a clean checkout. The real-schema
@@ -11,9 +11,9 @@ from __future__ import annotations
 import json
 
 import pytest
-from examples.showcase.common.schemas import compile_schema
-from examples.showcase.common.sources import cache_path
-from examples.showcase.invoice.render_html import (
+from examples.xrechnung.common.schemas import compile_schema
+from examples.xrechnung.common.sources import cache_path
+from examples.xrechnung.render_html import (
     FOOTER_COMMENT,
     invoice_facts,
     money,
@@ -494,7 +494,7 @@ def test_render_html_is_deterministic(synthetic_document):
 
 def test_render_pdf_writes_a_pdf(synthetic_document, tmp_path):
     pytest.importorskip("reportlab")
-    from examples.showcase.invoice.render_pdf import render_pdf
+    from examples.xrechnung.render_pdf import render_pdf
 
     dest = render_pdf(synthetic_document, tmp_path / "invoice.pdf")
     assert dest == tmp_path / "invoice.pdf"
@@ -506,7 +506,7 @@ def test_render_pdf_writes_a_pdf(synthetic_document, tmp_path):
 # --- Pinned XRechnung corpus (gitignored cache; skipped when absent) ---
 
 SAMPLE_SETUP = (
-    "run: uv run python examples/showcase/download_sources.py --only ubl-schema --only ubl-data"
+    "run: uv run python examples/xrechnung/download_sources.py --only ubl-schema --only ubl-data"
 )
 SCHEMA_ENTRY = cache_path("ubl-schema")
 SAMPLES_ROOT = cache_path("ubl-data").parent
@@ -520,7 +520,7 @@ requires_corpus = pytest.mark.skipif(
 
 @requires_corpus
 def test_primary_xrechnung_invoice_parses_and_renders():
-    document = compile_schema("ubl").parse(PRIMARY_SAMPLE)
+    document = compile_schema().parse(PRIMARY_SAMPLE)
     assert document.report.error_count == 0, document.report
     facts = invoice_facts(document)
     # Read once from cac:LegalMonetaryTotal/cbc:PayableAmount in the pinned
@@ -541,7 +541,7 @@ def test_pinned_xrechnung_corpus_parses_cleanly():
     assert len(UBL_SAMPLES) == 39, (
         f"the pinned KoSIT v2026-08-31 suite has 39 UBL invoices, found {len(UBL_SAMPLES)}"
     )
-    schema = compile_schema("ubl")
+    schema = compile_schema()
     failures = []
     for path in UBL_SAMPLES:
         document = schema.parse(path)
@@ -557,9 +557,9 @@ def test_pinned_xrechnung_corpus_parses_cleanly():
 @requires_corpus
 def test_render_pdf_writes_the_primary_invoice(tmp_path):
     pytest.importorskip("reportlab")
-    from examples.showcase.invoice.render_pdf import render_pdf
+    from examples.xrechnung.render_pdf import render_pdf
 
-    document = compile_schema("ubl").parse(PRIMARY_SAMPLE)
+    document = compile_schema().parse(PRIMARY_SAMPLE)
     dest = render_pdf(document, tmp_path / "primary.pdf")
     data = dest.read_bytes()
     assert data.startswith(b"%PDF")

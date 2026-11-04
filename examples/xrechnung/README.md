@@ -18,20 +18,20 @@ From the repository root:
 ```sh
 # 1. Verify/install the pinned schema and sample corpus.
 #    (Repeating this command verifies the cache without network access.)
-uv run python examples/showcase/download_sources.py --only ubl-schema --only ubl-data
+uv run python examples/xrechnung/download_sources.py --only ubl-schema --only ubl-data
 
 # 2. HTML invoice -> out/invoice.html
-uv run python examples/showcase/invoice/render_html.py
+uv run python examples/xrechnung/render_html.py
 
 # 3. PDF invoice (optional extra) -> out/invoice.pdf
-uv run --group examples-reportlab python examples/showcase/invoice/render_pdf.py
+uv run --group examples-reportlab python examples/xrechnung/render_pdf.py
 ```
 
 Both scripts accept any UBL invoice and an explicit destination:
 
 ```sh
-uv run python examples/showcase/invoice/render_html.py path/to/invoice.xml --out out/custom.html
-uv run --group examples-reportlab python examples/showcase/invoice/render_pdf.py path/to/invoice.xml --out out/custom.pdf
+uv run python examples/xrechnung/render_html.py path/to/invoice.xml --out out/custom.html
+uv run --group examples-reportlab python examples/xrechnung/render_pdf.py path/to/invoice.xml --out out/custom.pdf
 ```
 
 Without an input argument the HTML renderer picks the first file of the
@@ -45,8 +45,8 @@ from the xmldsig/XAdES schemas that the UBL extension wildcard pulls in.
 Tests:
 
 ```sh
-uv run pytest tests/test_showcase_invoice.py                      # offline; PDF tests skip
-uv run --group examples-reportlab pytest tests/test_showcase_invoice.py       # all nine
+uv run pytest tests/test_xrechnung_examples.py                      # offline; PDF tests skip
+uv run --group examples-reportlab pytest tests/test_xrechnung_examples.py       # all nine
 ```
 
 ## What the example shows
@@ -81,13 +81,13 @@ match across runs.
 ## Interfaces
 
 ```python
-# examples/showcase/invoice/render_html.py
+# examples/xrechnung/render_html.py
 def invoice_facts(document) -> dict   # JSON-safe primitives
 def render_html(document) -> str      # one complete HTML document
 def money(value) -> str               # exact string -> "336.90" (render only)
 def percent(value) -> str             # exact string -> "19"
 
-# examples/showcase/invoice/render_pdf.py
+# examples/xrechnung/render_pdf.py
 def render_pdf(document, dest: Path) -> Path
 ```
 
@@ -131,7 +131,7 @@ pyxsd does not implement Schematron.
 
 Schema and sample provenance, revisions, and SHA-256 digests are pinned in
 [`../sources.toml`](../sources.toml). License terms and the verbatim OASIS
-redistribution notice are quoted in [`../SOURCES.md`](../SOURCES.md):
+redistribution notice are quoted in [`SOURCES.md`](SOURCES.md):
 
 - OASIS UBL 2.3 XSDs — OASIS copyright; unmodified redistribution is
   permitted with the notice retained.
