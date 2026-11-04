@@ -245,7 +245,16 @@ def test_opendrive_bad_version_input(xml):
 
 
 @pytest.mark.parametrize(
-    "body", [b"garbage", b"<item>", b"\xff", b"", b"<item>no</item>", b"<wrong/>"]
+    "body",
+    [
+        b"garbage",
+        b"<item>",
+        b"\xff",
+        b"",
+        b"<item>no</item>",
+        b"<wrong/>",
+        b'<?xml version="1.0" encoding="bogus"?><item>3</item>',
+    ],
 )
 def test_validate_bad_input_is_diagnostics_not_traceback(registry, body):
     with TestClient(create_app(registry=registry)) as client:
@@ -305,8 +314,9 @@ def test_validate_parser_protections(registry, body):
 def test_render_bad_xml_size_and_missing_extra(registry):
     sample = registry["fake"]["samples"]["one"]
     with TestClient(create_app(registry=registry)) as client:
-        sample["path"].write_bytes(b"garbage")
-        assert client.get("/render/fake/one").status_code == 422
+        for body in (b"garbage", b'<?xml version="1.0" encoding="bogus"?><item>3</item>'):
+            sample["path"].write_bytes(body)
+            assert client.get("/render/fake/one").status_code == 422
         sample["path"].write_bytes(b" " * (8 * 1024 * 1024 + 1))
         assert client.get("/render/fake/one").status_code == 413
         sample["path"].write_bytes(b"<item>3</item>")

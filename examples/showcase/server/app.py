@@ -212,7 +212,7 @@ def _validate(application: FastAPI, domain: str, data: bytes) -> dict:
             return result
     except FileNotFoundError as exc:
         raise _unavailable(exc) from exc
-    except (PyXSDError, ValueError, ParseError, DefusedXmlException) as exc:
+    except (PyXSDError, ValueError, LookupError, ParseError, DefusedXmlException) as exc:
         return _diagnostic(exc)
 
 
@@ -346,7 +346,7 @@ def create_app(registry: dict | None = None) -> FastAPI:
             raise HTTPException(
                 503, "Install the examples-matplotlib/examples-reportlab group"
             ) from exc
-        except (PyXSDError, ValueError, ParseError, DefusedXmlException) as exc:
+        except (PyXSDError, ValueError, LookupError, ParseError, DefusedXmlException) as exc:
             return JSONResponse(_diagnostic(exc), status_code=422)
 
     @application.post("/validate/{domain}")
