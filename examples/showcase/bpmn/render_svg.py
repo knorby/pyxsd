@@ -364,6 +364,8 @@ def render_svg(document, *, width: int = 1000) -> str:
     y_values = [shape["y"] for shape in shapes]
     y_values += [shape["y"] + shape["h"] for shape in shapes]
     for edge in edges:
+        if len(edge["waypoints"]) < 2:
+            continue  # not rendered, so it must not widen the canvas
         for x, y in edge["waypoints"]:
             x_values.append(x)
             y_values.append(y)

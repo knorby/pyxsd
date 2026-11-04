@@ -1,6 +1,6 @@
 """Tests for the showcase BPMN renderer.
 
-The offline half builds a synthetic three-namespace BPMN subset so the DI
+The offline half builds a synthetic BPMN subset spanning four namespaces so the DI
 readers and SVG renderer stay covered when the pinned samples are absent.
 The real half parses the bpmn-io samples against the pinned schema and skips
 with a setup hint in a clean checkout.

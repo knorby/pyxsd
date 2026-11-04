@@ -117,8 +117,8 @@ name via `document.xpath(..., namespaces=...)`.
 uv run pytest tests/test_showcase_bpmn.py -q
 ```
 
-The offline tests build a synthetic three-namespace BPMN subset (model,
-BPMN-DI, DD-DC/DI) and cover shape classification, waypoint reading,
-glyph output, y-axis flipping, text escaping, and byte determinism. The
-real-schema tests parse all four pinned samples and skip with the setup
-command above when `.cache/` is absent.
+The offline tests build a synthetic BPMN subset spanning the model,
+BPMN-DI, DD-DC, and DD-DI namespaces and cover shape classification,
+waypoint reading, glyph output, y-axis flipping, text escaping, and byte
+determinism. The real-schema tests parse all four pinned samples and skip
+with the setup command above when `.cache/` is absent.
