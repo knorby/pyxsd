@@ -313,7 +313,11 @@ class OutputStore:
         self, *, after: tuple[float, str] | None = None, limit: int = 50
     ) -> tuple[list_type[OutputRef], tuple[float, str] | None]:
         if type(limit) is not int or not 1 <= limit <= self.limits.page_items:
-            raise ToolError("invalid_argument", "Invalid output page size")
+            raise ToolError(
+                "invalid_argument",
+                f"Invalid output page size; expected an integer from 1 to {self.limits.page_items}",
+                details={"limit": limit, "maximum": self.limits.page_items},
+            )
         if after is not None and (
             not isinstance(after, tuple)
             or len(after) != 2

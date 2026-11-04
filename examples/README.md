@@ -16,6 +16,9 @@
   schema-derived Arrow projections: nested versus contextual tables, child
   expansion, a station/region join, and a Parquet round trip. See
   [`docs/data-workflows.md`](../docs/data-workflows.md).
+- [`healthcare/`](healthcare/) — real C-CDA documents with datatype mixins,
+  a scoped CDA-to-FHIR R4 XML pipeline, and an MCP diagnostic walkthrough.
+  One verified source-fetch command supplies both schema trees.
 - [`pydantic/assess_orders.py`](pydantic/assess_orders.py) — the purchase-order
   assessment application from the same guide: schema-generated snapshots,
   synthetic policy, and deterministic reason codes. The directory's

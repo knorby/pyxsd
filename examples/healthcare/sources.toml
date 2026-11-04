@@ -1,0 +1,65 @@
+[cda]
+url = "https://github.com/HL7/CDA-core-2.0/archive/e922fc35586fd2629f0c8a021080bca9ab424e18.zip"
+revision = "e922fc35586fd2629f0c8a021080bca9ab424e18"
+sha256 = "6a7c655f140848078ff29a37b11aa67a902190fd6a046c4bfa73b3b456a87700"
+entry = "CDA-core-2.0-e922fc35586fd2629f0c8a021080bca9ab424e18/schema/normative/infrastructure/cda/CDA.xsd"
+destination = "schemas/cda"
+license = "HL7 schema distribution terms; see upstream repository"
+role = "Base CDA R2 schema"
+
+[fhir]
+url = "https://hl7.org/fhir/R4/fhir-all-xsd.zip"
+revision = "R4-4.0.1"
+sha256 = "78d818da86336ce065a8c030cd1308b72151f9797151565e6284916ede5c85b7"
+entry = "fhir-single.xsd"
+destination = "schemas/fhir"
+license = "CC0; see https://hl7.org/fhir/R4/license.html"
+role = "Base FHIR R4 schema"
+
+[hl7]
+repository = "HL7/C-CDA-Examples"
+url = "https://github.com/HL7/C-CDA-Examples/archive/ad5007abd912a45bbd04ce96e871c70954c2b2c2.zip"
+revision = "ad5007abd912a45bbd04ce96e871c70954c2b2c2"
+sha256 = "2c83f1814e90a063d9292c636ba33aebc5567386c144c561499fabb76ce50e98"
+entry = "C-CDA-Examples-ad5007abd912a45bbd04ce96e871c70954c2b2c2/README.md"
+destination = "corpora/hl7"
+license = "CC0-1.0"
+role = "Complete HL7 example repository, including documents and fragments"
+
+[onc]
+repository = "onc-healthit/2015-certification-ccda-testdata"
+url = "https://github.com/onc-healthit/2015-certification-ccda-testdata/archive/4ac99c52ac99c998055c72c3120c52b10a29ebe7.zip"
+revision = "4ac99c52ac99c998055c72c3120c52b10a29ebe7"
+sha256 = "a8779c3f57722ff007bdbe8b7e7f0c235e7b363090e98861f09158fb7f27944e"
+entry = "2015-certification-ccda-testdata-4ac99c52ac99c998055c72c3120c52b10a29ebe7/README.md"
+destination = "corpora/onc"
+license = "CC0"
+role = "Optional certification corpus"
+
+[vendor]
+repository = "chb/sample_ccdas"
+url = "https://github.com/chb/sample_ccdas/archive/aca04c6c8febfa9b462543e7024f9bbfa4a9996b.zip"
+revision = "aca04c6c8febfa9b462543e7024f9bbfa4a9996b"
+sha256 = "ab8266a578b9e03d94a4237bbe2fe2afd22b9c4771b87301f12a83f84a74b475"
+entry = "sample_ccdas-aca04c6c8febfa9b462543e7024f9bbfa4a9996b/README.md"
+destination = "corpora/vendor"
+license = "Unclear; download-only, review before redistributing"
+role = "Optional vendor corpus"
+
+[documents.discharge]
+repository = "hl7"
+path = "Documents/Discharge Summary/Discharge_Summary.xml"
+url = "https://raw.githubusercontent.com/HL7/C-CDA-Examples/ad5007abd912a45bbd04ce96e871c70954c2b2c2/Documents/Discharge%20Summary/Discharge_Summary.xml"
+revision = "ad5007abd912a45bbd04ce96e871c70954c2b2c2"
+sha256 = "f6fcbff1e5148c7165c9d8bca52d30bab53c57dd1c8400bb469be0f1d017b1be"
+license = "CC0-1.0"
+role = "Conversion and datatype inspection"
+
+[documents.ccd-with-issues]
+repository = "hl7"
+path = "Documents/CCD/CCD 2/CCD.xml"
+url = "https://raw.githubusercontent.com/HL7/C-CDA-Examples/ad5007abd912a45bbd04ce96e871c70954c2b2c2/Documents/CCD/CCD%202/CCD.xml"
+revision = "ad5007abd912a45bbd04ce96e871c70954c2b2c2"
+sha256 = "c5c60ef2281f66a69581ea7671188adb0bc3585c37828470eeb565c778a5970e"
+license = "CC0-1.0"
+role = "MCP diagnosis"

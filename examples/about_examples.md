@@ -35,6 +35,16 @@ invalid run `sz`), the report still lists both problems, and the transform
 still renders the full document. See
 [`docs/binding.md`](../docs/binding.md).
 
+## Healthcare workflows
+
+[`healthcare/`](healthcare/README.md) shares pinned CDA R2 and FHIR R4 schemas
+and unchanged CC0 documents across datatype inspection, scoped FHIR XML
+conversion, and MCP diagnosis. Fetch sources with `download_sources.py` in
+that directory; downloaded schemas and generated output stay untracked.
+The family has focused `tests/test_healthcare_*.py` coverage, including
+offline helpers and download-dependent real-schema cases. Base-XSD validation
+does not establish template, profile, terminology, or clinical conformance.
+
 ## Transform templates
 
 Three templates demonstrate the three ways transforms are typically

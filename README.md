@@ -100,6 +100,10 @@ untrusted documents or enabling remote schemas.
 
 ## Uses
 
+The [healthcare examples](examples/healthcare/README.md) combine these features
+on real C-CDA documents: datatype mixins, a scoped FHIR R4 XML conversion with
+fresh validation, and MCP diagnosis of imperfect data.
+
 ### Validate XML against its schema
 
 Check incoming documents before processing them, validate exports in CI, or
