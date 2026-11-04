@@ -12,7 +12,7 @@ import re
 from io import StringIO
 
 import pytest
-from examples.showcase.citygml import plan_svg
+from examples.showcase.citygml import plan_svg, plot_city3d
 from examples.showcase.common.sources import SHOWCASE_ROOT
 
 from pyxsd import ParseModes, Schema
@@ -283,6 +283,15 @@ def test_render_plan_without_geometry_is_empty_but_valid(subset_schema):
     assert "<svg" in svg
     assert "no building geometry" in svg
     assert "<polygon" not in svg
+
+
+def test_plot_city_3d_writes_png(tmp_path, subset_document):
+    pytest.importorskip("matplotlib")
+    dest = tmp_path / "city3d.png"
+    written = plot_city3d.plot_city_3d(subset_document, dest)
+    assert written == dest
+    assert dest.stat().st_size > 0
+    assert dest.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_missing_sample_reports_setup_hint(tmp_path, capsys):
