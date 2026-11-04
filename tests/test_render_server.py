@@ -10,7 +10,7 @@ fastapi = pytest.importorskip("fastapi")
 pytest.importorskip("httpx2" if find_spec("httpx2") else "httpx")
 TestClient = pytest.importorskip("fastapi.testclient").TestClient
 
-from examples.showcase.server.app import create_app  # noqa: E402
+from examples.server.app import create_app  # noqa: E402
 
 XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
 <xs:element name="item" type="xs:integer"/></xs:schema>"""
@@ -136,7 +136,7 @@ def test_concurrent_requests_hold_schema_lock_through_facts_and_render(registry)
 
 
 def test_default_facts_adapters_on_empty_bound_tree(registry):
-    from examples.showcase.server.app import _default_registry
+    from examples.server.app import _default_registry
 
     from pyxsd import Schema
 
@@ -147,14 +147,15 @@ def test_default_facts_adapters_on_empty_bound_tree(registry):
     assert defaults["citygml"]["facts"](document) == {"buildings": 0}
     assert defaults["opendrive"]["facts"](document) == {"roads": 0}
     assert defaults["bpmn"]["facts"](document) == {"shapes": 0, "edges": 0}
-    assert defaults["ubl"]["facts"](document) == {"payable": None}
-    assert defaults["score"]["facts"](document) == {"notes": 0}
+    assert defaults["xrechnung"]["facts"](document) == {"payable": None}
+    assert defaults["musicxml"]["facts"](document) == {"notes": 0}
 
 
 def test_default_registry_is_curated_and_missing_cache_is_lazy(monkeypatch, tmp_path):
-    from examples.showcase.server import app as module
+    from examples.server import app as module
 
-    monkeypatch.setattr(module, "CACHE_ROOT", tmp_path)
+    for name in ("BPMN_CACHE", "CITYGML_CACHE", "OPENDRIVE_CACHE", "XRECHNUNG_CACHE"):
+        monkeypatch.setattr(module, name, tmp_path)
     application = create_app()
     assert application.state.schemas == {}
     with TestClient(application) as client:
@@ -163,8 +164,8 @@ def test_default_registry_is_curated_and_missing_cache_is_lazy(monkeypatch, tmp_
             "citygml",
             "opendrive",
             "bpmn",
-            "ubl",
-            "score",
+            "xrechnung",
+            "musicxml",
         }
         assert {item["sample"] for item in items if item["domain"] == "bpmn"} == {
             "starter",
@@ -217,7 +218,7 @@ def test_file_renderer_failure_cleans_up(registry):
 
 @pytest.mark.parametrize("minor,variant", [(4, "1.4"), (5, "1.5"), (6, "1.7"), (7, "1.7")])
 def test_opendrive_version_sniff(minor, variant):
-    from examples.showcase.server.app import _variant
+    from examples.server.app import _variant
 
     xml = f'<OpenDRIVE><header revMajor="1" revMinor="{minor}"/></OpenDRIVE>'.encode()
     assert _variant("opendrive", xml) == variant
@@ -238,7 +239,7 @@ def test_opendrive_bad_version_input(xml):
     from xml.etree.ElementTree import ParseError
 
     from defusedxml.common import DefusedXmlException
-    from examples.showcase.server.app import _variant
+    from examples.server.app import _variant
 
     with pytest.raises((ValueError, ParseError, DefusedXmlException)):
         _variant("opendrive", xml)
@@ -286,7 +287,7 @@ def test_validate_valid_and_limits(registry):
 
 
 def test_validate_stream_limit_without_content_length(registry, monkeypatch):
-    from examples.showcase.server import app as module
+    from examples.server import app as module
 
     monkeypatch.setattr(module, "MAX_XML_BYTES", 16)
     with TestClient(create_app(registry=registry)) as client:
@@ -375,9 +376,9 @@ def test_exception_diagnostics_retain_validation_report(registry):
     }
 
 
-ROOT = Path(__file__).resolve().parents[1] / "examples/showcase"
+ROOT = Path(__file__).resolve().parents[1] / "examples"
 CACHE = ROOT / ".cache"
-SETUP = "uv run python examples/showcase/download_sources.py"
+SETUP = "run each family's download_sources.py (see examples/<family>/README.md)"
 
 
 @pytest.mark.skipif(
@@ -419,17 +420,17 @@ def test_real_invoice_render_and_validate():
 @pytest.mark.skipif(not (CACHE / "musicxml-schemas/schema/musicxml.xsd").is_file(), reason=SETUP)
 def test_real_score_render_and_validate():
     with TestClient(create_app()) as client:
-        response = client.get("/render/score/chorale")
+        response = client.get("/render/musicxml/chorale")
         assert response.status_code == 200
         assert response.headers["content-type"] == "audio/wav"
         assert response.content[:4] == b"RIFF" and response.content[8:12] == b"WAVE"
-        assert client.get("/render/score/chorale?format=svg").text.startswith("<svg")
+        assert client.get("/render/musicxml/chorale?format=svg").text.startswith("<svg")
         raw = (ROOT.parent / "musicxml/instance.xml").read_bytes()
         # Uploads use the strict parser profile: unlike the trusted render
         # source, the stock score's legacy external DOCTYPE is not accepted.
-        assert not client.post("/validate/score", content=raw).json()["valid"]
+        assert not client.post("/validate/musicxml", content=raw).json()["valid"]
         start, end = raw.index(b"<!DOCTYPE"), raw.index(b">", raw.index(b"<!DOCTYPE"))
-        response = client.post("/validate/score", content=raw[:start] + raw[end + 1 :])
+        response = client.post("/validate/musicxml", content=raw[:start] + raw[end + 1 :])
         assert response.json()["valid"]
         assert response.json()["facts"] == {"notes": 163}
 
@@ -475,16 +476,16 @@ def test_real_geospatial_render_and_facts(domain, sample, schema_path, sample_pa
     [
         ("citygml", "lod2", "png", "matplotlib", b"\x89PNG"),
         ("opendrive", "curves_elevation", "png", "matplotlib", b"\x89PNG"),
-        ("ubl", "01.01a-INVOICE_ubl", "pdf", "reportlab", b"%PDF"),
+        ("xrechnung", "01.01a-INVOICE_ubl", "pdf", "reportlab", b"%PDF"),
     ],
 )
 def test_real_optional_file_render(domain, sample, format, dependency, magic):
     pytest.importorskip(dependency)
-    from examples.showcase.common.schemas import DOMAINS
-    from examples.showcase.common.sources import cache_path
+    from importlib import import_module
 
     application = create_app()
-    if not cache_path(DOMAINS[domain].schema_section).is_file():
+    cache_path = import_module(f"examples.{domain}.common.sources").cache_path
+    if not cache_path(import_module(f"examples.{domain}.common.schemas").SCHEMA_SECTION).is_file():
         pytest.skip(SETUP)
     if not application.state.registry[domain]["samples"][sample]["path"].is_file():
         pytest.skip(SETUP)

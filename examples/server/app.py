@@ -1,4 +1,8 @@
-"""Local-only HTTP showcase; schemas and optional renderers load on demand."""
+"""Local-only HTTP rendering server for the example families.
+
+Schemas and optional renderers load on demand from each self-contained
+family under ``examples/``.
+"""
 
 from __future__ import annotations
 
@@ -13,19 +17,23 @@ from xml.etree.ElementTree import ParseError
 
 from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
-from examples.showcase.common.sources import CACHE_ROOT, SETUP_HINT
+from examples.bpmn.common.sources import CACHE_ROOT as BPMN_CACHE
+from examples.citygml.common.sources import CACHE_ROOT as CITYGML_CACHE
+from examples.opendrive.common.sources import CACHE_ROOT as OPENDRIVE_CACHE
+from examples.xrechnung.common.sources import CACHE_ROOT as XRECHNUNG_CACHE
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-SHOWCASE_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLES_ROOT = Path(__file__).resolve().parents[1]
+SETUP_HINT = "run each family's download_sources.py (see examples/<family>/README.md)"
 MAX_XML_BYTES = 8 * 1024 * 1024
 
 
 def _lazy(module: str, name: str):
     def invoke(*args, **kwargs):
-        function = getattr(import_module(f"examples.showcase.{module}"), name)
+        function = getattr(import_module(f"examples.{module}"), name)
         return function(*args, **kwargs)
 
     return invoke
@@ -54,13 +62,13 @@ def _default_registry() -> dict:
     }
     invoice_name = "01.01a-INVOICE_ubl.xml"
     invoice = next(
-        iter(sorted((CACHE_ROOT / "ubl-data").rglob(invoice_name))),
-        CACHE_ROOT / "ubl-data" / invoice_name,
+        iter(sorted((XRECHNUNG_CACHE / "ubl-data").rglob(invoice_name))),
+        XRECHNUNG_CACHE / "ubl-data" / invoice_name,
     )
-    city_root = CACHE_ROOT / "citygml-schemas/citygml/examples/2.0/building"
+    city_root = CITYGML_CACHE / "citygml-schemas/citygml/examples/2.0/building"
     return {
         "citygml": {
-            "schema_domain": "citygml",
+            "compile_family": "citygml",
             "facts": lambda doc: {
                 "buildings": len(_lazy("citygml.plan_svg", "collect_buildings")(doc))
             },
@@ -76,11 +84,11 @@ def _default_registry() -> dict:
             },
         },
         "opendrive": {
-            "schema_domain": "opendrive",
+            "compile_family": "opendrive",
             "facts": lambda doc: {"roads": len(_lazy("opendrive.render_map", "road_paths")(doc))},
             "samples": {
                 name: sample(
-                    CACHE_ROOT / "opendrive-data" / f"{name}.xodr",
+                    OPENDRIVE_CACHE / "opendrive-data" / f"{name}.xodr",
                     "opendrive.render_map",
                     "render_map",
                     formats=road_png,
@@ -89,29 +97,29 @@ def _default_registry() -> dict:
             },
         },
         "bpmn": {
-            "schema_domain": "bpmn",
+            "compile_family": "bpmn",
             "facts": _bpmn_facts,
             "samples": {
                 name: sample(
-                    CACHE_ROOT / "bpmn-data" / f"{name}.bpmn", "bpmn.render_svg", "render_svg"
+                    BPMN_CACHE / "bpmn-data" / f"{name}.bpmn", "bpmn.render_svg", "render_svg"
                 )
                 for name in ("starter", "simple", "sequence-flows", "nested-subprocesses")
             },
         },
-        "ubl": {
-            "schema_domain": "ubl",
+        "xrechnung": {
+            "compile_family": "xrechnung",
             "facts": lambda doc: {
-                "payable": _lazy("invoice.render_html", "invoice_facts")(doc)["totals"]["payable"]
+                "payable": _lazy("xrechnung.render_html", "invoice_facts")(doc)["totals"]["payable"]
             },
             "samples": {
                 "01.01a-INVOICE_ubl": sample(
                     invoice,
-                    "invoice.render_html",
+                    "xrechnung.render_html",
                     "render_html",
                     "text/html",
                     formats={
                         "pdf": {
-                            "renderer": _lazy("invoice.render_pdf", "render_pdf"),
+                            "renderer": _lazy("xrechnung.render_pdf", "render_pdf"),
                             "media_type": "application/pdf",
                             "suffix": ".pdf",
                         }
@@ -120,19 +128,19 @@ def _default_registry() -> dict:
                 )
             },
         },
-        "score": {
-            "schema_domain": "musicxml",
-            "facts": lambda doc: {"notes": len(_lazy("score.synthesize", "notes")(doc))},
+        "musicxml": {
+            "compile_family": "musicxml",
+            "facts": lambda doc: {"notes": len(_lazy("musicxml.synthesize", "notes")(doc))},
             "samples": {
                 "chorale": sample(
-                    SHOWCASE_ROOT.parent / "musicxml/instance.xml",
-                    "score.synthesize",
+                    EXAMPLES_ROOT / "musicxml/instance.xml",
+                    "musicxml.synthesize",
                     "synthesize",
                     "audio/wav",
                     suffix=".wav",
                     formats={
                         "svg": {
-                            "renderer": _lazy("score.render_preview", "render_preview"),
+                            "renderer": _lazy("musicxml.render_preview", "render_preview"),
                             "media_type": svg_type,
                         }
                     },
@@ -230,7 +238,7 @@ def _validate(application: FastAPI, domain: str, data: bytes) -> dict:
 def _artifact(document, spec: dict) -> Response:
     if "suffix" not in spec:
         return Response(spec["renderer"](document), media_type=spec["media_type"])
-    temporary = TemporaryDirectory(prefix="pyxsd-showcase-")
+    temporary = TemporaryDirectory(prefix="pyxsd-examples-")
     try:
         destination = Path(temporary.name) / ("render" + spec["suffix"])
         spec["renderer"](document, destination)
@@ -273,10 +281,10 @@ def _schema(application: FastAPI, domain: str, variant: str | None = None):
                 raise FileNotFoundError(path)
             schema = Schema.compile(path, mode=ParseModes.LAX)
         else:
-            from examples.showcase.common.schemas import compile_schema
+            module = import_module(f"examples.{binding['compile_family']}.common.schemas")
 
-            # The spine's process cache must not share mutable parsers across apps.
-            schema = compile_schema(binding["schema_domain"], variant, fresh=True)
+            # The family's process cache must not share mutable parsers across apps.
+            schema = module.compile_schema(variant, fresh=True)
         application.state.schemas[key] = schema
     return application.state.schemas[key]
 
@@ -287,7 +295,7 @@ def _unavailable(exc: Exception) -> HTTPException:
 
 def create_app(registry: dict | None = None) -> FastAPI:
     """Build an isolated app; injected domains supply schema, samples, and facts."""
-    application = FastAPI(title="pyxsd rendering showcase")
+    application = FastAPI(title="pyxsd rendering server")
     application.state.registry = _default_registry() if registry is None else registry
     application.state.schemas = {}
     # Schema.parse is neither concurrent nor reentrant. Keep compile, parse,
@@ -315,7 +323,7 @@ def create_app(registry: dict | None = None) -> FastAPI:
         return (
             '<!DOCTYPE html><html lang="en"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            "<title>pyxsd rendering showcase</title><style>"
+            "<title>pyxsd rendering server</title><style>"
             "body{font:16px/1.6 system-ui,sans-serif;color:#172b45;background:#f4f7fb;"
             "max-width:960px;margin:40px auto;padding:0 20px}h1,h2{line-height:1.2}"
             "section{background:white;padding:20px;margin:20px 0;border-radius:10px}"
