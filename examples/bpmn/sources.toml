@@ -1,0 +1,67 @@
+# Pinned upstream sources for the bpmn example family.
+#
+# Every entry carries its upstream URL, the license that governs it, and a
+# SHA-256 digest; download_sources.py verifies digests before anything is
+# used. Nothing listed here is committed to the repository: the cache lives
+# under the gitignored .cache/ directory and can be rebuilt at any time.
+# License evidence and attribution live in SOURCES.md next to this file.
+[bpmn-schema]
+kind = "files"
+revision = "camunda/camunda-bpm-platform @ ee4826e5e76c2348a1510ef46a2f4ccd3b080e48"
+entry = "BPMN20.xsd"
+destination = "bpmn-schemas"
+license = "Apache-2.0 (mirror); schemas Copyright (c) Object Management Group"
+role = "OMG BPMN 2.0 XSD set (BPMN20, Semantic, BPMNDI, DC, DI) via the Camunda mirror"
+
+[[bpmn-schema.files]]
+path = "BPMN20.xsd"
+url = "https://raw.githubusercontent.com/camunda/camunda-bpm-platform/ee4826e5e76c2348a1510ef46a2f4ccd3b080e48/model-api/bpmn-model/src/main/resources/org/camunda/bpm/model/bpmn/schema/BPMN20.xsd"
+sha256 = "165ce3c1d9b9bd39ca0e8884cc0fc3ce1940e163d015d9f1c9d910dd3a6a5306"
+
+[[bpmn-schema.files]]
+path = "BPMNDI.xsd"
+url = "https://raw.githubusercontent.com/camunda/camunda-bpm-platform/ee4826e5e76c2348a1510ef46a2f4ccd3b080e48/model-api/bpmn-model/src/main/resources/org/camunda/bpm/model/bpmn/schema/BPMNDI.xsd"
+sha256 = "1bfaab6a1e3b4184055100b15d1404e3414601fd47768feb7e932b4cd49fe77f"
+
+[[bpmn-schema.files]]
+path = "DC.xsd"
+url = "https://raw.githubusercontent.com/camunda/camunda-bpm-platform/ee4826e5e76c2348a1510ef46a2f4ccd3b080e48/model-api/bpmn-model/src/main/resources/org/camunda/bpm/model/bpmn/schema/DC.xsd"
+sha256 = "b325cd3c0d03628d5a4e10f78a1e8816b4344a2b35c459b4f5ca1a9c71097590"
+
+[[bpmn-schema.files]]
+path = "DI.xsd"
+url = "https://raw.githubusercontent.com/camunda/camunda-bpm-platform/ee4826e5e76c2348a1510ef46a2f4ccd3b080e48/model-api/bpmn-model/src/main/resources/org/camunda/bpm/model/bpmn/schema/DI.xsd"
+sha256 = "62fa0d89138ac5de62152061be07c899a74e7b983c0486dc6803113e1a5f94a2"
+
+[[bpmn-schema.files]]
+path = "Semantic.xsd"
+url = "https://raw.githubusercontent.com/camunda/camunda-bpm-platform/ee4826e5e76c2348a1510ef46a2f4ccd3b080e48/model-api/bpmn-model/src/main/resources/org/camunda/bpm/model/bpmn/schema/Semantic.xsd"
+sha256 = "521f69e5a1740a6a9817e213af66546b270e9f00e1a0fb616e7350c8faef83fa"
+
+[bpmn-data]
+kind = "files"
+revision = "bpmn-io/bpmn-js-examples @ e6a99f5c6741599476859c65c6c05a17e2186ae5; bpmn-io/bpmn-js @ e7b7435ed60f662b3d80caaefe5dccba5d3a4c75"
+entry = "starter.bpmn"
+destination = "bpmn-data"
+license = "MIT"
+role = "Real bpmn.io diagrams carrying BPMNDI layout: the starter diagram (pool, lane, gateways) and three bpmn-js fixtures"
+
+[[bpmn-data.files]]
+path = "nested-subprocesses.bpmn"
+url = "https://raw.githubusercontent.com/bpmn-io/bpmn-js/e7b7435ed60f662b3d80caaefe5dccba5d3a4c75/test/fixtures/bpmn/nested-subprocesses.bpmn"
+sha256 = "b9227f15acfd06876d9a61488cb2984ba50eb281922ac1ae6b90873fb63c271f"
+
+[[bpmn-data.files]]
+path = "sequence-flows.bpmn"
+url = "https://raw.githubusercontent.com/bpmn-io/bpmn-js/e7b7435ed60f662b3d80caaefe5dccba5d3a4c75/test/fixtures/bpmn/sequence-flows.bpmn"
+sha256 = "a7ae766a5a95816bed1691a35106f47a698b8eb2fe5698214a1e7c961d12d5c5"
+
+[[bpmn-data.files]]
+path = "simple.bpmn"
+url = "https://raw.githubusercontent.com/bpmn-io/bpmn-js/e7b7435ed60f662b3d80caaefe5dccba5d3a4c75/test/fixtures/bpmn/simple.bpmn"
+sha256 = "48e0f2877bd5d1e947f424313cf6ad9822fcd852f6bb31ad6d7cda56f7c7546f"
+
+[[bpmn-data.files]]
+path = "starter.bpmn"
+url = "https://raw.githubusercontent.com/bpmn-io/bpmn-js-examples/e6a99f5c6741599476859c65c6c05a17e2186ae5/starter/diagram.bpmn"
+sha256 = "985c2c317af60a00b83d62fd218b63e2949b293d612b32c50937cd1304f1aba2"

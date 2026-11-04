@@ -1,4 +1,4 @@
-"""Tests for the showcase BPMN renderer.
+"""Tests for this family BPMN renderer.
 
 The offline half builds a synthetic BPMN subset spanning four namespaces so the DI
 readers and SVG renderer stay covered when the pinned samples are absent.
@@ -11,9 +11,9 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 
 import pytest
-from examples.showcase.bpmn.render_svg import di_edges, di_shapes, main, render_svg
-from examples.showcase.common.schemas import compile_schema
-from examples.showcase.common.sources import CACHE_ROOT
+from examples.bpmn.common.schemas import compile_schema
+from examples.bpmn.common.sources import CACHE_ROOT
+from examples.bpmn.render_svg import di_edges, di_shapes, main, render_svg
 
 from pyxsd.binding import ParseModes
 from pyxsd.schema import Schema
@@ -154,7 +154,7 @@ MODEL_SCHEMA = f"""\
 
 INSTANCE = f"""\
 <definitions xmlns="{MODEL}" xmlns:bpmndi="{BPMN_DI}" xmlns:dc="{DC}" xmlns:di="{DD_DI}"
-             targetNamespace="urn:showcase:bpmn">
+             targetNamespace="urn:example:bpmn">
   <process id="proc" name="Order handling">
     <participant id="pool" name="Pool"/>
     <participant id="pool_unnamed"/>
@@ -407,7 +407,7 @@ requires_bpmn_sources = pytest.mark.skipif(
     not (CACHE_ROOT / "bpmn-schemas" / "BPMN20.xsd").is_file()
     or not all((BPMN_DATA / name).is_file() for name in SAMPLE_NAMES),
     reason=(
-        "run `uv run python examples/showcase/download_sources.py "
+        "run `uv run python examples/bpmn/download_sources.py "
         "--only bpmn-schema --only bpmn-data` to fetch the pinned schema and samples"
     ),
 )
@@ -415,7 +415,7 @@ requires_bpmn_sources = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def real_schema():
-    return compile_schema("bpmn")
+    return compile_schema()
 
 
 @requires_bpmn_sources
@@ -487,10 +487,10 @@ def test_cli_writes_svg_and_rejects_invalid_bpmn(tmp_path, capsys):
 
 
 @requires_bpmn_sources
-def test_cli_defaults_to_the_showcase_out_directory(monkeypatch, tmp_path):
-    from examples.showcase.common import sources
+def test_cli_defaults_to_the_family_out_directory(monkeypatch, tmp_path):
+    from examples.bpmn.common import sources
 
-    monkeypatch.setattr(sources, "SHOWCASE_ROOT", tmp_path)
+    monkeypatch.setattr(sources, "FAMILY_ROOT", tmp_path)
     assert main([str(BPMN_DATA / "starter.bpmn"), "--width", "640"]) == 0
     written = tmp_path / "out" / "starter.svg"
     assert written.read_text(encoding="utf-8").startswith(

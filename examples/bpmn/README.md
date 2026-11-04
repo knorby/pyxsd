@@ -6,36 +6,36 @@ with the geometry an editor drew (`dc:Bounds`, `di:waypoint`). This
 workflow compiles the pinned OMG BPMN 2.0 schema set, binds both layers
 into typed Python trees, and renders the drawing as a standalone SVG.
 
-It is the showcase's clearest "the schema is the interface" demo: the
+It is this family's clearest "the schema is the interface" demo: the
 renderer never guesses a layout, it reads the coordinates the modeler
 saved and turns them into SVG glyphs.
 
 ## Setup
 
 ```sh
-uv run python examples/showcase/download_sources.py --only bpmn-schema --only bpmn-data
+uv run python examples/bpmn/download_sources.py --only bpmn-schema --only bpmn-data
 ```
 
 This verifies and installs the five-schema closure (via the Apache-2.0
 Camunda mirror) and four real MIT-licensed bpmn-io diagrams below
-`examples/showcase/.cache/` (gitignored). Re-running the command verifies
+`examples/bpmn/.cache/` (gitignored). Re-running the command verifies
 the cache without network access. Sources, revisions, digests, and license
 evidence are in [`../sources.toml`](../sources.toml) and
-[`../SOURCES.md`](../SOURCES.md).
+[`SOURCES.md`](SOURCES.md).
 
 ## Render
 
 ```sh
-uv run python examples/showcase/bpmn/render_svg.py examples/showcase/.cache/bpmn-data/starter.bpmn
-# wrote examples/showcase/out/starter.svg
+uv run python examples/bpmn/render_svg.py examples/bpmn/.cache/bpmn-data/starter.bpmn
+# wrote examples/bpmn/out/starter.svg
 
-uv run python examples/showcase/bpmn/render_svg.py path/to/diagram.bpmn -o /tmp/diagram.svg
-uv run python examples/showcase/bpmn/render_svg.py path/to/diagram.bpmn --width 1600
+uv run python examples/bpmn/render_svg.py path/to/diagram.bpmn -o /tmp/diagram.svg
+uv run python examples/bpmn/render_svg.py path/to/diagram.bpmn --width 1600
 ```
 
 The CLI compiles the pinned schema, parses the file, and refuses to write
 output when the document has validation errors (diagnostics go to
-stderr). The default output directory is `examples/showcase/out/`.
+stderr). The default output directory is `examples/bpmn/out/`.
 
 ## What it draws
 
@@ -56,11 +56,11 @@ stderr). The default output directory is `examples/showcase/out/`.
 ## Python API
 
 ```python
-from examples.showcase.bpmn.render_svg import di_edges, di_shapes, render_svg
-from examples.showcase.common.schemas import compile_schema
-from examples.showcase.common.sources import require_cache
+from examples.bpmn.render_svg import di_edges, di_shapes, render_svg
+from examples.bpmn.common.schemas import compile_schema
+from examples.bpmn.common.sources import require_cache
 
-document = compile_schema("bpmn").parse(require_cache("bpmn-data"))
+document = compile_schema().parse(require_cache("bpmn-data"))
 
 di_shapes(document)
 # [{'element_id': 'sid-...', 'kind': 'task', 'x': 393.0, 'y': 170.0,
@@ -82,7 +82,7 @@ semantic id (not the shape's own DI id).
 namespace mode, components merge by local name, so `BPMNShape` and
 `BPMNEdge` no longer see `di:DiagramElement` as their substitution-group
 head; schema compilation reports two errors and every document then fails
-with sixteen. `examples/showcase/common/schemas.py` pins
+with sixteen. `examples/bpmn/common/schemas.py` pins
 `ParseModes.STRICT.replace(namespaces="strict")` for `bpmn`: the schema
 compiles with zero issues, and all four pinned samples parse with zero
 report issues.
@@ -114,7 +114,7 @@ name via `document.xpath(..., namespaces=...)`.
 ## Tests
 
 ```sh
-uv run pytest tests/test_showcase_bpmn.py -q
+uv run pytest tests/test_bpmn_examples.py -q
 ```
 
 The offline tests build a synthetic BPMN subset spanning the model,

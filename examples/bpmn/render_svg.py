@@ -8,7 +8,7 @@ BPMN DI is authoritative -- no auto-layout is attempted.
 
 Run from a pyxsd checkout after installing the pinned sources::
 
-    uv run python examples/showcase/bpmn/render_svg.py <file.bpmn> [-o out.svg]
+    uv run python examples/bpmn/render_svg.py <file.bpmn> [-o out.svg]
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from examples.showcase.common import render
+from examples.bpmn.common import render
 
 BPMN_MODEL = "http://www.omg.org/spec/BPMN/20100524/MODEL"
 BPMN_DI = "http://www.omg.org/spec/BPMN/20100524/DI"
@@ -395,8 +395,8 @@ def render_svg(document, *, width: int = 1000) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from examples.showcase.common.schemas import compile_schema
-    from examples.showcase.common.sources import SHOWCASE_ROOT
+    from examples.bpmn.common.schemas import compile_schema
+    from examples.bpmn.common.sources import FAMILY_ROOT
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("document", type=Path, help="BPMN 2.0 XML file to render")
@@ -404,12 +404,12 @@ def main(argv: list[str] | None = None) -> int:
         "-o",
         "--output",
         type=Path,
-        help="output SVG path (default: examples/showcase/out/<stem>.svg)",
+        help="output SVG path (default: examples/bpmn/out/<stem>.svg)",
     )
     parser.add_argument("--width", type=int, default=1000, help="SVG width in pixels")
     args = parser.parse_args(argv)
 
-    schema = compile_schema("bpmn")
+    schema = compile_schema()
     document = schema.parse(args.document)
     if document.report.has_errors:
         print(
@@ -419,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {issue}", file=sys.stderr)
         return 1
 
-    output = args.output or SHOWCASE_ROOT / "out" / f"{args.document.stem}.svg"
+    output = args.output or FAMILY_ROOT / "out" / f"{args.document.stem}.svg"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_svg(document, width=args.width), encoding="utf-8")
     print(f"wrote {output}")
