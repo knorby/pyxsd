@@ -311,7 +311,7 @@ def render_plan(document: Any, *, width: int = 900) -> str:
                 for x, y in ring
             )
             parts.append(
-                f'<polygon points="{coordinates}" fill="{fill}" stroke="#111827" '
+                f'<polygon points="{coordinates}" fill="{fill}" stroke="#000000" '
                 'stroke-width="1" fill-rule="evenodd" '
                 f'data-building="{render.esc(building["id"])}"/>'
             )

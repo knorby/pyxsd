@@ -273,7 +273,7 @@ def test_render_plan_draws_one_closed_polygon_per_surface(subset_document):
     tags = _polygon_tags(svg)
     assert len(tags) == 3
     assert all(_point_count(tag) >= 4 for tag in tags)
-    assert all('stroke="#111827"' in tag for tag in tags)
+    assert all('stroke="#000000"' in tag for tag in tags)
     assert svg == plan_svg.render_plan(subset_document)
     assert svg == plan_svg.render_plan(subset_document, width=900)
 
