@@ -382,4 +382,4 @@ def test_real_model_renders_svg_and_png(citygml_schema, tmp_path):
 def test_sample_paths_are_ascii():
     """CI runs under LC_ALL=C on Linux; sample paths must stay ASCII."""
     for path in (LOD2_SAMPLE, LOD1_SAMPLE, GARAGE_SAMPLE):
-        assert str(path).isascii()
+        assert path.relative_to(SHOWCASE_ROOT).as_posix().isascii()
