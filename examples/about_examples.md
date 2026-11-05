@@ -52,9 +52,9 @@ Six families render real documents end to end — CityGML 2.0 buildings,
 BPMN 2.0 diagrams, ASAM OpenDRIVE roads, UBL 2.3 / XRechnung invoices,
 MusicXML 4.0 scores, and ECMA-376 WordprocessingML. Each pins and verifies
 its own upstream sources, records license evidence in `SOURCES.md`, and
-documents its workflow in its README. The shared pattern and the
-[`server/`](server/) family that mounts them behind FastAPI are described
-in [`docs/rendering-examples.md`](../docs/rendering-examples.md).
+owns its multiple example uses: CLI rendering, plots or audio, and its own
+FastAPI server. The shared pattern and per-family server commands are in
+[`docs/rendering-examples.md`](../docs/rendering-examples.md).
 
 ## Transform templates
 

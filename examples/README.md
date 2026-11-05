@@ -16,23 +16,21 @@
 - [`healthcare/`](healthcare/) — real C-CDA documents with datatype mixins,
   a scoped CDA-to-FHIR R4 XML pipeline, and an MCP diagnostic walkthrough.
   One verified source-fetch command supplies both schema trees.
-- [`citygml/`](citygml/) — CityGML 2.0 buildings as an SVG plan and a
-  Matplotlib 3D plot.
+- [`citygml/`](citygml/) — CityGML 2.0 buildings as an SVG plan, a
+  Matplotlib 3D plot, and a FastAPI server (`examples.citygml.server:app`).
 - [`bpmn/`](bpmn/) — BPMN 2.0 diagrams drawn from the document's saved DI
-  layout.
-- [`opendrive/`](opendrive/) — ASAM OpenDRIVE lane maps and elevation
-  profiles.
+  layout, plus a FastAPI server (`examples.bpmn.server:app`).
+- [`opendrive/`](opendrive/) — ASAM OpenDRIVE lane maps, elevation
+  profiles, and a FastAPI server (`examples.opendrive.server:app`).
 - [`xrechnung/`](xrechnung/) — UBL 2.3 / EN 16931 invoices as standalone
-  HTML and PDF.
-- [`musicxml/`](musicxml/) — MusicXML 4.0 scores as synthesized WAV and an
-  SVG staff preview.
+  HTML and PDF, plus a FastAPI server (`examples.xrechnung.server:app`).
+- [`musicxml/`](musicxml/) — MusicXML 4.0 scores as synthesized WAV, an
+  SVG staff preview, and a FastAPI server (`examples.musicxml.server:app`).
 
-  Each rendering family pins and verifies its own upstream sources,
-  documents its workflow in its README, and follows the shared pattern in
-  [`docs/rendering-examples.md`](../docs/rendering-examples.md).
-- [`server/`](server/) — a FastAPI app that mounts the five families
-  behind a sample browser, server-side render routes, and a validation
-  route for submitted XML.
+Each rendering family pins and verifies its own upstream sources, owns its
+multiple example uses, documents its workflow in its README, and follows
+the shared pattern in
+[`docs/rendering-examples.md`](../docs/rendering-examples.md).
 - [`pydantic/assess_orders.py`](pydantic/assess_orders.py) — the purchase-order
   assessment application from the same guide: schema-generated snapshots,
   synthetic policy, and deterministic reason codes. The directory's

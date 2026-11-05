@@ -65,26 +65,35 @@ removed from the environment.
 Each README has the commands, the binding details that family
 demonstrates, and its full list of limitations.
 
-## FastAPI: render on the server
+## FastAPI: serve each family
 
-The shared server example brings the five pinned families behind a sample
-browser, render routes, and a validation route for submitted XML:
+Each of the five pinned XML families (CityGML, BPMN, OpenDRIVE,
+XRechnung, MusicXML) owns its own local FastAPI use beside its CLI
+renderers. A server reuses only that family's pinned sources, schema,
+samples, and render functions:
 
 ```sh
-uv run --group examples-fastapi uvicorn examples.server.app:app --reload
+uv run --group examples-fastapi uvicorn examples.bpmn.server:app --port 8000
+uv run --group examples-fastapi uvicorn examples.citygml.server:app --port 8000
+uv run --group examples-fastapi uvicorn examples.opendrive.server:app --port 8000
+uv run --group examples-fastapi uvicorn examples.xrechnung.server:app --port 8000
+uv run --group examples-fastapi uvicorn examples.musicxml.server:app --port 8000
 ```
+
+Every family server exposes the same single-source routes:
 
 | Method and route | Purpose |
 | --- | --- |
-| `GET /` | Browse the sample inventory and rendering links. |
-| `GET /api/samples` | Read the sample inventory as JSON. |
-| `GET /render/{domain}/{sample}` | Render a known sample on the server. |
-| `POST /validate/{domain}` | Submit XML and receive validation diagnostics. |
+| `GET /` | Browse that family's sample inventory. |
+| `GET /api/samples` | Read that inventory as JSON. |
+| `GET /render/{sample}` | Render a curated sample; `?format=` selects an optional artifact. |
+| `POST /validate` | Submit XML for diagnostics and family-specific facts. |
 
-The server reuses the domain renderers rather than maintaining a second
-transformation pipeline. Treat it as a local example, not a deployment
-recipe for untrusted uploads; see {doc}`xml-security` for parser policies
-and resource limits, and `examples/server/README.md` for endpoint details.
+Run one family at a time, or give each uvicorn process a different port.
+These are local examples, not deployment recipes for untrusted uploads;
+see {doc}`xml-security` for parser policies and resource limits. Each
+family README documents its run command, samples, output formats, and
+caveats.
 
 ## Sources and licensing
 

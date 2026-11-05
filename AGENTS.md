@@ -9,6 +9,15 @@
 - Docs and examples describe what a workflow does, never what technology it
   "replaces": no "XSLT replacement" / browser-XSLT framing anywhere.
 
+## Examples organize by data source
+
+- Each data-source family owns its source fetching, schema baseline,
+  documentation, and multiple example uses.
+- Servers, plots, renderers, and other uses live inside that family; do not
+  create cross-family showcase applications or registries.
+- Self-contained duplication between families is preferred over a shared
+  example umbrella.
+
 ## Documentation matches the project, not the work stream
 
 - A docs page named for a capability (rendering, data workflows, batch)
