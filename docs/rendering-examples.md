@@ -1,9 +1,16 @@
 # Rendering real XML formats
 
-The workflows in the rendering example families compile external XSDs, bind real XML
-documents into Python trees, and render those trees as SVG, PNG, HTML, PDF,
-or WAV. They cover CityGML buildings, BPMN diagrams, OpenDRIVE roads, UBL
-invoices, and MusicXML scores.
+The rendering example families compile external XSDs, bind real XML
+documents into Python trees, and render those trees as SVG, PNG, HTML,
+PDF, WAV, or Markdown. This page walks each of them: CityGML buildings,
+BPMN diagrams, OpenDRIVE roads, UBL invoices, MusicXML scores, and
+WordprocessingML documents.
+
+Other example families do different work and have their own
+documentation: the Arrow/DuckDB analysis workflows in
+{doc}`data-workflows`, {doc}`batch` processing, the {doc}`demo`
+transform tour, and the healthcare family described in its
+`examples/healthcare/README.md`.
 
 The boundary is the same as in {doc}`data-workflows`: pyxsd handles schema
 interpretation, typed binding, and diagnostics; application code decides how
@@ -155,6 +162,28 @@ without randomness or timestamps. It is not a full engraver or performance
 engine: tempo changes, repeats, dynamics, and articulation are out of scope.
 See `examples/musicxml/README.md` for the synthesis model and limits.
 
+## WordprocessingML: Word to Markdown
+
+The oldest rendering example turns a `word/document.xml` into style-aware
+Markdown against the real ECMA-376 WordprocessingML schema — roughly 26
+files and 700 KB of XSD, which makes it the proof that opt-in namespace
+support handles a large, genuine schema. The schemas are redistributable
+but large, so they are fetched on demand rather than committed:
+
+```sh
+uv run python examples/docx/download_schemas.py
+```
+
+Then render with the CLI transform or the library API:
+
+```sh
+uv run pyxsd -i examples/docx/document.xml -s examples/docx/schemas/wml.xsd \
+    --namespaces strict -k -o /dev/null -t "ToMarkdown('document.md')"
+```
+
+A `lax/` variant of the same workflow shows best-effort binding for
+partial documents. Details: `examples/docx/README.md`.
+
 ## FastAPI: render on the server
 
 The shared server example brings the five domains behind a sample browser,
@@ -183,7 +212,9 @@ in `examples/server/README.md`.
 ## Sources and licensing
 
 See each family's `SOURCES.md` for provenance, attribution, and license
-evidence, and its `sources.toml` for the pinned digests. Never commit
+evidence, and its `sources.toml` for the pinned digests (the docx family
+predates the pinned-manifest discipline and documents its own fetcher in
+its README). Never commit
 downloaded schemas or sample corpora: they remain in the family's `.cache/`,
 and generated artifacts remain in its `out/`. The existing public-domain
 chorale is already committed separately. Each family's `README.md` documents
