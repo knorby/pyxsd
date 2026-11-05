@@ -27,7 +27,7 @@ Every rendering family follows the same shape:
    `to_dict()` projections, or XPath — and extracts exactly the facts it
    presents.
 4. **Render plain Python.** Output is built with the standard library or
-   a single-purpose library, never with a stylesheet engine. SVG, HTML,
+   a single-purpose library. SVG, HTML,
    and WAV generation need only pyxsd's base environment; the plotting,
    server, and PDF families use example-only dependency groups.
 
