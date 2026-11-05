@@ -1,5 +1,10 @@
 # Quickstart
 
+```{eval-rst}
+.. meta::
+   :description: Install pyxsd, validate supplied XML against XSD, query namespaced elements, and revalidate and save an edited document.
+```
+
 Validate a small inventory, query its items, and save a checked edit. This
 walkthrough uses only the base library and the two files supplied below.
 
@@ -21,6 +26,18 @@ python -m pip install pyxsd
 In a uv-managed project, use `uv add pyxsd` and run scripts with `uv run python`.
 For **CLI-only** use, `uv tool install pyxsd` creates an isolated tool
 environment; it does not make library imports available in another project.
+
+| Goal | Installation |
+| --- | --- |
+| Library imports and the `pyxsd` CLI | `python -m pip install pyxsd` |
+| Isolated CLI only | `uv tool install pyxsd` |
+| Pydantic or Arrow/Parquet | `python -m pip install 'pyxsd[pydantic]'` or `'pyxsd[arrow]'`; see {doc}`integrations`. |
+| Local MCP server and Python client | `python -m pip install 'pyxsd[mcp]'`; see {doc}`mcp`. |
+| Repository examples | Follow the family's README; `examples-*` dependency groups are checkout-only, not published extras. |
+| Development and documentation | From a checkout, `uv sync --group dev --group docs`; see {doc}`contributing`. |
+
+This site follows `develop` and may describe unreleased behavior. Compare
+`pyxsd --version` with the matching repository tag when using a release.
 
 ## Create the input files
 
@@ -141,6 +158,7 @@ domain-specific conformance.
 ## Next steps
 
 - {doc}`validation`: interpret findings and troubleshoot unexpected results.
+- {doc}`schema-resolution`: resolve includes, imports, and instance hints.
 - {doc}`demo`: run a custom transform from a repository checkout.
 - {doc}`batch`: parse multiple files sequentially with one compiled schema.
 - {doc}`integrations`: generate Pydantic snapshots or Arrow/Parquet exports.

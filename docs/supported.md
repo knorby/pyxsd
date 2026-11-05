@@ -116,7 +116,7 @@ selects how invalid or unrecognized content is **bound** (strict vs. lax)
 without changing what is **reported** — see {doc}`binding`. The same policy
 carries a `namespaces` field: `Schema.compile(...,
 mode=ParseModes.NAMESPACED)` or `--namespaces strict` turns on
-namespace-aware validation (the default legacy behavior is unchanged).
+namespace-aware validation (the default is legacy local-name matching).
 
 ## Extending and typing generated classes
 
@@ -129,7 +129,7 @@ namespace-aware validation (the default legacy behavior is unchanged).
 - **Type-stub emission** (`Schema.stub()` / `pyxsd --emit-stubs`) renders
   a `.pyi` typing surface, or a compact agent-oriented view, for the
   classes a compiled schema creates at runtime; a construct that cannot be
-  typed truthfully degrades to `Any` (see {doc}`api`).
+  typed precisely uses `Any` (see {doc}`stubs`).
 - **Native value conversions and facet introspection** on the XSD value
   types — temporal (`to_date` / `to_datetime` / `to_time`, `to_gregorian`),
   duration, binary, QName, and URI conversions, plus

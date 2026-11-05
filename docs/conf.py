@@ -45,7 +45,8 @@ myst_heading_anchors = 3
 
 # --- HTML theme -------------------------------------------------------------
 html_theme = "furo"
-html_title = "pyxsd"
+html_title = "pyxsd: XML Schema validation and Python bindings"
+html_short_title = "pyxsd"
 html_baseurl = "https://pyxsd.knorby.com/"
 html_static_path = ["_static"]
 # Serve the custom domain from the GitHub Pages artifact.

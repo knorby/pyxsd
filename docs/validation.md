@@ -1,5 +1,10 @@
 # Validation
 
+```{eval-rst}
+.. meta::
+   :description: Interpret pyxsd XML and XSD validation reports, troubleshoot namespace and binding results, and locate issue codes and source occurrences.
+```
+
 pyxsd reports recoverable schema and instance findings in a
 {class}`~pyxsd.validation.ValidationReport` rather than raising on the first
 one. Each finding is a `ValidationIssue`. A compiled schema reports its own
@@ -33,7 +38,7 @@ limitations below also apply.
 ```python
 import pyxsd
 
-schema = pyxsd.Schema.compile("inventory.xsd")
+schema = pyxsd.Schema.compile("inventory.xsd", mode=pyxsd.ParseModes.NAMESPACED)
 schema.require_valid()  # raises ValidationError if the schema itself is bad
 
 document = schema.parse("inventory.xml")
@@ -53,6 +58,28 @@ Validation settings do not authorize file access or harden XML parsing. See
 `ResourcePolicyError` is a fatal refusal, not a recoverable validation issue.
 Parser profiles apply per parse; a custom resource policy instead remains
 attached to its compiled schema and owns subsequent reads and parsing.
+
+## Troubleshoot an unexpected result
+
+Start with `schema.report` for compilation problems, then `document.report`
+for the combined result. Use the inventory files from {doc}`quickstart` to
+compare a small known-valid input with your own.
+
+| Symptom | Check and next action |
+| --- | --- |
+| `document.root` is `None` / `unknown-root` | Confirm that a global element matches the root's expanded name and that you loaded the intended schema. A type declaration alone does not declare a document root. |
+| Import or type cannot be resolved | Check the containing schema's base path, `xs:import`, target namespace, and `namespace_schemas` mapping. Follow {doc}`schema-resolution`; lax retention does not supply the missing type. |
+| A namespaced element is missing or unexpected | Use `ParseModes.NAMESPACED`, check form defaults, and give query methods a prefix-to-URI map. A query prefix need not match the XML's original prefix. |
+| An invalid value becomes `None` | Strict retention drops invalid lexical values. Inspect the value/facet issue first; use lax retention if you need the raw text for repair. |
+| A complex child is in `_children_` but `obj.child` is `None` | Some parsed complex-child descriptors are not populated. Retrieve the bound node with `find`, `findall`, or `xpath`; see {doc}`api`. |
+| An edit still shows old errors, or appears valid despite a bad value | Reports describe a parse, not a live tree. Use `checked = document.revalidate()` and inspect or require validity on `checked` before saving. |
+| The CLI exits `0` despite findings | Add `--strict` to fail on report errors. `--mode strict` controls retention, not process exit status. |
+| A file or malformed-XML exception occurs before a report | Catch `PyXSDError` at the input boundary; fix the path or XML syntax before interpreting validation findings. Resource refusals use `ResourcePolicyError`. |
+
+Successful binding does not imply complete XSD conformance. See
+{doc}`supported` for unsupported constructs and {doc}`xml-security` for
+input protections. Neither report settings nor lax binding authorize remote
+resources.
 
 ## DTD-dependent ENTITY and ENTITIES values
 

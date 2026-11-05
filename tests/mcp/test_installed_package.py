@@ -134,3 +134,22 @@ def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_pa
         assert not state.exists()
 
     anyio.run(scenario)
+
+
+def test_guide_python_client_is_complete(tmp_path):
+    guide = (ROOT / "docs/mcp.md").read_text(encoding="utf-8")
+    blocks = guide.split("```python\n")[1:]
+    assert blocks, "Supply a complete Python client interaction"
+    script = tmp_path / "client.py"
+    script.write_text(blocks[0].split("```", 1)[0], encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=45,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "valid: True"
+    assert not (tmp_path / ".pyxsd").exists()

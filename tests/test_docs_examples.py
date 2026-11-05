@@ -6,6 +6,8 @@ users copy. Extract them and run them here so they cannot rot.
 
 from pathlib import Path
 
+import pytest
+
 from pyxsd.transforms import Transform
 
 GUIDE = Path(__file__).parent.parent / "docs" / "transforms" / "writing.md"
@@ -85,3 +87,68 @@ def test_transform_guide_library_example(tmp_path, monkeypatch):
         exec(compile(source, "using.md", "exec"), namespace)
     assert namespace["checked"].is_valid
     assert "HELLO" in (tmp_path / "out.xml").read_text(encoding="utf-8")
+
+
+def test_schema_resolution_from_supplied_files(tmp_path, monkeypatch, capsys):
+    guide = GUIDE.parent.parent / "schema-resolution.md"
+    assert guide.is_file(), "Supply the multi-file schema recipe"
+    markdown = guide.read_text(encoding="utf-8")
+    xml_blocks = markdown.split("```xml\n")[1:]
+    filenames = ("orders.xsd", "fields.xsd", "codes.xsd", "order.xml")
+    assert len(xml_blocks) == len(filenames)
+    inputs = tmp_path / "schemas"
+    inputs.mkdir()
+    for filename, block in zip(filenames, xml_blocks, strict=True):
+        (inputs / filename).write_text(block.split("```", 1)[0], encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    namespace = {}
+    for source in _python_blocks(markdown):
+        exec(compile(source, "schema-resolution.md", "exec"), namespace)
+    assert capsys.readouterr().out.splitlines() == ["AB 2", "True"]
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    document = namespace["schema"].parse(inputs / "order.xml")
+    assert document.is_valid
+    assert document.xpath("string(/order/code)") == "AB"
+
+
+def test_integration_examples_use_identified_inputs(tmp_path, monkeypatch):
+    pytest.importorskip("pydantic")
+    pytest.importorskip("pyarrow")
+    import pyarrow.parquet as pq
+
+    quickstart = (GUIDE.parent.parent / "quickstart.md").read_text(encoding="utf-8")
+    for filename, block in zip(
+        ("inventory.xsd", "inventory.xml"), quickstart.split("```xml\n")[1:], strict=True
+    ):
+        (tmp_path / filename).write_text(block.split("```", 1)[0], encoding="utf-8")
+    examples = tmp_path / "examples" / "pydantic"
+    examples.mkdir(parents=True)
+    for filename in ("orders.xsd", "orders.xml"):
+        source = GUIDE.parents[2] / "examples" / "pydantic" / filename
+        (examples / filename).write_bytes(source.read_bytes())
+    monkeypatch.chdir(tmp_path)
+    namespace = {}
+    guide = GUIDE.parent.parent / "integrations.md"
+    for source in _python_blocks(guide.read_text(encoding="utf-8")):
+        exec(compile(source, "integrations.md", "exec"), namespace)
+    assert namespace["snapshot"].model_dump(by_alias=True) == namespace["inventory"].model_dump(
+        by_alias=True
+    )
+    assert namespace["item"].model_dump(by_alias=True)["{urn:inventory}quantity"] == 4
+    assert pq.read_table("inventory.parquet").num_rows == 1
+    assert namespace["table"].column_names == [
+        "order_number",
+        "customer_account",
+        "sku",
+        "quantity",
+        "unit_price",
+        "currency",
+    ]
+    assert namespace["table"]["sku"].to_pylist() == [
+        "LOGGER-USB",
+        "PROBE-EC",
+        "BOTTLE-1L",
+        "LABEL-WP",
+    ]

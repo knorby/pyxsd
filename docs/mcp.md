@@ -1,5 +1,10 @@
 # MCP integration
 
+```{eval-rst}
+.. meta::
+   :description: Run pyxsd as a local MCP server to inspect XSD schemas, validate XML, follow diagnostics, and retain bounded output artifacts.
+```
+
 pyxsd can run as a local [Model Context Protocol](https://modelcontextprotocol.io/)
 server. MCP clients can load schema and XML inputs for a session, explore compiled
 schemas, validate XML, follow diagnostics to exact source occurrences, run bounded
@@ -49,6 +54,70 @@ cannot be combined with `--state-dir`.
 
 See {doc}`mcp-deployment` for source roots, persistent-store layout, shared
 processes, cleanup, and operator limits. Normal session uploads need no source root.
+
+## Validate XML from a Python client
+
+Install `pyxsd[mcp]` in the environment that runs this script; the `uvx`
+server environment alone does not install client imports into your project.
+Save the following as `validate_client.py`, then run
+`python validate_client.py`. It starts and closes its own stdio server, uploads
+both inputs, and prints `valid: True`.
+
+The server uses `--no-persist`: uploads end with this session, and any retained
+outputs are removed on orderly shutdown. Transformation execution stays
+disabled. For persistent or sensitive document data, choose storage using
+{doc}`mcp-deployment` before changing these launch options.
+
+```python
+import sys
+
+import anyio
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+async def main():
+    parameters = StdioServerParameters(
+        command=sys.executable, args=["-m", "pyxsd.mcp", "--no-persist"]
+    )
+    async with (
+        stdio_client(parameters) as (read, write),
+        ClientSession(read, write) as client,
+    ):
+        with anyio.fail_after(30):
+            await client.initialize()
+            created = await client.call_tool("pyxsd_manage_workspace", {"action": "create"})
+            workspace = created.structured_content["data"]["id"]
+            await client.call_tool(
+                "pyxsd_put_files",
+                {
+                    "workspace_id": workspace,
+                    "files": [
+                        {
+                            "path": "order.xsd",
+                            "text": (
+                                '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+                                '<xs:element name="order" type="xs:int"/></xs:schema>'
+                            ),
+                        },
+                        {"path": "order.xml", "text": "<order>42</order>"},
+                    ],
+                },
+            )
+            result = await client.call_tool(
+                "pyxsd_validate_document",
+                {
+                    "workspace_id": workspace,
+                    "document": {"path": "order.xml"},
+                    "schema_ref": {"source": {"path": "order.xsd"}},
+                },
+            )
+            print("valid:", result.structured_content["data"]["valid"])
+
+
+if __name__ == "__main__":
+    anyio.run(main)
+```
 
 ## Persistent store and session inputs
 

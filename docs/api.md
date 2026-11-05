@@ -1,5 +1,10 @@
 # API reference
 
+```{eval-rst}
+.. meta::
+   :description: Look up pyxsd Schema and Document APIs, XML queries, validation errors, sequential batches, stubs, and schema introspection.
+```
+
 Use {doc}`quickstart` for a complete first example. This page documents public
 entry points; {doc}`data-model` describes node storage and export behavior.
 

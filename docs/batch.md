@@ -82,6 +82,10 @@ the same Schema concurrently or reentrantly while its iterator is active.
 The API offers no scheduler, shared-schema concurrency, or XML streaming:
 each file still becomes a materialized tree.
 
+Concurrent compiles and parses on **separate Schema objects** are supported.
+Give each worker its own schema; compile-once reuse in the loop above is
+sequential reuse, not permission to share that schema across workers.
+
 Files are closed before results are yielded. The iterator keeps no list of
 Documents or outcomes, only current input state and an O(number of inputs)
 ID set. The native compiler host may keep bounded state from its latest

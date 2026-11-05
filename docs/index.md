@@ -1,4 +1,11 @@
-# XML Schema validation and Python bindings
+(pyxsd-documentation)=
+
+# pyxsd: XML Schema validation and Python bindings
+
+```{eval-rst}
+.. meta::
+   :description: Validate XML against XSD in Python, query and edit bound objects, inspect validation reports, and export records with pyxsd.
+```
 
 pyxsd validates XML against XSD and binds documents to Python objects.
 Start with {doc}`quickstart` to parse, query, edit, and save a document with
@@ -36,6 +43,7 @@ comparison-libxml2
 :caption: Work with documents
 
 binding
+schema-resolution
 data-model
 validation
 transforms/index
@@ -89,5 +97,4 @@ Source <https://github.com/knorby/pyxsd>
 ## Indices and tables
 
 - {ref}`genindex`
-- {ref}`modindex`
 - {ref}`search`

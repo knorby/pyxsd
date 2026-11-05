@@ -60,7 +60,7 @@ denominator, and the reviewed baselines used for the generated results.
   `thin_lazy` supports large documents and streaming, which pyxsd does not.
 - **Resource controls and hardening.** `xmlschema` exposes a broader
   resource-policy layer (`allow` / `defuse`), timeouts, processing limits, and
-  remote download with an offline cache. pyxsd now offers opt-in parser profiles
+  remote download with an offline cache. pyxsd offers opt-in parser profiles
   (`protected` / `strict`), `XmlLimits`, and an HTTPS-only
   `RemoteResourcePolicy` with finite budgets, but it has no offline cache,
   lazy/streaming mode, lxml injection, or general per-parse timeout, and its
@@ -76,7 +76,9 @@ denominator, and the reviewed baselines used for the generated results.
   younger and has a smaller user base; the known limitations below matter
   when choosing between them.
 
-## Honest limitations of pyxsd
+(honest-limitations-of-pyxsd)=
+
+## Limitations of pyxsd
 
 - **Maturity.** The modern 1.x API has less field hardening than
   `xmlschema`.
@@ -85,28 +87,17 @@ denominator, and the reviewed baselines used for the generated results.
 - **Legacy namespace mode is the default binding policy.** Strict namespace
   handling is a distinct opt-in mode (`ParseModes.NAMESPACED`), which
   surprises users who expect qualified names by default.
-- **Mixed content is preserved but not a structured-export citizen.**
+- **Mixed content has limited structured export.**
   Interleaved text is kept verbatim in the bound tree (leading text in
   `_value_`, child tails in `_tail_`) and survives serialization and
   XPath queries, but the dict export can only concatenate the character
   data under `$`, and the Arrow/Pydantic integrations reject mixed
   content.
-- **DTD-dependent checks have limited evidence.** When a compiled schema can
-  validate `ENTITY`/`ENTITIES`, pyxsd lazily collects unparsed (`NDATA`)
-  declarations from the prolog/internal subset and rejects undeclared names
-  when that evidence is complete. Internal parameter entities are expanded;
-  external subsets and external parameter entities are never fetched, and
-  either makes the evidence incomplete. Incomplete evidence leaves missing
-  names lexical-only with one advisory when a check is skipped.
-  Caller-supplied trees without pyxsd source provenance, custom-policy parser
-  results, and non-seekable instance streams passed to top-level
-  `pyxsd.parse()` remain lexical-only. Compiled
-  `Schema.parse()` supports prolog replay for those streams. Unrelated schemas
-  skip declaration collection. The default still expands internal parsed
-  entities and can apply `ATTLIST` defaults; `protected()` and `strict()`
-  retain their declaration/DOCTYPE refusals. These are not DTD-validation
-  modes. See {doc}`validation` for provenance and revalidation limitations,
-  and {doc}`xml-security` for the unchanged parser profiles.
+- **DTD-dependent checks have limited evidence.** `ENTITY`/`ENTITIES` checks
+  depend on available unparsed-entity declarations; external subsets are not
+  fetched. See [DTD evidence and input limitations](validation.md#dtd-dependent-entity-and-entities-values).
+  Parser profiles are separate and do not provide DTD validation; see
+  {doc}`xml-security`.
 - **One parse at a time per `Schema`.** The compiled schema holds per-parse
   indexes on a shared host, so concurrent parses against the same `Schema`
   are not supported.
