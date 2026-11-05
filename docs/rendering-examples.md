@@ -2,9 +2,8 @@
 
 The rendering example families compile external XSDs, bind real XML
 documents into Python trees, and render those trees as SVG, PNG, HTML,
-PDF, WAV, or Markdown. This page walks each of them: CityGML buildings,
-BPMN diagrams, OpenDRIVE roads, UBL invoices, MusicXML scores, and
-WordprocessingML documents.
+PDF, WAV, or Markdown. This page describes the pattern they share and the
+catalog of formats they cover.
 
 Other example families do different work and have their own
 documentation: the Arrow/DuckDB analysis workflows in
@@ -12,189 +11,68 @@ documentation: the Arrow/DuckDB analysis workflows in
 transform tour, and the healthcare family described in its
 `examples/healthcare/README.md`.
 
-The boundary is the same as in {doc}`data-workflows`: pyxsd handles schema
-interpretation, typed binding, and diagnostics; application code decides how
-to present the data. A compiled {class}`~pyxsd.schema.Schema` can be reused
-for multiple documents. See {doc}`transforms/writing` for the transform API.
+## The pattern
 
-Rendering can also happen on the server: parse and validate XML in Python,
-then hand the browser finished HTML or SVG. The invoice workflow and the
-shared FastAPI example demonstrate that separation.
+Every rendering family follows the same shape:
 
-## Setup
+1. **Compile once.** The family's pinned schema closure is compiled into
+   Python classes once per process and reused for every document it
+   renders.
+2. **Bind.** `Schema.parse()` validates and binds the document into a
+   typed tree. Rendering never requires a clean validation verdict:
+   schemas with known stock findings (CityGML) and documents with
+   recorded instance findings still bind, while diagnostics stay
+   available on `schema.report`. See {doc}`validation`.
+3. **Walk.** The renderer reads the bound tree — typed descriptors,
+   `to_dict()` projections, or XPath — and extracts exactly the facts it
+   presents.
+4. **Render plain Python.** Output is built with the standard library or
+   a single-purpose library, never with a stylesheet engine. SVG, HTML,
+   and WAV generation need only pyxsd's base environment; the plotting,
+   server, and PDF families use example-only dependency groups.
 
-Run these commands from a repository checkout with Python 3.11 or newer:
+pyxsd handles schema interpretation, typed binding, and diagnostics;
+application code decides how to present the data. That boundary is the
+same one described in {doc}`data-workflows`, and the transform API is in
+{doc}`transforms/writing`.
 
-```sh
-uv run python examples/citygml/download_sources.py
-uv run python examples/bpmn/download_sources.py
-uv run python examples/opendrive/download_sources.py
-uv run python examples/xrechnung/download_sources.py
-uv run python examples/musicxml/download_sources.py
-```
-
-Each family's `sources.toml` pins source URLs, revisions, licenses, and
-SHA-256 digests. The downloader installs verified files under the
-family's gitignored `.cache/`; repeating the command verifies the cache
-without network access. Rendered artifacts normally go under the
-family's gitignored `out/`.
-
-SVG, HTML, and WAV generation need no rendering dependency beyond pyxsd's
-base environment. Install the optional plotting, server, and PDF dependencies
-with the example-only groups:
+Sources are pinned per family: `sources.toml` records URLs, revisions,
+licenses, and SHA-256 digests; the downloader installs verified files
+under the family's gitignored `.cache/`, and repeating the command
+verifies the cache without network access. Rendered artifacts go under
+the family's gitignored `out/`. Output is byte-deterministic except where
+a library stamps metadata (reportlab PDFs carry a creation date).
 
 ```sh
 uv sync --group examples-matplotlib --group examples-fastapi --group examples-reportlab
 ```
 
-These groups do not add dependencies to the published library. As with the
-analytical examples, each `uv sync` matches the groups named in that command;
-omit a previously selected group and it is removed from the environment.
+These groups do not add dependencies to the published library; each
+`uv sync` matches the groups named in that command, so omit one and it is
+removed from the environment.
 
-## CityGML: plan view and 3D buildings
+## The families
 
-The CityGML workflow reads OGC CityGML 2.0 building examples and produces a
-top-down SVG plan and a Matplotlib 3D PNG:
+| Family | Data source | Artifacts | One caveat |
+| --- | --- | --- | --- |
+| `citygml/` | OGC CityGML 2.0 LOD1/LOD2 buildings | SVG plan, 3D PNG | known stock schema findings; needs `examples-matplotlib` |
+| `bpmn/` | BPMN 2.0 with diagram interchange | SVG diagram | draws the saved layout; not an auto-layout engine |
+| `opendrive/` | ASAM OpenDRIVE 1.4–1.8 roads | SVG map, profile PNG | schema picked from the header revision; needs `examples-matplotlib` |
+| `xrechnung/` | UBL 2.3 / EN 16931 invoices | HTML, PDF | keeps lexical amounts; XSD validity is not business-rule conformance |
+| `musicxml/` | MusicXML 4.0 scores | WAV, SVG preview | merged ties, fixed tempo; not an engraver |
+| `docx/` | ECMA-376 WordprocessingML | Markdown | fetches its own schema set (`download_schemas.py`) |
 
-```sh
-uv run python examples/citygml/plan_svg.py
-uv run python examples/citygml/plot_city3d.py
-```
-
-The renderers project surface rings, follow local `xlink:href` references,
-and shade buildings using measured height. They understand LOD1/LOD2 solids
-and selected semantic-surface fallbacks, not textures, terrain, or coordinate
-reprojection. The 3D command needs `examples-matplotlib`.
-
-This workflow demonstrates typed binding without concealing diagnostics:
-the stock CityGML/GML schema closure reports findings, and parsing adds
-instance findings, while the building geometry needed by the renderers still
-binds. Rendering is not a claim that the schema or document passed
-`require_valid()`. See {doc}`validation` for that distinction and
-`examples/citygml/README.md` for the recorded findings and limits.
-
-## BPMN: diagrams from saved layout
-
-BPMN 2.0 documents contain both a semantic process and diagram interchange
-(DI) geometry. The renderer uses the saved bounds and waypoints rather than
-inventing a layout:
-
-```sh
-uv run python examples/bpmn/render_svg.py examples/bpmn/.cache/bpmn-data/starter.bpmn
-```
-
-The standalone SVG contains pools, lanes, tasks, events, gateways, sequence
-flows, and semantic labels. A document without DI data has no layout to draw;
-this is not an automatic diagram-layout engine.
-
-This workflow demonstrates `document.to_dict()` and namespace-aware
-`document.xpath()` access on a reference-based schema, where child descriptor
-reads can return `None` despite successful binding. Strict namespace handling
-keeps the BPMN and DI components distinct. Output is byte-deterministic, and
-the CLI refuses to write it when validation reports errors. Details are in
-`examples/bpmn/README.md` and {doc}`data-model`.
-
-## OpenDRIVE: lane maps and elevation profiles
-
-The OpenDRIVE workflow samples road reference geometry and offsets lane
-boundaries to make an SVG map. A separate Matplotlib command plots elevation
-and, when present, superelevation:
-
-```sh
-uv run python examples/opendrive/render_map.py \
-    examples/opendrive/.cache/opendrive-data/Town01.xodr
-uv run python examples/opendrive/plot_profiles.py \
-    examples/opendrive/.cache/opendrive-data/curves_elevation.xodr
-```
-
-The profile command needs `examples-matplotlib`. Geometry sampling and lane
-offsetting are application code, not pyxsd features: the renderer evaluates
-lines, arcs, spirals, and polynomial segments from the bound document's
-`to_dict()` projection. SVG output is byte-deterministic.
-
-The CLIs choose a pinned schema from the instance header's `revMajor` and
-`revMinor`, not its unrelated `version` attribute. Junction turn paths, road
-marks, and signals are not rendered. See
-`examples/opendrive/README.md` for schema-version handling and limits.
-
-## UBL: HTML and PDF invoices
-
-The invoice workflow binds KoSIT XRechnung test invoices against the OASIS
-UBL 2.3 schema and renders the same extracted facts as HTML or PDF:
-
-```sh
-uv run python examples/xrechnung/render_html.py
-uv run --group examples-reportlab python examples/xrechnung/render_pdf.py
-```
-
-The HTML is self-contained and escapes document text. The PDF command uses
-reportlab. Both accept an input invoice and an explicit output destination;
-see `examples/xrechnung/README.md` for those forms.
-
-This transform demonstrates exact amounts and presentation at the edge:
-`document.to_dict(typed=False)` preserves lexical amounts such as `336.9`,
-without a float conversion, and the renderer formats them as `336.90` only
-for display. HTML bytes are deterministic; PDF metadata includes a creation
-date, so PDF bytes are not expected to match across runs.
-
-XSD validity is not EN 16931 or XRechnung business-rule conformance. Those
-rules require Schematron validation, which pyxsd does not implement. Rendering
-an invoice is not a compliance decision.
-
-## MusicXML: WAV synthesis and score preview
-
-The score workflow reads the existing public-domain Bach chorale in
-`examples/musicxml/instance.xml` against the pinned MusicXML 4.0 schema:
-
-```sh
-uv run python examples/musicxml/synthesize.py
-uv run python examples/musicxml/render_preview.py
-```
-
-It produces a 16-bit mono WAV at 22.05 kHz and an SVG staff preview using
-only the Python standard library for rendering. Note durations and divisions
-become quarter-note spans; ties merge before the spans are scheduled at the
-default 96 quarter notes per minute.
-
-This workflow demonstrates an ordered walk over the bound node tree and
-deterministic synthesis: the same input produces byte-identical WAV output,
-without randomness or timestamps. It is not a full engraver or performance
-engine: tempo changes, repeats, dynamics, and articulation are out of scope.
-See `examples/musicxml/README.md` for the synthesis model and limits.
-
-## WordprocessingML: Word to Markdown
-
-The oldest rendering example turns a `word/document.xml` into style-aware
-Markdown against the real ECMA-376 WordprocessingML schema — roughly 26
-files and 700 KB of XSD, which makes it the proof that opt-in namespace
-support handles a large, genuine schema. The schemas are redistributable
-but large, so they are fetched on demand rather than committed:
-
-```sh
-uv run python examples/docx/download_schemas.py
-```
-
-Then render with the CLI transform or the library API:
-
-```sh
-uv run pyxsd -i examples/docx/document.xml -s examples/docx/schemas/wml.xsd \
-    --namespaces strict -k -o /dev/null -t "ToMarkdown('document.md')"
-```
-
-A `lax/` variant of the same workflow shows best-effort binding for
-partial documents. Details: `examples/docx/README.md`.
+Each README has the commands, the binding details that family
+demonstrates, and its full list of limitations.
 
 ## FastAPI: render on the server
 
-The shared server example brings the five domains behind a sample browser,
-render routes, and a validation route for submitted XML. Its planned launch
-command uses the example-only server group:
+The shared server example brings the five pinned families behind a sample
+browser, render routes, and a validation route for submitted XML:
 
 ```sh
 uv run --group examples-fastapi uvicorn examples.server.app:app --reload
 ```
-
-The interface is organized around these routes:
 
 | Method and route | Purpose |
 | --- | --- |
@@ -204,18 +82,15 @@ The interface is organized around these routes:
 | `POST /validate/{domain}` | Submit XML and receive validation diagnostics. |
 
 The server reuses the domain renderers rather than maintaining a second
-transformation pipeline. Treat it as a local example, not a deployment recipe
-for untrusted uploads; see {doc}`xml-security` for parser policies and resource
-limits. Server-specific setup, endpoint details, and limitations are documented
-in `examples/server/README.md`.
+transformation pipeline. Treat it as a local example, not a deployment
+recipe for untrusted uploads; see {doc}`xml-security` for parser policies
+and resource limits, and `examples/server/README.md` for endpoint details.
 
 ## Sources and licensing
 
 See each family's `SOURCES.md` for provenance, attribution, and license
-evidence, and its `sources.toml` for the pinned digests (the docx family
-predates the pinned-manifest discipline and documents its own fetcher in
-its README). Never commit
-downloaded schemas or sample corpora: they remain in the family's `.cache/`,
-and generated artifacts remain in its `out/`. The existing public-domain
-chorale is already committed separately. Each family's `README.md` documents
-its workflow and limits.
+evidence, and its `sources.toml` for the pinned digests (the `docx/`
+family predates the pinned-manifest discipline and documents its own
+fetcher in its README). Never commit downloaded schemas or sample corpora:
+they remain in the family's `.cache/`, and generated artifacts remain in
+its `out/`.

@@ -48,19 +48,13 @@ does not establish template, profile, terminology, or clinical conformance.
 
 ## Rendering example families
 
-Five self-contained families, each organized around one real data source,
-apply the same pinned-source discipline to a rendering pipeline:
-[`citygml/`](citygml/), [`bpmn/`](bpmn/), [`opendrive/`](opendrive/),
-[`xrechnung/`](xrechnung/), and [`musicxml/`](musicxml/) — CityGML 2.0,
-BPMN 2.0, ASAM OpenDRIVE, OASIS UBL 2.3 (XRechnung), and MusicXML 4.0 —
-each compiling its official schema and transforming real documents into
-SVG, PNG, HTML, PDF, or WAV. Each family's own `download_sources.py`
-verifies its manifest; nothing downloaded is committed, and each
-family's `SOURCES.md` records the attribution and license evidence. The
-[`server/`](server/) family mounts all five behind a FastAPI app for
-server-side rendering and upload validation. Focused
-`tests/test_<family>_examples.py` and `tests/test_render_server.py`
-coverage follows the same offline-plus-skip-gated real-schema pattern.
+Six families render real documents end to end — CityGML 2.0 buildings,
+BPMN 2.0 diagrams, ASAM OpenDRIVE roads, UBL 2.3 / XRechnung invoices,
+MusicXML 4.0 scores, and ECMA-376 WordprocessingML. Each pins and verifies
+its own upstream sources, records license evidence in `SOURCES.md`, and
+documents its workflow in its README. The shared pattern and the
+[`server/`](server/) family that mounts them behind FastAPI are described
+in [`docs/rendering-examples.md`](../docs/rendering-examples.md).
 
 ## Transform templates
 

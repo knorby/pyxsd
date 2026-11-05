@@ -4,9 +4,6 @@
   schema, instance document, a custom transform (`CountElements`), and
   `demo.py` (library use). The walkthrough lives in
   [`docs/demo.md`](../docs/demo.md).
-- [`musicxml/`](musicxml/) — a real document format: a MusicXML subset
-  schema, a short score, and transforms that report on it (works as a
-  strict-mode example and a conformance test).
 - [`gpx/`](gpx/) — a real geospatial format: a GPX schema subset, a
   recorded track, and a transform that computes track statistics.
 - [`docx/`](docx/) — a real office format: a `word/document.xml` schema
@@ -19,14 +16,20 @@
 - [`healthcare/`](healthcare/) — real C-CDA documents with datatype mixins,
   a scoped CDA-to-FHIR R4 XML pipeline, and an MCP diagnostic walkthrough.
   One verified source-fetch command supplies both schema trees.
-- [`citygml/`](citygml/), [`bpmn/`](bpmn/), [`opendrive/`](opendrive/),
-  [`xrechnung/`](xrechnung/), [`musicxml/`](musicxml/) — five self-contained
-  example families, each organized around one real data source and rendering
-  it end to end: CityGML buildings (SVG plan + 3D plot), BPMN 2.0 diagrams
-  from their DI layout, OpenDRIVE road networks (lane maps + elevation
-  profiles), UBL 2.3 / XRechnung invoices (HTML + PDF), and MusicXML
-  synthesis to WAV. Each family pins and verifies its own upstream sources.
-  See [`docs/rendering-examples.md`](../docs/rendering-examples.md).
+- [`citygml/`](citygml/) — CityGML 2.0 buildings as an SVG plan and a
+  Matplotlib 3D plot.
+- [`bpmn/`](bpmn/) — BPMN 2.0 diagrams drawn from the document's saved DI
+  layout.
+- [`opendrive/`](opendrive/) — ASAM OpenDRIVE lane maps and elevation
+  profiles.
+- [`xrechnung/`](xrechnung/) — UBL 2.3 / EN 16931 invoices as standalone
+  HTML and PDF.
+- [`musicxml/`](musicxml/) — MusicXML 4.0 scores as synthesized WAV and an
+  SVG staff preview.
+
+  Each rendering family pins and verifies its own upstream sources,
+  documents its workflow in its README, and follows the shared pattern in
+  [`docs/rendering-examples.md`](../docs/rendering-examples.md).
 - [`server/`](server/) — a FastAPI app that mounts the five families
   behind a sample browser, server-side render routes, and a validation
   route for submitted XML.
