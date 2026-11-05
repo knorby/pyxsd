@@ -185,7 +185,8 @@ def localize(target: Path, extra_map: dict[str, str] | None = None) -> list[Path
     for path in sorted(target.rglob("*.xsd")):
         if ".pristine" in path.relative_to(target).parts:
             continue
-        text = original = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        text = original = raw.decode("utf-8")
         for url in sorted(set(_absolute_schema_locations(text))):
             if url in extra_map:
                 mapped = (path.parent / extra_map[url]).resolve()
@@ -204,8 +205,7 @@ def localize(target: Path, extra_map: dict[str, str] | None = None) -> list[Path
         if text != original:
             pristine = target / ".pristine" / path.relative_to(target)
             pristine.parent.mkdir(parents=True, exist_ok=True)
-            if not pristine.exists():
-                pristine.write_bytes(original.encode("utf-8"))
+            pristine.write_bytes(raw)
             path.write_text(text, encoding="utf-8")
             changed.append(path)
     return changed

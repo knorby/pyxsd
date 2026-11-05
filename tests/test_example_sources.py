@@ -258,3 +258,45 @@ def test_render_helpers_escape_and_wrap(family):
 def test_xrechnung_render_module_exposes_esc_only():
     render = import_module("examples.xrechnung.common.render")
     assert not hasattr(render, "num") and not hasattr(render, "svg")
+
+
+def test_force_reinstall_repairs_a_mangled_pristine_copy(tmp_path, monkeypatch):
+    """A --force reinstall must not keep stale .pristine bytes from a prior one."""
+    sources = import_module("examples.musicxml.common.sources")
+    payload = (
+        b'<xs:schema schemaLocation="http://www.musicxml.org/xsd/xml.xsd">\r\n</xs:schema>\r\n'
+    )
+    companion = b"<xs:schema/>\r\n"
+    spec = {
+        "destination": "set",
+        "kind": "files",
+        "entry": "entry.xsd",
+        "localize": True,
+        "rewrite": {"http://www.musicxml.org/xsd/xml.xsd": "xml.xsd"},
+        "files": [
+            {
+                "url": "https://example.invalid/entry.xsd",
+                "path": "entry.xsd",
+                "sha256": _sha(payload),
+            },
+            {
+                "url": "https://example.invalid/xml.xsd",
+                "path": "xml.xsd",
+                "sha256": _sha(companion),
+            },
+        ],
+    }
+    served = {
+        "https://example.invalid/entry.xsd": payload,
+        "https://example.invalid/xml.xsd": companion,
+    }
+    monkeypatch.setattr(sources, "_download", served.__getitem__)
+    sources.install(spec, cache_root=tmp_path, force=True)
+    pristine = tmp_path / "set" / ".pristine" / "entry.xsd"
+    assert pristine.read_bytes() == payload
+    pristine.write_text("mangled", encoding="utf-8")
+    with pytest.raises(sources.SourceVerificationError, match="corrupt cache"):
+        sources.install(spec, cache_root=tmp_path)
+    sources.install(spec, cache_root=tmp_path, force=True)
+    sources.install(spec, cache_root=tmp_path)
+    assert pristine.read_bytes() == payload
