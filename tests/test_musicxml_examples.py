@@ -481,3 +481,11 @@ def test_real_score_preview_draws_four_staves(chorale):
     assert svg.count('class="staff-line"') == 20
     assert svg.count("<ellipse") == 165
     assert svg.count('class="tie"') == 2
+
+
+def test_single_schema_family_rejects_variants():
+    from examples.musicxml.common import schemas
+
+    assert not hasattr(schemas, "ENTRIES")
+    with pytest.raises(KeyError, match="single schema entry"):
+        compile_schema("1.7")

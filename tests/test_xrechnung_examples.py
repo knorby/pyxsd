@@ -565,3 +565,11 @@ def test_render_pdf_writes_the_primary_invoice(tmp_path):
     data = dest.read_bytes()
     assert data.startswith(b"%PDF")
     assert len(data) > 1024
+
+
+def test_single_schema_family_rejects_variants():
+    from examples.xrechnung.common import schemas
+
+    assert not hasattr(schemas, "ENTRIES")
+    with pytest.raises(KeyError, match="single schema entry"):
+        compile_schema("1.7")

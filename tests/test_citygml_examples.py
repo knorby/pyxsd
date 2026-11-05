@@ -383,3 +383,11 @@ def test_sample_paths_are_ascii():
     """CI runs under LC_ALL=C on Linux; sample paths must stay ASCII."""
     for path in (LOD2_SAMPLE, LOD1_SAMPLE, GARAGE_SAMPLE):
         assert path.relative_to(FAMILY_ROOT).as_posix().isascii()
+
+
+def test_single_schema_family_rejects_variants():
+    from examples.citygml.common import schemas
+
+    assert not hasattr(schemas, "ENTRIES")
+    with pytest.raises(KeyError, match="single schema entry"):
+        compile_schema("1.7")

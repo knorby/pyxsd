@@ -496,3 +496,11 @@ def test_cli_defaults_to_the_family_out_directory(monkeypatch, tmp_path):
     assert written.read_text(encoding="utf-8").startswith(
         '<svg xmlns="http://www.w3.org/2000/svg" width="640"'
     )
+
+
+def test_single_schema_family_rejects_variants():
+    from examples.bpmn.common import schemas
+
+    assert not hasattr(schemas, "ENTRIES")
+    with pytest.raises(KeyError, match="single schema entry"):
+        compile_schema("1.7")
