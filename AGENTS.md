@@ -9,6 +9,19 @@
 - Docs and examples describe what a workflow does, never what technology it
   "replaces": no "XSLT replacement" / browser-XSLT framing anywhere.
 
+## Documentation matches the project, not the work stream
+
+- A docs page named for a capability (rendering, data workflows, batch)
+  covers every example with that capability, not just the ones the current
+  change adds. Survey `examples/` and the existing docs before writing or
+  renaming; a broader name on a narrower page is a scoping bug.
+- Docs state what exists and give commands that run. Link a family README
+  instead of restating it; a docs page earns its place with what only it can
+  add — cross-family patterns, the boundary with the library, navigation.
+- If a proposed page or section would only echo one change's output or say
+  what its README already says, it is slop: extend the existing page or the
+  README instead of writing it.
+
 ## Every change needs tests that cover its added lines
 
 - Overall branch coverage has an enforced floor (`fail_under = 99` in
