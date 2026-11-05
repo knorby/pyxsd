@@ -139,13 +139,19 @@ def test_integration_examples_use_identified_inputs(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     namespace = {}
     guide = GUIDE.parent.parent / "integrations.md"
-    for source in _python_blocks(guide.read_text(encoding="utf-8")):
+    walkthrough, contextual = guide.read_text(encoding="utf-8").split(
+        "### Named scalar columns with row context", 1
+    )
+    for source in _python_blocks(walkthrough):
         exec(compile(source, "integrations.md", "exec"), namespace)
     assert namespace["snapshot"].model_dump(by_alias=True) == namespace["inventory"].model_dump(
         by_alias=True
     )
     assert namespace["item"].model_dump(by_alias=True)["{urn:inventory}quantity"] == 4
     assert pq.read_table("inventory.parquet").num_rows == 1
+    namespace = {}
+    for source in _python_blocks(contextual):
+        exec(compile(source, "integrations.md[contextual]", "exec"), namespace)
     assert namespace["table"].column_names == [
         "order_number",
         "customer_account",

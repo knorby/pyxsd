@@ -2,7 +2,7 @@
 
 Query schema-derived Arrow records from
 [`observations.xml`](../arrow/observations.xml) with DuckDB or Polars.
-This walkthrough owns setup, commands, expected output, and consumer limits.
+The commands below show setup, expected output, and consumer limits.
 See the [integration guide](../../docs/integrations.md) for conversion rules.
 
 - `common.py` prepares the shared inputs: the nested record projection and the

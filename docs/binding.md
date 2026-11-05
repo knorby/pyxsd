@@ -15,7 +15,7 @@ purpose:
 | XSD version | `xsd_version="1.1"` | Processor version and version-gated schema vocabulary. Use `"1.0"` when needed; see {doc}`supported` for coverage limits. |
 | Namespace handling | `namespaces="legacy"` | Local-name compatibility versus expanded-name validation. Use `ParseModes.NAMESPACED` for namespace-aware binding. |
 | Binding retention | `invalid_value="drop"` | Whether invalid lexical values are dropped or retained as raw strings; `ParseModes.LAX` also retains unresolved/undeclared content. |
-| Facet checks | `facets="on"` | Whether facets are enforced. Disabling them reduces validation; see {doc}`validation`. |
+| Facet checks | `facets="strict"` | Whether facets are enforced. Disabling them reduces validation; see {doc}`validation`. |
 | XML parser profile | stdlib behavior | DOCTYPE/entity protections and optional structural limits; see {doc}`xml-security`. |
 | Failure on report errors | Explicit check | Call `require_valid()` in Python or pass CLI `--strict`; neither is implied by a binding preset. |
 

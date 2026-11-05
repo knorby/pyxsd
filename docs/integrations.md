@@ -144,6 +144,7 @@ repository root with the Arrow extra installed.
 
 ```python
 from pyxsd.integrations.arrow import records
+import pyxsd
 from pyxsd.integrations.projection import FieldSource
 
 schema = pyxsd.compile("examples/pydantic/orders.xsd", mode=pyxsd.ParseModes.NAMESPACED)

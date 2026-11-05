@@ -28,7 +28,7 @@ $ uv run pyxsd -i document.xml -s schemas/wml.xsd --namespaces strict \
 $ cat document.md
 ```
 
-Or from anywhere, using the library API:
+Or from the repository root, using the library API:
 
 ```python
 from pyxsd import ParseModes, Schema

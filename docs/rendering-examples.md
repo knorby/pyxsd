@@ -15,9 +15,8 @@ transform tour, and the healthcare family described in its
 
 Every rendering family follows the same shape:
 
-1. **Compile once.** The family's pinned schema closure is compiled into
-   Python classes once per process and reused for every document it
-   renders.
+1. **Compile.** Compile the family's schema into Python classes. Reuse the
+   compiled schema when rendering multiple documents sequentially.
 2. **Bind.** `Schema.parse()` validates and binds the document into a
     typed tree. Each family decides whether errors prevent rendering:
     BPMN requires valid input, while CityGML can render with recorded
@@ -36,12 +35,17 @@ application code decides how to present the data. That boundary is the
 same one described in {doc}`data-workflows`, and the transform API is in
 {doc}`transforms/writing`.
 
-Sources are pinned per family: `sources.toml` records URLs, revisions,
+CityGML, BPMN, OpenDRIVE, XRechnung, and MusicXML pin their sources per
+family: `sources.toml` records URLs, revisions,
 licenses, and SHA-256 digests; the downloader installs verified files
 under the family's gitignored `.cache/`, and repeating the command
 verifies the cache without network access. Rendered artifacts go under
 the family's gitignored `out/`. Output is byte-deterministic except where
 a library stamps metadata (reportlab PDFs carry a creation date).
+
+DOCX uses `download_schemas.py` to populate `schemas/`; its documented
+transform writes `document.md` in the working directory. Follow its README
+for setup and output paths.
 
 ```sh
 uv sync --group examples-matplotlib --group examples-fastapi --group examples-reportlab
@@ -97,9 +101,8 @@ caveats.
 
 ## Sources and licensing
 
-See each family's `SOURCES.md` for provenance, attribution, and license
-evidence, and its `sources.toml` for the pinned digests (the `docx/`
-family predates the pinned-manifest discipline and documents its own
-fetcher in its README). Never commit downloaded schemas or sample corpora:
-they remain in the family's `.cache/`, and generated artifacts remain in
-its `out/`.
+For the five manifest-based families, see `SOURCES.md` for provenance,
+attribution, and license evidence, and `sources.toml` for pinned digests.
+Their downloaded files stay in `.cache/` and default artifacts in `out/`.
+DOCX documents its separate fetcher and paths in its README. Keep downloaded
+schemas, sample corpora, and generated artifacts out of version control.
