@@ -46,8 +46,8 @@ _PER_NOTE_GAIN = 0.22
 _PEAK = 0.89
 _HARMONICS = ((1.0, 1), (0.35, 2), (0.15, 3))
 
-_DEFAULT_INPUT = Path(__file__).resolve().parents[1] / "instance.xml"
-_DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "out" / "chorale.wav"
+_DEFAULT_INPUT = Path(__file__).resolve().parent / "instance.xml"
+_DEFAULT_OUTPUT = Path(__file__).resolve().parent / "out" / "chorale.wav"
 
 
 def midi_to_freq(midi: int) -> float:

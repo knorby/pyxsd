@@ -27,8 +27,8 @@ from examples.musicxml.common.render import esc, num, svg
 from examples.musicxml.common.schemas import compile_schema
 from examples.musicxml.synthesize import STEP_INDEX, _score_parts
 
-_DEFAULT_INPUT = Path(__file__).resolve().parents[1] / "instance.xml"
-_DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "out" / "score-preview.svg"
+_DEFAULT_INPUT = Path(__file__).resolve().parent / "instance.xml"
+_DEFAULT_OUTPUT = Path(__file__).resolve().parent / "out" / "score-preview.svg"
 
 _LINE_GAP = 8.0
 _STAFF_HEIGHT = _LINE_GAP * 4

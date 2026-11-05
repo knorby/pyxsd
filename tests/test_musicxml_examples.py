@@ -21,6 +21,15 @@ from examples.musicxml.common.sources import require_cache
 from pyxsd import Schema
 from pyxsd.binding import ParseModes
 
+
+def test_cli_defaults_use_the_musicxml_family_root():
+    family_root = Path(synthesize.__file__).resolve().parent
+    for module, output_name in ((synthesize, "chorale.wav"), (render_preview, "score-preview.svg")):
+        assert family_root / "instance.xml" == module._DEFAULT_INPUT
+        assert family_root / "out" / output_name == module._DEFAULT_OUTPUT
+    assert (family_root / "instance.xml").is_file()
+
+
 SCORE_SCHEMA = """\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="score-partwise">
