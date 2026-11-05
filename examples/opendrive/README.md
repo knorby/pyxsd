@@ -63,9 +63,34 @@ Pinned samples:
 | `fabriksgatan.xodr` | 1.4 | 16 | `paramPoly3` geometry and `laneOffset` |
 | `soderleden.xodr` | 1.7 | 5 | 1.7 schema set, highway interchange |
 
+## Serve
+
+The family includes a local FastAPI use that selects the OpenDRIVE schema
+from each document's header revision. It reuses this family's pinned
+schemas, sample networks, map renderer, and profile plot:
+
+```sh
+uv run --group examples-fastapi --group examples-matplotlib \
+    uvicorn examples.opendrive.server:app --port 8000
+```
+
+Open <http://127.0.0.1:8000/> for the sample browser. `/render/Town01`,
+`/render/Town02`, `/render/soderleden`, and `/render/curves_elevation`
+return SVG maps; add `?format=png` for elevation profiles. Submit a
+network for diagnostics and a road count:
+
+```sh
+curl --data-binary @network.xodr -H 'Content-Type: application/xml' \
+    http://127.0.0.1:8000/validate
+```
+
+Revision 1.4 selects the 1.4 schema, 1.5 selects 1.5, and 1.6/1.7 select
+the 1.7 closure; missing or unsupported revisions are diagnostics. This is
+a local example, not a deployment recipe for untrusted uploads.
+
 ## Interfaces
 
-The FastAPI showcase server imports these functions directly:
+The family server imports these functions directly:
 
 ```python
 # render_map.py

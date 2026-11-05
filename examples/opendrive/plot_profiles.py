@@ -7,7 +7,7 @@ at ``s = 0`` for every road, so the plot draws one line per road rather
 than pretending a route is continuous.
 
 Matplotlib is imported inside :func:`plot_profiles` so the rest of the
-OpenDRIVE workflow (and the FastAPI showcase) works with only pyxsd
+OpenDRIVE workflow (and the family server) works with only pyxsd
 installed; the example-only dependency group is
 ``uv sync --group examples-matplotlib``.
 """
