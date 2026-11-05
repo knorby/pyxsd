@@ -37,6 +37,28 @@ The CLI compiles the pinned schema, parses the file, and refuses to write
 output when the document has validation errors (diagnostics go to
 stderr). The default output directory is `examples/bpmn/out/`.
 
+## Serve
+
+The family also includes a local FastAPI use for curated rendering and
+submitted XML validation. It reuses this family's pinned schema, sample
+cache, and SVG renderer:
+
+```sh
+uv run --group examples-fastapi uvicorn examples.bpmn.server:app --port 8000
+```
+
+Open <http://127.0.0.1:8000/> for the sample browser. Rendering is
+available at `/render/starter`, `/render/simple`,
+`/render/sequence-flows`, and `/render/nested-subprocesses`. Submit a
+document for validation and shape/edge facts:
+
+```sh
+curl --data-binary @document.bpmn -H 'Content-Type: application/xml' \
+    http://127.0.0.1:8000/validate
+```
+
+This is a local example, not a deployment recipe for untrusted uploads.
+
 ## What it draws
 
 - **Pools and lanes** as backdrop frames, from the `participant` and `lane`
@@ -114,10 +136,12 @@ name via `document.xpath(..., namespaces=...)`.
 ## Tests
 
 ```sh
-uv run pytest tests/test_bpmn_examples.py -q
+uv run pytest tests/test_bpmn_examples.py tests/test_bpmn_server.py -q
 ```
 
-The offline tests build a synthetic BPMN subset spanning the model,
+The server tests cover the family-local HTTP contract with injected
+samples and schemas, plus cache-gated real render/validate cases. The
+offline tests build a synthetic BPMN subset spanning the model,
 BPMN-DI, DD-DC, and DD-DI namespaces and cover shape classification,
 waypoint reading, glyph output, y-axis flipping, text escaping, and byte
 determinism. The real-schema tests parse all four pinned samples and skip
