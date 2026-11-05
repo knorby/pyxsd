@@ -19,10 +19,10 @@ Every rendering family follows the same shape:
    Python classes once per process and reused for every document it
    renders.
 2. **Bind.** `Schema.parse()` validates and binds the document into a
-   typed tree. Rendering never requires a clean validation verdict:
-   schemas with known stock findings (CityGML) and documents with
-   recorded instance findings still bind, while diagnostics stay
-   available on `schema.report`. See {doc}`validation`.
+    typed tree. Each family decides whether errors prevent rendering:
+    BPMN requires valid input, while CityGML can render with recorded
+    findings. Schema findings are on `schema.report`; the merged schema
+    and instance findings are on `document.report`. See {doc}`validation`.
 3. **Walk.** The renderer reads the bound tree — typed descriptors,
    `to_dict()` projections, or XPath — and extracts exactly the facts it
    presents.
@@ -55,12 +55,12 @@ removed from the environment.
 
 | Family | Data source | Artifacts | One caveat |
 | --- | --- | --- | --- |
-| `citygml/` | OGC CityGML 2.0 LOD1/LOD2 buildings | SVG plan, 3D PNG | known stock schema findings; needs `examples-matplotlib` |
-| `bpmn/` | BPMN 2.0 with diagram interchange | SVG diagram | draws the saved layout; not an auto-layout engine |
-| `opendrive/` | ASAM OpenDRIVE 1.4–1.8 roads | SVG map, profile PNG | schema picked from the header revision; needs `examples-matplotlib` |
-| `xrechnung/` | UBL 2.3 / EN 16931 invoices | HTML, PDF | keeps lexical amounts; XSD validity is not business-rule conformance |
-| `musicxml/` | MusicXML 4.0 scores | WAV, SVG preview | merged ties, fixed tempo; not an engraver |
-| `docx/` | ECMA-376 WordprocessingML | Markdown | fetches its own schema set (`download_schemas.py`) |
+| [CityGML](https://github.com/knorby/pyxsd/tree/develop/examples/citygml) | OGC CityGML 2.0 LOD1/LOD2 buildings | SVG plan, 3D PNG | known schema findings; needs `examples-matplotlib` |
+| [BPMN](https://github.com/knorby/pyxsd/tree/develop/examples/bpmn) | BPMN 2.0 with diagram interchange | SVG diagram | draws the saved layout; not an auto-layout engine |
+| [OpenDRIVE](https://github.com/knorby/pyxsd/tree/develop/examples/opendrive) | ASAM OpenDRIVE 1.4–1.7 roads | SVG map, profile PNG | schema picked from the header revision; needs `examples-matplotlib` |
+| [XRechnung](https://github.com/knorby/pyxsd/tree/develop/examples/xrechnung) | UBL 2.3 / EN 16931 invoices | HTML, PDF | keeps lexical amounts; XSD validity is not business-rule conformance |
+| [MusicXML](https://github.com/knorby/pyxsd/tree/develop/examples/musicxml) | MusicXML 4.0 scores | WAV, SVG preview | merged ties, fixed tempo; not an engraver |
+| [DOCX](https://github.com/knorby/pyxsd/tree/develop/examples/docx) | ECMA-376 WordprocessingML | Markdown | fetches its own schema set (`download_schemas.py`) |
 
 Each README has the commands, the binding details that family
 demonstrates, and its full list of limitations.

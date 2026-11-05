@@ -82,7 +82,7 @@ def test_uvx_is_primary_and_direct_install_remains_documented():
     assert "--state-dir" in install
     assert "--no-persist" in install
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "uvx --from 'pyxsd[mcp]' pyxsd-mcp" in readme
+    assert "https://pyxsd.knorby.com/mcp.html" in readme
     skill = (ROOT / "src/pyxsd/skills/pyxsd-mcp/SKILL.md").read_text(encoding="utf-8")
     assert "uvx --from 'pyxsd[mcp]' pyxsd-mcp" in skill
 

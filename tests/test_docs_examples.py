@@ -47,3 +47,41 @@ def test_in_memory_example_runs(capsys):
     assert "body before: hello & goodbye" in out
     assert "<body>HELLO &amp; GOODBYE</body>" in out
     assert "revalidation errors: []" in out
+
+
+def test_readme_first_example_is_self_contained(capsys):
+    readme = GUIDE.parents[2] / "README.md"
+    source = _python_blocks(readme.read_text(encoding="utf-8"))[0]
+    namespace = {}
+    exec(compile(source, "README.md", "exec"), namespace)
+    assert capsys.readouterr().out == "42\n"
+    assert namespace["document"].is_valid
+
+
+def test_quickstart_from_supplied_files(tmp_path, monkeypatch, capsys):
+    guide = GUIDE.parent.parent / "quickstart.md"
+    markdown = guide.read_text(encoding="utf-8")
+    xml_blocks = markdown.split("```xml\n")[1:]
+    assert len(xml_blocks) == 2, "Supply the complete schema and XML input"
+    for filename, block in zip(("inventory.xsd", "inventory.xml"), xml_blocks, strict=True):
+        (tmp_path / filename).write_text(block.split("```", 1)[0], encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    namespace = {}
+    for index, source in enumerate(_python_blocks(markdown)):
+        exec(compile(source, f"quickstart.md[{index}]", "exec"), namespace)
+    assert "Bolts 4" in capsys.readouterr().out
+    checked = namespace["checked"]
+    assert checked.is_valid
+    saved = namespace["schema"].parse(tmp_path / "updated.xml")
+    assert saved.is_valid
+    assert saved.xpath("string(/i:inventory/i:item/i:name)", namespaces=namespace["ns"]) == "BOLTS"
+
+
+def test_transform_guide_library_example(tmp_path, monkeypatch):
+    guide = GUIDE.parent / "using.md"
+    monkeypatch.chdir(tmp_path)
+    namespace = {}
+    for source in _python_blocks(guide.read_text(encoding="utf-8")):
+        exec(compile(source, "using.md", "exec"), namespace)
+    assert namespace["checked"].is_valid
+    assert "HELLO" in (tmp_path / "out.xml").read_text(encoding="utf-8")

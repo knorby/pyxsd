@@ -1,12 +1,12 @@
 # Writing transforms
 
-Writing a transform means writing a small Python class with a fixed shape.
-pyxsd loads transforms dynamically from just a name and a call string, so
-the shape matters.
+For library use, write a function that takes the tree root; see
+{doc}`using` for a complete example. A `Transform` subclass adds visitor and
+node-construction helpers and can be discovered by name on the CLI.
 
 ## The rules
 
-Every transform must follow these rules:
+For a discoverable `Transform` subclass, follow these conventions:
 
 1. **Give the entry-point class a matching module.** CLI discovery matches
    the class name to the module name (case and underscores are normalized,
@@ -125,11 +125,10 @@ writable by `XmlTreeWriter`. The node shape is documented in {doc}`../data-model
 
 ## Revalidating after structural changes
 
-If your transform changes the tree's shape so much that it no longer
-corresponds to the schema, call `Document.revalidate()` on the
-transformed document — it re-parses the serialized tree against the same
-schema and returns a fresh document whose report reflects the new
-structure:
+After value or structure edits, call `Document.revalidate()` on the
+transformed document. It reparses the serialized tree against the same
+schema and returns a fresh document whose report reflects the current values
+and structure:
 
 ```python
 again = transformed.revalidate()

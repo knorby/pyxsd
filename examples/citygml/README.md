@@ -107,29 +107,21 @@ formatted with fixed precision, and nothing timestamped is emitted.
 ## Known findings on the stock schema
 
 `compile_schema()` composes the real CityGML 2.0 closure and the
-GML 3.1.1 closure it imports. Do **not** call `require_valid()`: the
-official files themselves trip 22 error-severity findings:
+GML 3.1.1 closure it imports. This example renders despite pyxsd's schema
+findings; adding `require_valid()` would stop it. Findings include:
 
-- 21 × `particle-restriction` — GML 3.1.1 derives geometry types by
+- `particle-restriction` — pyxsd reports restriction/extension mismatches in
+  GML 3.1.1, including geometry types derived by
   extension inside restrictions of `AbstractGeometryType` (and similar
-  `metaDataProperty`/`description` sequence mismatches). Every strict
-  validator reports these; they are inherent to the published files.
-- 1 × `unknown-attributeRef` — `gml:uom` referenced from
+  `metaDataProperty`/`description` sequence mismatches).
+- `unknown-attributeRef` — `gml:uom` referenced from
   `CoordinateSystemAxisType` cannot be resolved in GML 3.1.1.
 
-Parsing the example instances adds exactly 3 instance-phase errors, all
-from the abstract `gml:_Feature` particle that composition cannot bind:
-
-- `order` on `FeaturePropertyType` (`_Feature` expected in a different
-  position),
-- `unexpected-element` for `dem:ReliefFeature`,
-- `occurrence-min` for the missing `gml:_Feature`.
-
-The trees still bind `cityObjectMember → Building`, the solids, and the
-semantic surfaces, which is all both renderers need. The tests assert the
-report stays at or below 30 errors and that those codes remain present, so
-a future improvement to composition support shows up as a deliberate
-baseline update rather than silent drift.
+Instance findings, including content-order errors, are available on
+`document.report`. These describe this processor and configuration, not a
+verdict shared by every validator. The renderers use the bound buildings,
+solids, and semantic surfaces. Inspect the report alongside the artifact;
+a rendered view does not establish validity or complete geometry support.
 
 ## Limitations
 

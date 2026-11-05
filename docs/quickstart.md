@@ -1,123 +1,146 @@
 # Quickstart
 
-pyxsd maps an XML document into a Python object tree according to its XML
-Schema (XSD), reports validation issues, runs user-defined *transforms*, and
-writes the tree back out as XML. The base install's runtime dependencies are
-[elementpath](https://pypi.org/project/elementpath/) (XSD regular expressions
-and XPath) and [defusedxml](https://pypi.org/project/defusedxml/), both pure
-Python with no compiled extensions. defusedxml is loaded only when an opt-in
-parser profile selects it; the default parser keeps the stdlib's speed and
-compatibility.
+Validate a small inventory, query its items, and save a checked edit. This
+walkthrough uses only the base library and the two files supplied below.
 
 ## Requirements
 
-- Python 3.11 or newer (3.11–3.15 tested)
-- Two pure-Python dependencies: `elementpath` (XSD regular expressions) and
-  `defusedxml` (opt-in parser hardening); no compiled extensions
-
-```{note}
-Parsing untrusted XML is a decision, not a default. See {doc}`xml-security` for
-`XmlParserPolicy`, `XmlLimits`, remote schema rules, and the XPath/DoS boundary.
-```
+Python 3.11 or newer (3.11–3.15 tested). The base dependencies, `elementpath`
+and `defusedxml`, are pure Python; no compiled extensions are required.
+Before using untrusted input, read {doc}`xml-security` for parser protections
+and limits. The files in this walkthrough are trusted sample data.
 
 ## Installation
 
-```bash
-pip install pyxsd
+Install into the Python environment in which you will run the examples:
+
+```sh
+python -m pip install pyxsd
 ```
 
-or with [uv](https://docs.astral.sh/uv/):
+In a uv-managed project, use `uv add pyxsd` and run scripts with `uv run python`.
+For **CLI-only** use, `uv tool install pyxsd` creates an isolated tool
+environment; it does not make library imports available in another project.
 
-```bash
-uv tool install pyxsd
+## Create the input files
+
+Save this as `inventory.xsd` in an empty working directory:
+
+```xml
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="urn:inventory" xmlns:i="urn:inventory"
+    elementFormDefault="qualified">
+  <xs:element name="inventory">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="name" type="xs:string"/>
+              <xs:element name="quantity" type="xs:positiveInteger"/>
+            </xs:sequence>
+            <xs:attribute name="id" type="xs:string" use="required"/>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
 ```
 
-## Command line
+Save this as `inventory.xml` beside it:
 
-Given a schema and an instance document:
-
-```bash
-pyxsd --inputXml inventory.xml
+```xml
+<inventory xmlns="urn:inventory">
+  <item id="B1"><name>Bolts</name><quantity>4</quantity></item>
+</inventory>
 ```
-
-pyxsd locates the schema from the instance's `xsi:schemaLocation`-style hints
-(or you can pass `-s schema.xsd`), builds the object tree, and validates it.
-By default nothing is written: a bare run is a validation pass. Pass `-k` to
-write the parsed tree, or give a transform with `-t`; transform output goes
-to standard output by default. Use `-o FILE` (or `-o stdout`) to choose the
-destination explicitly, or `-d` for the default filename
-(`<input>Transformed.xml`). Useful flags:
-
-```bash
-# Validate strictly: exit 1 if the report contains errors
-pyxsd -i inventory.xml -s schema.xsd --strict
-
-# Write the parsed tree to a file, then apply a transform
-pyxsd -i inventory.xml -s schema.xsd -k -o transformed.xml -t 'PrintData()'
-
-# Chain transforms with '>'
-pyxsd -i inventory.xml -t 'PrintData() > PrintData()'
-```
-
-See {doc}`cli` for the complete flag reference and {doc}`transforms/index`
-for transform syntax.
 
 ## Library use
 
-Two objects do the work: a compiled {class}`~pyxsd.schema.Schema` and the
-{class}`~pyxsd.document.Document` instances it produces. Compiling the
-schema builds the Python classes; each parse binds one instance document:
+Run Python from that directory. Compile the schema, then parse the XML:
 
 ```python
-import pyxsd
+from pyxsd import ParseModes, Schema
 
-schema = pyxsd.Schema.compile("inventory.xsd")
-schema.require_valid()  # raises pyxsd.ValidationError if the schema is bad
-
+schema = Schema.compile("inventory.xsd", mode=ParseModes.NAMESPACED)
+schema.require_valid()
 document = schema.parse("inventory.xml")
-document.require_valid()  # raises pyxsd.ValidationError if the document is bad
+document.require_valid()
 ```
 
-A failed check raises {class}`~pyxsd.exceptions.ValidationError`, whose
-`report` attribute holds every issue found so far. Without it, the
-document keeps going — pyxsd is a *lax* validator — and the report is
-there when you want it:
+`schema.report` contains schema findings. `document.report` merges those
+with instance findings. A returned object alone does not establish validity:
+`require_valid()` raises `ValidationError` if its report contains errors.
+Unreadable or malformed input can raise `PyXSDError` before binding completes.
+
+## Query the document
+
+Use query prefixes even when the XML uses a default namespace:
 
 ```python
-if document.report.has_errors:
-    for issue in document.report.issues:
-        print(issue.format())
+ns = {"i": "urn:inventory"}
+item = document.find("i:item", namespaces=ns)
+print(item.name, item.quantity)  # Bolts 4
+items = document.findall("i:item", namespaces=ns)
+assert len(items) == 1
+assert document.xpath("count(/i:inventory/i:item)", namespaces=ns) == 1
 ```
 
-`document.root` is the parsed tree's root instance. Transforms are plain
-callables that take the root; one returning a tree root comes back as a
-new `Document` you can write out:
+`find` and `findall` accept ElementTree paths relative to the root and return
+bound nodes (`None` or an empty list when absent). `xpath` accepts XPath
+expressions, including scalar queries; absolute paths include the root name.
+See {doc}`data-model` for query semantics and export fidelity.
+
+Simple children such as `item.name` provide value access. Some parsed complex
+children are present in `_children_` while their descriptor returns `None`;
+use `find`, `findall`, or `xpath` to retrieve those nodes. Type stubs describe
+declarations, not a guarantee that every descriptor is populated after parsing.
+
+## Edit, revalidate, and write
+
+Change a bound text node, then check a fresh document before writing it:
 
 ```python
-def normalize_units(root): ...
-
-
-updated = document.transform(normalize_units)
-updated.write("normalized.xml")
+name = document.find("i:item/i:name", namespaces=ns)
+name._value_ = ["BOLTS"]
+checked = document.revalidate()
+checked.require_valid()
+checked.write("updated.xml")
 ```
 
-A transform that changes the tree's shape leaves the report describing
-the tree as it was parsed; call `updated.revalidate()` to re-parse the
-serialized tree and get a fresh report for its current shape. The tree
-walks with `pyxsd.tree.iter_tree` or the `walk`/visitor helpers in
-{doc}`transforms/class`; the node shape is documented in {doc}`data-model`.
+The saved item name is `BOLTS`. `_value_` is a list of lexical strings in the
+{doc}`data-model`. The old report describes the original parse; neither edits
+nor `write()` refresh it. Value changes can violate a type or facet just as
+structural edits can violate a content model. `revalidate()` serializes and
+reparses the tree; use its returned document and report.
+
+For reusable edits, see {doc}`transforms/using`. Transforms can mutate the
+original tree; they do not automatically copy it or revalidate their result.
+
+## Command line
+
+From the directory containing the two input files:
+
+```sh
+pyxsd -i inventory.xml -s inventory.xsd --namespaces strict --strict
+```
+
+A successful run exits `0` without writing XML. Change the quantity to `0`
+to see a validation report on stderr and exit code `1`. Without `--strict`,
+recoverable validation errors do not fail the command. Namespace handling,
+binding retention, and failure-on-errors are separate choices; see
+{doc}`binding` and {doc}`cli`.
 
 ## What pyxsd validates
 
-pyxsd is a *lax* validator for recoverable issues: it builds the tree even
-when the document has validation errors and records non-fatal issues in a
-{doc}`validation` report rather than aborting. The supported feature set includes the built-in type lattice,
-sequence / choice / all content models, groups, wildcards, substitution
-groups, `xsi:type` dispatch, nil/default/fixed, identity constraints, and
-schema composition. Known gaps are tabulated in {doc}`supported`.
+See {doc}`supported` for supported XSD constructs and known gaps. Validation
+reports describe the checks performed, not automatic repairs or complete
+domain-specific conformance.
 
 ## Next steps
 
-- {doc}`architecture` — how the ER system generates classes from your schema
-- {doc}`transforms/writing` — write your own transforms
-- {doc}`migration-1.0` — coming from pyxsd 0.1?
+- {doc}`validation`: interpret findings and troubleshoot unexpected results.
+- {doc}`demo`: run a custom transform from a repository checkout.
+- {doc}`batch`: parse multiple files sequentially with one compiled schema.
+- {doc}`integrations`: generate Pydantic snapshots or Arrow/Parquet exports.
