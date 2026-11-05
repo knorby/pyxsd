@@ -17,10 +17,10 @@ From the repository root:
 #    (Repeating this command verifies the cache without network access.)
 uv run python examples/xrechnung/download_sources.py --only ubl-schema --only ubl-data
 
-# 2. HTML invoice -> out/invoice.html
+# 2. HTML invoice -> examples/xrechnung/out/invoice.html
 uv run python examples/xrechnung/render_html.py
 
-# 3. PDF invoice (optional extra) -> out/invoice.pdf
+# 3. PDF invoice (optional extra) -> examples/xrechnung/out/invoice.pdf
 uv run --group examples-reportlab python examples/xrechnung/render_pdf.py
 ```
 

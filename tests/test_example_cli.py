@@ -26,6 +26,8 @@ RENDERER_CLIS = (
 
 @pytest.mark.parametrize("relative", RENDERER_CLIS)
 def test_renderer_cli_help_runs_from_repo_root(relative: str):
+    if relative == "examples/xrechnung/render_pdf.py":
+        pytest.importorskip("reportlab")
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     result = subprocess.run(

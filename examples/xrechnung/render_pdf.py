@@ -29,6 +29,7 @@ from examples.xrechnung.common.render import esc
 from examples.xrechnung.render_html import (
     _DASH,
     DEFAULT_SAMPLE,
+    default_output,
     default_sample,
     invoice_facts,
     load_invoice,
@@ -305,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("out/invoice.pdf"),
+        default=default_output("invoice.pdf"),
         help="output path (default: %(default)s)",
     )
     args = parser.parse_args(argv)

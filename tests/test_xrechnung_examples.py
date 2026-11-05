@@ -9,11 +9,13 @@ cache is absent.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from examples.xrechnung.common.schemas import compile_schema
 from examples.xrechnung.common.sources import cache_path
 from examples.xrechnung.render_html import (
+    default_output,
     invoice_facts,
     money,
     percent,
@@ -26,6 +28,13 @@ from pyxsd.binding import ParseModes
 CBC_NS = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
 CAC_NS = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
 INV_NS = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+
+
+def test_cli_default_outputs_use_the_xrechnung_family_root():
+    family_root = Path(__file__).resolve().parents[1] / "examples/xrechnung"
+    assert default_output("invoice.html") == family_root / "out/invoice.html"
+    assert default_output("invoice.pdf") == family_root / "out/invoice.pdf"
+
 
 CBC_SCHEMA = f"""\
 <?xml version="1.0" encoding="UTF-8"?>

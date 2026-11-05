@@ -495,6 +495,10 @@ def default_sample() -> Path:
     return matches[0]
 
 
+def default_output(filename: str) -> Path:
+    return Path(__file__).resolve().parent / "out" / filename
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Render a UBL invoice as standalone HTML.")
     parser.add_argument(
@@ -506,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("out/invoice.html"),
+        default=default_output("invoice.html"),
         help="output path (default: %(default)s)",
     )
     args = parser.parse_args(argv)
