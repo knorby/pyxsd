@@ -29,7 +29,6 @@ from examples.xrechnung.common.render import esc
 from examples.xrechnung.render_html import (
     _DASH,
     DEFAULT_SAMPLE,
-    FOOTER_COMMENT,
     default_sample,
     invoice_facts,
     load_invoice,
@@ -271,7 +270,6 @@ def _story(facts: dict, styles: dict[str, ParagraphStyle]) -> list:
                 Paragraph("<br/>".join(esc(note) for note in facts["notes"]), styles["small"]),
             ]
         )
-    story.extend([Spacer(1, 8 * mm), Paragraph(esc(FOOTER_COMMENT), styles["small"])])
     return story
 
 
@@ -286,7 +284,6 @@ def render_pdf(document: Document, dest: Path) -> Path:
         str(dest),
         pagesize=A4,
         title=document_title,
-        author="pyxsd",
         subject="Server-side invoice rendering",
         leftMargin=18 * mm,
         rightMargin=18 * mm,

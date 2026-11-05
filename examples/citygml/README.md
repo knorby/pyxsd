@@ -1,7 +1,7 @@
 # CityGML: buildings as an SVG plan and a shaded 3D plot
 
-Browsers are dropping client-side XSLT, but geospatial formats still need a
-rendering path. This workflow compiles the official **OGC CityGML 2.0**
+Geospatial formats still need a rendering path. This workflow compiles the
+official **OGC CityGML 2.0**
 schema closure once, binds real `CityModel` documents into pyxsd's typed
 tree, walks the GML solids, and produces two server-side artifacts with no
 GIS stack and no JavaScript:

@@ -3,9 +3,8 @@
 One local FastAPI app mounts the five example-family workflows: CityGML building
 plans, OpenDRIVE road maps, BPMN diagrams, UBL invoices, and a MusicXML
 chorale you can hear. The renderers consume pyxsd's bound documents rather
-than raw XML strings. **Server-side rendering replaces browser XSLT**:
-the browser receives SVG, HTML, PDF, PNG, or WAV, not a stylesheet that
-depends on a browser XSLT engine.
+than raw XML strings: the browser receives finished artifacts — SVG,
+HTML, PDF, PNG, or WAV.
 
 ## Run
 

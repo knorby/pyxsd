@@ -10,10 +10,9 @@ interpretation, typed binding, and diagnostics; application code decides how
 to present the data. A compiled {class}`~pyxsd.schema.Schema` can be reused
 for multiple documents. See {doc}`transforms/writing` for the transform API.
 
-Rendering on the server also provides an alternative to browser-side XSLT:
-parse and validate XML in Python, then send the browser HTML or SVG rather
-than relying on a browser XSLT engine. The invoice workflow and the shared
-FastAPI example demonstrate that separation.
+Rendering can also happen on the server: parse and validate XML in Python,
+then hand the browser finished HTML or SVG. The invoice workflow and the
+shared FastAPI example demonstrate that separation.
 
 ## Setup
 

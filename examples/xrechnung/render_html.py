@@ -1,10 +1,9 @@
 """Turn a bound UBL invoice into business facts and a standalone HTML page.
 
-This is this family's "server-side XSLT replacement" story: compile the
-OASIS UBL 2.3 schema once, bind an EN 16931 / XRechnung invoice, extract a
-small typed view with :func:`invoice_facts`, and render it with plain
-Python. No stylesheet, no XSLT engine -- and the same facts drive the PDF
-renderer in ``render_pdf.py``.
+Compile the OASIS UBL 2.3 schema once, bind an EN 16931 / XRechnung
+invoice, extract a small typed view with :func:`invoice_facts`, and
+render it with plain Python; the same facts drive the PDF renderer in
+``render_pdf.py``.
 
 Access pattern: on this ref-based UBL schema, descriptor reads such as
 ``document.root.ID`` return ``None`` even though binding and XPath work,
@@ -457,8 +456,6 @@ th, td { padding: 9px 10px; }
 }
 """
 
-FOOTER_COMMENT = "Rendered server-side by pyxsd \u2014 the browser-side XSLT replacement."
-
 
 def render_html(document: Document) -> str:
     """Render *document* as one self-contained HTML page (no external assets)."""
@@ -480,7 +477,6 @@ def render_html(document: Document) -> str:
         + _totals_table(facts)
         + _notes_block(facts)
         + "\n</main>\n"
-        + f"<!-- {FOOTER_COMMENT} -->\n"
         + "</body>\n</html>\n"
     )
 

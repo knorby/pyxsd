@@ -14,7 +14,6 @@ import pytest
 from examples.xrechnung.common.schemas import compile_schema
 from examples.xrechnung.common.sources import cache_path
 from examples.xrechnung.render_html import (
-    FOOTER_COMMENT,
     invoice_facts,
     money,
     percent,
@@ -482,8 +481,10 @@ def test_render_html_escapes_and_formats_the_invoice(synthetic_document):
     assert "H87" in html
     assert "Montage" in html
     assert 'class="grand"' in html
-    assert FOOTER_COMMENT in html
-    assert "<!-- Rendered server-side by pyxsd" in html
+    # Rendered artifacts carry no library markers: no generator comments,
+    # no branding, in comments, text, or metadata.
+    assert "pyxsd" not in html.lower()
+    assert "<!--" not in html
 
 
 def test_render_html_is_deterministic(synthetic_document):

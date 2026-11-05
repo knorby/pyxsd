@@ -1,5 +1,14 @@
 # Agent guidance for pyxsd
 
+## Example outputs carry no library markers
+
+- Rendered artifacts (SVG, HTML, PDF, PNG, WAV, console output) must not
+  contain pyxsd branding, "rendered by" comments, generator notices, or any
+  other library marker — not in comments, visible text, or document/PDF
+  metadata. The output belongs to the user's document.
+- Docs and examples describe what a workflow does, never what technology it
+  "replaces": no "XSLT replacement" / browser-XSLT framing anywhere.
+
 ## Every change needs tests that cover its added lines
 
 - Overall branch coverage has an enforced floor (`fail_under = 99` in

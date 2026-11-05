@@ -332,7 +332,7 @@ def create_app(registry: dict | None = None) -> FastAPI:
             "section{background:white;padding:20px;margin:20px 0;border-radius:10px}"
             "a{color:#165ba6}small{color:#52647a}pre{overflow:auto;background:#edf2f8;"
             "padding:12px;border-radius:6px}</style><h1>XML in, artifacts out</h1>"
-            "<p>Server-side rendering replaces browser XSLT: validate, bind, draw.</p>"
+            "<p>Validate, bind, draw: XML in, artifacts out.</p>"
             + "".join(sections)
             + "<footer>Local examples only. Do not expose this server publicly.</footer></html>"
         )

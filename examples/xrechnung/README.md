@@ -4,12 +4,9 @@ Bind a real B2B e-invoice against the official OASIS **UBL 2.3** schema and
 render it as one self-contained HTML page or a PDF report — both from the
 same extracted facts, both server-side.
 
-This is the workflow that replaces the classic "ship a UBL-to-HTML XSLT
-stylesheet and hope the browser keeps an XSLT engine" pipeline. pyxsd
-compiles the schema once, validates and binds the document into a typed
-Python tree, and the renderer is plain Python. No stylesheet, no XSLT
-engine, and a malformed invoice produces diagnostics instead of a blank
-page.
+pyxsd compiles the schema once, validates and binds the document into a
+typed Python tree, and the renderer is plain Python. A malformed invoice
+produces diagnostics instead of a blank page.
 
 ## Run it
 
