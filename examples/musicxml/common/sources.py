@@ -1,12 +1,12 @@
-"""Pinned, verified downloads for the musicxml examples.
+"""Pinned, verified downloads for one self-contained example family.
 
 Adapted from ``examples/healthcare/common/sources.py`` with two additions
-this family needs: individual-file sections (the GML 3.1.1 and UBL 2.3
-closures are only published as loose files) and install-time localization
-of absolute ``schemaLocation`` URLs (the official CityGML and MusicXML
-schemas import companions by absolute URL; pyxsd's default resource policy
-correctly refuses remote loading, so the URLs are rewritten to the local
-mirror once, after digest verification).
+such families need: individual-file sections (some XSD closures are only
+published as loose files) and install-time localization of absolute
+``schemaLocation`` URLs (official schemas sometimes import companions by
+absolute URL; pyxsd's default resource policy correctly refuses remote
+loading, so the URLs are rewritten to the local mirror once, after digest
+verification).
 
 Every section of ``sources.toml`` is either:
 
@@ -18,9 +18,8 @@ Every section of ``sources.toml`` is either:
     ``destination/`` (paths mirror the origin URL layout so the
     localization step can rewrite absolute imports mechanically).
 
-Two sections may share one ``destination`` (``citygml-schema`` and
-``citygml-gml`` both install into ``citygml-schemas/``); each section
-verifies only its own files, recorded in ``.<section>.verified.json``.
+Two sections may share one ``destination``; each section verifies only
+its own files, recorded in ``.<section>.verified.json``.
 Files modified by localization keep their pristine bytes in
 ``.pristine/`` so re-verification stays exact.
 """
@@ -39,6 +38,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 FAMILY_ROOT = Path(__file__).resolve().parents[1]
+FAMILY = FAMILY_ROOT.name
 CACHE_ROOT = FAMILY_ROOT / ".cache"
 
 #: Mirrors the healthcare budget: archives cap at 80 MB on the wire and
@@ -47,15 +47,17 @@ MAX_ARCHIVE_BYTES = 80_000_000
 MAX_EXPANDED_BYTES = 300_000_000
 
 #: URL prefixes whose referenced files live in the shared mirror at the
-#: same relative path (``http://schemas.opengis.net/gml/3.1.1/base/gml.xsd``
-#: is installed at ``gml/3.1.1/base/gml.xsd`` under the destination).
+#: same relative path (an absolute URL under a prefix maps to the path
+#: after it, under the destination).
 MIRROR_PREFIXES = (
     "http://schemas.opengis.net/",
     "http://www.w3.org/",
     "http://docs.oasis-open.org/",
 )
 
-SETUP_HINT = "uv run python examples/musicxml/download_sources.py (see examples/musicxml/README.md)"
+SETUP_HINT = (
+    f"uv run python examples/{FAMILY}/download_sources.py (see examples/{FAMILY}/README.md)"
+)
 
 
 class SourceVerificationError(ValueError):
@@ -70,7 +72,7 @@ def section(name: str) -> dict:
     try:
         return manifest()[name]
     except KeyError:
-        raise KeyError(f"unknown musicxml source section: {name!r}") from None
+        raise KeyError(f"unknown {FAMILY} source section: {name!r}") from None
 
 
 def _marker_path(cache_root: Path, spec: dict, name: str) -> Path:
@@ -87,7 +89,7 @@ def require_cache(name: str) -> Path:
     """Entry-file path for an installed section, with the setup hint."""
     path = cache_path(name)
     if not path.is_file():
-        raise FileNotFoundError(f"missing musicxml source {name!r}: {path}; run: {SETUP_HINT}")
+        raise FileNotFoundError(f"missing {FAMILY} source {name!r}: {path}; run: {SETUP_HINT}")
     return path
 
 
@@ -98,7 +100,7 @@ def resolve_sample(name: str, relative: str) -> Path:
     if PurePosixPath(relative).is_absolute() or not candidate.is_relative_to(base):
         raise ValueError("sample path escapes section cache")
     if not candidate.is_file():
-        raise FileNotFoundError(f"missing musicxml sample {name}:{relative}; run: {SETUP_HINT}")
+        raise FileNotFoundError(f"missing {FAMILY} sample {name}:{relative}; run: {SETUP_HINT}")
     return candidate
 
 
@@ -171,9 +173,9 @@ def _fetch_files(spec: dict) -> dict[str, bytes]:
 def localize(target: Path, extra_map: dict[str, str] | None = None) -> list[Path]:
     """Rewrite absolute ``schemaLocation`` URLs to mirror-relative paths.
 
-    ``extra_map`` maps absolute URLs to sibling-relative locations (the
-    MusicXML zip rewrites ``http://www.musicxml.org/xsd/xml.xsd`` to the
-    ``xml.xsd`` sitting next to ``musicxml.xsd``). Only references whose
+    ``extra_map`` maps absolute URLs to sibling-relative locations (a
+    manifest ``rewrite`` table can point an import at the file sitting
+    next to the entry schema). Only references whose
     target exists in the tree are rewritten; pristine bytes of every
     modified file are preserved under ``.pristine/`` so verification can
     re-hash the exact content that was pinned. Returns the changed files.
@@ -219,7 +221,7 @@ def install(source: str | dict, *, cache_root: Path | None = None, force: bool =
 
     A valid cache verifies without network access. Tests pass synthetic
     spec dicts together with ``cache_root``; production callers pass the
-    section name and use the default ``examples/musicxml/.cache``.
+    section name and use the family's default ``.cache``.
     """
     cache_root = cache_root if cache_root is not None else CACHE_ROOT
     spec = section(source) if isinstance(source, str) else source
@@ -256,9 +258,8 @@ def install(source: str | dict, *, cache_root: Path | None = None, force: bool =
     if spec.get("localize") or spec.get("rewrite"):
         # Localization happens on the installed tree, not the staging
         # copy: shared destinations mean a section's absolute imports can
-        # point at files another section installed (the CityGML zip
-        # imports the GML 3.1.1 closure pinned in citygml-gml). Pristine
-        # bytes land in .pristine/ so marker verification stays exact.
+        # point at files another section installed. Pristine bytes land
+        # in .pristine/ so marker verification stays exact.
         localize(target, spec.get("rewrite"))
     return target
 
@@ -267,37 +268,5 @@ def fetch_sources(*, force: bool = False, only: list[str] | None = None) -> list
     names = only if only else list(manifest())
     unknown = [n for n in names if n not in manifest()]
     if unknown:
-        raise KeyError(f"unknown musicxml source sections: {unknown}")
+        raise KeyError(f"unknown {FAMILY} source sections: {unknown}")
     return [(name, install(name, force=force)) for name in names]
-
-
-def sample_documents() -> list[dict]:
-    """Inventory the curated sample documents across installed sections.
-
-    Records follow the healthcare ``corpus.py`` shape: selector, section,
-    path, license, and role. Sections that are not installed are skipped.
-    """
-    entries = []
-    for name, spec in manifest().items():
-        target = CACHE_ROOT / spec["destination"]
-        if not target.is_dir():
-            continue
-        for pattern, media in (
-            ("*.gml", "citygml"),
-            ("*.bpmn", "bpmn"),
-            ("*.xodr", "opendrive"),
-            ("*.xml", "ubl"),
-        ):
-            for path in sorted(target.rglob(pattern)):
-                if ".pristine" in path.relative_to(target).parts:
-                    continue
-                entries.append(
-                    {
-                        "domain": media,
-                        "section": name,
-                        "selector": f"{name}:{path.relative_to(target).as_posix()}",
-                        "license": spec["license"],
-                        "revision": spec["revision"],
-                    }
-                )
-    return entries

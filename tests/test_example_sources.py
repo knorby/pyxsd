@@ -36,6 +36,18 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def test_installers_are_byte_identical():
+    """The five self-contained copies are one text; the family comes from its path."""
+    root = Path(__file__).resolve().parents[1]
+    texts = {
+        family: (root / "examples" / family / "common" / "sources.py").read_text()
+        for family in FAMILIES
+    }
+    reference = texts["citygml"]
+    for family, text in texts.items():
+        assert text == reference, f"{family} installer drifted"
+
+
 @pytest.fixture
 def served(monkeypatch, request):
     """Serve local bytes at synthetic URLs by patching the family downloader."""
