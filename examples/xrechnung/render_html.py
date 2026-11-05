@@ -23,7 +23,7 @@ from pathlib import Path
 from pyxsd import Document
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from examples.xrechnung.common.render import esc
 from examples.xrechnung.common.schemas import compile_schema

@@ -26,13 +26,11 @@ $ uv run python examples/musicxml/download_sources.py
 From the repository root:
 
 ```console
-$ uv run pyxsd -i examples/musicxml/instance.xml \
-      -s examples/musicxml/.cache/musicxml-schemas/schema/musicxml.xsd \
-      --namespaces strict -k -o /dev/null \
-      -t 'NoteStats()' -o note-stats.xml
+$ uv run python examples/musicxml/note_stats.py
 ```
 
-`NoteStats` replaces the score with a summary tree:
+The command writes `examples/musicxml/out/note-stats.xml` (override with
+`--output`). `NoteStats` replaces the score with a summary tree:
 
 ```xml
 <noteStats totalNotes="165" totalDuration="288" rests="0"

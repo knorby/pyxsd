@@ -20,7 +20,7 @@ This verifies and installs the five-schema closure (via the Apache-2.0
 Camunda mirror) and four real MIT-licensed bpmn-io diagrams below
 `examples/bpmn/.cache/` (gitignored). Re-running the command verifies
 the cache without network access. Sources, revisions, digests, and license
-evidence are in [`../sources.toml`](../sources.toml) and
+evidence are in [`sources.toml`](sources.toml) and
 [`SOURCES.md`](SOURCES.md).
 
 ## Render

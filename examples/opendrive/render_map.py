@@ -41,7 +41,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from examples.opendrive.common import render
 from examples.opendrive.common.schemas import compile_schema
@@ -455,6 +455,10 @@ def _schema_variant(path: Path) -> str:
     return {"4": "1.4", "5": "1.5"}.get(minor, "1.7")
 
 
+def _default_output(document: Path) -> Path:
+    return Path(__file__).resolve().parent / "out" / f"{document.stem}.svg"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Render an OpenDRIVE .xodr file as SVG.")
     parser.add_argument("document", type=Path, help="path to an .xodr file")
@@ -463,9 +467,7 @@ def main(argv=None) -> int:
 
     schema = compile_schema(_schema_variant(args.document))
     document = schema.parse(args.document)
-    output = args.output or Path(__file__).resolve().parents[1] / "out" / (
-        f"{args.document.stem}.svg"
-    )
+    output = args.output or _default_output(args.document)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_map(document), encoding="utf-8")
     print(f"wrote {output}")

@@ -18,6 +18,16 @@ from examples.citygml.common.sources import FAMILY_ROOT
 
 from pyxsd import ParseModes, Schema
 
+
+def test_cli_defaults_use_the_citygml_family_root():
+    assert plan_svg.FAMILY_ROOT == FAMILY_ROOT
+    assert plan_svg.OUT_DIR == FAMILY_ROOT / "out"
+    assert plan_svg.DEFAULT_SAMPLE == (
+        FAMILY_ROOT
+        / ".cache/citygml-schemas/citygml/examples/2.0/building/Building_LOD2-EPSG25832.gml"
+    )
+
+
 CITYGML_SUBSET_SCHEMA = """<?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            xmlns:t="urn:example:citygml-subset"

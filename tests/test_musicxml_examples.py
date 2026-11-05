@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import io
 import wave
+import xml.etree.ElementTree as ET
 from functools import cache
 from pathlib import Path
 
 import pytest
-from examples.musicxml import render_preview, synthesize
+from examples.musicxml import note_stats, render_preview, synthesize
 from examples.musicxml.common.schemas import compile_schema
 from examples.musicxml.common.sources import require_cache
 
@@ -24,7 +25,11 @@ from pyxsd.binding import ParseModes
 
 def test_cli_defaults_use_the_musicxml_family_root():
     family_root = Path(synthesize.__file__).resolve().parent
-    for module, output_name in ((synthesize, "chorale.wav"), (render_preview, "score-preview.svg")):
+    for module, output_name in (
+        (synthesize, "chorale.wav"),
+        (render_preview, "score-preview.svg"),
+        (note_stats, "note-stats.xml"),
+    ):
         assert family_root / "instance.xml" == module._DEFAULT_INPUT
         assert family_root / "out" / output_name == module._DEFAULT_OUTPUT
     assert (family_root / "instance.xml").is_file()
@@ -490,6 +495,23 @@ def test_real_score_preview_draws_four_staves(chorale):
     assert svg.count('class="staff-line"') == 20
     assert svg.count("<ellipse") == 165
     assert svg.count('class="tie"') == 2
+
+
+@requires_musicxml_schema
+def test_note_stats_cli_writes_the_summary(tmp_path):
+    output = tmp_path / "note-stats.xml"
+    assert note_stats.main(["--output", str(output)]) == 0
+    root = ET.parse(output).getroot()
+    assert root.tag == "noteStats"
+    assert root.attrib == {
+        "totalNotes": "165",
+        "totalDuration": "288",
+        "rests": "0",
+        "parts": "4",
+        "measures": "40",
+        "lowestPitch": "42",
+        "highestPitch": "76",
+    }
 
 
 def test_single_schema_family_rejects_variants():

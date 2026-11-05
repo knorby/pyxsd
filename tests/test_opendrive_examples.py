@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 
 import pytest
+from examples.opendrive import plot_profiles as plot_profiles_module
 from examples.opendrive import render_map
 from examples.opendrive.common.schemas import compile_schema
 from examples.opendrive.plot_profiles import plot_profiles, profile_samples
@@ -28,6 +29,14 @@ requires_sources = pytest.mark.skipif(
     or not (SCHEMA_DIR / "opendrive_17_core.xsd").is_file(),
     reason="run `uv run python examples/opendrive/download_sources.py` to fetch OpenDRIVE sources",
 )
+
+
+def test_cli_default_outputs_use_the_opendrive_family_root():
+    assert render_map._default_output(Path("Town01.xodr")) == FAMILY_ROOT / "out/Town01.svg"
+    assert plot_profiles_module._default_output(Path("curves_elevation.xodr")) == (
+        FAMILY_ROOT / "out/curves_elevation-profiles.png"
+    )
+
 
 # Only the pieces the renderer touches: geometry primitives, lane widths,
 # elevation and superelevation. Namespace-free, like every real .xodr file.

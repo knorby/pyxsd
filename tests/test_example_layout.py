@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,17 @@ def test_family_servers_do_not_import_other_families():
 def test_central_showcase_server_is_removed():
     assert not (EXAMPLES / "server/app.py").exists()
     assert not (EXAMPLES / "server/README.md").exists()
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_family_readme_local_links_resolve(family):
+    readme = EXAMPLES / family / "README.md"
+    for target in re.findall(r"\[[^]]*\]\(([^)]+)\)", readme.read_text(encoding="utf-8")):
+        relative = target.split("#", 1)[0]
+        if not relative or "://" in relative or relative.startswith("mailto:"):
+            continue
+        destination = (readme.parent / relative).resolve()
+        assert destination.exists(), f"{readme}: broken local link {target!r}"
 
 
 def test_docs_describe_family_servers_not_domain_dispatch():

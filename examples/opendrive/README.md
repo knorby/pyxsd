@@ -181,4 +181,4 @@ Every schema and `.xodr` file is downloaded at runtime, digest-verified,
 and never committed. Provenance, revisions, and verbatim license evidence
 (CARLA MIT, esmini MPL-2.0, ASAM schema terms) live in
 [`SOURCES.md`](SOURCES.md); the pinned URLs and SHA-256 digests are
-in [`../sources.toml`](../sources.toml).
+in [`sources.toml`](sources.toml).

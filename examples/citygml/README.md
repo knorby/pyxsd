@@ -25,7 +25,7 @@ uv run python examples/citygml/download_sources.py
 uv sync --group examples-matplotlib   # only needed for plot_city3d.py
 ```
 
-Sources are pinned by SHA-256 in [`../sources.toml`](../sources.toml) and
+Sources are pinned by SHA-256 in [`sources.toml`](sources.toml) and
 installed under the gitignored `examples/citygml/.cache/`. Repeating the
 download command verifies the cache without network access.
 

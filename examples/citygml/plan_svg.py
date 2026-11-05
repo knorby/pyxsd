@@ -27,11 +27,11 @@ from pathlib import Path
 from typing import Any
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from examples.citygml.common import render
 
-FAMILY_ROOT = Path(__file__).resolve().parents[1]
+FAMILY_ROOT = Path(__file__).resolve().parent
 OUT_DIR = FAMILY_ROOT / "out"
 DEFAULT_SAMPLE = (
     FAMILY_ROOT

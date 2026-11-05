@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from examples.opendrive.common.schemas import compile_schema
 from examples.opendrive.render_map import (
@@ -168,6 +168,10 @@ def plot_profiles(document, dest: Path) -> Path:
     return dest
 
 
+def _default_output(document: Path) -> Path:
+    return Path(__file__).resolve().parent / "out" / f"{document.stem}-profiles.png"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Plot OpenDRIVE elevation profiles as PNG.")
     parser.add_argument("document", type=Path, help="path to an .xodr file")
@@ -176,9 +180,7 @@ def main(argv=None) -> int:
 
     schema = compile_schema(_schema_variant(args.document))
     document = schema.parse(args.document)
-    output = args.output or Path(__file__).resolve().parents[1] / "out" / (
-        f"{args.document.stem}-profiles.png"
-    )
+    output = args.output or _default_output(args.document)
     plot_profiles(document, output)
     print(f"wrote {output}")
     if document.report.has_errors:

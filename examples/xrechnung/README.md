@@ -85,8 +85,7 @@ pinned KoSIT suite parse with zero errors.
 `document.root.ID` return `None` on this ref-based UBL binding even though
 binding and XPath succeed. `invoice_facts()` therefore reads
 `document.to_dict(typed=False)` and its Clark-notation keys; `document.xpath(expr,
-namespaces=NS)` works too if you prefer queries. This is the same finding the
-[research notes](../../../docs/superpowers/research/invoice.md) recorded.
+namespaces=NS)` works too if you prefer queries.
 
 **Exact decimals, formatting at the edge.** Amounts and quantities stay the
 document's exact lexical strings in the facts: the canonical XRechnung file
@@ -153,7 +152,7 @@ pyxsd does not implement Schematron.
 ## Sources and attribution
 
 Schema and sample provenance, revisions, and SHA-256 digests are pinned in
-[`../sources.toml`](../sources.toml). License terms and the verbatim OASIS
+[`sources.toml`](sources.toml). License terms and the verbatim OASIS
 redistribution notice are quoted in [`SOURCES.md`](SOURCES.md):
 
 - OASIS UBL 2.3 XSDs — OASIS copyright; unmodified redistribution is
