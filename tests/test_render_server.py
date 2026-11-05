@@ -18,6 +18,17 @@ from examples.opendrive.common.sources import CACHE_ROOT as OPENDRIVE_CACHE_ROOT
 from examples.server.app import create_app  # noqa: E402
 from examples.xrechnung.common.sources import CACHE_ROOT as XRECHNUNG_CACHE_ROOT  # noqa: E402
 
+FAMILY_CACHES = {
+    "bpmn": BPMN_CACHE_ROOT,
+    "citygml": CITYGML_CACHE_ROOT,
+    "musicxml": MUSICXML_CACHE_ROOT,
+    "opendrive": OPENDRIVE_CACHE_ROOT,
+    "xrechnung": XRECHNUNG_CACHE_ROOT,
+}
+INSTANCE_XML = Path(__file__).resolve().parents[1] / "examples/musicxml/instance.xml"
+
+SETUP = "Run examples/<family>/download_sources.py to install that family's pinned sources."
+
 XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
 <xs:element name="item" type="xs:integer"/></xs:schema>"""
 SVG = '<svg xmlns="http://www.w3.org/2000/svg"><text>one</text></svg>'
@@ -380,18 +391,6 @@ def test_exception_diagnostics_retain_validation_report(registry):
             }
         ],
     }
-
-
-FAMILY_CACHES = {
-    "bpmn": BPMN_CACHE_ROOT,
-    "citygml": CITYGML_CACHE_ROOT,
-    "musicxml": MUSICXML_CACHE_ROOT,
-    "opendrive": OPENDRIVE_CACHE_ROOT,
-    "xrechnung": XRECHNUNG_CACHE_ROOT,
-}
-INSTANCE_XML = Path(__file__).resolve().parents[1] / "examples/musicxml/instance.xml"
-
-SETUP = "run each family's download_sources.py (see examples/<family>/README.md)"
 
 
 @pytest.mark.skipif(
