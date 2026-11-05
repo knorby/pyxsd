@@ -69,6 +69,119 @@ class TestMultiHeadSubstitution:
         assert "substitution-type" in _schema_codes(report)
 
 
+class TestPrefixedHeadResolution:
+    """Prefixed heads resolve through declarations in every namespace mode."""
+
+    @pytest.mark.parametrize(
+        "mode", [ParseModes.STRICT, ParseModes.NAMESPACED], ids=["legacy", "strict"]
+    )
+    def test_prefixed_head_in_target_namespace_resolves(self, tmp_path, mode):
+        schema_path = tmp_path / "schema.xsd"
+        instance_path = tmp_path / "instance.xml"
+        schema_path.write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:t='urn:t' targetNamespace='urn:t' elementFormDefault='qualified'>"
+            "<xsd:element name='_Base' type='xsd:string' abstract='true'/>"
+            "<xsd:element name='Child' type='xsd:string' substitutionGroup='t:_Base'/>"
+            "<xsd:element name='root'><xsd:complexType><xsd:sequence>"
+            "<xsd:element ref='t:_Base'/>"
+            "</xsd:sequence></xsd:complexType></xsd:element>"
+            "</xsd:schema>",
+            encoding="utf-8",
+        )
+        instance_path.write_text(
+            "<t:root xmlns:t='urn:t'><t:Child>ok</t:Child></t:root>",
+            encoding="utf-8",
+        )
+
+        schema = Schema.compile(schema_path, mode=mode)
+        document = schema.parse(instance_path)
+
+        assert "unknown-substitution-head" not in _schema_codes(schema.report)
+        assert not document.report.errors
+        assert [child._value_ for child in document.root._children_] == [["ok"]]
+
+    @pytest.mark.parametrize(
+        "mode", [ParseModes.STRICT, ParseModes.NAMESPACED], ids=["legacy", "strict"]
+    )
+    def test_same_local_name_in_another_namespace_is_not_a_cycle(self, tmp_path, mode):
+        head_path = tmp_path / "head.xsd"
+        main_path = tmp_path / "main.xsd"
+        head_path.write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:h='urn:head' targetNamespace='urn:head' "
+            "elementFormDefault='qualified'>"
+            "<xsd:element name='animate' type='xsd:string' abstract='true'/>"
+            "</xsd:schema>",
+            encoding="utf-8",
+        )
+        main_path.write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:m='urn:main' xmlns:h='urn:head' targetNamespace='urn:main' "
+            "elementFormDefault='qualified'>"
+            "<xsd:import namespace='urn:head' schemaLocation='head.xsd'/>"
+            "<xsd:element name='animate' type='xsd:string' "
+            "substitutionGroup='h:animate'/>"
+            "</xsd:schema>",
+            encoding="utf-8",
+        )
+
+        report = Schema.compile(main_path, mode=mode).report
+        codes = _schema_codes(report)
+
+        assert "unknown-substitution-head" not in codes
+        assert "circular-substitution-group" not in codes
+
+    def test_repeated_prefixed_head_token_registers_one_member(self, tmp_path):
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:t='urn:t' targetNamespace='urn:t' elementFormDefault='qualified'>"
+            "<xsd:element name='head' type='xsd:string' abstract='true'/>"
+            "<xsd:element name='member' type='xsd:string' "
+            "substitutionGroup='t:head t:head'/>"
+            "</xsd:schema>",
+            encoding="utf-8",
+        )
+
+        schema = Schema.compile(schema_path, mode=ParseModes.STRICT)
+        schemaER = schema.components.getFromName("schema", warn=False)
+
+        assert not schema.report.errors
+        assert [len(members) for members in schemaER.substitutionGroups.values()] == [1]
+
+    def test_unresolved_prefixed_head_is_reported_in_legacy_mode(self, tmp_path):
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:t='urn:t' targetNamespace='urn:t'>"
+            "<xsd:element name='Child' substitutionGroup='t:Missing'/>"
+            "</xsd:schema>",
+            encoding="utf-8",
+        )
+
+        report = Schema.compile(schema_path, mode=ParseModes.STRICT).report
+
+        assert "unknown-substitution-head" in _schema_codes(report)
+
+    @pytest.mark.parametrize(
+        "mode", [ParseModes.STRICT, ParseModes.NAMESPACED], ids=["legacy", "strict"]
+    )
+    def test_prefixed_self_reference_is_a_cycle(self, tmp_path, mode):
+        schema_path = tmp_path / "schema.xsd"
+        schema_path.write_text(
+            "<xsd:schema xmlns:xsd='http://www.w3.org/2001/XMLSchema' "
+            "xmlns:t='urn:t' targetNamespace='urn:t'>"
+            "<xsd:element name='head' substitutionGroup='t:head'/>"
+            "</xsd:schema>",
+            encoding="utf-8",
+        )
+
+        report = Schema.compile(schema_path, mode=mode).report
+
+        assert "circular-substitution-group" in _schema_codes(report)
+
+
 class TestSubstitutionDerivationBlock:
     def test_blocked_member_rejected(self, parse_document):
         report = parse_document(

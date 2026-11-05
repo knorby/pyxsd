@@ -2911,14 +2911,52 @@ def check_child_grammar(ctx: CompileContextProtocol, er: Any) -> None:
                 )
 
 
+def _substitution_head_declarations(element: Any, elements: list[Any], py_xsd: Any) -> list[Any]:
+    """Resolves an element's substitution heads to their declarations.
+
+    Each QName token names a namespace through the writing document's
+    prefix bindings, so a candidate whose authored namespace matches is
+    selected even in legacy mode, where the general reference lookup
+    treats an unrecorded main-document candidate as an admissible
+    local-name fallback. Unresolvable tokens are omitted so the caller
+    can report a wholly unknown head. Repeated tokens naming one
+    declaration yield one entry, in authored order.
+    """
+    raw = element.tagAttributes.get("substitutionGroup")
+    if not raw:
+        return []
+    heads: list[Any] = []
+    seen: set[int] = set()
+    for token in raw.split():
+        namespace = element.referenceNamespace(token)
+        head = None
+        if namespace is not None:
+            local = local_part(token)
+            for candidate in elements:
+                if candidate.name == local and candidate.authoredNamespace() == namespace:
+                    head = candidate
+                    break
+        if head is None:
+            head = element.resolveReference(token, elements, parser=py_xsd)
+        if head is None:
+            continue
+        if id(head) in seen:
+            continue
+        seen.add(id(head))
+        heads.append(head)
+    return heads
+
+
 def build_substitution_groups(ctx: CompileContextProtocol, schemaER: Any, py_xsd: Any) -> None:
     """Maps substitution-group heads to their member elements.
 
     XSD 1.0 declares substitution groups on global element
     declarations: a member element carries ``substitutionGroup``
-    naming its head. After the ER run, every member is recorded
-    under its head's local name so instance parsing can dispatch
-    member elements wherever the head is allowed. Heads that name
+    naming its head. After the ER run, every member is recorded under
+    its head so instance parsing can dispatch member elements wherever
+    the head is allowed. In strict namespace mode the key is the head's
+    expanded name; legacy dispatch matches local names, so there the
+    resolved head declaration's local name is the key. Heads that name
     no global element are recorded as schema errors.
     """
     # ``schema.elements`` normally holds element declarations, but a
@@ -2926,24 +2964,21 @@ def build_substitution_groups(ctx: CompileContextProtocol, schemaER: Any, py_xsd
     # top-level group reference, for example); only real element
     # declarations participate in substitution groups.
     elements = [e for e in schemaER.elements if type(e).__name__ == "Element"]
-    declaredNames = {element.name for element in elements}
-    declaredExpanded = {element.expandedName for element in elements}
+    strictNamespaces = getattr(getattr(py_xsd, "mode", None), "namespaces", "legacy") == "strict"
     for element in elements:
-        heads = element.getSubstitutionGroupHeads(py_xsd)
-        if not heads:
-            continue
-        known = [head for head in heads if head in declaredNames or head in declaredExpanded]
-        if not known:
+        heads = _substitution_head_declarations(element, elements, py_xsd)
+        if element.tagAttributes.get("substitutionGroup") and not heads:
             ctx.report.add_error(
                 f"element '{element.name}' declares substitutionGroup "
-                f"'{element.tagAttributes.get('substitutionGroup', heads[0])}', "
+                f"'{element.tagAttributes['substitutionGroup']}', "
                 "but no global element with that name exists",
                 code="unknown-substitution-head",
                 element=element.name,
             )
             continue
-        for head in dict.fromkeys(known):
-            schemaER.substitutionGroups.setdefault(head, []).append(element)
+        for head in heads:
+            key = head.expandedName if strictNamespaces else head.name
+            schemaER.substitutionGroups.setdefault(key, []).append(element)
     logger.debug("Substitution groups built: %s", list(schemaER.substitutionGroups))
     report_substitution_group_cycles(ctx, elements, py_xsd)
 
@@ -2955,31 +2990,21 @@ def report_substitution_group_cycles(
 
     A cycle in the ``substitutionGroup`` graph (foo heads bar heads
     foo) has no well-founded head, so the schema is invalid. Each
-    element that reaches a cycle while following its head chain is
-    reported once; trivial self-reference is included.
+    element that reaches a cycle while following its resolved head
+    declarations is reported once; trivial self-reference is included.
     """
-    byName: dict[str, Any] = {}
     for element in elements:
-        if element.name:
-            byName.setdefault(element.name, element)
-        expanded = getattr(element, "expandedName", None)
-        if expanded:
-            byName.setdefault(expanded, element)
-    for element in elements:
-        if not element.getSubstitutionGroupHeads(py_xsd):
+        if not element.tagAttributes.get("substitutionGroup"):
             continue
-        # Depth-first walk of the head graph from this element; a
-        # path that reaches the element again is a cycle. XSD 1.1
-        # allows several heads per member, so every edge is followed.
+        # Depth-first walk of the head graph from this element; a path
+        # that reaches the element again is a cycle. XSD 1.1 allows
+        # several heads per member, so every resolved edge is followed.
         stack = [element]
         visited: set[int] = set()
         cycle = False
         while stack:
             current = stack.pop()
-            for headName in current.getSubstitutionGroupHeads(py_xsd):
-                head = byName.get(headName)
-                if head is None:
-                    continue
+            for head in _substitution_head_declarations(current, elements, py_xsd):
                 if head is element:
                     cycle = True
                     break
