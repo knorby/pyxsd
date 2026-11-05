@@ -48,7 +48,7 @@ file-based example with queries, edits, and fresh validation. The same install
 also provides a CLI:
 
 ```sh
-pyxsd -i inventory.xml -s inventory.xsd --strict
+pyxsd -i inventory.xml -s inventory.xsd --namespaces strict --strict
 ```
 
 Use that command with your own files or the quickstart's fixtures. `--strict`

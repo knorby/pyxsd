@@ -37,10 +37,12 @@ checked.require_valid()
 checked.write("out.xml")
 ```
 
-A bound root result is wrapped in a new `Document` against the same schema.
+A `SchemaBase` root result (as in this complex-root example) is wrapped in a
+new `Document` against the same schema.
 That wrapper shares the original report and does not copy the tree: this
 example also changes `document.root`. Other results, including `None`, are
-returned unchanged. An in-place transform returning `None` leaves the original
+returned unchanged. That includes scalar roots backed by primitive datatype
+classes rather than `SchemaBase`. An in-place transform returning `None` leaves the original
 document available, but its return value cannot be used as a `Document`.
 
 Revalidate after value or structure edits to obtain current findings.
@@ -78,8 +80,9 @@ Imported transform code runs with your process's permissions; literal argument
 parsing is not a sandbox.
 
 Calls run in order. A tree result becomes the next stage's document; a
-non-tree result does not replace that document. A final `None` produces no
-transform output, but does not stop later calls. Use `-T FILE` instead of `-t`
+non-tree result does not replace that document. A `None` result does not stop
+later calls; if the final call returns `None`, no transform output is written.
+Use `-T FILE` instead of `-t`
 for one call per line:
 
 ```text

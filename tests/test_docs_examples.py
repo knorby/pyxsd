@@ -4,6 +4,9 @@ The guide is documentation first, but its code blocks are the same source
 users copy. Extract them and run them here so they cannot rot.
 """
 
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -77,6 +80,11 @@ def test_quickstart_from_supplied_files(tmp_path, monkeypatch, capsys):
     saved = namespace["schema"].parse(tmp_path / "updated.xml")
     assert saved.is_valid
     assert saved.xpath("string(/i:inventory/i:item/i:name)", namespaces=namespace["ns"]) == "BOLTS"
+    stubs = GUIDE.parent.parent / "stubs.md"
+    for source in _python_blocks(stubs.read_text(encoding="utf-8")):
+        exec(compile(source, "stubs.md", "exec"), namespace)
+    assert namespace["declaration"].id.startswith("element:")
+    assert "inventory" in capsys.readouterr().out
 
 
 def test_transform_guide_library_example(tmp_path, monkeypatch):
@@ -152,3 +160,39 @@ def test_integration_examples_use_identified_inputs(tmp_path, monkeypatch):
         "BOTTLE-1L",
         "LABEL-WP",
     ]
+
+
+def test_cli_reference_examples_use_quickstart_inputs(tmp_path):
+    quickstart = (GUIDE.parent.parent / "quickstart.md").read_text(encoding="utf-8")
+    for filename, block in zip(
+        ("inventory.xsd", "inventory.xml"), quickstart.split("```xml\n")[1:], strict=True
+    ):
+        (tmp_path / filename).write_text(block.split("```", 1)[0], encoding="utf-8")
+    guide = (GUIDE.parent.parent / "cli.md").read_text(encoding="utf-8")
+    examples = guide.split("## Examples", 1)[1]
+    if "```text\n" in examples:
+        calls = examples.split("```text\n", 1)[1].split("```", 1)[0]
+        (tmp_path / "transforms.txt").write_text(calls, encoding="utf-8")
+    commands = [line for line in examples.splitlines() if line.startswith("pyxsd ")]
+    assert commands
+    for line in commands:
+        completed = subprocess.run(
+            [sys.executable, "-m", "pyxsd", *shlex.split(line)[1:]],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+        assert completed.returncode == 0, (line, completed.stderr)
+    assert "Bolts" in completed.stdout
+    from pyxsd import ParseModes, Schema
+
+    saved = Schema.compile(tmp_path / "inventory.xsd", mode=ParseModes.NAMESPACED).parse(
+        tmp_path / "parsed.xml"
+    )
+    assert saved.is_valid
+    assert (
+        saved.xpath("string(/i:inventory/i:item/i:name)", namespaces={"i": "urn:inventory"})
+        == "Bolts"
+    )

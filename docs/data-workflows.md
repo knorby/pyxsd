@@ -2,8 +2,8 @@
 
 Choose a workflow by its output. pyxsd validates and binds XML; your application
 decides how to aggregate values, join reference data, or apply business policy.
-The {doc}`integrations` guide owns the conversion rules and supported shapes.
-Family READMEs own the runnable commands, expected results, and sample-specific
+See {doc}`integrations` for conversion rules and supported shapes. Each family
+README supplies runnable commands, expected results, and sample-specific
 limitations.
 
 ## Choose a workflow

@@ -14,7 +14,7 @@ pyxsd [options]
 | `--version` | | Print the version and exit. |
 | `-i FILE` | `--inputXml` | Filename of the XML document to read in. Reads from **stdin** by default. |
 | `-s FILE` | `--inputXsd`, `--schema` | Filename of the XSD schema. By default pyxsd tries to determine the location from the instance document (schema hints). |
-| `-p FILE` | `--parsedXml`, `--parsedOutput` | Filename for the parsed (pre-transform) output. Default: input filename + `Parsed`. |
+| `-p FILE` | `--parsedXml`, `--parsedOutput` | Filename for parsed (pre-transform) output when `-k` is enabled. Default: input stem + `Parsed.xml` beside the input. |
 | `-k` | `--ParsedFile` | Write the parsed tree even when transforms are given. Off by default. |
 | `-o FILE` | `--transformOutput` | Output after parsing and transforming. **stdout** by default. `stdout` may also be given explicitly as the value. |
 | `-d` | `--useDefaultFile` | Use the default filename for transformed output instead of stdout. |
@@ -65,23 +65,31 @@ annotation limits rather than treating a stub as a validity verdict.
 
 ## Examples
 
+Create `inventory.xsd` and `inventory.xml` from {doc}`quickstart`. Run these
+commands from their directory. For the `-T` command, first save this as
+`transforms.txt`:
+
+```text
+PrintData()
+```
+
 ```bash
 # Round-trip: parse and write the parsed tree back out
-pyxsd -i inventory.xml -k -o parsed.xml
+pyxsd -i inventory.xml -s inventory.xsd --namespaces strict -k -p parsed.xml
 
 # Validate against an explicit schema, strict mode (CI-friendly)
-pyxsd -i inventory.xml -s inventory.xsd --strict
+pyxsd -i inventory.xml -s inventory.xsd --namespaces strict --strict
 
 # Transform pipeline: both transforms run, final tree to stdout
-pyxsd -i inventory.xml -t 'PrintData() > PrintData()'
+pyxsd -i inventory.xml -s inventory.xsd --namespaces strict -t 'PrintData() > PrintData()'
 
 # Transform calls from a file
-pyxsd -i inventory.xml -T transforms.txt
+pyxsd -i inventory.xml -s inventory.xsd --namespaces strict -T transforms.txt
 
 # Validate an XSD 1.0 schema under the 1.0 processor
-pyxsd -i inventory.xml -s inventory.xsd --xsd-version 1.0 --strict
+pyxsd -i inventory.xml -s inventory.xsd --namespaces strict --xsd-version 1.0 --strict
 
 # Export the bound tree as JSON (the ToDict transform; a dict result is
 # written as JSON to the transform output)
-pyxsd -i inventory.xml -t 'ToDict()'
+pyxsd -i inventory.xml -s inventory.xsd --namespaces strict -t 'ToDict()'
 ```

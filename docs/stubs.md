@@ -34,8 +34,9 @@ For a large schema, select declarations through `pyxsd.introspection`:
 from pyxsd.introspection import describe_component, find_components, related_components
 
 # schema is the compiled Schema from the quickstart.
-matches = find_components(schema, text="inventory", kind="element")
-declaration = describe_component(schema, matches[0].id)
+matches = find_components(schema, text="inventory", kind="element", namespace="urn:inventory")
+root = next(match for match in matches if match.global_declaration)
+declaration = describe_component(schema, root.id)
 dependencies = related_components(schema, declaration.id, direction="uses", depth=2)
 print(schema.stub(compact=True, component_ids=(declaration.id,), depth=1))
 ```
