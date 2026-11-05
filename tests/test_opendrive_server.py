@@ -405,3 +405,19 @@ def test_real_opendrive_png():
         response = client.get("/render/curves_elevation?format=png")
     assert response.status_code == 200
     assert response.content.startswith(b"\x89PNG")
+
+
+def test_render_failure_does_not_echo_exception_text(isolated):
+    from pyxsd import PyXSDError
+
+    application, _ = isolated
+
+    def fail(document):
+        raise PyXSDError("secret stack frame at /private/example")
+
+    application.state.samples["one"]["renderer"] = fail
+    with TestClient(application) as client:
+        response = client.get("/render/one")
+    assert response.status_code == 422
+    assert "secret stack frame" not in response.text
+    assert "/private/example" not in response.text

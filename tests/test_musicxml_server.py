@@ -311,3 +311,19 @@ def test_real_score_render_and_validate():
         result = client.post("/validate", content=raw[:start] + raw[end + 1 :]).json()
     assert result["valid"]
     assert result["facts"] == {"notes": 163}
+
+
+def test_render_failure_does_not_echo_exception_text(isolated):
+    from pyxsd import PyXSDError
+
+    application, _ = isolated
+
+    def fail(document):
+        raise PyXSDError("secret stack frame at /private/example")
+
+    application.state.samples["one"]["renderer"] = fail
+    with TestClient(application) as client:
+        response = client.get("/render/one")
+    assert response.status_code == 422
+    assert "secret stack frame" not in response.text
+    assert "/private/example" not in response.text

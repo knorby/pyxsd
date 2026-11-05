@@ -98,6 +98,21 @@ def _diagnostic(exc: Exception) -> dict:
     }
 
 
+def _input_error() -> dict:
+    return {
+        "valid": False,
+        "issues": [
+            {
+                "severity": "error",
+                "code": "xml-input",
+                "message": "the XML input could not be processed",
+                "element": None,
+                "phase": "instance",
+            }
+        ],
+    }
+
+
 def _unavailable() -> HTTPException:
     return HTTPException(503, f"CityGML example sources are not installed; {SETUP_HINT}")
 
@@ -229,8 +244,8 @@ def create_app(
             raise _unavailable() from exc
         except ImportError as exc:
             raise HTTPException(503, "Install the examples-matplotlib group") from exc
-        except (PyXSDError, ValueError, LookupError, ParseError, DefusedXmlException) as exc:
-            return JSONResponse(_diagnostic(exc), status_code=422)
+        except (PyXSDError, ValueError, LookupError, ParseError, DefusedXmlException):
+            return JSONResponse(_input_error(), status_code=422)
 
     @application.post("/validate")
     async def validate(request: Request) -> dict:
