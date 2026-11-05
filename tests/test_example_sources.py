@@ -17,6 +17,16 @@ import pytest
 
 FAMILIES = ["bpmn", "citygml", "musicxml", "opendrive", "xrechnung"]
 
+# Each family pins exactly its own manifest sections; guard against an
+# extraction bug or a copy-paste dragging another family's sources in.
+EXPECTED_SECTIONS = {
+    "bpmn": {"bpmn-schema", "bpmn-data"},
+    "citygml": {"citygml-schema", "citygml-gml"},
+    "musicxml": {"musicxml-schema"},
+    "opendrive": {"opendrive-schema", "opendrive-data"},
+    "xrechnung": {"ubl-schema", "ubl-data"},
+}
+
 
 def _sources(family: str):
     return import_module(f"examples.{family}.common.sources")
@@ -66,7 +76,7 @@ def _file_spec(url: str, name: str, digest: str, **overrides) -> dict:
 @pytest.mark.parametrize("family", FAMILIES)
 def test_manifest_sections_are_well_formed(family):
     specs = _sources(family).manifest()
-    assert specs, family
+    assert set(specs) == EXPECTED_SECTIONS[family], family
     for name, spec in specs.items():
         assert spec["kind"] in ("archive", "files"), (family, name)
         assert spec["destination"] and spec["entry"] and spec["license"] and spec["role"], (
