@@ -45,6 +45,31 @@ errors against MusicXML 4.0, so the example is also a conformance test —
 see `tests/test_example_applications.py` (the test skips when the schema
 has not been fetched).
 
+## Serve
+
+The family also includes a local FastAPI use for curated synthesis and
+submitted score validation. It reuses this family's pinned schema, the
+committed score, and the WAV/preview renderers:
+
+```sh
+uv run python examples/musicxml/download_sources.py
+uv run --group examples-fastapi uvicorn examples.musicxml.server:app --port 8000
+```
+
+Open <http://127.0.0.1:8000/> for the sample browser.
+`/render/chorale` returns WAV audio; add `?format=svg` for the preview.
+Submit a score for diagnostics and its merged sounding-note count:
+
+```sh
+curl --data-binary @score.musicxml -H 'Content-Type: application/xml' \
+    http://127.0.0.1:8000/validate
+```
+
+Uploads use the strict parser profile, so the committed score's legacy
+external DOCTYPE is refused there; the trusted curated render still reads
+the original file. This is a local example, not a deployment recipe for
+untrusted uploads.
+
 ## What it exercises
 
 - Real-world schema loading: `musicxml.xsd` (~1,400 complex types) with
@@ -126,8 +151,8 @@ synthesize(document, dest: Path, *, tempo_qpm=96.0, sample_rate=22_050) -> Path
 render_preview(document, *, width=1000) -> str   # SVG text
 ```
 
-`examples/server/app.py` calls the same two renderers; nothing here
-reads the network or writes outside `dest`.
+The family server calls these same functions; nothing here reads the
+network or writes outside `dest`.
 
 ### Synthesis limitations
 
