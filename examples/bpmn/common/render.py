@@ -1,8 +1,8 @@
-"""Tiny stdlib-only SVG helpers shared by the BPMN renderers.
+"""Tiny stdlib-only SVG helpers for a family's text renderers.
 
-The renderers build SVG as text: no XML library is needed for output, and
-keeping it dependency-free means the base-install examples (BPMN, CityGML
-plan view, OpenDRIVE map, score preview) run with only pyxsd installed.
+Renderers build SVG as text: no XML library is needed for output, and
+keeping it dependency-free means these examples run with only pyxsd
+installed.
 """
 
 from __future__ import annotations

@@ -243,14 +243,7 @@ def test_require_cache_and_resolve_sample_hint_at_setup(family, monkeypatch, tmp
         sources.resolve_sample(section, "missing.xml")
 
 
-@pytest.mark.parametrize(
-    "family",
-    [
-        f
-        for f in FAMILIES
-        if (Path(__file__).parents[1] / "examples" / f / "common" / "render.py").is_file()
-    ],
-)
+@pytest.mark.parametrize("family", ["bpmn", "citygml", "musicxml", "opendrive"])
 def test_render_helpers_escape_and_wrap(family):
     render = import_module(f"examples.{family}.common.render")
     assert render.esc('<a href="x">&amp;</a>') == "&lt;a href=&quot;x&quot;&gt;&amp;amp;&lt;/a&gt;"
@@ -260,3 +253,8 @@ def test_render_helpers_escape_and_wrap(family):
     out = render.svg("<rect/>", width=800, height=600)
     assert out.startswith('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"')
     assert out.endswith('viewBox="0 0 800 600"><rect/></svg>')
+
+
+def test_xrechnung_render_module_exposes_esc_only():
+    render = import_module("examples.xrechnung.common.render")
+    assert not hasattr(render, "num") and not hasattr(render, "svg")
