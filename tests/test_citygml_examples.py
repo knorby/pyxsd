@@ -14,7 +14,7 @@ from io import StringIO
 import pytest
 from examples.citygml import plan_svg, plot_city3d
 from examples.citygml.common.schemas import compile_schema
-from examples.citygml.common.sources import FAMILY_ROOT
+from examples.citygml.common.sources import FAMILY_ROOT, require_cache
 
 from pyxsd import ParseModes, Schema
 
@@ -354,6 +354,25 @@ def test_real_lod2_known_schema_findings(citygml_schema):
     assert report.error_count <= 30
     codes = {issue.code for issue in report.issues}
     assert {"particle-restriction", "unknown-attributeRef", "order"} <= codes
+
+
+@requires_cache
+def test_real_legacy_substitution_heads_resolve():
+    """Legacy mode resolves CityGML's prefixed heads and keeps both members."""
+    schema = Schema.compile(require_cache("citygml-schema"), mode=ParseModes.STRICT)
+    codes = {issue.code for issue in schema.report.errors}
+
+    assert "unknown-substitution-head" not in codes
+    assert "circular-substitution-group" not in codes
+    assert schema.report.error_count <= 22
+
+    document = schema.parse(LOD2_SAMPLE)
+    members = [
+        child
+        for child in document.root._children_
+        if getattr(child, "_name_", None) == "cityObjectMember"
+    ]
+    assert len(members) == 2
 
 
 @requires_cache
