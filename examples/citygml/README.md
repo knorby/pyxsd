@@ -43,6 +43,31 @@ uv run python examples/citygml/plan_svg.py \
 uv run python examples/citygml/plot_city3d.py <model.gml> -o out/city3d.png
 ```
 
+## Serve
+
+The family also includes a local FastAPI use for curated rendering and
+submitted XML validation. It reuses this family's pinned schema closure,
+OGC samples, plan renderer, and 3D plot:
+
+```sh
+uv run python examples/citygml/download_sources.py
+uv sync --group examples-fastapi --group examples-matplotlib
+uv run uvicorn examples.citygml.server:app --port 8000
+```
+
+Open <http://127.0.0.1:8000/> for the sample browser. `/render/lod1` and
+`/render/lod2` return SVG plans; add `?format=png` for the 3D plot.
+Submit a CityGML document for diagnostics and a building count:
+
+```sh
+curl --data-binary @model.gml -H 'Content-Type: application/xml' \
+    http://127.0.0.1:8000/validate
+```
+
+The published CityGML samples carry their documented schema and instance
+findings, so validation reports them while curated rendering still works.
+This is a local example, not a deployment recipe for untrusted uploads.
+
 From Python, compile once per process and reuse the schema:
 
 ```python
@@ -125,7 +150,7 @@ baseline update rather than silent drift.
 ## Tests
 
 ```sh
-uv run pytest tests/test_citygml_examples.py -q
+uv run pytest tests/test_citygml_examples.py tests/test_citygml_server.py -q
 ```
 
 The synthetic subset tests (ring extraction, `xlink`/`OrientableSurface`
