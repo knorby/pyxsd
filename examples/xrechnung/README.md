@@ -39,11 +39,37 @@ prints a handful of harmless descriptor-collision notices
 (`element descriptor for 'Condition' was bound as 'Condition|2'`): they come
 from the xmldsig/XAdES schemas that the UBL extension wildcard pulls in.
 
+## Serve
+
+The family also includes a local FastAPI use for curated rendering and
+submitted invoice validation. It reuses this family's pinned UBL schema,
+sample corpus, and HTML/PDF renderers:
+
+```sh
+uv run --group examples-fastapi --group examples-reportlab \
+    uvicorn examples.xrechnung.server:app --port 8000
+```
+
+Open <http://127.0.0.1:8000/> for the sample browser.
+`/render/01.01a-INVOICE_ubl` returns HTML; add `?format=pdf` for the PDF
+report. Submit an invoice for diagnostics and the exact lexical payable
+amount:
+
+```sh
+curl --data-binary @invoice.xml -H 'Content-Type: application/xml' \
+    http://127.0.0.1:8000/validate
+```
+
+XSD validation does not establish EN 16931 or Schematron business-rule
+conformance. This is a local example, not a deployment recipe for
+untrusted uploads.
+
 Tests:
 
 ```sh
-uv run pytest tests/test_xrechnung_examples.py                      # offline; PDF tests skip
-uv run --group examples-reportlab pytest tests/test_xrechnung_examples.py       # all nine
+uv run pytest tests/test_xrechnung_examples.py tests/test_xrechnung_server.py -q
+uv run --group examples-reportlab pytest tests/test_xrechnung_examples.py \
+    tests/test_xrechnung_server.py -q
 ```
 
 ## What the example shows
