@@ -1,4 +1,4 @@
-"""Tests for the OpenDRIVE showcase workflow.
+"""Tests for the OpenDRIVE example family.
 
 The offline tests run a synthetic, namespace-free OpenDRIVE subset through
 pyxsd, then check the geometry sampler and lane offsetting analytically.
