@@ -17,8 +17,9 @@ covered by an end-to-end test in
 | `docx/` | real `word/document.xml` (ECMA-376) | `ToMarkdown` — style-aware Markdown extraction | namespaced |
 
 The `musicxml/`, `gpx/`, and `docx/` examples each validate a genuine
-document against the **official** published schema, fetched on demand by a
-`download_schemas.py` script and skipped by the tests when it is absent:
+document against the **official** published schema, fetched on demand and
+skipped by the tests when it is absent (`download_sources.py` for the
+pinned MusicXML manifest; `download_schemas.py` for `gpx/` and `docx/`):
 
 - `musicxml/` loads the full MusicXML 4.0 schema (which imports the XML
   and XLink namespaces) and validates a 51 KB four-part Bach chorale.

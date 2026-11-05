@@ -55,7 +55,7 @@ SCHEMAS: dict[str, dict] = {
         "url": None,
         "url_sha256": None,
         "kind": "local",
-        "entry": "examples/musicxml/schemas/musicxml.xsd",
+        "entry": "examples/musicxml/.cache/musicxml-schemas/schema/musicxml.xsd",
     },
 }
 

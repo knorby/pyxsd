@@ -3,13 +3,13 @@
 The instance is Johann Sebastian Bach's four-part chorale *Christ unser
 Herr zum Jordan kam*, BWV 66.6, a public-domain work distributed with the
 BSD-licensed music21 corpus. It is validated against the real MusicXML 4.0
-schema (fetched by ``download_schemas.py``) in namespaced mode.
+schema (installed by ``download_sources.py``) in namespaced mode.
 
 Run from the repository root (the schema is fetched first):
 
-    uv run python examples/musicxml/download_schemas.py
+    uv run python examples/musicxml/download_sources.py
     uv run pyxsd -i examples/musicxml/instance.xml \
-        -s examples/musicxml/schemas/musicxml.xsd -k -o /dev/null \
+        -s examples/musicxml/.cache/musicxml-schemas/schema/musicxml.xsd -k -o /dev/null \
         --namespaces strict -t 'NoteStats()' -o note-stats.xml
 
 The transform replaces the parsed score with a small ``noteStats`` summary

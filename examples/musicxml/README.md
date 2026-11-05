@@ -13,22 +13,12 @@ cross-namespace imports.
 ## Fetch the schema
 
 The MusicXML 4.0 schema set is large (~380 KB), so it is not committed.
-This family carries two pinned-fetch entry points, each serving the
-workflows that were built on it:
-
-- `download_sources.py` — the family's pinned manifest
-  (`sources.toml`, SHA-256 verified, license evidence in `SOURCES.md`).
-  It installs the schema set under the gitignored `.cache/` and feeds
-  the **synthesis and preview workflows** below.
-- `download_schemas.py` — the original single-purpose fetcher for
-  `note_stats.py` and the conformance tooling; it extracts
-  `musicxml.xsd`, `xml.xsd`, and `xlink.xsd` into `schemas/`
-  (gitignored), rewriting the archive's absolute import URLs to the
-  local files.
+The family's pinned manifest (`sources.toml`, SHA-256 verified, license
+evidence in `SOURCES.md`) installs it under the gitignored `.cache/` and
+feeds every workflow in this family:
 
 ```console
-$ uv run python examples/musicxml/download_sources.py   # synthesis/preview
-$ uv run python examples/musicxml/download_schemas.py   # note_stats path
+$ uv run python examples/musicxml/download_sources.py
 ```
 
 ## Run it
@@ -37,7 +27,7 @@ From the repository root:
 
 ```console
 $ uv run pyxsd -i examples/musicxml/instance.xml \
-      -s examples/musicxml/schemas/musicxml.xsd \
+      -s examples/musicxml/.cache/musicxml-schemas/schema/musicxml.xsd \
       --namespaces strict -k -o /dev/null \
       -t 'NoteStats()' -o note-stats.xml
 ```
