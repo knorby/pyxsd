@@ -120,7 +120,7 @@ its paths again against that compile's tree. A path that cannot resolve
 fails the **compile** with `PyXSDError`, naming the offending path:
 
 - a segment that matches no element declaration in the traversal so
-  far (a typo dangles loudly);
+  far;
 - a path continuing into a child declared on the **base** of an
   extension-typed element — traversal stays within each element's own
   content model and does not follow the base chain;
@@ -213,8 +213,8 @@ contract, exactly as implemented:
   Outside a parse — for instance on a post-parse attribute write —
   findings are logged, like every other assignment-time diagnostic.
 
-The hook costs nothing when absent: a type without
-`__pyxsd_validate__` pays one `getattr` per constructed value.
+The binder checks for `__pyxsd_validate__` with one `getattr` per constructed
+value, whether or not the type defines a hook.
 
 ## Example: a URI type with a method and a hook
 

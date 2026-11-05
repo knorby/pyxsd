@@ -1,47 +1,26 @@
 # Migrating from pyxsd 0.1 to 1.0
 
-pyxsd 1.0 is the first release in twenty years, ported to modern Python and
-rebuilt for the ecosystem of 2026. It is a **new generation of the same
-idea**: schema-compiled Python classes, a validated instance tree, a
-transform pipeline, and a pure-Python runtime with one dependency
-(`elementpath`, for XSD regular expressions). The node shape, the CLI
-flags, and the XSD subset all survive; almost everything else around them
-was modernized.
+Move 0.1 applications to Python 3.11+ and replace the `PyXSD` constructor
+with separate schema compilation and document parsing. This page describes the
+1.0 migration; see the changelog for later releases and {doc}`quickstart` for
+current installation instructions.
 
-This document covers what changed, why, and how to move your code.
+Start with the changes that affect your application:
+
+- Replace imports using the module table below.
+- Use `Schema.compile`, `schema.parse`, and explicit `document.write` calls.
+- Read `document.report` instead of scraping printed diagnostics; add
+  `require_valid()` or CLI `--strict` where errors should stop processing.
+- Pass callables to the library transform API. Keep call strings on the CLI.
+- Obtain historical crystallography transforms separately from the installed
+  package; their original data is not distributed.
 
 ## Why the architecture changed
 
-pyxsd 0.1 generated classes with an imperative `type()` factory and kept
-class metadata (`_elementNames_`, `_attributeNames_`) in manually managed
-class dictionaries. 1.0 keeps the same generated-class idea but uses the
-modern machinery:
-
-- **`types.new_class`** replaces the `type()` factory, so generated classes
-  behave like ordinary classes under `inspect`, `copy`, and pickle probes.
-- **`__set_name__`** on the `Element`/`Attribute` descriptors wires each
-  descriptor to its owner and attribute name at class creation — no manual
-  bookkeeping lists to keep in sync.
-- **`__init_subclass__`** on `SchemaBase` collects the element/attribute
-  name lists automatically through the MRO.
-- **Descriptive `__getattr__`** on generated classes turns misspelled
-  attribute access into an error message that names your class and lists
-  its declared elements and attributes.
-- **`ValidationReport`** replaces scattered `print` statements: all
-  non-fatal issues are structured objects with severity, stable code,
-  message, and optional element name. A schema reports at
-  `Schema.report`; a bound document reports the merged run at
-  `Document.report`, and `require_valid()` turns errors into a raised
-  `ValidationError` carrying that report.
-- **`logging`** replaces prints for progress/trace output. The library
-  never configures handlers; the CLI maps `-v`/`-q` to DEBUG/CRITICAL.
-- **`pathlib.Path`, `argparse`, `abc.ABC`, context managers, and lazy
-  `importlib` loading** replace the Python-2 era equivalents (`imp`,
-  `optparse`, ad-hoc file handling, `sys.path` hacks).
-- Schema composition (`include`/`import`/`redefine`) is implemented by
-  splicing the composed documents into the main schema tree *before* class
-  generation, and identity constraints (`key`/`unique`/`keyref`) run as a
-  post-parse validation pass with an XPath subset.
+Compilation still creates Python classes from XSD. The 1.0 split lets callers
+reuse a schema, inspect findings, and choose when to write or transform each
+document. For descriptor/class-generation internals, see {doc}`architecture`;
+the compatibility changes below are what application code needs to address.
 
 ## Breaking changes
 
@@ -68,8 +47,7 @@ modern machinery:
 | `from pyxsd.pyXSD import PyXSD` | `import pyxsd` (then `pyxsd.Schema.compile` / `pyxsd.parse`) |
 | `from pyxsd.writers.xmlTreeWriter import XmlTreeWriter` | `from pyxsd.writers.xml_tree_writer import XmlTreeWriter` |
 
-All internal module names are now snake_case and importable as such; every
-layout change was a `git mv`, so history follows the files.
+Use snake_case module names when updating imports.
 
 ### Crystallography transforms
 
@@ -154,8 +132,8 @@ A transform that returns a tree root comes back as a new `Document`
 against the same schema; any other return value, including `None`, is
 returned unchanged. The original document remains available when a
 callable mutates it in place. A returned document shares the pre-transform
-report — after a structural change, call `updated.revalidate()` for a
-report that reflects the new shape (that is also the replacement for 0.1's
+report — after value or structure edits, call `updated.revalidate()` for a
+report that reflects the current tree (that is also the replacement for 0.1's
 `SendTreeToPyXSD` transform, which re-fed the written tree back through
 the pipeline).
 

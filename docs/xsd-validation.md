@@ -61,31 +61,12 @@ an `NCName` checks its lexical form, not this declaration-dependent requirement.
 An unparsed entity, declared with `NDATA`, is not a parsed entity reference to
 expand into XML text. Naming it does not require fetching its resource.
 
-pyxsd's default ElementTree/Expat backend expands internal parsed entities
-and can apply `ATTLIST` defaults. When the compiled schema can validate
-`ENTITY`/`ENTITIES`, pyxsd also lazily collects unparsed-entity declarations
-from the prolog/internal subset. Complete evidence lets it reject undeclared
-names, including values supplied by XSD defaults or checked through derived
-types. An absent DOCTYPE supplies an empty, complete declaration set.
-Internal parameter entities are expanded; external parameter entities are
-skipped without retrieval. Unrelated schemas skip this declaration-collection
-parse.
-
-No built-in profile retrieves external DTD subsets or entities. An external
-subset or skipped external parameter entity makes declaration evidence
-incomplete, so a missing name remains lexical-only with one advisory per
-document when a check needs the missing evidence. Caller-supplied trees
-without pyxsd source provenance and
-custom-policy parser results lack core declaration evidence. Non-seekable
-instance streams passed to top-level `pyxsd.parse()` also remain lexical-only,
-even with an explicit schema; compiled `Schema.parse()` can collect and
-replay their prolog. `Document.revalidate()` serializes the tree without its
-DOCTYPE, so it carries the original parse's declaration evidence into the
-reparse instead of recollecting: a declared value stays valid, complete
-evidence still rejects an undeclared replacement, and evidence the original
-parse lacked stays lexical-only.
-These are implementation limits, not alternative validity rules or security
-protections. See {doc}`validation` for source-provenance and reread limits.
+pyxsd's default backend expands internal parsed entities and can apply
+`ATTLIST` defaults. It checks `ENTITY`/`ENTITIES` declarations when the input
+path supplies sufficient evidence; incomplete evidence can leave a name checked
+only lexically. These are implementation limits, not alternative validity rules
+or security protections. See [DTD-dependent values](validation.md#dtd-dependent-entity-and-entities-values)
+for the complete input-path, advisory, and revalidation rules.
 
 Parser policy is a separate decision from validity. The protected profile
 rejects entity declarations and external identifiers; the strict profile

@@ -102,27 +102,11 @@ DTD syntax and entity declarations are different decisions:
 - Any entity declaration is refused by `protected()` and `strict()`.
 - Any DOCTYPE at all is refused by `strict()`.
 
-For schemas that can validate `xs:ENTITY`/`xs:ENTITIES` values, pyxsd lazily
-collects unparsed (`NDATA`) entity declarations from the instance prolog and
-internal subset. It checks entity names, not the resources they identify;
-collection adds no external fetcher and never replaces the parser's security
-handlers. Schemas unrelated to these types skip the declaration-collection
-parse entirely. The profiles above keep the same behavior: `protected()`
-still refuses entity declarations, and `strict()` still refuses any DOCTYPE.
-
-An unretrieved external subset or skipped external parameter entity leaves
-declaration evidence incomplete. A name absent from the internal declarations
-then remains lexical-only, with one `dtd-external-skipped` advisory per
-document if a check needs the missing evidence. Internal parameter entities
-are expanded so their declarations are collected; no external parameter
-entity is retrieved. Caller-supplied trees without pyxsd source provenance and
-custom-policy parser results have no core declaration evidence and remain
-lexical-only. Top-level `pyxsd.parse()` with a non-seekable instance stream
-has the same limitation, even with an explicit schema; this is not a security
-feature. A compiled `Schema.parse()` can instead replay that stream's prolog
-when declaration checking is needed. See {doc}`validation` for input and
-reread limitations. None of this performs DTD validation or hardens the
-default parser.
+The `xs:ENTITY`/`xs:ENTITIES` checks can collect unparsed entity declarations
+without fetching the named resources. Collection preserves the selected
+parser's guards; it is neither DTD validation nor parser hardening. See
+[DTD-dependent values](validation.md#dtd-dependent-entity-and-entities-values)
+for evidence completeness, input-path limits, and revalidation behavior.
 
 The parser protections are Python-level declaration interception. They do not
 replace a patched Expat. Expat has had memory-safety and entity-expansion
@@ -160,6 +144,15 @@ confining paths, applying parser hardening, and recording namespace evidence.
 Denials should raise `ResourcePolicyError`; an `OSError` is treated as an
 unavailable resource and can be downgraded to an advisory warning during schema
 composition.
+
+`read` returns `ResourceData(source_id, content)` containing original bytes.
+Canonical source IDs establish dependency bases and composition-cycle identity,
+including in virtual filesystems. The policy is retained for later parses and
+revalidation. Its `parse` method records namespaces in the supplied
+`NamespaceContext`. Streams also use it: binary streams preserve encoding and
+text streams are encoded as UTF-8. Relative dependencies in schema streams
+require a canonical `.name`; anonymous streams have no implicit filesystem base.
+Already-parsed `Element` inputs are refused while a resource policy is active.
 
 The default loader resolves local filesystem paths. An untrusted instance can
 still name a local schema through its `schemaLocation` hint, and a schema can

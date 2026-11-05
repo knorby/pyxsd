@@ -200,7 +200,7 @@ for expectation relationships and reviewed dispositions, and
 * - Remote schema hints
   - URL `schemaLocation`
   - partial
-  - The default loader resolves local filesystem paths only and never fetches a URL. `RemoteResourcePolicy` adds opt-in HTTPS-only schema loading: a remote explicit or hint-selected main schema is the root read, `allow_remote_hints` gates instance-selected schemas, an additional remote hint from a local schema needs both `allow_remote_hints` and `allow_local_remote`, an ordinary local-schema remote dependency needs `allow_local_remote`, cross-origin dependencies of admitted remote documents need `allowed_origins`, and budgets are finite; there is no persistent cache.
+  - The default loader is local-only. Opt-in `RemoteResourcePolicy` permits budgeted HTTPS schema loading with explicit origin and hint authorization, but no remote instance loading or persistent cache. See {doc}`xml-security` for the authorization rules.
 * - Unique particle attribution
   - UPA checking with XSD 1.1 wildcard exclusions
   - partial
@@ -208,7 +208,7 @@ for expectation relationships and reviewed dispositions, and
 * - DTD entities
   - `ENTITY` / `ENTITIES` values
   - partial
-  - Lazy prolog/internal-subset collection checks unparsed (`NDATA`) entity names, including derived types and defaults, when declaration evidence is complete. Internal parameter entities are expanded; external parameter entities are skipped without retrieval. No built-in profile retrieves external subsets or entities; incomplete external-subset or external-parameter-entity evidence leaves missing names lexical-only with one advisory when a check is skipped. Caller-supplied trees without pyxsd source provenance, custom-policy parser results, and non-seekable instance streams passed to top-level `pyxsd.parse()` remain lexical-only. Compiled `Schema.parse()` supports prolog replay for non-seekable streams. `Document.revalidate()` serializes the tree without its DOCTYPE, so it carries the original parse's evidence into the reparse instead of recollecting: a declared value stays valid, complete evidence still rejects an undeclared replacement, and evidence the original parse lacked stays lexical-only. Parser profiles are unchanged; see {doc}`validation` and {doc}`xml-security` for the boundaries.
+  - Unparsed entity names are checked when declaration evidence is complete; unavailable external declarations and some input paths limit checks to lexical form. Revalidation retains the original evidence. See [DTD-dependent values](validation.md#dtd-dependent-entity-and-entities-values) for the full rules; this is not DTD validation.
 * - XML 1.1 documents
   - `<?xml version="1.1"?>`
   - unsupported

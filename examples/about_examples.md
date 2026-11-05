@@ -1,100 +1,47 @@
 # About the examples
 
-The `examples/` directory shows how to use pyxsd's transform system on
-real document formats, and keeps the application transforms that shipped
-with pyxsd 0.1 as historical reading material.
+Use the [example index](README.md) to choose a data source. Each family README
+owns source fetching, supported schema versions, run commands, outputs, and
+limitations. Scripts in the repository require a source checkout; installing
+the package alone does not supply these directories.
 
 ## Application examples
 
-Each of these is a runnable schema + instance + transform, and each is
-covered by an end-to-end test in
-`tests/test_example_applications.py`:
-
-| Directory | Format | Transform | Mode |
-| --------- | ------ | --------- | ---- |
-| `musicxml/` | real MusicXML 4.0 (Bach chorale, BWV 66.6) | `NoteStats` — note/rest counts and sounding range | namespaced |
-| `gpx/` | real GPX 1.1 track with Garmin extensions | `TrackStats` — great-circle distance and elevation gain/loss | namespaced |
-| `docx/` | real `word/document.xml` (ECMA-376) | `ToMarkdown` — style-aware Markdown extraction | namespaced |
-
-The `musicxml/`, `gpx/`, and `docx/` examples each validate a genuine
-document against the **official** published schema, fetched on demand and
-skipped by the tests when it is absent (`download_sources.py` for the
-pinned MusicXML manifest; `download_schemas.py` for `gpx/` and `docx/`):
-
-- `musicxml/` loads the full MusicXML 4.0 schema (which imports the XML
-  and XLink namespaces) and validates a 51 KB four-part Bach chorale.
-- `gpx/` loads the official GPX 1.1 schema and validates a real
-  public-domain ride whose Garmin heart-rate/cadence data is admitted by
-  `xs:any namespace="##other" processContents="lax"`.
-- `docx/` validates a realistic `word/document.xml` against the full
-  ECMA-376 `wml.xsd`, rendering multilevel lists, tables, hyperlinks,
-  breaks/tabs, run properties, and `xml:space="preserve"`.
-
-`docx/lax/` keeps the earlier no-namespace demo, the worked proof of lax
-binding: the instance is deliberately messy (an unmodeled `bookmarkStart`, an
-invalid run `sz`), the report still lists both problems, and the transform
-still renders the full document. See
-[`docs/binding.md`](../docs/binding.md).
+GPX, WordprocessingML, and MusicXML use official schemas fetched by their
+family's downloader. The separate [lax DOCX example](docx/lax/README.md) uses
+deliberately imperfect input to illustrate best-effort binding. See the
+[binding guide](../docs/binding.md) for retention limits.
 
 ## Healthcare workflows
 
-[`healthcare/`](healthcare/README.md) shares pinned CDA R2 and FHIR R4 schemas
-and unchanged CC0 documents across datatype inspection, scoped FHIR XML
-conversion, and MCP diagnosis. Fetch sources with `download_sources.py` in
-that directory; downloaded schemas and generated output stay untracked.
-The family has focused `tests/test_healthcare_*.py` coverage, including
-offline helpers and download-dependent real-schema cases. Base-XSD validation
-does not establish template, profile, terminology, or clinical conformance.
+The [healthcare README](healthcare/README.md) covers CDA/FHIR sources, conversion,
+and MCP diagnosis. Base-XSD validity is separate from clinical/profile conformance.
 
 ## Rendering example families
 
-Six families render real documents end to end — CityGML 2.0 buildings,
-BPMN 2.0 diagrams, ASAM OpenDRIVE roads, UBL 2.3 / XRechnung invoices,
-MusicXML 4.0 scores, and ECMA-376 WordprocessingML. Each pins and verifies
-its own upstream sources, records license evidence in `SOURCES.md`, and
-owns its multiple example uses: CLI rendering, plots or audio, and its own
-FastAPI server. The shared pattern and per-family server commands are in
-[`docs/rendering-examples.md`](../docs/rendering-examples.md).
+The [rendering guide](../docs/rendering-examples.md) compares all rendering
+families. CityGML, BPMN, OpenDRIVE, XRechnung, and MusicXML have pinned manifests,
+license evidence, and family-local FastAPI servers. DOCX uses its own schema
+fetcher and has no such server. There is no cross-family application server.
 
 ## Transform templates
 
-Three templates demonstrate the three ways transforms are typically
-deployed:
-
 | File | Pattern |
-| ---- | ------- |
-| `transform_template_fromTransform.py` | A self-contained transform that subclasses `pyxsd.transforms.Transform`. |
-| `transform_template_library.py` | A transform *library*: helper functions/classes that a transform imports. |
-| `transform_template_fromLibrary.py` | A transform that uses a sibling library module (`from yourTransformLibrary import ...`). |
+| --- | --- |
+| [transform_template_fromTransform.py](transform_template_fromTransform.py) | Self-contained `Transform` subclass. |
+| [transform_template_library.py](transform_template_library.py) | Reusable helper functions/classes. |
+| [transform_template_fromLibrary.py](transform_template_fromLibrary.py) | Transform importing a sibling helper library. |
 
-All import the framework as `from pyxsd.transforms import Transform` —
-pyxsd 1.0 ships the framework in the package; only application transforms
-moved out of it.
+See [writing transforms](../docs/transforms/writing.md) for callable and class
+conventions.
 
 ## Legacy application transforms (`legacy/`)
 
-The crystallography transforms from pyxsd 0.1 live under
-`examples/legacy/` — they are **no longer installed with the package**
-(see `docs/migration-1.0.md`) and their 2006 schemas/data are no longer
-distributed, so they are kept as reading material:
-
-| Transform | What it does |
-| --------- | ------------ |
-| `ExpandCell` | Fills out a unit cell from asymmetric atoms, using symmetry. |
-| `SphereCutter` | Keeps only atoms within a radius of the cell origin. |
-| `CellSizer` | Converts between unit cell representations (a↔b/c, lengths↔angles). |
-| `BravaisLattice` | Derives the Bravais lattice from cell parameters. |
-| `CoordViewer` | Emits coordinates for a viewer. |
-| `FormatForVisit` | Formats cell data for the VisIt visualization tool. |
-
-Helper libraries: `Atom` (atom objects with Cartesian/fractional
-conversions) and `Vector` (3-vector math).
-
-These expect crystallography-shaped XML data that is no longer shipped.
-To read them, start in `examples/legacy/` or copy the files you need
-next to your data — see `legacy/README.md` in that directory.
+The crystallography transforms from pyxsd 0.1 are historical reading material;
+their original data is no longer distributed and they are not installed with
+the package. See [legacy/README.md](legacy/README.md) for their inventory.
 
 ## Sample transform file
 
-`legacy/sampleTransformFile.txt` shows the one-call-per-line format
-accepted by the `-T`/`--transformFile` CLI option.
+[legacy/sampleTransformFile.txt](legacy/sampleTransformFile.txt) illustrates the
+one-call-per-line format accepted by `-T` / `--transformFile`.

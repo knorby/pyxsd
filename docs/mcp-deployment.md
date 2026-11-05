@@ -1,6 +1,7 @@
 # MCP worker deployment
 
-This page describes the `pyxsd.mcp` worker-runtime boundary. The server is a
+This page covers storage, input access, worker limits, and process trust. For
+installation and tool usage, start with {doc}`mcp`. The server is a
 **local stdio process** that runs beside the MCP client. It is not a hosted
 multi-tenant service, and no network listener is included.
 
@@ -73,3 +74,39 @@ distributed or network-filesystem deployment.
 For mutually untrusted code or tenants, use a separate operator-designed sandbox
 with its own threat model. Local workers do not establish a public-hosting or
 untrusted-code safety claim.
+
+## Source roots
+
+`--source-root /absolute/root` grants read-only access to one operator-selected
+tree. Clients cannot mount arbitrary host directories. Create an empty workspace
+and refer to paths relative to that root; operations capture referenced files and
+dependencies. Those captures use the workspace ID, generation `0`, and per-file
+digests for identity. Once a workspace has uploads, it uses only uploads: missing
+files are never filled from the source tree.
+
+State is excluded from captures, including dependency discovery. A source root
+cannot lie inside the state directory. Uploaded files with similar names are
+ordinary session inputs. Relative configured paths are frozen against the launch
+working directory; there is no Git-root discovery or client-controlled scope
+switching.
+
+## Store layout and recovery
+
+The selected store contains `store-v2/index.sqlite3` and
+`store-v2/artifacts/<random-id>/<filename>`. An explicit `--state-dir` overrides
+the project default and shares artifacts with other processes selecting it.
+For read-only projects, choose a writable private directory or `--no-persist`.
+An unwritable default permits discovery but retaining an output reports a fault.
+
+SQLite uses rollback journaling, short transactions, and no lifetime process
+lock. Output files are staged and fsynced before publication. An open read may
+finish after another process deletes an artifact; subsequent reads return
+`not_found`. Each process owns temporary scratch outside the store and never
+cleans a peer's scratch. Discovery, uploads, validation without output, and
+operations against an absent store do not create persistent state.
+
+Crashes may leave unlisted staging/orphan files. There is no online garbage
+collection or adoption: stop every process sharing a store before resetting its
+dedicated directory. Resetting it deletes retained outputs too. Legacy state
+and the old user-global default are not migrated or discovered automatically;
+stop old servers before explicitly reusing that path.

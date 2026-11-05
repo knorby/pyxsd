@@ -47,61 +47,16 @@ Select another persistent store with `--state-dir /absolute/private/path`. Use
 `--no-persist` for a temporary store that is removed on orderly shutdown; it
 cannot be combined with `--state-dir`.
 
-An explicit state directory wins over the project default and deliberately shares
-artifacts with other servers selecting it. Relative paths are frozen against the
-launch working directory. There is no Git-root search or client-controlled scope
-switching. Projects normally gitignore `.pyxsd/`; pyxsd never edits `.gitignore`.
-For a read-only project, use `--no-persist` or select a writable private
-`--state-dir`. An unwritable default does not prevent discovery; retaining an
-output reports a storage fault instead.
-
-For an operator-granted read-only source tree, add `--source-root /absolute/root`.
-Only that configured root is captured; a client cannot mount an arbitrary host
-directory. Normal session inputs use `pyxsd_put_files` and need no source root.
-Create an empty workspace and use paths relative to the source root directly;
-operations capture only the referenced files and discovered dependencies. Source
-captures carry the real workspace ID and generation `0`, with file digests used
-for result identity. Once a workspace has uploads, operations use only those
-uploads: missing paths are never silently filled from the source tree.
-Persistent state is excluded from source captures, including discovered schema
-dependencies. A source root cannot itself be inside the state directory. Uploaded
-files with similar relative names are ordinary session inputs.
+See {doc}`mcp-deployment` for source roots, persistent-store layout, shared
+processes, cleanup, and operator limits. Normal session uploads need no source root.
 
 ## Persistent store and session inputs
 
-Servers for different projects are independent. Servers selecting the same store
-share retained artifacts through short SQLite transactions; no lifetime process
-lock is held. The store holds an artifact index plus each retained output file:
-
-```text
-<store>/store-v2/
-├── index.sqlite3
-└── artifacts/<random-id>/<filename>
-```
-
-Workspaces, uploaded input sets, page cursors, compiled schemas, and transform
-execution context are **session-only**. Restarting the server discards them. A
-restarted session can still list and read previously retained artifacts by ID.
-Each server owns separate temporary scratch outside persistent state. Closing one
-server never cleans another server's scratch. Discovery, uploads, valid validation
-without output, and reads/lists/deletes against an absent store do not create
-`.pyxsd/`. `--no-persist` keeps all outputs temporary.
-
-SQLite uses rollback journaling and a 5000 ms contention timeout. Busy/locked
-transactions return retryable `state_busy`; other failures are not labeled busy.
-Files are staged and fsynced before publication. An already-open read can finish
-after another server deletes the artifact; later reads return `not_found`.
-
-Startup does not reconcile or remove unindexed files: they may belong to a live
-writer. Crashes may leave unlisted staging or orphan files. To reset the store,
-stop **all** servers using it, then remove only its dedicated MCP directory (by
-default `.pyxsd/mcp`); this deletes retained outputs too. No online garbage
-collection or orphan adoption is performed.
-
-The old user-global default is not migrated, discovered, or deleted. To reuse its
-artifacts, stop old servers first and explicitly select that directory with
-`--state-dir`. Mixed old/new servers sharing state are unsupported. Legacy
-`state.sqlite3` and `workspaces/` files remain untouched.
+Uploads, workspaces, compiled schemas, cursors, and execution context last only
+for the server session. Retained output artifacts survive restart unless the
+server uses `--no-persist` or they are explicitly deleted. Releasing a workspace
+removes its inputs, not its outputs. Treat retained files as document data and
+choose their storage location accordingly; see {doc}`mcp-deployment`.
 
 ## Basic workflow
 

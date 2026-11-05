@@ -1,51 +1,81 @@
-# pyxsd documentation
+# XML Schema validation and Python bindings
 
-Documentation for **pyxsd**, a Python library and CLI that maps XML
-documents into Python object trees according to an XML Schema (XSD). It
-reports validation issues, queries and exports the bound tree (`xpath` /
-`find` / `to_dict` / `to_json`), runs user-defined *transforms*, and writes
-XML. The base install has two small, pure-Python dependencies, `elementpath`
-and `defusedxml`; `defusedxml` is used only when the opt-in parser profiles are
-selected. pyxsd is an XSD 1.1 processor with an optional XSD 1.0 mode.
+pyxsd validates XML against XSD and binds documents to Python objects.
+Start with {doc}`quickstart` to parse, query, edit, and save a document with
+supplied inputs. For a runnable custom transform, follow {doc}`demo`.
 
-For explicit local input sequences, see {doc}`batch`: reuse one compiled
-schema for parsing or export a new manifested Parquet dataset with the
-optional Arrow adapter. To attach methods and validation checks to generated
-classes, see {doc}`extensions`. The {doc}`api` covers schema introspection
-and filtered stubs; {doc}`validation` covers resource policies and diagnostic
-locations; {doc}`xml-security` covers parser profiles, limits, remote loading,
-and untrusted-input boundaries.
+This site follows the `develop` branch and may include unreleased behavior.
+Check `pyxsd --version`; for release-specific documentation sources, select
+the matching tag in the [repository](https://github.com/knorby/pyxsd/tags).
+
+## Choose a task
+
+- Inspect errors and their source occurrences: {doc}`validation`.
+- Understand namespaces and retained data: {doc}`binding` and {doc}`data-model`.
+- Process several files: {doc}`batch`.
+- Export Pydantic models, Arrow tables, or Parquet: {doc}`integrations`.
+- Find an application workflow: {doc}`data-workflows` or {doc}`rendering-examples`.
+- Work through an MCP client: {doc}`mcp`.
+
+Read {doc}`supported` for XSD coverage and {doc}`xml-security` before
+processing untrusted input. Validation, binding retention, and parser
+protection are separate choices.
 
 ```{toctree}
-:maxdepth: 2
-:caption: Contents
+:maxdepth: 1
+:caption: Start here
 
 quickstart
-cli
 demo
-architecture
-mcp
-mcp-deployment
-data-model
-validation
-xml-security
-batch
-binding
-extensions
-transforms/index
-supported
-xsd-validation
-xsts
 comparison-xmlschema
 comparison-libxml2
-api
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Work with documents
+
+binding
+data-model
+validation
+transforms/index
+batch
+extensions
+stubs
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Connect tools and examples
+
 integrations
 data-workflows
 rendering-examples
+mcp
+mcp-deployment
 skills
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Reference and limits
+
+api
+cli
+supported
+xml-security
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Understand and contribute
+
+xsd-validation
+xsts
+architecture
+contributing
 migration-1.0
 history/index
-contributing
 ```
 
 ```{toctree}
