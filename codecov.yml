@@ -6,3 +6,24 @@
 # merges them with the reports taken from the repository source.
 fixes:
   - ".venv/lib/*/site-packages/pyxsd/::src/pyxsd/"
+
+coverage:
+  status:
+    project:
+      default:
+        # Informational, not gating. Coverage arrives as ~21 separate
+        # uploads from three workflows (the ci.yml Python matrix, the
+        # oracle job, the adapters matrix, and the optional mcp-arrow
+        # matrix), and Codecov posts this status after every upload,
+        # evaluating whatever partial flag merge exists at that moment.
+        # Early posts swing by more than a percent, and an exact
+        # after_n_builds count would break whenever a workflow is
+        # skipped. The enforced gates live elsewhere: the coverage floor
+        # is fail_under = 98 in pyproject.toml (every CI coverage job
+        # fails below it) and per-PR patch coverage below stays strict.
+        informational: true
+    patch:
+      default:
+        # Every modified, coverable line must be covered (the repo's
+        # coverage contract in AGENTS.md).
+        threshold: 0%

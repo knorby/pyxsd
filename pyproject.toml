@@ -74,6 +74,9 @@ docs = [
 # published extras and must never be installed by library users implicitly.
 examples-duckdb = ["duckdb>=1.4,<2"]
 examples-polars = ["polars>=1.32,<2"]
+examples-matplotlib = ["matplotlib>=3.9,<4"]
+examples-fastapi = ["fastapi>=0.115,<1", "uvicorn>=0.32,<1"]
+examples-reportlab = ["reportlab>=4,<5"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyxsd"]
@@ -190,5 +193,5 @@ show_missing = true
 precision = 1
 # Coverage floor enforced by CI; raise it as coverage grows. The base
 # suite (core + dependency-free projection) measured 99.3% after the
-# coverage burndown; 98 leaves headroom for interpreter-version drift.
-fail_under = 98
+# coverage burndown; per-version CI runs sit around 99.1-99.3%.
+fail_under = 99

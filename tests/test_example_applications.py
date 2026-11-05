@@ -18,7 +18,7 @@ from pyxsd.schema import Schema
 EXAMPLES = Path(__file__).parent.parent / "examples"
 DOCX_SCHEMA = EXAMPLES / "docx" / "schemas" / "wml.xsd"
 GPX_SCHEMA = EXAMPLES / "gpx" / "schemas" / "gpx.xsd"
-MUSICXML_SCHEMA = EXAMPLES / "musicxml" / "schemas" / "musicxml.xsd"
+MUSICXML_SCHEMA = EXAMPLES / "musicxml" / ".cache" / "musicxml-schemas" / "schema" / "musicxml.xsd"
 
 requires_docx_schemas = pytest.mark.skipif(
     not DOCX_SCHEMA.exists(),
@@ -30,7 +30,7 @@ requires_gpx_schemas = pytest.mark.skipif(
 )
 requires_musicxml_schemas = pytest.mark.skipif(
     not MUSICXML_SCHEMA.exists(),
-    reason="run examples/musicxml/download_schemas.py to fetch the MusicXML schemas",
+    reason="run examples/musicxml/download_sources.py to install the pinned MusicXML schema",
 )
 
 # A minimal GPX 1.1 subset carrying only what TrackStats reads. The

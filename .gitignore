@@ -33,13 +33,22 @@ docs/superpowers/
 # Docs build output
 docs/_build/
 
-# Downloaded schemas for the docx, gpx, and musicxml examples
-# (fetch with examples/*/download_schemas.py; too large to commit)
+# Downloaded schemas for the docx and gpx examples
+# (fetch on demand; too large to commit)
 examples/docx/schemas/
 examples/gpx/schemas/
-examples/musicxml/schemas/
 examples/healthcare/.cache/
 examples/healthcare/out/
+examples/citygml/.cache/
+examples/citygml/out/
+examples/bpmn/.cache/
+examples/bpmn/out/
+examples/opendrive/.cache/
+examples/opendrive/out/
+examples/xrechnung/.cache/
+examples/xrechnung/out/
+examples/musicxml/.cache/
+examples/musicxml/out/
 
 # CLI transform output written next to the input file (the default
 # -d/--directoryTransformed and -p/--parsedOutput filenames)

@@ -1,0 +1,104 @@
+# Pinned upstream sources for the xrechnung example family.
+#
+# Every entry carries its upstream URL, the license that governs it, and a
+# SHA-256 digest; download_sources.py verifies digests before anything is
+# used. Nothing listed here is committed to the repository: the cache lives
+# under the gitignored .cache/ directory and can be rebuilt at any time.
+# License evidence and attribution live in SOURCES.md next to this file.
+[ubl-schema]
+kind = "files"
+revision = "UBL 2.3 OASIS Standard, 2021-06-15"
+entry = "maindoc/UBL-Invoice-2.3.xsd"
+destination = "ubl-schemas"
+license = "OASIS copyright notice; unmodified redistribution permitted with the notice retained"
+role = "OASIS UBL 2.3 Invoice schema closure (19 XSD files) from docs.oasis-open.org"
+
+[[ubl-schema.files]]
+path = "common/BDNDR-CCTS_CCT_SchemaModule-1.1.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/BDNDR-CCTS_CCT_SchemaModule-1.1.xsd"
+sha256 = "dd546e4809df86b6445589f69f0d6c9df162840ae386574ddfc1da7638103e15"
+
+[[ubl-schema.files]]
+path = "common/BDNDR-UnqualifiedDataTypes-1.1.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/BDNDR-UnqualifiedDataTypes-1.1.xsd"
+sha256 = "6be0887f677a21d1fa2b363b0abe2385b713a20befee85d1a8fed5ef7d76993c"
+
+[[ubl-schema.files]]
+path = "common/UBL-CommonAggregateComponents-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-CommonAggregateComponents-2.3.xsd"
+sha256 = "9ff2b3cc1ad590f3fd7ee5c43f3556b4f12347c3d1672965b18c72958c054d65"
+
+[[ubl-schema.files]]
+path = "common/UBL-CommonBasicComponents-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-CommonBasicComponents-2.3.xsd"
+sha256 = "9bc47430a6c550684412269dd65f26351b4c3e00b16d805595af581130c2f03a"
+
+[[ubl-schema.files]]
+path = "common/UBL-CommonExtensionComponents-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-CommonExtensionComponents-2.3.xsd"
+sha256 = "80dcae5d6aae596cca9d1047c753bb4323672569114a796c6979ac87d2ec530c"
+
+[[ubl-schema.files]]
+path = "common/UBL-CommonSignatureComponents-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-CommonSignatureComponents-2.3.xsd"
+sha256 = "c62abc443c5ccf8184c68221776ef1278aa4d9d2ad0f753203f9b9d61ace0417"
+
+[[ubl-schema.files]]
+path = "common/UBL-ExtensionContentDataType-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-ExtensionContentDataType-2.3.xsd"
+sha256 = "559c0d50c2b5c40c7a227b7dff76cdd1b3f3aebc8f8f3b393893a466474a36c5"
+
+[[ubl-schema.files]]
+path = "common/UBL-QualifiedDataTypes-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-QualifiedDataTypes-2.3.xsd"
+sha256 = "889be90e684097e70d60c8d7d690beeb1d04a5a0c385e6fe49969621f8bab9fd"
+
+[[ubl-schema.files]]
+path = "common/UBL-SignatureAggregateComponents-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-SignatureAggregateComponents-2.3.xsd"
+sha256 = "4e504e5f6238ef000b6514ad76022dd8e8a88cc9240361ff5cf712e900ad3a04"
+
+[[ubl-schema.files]]
+path = "common/UBL-SignatureBasicComponents-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-SignatureBasicComponents-2.3.xsd"
+sha256 = "69a994f1e75d1e0d96d666199d152b9700814fecbca3b6538470be238d5884ae"
+
+[[ubl-schema.files]]
+path = "common/UBL-XAdES01903v132-201601-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-XAdES01903v132-201601-2.3.xsd"
+sha256 = "1d514f71356b90972819c8eb032c649e930eb4a5d47c2670710165211631aaac"
+
+[[ubl-schema.files]]
+path = "common/UBL-XAdES01903v141-201601-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-XAdES01903v141-201601-2.3.xsd"
+sha256 = "e3ffb355ab7b8185c4ee63d2495837554d242deaf3faa7b3071afb5f48012f60"
+
+[[ubl-schema.files]]
+path = "common/UBL-xmldsig-core-schema-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-xmldsig-core-schema-2.3.xsd"
+sha256 = "76632721ac08eb89cb2c3cdb94323501e42395dc45e50244e3ef41a2b59a2803"
+
+[[ubl-schema.files]]
+path = "common/UBL-xmldsig1-schema-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-xmldsig1-schema-2.3.xsd"
+sha256 = "5e68279f5671cf248ff65e950a4b7493c8387b782bd507b944e828807d84f49e"
+
+[[ubl-schema.files]]
+path = "common/UBL-xmldsig11-schema-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/common/UBL-xmldsig11-schema-2.3.xsd"
+sha256 = "6b35331559a482b36073aca33483d217fdfaf3d2eb3af49da9450d6b40c03d52"
+
+[[ubl-schema.files]]
+path = "maindoc/UBL-Invoice-2.3.xsd"
+url = "https://docs.oasis-open.org/ubl/os-UBL-2.3/xsd/maindoc/UBL-Invoice-2.3.xsd"
+sha256 = "17be67538966292a3e8e7bd6404c9017b38919184cb7d4c8dc12f0937358e1a4"
+
+[ubl-data]
+kind = "archive"
+url = "https://github.com/itplr-kosit/xrechnung-testsuite/archive/refs/tags/v2026-08-31.zip"
+revision = "tag v2026-08-31"
+sha256 = "f31ba403a93223c2862af695cf0150f0a229bfc5ab0aa41736cf972f9944b69b"
+entry = "xrechnung-testsuite-2026-08-31/README.md"
+destination = "ubl-data"
+license = "Apache-2.0"
+role = "KoSIT XRechnung test suite: 39 UBL invoices under the German EN 16931 CIUS"

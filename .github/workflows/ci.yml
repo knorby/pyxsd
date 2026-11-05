@@ -65,10 +65,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: |
-            examples/musicxml/schemas
+            examples/musicxml/.cache
             examples/gpx/schemas
             examples/docx/schemas
-          key: example-schemas-${{ runner.os }}-${{ hashFiles('examples/*/download_schemas.py') }}
+          key: example-schemas-${{ runner.os }}-${{ hashFiles('examples/*/download_schemas.py', 'examples/musicxml/download_sources.py', 'examples/musicxml/sources.toml') }}
 
       - name: Sync environment
         run: uv sync --group dev --python ${{ matrix.python-version }}
@@ -76,7 +76,7 @@ jobs:
       - name: Download example schemas
         if: steps.schemas.outputs.cache-hit != 'true'
         run: |
-          uv run python examples/musicxml/download_schemas.py
+          uv run python examples/musicxml/download_sources.py --only musicxml-schema
           uv run python examples/gpx/download_schemas.py
           uv run python examples/docx/download_schemas.py
 

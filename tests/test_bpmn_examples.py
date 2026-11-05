@@ -1,0 +1,506 @@
+"""Tests for this family BPMN renderer.
+
+The offline half builds a synthetic BPMN subset spanning four namespaces so the DI
+readers and SVG renderer stay covered when the pinned samples are absent.
+The real half parses the bpmn-io samples against the pinned schema and skips
+with a setup hint in a clean checkout.
+"""
+
+from __future__ import annotations
+
+import xml.etree.ElementTree as ET
+
+import pytest
+from examples.bpmn.common.schemas import compile_schema
+from examples.bpmn.common.sources import CACHE_ROOT
+from examples.bpmn.render_svg import di_edges, di_shapes, main, render_svg
+
+from pyxsd.binding import ParseModes
+from pyxsd.schema import Schema
+
+MODEL = "http://www.omg.org/spec/BPMN/20100524/MODEL"
+BPMN_DI = "http://www.omg.org/spec/BPMN/20100524/DI"
+DC = "http://www.omg.org/spec/DD/20100524/DC"
+DD_DI = "http://www.omg.org/spec/DD/20100524/DI"
+
+DC_SCHEMA = f"""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:dc="{DC}" targetNamespace="{DC}" elementFormDefault="qualified">
+  <xs:complexType name="BoundsType">
+    <xs:attribute name="x" type="xs:double" use="required"/>
+    <xs:attribute name="y" type="xs:double" use="required"/>
+    <xs:attribute name="width" type="xs:double"/>
+    <xs:attribute name="height" type="xs:double" use="required"/>
+  </xs:complexType>
+  <xs:element name="Bounds" type="dc:BoundsType"/>
+</xs:schema>
+"""
+
+DD_DI_SCHEMA = f"""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:di="{DD_DI}" targetNamespace="{DD_DI}" elementFormDefault="qualified">
+  <xs:element name="waypoint">
+    <xs:complexType>
+      <xs:attribute name="x" type="xs:double"/>
+      <xs:attribute name="y" type="xs:double"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+
+BPMN_DI_SCHEMA = f"""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:di="{DD_DI}" xmlns:dc="{DC}" xmlns:bpmndi="{BPMN_DI}"
+           targetNamespace="{BPMN_DI}" elementFormDefault="qualified">
+  <xs:import namespace="{DC}" schemaLocation="dc.xsd"/>
+  <xs:import namespace="{DD_DI}" schemaLocation="dd_di.xsd"/>
+  <xs:element name="extension">
+    <xs:complexType/>
+  </xs:element>
+  <xs:complexType name="ShapeType">
+    <xs:sequence>
+      <xs:element ref="bpmndi:extension" minOccurs="0"/>
+      <xs:element ref="dc:Bounds" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+    <xs:attribute name="bpmnElement" type="xs:string" use="required"/>
+    <xs:attribute name="isHorizontal" type="xs:boolean"/>
+  </xs:complexType>
+  <xs:element name="BPMNShape" type="bpmndi:ShapeType"/>
+  <xs:complexType name="EdgeType">
+    <xs:sequence>
+      <xs:element ref="di:waypoint" minOccurs="1" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+    <xs:attribute name="bpmnElement" type="xs:string" use="required"/>
+  </xs:complexType>
+  <xs:element name="BPMNEdge" type="bpmndi:EdgeType"/>
+  <xs:complexType name="PlaneType">
+    <xs:sequence>
+      <xs:element ref="bpmndi:BPMNShape" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element ref="bpmndi:BPMNEdge" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+    <xs:attribute name="bpmnElement" type="xs:string" use="required"/>
+  </xs:complexType>
+  <xs:element name="BPMNPlane" type="bpmndi:PlaneType"/>
+  <xs:element name="BPMNDiagram">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="bpmndi:BPMNPlane"/>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+
+MODEL_SCHEMA = f"""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:m="{MODEL}" xmlns:bpmndi="{BPMN_DI}"
+           targetNamespace="{MODEL}" elementFormDefault="qualified">
+  <xs:import namespace="{BPMN_DI}" schemaLocation="bpmndi.xsd"/>
+  <xs:complexType name="FlowNodeType">
+    <xs:attribute name="id" type="xs:string"/>
+    <xs:attribute name="name" type="xs:string"/>
+  </xs:complexType>
+  <xs:complexType name="SequenceFlowType">
+    <xs:attribute name="id" type="xs:string" use="required"/>
+    <xs:attribute name="name" type="xs:string"/>
+    <xs:attribute name="sourceRef" type="xs:string"/>
+    <xs:attribute name="targetRef" type="xs:string"/>
+  </xs:complexType>
+  <xs:element name="participant" type="m:FlowNodeType"/>
+  <xs:element name="lane" type="m:FlowNodeType"/>
+  <xs:element name="subProcess" type="m:FlowNodeType"/>
+  <xs:element name="intermediateCatchEvent" type="m:FlowNodeType"/>
+  <xs:element name="textAnnotation" type="m:FlowNodeType"/>
+  <xs:element name="startEvent" type="m:FlowNodeType"/>
+  <xs:element name="endEvent" type="m:FlowNodeType"/>
+  <xs:element name="task" type="m:FlowNodeType"/>
+  <xs:element name="exclusiveGateway" type="m:FlowNodeType"/>
+  <xs:element name="sequenceFlow" type="m:SequenceFlowType"/>
+  <xs:element name="process">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:choice minOccurs="0" maxOccurs="unbounded">
+          <xs:element ref="m:participant"/>
+          <xs:element ref="m:lane"/>
+          <xs:element ref="m:subProcess"/>
+          <xs:element ref="m:intermediateCatchEvent"/>
+          <xs:element ref="m:textAnnotation"/>
+          <xs:element ref="m:startEvent"/>
+          <xs:element ref="m:endEvent"/>
+          <xs:element ref="m:task"/>
+          <xs:element ref="m:exclusiveGateway"/>
+          <xs:element ref="m:sequenceFlow"/>
+        </xs:choice>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:string" use="required"/>
+      <xs:attribute name="name" type="xs:string"/>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="definitions">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="m:process" minOccurs="0"/>
+        <xs:element ref="bpmndi:BPMNDiagram" minOccurs="0"/>
+      </xs:sequence>
+      <xs:attribute name="targetNamespace" type="xs:string"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+"""
+
+INSTANCE = f"""\
+<definitions xmlns="{MODEL}" xmlns:bpmndi="{BPMN_DI}" xmlns:dc="{DC}" xmlns:di="{DD_DI}"
+             targetNamespace="urn:example:bpmn">
+  <process id="proc" name="Order handling">
+    <participant id="pool" name="Pool"/>
+    <participant id="pool_unnamed"/>
+    <lane id="lane" name="Lane"/>
+    <startEvent id="start" name="Start"/>
+    <task id="task_a" name="Do work"/>
+    <exclusiveGateway id="gw" name="OK?"/>
+    <task id="task_b" name="Finish &amp; sign off"/>
+    <subProcess id="sub" name="Sub process"/>
+    <intermediateCatchEvent id="wait" name="Wait"/>
+    <textAnnotation id="note" name="Note"/>
+    <task name="Anonymous"/>
+    <endEvent id="end" name="End"/>
+    <sequenceFlow id="f1" name="go" sourceRef="start" targetRef="task_a"/>
+    <sequenceFlow id="f2" sourceRef="task_a" targetRef="gw"/>
+    <sequenceFlow id="f3" name="yes" sourceRef="gw" targetRef="task_b"/>
+    <sequenceFlow id="f4" sourceRef="task_b" targetRef="end"/>
+    <sequenceFlow id="f5" name="broken"/>
+  </process>
+  <bpmndi:BPMNDiagram id="diagram">
+    <bpmndi:BPMNPlane id="plane" bpmnElement="proc">
+      <bpmndi:BPMNShape id="s-pool" bpmnElement="pool" isHorizontal="true">
+        <dc:Bounds x="40" y="30" width="640" height="430"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-pool-unnamed" bpmnElement="pool_unnamed">
+        <dc:Bounds x="700" y="30" width="80" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-lane" bpmnElement="lane" isHorizontal="true">
+        <dc:Bounds x="60" y="40" width="560" height="400"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-start" bpmnElement="start">
+        <dc:Bounds x="100" y="100" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-task-a" bpmnElement="task_a">
+        <bpmndi:extension/>
+        <dc:Bounds x="200" y="80" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-gw" bpmnElement="gw">
+        <dc:Bounds x="360" y="95" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-task-b" bpmnElement="task_b">
+        <dc:Bounds x="200" y="300" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-sub" bpmnElement="sub">
+        <dc:Bounds x="430" y="260" width="120" height="90"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-wait" bpmnElement="wait">
+        <dc:Bounds x="580" y="280" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-note" bpmnElement="note">
+        <dc:Bounds x="640" y="150" width="60" height="40"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-end" bpmnElement="end">
+        <dc:Bounds x="560" y="380" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="s-no-bounds" bpmnElement="missing"/>
+      <bpmndi:BPMNShape id="s-bad-bounds" bpmnElement="missing">
+        <dc:Bounds x="1" y="2" height="3"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="e1" bpmnElement="f1">
+        <di:waypoint x="136" y="118"/>
+        <di:waypoint x="200" y="120"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="e2" bpmnElement="f2">
+        <di:waypoint x="300" y="120"/>
+        <di:waypoint x="360" y="120"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="e3" bpmnElement="f3">
+        <di:waypoint x="385" y="145"/>
+        <di:waypoint x="250" y="300"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="e4" bpmnElement="f4">
+        <di:waypoint x="300" y="340"/>
+        <di:waypoint x="560" y="398"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="e5" bpmnElement="f5">
+        <di:waypoint x="500" y="500"/>
+        <di:waypoint y="510"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>
+"""
+
+
+@pytest.fixture(scope="module")
+def synthetic(tmp_path_factory):
+    root = tmp_path_factory.mktemp("bpmn-schema")
+    for name, text in (
+        ("dc.xsd", DC_SCHEMA),
+        ("dd_di.xsd", DD_DI_SCHEMA),
+        ("bpmndi.xsd", BPMN_DI_SCHEMA),
+        ("model.xsd", MODEL_SCHEMA),
+    ):
+        (root / name).write_text(text, encoding="utf-8")
+    schema = Schema.compile(root / "model.xsd", mode=ParseModes.STRICT.replace(namespaces="strict"))
+    assert not schema.report.has_errors
+    instance = root / "instance.xml"
+    instance.write_text(INSTANCE, encoding="utf-8")
+    document = schema.parse(instance)
+    assert not document.report.has_errors
+    return document
+
+
+def test_di_shapes_classify_by_referenced_element(synthetic):
+    shapes = di_shapes(synthetic)
+    assert [shape["element_id"] for shape in shapes] == [
+        "pool",
+        "pool_unnamed",
+        "lane",
+        "start",
+        "task_a",
+        "gw",
+        "task_b",
+        "sub",
+        "wait",
+        "note",
+        "end",
+    ]
+    assert {shape["element_id"]: shape["kind"] for shape in shapes} == {
+        "pool": "participant",
+        "pool_unnamed": "participant",
+        "lane": "lane",
+        "start": "start_event",
+        "task_a": "task",
+        "gw": "gateway",
+        "task_b": "task",
+        "sub": "subprocess",
+        "wait": "event",
+        "note": "other",
+        "end": "end_event",
+    }
+
+
+def test_di_shapes_carry_bounds_labels_and_orientation(synthetic):
+    shapes = {shape["element_id"]: shape for shape in di_shapes(synthetic)}
+    task = shapes["task_a"]
+    assert (task["x"], task["y"], task["w"], task["h"]) == (200.0, 80.0, 100.0, 80.0)
+    assert task["label"] == "Do work"
+    assert task["is_horizontal"] is False
+    assert shapes["lane"]["is_horizontal"] is True
+    assert shapes["pool_unnamed"]["label"] == ""
+
+
+def test_di_edges_carry_waypoints_and_semantic_labels(synthetic):
+    edges = di_edges(synthetic)
+    assert [edge["element_id"] for edge in edges] == ["f1", "f2", "f3", "f4", "f5"]
+    assert edges[0]["waypoints"] == [(136.0, 118.0), (200.0, 120.0)]
+    assert edges[2]["waypoints"] == [(385.0, 145.0), (250.0, 300.0)]
+    # A waypoint missing a coordinate is dropped, not guessed.
+    assert edges[4]["waypoints"] == [(500.0, 500.0)]
+    assert {edge["element_id"]: edge["label"] for edge in edges} == {
+        "f1": "go",
+        "f2": "",
+        "f3": "yes",
+        "f4": "",
+        "f5": "broken",
+    }
+
+
+SVG = "{http://www.w3.org/2000/svg}"
+
+
+def _elements(svg: str, tag: str) -> list:
+    return list(ET.fromstring(svg).iter(f"{SVG}{tag}"))
+
+
+def test_render_svg_draws_each_glyph_and_one_arrowhead(synthetic):
+    svg = render_svg(synthetic, width=800)
+    assert svg.startswith("<svg ")
+    assert svg.count("<marker") == 1
+    assert "<defs>" in svg
+
+    tasks = [rect for rect in _elements(svg, "rect") if rect.get("data-kind") == "task"]
+    assert len(tasks) == 2
+    assert all(rect.get("rx") for rect in tasks)
+    assert len(_elements(svg, "polygon")) == 1  # the gateway diamond
+    circles = {circle.get("data-kind"): circle for circle in _elements(svg, "circle")}
+    assert set(circles) == {"start_event", "end_event", "event"}
+    assert float(circles["end_event"].get("stroke-width")) > float(
+        circles["start_event"].get("stroke-width")
+    )
+    rect_kinds = [rect.get("data-kind") for rect in _elements(svg, "rect")]
+    assert rect_kinds.count("lane") == 1
+    assert rect_kinds.count("participant") == 2
+    assert rect_kinds.count("subprocess") == 1
+    assert rect_kinds.count("other") == 1
+    # Each [+] badge is a small rect with one horizontal and one vertical line.
+    assert len(_elements(svg, "line")) == 2
+    polylines = _elements(svg, "polyline")
+    assert len(polylines) == 4
+    assert all(polyline.get("marker-end") == "url(#bpmn-arrow)" for polyline in polylines)
+    # The edge whose second waypoint lost its x coordinate is not drawn.
+    assert "f5" not in {polyline.get("data-element") for polyline in polylines}
+
+
+def test_render_svg_writes_labels_and_escapes_text(synthetic):
+    svg = render_svg(synthetic, width=800)
+    labels = [element.text for element in _elements(svg, "text")]
+    assert "Do work" in labels
+    assert "OK?" in labels
+    assert "Lane" in labels
+    assert "Pool" in labels
+    assert "Sub process" in labels
+    assert "Note" in labels
+    assert "go" in labels
+    assert "yes" in labels
+    assert "Finish &amp; sign off" in svg
+    assert "Finish & sign off" not in svg
+
+
+def test_render_svg_flips_the_bpmn_y_axis(synthetic):
+    svg = render_svg(synthetic, width=800)
+    by_element = {
+        element.get("data-element"): element
+        for element in _elements(svg, "rect")
+        if element.get("data-element")
+    }
+    # task_a sits at DI y=80, task_b at y=300: the larger DI y is nearer the
+    # SVG top, so task_a's SVG y is the larger of the two.
+    assert float(by_element["task_a"].get("y")) > float(by_element["task_b"].get("y"))
+
+
+def test_render_svg_is_deterministic(synthetic):
+    assert render_svg(synthetic, width=800) == render_svg(synthetic, width=800)
+
+
+def test_render_svg_with_no_di_geometry_is_still_well_formed():
+    class _EmptyDocument:
+        def to_dict(self):
+            return {}
+
+        def xpath(self, *_args, **_kwargs):
+            return []
+
+    svg = render_svg(_EmptyDocument(), width=400)
+    assert svg.startswith('<svg xmlns="http://www.w3.org/2000/svg" width="400"')
+    assert ET.fromstring(svg).get("height") == "100"
+    assert svg.count("<marker") == 1
+
+
+BPMN_DATA = CACHE_ROOT / "bpmn-data"
+SAMPLE_NAMES = (
+    "starter.bpmn",
+    "nested-subprocesses.bpmn",
+    "simple.bpmn",
+    "sequence-flows.bpmn",
+)
+requires_bpmn_sources = pytest.mark.skipif(
+    not (CACHE_ROOT / "bpmn-schemas" / "BPMN20.xsd").is_file()
+    or not all((BPMN_DATA / name).is_file() for name in SAMPLE_NAMES),
+    reason=(
+        "run `uv run python examples/bpmn/download_sources.py "
+        "--only bpmn-schema --only bpmn-data` to fetch the pinned schema and samples"
+    ),
+)
+
+
+@pytest.fixture(scope="module")
+def real_schema():
+    return compile_schema()
+
+
+@requires_bpmn_sources
+def test_real_samples_parse_against_the_pinned_schema(real_schema):
+    for name in SAMPLE_NAMES:
+        document = real_schema.parse(BPMN_DATA / name)
+        assert not document.report.has_errors, (name, document.report.issues)
+
+
+@requires_bpmn_sources
+def test_starter_shapes_and_edges_match_the_di(real_schema):
+    document = real_schema.parse(BPMN_DATA / "starter.bpmn")
+    shapes = di_shapes(document)
+    assert len(shapes) == 8  # participant, lane, 2 tasks, 2 gateways, 2 events
+    assert [shape["kind"] for shape in shapes] == [
+        "participant",
+        "lane",
+        "task",
+        "task",
+        "start_event",
+        "end_event",
+        "gateway",
+        "gateway",
+    ]
+    assert next(shape for shape in shapes if shape["kind"] == "lane")["is_horizontal"]
+    edges = di_edges(document)
+    assert len(edges) == 6
+    assert {edge["label"] for edge in edges} >= {"Yes", "No"}
+
+
+@requires_bpmn_sources
+def test_starter_renders_labels_and_is_deterministic(real_schema):
+    document = real_schema.parse(BPMN_DATA / "starter.bpmn")
+    first = render_svg(document)
+    assert first == render_svg(document)
+    assert first.startswith('<svg xmlns="http://www.w3.org/2000/svg" width="1000"')
+    assert first.count("<marker") == 1
+    for text in ("Customer", "Scan QR code", "Scan successful?", "Yes", "No"):
+        assert text in first
+    assert len(_elements(first, "polyline")) == 6
+    assert len(_elements(first, "rect")) >= 4
+    assert int(ET.fromstring(first).get("height")) > 0
+
+
+@requires_bpmn_sources
+def test_nested_subprocesses_get_the_plus_badge(real_schema):
+    document = real_schema.parse(BPMN_DATA / "nested-subprocesses.bpmn")
+    svg = render_svg(document)
+    subprocesses = [
+        rect for rect in _elements(svg, "rect") if rect.get("data-kind") == "subprocess"
+    ]
+    assert len(subprocesses) == 2
+    # Each [+] badge is a small rect with one horizontal and one vertical line.
+    assert len(_elements(svg, "line")) == 4
+
+
+@requires_bpmn_sources
+def test_cli_writes_svg_and_rejects_invalid_bpmn(tmp_path, capsys):
+    output = tmp_path / "starter.svg"
+    assert main([str(BPMN_DATA / "starter.bpmn"), "-o", str(output)]) == 0
+    assert output.read_text(encoding="utf-8").startswith("<svg ")
+    assert "wrote" in capsys.readouterr().out
+
+    broken = tmp_path / "broken.bpmn"
+    broken.write_text("<definitions/>", encoding="utf-8")
+    assert main([str(broken), "-o", str(tmp_path / "broken.svg")]) == 1
+    assert "validation error" in capsys.readouterr().err
+    assert not (tmp_path / "broken.svg").exists()
+
+
+@requires_bpmn_sources
+def test_cli_defaults_to_the_family_out_directory(monkeypatch, tmp_path):
+    from examples.bpmn.common import sources
+
+    monkeypatch.setattr(sources, "FAMILY_ROOT", tmp_path)
+    assert main([str(BPMN_DATA / "starter.bpmn"), "--width", "640"]) == 0
+    written = tmp_path / "out" / "starter.svg"
+    assert written.read_text(encoding="utf-8").startswith(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="640"'
+    )
+
+
+def test_single_schema_family_rejects_variants():
+    from examples.bpmn.common import schemas
+
+    assert not hasattr(schemas, "ENTRIES")
+    with pytest.raises(KeyError, match="single schema entry"):
+        compile_schema("1.7")
