@@ -90,6 +90,8 @@ include = [
     "docs",
     "examples",
     "benchmarks",
+    "server.json",
+    "scripts/check_mcp_registry.py",
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
@@ -187,7 +189,7 @@ module = ["pyarrow", "pyarrow.*", "pydantic", "anyio", "anyio.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
-source = ["pyxsd"]
+source = ["pyxsd", "scripts.check_mcp_registry"]
 branch = true
 
 # Base CI measures the core and dependency-free projection. Dedicated adapter
