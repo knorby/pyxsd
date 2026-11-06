@@ -385,7 +385,7 @@ the measurement's scope. See {doc}`xsd-validation` for the concepts and
 
 [corpus]: https://github.com/w3c/xsdtests/tree/7bc3365c652a322f3d762021b3879eb92dae7e30
 [main-suite]: https://github.com/w3c/xsdtests/blob/7bc3365c652a322f3d762021b3879eb92dae7e30/suite.xml
-[upstream-readme]: https://github.com/w3c/xsdtests/blob/7bc3365c652a322f3d762021b3879eb92dae7e30/README.md#running-the-tests
+[upstream-readme]: https://github.com/w3c/xsdtests/blob/7bc3365c652a322f3d762021b3879eb92dae7e30/README.md
 [extra-suite]: https://github.com/w3c/xsdtests/blob/7bc3365c652a322f3d762021b3879eb92dae7e30/extra-suite.xml
 [harness-readme]: https://github.com/knorby/pyxsd/blob/develop/tests/xsts/README.md
 [root-assessment]: https://www.w3.org/TR/xmlschema11-1/structures.html#cvc-assess-elt

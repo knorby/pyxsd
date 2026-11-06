@@ -48,7 +48,8 @@ myst_heading_anchors = 3
 # --- Copy buttons ------------------------------------------------------------
 # MyST puts no-copy on the outer wrapper, not the inner highlight div.
 copybutton_selector = "div:not(.no-copy) > div.highlight > pre"
-copybutton_prompt_text = r"^(\$ |>>> |\.\.\. )"
+# The extension adds capturing groups; ours must not shift its command group.
+copybutton_prompt_text = r"^(?:\$ |>>> |\.\.\. )"
 copybutton_prompt_is_regexp = True
 # Preserve unprompted continuation lines and indentation, including shell '\'.
 copybutton_only_copy_prompt_lines = False
@@ -58,6 +59,11 @@ copybutton_exclude = ".linenos"
 linkcheck_timeout = 15
 linkcheck_retries = 2
 linkcheck_workers = 5
+# ORNL returns 403 to every automated client, including a browser user agent.
+linkcheck_ignore = [
+    r"https://www\.ornl\.gov/csmd",
+    r"https://www\.ornl\.gov/group/cmsg",
+]
 
 # --- HTML theme -------------------------------------------------------------
 html_theme = "furo"

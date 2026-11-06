@@ -134,5 +134,5 @@ for the populations, skips, scoring rules, and reproduction commands.
 - {doc}`comparison-libxml2` — C-engine scope and preliminary XSD 1.0 evidence.
 - [Data model](data-model.md) — the bound tree, `to_dict`/`to_json`, and the
   projection used by `xpath`/`find`.
-- [xmlschema documentation](https://xmlschema.readthedocs.io/) — the
+- [xmlschema documentation](https://xmlschema.readthedocs.io/en/stable/) — the
   authoritative description of the features attributed to it above.

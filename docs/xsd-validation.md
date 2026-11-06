@@ -286,4 +286,4 @@ and {doc}`xml-security`.
 [xsd11-model-changes]: https://www.w3.org/TR/xmlschema11-1/#ch_models
 [xsd11-datatype-changes]: https://www.w3.org/TR/xmlschema11-2/#changes
 [xsd11-psvi]: https://www.w3.org/TR/xmlschema11-1/#key-psvi
-[xsts-readme]: https://github.com/w3c/xsdtests/blob/7bc3365c652a322f3d762021b3879eb92dae7e30/README.md#running-the-tests
+[xsts-readme]: https://github.com/w3c/xsdtests/blob/7bc3365c652a322f3d762021b3879eb92dae7e30/README.md

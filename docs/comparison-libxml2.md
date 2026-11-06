@@ -135,5 +135,5 @@ wrappers, or XSD 1.1.
 [schema-header]: https://github.com/GNOME/libxml2/blob/master/include/libxml/xmlschemas.h
 [catalog-api]: https://gnome.pages.gitlab.gnome.org/libxml2/html/catalog_8h.html
 [corpus]: https://github.com/w3c/xsdtests/tree/7bc3365c652a322f3d762021b3879eb92dae7e30
-[xsts-readme]: https://github.com/w3c/xsdtests/blob/7bc3365c652a322f3d762021b3879eb92dae7e30/README.md#running-the-tests
+[xsts-readme]: https://github.com/w3c/xsdtests/blob/7bc3365c652a322f3d762021b3879eb92dae7e30/README.md
 [xsd10]: https://www.w3.org/TR/xmlschema-1/

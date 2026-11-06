@@ -105,6 +105,18 @@ def test_console_prompts_marked_for_stripping(build):
     assert "true, false, true, true" in script  # regexp, all lines, strip, keep blanks
 
 
+def test_prompt_regex_preserves_command_group():
+    conf = runpy.run_path(str(ROOT / "docs/conf.py"))
+    # The extension wraps this regex in (prompt)(command) and copies group 2.
+    pattern = re.compile("^(" + conf["copybutton_prompt_text"] + ")(.*)")
+    for text, expected in (
+        ("$ uv run pytest \\", "uv run pytest \\"),
+        (">>> if True:", "if True:"),
+        ('...     print("hello")', '    print("hello")'),
+    ):
+        assert pattern.match(text).group(2) == expected
+
+
 def test_no_copy_block_has_no_button(build):
     html = (build / "index.html").read_text(encoding="utf-8")
     container = html.split("no-copy", 1)[1].split("</div>", 1)[0]

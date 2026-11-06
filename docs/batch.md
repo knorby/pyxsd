@@ -297,6 +297,6 @@ uv run --extra arrow --group examples-polars python examples/batch/summarize_dat
 ```
 
 These reuse the precision-limited consumer profile documented in the
-[analytics README](https://github.com/knorby/pyxsd/tree/develop/examples/analytics#consumer-limits-and-failures);
+[analytics README](https://github.com/knorby/pyxsd/tree/develop/examples/analytics);
 they add no DuckDB/Polars/pandas library dependency. Generalize the projection
 for your schema rather than inferring types from sample XML.

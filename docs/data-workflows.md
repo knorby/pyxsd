@@ -11,7 +11,7 @@ limitations.
 | Task | Example | Result |
 | --- | --- | --- |
 | Validate Python input or read typed order snapshots | [Purchase-order models](https://github.com/knorby/pyxsd/tree/develop/examples/pydantic#readme) | Pydantic models, JSON Schema, explicit presence |
-| Apply approval rules after XML validation | [Order assessment](https://github.com/knorby/pyxsd/tree/develop/examples/pydantic#order-assessment) | Exact subtotals and reason codes |
+| Apply approval rules after XML validation | [Order assessment](https://github.com/knorby/pyxsd/tree/develop/examples/pydantic) | Exact subtotals and reason codes |
 | Extract nested XML records or scalar columns | [Arrow and Parquet](https://github.com/knorby/pyxsd/tree/develop/examples/arrow#readme) | Typed tables, record batches, Parquet |
 | Aggregate observations and join station metadata | [DuckDB and Polars](https://github.com/knorby/pyxsd/tree/develop/examples/analytics#readme) | Grouped totals, child expansion, Parquet readback |
 | Validate or export several XML files | {doc}`batch` | Per-file outcomes or a manifested dataset |
@@ -47,7 +47,7 @@ The [analytics README](https://github.com/knorby/pyxsd/tree/develop/examples/ana
 contains both consumer walkthroughs and their expected outputs.
 
 (order-assessment)=
-The [purchase-order README](https://github.com/knorby/pyxsd/tree/develop/examples/pydantic#order-assessment)
+The [purchase-order README](https://github.com/knorby/pyxsd/tree/develop/examples/pydantic)
 contains approval thresholds, rejection cases, and the assessment commands.
 
 (caveats-and-failure-modes)=
