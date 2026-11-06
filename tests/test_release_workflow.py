@@ -49,6 +49,18 @@ def test_reusable_workflow_concurrency_does_not_cancel_the_release():
     assert len(groups) == len(set(groups))
 
 
+def test_registry_publication_is_separate_from_github_and_uses_oidc():
+    jobs = _workflow("release.yml")["jobs"]
+    registry = jobs["mcp-registry"]
+    assert registry["needs"] == "publish"
+    assert "mcp-registry" not in jobs["github-release"]["needs"]
+    assert registry["permissions"] == {"contents": "read", "id-token": "write"}
+    commands = [step["run"] for step in registry["steps"] if "run" in step]
+    assert commands.index("./mcp-publisher validate") < commands.index("./mcp-publisher publish")
+    assert "./mcp-publisher login github-oidc" in commands
+    assert "--registry registry.json" in commands[-1]
+
+
 @pytest.mark.parametrize(
     ("changelog", "success"),
     [

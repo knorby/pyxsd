@@ -3,6 +3,7 @@
 Run with PYXSD_DIST_DIR pointing at a fresh ``uv build`` output directory.
 """
 
+import email
 import os
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from scripts.check_mcp_registry import check_local, check_pypi
 
 from pyxsd import __version__
 
@@ -24,6 +26,8 @@ def test_built_distributions_have_complete_sources_and_bundled_skills(tmp_path):
         names = archive.getnames()
         root = f"pyxsd-{__version__}/"
         assert root + "benchmarks/mcp_workflows.py" in names
+        assert root + "server.json" in names
+        assert root + "scripts/check_mcp_registry.py" in names
         assert root + "benchmarks/fixtures/mcp/catalog.xsd" in names
         assert not any(name.startswith(root + "tests/xsts/corpus/") for name in names)
         # All members come from our freshly built source archive. Manual
@@ -57,3 +61,17 @@ def test_built_distributions_have_complete_sources_and_bundled_skills(tmp_path):
         entries = wheel.read(f"pyxsd-{__version__}.dist-info/entry_points.txt").decode()
         assert "pyxsd = pyxsd.__main__:main" in entries
         assert "pyxsd-mcp = pyxsd.mcp.__main__:main" in entries
+        metadata = wheel.read(f"pyxsd-{__version__}.dist-info/METADATA").decode("utf-8")
+        assert "<!-- mcp-name: io.github.knorby/pyxsd -->" in metadata
+        message = email.message_from_string(metadata)
+        check_pypi(
+            check_local(Path(__file__).resolve().parents[1]),
+            {
+                "info": {
+                    "name": message["Name"],
+                    "version": message["Version"],
+                    "description": message.get_payload(),
+                    "requires_dist": message.get_all("Requires-Dist"),
+                },
+            },
+        )
