@@ -1,6 +1,7 @@
 name: Optional integrations
 
 on:
+  workflow_call:
   push:
     branches: ["**"]
   pull_request:
@@ -47,10 +48,10 @@ jobs:
               PYARROW=22.0.0
               PYDANTIC=2.12.5
             fi
-            uv pip install "$WHEEL[pydantic,arrow]" "pyarrow==$PYARROW" "pydantic==$PYDANTIC" 'pytest>=8.4' 'pytest-cov>=7'
+            uv pip install "${WHEEL}[pydantic,arrow]" "pyarrow==$PYARROW" "pydantic==$PYDANTIC" 'pytest>=8.4' 'pytest-cov>=7'
             .venv/bin/python -c "import importlib.metadata as m; assert (m.version('pydantic'), m.version('pyarrow')) == ('$PYDANTIC', '$PYARROW')"
           else
-            uv pip install "$WHEEL[pydantic,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
+            uv pip install "${WHEEL}[pydantic,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
           fi
       - name: Test installed adapters and separate branch coverage
         run: >-
@@ -105,7 +106,7 @@ jobs:
       - name: Install Arrow extra and the selected consumer
         run: |
           WHEEL=$(find dist -name '*.whl' -print -quit)
-          uv pip install "$WHEEL[arrow]" "$CONSUMER" 'pytest>=8.4'
+          uv pip install "${WHEEL}[arrow]" "$CONSUMER" 'pytest>=8.4'
       - name: Run consumer workflow examples without skips
         run: >-
           .venv/bin/python -m pytest -q
@@ -133,7 +134,7 @@ jobs:
           uv venv --python 3.12
           WHEEL=$(find dist -name '*.whl' -print -quit)
           if [ -n "$EXTRAS" ]; then
-            WHEEL="$WHEEL[$EXTRAS]"
+            WHEEL="${WHEEL}[$EXTRAS]"
           fi
           uv pip install "$WHEEL" 'pytest>=8.4'
       - name: Verify base and independently installed extras

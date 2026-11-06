@@ -7,9 +7,39 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: publish-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  core:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  mcp:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/mcp.yml
+
+  integrations:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/optional-integrations.yml
+
+  docs:
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml
+
   build:
+    needs: [core, mcp, integrations, docs]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
@@ -23,19 +53,48 @@ jobs:
           fi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Build distributions
         run: uv build
+
+      - name: Test source archive and wheel contents
+        run: >-
+          uv run --locked --extra mcp pytest tests/test_distributions.py -q
+        env:
+          PYXSD_DIST_DIR: dist
+
+      - name: Extract curated release notes
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          heading = f"## [{version}] - "
+          matching = [section for section in changelog.split("\n## ") if section.startswith(f"[{version}] - ")]
+          if len(matching) != 1:
+              raise SystemExit(f"Expected one dated changelog section: {heading}")
+          notes = matching[0].split("\n", 1)[1].strip()
+          if not notes:
+              raise SystemExit("Release notes must not be empty")
+          Path("release-notes.md").write_text(notes + "\n", encoding="utf-8")
+          PY
 
       - uses: actions/upload-artifact@v7
         with:
           name: distributions
           path: dist/
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes.md
+
   publish:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: pypi
     permissions:
       # Required for PyPI OIDC trusted publishing.
@@ -50,11 +109,12 @@ jobs:
       - name: Publish to PyPI
         # Trusted publishing: no API token required once the PyPI project
         # is configured for this repository and the "pypi" environment.
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
 
   github-release:
-    needs: build
+    needs: [build, publish]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -64,9 +124,13 @@ jobs:
           name: distributions
           path: dist/
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: release-notes.md
           fail_on_unmatched_files: true
