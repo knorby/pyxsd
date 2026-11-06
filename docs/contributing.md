@@ -161,7 +161,8 @@ pyxsd uses [semantic versioning](https://semver.org/spec/v2.0.0.html)
    date, and retain an empty Unreleased section. Describe compatibility with
    the previous published version, not intermediate development APIs.
 2. Set `__version__` in `src/pyxsd/__init__.py` to the release version and run
-   `uv lock` to refresh project metadata. Historical benchmark and XSTS
+   `uv lock` to refresh project metadata. Regenerate version-stamped stub
+   goldens in `tests/fixtures/stubs/` and run the stub tests. Historical benchmark and XSTS
    provenance records keep the versions actually measured.
 3. Run the quality gates above, plus the optional MCP and adapter tests.
    Check patch coverage as well as the overall floor. Require successful
