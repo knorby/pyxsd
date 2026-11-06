@@ -89,11 +89,15 @@ include = [
     "tests",
     "docs",
     "examples",
+    "benchmarks",
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "pyproject.toml",
 ]
+# The pinned upstream corpus is a checkout-only validation input, not part of
+# the published source. Keep archive contents independent of submodule state.
+exclude = ["tests/xsts/corpus/**"]
 
 [tool.ruff]
 target-version = "py311"
