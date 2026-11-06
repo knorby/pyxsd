@@ -2,13 +2,15 @@
 
 `examples/demo/` is a complete, domain-neutral working example of pyxsd —
 schema, instance document, a custom transform, and both invocation styles.
-Follow along by running the commands from that directory.
+Use a repository checkout with pyxsd installed in your Python environment.
+The command-line and library snippets below run from `examples/demo/`;
+the final `demo.py` command runs from the repository root.
 
 ## The pieces
 
 | File | Role |
 | ---- | ---- |
-| `schema.xsd` | A small XSD: `inventory` (maxOccurs unbounded, required `id` attribute) of `item` elements (`name`, `quantity`, `color`, optional `note`). |
+| `schema.xsd` | An `inventory` containing repeated `item` elements. Each item has a required `id` attribute, `name`, `quantity`, `color`, and optional `note`. |
 | `instance.xml` | Two items — one with a `note`, exercising optional elements. |
 | `CountElements.py` | A custom transform: prints an element-name frequency table using `iter_tree`. |
 | `demo.py` | Drives the whole pipeline as a library. |
@@ -22,11 +24,11 @@ pyxsd -i instance.xml -o transformed.xml -t 'CountElements()'
 
 pyxsd finds the schema through the instance's
 `xsi:noNamespaceSchemaLocation` hint (resolved **relative to the instance
-file**, so this works from any working directory), builds the object
+file**), builds the object
 tree, runs `CountElements()`, and writes the transformed tree to
 `transformed.xml`. You should see:
 
-```
+```text
 CountElements: element frequency
   color: 2
   inventory: 1
@@ -64,8 +66,8 @@ compositor bookkeeping name). `CountElements` returns the bound root,
 so `transform` hands back a fresh `Document` whose tree
 `document.write` serializes to `transformed.xml`.
 
-`demo.py` is this script with the paths anchored to its own directory
-(so it also runs from the repository root) — run it with:
+`demo.py` also prints validation and node details, with paths anchored to its
+own directory. Return to the repository root before running:
 
 ```bash
 uv run python examples/demo/demo.py
@@ -98,7 +100,8 @@ file.
 
 ## Crystallography examples
 
-The old application transforms live in `examples/legacy/` and are
-used the same way — run from that directory or copy the files next to
-your data. See `examples/legacy/README.md` and the transform docs in
-{doc}`transforms/using`.
+The old application transforms in
+[`examples/legacy/`](https://github.com/knorby/pyxsd/tree/develop/examples/legacy)
+are historical reading material. Their original schemas and input documents
+are no longer distributed, so they are not runnable follow-up examples.
+See {doc}`transforms/writing` to write a transform for your own data.

@@ -24,7 +24,7 @@ but they are greatly appreciated.
 git clone https://github.com/knorby/pyxsd
 cd pyxsd
 uv sync --group dev          # runtime + dev/test dependencies
-uv run pytest --cov          # full suite with coverage
+uv run pytest --cov --cov-branch  # default suite with branch coverage
 uvx ruff@0.16.6 check .      # lint
 uvx ruff@0.16.6 format --check .
 uv run mypy src/pyxsd        # type check
@@ -34,7 +34,7 @@ uv run python -m tests.conformance.run     # real-schema conformance + benchmark
 PYXSD_RUN_XSTS=1 uv run pytest tests/test_xsts_suite.py  # W3C XML Schema Test Suite
 ```
 
-`pre-commit install` runs the hooks on every commit: ruff lint and
+`uv run pre-commit install` installs hooks that run on every commit: ruff lint and
 format, file hygiene (whitespace, line endings, TOML/YAML validity,
 large-file and merge-conflict checks), shellcheck, and secret detection.
 They catch locally what CI would catch after you push, plus a few checks
@@ -44,7 +44,12 @@ every hook without installing the git hooks:
 `uv run pre-commit run --all-files`.
 Python 3.11 is the floor; CI tests 3.11–3.15.
 
-Two of the gates above are env-gated because their corpora are large.
+### Optional corpora and validation gates
+
+The default test run skips opt-in oracle and XSTS tests, and downloaded-schema
+tests skip when their inputs are absent. A passing default run does not mean
+those checks ran.
+
 `tests/conformance/` compiles five published schemas (FHIR R5, HL7 CDA R2,
 ECMA-376 WordprocessingML and SpreadsheetML, and MusicXML 4.0): fetch the
 corpus once with `uv run python -m tests.conformance.fetch`, then
@@ -55,9 +60,13 @@ to run the W3C XML Schema Test Suite against its checked-in baseline (its
 contract and baseline notes are in `tests/xsts/README.md`); the
 `PYXSD_XSTS_TIMEOUT` environment variable raises the per-case budget, which
 the slower CI runners need. Use `PYXSD_XSTS_TIMEOUT=180` locally to match CI
-when running the full suite on a loaded machine; `particlesZ036_b1` is now
-close enough to the 60 s dev default to time out under load. The `xmlschema`
-oracle is gated the same way by `PYXSD_RUN_ORACLE=1`.
+when running the full suite on a loaded machine. The `xmlschema` oracle is
+enabled separately with `PYXSD_RUN_ORACLE=1`.
+
+Coverage must meet the repository's 99% branch-coverage floor. Also inspect
+`uv run coverage report --show-missing` against the lines you changed: the
+overall floor does not establish patch coverage. Exercise each new condition's
+branches, including failure paths, and assert the resulting behavior.
 
 ## Pull requests
 

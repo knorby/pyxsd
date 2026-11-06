@@ -168,6 +168,50 @@ def test_integration_examples_use_identified_inputs(tmp_path, monkeypatch):
     ]
 
 
+def test_batch_guide_reports_valid_invalid_and_missing_inputs(tmp_path, monkeypatch, capsys):
+    quickstart = (GUIDE.parent.parent / "quickstart.md").read_text(encoding="utf-8")
+    for filename, block in zip(
+        ("inventory.xsd", "inventory.xml"), quickstart.split("```xml\n")[1:], strict=True
+    ):
+        (tmp_path / filename).write_text(block.split("```", 1)[0], encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    guide = (GUIDE.parent.parent / "batch.md").read_text(encoding="utf-8")
+    namespace = {}
+    for source in _python_blocks(guide.split("## Sources and outcomes", 1)[0]):
+        exec(compile(source, "batch.md", "exec"), namespace)
+    output = capsys.readouterr().out
+    assert output.splitlines() == ["original valid", "zero invalid", "missing input_error"]
+    assert namespace["outcomes"][1].document.report.has_errors
+    assert namespace["outcomes"][2].error.kind == "io"
+
+
+def test_batch_guide_checkout_command(capsys):
+    from examples.batch.validate_documents import main
+
+    guide = (GUIDE.parent.parent / "batch.md").read_text(encoding="utf-8")
+    section = guide.split("## Runnable validation example", 1)[1]
+    command = section.split("```bash\n", 1)[1].split("```", 1)[0].strip()
+    arguments = shlex.split(command)[4:]
+    root = GUIDE.parents[2]
+    assert main([str(root / arguments[0]), str(root / arguments[1]), *arguments[2:]]) == 0
+    assert capsys.readouterr().out == "instance.xml: valid\n"
+
+
+def test_demo_guide_library_example(tmp_path, monkeypatch, capsys):
+    demo = GUIDE.parents[2] / "examples" / "demo"
+    for filename in ("schema.xsd", "instance.xml", "CountElements.py"):
+        (tmp_path / filename).write_bytes((demo / filename).read_bytes())
+    monkeypatch.chdir(tmp_path)
+    guide = (GUIDE.parent.parent / "demo.md").read_text(encoding="utf-8")
+    namespace = {}
+    exec(compile(_python_blocks(guide)[0], "demo.md", "exec"), namespace)
+    assert namespace["document"].is_valid
+    saved = namespace["document"].schema.parse(tmp_path / "transformed.xml")
+    assert saved.is_valid
+    assert len(saved.findall("item")) == 2
+    assert "CountElements: element frequency" in capsys.readouterr().out
+
+
 def test_cli_reference_examples_use_quickstart_inputs(tmp_path):
     quickstart = (GUIDE.parent.parent / "quickstart.md").read_text(encoding="utf-8")
     for filename, block in zip(
