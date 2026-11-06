@@ -1,6 +1,8 @@
 # Command-line reference
 
-```text
+```{code-block} text
+:class: no-copy
+
 pyxsd [options]
 ```
 

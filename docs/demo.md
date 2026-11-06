@@ -28,7 +28,9 @@ file**), builds the object
 tree, runs `CountElements()`, and writes the transformed tree to
 `transformed.xml`. You should see:
 
-```text
+```{code-block} text
+:class: no-copy
+
 CountElements: element frequency
   color: 2
   inventory: 1

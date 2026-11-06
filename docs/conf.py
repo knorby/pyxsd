@@ -26,6 +26,7 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
+    "sphinx_copybutton",
 ]
 
 templates_path = ["_templates"]
@@ -42,6 +43,15 @@ myst_enable_extensions = [
     "tasklist",
 ]
 myst_heading_anchors = 3
+
+# --- Copy buttons ------------------------------------------------------------
+# MyST puts no-copy on the outer wrapper, not the inner highlight div.
+copybutton_selector = "div:not(.no-copy) > div.highlight > pre"
+copybutton_prompt_text = r"^(\$ |>>> |\.\.\. )"
+copybutton_prompt_is_regexp = True
+# Preserve unprompted continuation lines and indentation, including shell '\'.
+copybutton_only_copy_prompt_lines = False
+copybutton_exclude = ".linenos"
 
 # --- HTML theme -------------------------------------------------------------
 html_theme = "furo"

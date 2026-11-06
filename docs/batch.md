@@ -30,7 +30,9 @@ for outcome in outcomes:
 
 Expected output:
 
-```text
+```{code-block} text
+:class: no-copy
+
 original valid
 zero invalid
 missing input_error
@@ -193,7 +195,9 @@ and chains the cause. Interrupts/cancellation propagate after cleanup.
 
 ### Layout, provenance and manifest version 1
 
-```text
+```{code-block} text
+:class: no-copy
+
 new-observation-dataset/
   manifest.json
   _schema.parquet

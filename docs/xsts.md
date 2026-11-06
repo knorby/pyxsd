@@ -8,7 +8,9 @@ assessment, and binding, start with {doc}`xsd-validation`.
 
 **The headline is raw agreement on checked cases:**
 
-```text
+```{code-block} text
+:class: no-copy
+
 checked = pass + fail
 agreement on checked cases = 100 * pass / checked
 ```
