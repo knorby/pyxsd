@@ -92,6 +92,11 @@ and file contents copyable. Review copied console commands for prompt stripping
 and preserved continuation lines. Keep API details at their existing anchors
 rather than generating duplicate reference pages.
 
+The HTML build also writes `llms.txt` and `llms-full.txt` at the site root. The
+summary links to the raw MyST files in `_sources/`; the full file concatenates
+those sources. Autodoc output is not expanded in the full file. Check both files
+when changing source layout, page titles, or documentation URLs.
+
 The separate **Docs links** workflow checks external URLs weekly and on manual
 dispatch, retaining its linkcheck reports even on failure. External availability
 does not gate pull requests. To run the same bounded check locally:

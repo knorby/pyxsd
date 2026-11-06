@@ -18,12 +18,17 @@ ROOT = Path(__file__).resolve().parents[1]
 def build_fixture_site(tmp_path, *, extra_conf="", body=""):
     """Build an offline fixture with this project's copy/reference settings."""
     conf = runpy.run_path(str(ROOT / "docs/conf.py"))
-    names = [name for name in conf if name.startswith("copybutton_") or name == "nitpicky"]
+    names = [
+        name for name in conf if name.startswith(("copybutton_", "llms_txt_")) or name == "nitpicky"
+    ]
     extensions = ["myst_parser"]
     if "sphinx_copybutton" in conf["extensions"]:
         extensions.append("sphinx_copybutton")
+    if "sphinx_llms_txt" in conf["extensions"]:
+        extensions.append("sphinx_llms_txt")
     (tmp_path / "conf.py").write_text(
         f"extensions = {extensions!r}\nmaster_doc = 'index'\n"
+        "project = 'pyxsd'\nhtml_baseurl = 'https://pyxsd.knorby.com/'\n"
         + "".join(f"{name} = {conf[name]!r}\n" for name in names)
         + extra_conf,
         encoding="utf-8",
@@ -203,6 +208,33 @@ def test_real_site_channel_banner(docs_build):
         )
         assert f'{target}"' in banners[0], path
         assert "_static/docs.css" in html, path
+
+
+def test_llms_files_generated_from_myst(build):
+    summary_path = build / "llms.txt"
+    full_path = build / "llms-full.txt"
+    assert summary_path.is_file()
+    assert full_path.is_file()
+    summary = summary_path.read_text(encoding="utf-8")
+    assert summary.startswith("# pyxsd\n")
+    assert "## Docs" in summary
+    assert "[Copy examples](https://pyxsd.knorby.com/_sources/index.md.txt)" in summary
+    full = full_path.read_text(encoding="utf-8")
+    assert "Copy examples" in full
+    assert 'print("hello")' in full
+
+
+def test_real_site_llms_files_and_links(docs_build):
+    summary = (docs_build / "llms.txt").read_text(encoding="utf-8")
+    assert summary.startswith("# pyxsd\n")
+    assert "[Quickstart](https://pyxsd.knorby.com/_sources/quickstart.md.txt)" in summary
+    assert "[API reference](https://pyxsd.knorby.com/_sources/api.md.txt)" in summary
+    for target in re.findall(r"\]\((https://pyxsd\.knorby\.com/[^)]+)\)", summary):
+        relative = target.removeprefix("https://pyxsd.knorby.com/")
+        assert (docs_build / relative).is_file(), target
+    full = (docs_build / "llms-full.txt").read_text(encoding="utf-8")
+    assert "# Quickstart" in full
+    assert "# API reference" in full
 
 
 def test_channel_configuration_is_explicit():

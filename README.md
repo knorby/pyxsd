@@ -6,17 +6,46 @@
 [![Docs](https://img.shields.io/badge/docs-pyxsd.knorby.com-blue)](https://pyxsd.knorby.com/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
-pyxsd validates XML against XML Schema (XSD) and binds it to Python objects.
-Compile a schema once, parse documents against it, then query, transform, or
-export their data. Each document carries a structured validation report.
+pyxsd compiles XML Schema (XSD) into Python classes, then validates and binds
+XML documents into typed object trees. It combines structured validation
+reports, XPath and ElementTree queries, user-defined transforms, and XML
+serialization, with optional Pydantic and Arrow/Parquet integrations. Use it
+when you need schema-driven validation and XML processing, not just an XML
+parser: compile a schema once, then inspect, transform, or export many documents.
 
-## Quickstart
+## Install
 
-Requires Python 3.11 or newer. Install into the environment running your code:
+Requires Python 3.11 or newer:
 
 ```sh
-python -m pip install pyxsd
+pip install pyxsd
 ```
+
+For the MCP server, `pip install 'pyxsd[mcp]'` provides the `pyxsd-mcp`
+command, or configure your client to launch the server with `uvx`:
+
+```json
+{
+  "mcpServers": {
+    "pyxsd": {
+      "command": "uvx",
+      "args": ["--from", "pyxsd[mcp]", "pyxsd-mcp"]
+    }
+  }
+}
+```
+
+For the bundled agent skills:
+
+```sh
+npx skills add knorby/pyxsd
+```
+
+See [MCP setup](https://pyxsd.knorby.com/mcp.html) for storage and trust
+options and [agent skills](https://pyxsd.knorby.com/skills.html) for other
+clients. MCP transformation execution is disabled by default.
+
+## Quickstart
 
 This example runs without any files or downloads:
 

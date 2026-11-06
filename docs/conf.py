@@ -28,6 +28,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "sphinx_copybutton",
+    "sphinx_llms_txt",
 ]
 
 templates_path = ["_templates"]
@@ -54,6 +55,15 @@ copybutton_prompt_is_regexp = True
 # Preserve unprompted continuation lines and indentation, including shell '\'.
 copybutton_only_copy_prompt_lines = False
 copybutton_exclude = ".linenos"
+
+# --- LLM-friendly text --------------------------------------------------------
+# llms.txt links to the raw MyST sources copied into _sources/; llms-full.txt
+# concatenates those sources. Autodoc output is not expanded in the full file.
+llms_txt_summary = (
+    "Validate XML against XSD and bind documents to Python objects. Inspect "
+    "structured validation reports, query and transform trees, and export data "
+    "with optional Pydantic and Arrow/Parquet integrations."
+)
 
 # --- External links (scheduled/manual only, never a per-PR gate) -------------
 linkcheck_timeout = 15

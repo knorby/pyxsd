@@ -1,5 +1,6 @@
 """Documented launch paths work from an installed distribution, not only source fixtures."""
 
+import json
 import re
 import shutil
 import subprocess
@@ -85,6 +86,24 @@ def test_uvx_is_primary_and_direct_install_remains_documented():
     assert "https://pyxsd.knorby.com/mcp.html" in readme
     skill = (ROOT / "src/pyxsd/skills/pyxsd-mcp/SKILL.md").read_text(encoding="utf-8")
     assert "uvx --from 'pyxsd[mcp]' pyxsd-mcp" in skill
+
+
+def test_readme_setup_includes_library_mcp_and_skills():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "## Install\n" in readme
+    install = readme.split("## Install", 1)[1].split("## ", 1)[0]
+    assert "pip install pyxsd" in install
+    assert "pip install 'pyxsd[mcp]'" in install
+    assert "npx skills add knorby/pyxsd" in install
+    config = json.loads(install.split("```json", 1)[1].split("```", 1)[0])
+    assert config == {
+        "mcpServers": {
+            "pyxsd": {
+                "command": "uvx",
+                "args": ["--from", "pyxsd[mcp]", "pyxsd-mcp"],
+            }
+        }
+    }
 
 
 def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_path):
