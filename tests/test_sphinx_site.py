@@ -5,6 +5,7 @@ import re
 import runpy
 import subprocess
 import sys
+from html import unescape
 from pathlib import Path
 
 import pytest
@@ -172,3 +173,26 @@ def test_api_summary_links_resolve_to_unique_anchors(docs_build):
             anchor = f"{cls}.{name}"
             assert html.count(f'id="{anchor}"') == 1, anchor
             assert f'href="#{anchor}"' in "".join(tables), anchor
+
+
+def test_real_site_channel_banner(docs_build):
+    from pyxsd import __version__
+
+    for path in docs_build.rglob("*.html"):
+        html = path.read_text(encoding="utf-8")
+        banners = re.findall(r'<p class="docs-channel">(.*?)</p>', html, re.S)
+        assert len(banners) == 1, path
+        text = " ".join(unescape(re.sub(r"<[^>]*>", "", banners[0])).split())
+        assert f"Development documentation (develop) · package {__version__}" in text, path
+        target = (
+            "#release-specific-sources"
+            if path == docs_build / "index.html"
+            else "index.html#release-specific-sources"
+        )
+        assert f'{target}"' in banners[0], path
+        assert "_static/docs.css" in html, path
+
+
+def test_channel_configuration_is_explicit():
+    conf = runpy.run_path(str(ROOT / "docs/conf.py"))
+    assert conf.get("html_context", {}).get("docs_channel") == "develop"

@@ -65,6 +65,8 @@ html_title = "pyxsd: XML Schema validation and Python bindings"
 html_short_title = "pyxsd"
 html_baseurl = "https://pyxsd.knorby.com/"
 html_static_path = ["_static"]
+html_css_files = ["docs.css"]
+html_context = {"docs_channel": "develop"}
 # Serve the custom domain from the GitHub Pages artifact.
 html_extra_path = ["CNAME"]
 

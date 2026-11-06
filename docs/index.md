@@ -11,6 +11,8 @@ pyxsd validates XML against XSD and binds documents to Python objects.
 Start with {doc}`quickstart` to parse, query, edit, and save a document with
 supplied inputs. For a runnable custom transform, follow {doc}`demo`.
 
+(release-specific-sources)=
+
 This site follows the `develop` branch and may include unreleased behavior.
 Check `pyxsd --version`; for release-specific documentation sources, select
 the matching tag in the [repository](https://github.com/knorby/pyxsd/tags).
