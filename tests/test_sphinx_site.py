@@ -1,6 +1,7 @@
 """Rendered documentation contracts; install the docs group to run these tests."""
 
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -143,3 +144,31 @@ def test_conf_has_no_regex_suppression():
     conf = runpy.run_path(str(ROOT / "docs/conf.py"))
     assert conf.get("nitpicky") is True
     assert not conf.get("nitpick_ignore_regex")
+
+
+def test_api_summary_links_resolve_to_unique_anchors(docs_build):
+    html = (docs_build / "api.html").read_text(encoding="utf-8")
+    tables = re.findall(r'<table[^>]*class="[^"]*autosummary[^"]*".*?</table>', html, re.S)
+    assert len(tables) == 2
+    for cls, methods in (
+        ("pyxsd.schema.Schema", ["compile", "parse", "iter_parse", "stub", "require_valid"]),
+        (
+            "pyxsd.document.Document",
+            [
+                "find",
+                "findall",
+                "xpath",
+                "to_dict",
+                "to_json",
+                "to_string",
+                "transform",
+                "revalidate",
+                "write",
+                "require_valid",
+            ],
+        ),
+    ):
+        for name in methods:
+            anchor = f"{cls}.{name}"
+            assert html.count(f'id="{anchor}"') == 1, anchor
+            assert f'href="#{anchor}"' in "".join(tables), anchor

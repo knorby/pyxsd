@@ -22,6 +22,20 @@ and `xml_limits` apply to the schema closure, not later instance parses.
 A custom `resource_policy` instead owns reading/parsing and is retained by
 the schema. See {doc}`xml-security`.
 
+Common schema entry points; full signatures and contracts below.
+
+```{eval-rst}
+.. autosummary::
+   :signatures: none
+
+   ~pyxsd.schema.Schema.compile
+   ~pyxsd.schema.Schema.parse
+   ~pyxsd.schema.Schema.iter_parse
+   ~pyxsd.schema.Schema.stub
+   ~pyxsd.schema.Schema.require_valid
+
+```
+
 ```{eval-rst}
 .. autoclass:: pyxsd.schema.Schema
    :members:
@@ -35,6 +49,26 @@ the schema. See {doc}`xml-security`.
 ```
 
 ## Querying a document
+
+Common document entry points; full signatures and contracts are in the
+`Document` reference above.
+
+```{eval-rst}
+.. autosummary::
+   :signatures: none
+
+   ~pyxsd.document.Document.find
+   ~pyxsd.document.Document.findall
+   ~pyxsd.document.Document.xpath
+   ~pyxsd.document.Document.to_dict
+   ~pyxsd.document.Document.to_json
+   ~pyxsd.document.Document.to_string
+   ~pyxsd.document.Document.transform
+   ~pyxsd.document.Document.revalidate
+   ~pyxsd.document.Document.write
+   ~pyxsd.document.Document.require_valid
+
+```
 
 `find(path, *, namespaces=None)` returns a bound node or `None`;
 `findall(...)` returns a list. Both use ElementTree paths relative to the
@@ -285,6 +319,17 @@ below point to the same implementations documented above.
 
 .. py:class:: Document
    :canonical: pyxsd.document.Document
+
+   Alias for :class:`pyxsd.document.Document`.
+
+.. py:class:: Schema
+   :canonical: pyxsd.schema.Schema
+
+   Alias for :class:`pyxsd.schema.Schema`.
+
+.. py:method:: to_dict
+
+   See :meth:`pyxsd.document.Document.to_dict` for dictionary export.
 
 .. py:method:: XmlParserPolicy.strict
    :canonical: pyxsd.xml_policy.XmlParserPolicy.strict
