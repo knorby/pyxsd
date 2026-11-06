@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.knorby/pyxsd",
+  "title": "pyxsd",
+  "description": "Explore XML schemas, validate XML documents, and transform typed document trees.",
+  "repository": {
+    "url": "https://github.com/knorby/pyxsd",
+    "source": "github"
+  },
+  "websiteUrl": "https://pyxsd.knorby.com/mcp.html",
+  "version": "1.3.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "pyxsd",
+      "version": "1.3.0",
+      "transport": {"type": "stdio"},
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        {"type": "named", "name": "--with", "value": "pyxsd[mcp]==1.3.0"}
+      ],
+      "packageArguments": [{"type": "positional", "value": "mcp"}]
+    }
+  ]
+}

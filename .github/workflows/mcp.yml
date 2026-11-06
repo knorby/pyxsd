@@ -1,6 +1,7 @@
 name: Optional MCP integration
 
 on:
+  workflow_call:
   push:
     branches: ["**"]
   pull_request:
@@ -45,9 +46,9 @@ jobs:
             if [ "$PYTHON_VERSION" = "3.15" ]; then
               PYDANTIC=2.14.1
             fi
-            uv pip install "$WHEEL[mcp]" 'mcp==2.3.0' "pydantic==$PYDANTIC" 'defusedxml==0.7.1' "anyio==$ANYIO" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18' 'types-defusedxml>=0.7.0.20260504'
+            uv pip install "${WHEEL}[mcp]" 'mcp==2.3.0' "pydantic==$PYDANTIC" 'defusedxml==0.7.1' "anyio==$ANYIO" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18' 'types-defusedxml>=0.7.0.20260504'
           else
-            uv pip install "$WHEEL[mcp]" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18' 'types-defusedxml>=0.7.0.20260504'
+            uv pip install "${WHEEL}[mcp]" 'pytest>=8.4' 'pytest-cov>=7' 'mypy>=1.18' 'types-defusedxml>=0.7.0.20260504'
           fi
       - name: Type-check MCP modules with the real optional dependencies
         run: .venv/bin/python -m mypy src/pyxsd/mcp
@@ -78,7 +79,7 @@ jobs:
           uv build --wheel
           uv venv --python "$PYTHON_VERSION"
           WHEEL=$(find dist -name '*.whl' -print -quit)
-          uv pip install "$WHEEL[mcp,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
+          uv pip install "${WHEEL}[mcp,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
       - name: Test installed MCP and Arrow integration with branch coverage
         run: >-
           .venv/bin/python -m pytest -q tests/mcp tests/test_mcp_packaging.py
@@ -116,7 +117,7 @@ jobs:
           uv build --wheel
           uv venv --python 3.11
           WHEEL=$(find dist -name '*.whl' -print -quit)
-          uv pip install "$WHEEL[mcp]" 'pytest>=8.4'
+          uv pip install "${WHEEL}[mcp]" 'pytest>=8.4'
       - name: Exercise documented stdio launch and both protocol versions
         run: |
           .venv/bin/python -m pytest -q \

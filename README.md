@@ -1,5 +1,7 @@
 # pyxsd
 
+<!-- mcp-name: io.github.knorby/pyxsd -->
+
 [![CI](https://github.com/knorby/pyxsd/actions/workflows/ci.yml/badge.svg)](https://github.com/knorby/pyxsd/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/knorby/pyxsd/branch/develop/graph/badge.svg)](https://codecov.io/gh/knorby/pyxsd)
 [![PyPI](https://img.shields.io/pypi/v/pyxsd)](https://pypi.org/project/pyxsd/)

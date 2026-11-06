@@ -154,10 +154,63 @@ assistant:
 ## Releases
 
 pyxsd uses [semantic versioning](https://semver.org/spec/v2.0.0.html)
-(`MAJOR.MINOR.MICRO`). Maintainers cut a release by dating the
-changelog's unreleased section and pushing a `vMAJOR.MINOR.MICRO` tag;
-the tag-triggered workflow builds the distributions, publishes them to
-PyPI, and creates the GitHub release with the artifacts attached.
+(`MAJOR.MINOR.MICRO`). Prepare releases on a branch from `develop`:
+
+1. Review changes since the previous release. Complete `CHANGELOG.md`, move
+   its entries into a dated version section using the intended publication
+   date, and retain an empty Unreleased section. Describe compatibility with
+   the previous published version, not intermediate development APIs.
+2. Set `__version__` in `src/pyxsd/__init__.py` to the release version and run
+   `uv lock` to refresh project metadata. Regenerate version-stamped stub
+   goldens in `tests/fixtures/stubs/` and run the stub tests. Historical benchmark and XSTS
+   provenance records keep the versions actually measured.
+3. Run the quality gates above, plus the optional MCP and adapter tests.
+   Check patch coverage as well as the overall floor. Require successful
+   Python 3.11–3.15, minimum/current optional dependency, oracle, XSTS, and
+   documentation checks on the exact release commit.
+4. Build fresh archives with `uv build --out-dir /path/to/empty-dist`, then run
+   `PYXSD_DIST_DIR=/path/to/empty-dist uv run --extra mcp pytest tests/test_distributions.py -q`.
+   This extracts the source archive outside the checkout and runs its benchmark
+   tests, and checks wheel skills and entry points. Also smoke-test installation
+   from each archive in clean environments, including base-only and optional
+   extras. The source archive includes benchmark fixtures but intentionally
+   excludes `tests/xsts/corpus`: full XSTS runs require a repository checkout
+   with the pinned submodule initialized.
+5. Submit the preparation branch as a PR. After review, tag the verified
+   release commit `vMAJOR.MINOR.MICRO` and push the tag only when publication
+   is authorized. The tag must match the package version.
+
+The tag-triggered workflow reruns core (including XSTS and oracle), MCP,
+optional integration, and documentation workflows against the tagged commit.
+Only after they succeed does it build and inspect distributions. Publication
+uses the PyPI trusted publisher and the repository's `pypi` environment;
+maintainers must configure its approval rules and PyPI trust separately.
+The GitHub release is created only after successful PyPI publication, with
+the dated changelog section as its release notes and both archives attached.
+The independent `mcp-registry` job then publishes the stdio server metadata
+as `io.github.knorby/pyxsd` using GitHub OIDC; no registry secret is needed.
+It downloads a pinned publisher and verifies its Sigstore bundle before use.
+An MCP Registry failure does not block the GitHub release. Fix the reported
+problem and rerun only the failed job, rather than republishing to PyPI.
+
+When changing the package version, update both version fields and the pinned
+`pyxsd[mcp]` requirement in `server.json`. Run
+`uv run --locked python scripts/check_mcp_registry.py` before building.
+Keep the `mcp-name` HTML comment in the README: the registry verifies the
+README embedded in the published PyPI package, not the current GitHub file.
+The build gate tests the manifest's uvx command against the actual wheel,
+including an MCP initialization and XML validation. The registry launcher
+uses `pyxsd mcp`, an alias for `pyxsd-mcp`, with the matching MCP extra installed.
+Both launchers keep execution disabled by default.
+
+After publication the workflow checks the exact version's PyPI metadata and
+registry record. The [official registry](https://github.com/modelcontextprotocol/registry)
+is still in preview; publication does not guarantee immediate listing in
+every client or marketplace.
+
+Finally, verify the published version, CLI entry points, and downloadable
+artifacts. These steps publish packages; they do not create a stable docs
+channel. The documentation site continues to follow `develop`.
 
 ## Contribution terms
 

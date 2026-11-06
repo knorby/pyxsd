@@ -11,6 +11,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-05
+
 ### Added
 
 - Opt-in XML parser profiles: `XmlParserPolicy.protected()` forbids entity
@@ -44,37 +46,44 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   durable input revisions, quota ledger or publication/commit workflow.
   Execution remains disabled by default; trusted-local previews require
   explicit stdio opt-in.
+- MCP Registry release metadata and OIDC publication, with a version-pinned
+  uvx launcher through the new `pyxsd mcp` alias.
 - `Extensions.for_namespace("")` and `Extensions.for_namespace(None)` select
   declarations that have no namespace, so a mixin can attach to a no-namespace
   schema's types.
+- Bundled agent skills for development, MCP workflows, and XML diagnostics,
+  exportable with `python -m pyxsd.skills export NAME DEST`.
+- Real-data healthcare examples for CDA datatype inspection, CDA-to-FHIR
+  conversion, and occurrence-specific diagnostic repair.
+- Rendering examples for BPMN, CityGML, MusicXML, OpenDRIVE, and XRechnung,
+  with family-owned pinned sources, local servers, and SVG, HTML, PDF, plot,
+  and audio outputs. See the example family READMEs for requirements.
+- Reproducible XSTS conformance reports with pinned corpus provenance,
+  failure dispositions, and generated documentation.
 
 ### Changed
 
-- **Migration notes for the XML-resource and source-fidelity release:**
-  - `ResourcePolicy.read()` can now receive `purpose="schema-hint"` for a schema
-    the instance selected through `xsi:schemaLocation` or
-    `xsi:noNamespaceSchemaLocation` (and for hint-selected main schemas). A
-    third-party policy that switches on `purpose` must handle the new value;
-    treating it like `"schema"` keeps the old behavior, and denying it is now
-    possible without denying ordinary schema loads.
-  - The MCP `pyxsd_query_document` `result="subtree"` response is a breaking
-    shape change: the serialized `subtree` text is removed, and each element
-    result carries `encoding` (`"base64"`), `data` (exact original bytes),
-    `byte_length`, `span`, and `source_faithful`. When provenance or a span is
-    unavailable the result instead carries a per-result `fault` of
-    `source_unavailable` with null data. Clients must decode `data` rather than
-    read `subtree`.
-  - Selecting `RemoteResourcePolicy` also changes instance parsing: the compiled
-    schema retains the policy, so later `Schema.parse()` calls parse the
-    instance with `XmlParserPolicy.strict()` and cap it at
-    `limits.response_bytes`. Local instances are affected, and a DOCTYPE-bearing
-    or oversized instance is refused while the policy is attached.
+- The new resource-policy interface distinguishes instance-selected schemas
+  with `purpose="schema-hint"`, allowing policies to deny hints independently
+  of application-selected schemas. A compiled schema retains its policy;
+  `RemoteResourcePolicy` applies strict parsing and `limits.response_bytes`
+  to later instance reads, including local instances.
+- MCP subtree results carry base64 original bytes rather than regenerated XML.
+  Clients of unreleased development versions must decode `data` instead of
+  reading the former `subtree` field. Neither MCP nor resource policies were
+  available in 1.2.1.
 - `defusedxml` joins `elementpath` as a base dependency (both pure Python).
   `defusedxml` is loaded only when an opt-in parser profile selects it, and it
   is no longer a separate `pyxsd[mcp]` requirement.
 - Document serialization is deterministic for the same tree: repeated writes
   produce identical bytes, and the generated header no longer varies between
   runs.
+- Content-model matching avoids unnecessary general matching for supported
+  repeated-particle shapes; attribute-group targets are cached per reference
+  site during compilation.
+- Guides now lead with runnable workflows, explain schema resolution and
+  parser security boundaries, and identify the documentation as following
+  `develop` rather than a stable release channel.
 
 ### Fixed
 
@@ -98,6 +107,19 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 - Attribute declaration type checks resolve by URI, so rebound `xs`/`xsd`
   prefixes cannot incorrectly select built-ins; legacy runtime value typing is
   unchanged.
+- Legacy substitution-group heads resolve using authored namespace identity,
+  including imported and chameleon declarations.
+- ENTITY/ENTITIES validation checks internal DTD declaration evidence when
+  available and preserves that evidence during document revalidation. External
+  DTDs are not fetched; caller-supplied trees and trusted policy parses without
+  evidence remain lexical-only.
+- Pattern validation follows the selected XSD version's regex grammar and
+  corrects XML/XSD character-class behavior.
+- Schema references require the directly imported namespace rather than
+  accidentally accepting declarations visible only through transitive imports.
+- MusicXML benchmarks use the pinned family cache and current download command.
+- Source distributions include benchmark scripts and fixtures needed by their
+  tests, and exclude the checkout-only XSTS corpus regardless of submodule state.
 
 ## [1.2.1] - 2026-10-20
 

@@ -88,27 +88,27 @@ def _small_fixture_metrics(work: Path, limits: Limits) -> dict[str, object]:
 
 def _musicxml_metrics(limits: Limits) -> dict[str, object]:
     example = ROOT / "examples" / "musicxml"
-    schema = example / "schemas" / "musicxml.xsd"
+    schema_root = example / ".cache" / "musicxml-schemas" / "schema"
+    schema = schema_root / "musicxml.xsd"
     instance = example / "instance.xml"
     if not schema.is_file() or not instance.is_file():
         return {
             "dataset": "musicxml",
             "available": False,
-            "reason": "run examples/musicxml/download_schemas.py to fetch the licensed corpus",
+            "reason": "run examples/musicxml/download_sources.py to fetch the licensed corpus",
         }
     names = sorted(
-        str(path.relative_to(example))
-        for path in example.rglob("*")
-        if path.is_file() and "__pycache__" not in path.parts
+        [str(instance.relative_to(example))]
+        + [str(path.relative_to(example)) for path in schema_root.rglob("*.xsd")]
     )
     capture = InputCapture("benchmark", 1, example, _manifest(example, names))
     cache = SchemaCache(limits)
     try:
         before = cache.info().misses
-        cold_ms = _run(cache, capture, "schemas/musicxml.xsd", "instance.xml")
+        cold_ms = _run(cache, capture, str(schema.relative_to(example)), "instance.xml")
         cold_compiles = cache.info().misses - before
         before = cache.info().misses
-        warm_ms = _run(cache, capture, "schemas/musicxml.xsd", "instance.xml")
+        warm_ms = _run(cache, capture, str(schema.relative_to(example)), "instance.xml")
         warm_compiles = cache.info().misses - before
         assert (cold_compiles, warm_compiles) == (1, 0)
         return {

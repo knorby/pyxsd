@@ -18,6 +18,11 @@ the worker boundary.
 
 ## Install and launch
 
+The MCP Registry launcher uses `pyxsd mcp`, an alias for `pyxsd-mcp`.
+It installs the version-matched `pyxsd[mcp]` extra; the base package alone
+does not provide the server's dependencies. Existing configurations below
+continue to work unchanged.
+
 The primary launch method is [`uvx`](https://docs.astral.sh/uv/), which creates an
 isolated environment with the optional MCP dependencies (Python 3.11 or newer):
 

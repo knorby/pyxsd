@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: ["**"]
   pull_request:
@@ -13,6 +14,60 @@ permissions:
   contents: read
 
 jobs:
+  distributions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        archive: [wheel, sdist]
+        extra: ["", mcp]
+    env:
+      ARCHIVE: ${{ matrix.archive }}
+      EXTRA: ${{ matrix.extra }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.11"
+      - name: Build and test distribution contents outside the checkout
+        run: |
+          uv build
+          uv run --locked --extra mcp pytest tests/test_distributions.py -q
+        env:
+          PYXSD_DIST_DIR: dist
+      - name: Smoke-test clean installation from each archive
+        run: |
+          uv venv "$RUNNER_TEMP/pyxsd-release-smoke"
+          if [ "$ARCHIVE" = wheel ]; then
+            PACKAGE=$(find "$PWD/dist" -name '*.whl' -print -quit)
+          else
+            PACKAGE=$(find "$PWD/dist" -name '*.tar.gz' -print -quit)
+          fi
+          if [ -n "$EXTRA" ]; then
+            PACKAGE="${PACKAGE}[$EXTRA]"
+          fi
+          uv pip install --python "$RUNNER_TEMP/pyxsd-release-smoke/bin/python" "$PACKAGE"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/pyxsd-release-smoke/bin/python" - <<'PY'
+          import importlib.metadata
+          import importlib.util
+          import io
+          import os
+          import pyxsd
+          from pyxsd.skills import list_skills
+          assert importlib.metadata.version("pyxsd") == pyxsd.__version__
+          schema = pyxsd.compile(io.StringIO('<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="root" type="xs:string"/></xs:schema>'))
+          assert schema.parse(io.StringIO("<root>installed</root>")).is_valid
+          assert len(list_skills()) == 3
+          assert importlib.util.find_spec("pyarrow") is None
+          assert (importlib.util.find_spec("mcp") is not None) == bool(os.environ["EXTRA"])
+          PY
+          "$RUNNER_TEMP/pyxsd-release-smoke/bin/pyxsd" --version
+          if [ -n "$EXTRA" ]; then
+            "$RUNNER_TEMP/pyxsd-release-smoke/bin/pyxsd-mcp" --help
+          fi
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10

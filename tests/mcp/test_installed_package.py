@@ -106,13 +106,45 @@ def test_readme_setup_includes_library_mcp_and_skills():
     }
 
 
-def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_path):
+@pytest.mark.parametrize("launch", ["module", "registry"])
+def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_path, launch):
     async def scenario():
         state = tmp_path / "state"
         parameters = StdioServerParameters(
             command=sys.executable,
             args=["-m", "pyxsd.mcp", "--state-dir", str(state)],
         )
+        if launch == "registry":
+            import os
+
+            if shutil.which("uvx") is None:
+                pytest.skip("uvx is not installed")
+            manifest = json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
+            (package,) = manifest["packages"]
+            directory = Path(os.environ.get("PYXSD_DIST_DIR", tmp_path / "wheels")).resolve()
+            if "PYXSD_DIST_DIR" not in os.environ:
+                subprocess.run(
+                    [shutil.which("uv"), "build", "--wheel", "--out-dir", str(directory)],
+                    cwd=ROOT,
+                    check=True,
+                    capture_output=True,
+                    timeout=120,
+                )
+            (wheel,) = directory.glob("pyxsd-*.whl")
+            assert wheel.is_file()
+            # Same argv as VS Code's McpServerManifestParser. A local index
+            # supplies the not-yet-published wheel without overriding extras
+            # or uvx's command-name and version parsing.
+            arguments = []
+            for argument in package["runtimeArguments"]:
+                arguments.extend([argument["name"], argument["value"]])
+            arguments.append(f"{package['identifier']}@{package['version']}")
+            arguments.extend(argument["value"] for argument in package["packageArguments"])
+            parameters = StdioServerParameters(
+                command=shutil.which("uvx"),
+                args=[*arguments, "--state-dir", str(state)],
+                env={"UV_FIND_LINKS": str(directory), "UV_ISOLATED": "1"},
+            )
         async with (
             stdio_client(parameters) as (read, write),
             ClientSession(read, write) as client,
