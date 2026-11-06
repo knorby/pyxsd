@@ -71,4 +71,4 @@ how each falls back to the Python/CLI workflow when the server is not installed.
 Baseline pressure scenarios live in `tests/skills/scenarios.md`; they were
 recorded before the guidance was drafted. Skill efficacy against live models
 is **not evaluated** in this repository — running those trials requires
-separate, explicit approval, and no implicit model spend is authorized here.
+an explicitly configured model service and approval for its usage costs.

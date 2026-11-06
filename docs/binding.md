@@ -1,19 +1,26 @@
 # Parse modes and binding
 
-pyxsd does two jobs at once: it **validates** a document against its
-schema, and it **maps** the document into Python objects. Those jobs can
-pull in opposite directions. A report you can trust wants every problem
-reported; a mapping tool wants usable objects even when a document is a
-little off.
+pyxsd validates XML and binds it to Python objects. Binding retention controls
+whether invalid values or undeclared content are dropped or retained; keeping
+them does not make the document valid. With the same validation settings,
+strict and lax retention report the same problems.
 
-Parse modes resolve that tension by separating the two:
+## Separate the settings
 
-> **The validation report is always strict. A parse mode only changes
-> what value is bound into the tree.**
+Several independent options use the word “strict.” Choose each for its own
+purpose:
 
-No mode suppresses an issue. `Document.report` looks the same in strict
-and lax mode; what differs is whether an invalid or unrecognized piece of
-the document is dropped or kept in a best-effort form.
+| Choice | Default | What it controls |
+| --- | --- | --- |
+| XSD version | `xsd_version="1.1"` | Processor version and version-gated schema vocabulary. Use `"1.0"` when needed; see {doc}`supported` for coverage limits. |
+| Namespace handling | `namespaces="legacy"` | Local-name compatibility versus expanded-name validation. Use `ParseModes.NAMESPACED` for namespace-aware binding. |
+| Binding retention | `invalid_value="drop"` | Whether invalid lexical values are dropped or retained as raw strings; `ParseModes.LAX` also retains unresolved/undeclared content. |
+| Facet checks | `facets="strict"` | Whether facets are enforced. Disabling them reduces validation; see {doc}`validation`. |
+| XML parser profile | stdlib behavior | DOCTYPE/entity protections and optional structural limits; see {doc}`xml-security`. |
+| Failure on report errors | Explicit check | Call `require_valid()` in Python or pass CLI `--strict`; neither is implied by a binding preset. |
+
+Changing namespaces, XSD version, or facet checks can change findings.
+`ParseModes.STRICT` is a binding preset, not a hardened XML parser profile.
 
 ## Using a mode
 
@@ -37,7 +44,7 @@ $ pyxsd -i document.xml -s schema.xsd --namespaces strict -o out.xml
 starting point:
 
 ```python
-from pyxsd import BindingPolicy, Schema
+from pyxsd import ParseModes, Schema
 
 mode = ParseModes.LAX.replace(whitespace="compat")
 schema = Schema.compile("schema.xsd", mode=mode)
@@ -64,7 +71,7 @@ document = schema.parse("document.xml")
   - `"drop"` \| `"raw"`
   - `drop` binds `None` for a value that fails lexical validation (the
     problem is reported). `raw` binds the original text as a plain string,
-    so no data is lost.
+     rather than the typed value. This does not make serialization lossless.
 * - `unresolved_type`
   - `"error"` \| `"generic"`
   - An element whose declared type cannot be resolved is reported in both
@@ -101,8 +108,7 @@ schema = Schema.compile("schema.xsd", mode=mode)
 document = schema.parse("document.xml")
 ```
 
-The default remains `legacy` so existing callers and output are
-unchanged. In `legacy` mode a prefixed name is reduced to its local part
+The default is `legacy` for compatibility. A prefixed name is reduced to its local part
 and namespaces are ignored during instance matching. In `strict` mode
 pyxsd records the in-scope namespace bindings while parsing, uses
 expanded names for component identity and instance matching, and honors
@@ -110,17 +116,15 @@ expanded names for component identity and instance matching, and honors
 `xs:import` can be satisfied with the `Schema.compile(...,
 namespace_schemas=...)` mapping or a `schemaLocation`.
 
-See `examples/docx/` for the binding side of a namespaced document and
-the `namespaces/` cases in the conformance corpus for the validation
-side.
+See {doc}`quickstart` for namespace-aware queries and {doc}`schema-resolution`
+for imports. The [WordprocessingML examples](https://github.com/knorby/pyxsd/tree/develop/examples/docx)
+compare namespaced and lax binding on a larger document.
 
 ## Why not just loosen the report?
 
-Because the report is the contract. Code that checks
-`document.report.has_errors` must not silently pass just because a caller
-wanted lenient binding. Keeping reporting strict means one run of pyxsd
-answers both questions — "is this valid?" and "what can I use?" — without
-the answer to the first depending on the answer to the second.
+Code that checks `document.report.has_errors` must not silently pass because
+a caller wants lenient binding. Retaining invalid data is useful for inspection
+and repair; the report continues to identify the supported checks it failed.
 
 ## Extending the policy
 
@@ -130,6 +134,5 @@ any call signature. New call sites should read the policy off the
 generated class (`getattr(cls, "_parseMode_", ParseModes.STRICT)`), the
 same channel already used for `_contentModel_` and `_derivation_`.
 
-A worked example is `examples/docx/`, which parses a deliberately messy
-`document.xml` subset under `ParseModes.LAX` and renders Markdown while
-the report still lists every problem.
+The WordprocessingML family's separate lax-binding example renders retained
+content while leaving validation findings visible.

@@ -1,0 +1,20 @@
+.docs-channel {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.65rem 1rem;
+  color: var(--color-foreground-secondary);
+  background: var(--color-background-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.docs-channel a {
+  color: var(--color-link);
+  text-decoration: underline;
+}
+
+.docs-channel a:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}

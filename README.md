@@ -2,341 +2,136 @@
 
 [![CI](https://github.com/knorby/pyxsd/actions/workflows/ci.yml/badge.svg)](https://github.com/knorby/pyxsd/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/knorby/pyxsd/branch/develop/graph/badge.svg)](https://codecov.io/gh/knorby/pyxsd)
-[![Docs](https://github.com/knorby/pyxsd/actions/workflows/docs.yml/badge.svg)](https://github.com/knorby/pyxsd/actions/workflows/docs.yml)
-[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14%20%7C%203.15-blue)](https://pypi.org/project/pyxsd/)
 [![PyPI](https://img.shields.io/pypi/v/pyxsd)](https://pypi.org/project/pyxsd/)
 [![Docs](https://img.shields.io/badge/docs-pyxsd.knorby.com-blue)](https://pyxsd.knorby.com/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
-**pyxsd** maps XML documents into Python object trees according to an XML
-Schema (XSD), reports non-fatal validation issues, runs user-defined
-*transforms*, and writes the tree back out as XML.
+pyxsd compiles XML Schema (XSD) into Python classes, then validates and binds
+XML documents into typed object trees. It combines structured validation
+reports, XPath and ElementTree queries, user-defined transforms, and XML
+serialization, with optional Pydantic and Arrow/Parquet integrations. Use it
+when you need schema-driven validation and XML processing, not just an XML
+parser: compile a schema once, then inspect, transform, or export many documents.
 
-- **Minimal dependencies** — two small, pure-Python packages (`elementpath`
-  for XSD regular expressions and XPath queries, and `defusedxml` for the
-  opt-in parser profiles); no compiled extensions in the base install and no
-  parser overhead unless a profile is selected
-- **Optional integrations** — generated Pydantic models and schema-derived
-  Arrow tables/Parquet output, independently installed with
-  `pyxsd[pydantic]` and `pyxsd[arrow]`; Python 3.11+ remains supported
-- **Schema-compiled classes** — your schema becomes real Python classes;
-  `xs:extension` becomes real subclassing
-- **Extend the generated classes** — fold your own mixin classes into the
-  schema's generated types at compile time (an `Extensions` registry,
-  `Schema.compile(..., extensions=ext)`), with an optional
-  `__pyxsd_validate__` hook that adds findings to the validation report
-- **Type-stub emission** — `Schema.stub()` or `pyxsd --emit-stubs` renders
-  a `.pyi` typing surface (or a compact, agent-oriented view) for the
-  classes a compiled schema creates at runtime, so mypy and IDEs can
-  check code written against the bound tree
-- **XSD 1.1 processor** — with an optional XSD 1.0 mode
-  (`Schema.compile(xsd, xsd_version="1.0")` / `--xsd-version 1.0`) that
-  applies the 1.0 vocabulary gate and semantic differences
-- **Lax validation** — recoverable document errors still build a tree; every
-  issue is a code-tagged entry in a `ValidationReport` (`--strict` and
-  `require_valid()` make errors fatal)
-- **Query and export** — `Document.xpath` / `find` / `findall` return the
-  original bound nodes, and `Document.to_dict` / `to_json` export plain
-  Python data (also as the `ToDict` transform)
-- **Schema tooling** — inspect declarations and dependencies with
-  `pyxsd.introspection`, filter generated type stubs, and optionally scope
-  schema and instance reads with a `ResourcePolicy`
-- **Transform pipeline** — apply plain callables or `Transform` classes to
-  the bound tree (`document.transform(fn)`); chain them on the CLI
-  (`PrintData() > PrintData()`)
+## Install
 
-## MCP integration
+Requires Python 3.11 or newer:
 
-Run pyxsd as a local [Model Context Protocol](https://modelcontextprotocol.io/)
-server and let MCP clients explore schemas, validate XML, and inspect exact
-diagnostic occurrences. The primary launch method is `uvx`:
-
-```bash
-uvx --from 'pyxsd[mcp]' pyxsd-mcp
-```
-
-Alternatively, install the optional dependencies and launch directly:
-
-```bash
-pip install 'pyxsd[mcp]'
-pyxsd-mcp
-```
-
-The local stdio server provides:
-
-- **Schema exploration** — overviews, compact/full stubs, constraint-rich
-  declarations, and bounded `uses` / `used_by` graph queries
-- **XML diagnostics** — structured counts, exact repeated-node locations,
-  paged issue reports, source/schema fingerprints, and curated explanations
-- **Bounded XPath queries** — scalar values, node summaries, and exact source
-  subtrees with external-resource functions disabled
-- **Local session inputs** — replaceable schema/XML upload sets, private
-  verified operation captures, and no arbitrary client-selected mounts
-- **Persistent outputs** — digest-verified local artifacts that survive restart
-  and are deleted only when explicitly requested
-- **Clean worker processes** — bounded JSON IPC, content-keyed schema caches,
-  deadlines, queue limits, cancellation, recycling, and no pickle transport
-- **MCP-native results** — strict input/output schemas, `structuredContent`
-  plus JSON text, real error flags, resources, prompts, validation, comparison,
-  transform previews, record exports, and oversized-result artifacts rather than
-  truncated responses
-
-Start with the [MCP guide](https://pyxsd.knorby.com/mcp.html) for a complete
-Python client example, tool catalog, session/output lifecycle, and deployment
-boundaries. Execution is disabled in this build. The server speaks stdio only;
-there is no HTTP/OAuth mode, and remote user-code execution is not included.
-
-## XML security
-
-Parsing and schema retrieval are local and offline by default. The stdlib parser
-is kept for speed and compatibility, so protections are opt-in:
-`XmlParserPolicy.protected()` or `.strict()` select a defusedxml-backed parser,
-and `XmlLimits` bounds bytes, depth, and element count. The only built-in remote
-XSD loader is an explicit `RemoteResourcePolicy`, with HTTPS-only trust rules and
-finite per-compilation budgets; there is no persistent remote cache. The MCP
-server is stricter and always local. Read the
-[XML security guide](https://pyxsd.knorby.com/xml-security.html) before parsing
-untrusted documents or enabling remote schemas.
-
-## Uses
-
-The [healthcare examples](examples/healthcare/README.md) combine these features
-on real C-CDA documents: datatype mixins, a scoped FHIR R4 XML conversion with
-fresh validation, and MCP diagnosis of imperfect data.
-
-### Validate XML against its schema
-
-Check incoming documents before processing them, validate exports in CI, or
-inspect issues in imperfect data. Compile an XSD once, parse multiple documents
-against it, and inspect each `document.report`. Call `require_valid()` when
-invalid input should stop the workflow; use `revalidate()` to check a tree
-after edits.
-
-For an explicit sequence of local files, `Schema.iter_parse` yields structured
-per-source outcomes. It stops at the first failure by default; pass
-`errors="report"` to report invalid or unreadable inputs and continue. See
-[sequential batch parsing](docs/batch.md) and the
-[validation example](examples/batch/validate_documents.py).
-
-See [validation and issue codes](https://pyxsd.knorby.com/validation.html),
-[parse modes](https://pyxsd.knorby.com/binding.html), and the
-[supported-features coverage](https://pyxsd.knorby.com/supported.html).
-
-### Generate Python types and extract structured data
-
-Use the XSD as the source of your XML access types rather than maintaining
-parallel Python classes. Compilation generates native binding classes at
-runtime, including inheritance for schema extensions. Parsing binds XML
-occurrences to those classes and validates their declared values and structure.
-There is no static code-generation step.
-
-Query the bound tree with `find`, `findall`, or `xpath`; export dictionaries or
-JSON with `to_dict` / `to_json`; or apply transforms and write XML back out.
-For schema-declared tabular types and nested records, use the Arrow adapter
-below instead of inferring columns from dictionary exports.
-
-See the [data model](https://pyxsd.knorby.com/data-model.html),
-[API reference](https://pyxsd.knorby.com/api.html),
-[mixin extensions](https://pyxsd.knorby.com/extensions.html), and
-[transform guide](https://pyxsd.knorby.com/transforms/).
-
-### Create dynamic Pydantic access models
-
-Install `pyxsd[pydantic]` to generate Pydantic models from a compiled XSD,
-without handwritten model definitions or example XML. Validate independent
-Python dictionaries, inspect JSON Schema, or take typed snapshots of bound
-documents. Nested records, repeated elements, attributes, exact decimal
-values, and supported constraints come from the schema.
-
-Using the included purchase-order dataset:
-
-```python
-import pyxsd
-from pyxsd.integrations.pydantic import models
-
-schema = pyxsd.compile("examples/pydantic/orders.xsd", mode=pyxsd.ParseModes.NAMESPACED)
-registry = models(schema)
-Order = registry.model_for(element="orders", path=("order",))
-
-document = schema.parse("examples/pydantic/orders.xml")
-snapshot = registry.from_document(document, revalidate=True)
-order = snapshot.order[0]
-print(order.customer.name)  # River Research Lab
-print(order.line[0].price.xml_value)  # Decimal value: 125.50
-```
-
-`Order.model_validate(data)` also validates Python input before any XML is
-read. Models preserve explicit presence separately from effective defaults;
-changing a snapshot does not change the XML. Follow the
-[purchase-order tutorial](examples/pydantic/README.md) for standalone input,
-validation errors, defaults, and absent versus nil values.
-
-### Extract typed Arrow records and write Parquet
-
-Install `pyxsd[arrow]` to extract XML records into Arrow tables or write them
-to Parquet. Choose a record declaration in the XSD and select its occurrences
-in the document. The adapter prepares column types before reading rows,
-retains nested structs and lists, and uses exact representations for decimals
-and integers that exceed native column widths. Empty selections keep the same
-declared schema.
-
-Using the included environmental observations:
-
-```python
-import pyxsd
-from pyxsd.integrations.arrow import records
-
-schema = pyxsd.compile("examples/arrow/observations.xsd", mode=pyxsd.ParseModes.NAMESPACED)
-projection = records(schema, element="observations", path=("observation",))
-document = schema.parse("examples/arrow/observations.xml")
-projection.write_parquet(
-    document, "observations.parquet", selector="observation", batch_size=2, revalidate=True
-)
-```
-
-Use `projection.table(...)` for an in-memory table or `projection.batches(...)`
-for RecordBatches. Pydantic and pandas are not required. Output batching limits
-projected row count; XML parsing still materializes the document. Follow the
-[Arrow/Parquet tutorial](examples/arrow/README.md) for typed measurements,
-coordinates, lists, nil values, and verified Parquet readback.
-
-For multiple XML files, `projection.write_dataset(sources, "new-dataset",
-selector="observation", errors="report")` writes one part per successful
-`DocumentSource`, a fixed schema reference and a manifest. It never appends or
-overwrites. Inspect the returned `complete`/`partial`/`failed` status and read
-only manifest-listed parts. See [multi-document export](docs/batch.md#optional-parquet-dataset-export)
-for provenance, failure behavior and the local single-writer contract.
-
-Both optional adapters support a documented projection subset, not the entire
-XSD validation contract. See the [integration guide](docs/integrations.md) for
-type mappings, presence semantics, supported shapes, and limitations. For
-runnable end-to-end workflows — DuckDB and Polars analysis plus an order
-assessment application — see the
-[data workflow examples](docs/data-workflows.md).
-
-For scalar analytical rows with parent context, pass named `FieldSource`
-columns. For example, a line row can retain its enclosing order number:
-
-```python
-from pyxsd.integrations.projection import FieldSource
-
-projection = records(
-    schema,
-    element="orders",
-    path=("order", "line"),
-    columns={
-        "order_number": FieldSource(scope="ancestor", levels=1, attribute="number"),
-        "sku": FieldSource(attribute="sku"),
-        "quantity": FieldSource(path=("quantity",)),
-    },
-)
-table = projection.table(document, selector="order/line", revalidate=True)
-```
-
-Here `schema` and `document` use the purchase-order fixtures above. Column
-routes must be singleton and scalar; lists/structs remain whole-record outputs.
-Run `python examples/arrow/project_order_lines.py order-lines.parquet` for the
-complete Arrow-only example with prices, currency and Parquet readback.
-
-## Quickstart
-
-```bash
+```sh
 pip install pyxsd
 ```
 
-Validate and parse from the command line:
+For the MCP server, `pip install 'pyxsd[mcp]'` provides the `pyxsd-mcp`
+command, or configure your client to launch the server with `uvx`:
 
-```bash
-# schema is located from the instance's schemaLocation hints
-pyxsd -i inventory.xml --strict
-
-# write the parsed tree and apply a transform
-pyxsd -i inventory.xml -k -o parsed.xml -t 'PrintData()'
+```json
+{
+  "mcpServers": {
+    "pyxsd": {
+      "command": "uvx",
+      "args": ["--from", "pyxsd[mcp]", "pyxsd-mcp"]
+    }
+  }
+}
 ```
 
-Or as a library:
+For the bundled agent skills:
+
+```sh
+npx skills add knorby/pyxsd
+```
+
+See [MCP setup](https://pyxsd.knorby.com/mcp.html) for storage and trust
+options and [agent skills](https://pyxsd.knorby.com/skills.html) for other
+clients. MCP transformation execution is disabled by default.
+
+## Quickstart
+
+This example runs without any files or downloads:
 
 ```python
-import pyxsd
+from io import StringIO
 
-schema = pyxsd.Schema.compile("inventory.xsd")
+from pyxsd import Schema
+
+schema = Schema.compile(
+    StringIO("""
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="quantity" type="xs:positiveInteger"/>
+</xs:schema>
+""")
+)
 schema.require_valid()
-
-document = schema.parse("inventory.xml")
+document = schema.parse(StringIO("<quantity>42</quantity>"))
 document.require_valid()
-
-
-def normalize_units(root): ...
-
-
-updated = document.transform(normalize_units)
-updated.write("normalized.xml")
+print(document.to_dict()["$"])  # 42
 ```
 
-`Schema.compile` builds the schema once and generates its Python classes;
-`schema.parse` binds an instance into a `Document` whose `report` holds
-every issue found. A transform is any callable taking the tree root —
-see the [quickstart](https://pyxsd.knorby.com/quickstart.html) and the
-[full documentation](https://pyxsd.knorby.com/) for more.
+Compilation generates Python classes at runtime; no separate code-generation
+step is needed. Parsing records recoverable validation errors rather than
+raising them automatically. `require_valid()` raises `ValidationError` when
+the report contains errors.
 
-## What it validates
+The [quickstart](https://pyxsd.knorby.com/quickstart.html) supplies a complete
+file-based example with queries, edits, and fresh validation. The same install
+also provides a CLI:
 
-All 45 XSD 1.0 built-in types with lexical validation; sequence/choice/all
-content models; groups and attributeGroups (with refs); wildcards;
-unions (including inline members); substitution groups; element refs;
-`xsi:type` dispatch; `xsi:nil`; default/fixed; abstract/final; include /
-import / redefine; `key`/`unique`/`keyref` with an XPath subset. Opt-in
-namespace-aware validation (`--namespaces strict` / `ParseModes.NAMESPACED`)
-handles `targetNamespace`, form defaults, cross-namespace imports, wildcard
-namespace/`processContents`, and QName values. Facets on user-defined
-simpleTypes are enforced (enumeration, pattern, length family, bounds,
-digits, and whiteSpace), including values bound through `simpleContent`
-complex types. Known
-gaps are tabulated in the
-[supported-features page](https://pyxsd.knorby.com/supported.html).
+```sh
+pyxsd -i inventory.xml -s inventory.xsd --namespaces strict --strict
+```
 
-Backed by the W3C XML Schema Test Suite (xsdtests): pyxsd passes **99.78%**
-of the XSD 1.1 profile and **99.61%** of the XSD 1.0 profile. For context,
-the `xmlschema` library — the standard Python library in this space, and
-pyxsd's conformance oracle — passes 99.75% (1.1) and 99.77% (1.0), but
-declines (does not attempt) substantially more cases, so the percentages
-are not directly comparable. Residual gaps are tabulated on the
-[supported-features page](https://pyxsd.knorby.com/supported.html).
+Use that command with your own files or the quickstart's fixtures. `--strict`
+makes validation errors fail the command; a bare run does not write XML.
 
-## Status
+## Work with your data
 
-pyxsd was written at Oak Ridge National Laboratory in 2006 (see
-[history](https://pyxsd.knorby.com/history/origins.html)),
-abandoned around 2008, and revived as a Python 3 project in 2026.
-Version 1.0.0 was the first release of the modernized library. See
-[CHANGELOG.md](CHANGELOG.md) for subsequent releases.
+- [Validate and diagnose XML](https://pyxsd.knorby.com/validation.html): inspect
+  issue codes, phases, and exact source occurrences.
+- [Query and edit documents](https://pyxsd.knorby.com/quickstart.html#query-the-document):
+  use XPath or ElementTree paths, export dictionaries/JSON, and revalidate edits.
+- [Write transforms](https://pyxsd.knorby.com/transforms/writing.html): apply
+  Python functions or reusable transform classes to the bound tree.
+- [Process multiple documents](https://pyxsd.knorby.com/batch.html): reuse a
+  compiled schema sequentially and choose whether to stop or report failures.
+- [Connect Pydantic and Arrow](https://pyxsd.knorby.com/integrations.html):
+  generate access models or schema-derived tables and Parquet with optional extras.
+- [Use MCP tools](https://pyxsd.knorby.com/mcp.html): explore schemas and inspect
+  XML diagnostics through a local stdio server. Transform execution is disabled
+  by default; trusted-local previews require explicit opt-in.
 
-## Documentation
+For runnable applications, browse the [examples](examples/README.md): GPX
+statistics, document and diagram rendering, healthcare conversion and diagnosis,
+and analytical workflows. Each family documents its inputs and setup.
 
-Full documentation is published at **<https://pyxsd.knorby.com/>**:
+## Scope and limits
 
-- [Quickstart](https://pyxsd.knorby.com/quickstart.html)
-- [CLI reference](https://pyxsd.knorby.com/cli.html)
-- [Architecture](https://pyxsd.knorby.com/architecture.html)
-- [Data model](https://pyxsd.knorby.com/data-model.html)
-- [Mixin extensions](https://pyxsd.knorby.com/extensions.html)
-- [Validation and issue codes](https://pyxsd.knorby.com/validation.html)
-- [XML security and untrusted input](https://pyxsd.knorby.com/xml-security.html)
-- [Sequential parsing and Parquet datasets](docs/batch.md)
-- [Parse modes](https://pyxsd.knorby.com/binding.html)
-- [Transforms](https://pyxsd.knorby.com/transforms/)
-- [Supported features](https://pyxsd.knorby.com/supported.html)
-- [Pydantic and Arrow integrations](docs/integrations.md)
-- [Data workflow examples](docs/data-workflows.md)
-- [API reference](https://pyxsd.knorby.com/api.html)
-- [Migrating from 0.1](https://pyxsd.knorby.com/migration-1.0.html)
-- [Project history](https://pyxsd.knorby.com/history/origins.html)
-- [Contributing](https://pyxsd.knorby.com/contributing.html)
+pyxsd supports XSD 1.1 with an optional XSD 1.0 mode. Namespace-aware binding
+is opt-in (`ParseModes.NAMESPACED` or `--namespaces strict`); the default matches
+local names for compatibility. See [binding modes](https://pyxsd.knorby.com/binding.html),
+[supported features and gaps](https://pyxsd.knorby.com/supported.html), and
+[W3C test-suite results](https://pyxsd.knorby.com/xsts.html) before choosing it
+for a particular schema.
 
-The Sphinx sources live in `docs/`; build them locally with
-`uv run --group docs sphinx-build -W --keep-going -b html docs docs/_build/html`.
+Parsing materializes the XML tree. Validation does not repair invalid input,
+and the Python object tree is not a lossless source representation. Read the
+[data model](https://pyxsd.knorby.com/data-model.html) for access and export limits.
+For untrusted input, configure parser protections and resource limits as
+described in [XML security](https://pyxsd.knorby.com/xml-security.html).
+
+## Documentation and contributing
+
+[Full documentation](https://pyxsd.knorby.com/) ·
+[Python API](https://pyxsd.knorby.com/api.html) ·
+[CLI reference](https://pyxsd.knorby.com/cli.html) ·
+[Contributing](https://pyxsd.knorby.com/contributing.html) ·
+[Changelog](CHANGELOG.md)
+
+The documentation site follows `develop` and may describe unreleased behavior.
+For release-specific sources, select the matching tag in this repository.
+
+pyxsd began at Oak Ridge National Laboratory in 2006 and was revived for
+Python 3 in 2026. See the [project history](https://pyxsd.knorby.com/history/origins.html).
 
 ## License
 
-BSD 3-Clause. See [LICENSE](LICENSE) — it preserves the original ORNL
-provenance note.
+BSD 3-Clause. [LICENSE](LICENSE) includes the original ORNL provenance note.

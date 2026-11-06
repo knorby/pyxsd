@@ -23,9 +23,12 @@ version = ".".join(release.split(".")[:2])
 extensions = [
     "myst_parser",
     "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
+    "sphinx_copybutton",
+    "sphinx_llms_txt",
 ]
 
 templates_path = ["_templates"]
@@ -43,11 +46,43 @@ myst_enable_extensions = [
 ]
 myst_heading_anchors = 3
 
+# --- Copy buttons ------------------------------------------------------------
+# MyST puts no-copy on the outer wrapper, not the inner highlight div.
+copybutton_selector = "div:not(.no-copy) > div.highlight > pre"
+# The extension adds capturing groups; ours must not shift its command group.
+copybutton_prompt_text = r"^(?:\$ |>>> |\.\.\. )"
+copybutton_prompt_is_regexp = True
+# Preserve unprompted continuation lines and indentation, including shell '\'.
+copybutton_only_copy_prompt_lines = False
+copybutton_exclude = ".linenos"
+
+# --- LLM-friendly text --------------------------------------------------------
+# llms.txt links to the raw MyST sources copied into _sources/; llms-full.txt
+# concatenates those sources. Autodoc output is not expanded in the full file.
+llms_txt_summary = (
+    "Validate XML against XSD and bind documents to Python objects. Inspect "
+    "structured validation reports, query and transform trees, and export data "
+    "with optional Pydantic and Arrow/Parquet integrations."
+)
+
+# --- External links (scheduled/manual only, never a per-PR gate) -------------
+linkcheck_timeout = 15
+linkcheck_retries = 2
+linkcheck_workers = 5
+# ORNL returns 403 to every automated client, including a browser user agent.
+linkcheck_ignore = [
+    r"https://www\.ornl\.gov/csmd",
+    r"https://www\.ornl\.gov/group/cmsg",
+]
+
 # --- HTML theme -------------------------------------------------------------
 html_theme = "furo"
-html_title = "pyxsd"
+html_title = "pyxsd: XML Schema validation and Python bindings"
+html_short_title = "pyxsd"
 html_baseurl = "https://pyxsd.knorby.com/"
 html_static_path = ["_static"]
+html_css_files = ["docs.css"]
+html_context = {"docs_channel": "develop"}
 # Serve the custom domain from the GitHub Pages artifact.
 html_extra_path = ["CNAME"]
 
@@ -59,3 +94,22 @@ intersphinx_mapping = {
 # --- Autodoc ---------------------------------------------------------------
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
+
+# Strict cross-references: repair public targets in the docs, not broad ignores.
+nitpicky = True
+nitpick_ignore = [
+    ("py:class", "pyxsd.schema_context.SchemaContext"),  # Internal compilation state.
+    ("py:class", "pyxsd.namespaces.NamespaceContext"),  # Internal parser namespace state.
+    ("py:class", "ParseProvenance"),  # Internal input provenance, not a caller API.
+    ("py:class", "DocumentDeclarations"),  # Internal retained DTD evidence.
+    ("py:class", "AddressResolver"),  # Callable type alias, not a class.
+    ("py:class", "Path"),  # Short annotation spelling of pathlib.Path.
+    ("py:class", "ET.Element"),  # Short annotation spelling of ElementTree.Element.
+    ("py:class", "The merged report"),  # Napoleon misreads the report property's prose as a type.
+    ("py:class", "pyxsd.extensions.\nExtensions"),  # Wrapped role in the library docstring.
+    ("py:class", "pyxsd.xml_policy.\nXmlParserPolicy"),  # Wrapped role in the library docstring.
+    ("py:class", "pyxsd.xml_policy.\nXmlLimits"),  # Wrapped role in the library docstring.
+    ("py:func", "_render_compact"),  # Private stub-rendering implementation.
+    ("py:attr", "outcome"),  # Instance attribute described on BatchParseError, not class metadata.
+    ("py:data", "ResourcePurpose"),  # Literal type alias, not a documented data object.
+]

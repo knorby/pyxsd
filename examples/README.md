@@ -4,11 +4,11 @@
   schema, instance document, a custom transform (`CountElements`), and
   `demo.py` (library use). The walkthrough lives in
   [`docs/demo.md`](../docs/demo.md).
-- [`gpx/`](gpx/) — a real geospatial format: a GPX schema subset, a
+- [`gpx/`](gpx/README.md) — the official GPX 1.1 schema, a
   recorded track, and a transform that computes track statistics.
-- [`docx/`](docx/) — a real office format: a `word/document.xml` schema
-  subset and a style-aware Markdown transform, parsed in lax mode to
-  show how messy documents are bound without losing data.
+- [`docx/`](docx/README.md) — WordprocessingML bound against the full ECMA-376
+  schema in namespaced mode and converted to Markdown. A separate
+  [`lax/`](docx/lax/README.md) example demonstrates best-effort binding.
 - [`analytics/`](analytics/) — executable DuckDB and Polars workflows over
   schema-derived Arrow projections: nested versus contextual tables, child
   expansion, a station/region join, and a Parquet round trip. See
@@ -27,10 +27,8 @@
 - [`musicxml/`](musicxml/) — MusicXML 4.0 scores as synthesized WAV, an
   SVG staff preview, and a FastAPI server (`examples.musicxml.server:app`).
 
-Each rendering family pins and verifies its own upstream sources, owns its
-multiple example uses, documents its workflow in its README, and follows
-the shared pattern in
-[`docs/rendering-examples.md`](../docs/rendering-examples.md).
+- [`arrow/`](arrow/README.md) — schema-derived nested tables and Parquet,
+  with a companion scalar-column purchase-order export.
 - [`pydantic/assess_orders.py`](pydantic/assess_orders.py) — the purchase-order
   assessment application from the same guide: schema-generated snapshots,
   synthetic policy, and deterministic reason codes. The directory's
@@ -55,9 +53,11 @@ uv run python examples/demo/demo.py     # library pipeline
 uv run pyxsd -i examples/demo/instance.xml -o out.xml -t 'CountElements()'
 ```
 
-(The CLI run needs to start in `examples/demo/` — or copy the files
-elsewhere — for the local `CountElements.py` transform module to
-resolve.)
+The CLI searches the instance directory for `CountElements.py`, so the command
+above works from the repository root. These are source-checkout examples;
+installing pyxsd alone does not create the `examples/` directory. Rendering
+families document their own source downloads and optional dependencies; see
+the [rendering guide](../docs/rendering-examples.md) to choose one.
 
 ## Transform templates
 

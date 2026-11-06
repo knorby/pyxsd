@@ -1,5 +1,10 @@
 # Optional Pydantic and Arrow integrations
 
+```{eval-rst}
+.. meta::
+   :description: Generate Pydantic models from XSD and export validated XML records to Arrow tables and Parquet, with explicit type and fidelity limits.
+```
+
 Both integrations ship in **pyxsd**, not a separate library. Python **3.11+**
 remains supported, including installations with extras:
 
@@ -19,17 +24,28 @@ packages. Importing or using one integration does not require the other.
 
 ## Generate models without instance XML
 
+Create `inventory.xsd` and `inventory.xml` from {doc}`quickstart`, then run
+these snippets in order from their directory. Model generation needs only
+the schema; the snapshot step also reads the supplied XML.
+
 ```python
 import pyxsd
 from pyxsd.integrations.pydantic import models
 
-schema = pyxsd.compile("orders.xsd", mode=pyxsd.ParseModes.NAMESPACED)
+schema = pyxsd.compile("inventory.xsd", mode=pyxsd.ParseModes.NAMESPACED)
 registry = models(schema)
-Order = registry.model_for(element="{urn:orders}order")
+Inventory = registry.model_for(element="{urn:inventory}inventory")
 
-order = Order.model_validate({"{urn:orders}number": 7})
-snapshot = registry.from_document(schema.parse("order.xml"))
-description = Order.model_json_schema()
+inventory = Inventory.model_validate(
+    {
+        "{urn:inventory}item": [
+            {"@id": "B1", "{urn:inventory}name": "Bolts", "{urn:inventory}quantity": 4}
+        ]
+    }
+)
+document = schema.parse("inventory.xml")
+snapshot = registry.from_document(document)
+description = Inventory.model_json_schema()
 ```
 
 Models are ordinary runtime-generated Pydantic classes, separate from native
@@ -49,8 +65,11 @@ from it; each step also uses its expanded name. Ambiguous paths are errors.
 This identifies local declarations before documents or rows exist:
 
 ```python
-Item = registry.model_for(element="{urn:orders}orders", path=("{urn:orders}order",))
-item = registry.from_node(bound_order, element="{urn:orders}orders", path=("{urn:orders}order",))
+Item = registry.model_for(element="{urn:inventory}inventory", path=("{urn:inventory}item",))
+bound_item = document.find("i:item", namespaces={"i": "urn:inventory"})
+item = registry.from_node(
+    bound_item, element="{urn:inventory}inventory", path=("{urn:inventory}item",)
+)
 ```
 
 Input/output aliases are expanded-name children, `@` plus expanded-name
@@ -83,32 +102,9 @@ omitted optional fields; do not treat such dumps as a lossless XML codec.
 
 ### Projected contracts through MCP
 
-The `pyxsd[mcp]` extra includes Pydantic. `pyxsd_inspect_model` returns a selected
-declaration's projected JSON Schema; `pyxsd_validate_data` validates JSON data
-against that model. Both accept `workspace_id`, `schema_ref`, `element`, and an
-optional declaration `path`. Validation additionally accepts `data`:
-
-```json
-{
-  "workspace_id": "<workspace-id>",
-  "schema_ref": {"source": {"path": "orders.xsd"}},
-  "element": "order",
-  "path": [],
-  "data": {"@id": "one", "amount": "1.2300", "count": 4}
-}
-```
-
-Use decimal strings to preserve exact lexical precision. Results preserve aliases,
-absent-versus-nil fields, decimal strings and large integers. Errors retain bounded
-details with separate total and suppressed counts. Recursive, mixed-content and
-open shapes return `unsupported_projection` rather than an invented contract.
-
-These are **projected-data checks, not full XSD/XML validation**. Changing a
-generated model or its data does not update XML. Use `pyxsd_validate_document` for
-XML validity and the explicit preview/publication workflow for XML changes.
-Generated classes remain in clean workers and expire with their parent schema
-cache entry. An embedding can disable these tools at startup with
-`Settings(pydantic=False, ...)`.
+The {doc}`mcp` tools `pyxsd_inspect_model` and `pyxsd_validate_data` expose the
+same projected models. They check Python/JSON data, not full XML ordering or
+document-scoped constraints. Use `pyxsd_validate_document` for XML validation.
 
 ## Arrow tables and Parquet
 
@@ -118,11 +114,11 @@ declaration separately from its occurrences:
 ```python
 from pyxsd.integrations.arrow import records
 
-projection = records(schema, element="{urn:orders}orders", path=("{urn:orders}order",))
-document = schema.parse("orders.xml")
-selection = {"selector": ".//o:order", "namespaces": {"o": "urn:orders"}}
+projection = records(schema, element="{urn:inventory}inventory", path=("{urn:inventory}item",))
+selection = {"selector": "i:item", "namespaces": {"i": "urn:inventory"}}
 table = projection.table(document, **selection)
-projection.write_parquet(document, "orders.parquet", batch_size=10_000, **selection)
+assert table.num_rows == 1
+projection.write_parquet(document, "inventory.parquet", batch_size=10_000, **selection)
 ```
 
 `projection.schema` exists before rows are read. No selector means the
@@ -142,10 +138,17 @@ values from its enclosing occurrences or the document root. For the bundled
 purchase orders, each line can carry its order number without projecting the
 entire order:
 
+This separate example uses `examples/pydantic/orders.xsd` and `orders.xml`
+from a [repository checkout](https://github.com/knorby/pyxsd). Run it from the
+repository root with the Arrow extra installed.
+
 ```python
 from pyxsd.integrations.arrow import records
+import pyxsd
 from pyxsd.integrations.projection import FieldSource
 
+schema = pyxsd.compile("examples/pydantic/orders.xsd", mode=pyxsd.ParseModes.NAMESPACED)
+document = schema.parse("examples/pydantic/orders.xml")
 projection = records(
     schema,
     element="orders",
@@ -228,12 +231,6 @@ Named columns share the existing batch-size, typed-empty and atomic local-path
 Parquet guarantees. Batching is not XML streaming, and this feature does not
 add concurrent parsing against a shared Schema.
 
-Contextual extraction guards/groups each active ancestor occurrence once and
-reuses that validated state for its rows and columns. Singleton column branches
-retain their own occurrence/declaration-route and namespace context. State lives
-only in the active extraction's traversal frames, not globally or on a prepared
-projection; repeated row frames are released as traversal advances.
-
 Do not mutate the document while a table/write operation is running or while
 its `batches()` iterator is active. Exhaust or close that iterator before editing
 the tree. Separate extractions reread current values, including intervening
@@ -298,7 +295,7 @@ statuses, manifest version 1, failure cleanup and local publication guarantees.
 
 ## Validation, supported subset, and errors
 
-The initial profile supports element-only sequence/all content, non-repeating
+The integrations support element-only sequence/all content, non-repeating
 composite groups, optional nested records, repeated child elements, simple
 single-element choice branches, attributes, defaults/fixed values, simple
 content, and declaration-driven nil shells. Optional groups retain mandatory
@@ -324,7 +321,7 @@ identity/keyref scope, document assertions, or all XSD semantics. Numeric
 lexical-only patterns and comparable contextual restrictions are rejected
 during model generation rather than validated against invented lexical forms.
 JSON Schema exposes representable bounds/lengths, with custom facet metadata;
-custom validators do not magically become standard JSON Schema constraints.
+custom validators are not necessarily represented as standard JSON Schema constraints.
 
 Invalid XML/schema reports raise `pyxsd.ValidationError`. Unsupported shapes
 and snapshot/selection failures raise `pyxsd.integrations.IntegrationError`
@@ -332,9 +329,32 @@ with declaration/row context. Independent model validation raises Pydantic's
 `ValidationError`. Missing extras raise an actionable import error; a broken
 optional installation retains its actual missing-module cause.
 
+## API lookup
+
+Import `models` from `pyxsd.integrations.pydantic` or `records` from
+`pyxsd.integrations.arrow`. Both prepare a reusable adapter from a compiled
+`Schema`; neither parses XML itself. Declaration names and `path` steps use
+expanded XML names, not generated Python field names.
+
+| Entry point | Result and important arguments |
+| --- | --- |
+| `models(schema)` | `ModelSet` registry, independent of instance XML. |
+| `registry.model_for(*, element, path=())` | Pydantic model class for a global or local declaration. |
+| `registry.from_document(document, *, revalidate=False)` | Root-model snapshot; `revalidate=True` first checks a freshly parsed tree. |
+| `registry.from_node(node, *, element, path=())` | Snapshot of a selected bound occurrence, without whole-document validation. |
+| `records(schema, *, element, path=(), columns=None)` | `RecordProjection`; `.schema` is its prepared `pyarrow.Schema`. |
+| `projection.table(document, *, selector=None, namespaces=None, revalidate=False)` | Materialized `pyarrow.Table`. |
+| `projection.batches(document, *, selector=None, namespaces=None, batch_size=10000, revalidate=False)` | Iterator of `pyarrow.RecordBatch`; batch size counts rows, not XML bytes. |
+| `projection.write_parquet(document, destination, *, selector=None, namespaces=None, batch_size=10000, revalidate=False)` | Writes Parquet; returns `None`. See destination failure behavior above. |
+| `projection.write_dataset(sources, destination, *, selector=None, namespaces=None, batch_size=10000, errors="raise")` | `DatasetResult` for new local output; freshly parses each `DocumentSource`. See {doc}`batch`. |
+
+See [supported shapes and errors](#validation-supported-subset-and-errors)
+before choosing a declaration. Successful conversion checks the projected
+data contract, not every XML constraint or round-trip fidelity.
+
 ## Runnable examples
 
-The standalone tutorials use synthetic, substantive datasets and need only
+The standalone tutorials use supplied datasets and need only
 their own extra:
 
 - [Data workflow examples](data-workflows.md): DuckDB and Polars workflows over
@@ -353,7 +373,7 @@ python examples/arrow/demo.py observations.parquet
 python examples/arrow/project_order_lines.py order-lines.parquet
 ```
 
-The smaller combined smoke example is still available with both extras:
+The combined smoke example needs both extras:
 
 ```bash
 python examples/optional_integrations.py output.parquet

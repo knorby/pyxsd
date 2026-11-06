@@ -113,10 +113,10 @@ node, so assignment updates the instance dictionary only and the write-out
 is unchanged. Assigning a *bound node* directly (as internal binding does)
 is not a user-facing operation and does not go through this path.
 
-Elements and attributes now share one assignment policy. A plain Python
+Elements and attributes share one assignment policy. A plain Python
 value (a string, int, float, bool, or `decimal.Decimal`) assigned to a
 simple-typed element is coerced through the declared datatype, exactly as
-attribute assignment already coerced plain values. A value that fails the
+attribute assignment coerces plain values. A value that fails the
 declared type's validation is recorded in the report during a parse and
 logged outside one, and it is stored as given without touching the
 serialized tree — assignment never raises for a bad *lexical* value.
@@ -143,33 +143,9 @@ a non-colliding schema.
 
 ## Type stubs
 
-A compiled schema's classes exist only at runtime, so `Schema.stub()`
-(`pyxsd.stubs.emit_stub`) renders their typing surface as text. The full
-form is importable-quality `.pyi` source with three parts:
-
-- a **preamble**: the provenance line (pyxsd version and schema source),
-  the consumption idiom (`if TYPE_CHECKING: from schema_stubs import
-  ...`), and the semantics policy — annotations model valid parsed
-  documents, absent optional members (including absent repeated members)
-  read as `None`, and repeated-element assignment appends a single item;
-- one **class block** per generated class. Inheritance mirrors the XSD
-  derivation; element and attribute members carry the union annotations
-  above, with everything the annotation cannot say (a `default`'s lexical
-  fallback, `nillable`, aliased `xml:` names, facets, degradations) in
-  trailing comments; simple types render as their datatype subclass with
-  facet comments; a construct that cannot be typed truthfully degrades to
-  `Any` with a comment;
-- the **root aliases**: the global elements as module-level entries
-  (`orders: type[Orders]`), the valid document roots.
-
-The compact form (`compact=True`) is a two-line header plus one line per
-class and member: the header gives the provenance and an alias legend
-mapping short spellings back to the pyxsd classes they denote
-(`str=String`, `int=Int`, `date=Date`, ...), facet-only simple types are
-folded onto the members that use them, and a trailing `# roots:` comment
-lists the global elements. It is a readable description, not Python
-source. See {doc}`api` for both modes and the truthfulness contract, and
-{doc}`cli` for `--emit-stubs` / `--stubs-compact`.
+`Schema.stub()` describes runtime-generated classes for static checking or
+inspection. See {doc}`stubs` for generation, annotations, and runtime limits;
+stubs do not guarantee that parsed complex-child descriptors are populated.
 
 ## Value conversions
 

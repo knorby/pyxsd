@@ -1,5 +1,6 @@
 """Documented launch paths work from an installed distribution, not only source fixtures."""
 
+import json
 import re
 import shutil
 import subprocess
@@ -82,9 +83,27 @@ def test_uvx_is_primary_and_direct_install_remains_documented():
     assert "--state-dir" in install
     assert "--no-persist" in install
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "uvx --from 'pyxsd[mcp]' pyxsd-mcp" in readme
+    assert "https://pyxsd.knorby.com/mcp.html" in readme
     skill = (ROOT / "src/pyxsd/skills/pyxsd-mcp/SKILL.md").read_text(encoding="utf-8")
     assert "uvx --from 'pyxsd[mcp]' pyxsd-mcp" in skill
+
+
+def test_readme_setup_includes_library_mcp_and_skills():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "## Install\n" in readme
+    install = readme.split("## Install", 1)[1].split("## ", 1)[0]
+    assert "pip install pyxsd" in install
+    assert "pip install 'pyxsd[mcp]'" in install
+    assert "npx skills add knorby/pyxsd" in install
+    config = json.loads(install.split("```json", 1)[1].split("```", 1)[0])
+    assert config == {
+        "mcpServers": {
+            "pyxsd": {
+                "command": "uvx",
+                "args": ["--from", "pyxsd[mcp]", "pyxsd-mcp"],
+            }
+        }
+    }
 
 
 def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_path):
@@ -134,3 +153,22 @@ def test_documented_stdio_workflow_runs_against_the_installed_entry_point(tmp_pa
         assert not state.exists()
 
     anyio.run(scenario)
+
+
+def test_guide_python_client_is_complete(tmp_path):
+    guide = (ROOT / "docs/mcp.md").read_text(encoding="utf-8")
+    blocks = guide.split("```python\n")[1:]
+    assert blocks, "Supply a complete Python client interaction"
+    script = tmp_path / "client.py"
+    script.write_text(blocks[0].split("```", 1)[0], encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=45,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "valid: True"
+    assert not (tmp_path / ".pyxsd").exists()

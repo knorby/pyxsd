@@ -79,7 +79,7 @@ needed. Data paths resolve relative to the script, not the working directory.
    presence. Ordinary dumps can include default/omitted placeholders and are
    not a lossless XML round-trip format.
 
-## What this does—and does not—prove
+## Validation limits
 
 Types, supported constraints, and nested access structure come from the
 compiled XSD. Pydantic validates the projected-data contract; it does not
@@ -89,10 +89,44 @@ such as `placed` remain validated XSD strings, preserving their offsets.
 Generated models are snapshots: changing them does not modify the XML.
 
 See [the integration guide](../../docs/integrations.md) for aliases, supported
-shapes, and limitations. `demo.py`, `orders.xsd`, and `orders.xml` are the entire
-example; its behavior is exercised by `tests/test_optional_examples.py`.
+shapes, and limitations.
 
-The [`assess_orders.py`](assess_orders.py) companion applies synthetic approval
-policy to generated snapshots — unknown catalog entries, mixed currencies, and
-an exact approval threshold — and is run in the
-[data workflow guide](../../docs/data-workflows.md).
+## Order assessment
+
+The [`assess_orders.py`](assess_orders.py) companion validates XML, creates fresh
+Pydantic snapshots, and then applies synthetic approval rules. From the repository
+root, with the same Pydantic extra installed:
+
+```sh
+python examples/pydantic/assess_orders.py
+python examples/pydantic/assess_orders.py examples/pydantic/orders_review.xml
+```
+
+Each result contains the order number, disposition (`accepted`,
+`approval_required`, or `rejected`), currency, exact subtotal as a JSON string,
+and reason codes. The default input reports:
+
+| Order | Currency / subtotal | Disposition |
+| --- | --- | --- |
+| `PO-2026-1041` | USD `681.90` | `approval_required` |
+| `PO-2026-1042` | EUR `450.00` | `accepted` |
+| `PO-2026-1043` | USD `100.00` | `accepted` |
+
+The review fixture adds rejection and threshold cases:
+
+- `PO-2026-2001`: unknown account `NWL-99`, rejected with subtotal reported.
+- `PO-2026-2002`: unknown SKU `GADGET-X`, rejected with subtotal reported.
+- `PO-2026-2003`: USD and EUR lines, rejected as `mixed_currencies`, with no
+  aggregate subtotal or currency; the application supplies no exchange rate.
+- `PO-2026-2004`: USD `600.00`, accepted. Only a subtotal strictly above the
+  threshold requires approval.
+
+Accounts, SKUs, and the `600.00` threshold are synthetic policy fixtures, not
+XSD constraints or financial advice. XSD-valid orders can fail policy.
+Malformed XML raises `PyXSDError`; XSD-invalid input raises `ValidationError`
+during fresh snapshot validation. Neither reaches policy evaluation. Absent
+versus nil notes remain distinguishable through `model_fields_set`, and
+assessment does not mutate the source XML.
+
+`tests/test_optional_examples.py`, `tests/test_order_assessment_example.py`, and
+`tests/test_data_workflows_docs.py` cover these workflows and expected values.

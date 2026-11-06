@@ -1,6 +1,6 @@
-"""The data workflow guide's commands are executable and stay in sync.
+"""The source-family workflow commands are executable and stay in sync.
 
-Every shell command shown in ``docs/data-workflows.md`` is listed here
+The workflow commands in the analytics and Pydantic family READMEs are listed here
 verbatim, run as a subprocess from a temporary working directory, and must
 produce the documented output fragments. Consumer-dependent commands skip
 when their package is absent unless ``PYXSD_REQUIRE_EXAMPLES=1`` is set
@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-DOC = REPO / "docs" / "data-workflows.md"
 PARQUET = "observations.parquet"
 
 # (documented command, argv after the interpreter, required module, fragments)
@@ -129,10 +128,10 @@ def _ensure_parquet(script: str, tmp: Path) -> Path:
     return target
 
 
-def test_all_documented_commands_appear_in_the_guide():
-    text = DOC.read_text(encoding="utf-8")
-    missing = [command for command, *_ in COMMANDS if command not in text]
-    assert missing == []
+@pytest.mark.parametrize(("command", "args", "module", "fragments"), COMMANDS)
+def test_all_documented_commands_appear_in_the_family_readme(command, args, module, fragments):
+    readme = (REPO / args[0]).parent / "README.md"
+    assert command in readme.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

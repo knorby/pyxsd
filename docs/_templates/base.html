@@ -1,0 +1,8 @@
+{% extends "!base.html" %}
+{% block body %}
+{{ super() }}
+<p class="docs-channel">
+  Development documentation ({{ docs_channel }}) · package <code>{{ release }}</code> —
+  <a href="{% if pagename != 'index' %}{{ pathto('index') }}{% endif %}#release-specific-sources">release-specific sources</a>
+</p>
+{% endblock body %}

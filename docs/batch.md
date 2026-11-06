@@ -1,20 +1,46 @@
 # Sequential multi-document parsing
 
-Compile an XSD once and parse an explicit sequence of local XML files:
+Compile an XSD once to validate multiple local XML files. Choose whether to
+stop at the first failure or collect a result for each input.
+
+Create the two files from {doc}`quickstart` in an empty directory. The example
+below creates an invalid copy with quantity `0` and includes a deliberately
+missing path. Run it from that directory:
 
 ```python
-from pyxsd import Schema
+from pathlib import Path
+
+from pyxsd import ParseModes, Schema
 from pyxsd.batch import DocumentSource
 
-schema = Schema.compile("records.xsd")
-sources = [DocumentSource("first", "a.xml"), DocumentSource("second", "b.xml")]
-for outcome in schema.iter_parse(sources, errors="report"):
+original = Path("inventory.xml").read_text(encoding="utf-8")
+Path("zero-inventory.xml").write_text(
+    original.replace("<quantity>4</quantity>", "<quantity>0</quantity>"), encoding="utf-8"
+)
+schema = Schema.compile("inventory.xsd", mode=ParseModes.NAMESPACED)
+sources = [
+    DocumentSource("original", "inventory.xml"),
+    DocumentSource("zero", "zero-inventory.xml"),
+    DocumentSource("missing", "missing-inventory.xml"),
+]
+outcomes = list(schema.iter_parse(sources, errors="report"))
+for outcome in outcomes:
     print(outcome.source.id, outcome.status)
-    for issue in outcome.issues:
-        print(issue.phase, issue.format())
-    if outcome.error is not None:
-        print(outcome.error.kind, outcome.error.message)
 ```
+
+Expected output:
+
+```{code-block} text
+:class: no-copy
+
+original valid
+zero invalid
+missing input_error
+```
+
+For validation details, inspect `outcome.issues`; unreadable inputs have an
+`outcome.error` with `kind` and `message`. This example retains three outcomes
+for inspection. For large batches, iterate directly instead of collecting a list.
 
 This API adds no dependencies. An ordinary loop over `Schema.parse` remains
 supported, including its broader stream and parsed-element inputs.
@@ -82,6 +108,10 @@ the same Schema concurrently or reentrantly while its iterator is active.
 The API offers no scheduler, shared-schema concurrency, or XML streaming:
 each file still becomes a materialized tree.
 
+Concurrent compiles and parses on **separate Schema objects** are supported.
+Give each worker its own schema; compile-once reuse in the loop above is
+sequential reuse, not permission to share that schema across workers.
+
 Files are closed before results are yielded. The iterator keeps no list of
 Documents or outcomes, only current input state and an O(number of inputs)
 ID set. The native compiler host may keep bounded state from its latest
@@ -102,11 +132,14 @@ still matter.
 
 ## Runnable validation example
 
-From a repository checkout:
+From the repository root, validate the supplied demo document:
 
 ```bash
-uv run python examples/batch/validate_documents.py records.xsd inputs b.xml a.xml
+uv run python examples/batch/validate_documents.py examples/demo/schema.xsd examples/demo instance.xml
 ```
+
+This prints `instance.xml: valid` and exits `0`. Substitute your schema, input
+directory, and filenames to validate a larger batch.
 
 The example accepts explicit filenames relative to the input root, sorts
 their relative IDs, and uses namespaced binding. It prints each observed
@@ -117,7 +150,9 @@ the library never discovers or sorts files.
 
 ## Optional Parquet dataset export
 
-Install `pyxsd[arrow]`, prepare one projection, and give it explicit sources:
+Install `pyxsd[arrow]` and run from the repository root. The supplied observation
+files need no downloads. Choose a destination that does not already exist,
+including when rerunning the example:
 
 ```python
 from pyxsd import ParseModes, Schema
@@ -160,7 +195,9 @@ and chains the cause. Interrupts/cancellation propagate after cleanup.
 
 ### Layout, provenance and manifest version 1
 
-```text
+```{code-block} text
+:class: no-copy
+
 new-observation-dataset/
   manifest.json
   _schema.parquet
@@ -259,6 +296,7 @@ uv run --extra arrow --group examples-duckdb python examples/batch/summarize_dat
 uv run --extra arrow --group examples-polars python examples/batch/summarize_dataset.py observation-dataset --consumer polars
 ```
 
-These reuse the precision-limited consumer profile in {doc}`data-workflows`;
+These reuse the precision-limited consumer profile documented in the
+[analytics README](https://github.com/knorby/pyxsd/tree/develop/examples/analytics);
 they add no DuckDB/Polars/pandas library dependency. Generalize the projection
 for your schema rather than inferring types from sample XML.

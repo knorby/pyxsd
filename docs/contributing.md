@@ -24,17 +24,16 @@ but they are greatly appreciated.
 git clone https://github.com/knorby/pyxsd
 cd pyxsd
 uv sync --group dev          # runtime + dev/test dependencies
-uv run pytest --cov          # full suite with coverage
+uv run pytest --cov --cov-branch  # default suite with branch coverage
 uvx ruff@0.16.6 check .      # lint
 uvx ruff@0.16.6 format --check .
 uv run mypy src/pyxsd        # type check
-uv run --group docs sphinx-build -W --keep-going -b html docs docs/_build/html  # docs
 uv run python tests/report_conformance.py  # suite-inspired conformance report
 uv run python -m tests.conformance.run     # real-schema conformance + benchmarks
 PYXSD_RUN_XSTS=1 uv run pytest tests/test_xsts_suite.py  # W3C XML Schema Test Suite
 ```
 
-`pre-commit install` runs the hooks on every commit: ruff lint and
+`uv run pre-commit install` installs hooks that run on every commit: ruff lint and
 format, file hygiene (whitespace, line endings, TOML/YAML validity,
 large-file and merge-conflict checks), shellcheck, and secret detection.
 They catch locally what CI would catch after you push, plus a few checks
@@ -44,7 +43,12 @@ every hook without installing the git hooks:
 `uv run pre-commit run --all-files`.
 Python 3.11 is the floor; CI tests 3.11–3.15.
 
-Two of the gates above are env-gated because their corpora are large.
+### Optional corpora and validation gates
+
+The default test run skips opt-in oracle and XSTS tests, and downloaded-schema
+tests skip when their inputs are absent. A passing default run does not mean
+those checks ran.
+
 `tests/conformance/` compiles five published schemas (FHIR R5, HL7 CDA R2,
 ECMA-376 WordprocessingML and SpreadsheetML, and MusicXML 4.0): fetch the
 corpus once with `uv run python -m tests.conformance.fetch`, then
@@ -55,9 +59,66 @@ to run the W3C XML Schema Test Suite against its checked-in baseline (its
 contract and baseline notes are in `tests/xsts/README.md`); the
 `PYXSD_XSTS_TIMEOUT` environment variable raises the per-case budget, which
 the slower CI runners need. Use `PYXSD_XSTS_TIMEOUT=180` locally to match CI
-when running the full suite on a loaded machine; `particlesZ036_b1` is now
-close enough to the 60 s dev default to time out under load. The `xmlschema`
-oracle is gated the same way by `PYXSD_RUN_ORACLE=1`.
+when running the full suite on a loaded machine. The `xmlschema` oracle is
+enabled separately with `PYXSD_RUN_ORACLE=1`.
+
+Coverage must meet the repository's 99% branch-coverage floor. Also inspect
+`uv run coverage report --show-missing` against the lines you changed: the
+overall floor does not establish patch coverage. Exercise each new condition's
+branches, including failure paths, and assert the resulting behavior.
+
+### Documentation checks
+
+Install both groups so the same environment can build the site and run its
+tests. From the repository root:
+
+```bash
+uv sync --group dev --group docs
+uv run --no-sync sphinx-build -n -W --keep-going -b html docs docs/_build/html
+uv run --no-sync python -m tests.docs_site docs/_build/html --base-url https://pyxsd.knorby.com/
+PYXSD_DOCS_BUILD=docs/_build/html uv run --no-sync pytest tests/test_sphinx_site.py tests/test_docs_site.py
+uv run --no-sync python tests/report_xsts_docs.py --check
+```
+
+The strict build checks API cross-references. The offline HTML checker checks
+local files, anchors, canonical URLs, and entry-page descriptions. Site tests
+also inspect the rendered copy-button configuration, API summaries, and channel
+label. Point `PYXSD_DOCS_BUILD` at a freshly built directory; without it, the
+real-site tests skip. Sphinx fixture tests require the docs group; the local
+checker needs only Python's standard library.
+
+Mark output-only code blocks with MyST's `:class: no-copy`; leave runnable code
+and file contents copyable. Review copied console commands for prompt stripping
+and preserved continuation lines. Keep API details at their existing anchors
+rather than generating duplicate reference pages.
+
+The HTML build also writes `llms.txt` and `llms-full.txt` at the site root. The
+summary links to the raw MyST files in `_sources/`; the full file concatenates
+those sources. Autodoc output is not expanded in the full file. Check both files
+when changing source layout, page titles, or documentation URLs.
+
+The separate **Docs links** workflow checks external URLs weekly and on manual
+dispatch, retaining its linkcheck reports even on failure. External availability
+does not gate pull requests. To run the same bounded check locally:
+
+```bash
+uv run --no-sync sphinx-build -W --keep-going -b linkcheck docs docs/_build/linkcheck
+```
+
+Fix references before adding exceptions. `nitpick_ignore` entries must be exact
+role/target pairs with a reason; do not add regex suppressions. Add an exact URL
+to `linkcheck_anchors_ignore_for_url` only after confirming its anchor is created
+by JavaScript rather than present in the downloaded HTML, and explain why.
+Timeouts and missing pages are failures to investigate, not reasons for a broad
+ignore rule. A host that refuses every automated client may be listed exactly
+in `linkcheck_ignore` with the evidence; prefer a working canonical URL or a
+link without a fragile external fragment first.
+
+Channel presentation is isolated in `docs/_templates/base.html` and
+`docs/_static/docs.css`. A future site-matching template can replace those
+files without changing guide content or URLs. The current label identifies
+`develop` documentation and the package version; it does not claim a stable
+documentation channel exists.
 
 ## Pull requests
 

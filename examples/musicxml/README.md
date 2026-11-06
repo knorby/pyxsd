@@ -72,7 +72,8 @@ untrusted uploads.
 
 - Real-world schema loading: `musicxml.xsd` (~1,400 complex types) with
   cross-namespace `xs:import` of the XML and XLink schemas.
-- Namespaced validation of a genuine 51 KB score: four parts, 40 measures,
+- Namespaced validation of a 51 KB score: four parts, ten measures per part
+  (40 part-measures),
   165 notes, chordal harmony.
 - The transform API on local names: `getElementsByName(root, "note")` and
   `find("pitch", note)` work even though element names are Clark-qualified
@@ -132,8 +133,9 @@ sites. On such schemas, child-attribute access can legitimately return
 `None` for `<pitch>` and `<tie>` even though the bound children exist.
 This workflow therefore reads the documented `XMLNode` structure —
 `_name_`, `_children_`, `_value_`, `_attribs_` — which is exact and in
-document order. Element *attributes* (`step`, `alter`, `octave`,
-`duration`, `tie/@type`, `sound/@tempo`) still bind normally.
+document order. Simple child elements such as `step`, `alter`, `octave`,
+and `duration` provide value access; `type` on `tie` and `tempo` on `sound`
+are XML attributes.
 
 ### Interfaces for the server
 

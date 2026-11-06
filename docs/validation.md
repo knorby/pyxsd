@@ -1,5 +1,10 @@
 # Validation
 
+```{eval-rst}
+.. meta::
+   :description: Interpret pyxsd XML and XSD validation reports, troubleshoot namespace and binding results, and locate issue codes and source occurrences.
+```
+
 pyxsd reports recoverable schema and instance findings in a
 {class}`~pyxsd.validation.ValidationReport` rather than raising on the first
 one. Each finding is a `ValidationIssue`. A compiled schema reports its own
@@ -33,7 +38,7 @@ limitations below also apply.
 ```python
 import pyxsd
 
-schema = pyxsd.Schema.compile("inventory.xsd")
+schema = pyxsd.Schema.compile("inventory.xsd", mode=pyxsd.ParseModes.NAMESPACED)
 schema.require_valid()  # raises ValidationError if the schema itself is bad
 
 document = schema.parse("inventory.xml")
@@ -48,68 +53,33 @@ the report that failed the check.
 
 ## Resource and parser policies
 
-`pyxsd.compile(..., resource_policy=policy)` and
-`pyxsd.parse(..., resource_policy=policy)` accept an optional
-`pyxsd.resource_policy.ResourcePolicy`. The compiled schema retains this
-policy for subsequent `Schema.parse()` and `Document.revalidate()` calls.
-Without a policy, existing loading and parsing behavior is unchanged.
+Validation settings do not authorize file access or harden XML parsing. See
+{doc}`xml-security` for parser profiles, limits, and resource authorization.
+`ResourcePolicyError` is a fatal refusal, not a recoverable validation issue.
+Parser profiles apply per parse; a custom resource policy instead remains
+attached to its compiled schema and owns subsequent reads and parsing.
 
-A policy supplies two methods:
+## Troubleshoot an unexpected result
 
-- `read(source, *, base, purpose)` authorizes and loads a named resource,
-  returning `ResourceData(source_id, content)` with its original bytes.
-  `base` identifies the including document, not its directory; `purpose`
-  is `"schema"` (an explicit or mapped schema, or an ordinary dependency),
-  `"schema-hint"` (a schema the instance selected through its location
-  hint), or `"instance"`. Canonical source IDs can name virtual filesystem
-  layouts. They also determine nested dependency bases and composition-cycle
-  detection.
-- `parse(data, context)` parses admitted bytes and records namespace
-  bindings in the supplied `NamespaceContext`.
+Start with `schema.report` for compilation problems, then `document.report`
+for the combined result. Use the inventory files from {doc}`quickstart` to
+compare a small known-valid input with your own.
 
-Includes, imports, redefines, overrides, namespace mappings and instance
-schema hints use the same policy. Raise `ResourcePolicyError` to refuse
-access: unlike unavailable-resource errors, a denial is never downgraded
-to an ignored import or schema-hint warning. A policy's `parse()` owns XML
-parsing; `xml_policy` and `xml_limits` cannot be combined with it.
+| Symptom | Check and next action |
+| --- | --- |
+| `document.root` is `None` / `unknown-root` | Confirm that a global element matches the root's expanded name and that you loaded the intended schema. A type declaration alone does not declare a document root. |
+| Import or type cannot be resolved | Check the containing schema's base path, `xs:import`, target namespace, and `namespace_schemas` mapping. Follow {doc}`schema-resolution`; lax retention does not supply the missing type. |
+| A namespaced element is missing or unexpected | Use `ParseModes.NAMESPACED`, check form defaults, and give query methods a prefix-to-URI map. A query prefix need not match the XML's original prefix. |
+| An invalid value becomes `None` | Strict retention drops invalid lexical values. Inspect the value/facet issue first; use lax retention if you need the raw text for repair. |
+| A complex child is in `_children_` but `obj.child` is `None` | Some parsed complex-child descriptors are not populated. Retrieve the bound node with `find`, `findall`, or `xpath`; see {doc}`api`. |
+| An edit still shows old errors, or appears valid despite a bad value | Reports describe a parse, not a live tree. Use `checked = document.revalidate()` and inspect or require validity on `checked` before saving. |
+| The CLI exits `0` despite findings | Add `--strict` to fail on report errors. `--mode strict` controls retention, not process exit status. |
+| A file or malformed-XML exception occurs before a report | Catch `PyXSDError` at the input boundary; fix the path or XML syntax before interpreting validation findings. Resource refusals use `ResourcePolicyError`. |
 
-Streams pass through the policy parser too; byte streams preserve original
-encoding, whereas text streams are encoded as UTF-8. Anonymous schema
-streams have no implicit filesystem base: relative dependencies require a
-canonical stream `.name`. Already-parsed `Element` inputs are rejected
-when a policy is active, so they cannot bypass its parser.
-
-`Schema.compile` and `Schema.parse` also accept opt-in `xml_policy` and
-`xml_limits` arguments without a custom resource policy. `xml_policy=None`
-keeps the stdlib parser and its current DTD/entity behavior;
-`XmlParserPolicy.protected()` or `.strict()` selects a defusedxml-backed
-profile, and `XmlLimits` bounds bytes, depth, and start-tag count. A
-compile-time parser policy applies to the schema and its dependencies but is
-not inherited by later instance parses, so pass it per parse. These hooks are
-**not a sandbox or a secure parser implementation**. A policy is trusted
-application code responsible for access checks, parser hardening, limits and
-namespace evidence. Python overlays and extensions remain executable
-application code, outside this XML-loading contract.
-
-`pyxsd.RemoteResourcePolicy` is the built-in opt-in remote schema loader.
-Selecting it authorizes a remote main schema, whether the caller supplied it
-explicitly or the instance selected it through a location hint; a hint-selected
-remote main also requires `allow_remote_hints=True`, and as the root read it
-needs no `allowed_origins` entry. An **additional** remote hint resolved from a
-local schema is not a root read and needs **both** `allow_remote_hints=True` and
-`allow_local_remote=True`. An ordinary remote include/import from a local schema
-needs `allow_local_remote=True`; once admitted, cross-origin dependencies of a
-remote document need `allowed_origins`. Every request is HTTPS, address-checked,
-budgeted, and subject to `RemoteLimits`; there is no persistent cache. Remote
-instance documents, remote-to-local pivots, `file:` URLs, and remote Python
-overlays are refused. Once selected, transport/resolver failures abort the
-compile even for a document-authored include/import. Full rules, defaults, and
-the DNS-rebinding caveat are in {doc}`xml-security`.
-
-Selecting the policy also governs instance parsing: `Schema.parse()` sends the
-instance through the policy, which parses it with `XmlParserPolicy.strict()` and
-caps it at `limits.response_bytes`. Local instances are affected too, so a
-DOCTYPE-bearing or oversized instance is refused while the policy is attached.
+Successful binding does not imply complete XSD conformance. See
+{doc}`supported` for unsupported constructs and {doc}`xml-security` for
+input protections. Neither report settings nor lax binding authorize remote
+resources.
 
 ## DTD-dependent ENTITY and ENTITIES values
 
