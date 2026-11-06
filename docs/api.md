@@ -50,6 +50,27 @@ descriptors read as `None` after parsing even when the node exists in
 `_children_`; use the query methods to retrieve it.
 
 ```{eval-rst}
+.. autoclass:: pyxsd.binding.BindingPolicy
+   :members:
+
+.. autoclass:: pyxsd.binding.ParseModes
+
+.. py:attribute:: pyxsd.binding.ParseModes.STRICT
+
+   Drop invalid values; retain legacy local-name binding.
+
+.. py:attribute:: pyxsd.binding.ParseModes.LAX
+
+   Retain best-effort values without suppressing findings.
+
+.. py:attribute:: pyxsd.binding.ParseModes.NAMESPACED
+
+   Match expanded XML names with strict value retention.
+
+.. py:class:: pyxsd.schema_base.SchemaBase
+
+   Base of generated complex binding classes. See the data-model guide.
+
 .. autoclass:: pyxsd.nodes.XMLNode
    :members:
 ```
@@ -202,9 +223,72 @@ locations do.
 
 .. autoclass:: pyxsd.source_spans.SourceSpan
    :members:
+
+.. autoclass:: pyxsd.locations.PathStep
+
+.. autoclass:: pyxsd.locations.IssueLocation
+
+.. autoclass:: pyxsd.locations.ConstraintInfo
+
+.. autoclass:: pyxsd.locations.NodeLookup
 ```
 
 ## Transforms
 
 See {doc}`transforms/using` for return and revalidation behavior and
 {doc}`transforms/class` for `Transform`, `Displayer`, `iter_tree`, and built-ins.
+
+### Supporting records and entry-point aliases
+
+These records describe introspection and resource-policy results. The aliases
+below point to the same implementations documented above.
+
+```{eval-rst}
+.. autoclass:: pyxsd.introspection.SchemaDescription
+
+.. autoclass:: pyxsd.introspection.ComponentDescription
+
+.. autoclass:: pyxsd.introspection.MemberDescription
+
+.. autoclass:: pyxsd.introspection.ParticleDescription
+
+.. autoclass:: pyxsd.introspection.FacetDescription
+
+.. autoclass:: pyxsd.introspection.WildcardDescription
+
+.. autoclass:: pyxsd.introspection.IdentityDescription
+
+.. autoclass:: pyxsd.resource_policy.ResourceData
+
+.. autoclass:: pyxsd.remote.RemoteResponse
+
+.. autoclass:: pyxsd.remote.RemoteTransportError
+
+.. autofunction:: pyxsd.schema.load_overlay_classes
+
+.. autofunction:: pyxsd.dict_export.bound_to_dict
+
+.. py:module:: pyxsd.introspection
+
+.. py:module:: pyxsd.version_gates
+
+.. py:currentmodule:: None
+
+.. py:function:: pyxsd.compile
+   :canonical: pyxsd.schema.compile
+
+.. py:function:: pyxsd.parse
+   :canonical: pyxsd.schema.parse
+
+.. py:class:: pyxsd.ValidationError
+   :canonical: pyxsd.exceptions.ValidationError
+
+.. py:class:: Document
+   :canonical: pyxsd.document.Document
+
+.. py:method:: XmlParserPolicy.strict
+   :canonical: pyxsd.xml_policy.XmlParserPolicy.strict
+
+.. py:method:: pyxsd.transforms.Transform.makeElemObj
+   :canonical: pyxsd.transforms.transform.Transform.makeElemObj
+```

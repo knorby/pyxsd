@@ -116,3 +116,30 @@ def test_real_site_copy_buttons(docs_build):
     container = html.split("no-copy", 1)[1].split("</div>", 1)[0]
     assert "color: 2" in container
     assert "copybtn" not in container
+
+
+def test_nitpicky_build_fails_on_unknown_target(tmp_path):
+    result = build_fixture_site(tmp_path, body="See {py:func}`no_such_function`.\n")
+    assert result.returncode != 0
+    assert "no_such_function" in result.stdout + result.stderr
+
+
+def test_known_target_resolves(tmp_path):
+    result = build_fixture_site(
+        tmp_path,
+        body="""# API
+
+```{py:function} documented_function()
+A documented function.
+```
+
+See {py:func}`documented_function`.
+""",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_conf_has_no_regex_suppression():
+    conf = runpy.run_path(str(ROOT / "docs/conf.py"))
+    assert conf.get("nitpicky") is True
+    assert not conf.get("nitpick_ignore_regex")

@@ -70,3 +70,22 @@ intersphinx_mapping = {
 # --- Autodoc ---------------------------------------------------------------
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
+
+# Strict cross-references: repair public targets in the docs, not broad ignores.
+nitpicky = True
+nitpick_ignore = [
+    ("py:class", "pyxsd.schema_context.SchemaContext"),  # Internal compilation state.
+    ("py:class", "pyxsd.namespaces.NamespaceContext"),  # Internal parser namespace state.
+    ("py:class", "ParseProvenance"),  # Internal input provenance, not a caller API.
+    ("py:class", "DocumentDeclarations"),  # Internal retained DTD evidence.
+    ("py:class", "AddressResolver"),  # Callable type alias, not a class.
+    ("py:class", "Path"),  # Short annotation spelling of pathlib.Path.
+    ("py:class", "ET.Element"),  # Short annotation spelling of ElementTree.Element.
+    ("py:class", "The merged report"),  # Napoleon misreads the report property's prose as a type.
+    ("py:class", "pyxsd.extensions.\nExtensions"),  # Wrapped role in the library docstring.
+    ("py:class", "pyxsd.xml_policy.\nXmlParserPolicy"),  # Wrapped role in the library docstring.
+    ("py:class", "pyxsd.xml_policy.\nXmlLimits"),  # Wrapped role in the library docstring.
+    ("py:func", "_render_compact"),  # Private stub-rendering implementation.
+    ("py:attr", "outcome"),  # Instance attribute described on BatchParseError, not class metadata.
+    ("py:data", "ResourcePurpose"),  # Literal type alias, not a documented data object.
+]
