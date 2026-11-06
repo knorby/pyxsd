@@ -46,6 +46,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   durable input revisions, quota ledger or publication/commit workflow.
   Execution remains disabled by default; trusted-local previews require
   explicit stdio opt-in.
+- MCP Registry release metadata and OIDC publication, with a version-pinned
+  uvx launcher through the new `pyxsd mcp` alias.
 - `Extensions.for_namespace("")` and `Extensions.for_namespace(None)` select
   declarations that have no namespace, so a mixin can attach to a no-namespace
   schema's types.

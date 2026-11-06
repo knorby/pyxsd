@@ -187,6 +187,27 @@ uses the PyPI trusted publisher and the repository's `pypi` environment;
 maintainers must configure its approval rules and PyPI trust separately.
 The GitHub release is created only after successful PyPI publication, with
 the dated changelog section as its release notes and both archives attached.
+The independent `mcp-registry` job then publishes the stdio server metadata
+as `io.github.knorby/pyxsd` using GitHub OIDC; no registry secret is needed.
+It downloads a pinned publisher and verifies its Sigstore bundle before use.
+An MCP Registry failure does not block the GitHub release. Fix the reported
+problem and rerun only the failed job, rather than republishing to PyPI.
+
+When changing the package version, update both version fields and the pinned
+`pyxsd[mcp]` requirement in `server.json`. Run
+`uv run --locked python scripts/check_mcp_registry.py` before building.
+Keep the `mcp-name` HTML comment in the README: the registry verifies the
+README embedded in the published PyPI package, not the current GitHub file.
+The build gate tests the manifest's uvx command against the actual wheel,
+including an MCP initialization and XML validation. The registry launcher
+uses `pyxsd mcp`, an alias for `pyxsd-mcp`, with the matching MCP extra installed.
+Both launchers keep execution disabled by default.
+
+After publication the workflow checks the exact version's PyPI metadata and
+registry record. The [official registry](https://github.com/modelcontextprotocol/registry)
+is still in preview; publication does not guarantee immediate listing in
+every client or marketplace.
+
 Finally, verify the published version, CLI entry points, and downloadable
 artifacts. These steps publish packages; they do not create a stable docs
 channel. The documentation site continues to follow `develop`.
