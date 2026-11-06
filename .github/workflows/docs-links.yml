@@ -1,0 +1,34 @@
+name: Docs links
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-links
+  cancel-in-progress: true
+
+jobs:
+  linkcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Sync environment
+        run: uv sync --group docs
+      - name: Check external links
+        run: >
+          uv run sphinx-build -W --keep-going -b linkcheck
+          docs docs/_build/linkcheck
+      - name: Upload linkcheck report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linkcheck-report
+          path: docs/_build/linkcheck/output.*

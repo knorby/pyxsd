@@ -53,6 +53,11 @@ copybutton_prompt_is_regexp = True
 copybutton_only_copy_prompt_lines = False
 copybutton_exclude = ".linenos"
 
+# --- External links (scheduled/manual only, never a per-PR gate) -------------
+linkcheck_timeout = 15
+linkcheck_retries = 2
+linkcheck_workers = 5
+
 # --- HTML theme -------------------------------------------------------------
 html_theme = "furo"
 html_title = "pyxsd: XML Schema validation and Python bindings"
