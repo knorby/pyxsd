@@ -254,10 +254,139 @@ def _batch_outcome(item: BatchValidationItem, document: Document) -> dict[str, J
     }
 
 
+def _error_code_counts(report: dict[str, object]) -> dict[str, int]:
+    issues = report.get("issues", [])
+    if not isinstance(issues, list):
+        return {}
+    counts: Counter[str] = Counter()
+    for issue in issues:
+        if isinstance(issue, dict) and issue.get("severity") == "error":
+            code = issue.get("code")
+            if isinstance(code, str):
+                counts[code] += 1
+    return dict(sorted(counts.items()))
+
+
+def _probe_summary(report: dict[str, object]) -> dict[str, JsonValue]:
+    counts = report.get("counts")
+    error_count = 0
+    warning_count = 0
+    if isinstance(counts, dict):
+        error_count = int(cast(int, counts.get("error", 0)))
+        warning_count = int(cast(int, counts.get("warning", 0)))
+    return {
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "codes": cast(JsonValue, _error_code_counts(report)),
+    }
+
+
+def _has_prefixed_unknown_head(report: dict[str, object]) -> bool:
+    issues = report.get("issues", [])
+    if not isinstance(issues, list):
+        return False
+    for issue in issues:
+        if not isinstance(issue, dict) or issue.get("code") != "unknown-substitution-head":
+            continue
+        details = issue.get("details")
+        if isinstance(details, dict) and details.get("prefixed") is True:
+            return True
+    return False
+
+
+def _bounded_probe_message(message: str, cache: SchemaCache) -> str:
+    limits = getattr(cache, "limits", None)
+    maximum = getattr(limits, "message_bytes", None)
+    if maximum is None or len(message.encode("utf-8")) <= maximum:
+        return message
+    return message.encode("utf-8")[:maximum].decode("utf-8", errors="ignore")
+
+
+def _namespace_probe(
+    operation: DescribeOperation,
+    cache: SchemaCache,
+    processor_version: str,
+    current_report: dict[str, object],
+) -> dict[str, JsonValue]:
+    """Compile the same schema with strict namespaces and compare measured evidence."""
+    if operation.schema_ref.options.namespaces != "legacy":
+        return {}
+    if not _has_prefixed_unknown_head(current_report):
+        return {}
+    strict_options = operation.schema_ref.options.model_copy(update={"namespaces": "strict"})
+    strict_ref = operation.schema_ref.model_copy(update={"options": strict_options})
+    request = _for_schema(operation, strict_ref, processor_version)
+    alternative: dict[str, object]
+    try:
+        with cache.acquire(request) as schema:
+            alternative = schema.report.to_dict()
+    except ToolError as exc:
+        return {
+            "status": "error",
+            "fault": {
+                "code": exc.fault.code,
+                "message": _bounded_probe_message(exc.fault.message, cache),
+                "details": cast(JsonValue, exc.fault.details),
+            },
+        }
+    except PyXSDError as exc:
+        return {
+            "status": "error",
+            "fault": {
+                "code": "invalid_schema",
+                "message": _bounded_probe_message(str(exc), cache),
+                "details": {},
+            },
+        }
+    current_summary = _probe_summary(current_report)
+    alternative_summary = _probe_summary(alternative)
+    current_codes = cast(dict[str, int], current_summary["codes"])
+    alternative_codes = cast(dict[str, int], alternative_summary["codes"])
+    introduced = sorted(set(alternative_codes) - set(current_codes))
+    resolved = sorted(set(current_codes) - set(alternative_codes))
+    probe: dict[str, JsonValue] = {
+        "status": "ok",
+        "current": current_summary,
+        "alternative": alternative_summary,
+        "introduced_codes": cast(JsonValue, introduced),
+        "resolved_codes": cast(JsonValue, resolved),
+    }
+    head_code = "unknown-substitution-head"
+    measured_improvement = (
+        current_codes.get(head_code, 0) > alternative_codes.get(head_code, 0)
+        and int(cast(int, alternative_summary["error_count"]))
+        < int(cast(int, current_summary["error_count"]))
+        and not introduced
+    )
+    if measured_improvement:
+        probe["recommendation"] = {
+            "schema_ref": encode_value(strict_ref),
+            "explanation": (
+                "Strict namespaces resolved the prefixed substitution head without "
+                "introducing another issue code."
+            ),
+        }
+    return probe
+
+
 def _describe(
     operation: DescribeOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
     request = _for_schema(operation, operation.schema_ref, processor_version)
+    if operation.view == "diagnostics":
+        with cache.acquire(request) as schema:
+            current_report = schema.report.to_dict()
+        probe = _namespace_probe(operation, cache, processor_version, current_report)
+        recommendation = probe.pop("recommendation", None)
+        recommendations: list[dict[str, JsonValue]] = []
+        if isinstance(recommendation, dict):
+            recommendations.append(recommendation)
+        return {
+            "view": "diagnostics",
+            "report": encode_value(current_report),
+            "recommendations": cast(JsonValue, recommendations),
+            "namespace_probe": cast(JsonValue, probe if probe else None),
+        }
     with cache.acquire(request) as schema:
         description = describe_schema(schema)
         selected_ids = operation.component_ids or description.roots
@@ -490,6 +619,47 @@ def _execute(
     raise ToolError("invalid_operation", "Worker operation is not supported")
 
 
+def _reply_fault(
+    stream: BinaryIO,
+    operation: Operation | None,
+    *,
+    role: Literal["clean", "execution"],
+    fault: ToolFault,
+    operations: int,
+    max_bytes: int,
+) -> None:
+    """Preserve a fault's code while fitting its reply inside the IPC budget."""
+    message = fault.message
+    details: dict[str, JsonValue] = fault.details
+    reduced_details = False
+    while True:
+        bounded = fault.model_copy(update={"message": message, "details": details})
+        try:
+            _reply(
+                stream,
+                operation,
+                role=role,
+                status="error",
+                fault=bounded,
+                operations=operations,
+                max_bytes=max_bytes,
+            )
+        except ToolError as exc:
+            if exc.fault.code != "ipc_limit":
+                raise
+            if fault.details and not reduced_details:
+                details = {"details_truncated": True}
+                reduced_details = True
+            elif len(message) > 1:
+                message = message[: max(1, len(message) // 2)]
+            elif details:
+                details = {}
+            else:
+                raise
+        else:
+            return
+
+
 def _reply(
     stream: BinaryIO,
     operation: Operation | None,
@@ -574,11 +744,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except ToolError as exc:
                 operations += 1
-                _reply(
+                _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    status="error",
                     fault=exc.fault,
                     operations=operations,
                     max_bytes=config.limits.output_bytes,
@@ -590,11 +759,10 @@ def main(argv: list[str] | None = None) -> int:
                     if isinstance(operation, (ParseOperation, QueryOperation))
                     else "invalid_schema"
                 )
-                _reply(
+                _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    status="error",
                     fault=ToolFault(
                         code=code,
                         message=str(exc)[: config.limits.message_bytes],
@@ -606,11 +774,10 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 operations += 1
                 fatal = True
-                _reply(
+                _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    status="error",
                     fault=ToolFault(
                         code="worker_internal",
                         message="Worker operation failed without a verdict",

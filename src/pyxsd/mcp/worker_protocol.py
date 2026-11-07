@@ -68,7 +68,7 @@ class DescribeOperation(Operation):
     kind: Literal["describe"] = "describe"
     schema_ref: SchemaRef
     component_ids: tuple[Nonempty, ...] = ()
-    view: Literal["overview", "compact", "full", "constraints"] = "overview"
+    view: Literal["overview", "compact", "full", "constraints", "diagnostics"] = "overview"
     depth: Annotated[int, Field(ge=0)] | None = 1
     offset: Annotated[int, Field(ge=0)] = 0
     limit: Annotated[int, Field(gt=0)] = 50

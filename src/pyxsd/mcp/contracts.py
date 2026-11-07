@@ -103,7 +103,7 @@ class InspectSchemaRequest(WireModel):
     workspace_id: Nonempty
     schema_ref: SchemaRef
     component_ids: tuple[Nonempty, ...] = ()
-    view: Literal["overview", "compact", "full", "constraints"] = "overview"
+    view: Literal["overview", "compact", "full", "constraints", "diagnostics"] = "overview"
     depth: Annotated[int, Field(ge=0)] | None = 1
     page: Page = Field(default_factory=Page)
 

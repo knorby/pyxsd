@@ -6,6 +6,8 @@ pytest.importorskip("pydantic")
 pytest.importorskip("anyio")
 pytest.importorskip("defusedxml")
 
+from contextlib import asynccontextmanager
+
 import anyio
 from tests.mcp.test_exploration import harness, upload
 
@@ -195,6 +197,7 @@ def test_corpus_classifies_every_file_and_separates_impact_from_evidence(tmp_pat
                 )
             )
             result = await service.compare(_compare_request(workspace, corpus=corpus))
+            assert result["corpus_selection"] is None
             corpus_result = result["corpus"]
             statuses = {entry["path"]: entry["status"] for entry in corpus_result["files"]}
             assert statuses == {
@@ -254,6 +257,129 @@ def test_corpus_cap_is_enforced(tmp_path):
                         corpus=tuple(FileRef(path=name) for name in ("a.xml", "b.xml", "c.xml")),
                     ),
                 )
+
+    anyio.run(scenario)
+
+
+def test_corpus_glob_selects_uploaded_paths_and_reports_selection(tmp_path):
+    from pyxsd.mcp.services.comparison import ComparisonService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {
+                    "old.xsd": OLD,
+                    "new.xsd": NEW,
+                    "corpus/a.xml": GOOD,
+                    "corpus/nested/b.xml": REGRESSED,
+                    "corpus/c.xml": RESOLVED,
+                    "ignored.txt": "ignored",
+                },
+            )
+            service = ComparisonService(inputs, pool)
+            result = await service.compare(
+                _compare_request(workspace, corpus_glob="corpus/**/*.xml")
+            )
+            assert result["corpus_selection"] == {"glob": "corpus/**/*.xml", "matched": 3}
+            corpus_result = result["corpus"]
+            assert [entry["path"] for entry in corpus_result["files"]] == [
+                "corpus/a.xml",
+                "corpus/c.xml",
+                "corpus/nested/b.xml",
+            ]
+            statuses = {entry["path"]: entry["status"] for entry in corpus_result["files"]}
+            assert statuses == {
+                "corpus/a.xml": "valid",
+                "corpus/c.xml": "resolved",
+                "corpus/nested/b.xml": "regressed",
+            }
+
+    anyio.run(scenario)
+
+
+def test_corpus_glob_empty_match_reports_zero_evidence(tmp_path):
+    from pyxsd.mcp.services.comparison import ComparisonService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"old.xsd": OLD, "new.xsd": NEW})
+            service = ComparisonService(inputs, pool)
+            result = await service.compare(
+                _compare_request(workspace, corpus_glob="corpus/**/*.xml")
+            )
+            assert result["corpus_selection"] == {"glob": "corpus/**/*.xml", "matched": 0}
+            assert result["corpus"]["files"] == []
+            assert result["corpus"]["totals"] == {
+                "valid": 0,
+                "regressed": 0,
+                "resolved": 0,
+                "invalid": 0,
+                "malformed": 0,
+                "unbindable": 0,
+                "skipped": 0,
+            }
+
+    anyio.run(scenario)
+
+
+def test_corpus_glob_conflicts_and_selection_failure_never_reach_the_worker(tmp_path, monkeypatch):
+    from pyxsd.mcp.services.comparison import ComparisonService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"old.xsd": OLD, "new.xsd": NEW, "a.xml": GOOD})
+            service = ComparisonService(inputs, pool)
+
+            async def forbidden(operation, *, deadline):
+                raise AssertionError("comparison worker must not run")
+
+            monkeypatch.setattr(pool, "run", forbidden)
+            with pytest.raises(ToolError, match="invalid_argument"):
+                await service.compare(
+                    _compare_request(
+                        workspace,
+                        corpus=(FileRef(path="a.xml"),),
+                        corpus_glob="**/*.xml",
+                    )
+                )
+
+            async def too_many(workspace_id, pattern):
+                raise ToolError("quota_exceeded", "Corpus selection exceeded the budget")
+
+            monkeypatch.setattr(inputs, "select_corpus", too_many)
+            with pytest.raises(ToolError, match="quota_exceeded"):
+                await service.compare(_compare_request(workspace, corpus_glob="**/*.xml"))
+
+    anyio.run(scenario)
+
+
+def test_corpus_glob_respects_the_operator_file_budget(tmp_path):
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.services.comparison import ComparisonService
+
+    async def scenario():
+        async with harness(tmp_path, Limits(workers=1, corpus_files=2)) as (
+            _,
+            inputs,
+            pool,
+            workspace,
+        ):
+            await upload(
+                inputs,
+                workspace,
+                {
+                    "old.xsd": OLD,
+                    "new.xsd": NEW,
+                    "a.xml": GOOD,
+                    "b.xml": GOOD,
+                    "c.xml": GOOD,
+                },
+            )
+            service = ComparisonService(inputs, pool)
+            with pytest.raises(ToolError, match="quota_exceeded"):
+                await service.compare(_compare_request(workspace, corpus_glob="*.xml"))
 
     anyio.run(scenario)
 
@@ -371,6 +497,41 @@ def test_compare_tool_works_through_the_sdk_server(tmp_path):
             assert "element:added" in result["structural"]["added"]
             assert result["corpus"]["files"][0]["status"] == "valid"
             assert result["conclusions"]["corpus_only"] is True
+
+    anyio.run(scenario)
+
+
+def test_corpus_glob_tool_works_through_the_sdk_server(tmp_path):
+    from tests.mcp.test_server import connected, create_workspace, structured
+
+    async def scenario():
+        async with connected(
+            tmp_path, enabled_groups={"exploration", "workspaces", "execution"}
+        ) as (client, _services):
+            workspace = await create_workspace(client)
+            await client.call_tool(
+                "pyxsd_put_files",
+                {
+                    "workspace_id": workspace,
+                    "files": [
+                        {"path": "old.xsd", "text": OLD},
+                        {"path": "new.xsd", "text": NEW},
+                        {"path": "corpus/a.xml", "text": GOOD},
+                    ],
+                },
+            )
+            submitted = await client.call_tool(
+                "pyxsd_compare_schemas",
+                {
+                    "workspace_id": workspace,
+                    "old_schema": {"source": {"path": "old.xsd"}},
+                    "new_schema": {"source": {"path": "new.xsd"}},
+                    "corpus_glob": "corpus/**/*.xml",
+                },
+            )
+            result = structured(submitted)["data"]
+            assert result["corpus_selection"] == {"glob": "corpus/**/*.xml", "matched": 1}
+            assert result["corpus"]["files"][0]["status"] == "valid"
 
     anyio.run(scenario)
 
@@ -847,5 +1008,105 @@ def test_included_anonymous_move_and_single_file_edit(tmp_path):
             assert structural["removed"] == []
             assert "element:{urn:o}second" in structural["changed"]
             assert "element:{urn:o}first" not in structural["changed"]
+
+    anyio.run(scenario)
+
+
+def _make_source_comparison_tree(root):
+    root.mkdir()
+    (root / "old.xsd").write_text(OLD)
+    (root / "new.xsd").write_text(NEW)
+    (root / "corpus").mkdir()
+    (root / "corpus" / "a.xml").write_text(GOOD)
+
+
+@asynccontextmanager
+async def _source_harness(tmp_path):
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.inputs import SessionInputs
+    from pyxsd.mcp.output_store import OutputStore
+    from pyxsd.mcp.services.comparison import ComparisonService
+    from pyxsd.mcp.storage import Storage
+    from pyxsd.mcp.workers import WorkerPool
+
+    root = tmp_path / "tree"
+    _make_source_comparison_tree(root)
+    limits = Limits(workers=1)
+    storage = Storage(tmp_path / "state", persist=False)
+    outputs = OutputStore(storage, limits)
+    pool = WorkerPool(limits)
+    inputs = SessionInputs(storage.scratch, limits, source_root=root, discovery=pool)
+    inputs.outputs = outputs
+    workspace = await inputs.create()
+    service = ComparisonService(inputs, pool)
+    try:
+        yield service, inputs, pool, workspace.id, root
+    finally:
+        await pool.aclose()
+        outputs.close()
+        storage.close()
+
+
+def test_compare_glob_rechecks_source_stability_after_selection(tmp_path):
+    import hashlib
+    from contextlib import asynccontextmanager
+
+    async def scenario():
+        async with _source_harness(tmp_path) as (service, inputs, pool, workspace, root):
+            replacement = GOOD + " "
+            mutations = ["once"]
+            calls = []
+            original_discover = pool.discover
+
+            async def discover(capture, refs):
+                calls.append(tuple(ref.source.path for ref in refs if hasattr(ref, "source")))
+                if mutations:
+                    mutations.pop()
+                    (root / "corpus" / "a.xml").write_text(replacement)
+                return await original_discover(capture, refs)
+
+            pool.discover = discover
+            original_capture = inputs.capture_source
+            captures = []
+
+            @asynccontextmanager
+            async def spy(workspace_id, refs):
+                async with original_capture(workspace_id, refs) as capture:
+                    captures.append(capture)
+                    yield capture
+
+            inputs.capture_source = spy
+            result = await service.compare(
+                _compare_request(workspace, corpus_glob="corpus/**/*.xml")
+            )
+            assert result["corpus_selection"] == {"glob": "corpus/**/*.xml", "matched": 1}
+            assert result["corpus"]["files"] == [
+                {"path": "corpus/a.xml", "status": "valid", "old": "valid", "new": "valid"}
+            ]
+            assert len(calls) == 2
+            (captured,) = captures
+            item = next(entry for entry in captured.files if entry.path == "corpus/a.xml")
+            assert item.digest == hashlib.sha256(replacement.encode()).hexdigest()
+            assert item.size == len(replacement.encode())
+
+    anyio.run(scenario)
+
+
+def test_compare_glob_persistent_source_change_fails_without_mixed_revisions(tmp_path):
+    async def scenario():
+        async with _source_harness(tmp_path) as (service, _inputs, pool, workspace, root):
+            calls = 0
+            original_discover = pool.discover
+
+            async def discover(capture, refs):
+                nonlocal calls
+                calls += 1
+                (root / "corpus" / "a.xml").write_text(f"{GOOD} <!-- revision {calls} -->")
+                return await original_discover(capture, refs)
+
+            pool.discover = discover
+            with pytest.raises(ToolError, match="source_changed"):
+                await service.compare(_compare_request(workspace, corpus_glob="corpus/**/*.xml"))
+            assert calls == 2
 
     anyio.run(scenario)

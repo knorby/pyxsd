@@ -50,6 +50,34 @@ def test_limits_match_the_design():
     assert Limits().model_dump() == DEFAULTS
 
 
+def test_compare_request_corpus_glob_is_optional_and_nonempty():
+    from pydantic import ValidationError
+    from pyxsd.mcp.contracts import FileRef, SchemaRef
+    from pyxsd.mcp.services.comparison import CompareSchemasRequest
+
+    request = CompareSchemasRequest(
+        workspace_id="workspace",
+        old_schema=SchemaRef(source=FileRef(path="old.xsd")),
+        new_schema=SchemaRef(source=FileRef(path="new.xsd")),
+    )
+    assert request.corpus == ()
+    assert request.corpus_glob is None
+    selected = CompareSchemasRequest(
+        workspace_id="workspace",
+        old_schema=SchemaRef(source=FileRef(path="old.xsd")),
+        new_schema=SchemaRef(source=FileRef(path="new.xsd")),
+        corpus_glob="corpus/**/*.xml",
+    )
+    assert selected.corpus_glob == "corpus/**/*.xml"
+    with pytest.raises(ValidationError):
+        CompareSchemasRequest(
+            workspace_id="workspace",
+            old_schema=SchemaRef(source=FileRef(path="old.xsd")),
+            new_schema=SchemaRef(source=FileRef(path="new.xsd")),
+            corpus_glob="",
+        )
+
+
 @pytest.mark.parametrize("field", DEFAULTS)
 @pytest.mark.parametrize("bad", [0, -1, True, "1", 1.5])
 def test_each_budget_is_a_strict_positive_integer(field, bad):

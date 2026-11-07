@@ -207,15 +207,19 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             workspace_id: str,
             schema_ref: SchemaRef,
             component_ids: tuple[str, ...] = (),
-            view: Literal["overview", "compact", "full", "constraints"] = "overview",
+            view: Literal["overview", "compact", "full", "constraints", "diagnostics"] = (
+                "overview"
+            ),
             depth: int | None = 1,
             page: Page = _PAGE,
         ) -> types.CallToolResult:
-            """Inspect a schema: overview, compact stubs, full detail, or constraints.
+            """Inspect a schema: overview, stubs, detail, constraints, or diagnostics.
 
             view "overview" summarizes namespaces, roots, and counts; "compact"
             and "full" describe components (depth controls how deep those views
-            go, not the overview); "constraints" shows value/model constraints.
+            go, not the overview); "constraints" shows value/model constraints;
+            "diagnostics" returns the schema compilation report and, for legacy
+            prefixed substitution heads, measured strict-namespace evidence.
             roots/entry_roots values are component IDs like
             "element:{namespace}name". Incomplete schemas may still be inspected
             so their missing pieces can be diagnosed.
@@ -365,11 +369,24 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 tuple[FileRef, ...],
                 Field(
                     description=(
-                        "Optional documents validated under both schemas; count capped by the "
-                        "corpus_max_files budget."
+                        "Optional explicit documents validated under both schemas; count "
+                        "capped by the corpus_max_files budget. Mutually exclusive with "
+                        "corpus_glob."
                     )
                 ),
             ] = (),
+            corpus_glob: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Select corpus documents with a relative POSIX glob (* and ? within "
+                        "one segment, ** across segments), e.g. corpus/**/*.xml. Uploaded "
+                        "workspace files take precedence; an empty workspace selects from "
+                        "the configured source root. Matches are lexical and capped by the "
+                        "corpus_files budget."
+                    )
+                ),
+            ] = None,
         ) -> types.CallToolResult:
             """Diff two schemas structurally and optionally check a corpus for impact.
 
@@ -377,7 +394,9 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             locations produce an empty diff, and a real edit lists the changed
             components with old/new field values. Corpus documents are
             classified valid/regressed/resolved/invalid, with first-issue
-            evidence for regressions and resolutions.
+            evidence for regressions and resolutions. Select a corpus either
+            explicitly or with corpus_glob; the reply reports the glob and
+            match count when selection was used.
             """
             from .services.comparison import CompareSchemasRequest
 
@@ -386,6 +405,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 old_schema=old_schema,
                 new_schema=new_schema,
                 corpus=corpus,
+                corpus_glob=corpus_glob,
             )
 
             async def operation() -> ToolEnvelope:
@@ -514,43 +534,41 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
 
         _register(server, "pyxsd_preview_records", preview_records, read_only=True)
 
-        if "execution" in services.settings.enabled_groups:
+        async def export_records(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            documents: tuple[FileRef, ...],
+            element: str,
+            path: tuple[str, ...] = (),
+            selector: str | None = None,
+            namespaces: dict[str, str] | None = None,
+            columns: dict[str, FieldSourceSpec] | None = None,
+            format: Literal["parquet", "dataset"] = "parquet",
+        ) -> types.CallToolResult:
+            """Export projected records from many documents as retained artifacts.
 
-            async def export_records(
-                workspace_id: str,
-                schema_ref: SchemaRef,
-                documents: tuple[FileRef, ...],
-                element: str,
-                path: tuple[str, ...] = (),
-                selector: str | None = None,
-                namespaces: dict[str, str] | None = None,
-                columns: dict[str, FieldSourceSpec] | None = None,
-                format: Literal["parquet", "dataset"] = "parquet",
-            ) -> types.CallToolResult:
-                """Export projected records from many documents as retained artifacts.
+            Same projection options as preview_records, but writes parquet
+            or a dataset layout for the supplied documents and returns
+            artifact references for reading via pyxsd_read_artifact.
+            """
+            request = ExportRecordsRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                documents=documents,
+                element=element,
+                path=path,
+                selector=selector,
+                namespaces=namespaces or {},
+                columns=columns,
+                format=format,
+            )
 
-                Same projection options as preview_records, but writes parquet
-                or a dataset layout for the supplied documents and returns
-                artifact references for reading via pyxsd_read_artifact.
-                """
-                request = ExportRecordsRequest(
-                    workspace_id=workspace_id,
-                    schema_ref=schema_ref,
-                    documents=documents,
-                    element=element,
-                    path=path,
-                    selector=selector,
-                    namespaces=namespaces or {},
-                    columns=columns,
-                    format=format,
-                )
+            async def operation() -> ToolEnvelope:
+                return ToolEnvelope(data=await services.records.export_records(request))
 
-                async def operation() -> ToolEnvelope:
-                    return ToolEnvelope(data=await services.records.export_records(request))
+            return await _invoke(services, operation)
 
-                return await _invoke(services, operation)
-
-            _register(server, "pyxsd_export_records", export_records, read_only=False)
+        _register(server, "pyxsd_export_records", export_records, read_only=False)
 
     if workspaces:
 

@@ -150,6 +150,51 @@ def test_cli_execution_requires_explicit_stdio_opt_in(tmp_path, monkeypatch):
     assert main(["--state-dir", str(tmp_path), "--execution-backend", "trusted-local"]) == 0
     assert settings[-1].execution_backend == "trusted-local"
     assert "execution" in settings[-1].enabled_groups
+    monkeypatch.setenv("PYXSD_MCP_EXECUTION_BACKEND", "trusted-local")
+    assert main(["--state-dir", str(tmp_path)]) == 0
+    assert settings[-1].execution_backend == "trusted-local"
+    assert main(["--state-dir", str(tmp_path), "--execution-backend", "disabled"]) == 0
+    assert settings[-1].execution_backend == "disabled"
+    assert "execution" not in settings[-1].enabled_groups
+
+
+def test_execution_backend_environment_precedence():
+    from pyxsd.mcp.__main__ import _resolve_execution_backend
+
+    assert _resolve_execution_backend(cli_value=None, environment={}) == "disabled"
+    assert (
+        _resolve_execution_backend(
+            cli_value=None, environment={"PYXSD_MCP_EXECUTION_BACKEND": "trusted-local"}
+        )
+        == "trusted-local"
+    )
+    assert (
+        _resolve_execution_backend(
+            cli_value="disabled", environment={"PYXSD_MCP_EXECUTION_BACKEND": "trusted-local"}
+        )
+        == "disabled"
+    )
+    assert (
+        _resolve_execution_backend(
+            cli_value=None, environment={"PYXSD_MCP_EXECUTION_BACKEND": "  "}
+        )
+        == "disabled"
+    )
+
+
+@pytest.mark.parametrize("value", ["1", "true", "sandbox"])
+def test_invalid_execution_backend_environment_fails_before_startup(value, monkeypatch):
+    from pyxsd.mcp import server
+    from pyxsd.mcp.__main__ import main
+
+    def forbidden(_settings):
+        raise AssertionError("server must not start")
+
+    monkeypatch.setattr(server, "run", forbidden)
+    monkeypatch.setenv("PYXSD_MCP_EXECUTION_BACKEND", value)
+    with pytest.raises(SystemExit) as exited:
+        main([])
+    assert exited.value.code == 2
 
 
 def test_main_version_does_not_require_sdk(capsys):

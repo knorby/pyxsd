@@ -35,6 +35,7 @@ classifiers = [
 pydantic = ["pydantic>=2.12.5,<3"]
 arrow = ["pyarrow>=22"]
 mcp = ["mcp>=2.3,<3", "pydantic>=2.12.5,<3", "anyio>=4.10,<5"]
+mcp-all = ["mcp>=2.3,<3", "pydantic>=2.12.5,<3", "anyio>=4.10,<5", "pyarrow>=22"]
 
 [project.urls]
 Homepage = "https://github.com/knorby/pyxsd"

@@ -5,12 +5,13 @@ import os
 import re
 import stat
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Limits
 from .contracts import InlineFile
+from .corpus import CorpusGlob, portable_parts
 from .errors import ToolError
 
 
@@ -19,24 +20,7 @@ def validate_paths(paths: Sequence[str]) -> tuple[str, ...]:
     spellings: dict[str, str] = {}
     files: set[str] = set()
     for path in paths:
-        try:
-            valid = (
-                isinstance(path, str)
-                and bool(path)
-                and len(path.encode("utf-8")) <= 4096
-                and len(path.split("/")) <= 128
-                and not any(ord(char) < 32 or ord(char) == 127 for char in path)
-                and not any(char in path for char in ("\\", ":"))
-                and all(
-                    part not in ("", ".", "..") and len(part.encode("utf-8")) <= 255
-                    for part in path.split("/")
-                )
-            )
-        except UnicodeEncodeError:
-            valid = False
-        if not valid:
-            raise ToolError("invalid_path", "Expected an unambiguous relative POSIX path")
-        parts = path.split("/")
+        parts = portable_parts(path)
         for index in range(1, len(parts) + 1):
             prefix = "/".join(parts[:index])
             key = unicodedata.normalize("NFC", unicodedata.normalize("NFC", prefix).casefold())
@@ -163,6 +147,104 @@ class SafeDirectory:
             raise ToolError("unsafe_path", "Input path cannot be admitted") from exc
         finally:
             os.close(current)
+
+    def glob(
+        self,
+        pattern: str,
+        *,
+        max_entries: int,
+        max_matches: int,
+        exclude: str | None = None,
+        exclude_identities: Collection[tuple[int, int]] = (),
+    ) -> tuple[str, ...]:
+        """Enumerate matching regular files without following links or budgets."""
+        glob = CorpusGlob(pattern)
+        for label, budget in (("Entry budget", max_entries), ("Match budget", max_matches)):
+            if type(budget) is not int or budget <= 0:
+                raise ToolError("invalid_argument", f"{label} must be a positive integer")
+        if self._fd is None:
+            raise ToolError("closed", "Input directory is closed")
+        if exclude is not None:
+            validate_paths([exclude])
+
+        def scan(directory_fd: int) -> tuple[os.DirEntry[str], ...]:
+            try:
+                with os.scandir(directory_fd) as scanning:
+                    return tuple(sorted(scanning, key=lambda item: item.name))
+            except OSError as exc:
+                raise ToolError("unsafe_path", "Input tree cannot be enumerated") from exc
+
+        matches: list[str] = []
+        visited = 0
+        root = os.dup(self._fd)
+        try:
+            root_entries = scan(root)
+        except BaseException:
+            os.close(root)
+            raise
+        frames: list[tuple[int, str, tuple[os.DirEntry[str], ...], int]] = []
+        try:
+            frames.append((root, "", root_entries, 0))
+            while frames:
+                directory_fd, current, entries, index = frames[-1]
+                if index >= len(entries):
+                    frames.pop()
+                    os.close(directory_fd)
+                    continue
+                frames[-1] = (directory_fd, current, entries, index + 1)
+                entry = entries[index]
+                visited += 1
+                if visited > max_entries:
+                    raise ToolError("quota_exceeded", "Input entry limit exceeded")
+                path = f"{current}/{entry.name}" if current else entry.name
+                if exclude is not None and (path == exclude or path.startswith(f"{exclude}/")):
+                    continue
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError as exc:
+                    raise ToolError("unsafe_path", "Input entry cannot be inspected") from exc
+                if (
+                    stat.S_ISDIR(info.st_mode)
+                    and (
+                        info.st_dev,
+                        info.st_ino,
+                    )
+                    in exclude_identities
+                ):
+                    continue
+                matched = glob.matches(path)
+                if stat.S_ISDIR(info.st_mode):
+                    if matched:
+                        raise ToolError("unsafe_path", "Only regular input files are admitted")
+                    try:
+                        child = os.open(
+                            entry.name,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=directory_fd,
+                        )
+                    except OSError as exc:
+                        raise ToolError(
+                            "unsafe_path", "Input directory cannot be admitted"
+                        ) from exc
+                    try:
+                        child_entries = scan(child)
+                    except BaseException:
+                        os.close(child)
+                        raise
+                    frames.append((child, path, child_entries, 0))
+                elif matched:
+                    if not stat.S_ISREG(info.st_mode):
+                        raise ToolError("unsafe_path", "Only regular input files are admitted")
+                    matches.append(path)
+                    if len(matches) > max_matches:
+                        raise ToolError("quota_exceeded", "Corpus glob exceeds match budget")
+        except (OSError, UnicodeError) as exc:
+            raise ToolError("unsafe_path", "Input tree cannot be enumerated") from exc
+        finally:
+            for directory_fd, _, _, _ in frames:
+                os.close(directory_fd)
+        validate_paths(matches)
+        return tuple(sorted(matches))
 
     def verify(self, captured: CapturedFile, *, max_bytes: int) -> None:
         """Re-read through the root, detecting replacement and content changes."""

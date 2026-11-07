@@ -30,6 +30,7 @@ class CompareSchemasRequest(WireModel):
     old_schema: SchemaRef
     new_schema: SchemaRef
     corpus: tuple[FileRef, ...] = ()
+    corpus_glob: Nonempty | None = None
 
 
 def _fingerprint(component: ComponentDescription, keys: dict[str, str]) -> str:
@@ -208,18 +209,25 @@ class ComparisonService(ExplorationService):
         self.limits = inputs.limits
 
     async def compare(self, request: CompareSchemasRequest) -> dict[str, JsonValue]:
-        if len(request.corpus) > self.limits.corpus_files:
+        if request.corpus and request.corpus_glob is not None:
+            raise ToolError("invalid_argument", "Provide either corpus or corpus_glob, not both")
+        corpus = request.corpus
+        selection: dict[str, JsonValue] | None = None
+        if request.corpus_glob is not None:
+            corpus = await self.inputs.select_corpus(request.workspace_id, request.corpus_glob)
+            selection = {"glob": request.corpus_glob, "matched": len(corpus)}
+        if len(corpus) > self.limits.corpus_files:
             raise ToolError("quota_exceeded", "Corpus exceeds the operator file budget")
         async with self._capture(
             request.workspace_id,
-            (request.old_schema, request.new_schema, *request.corpus),
+            (request.old_schema, request.new_schema, *corpus),
         ) as capture:
             operation = ComparisonOperation(
                 request_id=secrets.token_hex(16),
                 capture=capture_to_wire(capture),
                 old_schema=request.old_schema,
                 new_schema=request.new_schema,
-                corpus=request.corpus,
+                corpus=corpus,
             )
             deadline = time.monotonic() + self.limits.batch_seconds
             reply = await self.pool.run(operation, deadline=deadline)
@@ -228,4 +236,4 @@ class ComparisonService(ExplorationService):
             raise ToolError(reply.fault.code, reply.fault.message)
         if not isinstance(reply.result, dict):
             raise ToolError("ipc_protocol", "Comparison returned no result object")
-        return reply.result
+        return {**reply.result, "corpus_selection": selection}
