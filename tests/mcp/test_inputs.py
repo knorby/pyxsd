@@ -441,3 +441,125 @@ def test_capture_source_returns_real_workspace_id(tmp_path):
             assert capture.generation == 0
 
     anyio.run(scenario)
+
+
+def make_corpus_tree(root):
+    root.mkdir()
+    (root / "corpus").mkdir()
+    (root / "corpus" / "nested").mkdir(parents=True)
+    (root / "corpus" / "a.xml").write_text(DOC)
+    (root / "corpus" / "nested" / "b.xml").write_text(DOC)
+    (root / "ignored.txt").write_text("ignored")
+
+
+def test_select_corpus_uses_uploaded_manifest_paths_without_capturing(tmp_path):
+    source = tmp_path / "source"
+    make_corpus_tree(source)
+
+    async def scenario():
+        store = inputs(tmp_path, source_root=source)
+        workspace = await store.create()
+        await store.put_files(
+            workspace.id,
+            [
+                InlineFile(path="z.xml", text=DOC),
+                InlineFile(path="a/nested.xml", text=DOC),
+                InlineFile(path="a.xml", text=DOC),
+                InlineFile(path="ignored.txt", text="ignored"),
+            ],
+        )
+        selected = await store.select_corpus(workspace.id, "**/*.xml")
+        assert [item.path for item in selected] == ["a.xml", "a/nested.xml", "z.xml"]
+        assert list(store._captures.iterdir()) == []
+
+    anyio.run(scenario)
+
+
+def test_select_corpus_never_merges_uploads_with_source_inputs(tmp_path):
+    source = tmp_path / "source"
+    make_corpus_tree(source)
+
+    async def scenario():
+        store = inputs(tmp_path, source_root=source)
+        workspace = await store.create()
+        await store.put_files(workspace.id, [InlineFile(path="uploaded.xml", text=DOC)])
+        selected = await store.select_corpus(workspace.id, "**/*.xml")
+        assert [item.path for item in selected] == ["uploaded.xml"]
+
+    anyio.run(scenario)
+
+
+def test_select_corpus_enumerates_source_root_for_an_empty_workspace(tmp_path):
+    source = tmp_path / "source"
+    make_corpus_tree(source)
+
+    async def scenario():
+        store = inputs(tmp_path, source_root=source)
+        workspace = await store.create()
+        selected = await store.select_corpus(workspace.id, "corpus/**/*.xml")
+        assert [item.path for item in selected] == ["corpus/a.xml", "corpus/nested/b.xml"]
+        assert list(store._captures.iterdir()) == []
+
+    anyio.run(scenario)
+
+
+def test_select_corpus_prunes_the_excluded_source_state(tmp_path):
+    source = tmp_path / "source"
+    make_corpus_tree(source)
+    (source / "state" / "nested").mkdir(parents=True)
+    (source / "state" / "nested" / "secret.xml").write_text("secret")
+
+    async def scenario():
+        store = inputs(tmp_path, source_root=source, excluded_source_root=source / "state")
+        workspace = await store.create()
+        selected = await store.select_corpus(workspace.id, "**/*.xml")
+        assert [item.path for item in selected] == ["corpus/a.xml", "corpus/nested/b.xml"]
+
+    anyio.run(scenario)
+
+
+def test_select_corpus_ignores_an_excluded_root_outside_the_source(tmp_path):
+    source = tmp_path / "source"
+    make_corpus_tree(source)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "secret.xml").write_text("secret")
+
+    async def scenario():
+        store = inputs(tmp_path, source_root=source, excluded_source_root=elsewhere)
+        workspace = await store.create()
+        selected = await store.select_corpus(workspace.id, "corpus/**/*.xml")
+        assert [item.path for item in selected] == ["corpus/a.xml", "corpus/nested/b.xml"]
+
+    anyio.run(scenario)
+
+
+def test_select_corpus_without_uploads_or_source_selects_nothing(tmp_path):
+    async def scenario():
+        store = inputs(tmp_path)
+        workspace = await store.create()
+        assert await store.select_corpus(workspace.id, "**/*.xml") == ()
+
+    anyio.run(scenario)
+
+
+def test_select_corpus_missing_workspace_is_not_found(tmp_path):
+    async def scenario():
+        store = inputs(tmp_path)
+        with pytest.raises(ToolError, match="not_found"):
+            await store.select_corpus("missing", "**/*.xml")
+
+    anyio.run(scenario)
+
+
+def test_select_corpus_honors_the_corpus_file_budget(tmp_path):
+    source = tmp_path / "source"
+    make_corpus_tree(source)
+
+    async def scenario():
+        store = inputs(tmp_path, Limits(corpus_files=1), source_root=source)
+        workspace = await store.create()
+        with pytest.raises(ToolError, match="quota_exceeded"):
+            await store.select_corpus(workspace.id, "corpus/**/*.xml")
+
+    anyio.run(scenario)

@@ -15,6 +15,7 @@ import anyio
 from .captures import CaptureDependency, CaptureFile, InputCapture
 from .config import Limits
 from .contracts import FileRef, InlineFile, SchemaRef
+from .corpus import select_manifest_paths
 from .errors import ToolError
 from .safe_io import AdmittedFile, CapturedFile, SafeDirectory, admit_inline, validate_paths
 
@@ -153,6 +154,49 @@ class SessionInputs:
                     CaptureFile(path, self._digest(item), len(item.content))
                     for path, item in sorted(area.files.items())
                 ),
+            )
+
+    async def select_corpus(self, workspace_id: str, pattern: str) -> tuple[FileRef, ...]:
+        """Resolve bounded corpus references from the active input set.
+
+        Uploaded files are selected from their manifest and never merge with a
+        configured source tree. Selection itself reads no file bytes, creates
+        no capture, and invokes no worker.
+        """
+        uploaded: tuple[str, ...] = ()
+        async with self._lock:
+            area = self._area(workspace_id)
+            async with area.lock:
+                uploaded = tuple(area.files)
+        if uploaded:
+            paths = await anyio.to_thread.run_sync(
+                lambda: select_manifest_paths(
+                    pattern, uploaded, max_matches=self.limits.corpus_files
+                )
+            )
+            return tuple(FileRef(path=path) for path in paths)
+        if self.source_root is None:
+            return ()
+        paths = await anyio.to_thread.run_sync(self._select_source_corpus, pattern)
+        return tuple(FileRef(path=path) for path in paths)
+
+    def _source_excluded_prefix(self) -> str | None:
+        if self.source_root is None or self.excluded_source_root is None:
+            return None
+        source = self.source_root.resolve()
+        excluded = self.excluded_source_root.resolve()
+        if not excluded.is_relative_to(source):
+            return None
+        return excluded.relative_to(source).as_posix()
+
+    def _select_source_corpus(self, pattern: str) -> tuple[str, ...]:
+        assert self.source_root is not None
+        with SafeDirectory(self.source_root) as source:
+            return source.glob(
+                pattern,
+                max_entries=self.limits.input_entries,
+                max_matches=self.limits.corpus_files,
+                exclude=self._source_excluded_prefix(),
             )
 
     def _validate(self, files: dict[str, AdmittedFile]) -> None:
