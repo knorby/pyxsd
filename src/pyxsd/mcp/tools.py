@@ -514,43 +514,41 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
 
         _register(server, "pyxsd_preview_records", preview_records, read_only=True)
 
-        if "execution" in services.settings.enabled_groups:
+        async def export_records(
+            workspace_id: str,
+            schema_ref: SchemaRef,
+            documents: tuple[FileRef, ...],
+            element: str,
+            path: tuple[str, ...] = (),
+            selector: str | None = None,
+            namespaces: dict[str, str] | None = None,
+            columns: dict[str, FieldSourceSpec] | None = None,
+            format: Literal["parquet", "dataset"] = "parquet",
+        ) -> types.CallToolResult:
+            """Export projected records from many documents as retained artifacts.
 
-            async def export_records(
-                workspace_id: str,
-                schema_ref: SchemaRef,
-                documents: tuple[FileRef, ...],
-                element: str,
-                path: tuple[str, ...] = (),
-                selector: str | None = None,
-                namespaces: dict[str, str] | None = None,
-                columns: dict[str, FieldSourceSpec] | None = None,
-                format: Literal["parquet", "dataset"] = "parquet",
-            ) -> types.CallToolResult:
-                """Export projected records from many documents as retained artifacts.
+            Same projection options as preview_records, but writes parquet
+            or a dataset layout for the supplied documents and returns
+            artifact references for reading via pyxsd_read_artifact.
+            """
+            request = ExportRecordsRequest(
+                workspace_id=workspace_id,
+                schema_ref=schema_ref,
+                documents=documents,
+                element=element,
+                path=path,
+                selector=selector,
+                namespaces=namespaces or {},
+                columns=columns,
+                format=format,
+            )
 
-                Same projection options as preview_records, but writes parquet
-                or a dataset layout for the supplied documents and returns
-                artifact references for reading via pyxsd_read_artifact.
-                """
-                request = ExportRecordsRequest(
-                    workspace_id=workspace_id,
-                    schema_ref=schema_ref,
-                    documents=documents,
-                    element=element,
-                    path=path,
-                    selector=selector,
-                    namespaces=namespaces or {},
-                    columns=columns,
-                    format=format,
-                )
+            async def operation() -> ToolEnvelope:
+                return ToolEnvelope(data=await services.records.export_records(request))
 
-                async def operation() -> ToolEnvelope:
-                    return ToolEnvelope(data=await services.records.export_records(request))
+            return await _invoke(services, operation)
 
-                return await _invoke(services, operation)
-
-            _register(server, "pyxsd_export_records", export_records, read_only=False)
+        _register(server, "pyxsd_export_records", export_records, read_only=False)
 
     if workspaces:
 

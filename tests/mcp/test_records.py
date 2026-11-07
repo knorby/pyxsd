@@ -385,9 +385,12 @@ def test_arrow_tools_work_through_the_sdk_server(tmp_path):
     import hashlib
 
     async def scenario():
-        async with connected(
-            tmp_path, enabled_groups={"exploration", "workspaces", "execution"}
-        ) as (client, _services):
+        async with connected(tmp_path, enabled_groups={"exploration", "workspaces"}) as (
+            client,
+            _services,
+        ):
+            names = {tool.name for tool in (await client.list_tools()).tools}
+            assert "pyxsd_preview_transform" not in names
             workspace = await create_workspace(client)
             await client.call_tool(
                 "pyxsd_put_files",
@@ -399,6 +402,8 @@ def test_arrow_tools_work_through_the_sdk_server(tmp_path):
                     ],
                 },
             )
+            async with _services.inputs.capture(workspace) as capture:
+                before = [(item.path, item.digest, item.size) for item in capture.files]
             preview = await client.call_tool(
                 "pyxsd_preview_records",
                 {
@@ -438,6 +443,9 @@ def test_arrow_tools_work_through_the_sdk_server(tmp_path):
             parquet_bytes = base64.b64decode(structured(downloaded)["data"]["data"])
             assert parquet_bytes[:4] == b"PAR1"
             assert hashlib.sha256(parquet_bytes).hexdigest() == entry["digest"]
+            async with _services.inputs.capture(workspace) as capture:
+                after = [(item.path, item.digest, item.size) for item in capture.files]
+            assert after == before
 
     anyio.run(scenario)
 
@@ -594,7 +602,7 @@ def test_arrow_preview_tool_without_execution_group(tmp_path):
             tools = await server.list_tools()
             names = {tool.name for tool in tools}
             assert "pyxsd_preview_records" in names
-            assert "pyxsd_export_records" not in names
+            assert "pyxsd_export_records" in names
             services.arrow_available = False
             without_arrow = create_server(settings, services)
             names = {tool.name for tool in await without_arrow.list_tools()}
