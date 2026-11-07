@@ -283,6 +283,8 @@ class OutputStore:
         self, artifact_id: str, *, offset: int, length: int | None
     ) -> tuple[OutputRef, bytes]:
         """Return metadata and a range after one integrity scan under one lock."""
+        if length is None:
+            length = self.limits.artifact_read_bytes
         if (
             type(offset) is not int
             or offset < 0
@@ -321,6 +323,8 @@ class OutputStore:
     async def list(
         self, *, after: tuple[float, str] | None = None, limit: int | None = None
     ) -> tuple[list_type[OutputRef], tuple[float, str] | None]:
+        if limit is None:
+            limit = self.limits.page_items
         if limit is not None:
             maximum = self.limits.page_items
             if type(limit) is not int:

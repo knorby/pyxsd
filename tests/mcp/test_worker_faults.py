@@ -127,6 +127,38 @@ def test_worker_exchange_rejects_missing_and_broken_streams():
     anyio.run(scenario)
 
 
+def test_request_defaults_apply_only_when_limits_are_enforced():
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.contracts import FileRef, SchemaRef
+    from pyxsd.mcp.worker_main import _with_request_defaults
+    from pyxsd.mcp.worker_protocol import (
+        BatchParseOperation,
+        CaptureMessage,
+        DescribeOperation,
+        ParseOperation,
+    )
+
+    capture = CaptureMessage(root="/unused", files=())
+    schema_ref = SchemaRef(source=FileRef(path="schema.xsd"))
+    parse = ParseOperation(
+        request_id="parse",
+        capture=capture,
+        schema_ref=schema_ref,
+        document=FileRef(path="document.xml"),
+    )
+    batch = BatchParseOperation(request_id="batch", capture=capture, items=())
+    describe = DescribeOperation(request_id="describe", capture=capture, schema_ref=schema_ref)
+    enabled = Limits(enforced=True, page_items=7, batch_issue_items=3)
+    disabled = Limits()
+
+    assert _with_request_defaults(parse, enabled).issue_limit == 7
+    assert _with_request_defaults(batch, enabled).issue_limit == 3
+    assert _with_request_defaults(describe, enabled).limit == 7
+    assert _with_request_defaults(parse, disabled).issue_limit is None
+    assert _with_request_defaults(batch, disabled).issue_limit is None
+    assert _with_request_defaults(describe, disabled).limit is None
+
+
 def test_worker_start_rejects_invalid_ready_and_scrubs_environment(monkeypatch):
     captured = {}
 
@@ -385,6 +417,14 @@ def test_worker_main_bounds_an_oversized_fault_without_losing_its_code(monkeypat
     assert reply.fault.code == "denied"
     assert reply.fault.retryable is False
     assert reply.fault.details == {"details_truncated": True}
+
+
+def test_worker_main_rejects_invalid_request_byte_budgets():
+    import argparse
+
+    for value in ("0", "-1", "abc", "1.5"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            worker_main._byte_budget(value)
 
 
 def test_reply_fault_preserves_unexpected_reply_errors(monkeypatch):

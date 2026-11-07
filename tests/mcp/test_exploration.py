@@ -467,6 +467,38 @@ def test_explain_known_unknown_and_scoped_issue(tmp_path):
     anyio.run(scenario)
 
 
+def test_explain_issue_reads_a_whole_report_when_limits_are_disabled(tmp_path):
+    import json
+
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.contracts import ArtifactRef
+
+    async def scenario():
+        async with harness(tmp_path, Limits()) as (service, _inputs, _pool, _workspace):
+            report = {"issues": [{"code": "value", "constraint": {"actual": "bad"}}]}
+            made = await service.outputs.put_bytes(
+                json.dumps(report).encode(),
+                name="report.json",
+                media_type="application/json",
+                kind="report",
+            )
+            ref = ArtifactRef(
+                id=made.id,
+                path=str(made.path),
+                media_type=made.media_type,
+                size=made.size,
+                digest=made.digest,
+                created_at=made.created_at,
+                kind=made.kind,
+            )
+            result = await service.explain_issue(
+                ExplainIssueRequest(code="value", report=ref, issue_index=0)
+            )
+            assert result.data["issue"]["constraint"]["actual"] == "bad"
+
+    anyio.run(scenario)
+
+
 def test_validation_without_an_output_store_keeps_the_report_inline(tmp_path):
     async def scenario():
         async with harness(tmp_path) as (service, inputs, _pool, workspace):

@@ -40,6 +40,20 @@ def test_source_budget_counts_utf8_bytes(size, allowed):
             normalize_transform({"kind": "python", "source": source}, Limits(enforced=True))
 
 
+def test_empty_pipeline_definition_is_rejected_as_an_invalid_transform():
+    from pyxsd.mcp.transforms import normalize_transform
+
+    with pytest.raises(ToolError, match="invalid_transform"):
+        normalize_transform(
+            {
+                "kind": "pipeline",
+                "steps": [{"name": "keep"}],
+                "definitions": {"keep": ""},
+            },
+            Limits(enforced=True),
+        )
+
+
 def test_pipeline_preserves_json_arguments_checkpoints_and_explicit_code():
     from pyxsd.mcp.transforms import normalize_transform
 

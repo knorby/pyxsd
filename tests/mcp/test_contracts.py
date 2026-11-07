@@ -29,6 +29,8 @@ DEFAULTS = {
     "transform_seconds": 60,
     "batch_seconds": 300,
     "transform_source_bytes": 64 * 2**10,
+    "batch_issue_items": 10,
+    "artifact_read_bytes": 8 * 2**10,
     "pipeline_steps": 32,
     "result_bytes": 24 * 2**10,
     "page_items": 50,

@@ -125,7 +125,7 @@ def test_main_run_configuration_errors_and_module_exit(tmp_path, monkeypatch, ca
 def test_main_reraises_unrelated_import_error(monkeypatch):
     from pyxsd.mcp.__main__ import main
 
-    monkeypatch.setitem(sys.modules, "pyxsd.mcp.config", None)
+    monkeypatch.setitem(sys.modules, "pyxsd.mcp.server", None)
     with pytest.raises(ModuleNotFoundError):
         main([])
 
@@ -274,6 +274,13 @@ def test_invalid_resource_limits_environment_fails_even_with_cli_override(monkey
     with pytest.raises(SystemExit) as exited:
         main(["--resource-limits", "enabled"])
     assert exited.value.code == 2
+
+
+def test_invalid_resource_limits_cli_value_is_rejected_directly():
+    from pyxsd.mcp.__main__ import _resolve_resource_limits
+
+    with pytest.raises(ValueError, match="must be one of"):
+        _resolve_resource_limits("invalid", (), {})
 
 
 @pytest.mark.parametrize("value", ["1", "true", "sandbox"])

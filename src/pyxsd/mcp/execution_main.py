@@ -1,5 +1,6 @@
 """One-shot transform process; only the coordinator decides candidate validity."""
 
+import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,12 +103,29 @@ def execute(request: ExecutionRequest) -> dict[str, Any]:
     return {"checkpoints": checkpoints}
 
 
-def main() -> int:
+def _byte_budget(value: str) -> int | None:
+    if value == "unlimited":
+        return None
+    if not value.isdecimal() or int(value) <= 0:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'unlimited'")
+    return int(value)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--request-bytes", type=_byte_budget, default=None)
+    arguments = parser.parse_args(argv)
+    request = None
     try:
+        frame = (
+            sys.stdin.buffer.readline()
+            if arguments.request_bytes is None
+            else sys.stdin.buffer.readline(arguments.request_bytes + 1)
+        )
         request = decode_frame(
-            sys.stdin.buffer.readline(),
+            frame,
             ExecutionRequest,
-            max_bytes=None,
+            max_bytes=arguments.request_bytes,
             expected={"request_id": "execution"},
         )
         result = execute(request)
@@ -125,7 +143,8 @@ def main() -> int:
                 code="transform_failed", message="Transform failed without a candidate"
             ),
         )
-    sys.stdout.buffer.write(encode_frame(reply, max_bytes=None))
+    reply_budget = request.limits.request_bytes if request is not None else arguments.request_bytes
+    sys.stdout.buffer.write(encode_frame(reply, max_bytes=reply_budget))
     sys.stdout.buffer.flush()
     return 0
 

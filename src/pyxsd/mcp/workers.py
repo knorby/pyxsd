@@ -122,7 +122,17 @@ class _Worker:
             if name in os.environ:
                 environment[name] = os.environ[name]
         process = await anyio.open_process(
-            (sys.executable, "-I", "-u", "-c", WORKER_BOOTSTRAP, "--role", role),
+            (
+                sys.executable,
+                "-I",
+                "-u",
+                "-c",
+                WORKER_BOOTSTRAP,
+                "--role",
+                role,
+                "--request-bytes",
+                "unlimited" if limits.request_bytes is None else str(limits.request_bytes),
+            ),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

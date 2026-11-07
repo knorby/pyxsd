@@ -356,6 +356,31 @@ def test_export_dataset_multiple_documents_manifest_and_corpus_quota(tmp_path):
     anyio.run(scenario_two)
 
 
+def test_export_dataset_with_limits_disabled_reports_every_output(tmp_path):
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.services.records import RecordService
+
+    async def scenario():
+        async with harness(tmp_path, Limits()) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.xsd": XSD, "a.xml": xml(2), "b.xml": xml(3)},
+            )
+            payload = await RecordService(inputs, pool, outputs=inputs.outputs).export_records(
+                _export_request(
+                    workspace,
+                    documents=(FileRef(path="a.xml"), FileRef(path="b.xml")),
+                    format="dataset",
+                )
+            )
+            assert payload["format"] == "dataset"
+            assert payload["row_count"] == 5
+            assert len(payload["artifacts"]) >= 2
+
+    anyio.run(scenario)
+
+
 def test_arrow_gate_blocks_record_services(tmp_path):
     from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
 

@@ -621,6 +621,8 @@ page/issue/list bounds still apply; omitted ones are unlimited.
 | Projection search depth / visited / candidates | 8 / 100 / 10 |
 | I/O chunk bytes | 65,536 |
 | Result payload / page items | 24 KiB / 50 |
+| Read artifact range | 8 KiB |
+| Batch validation issues | 10 |
 | Preview rows | 20 |
 | Collected issues / message | 10,000 / 4 KiB |
 | Output artifact | 128 MiB |

@@ -115,6 +115,30 @@ def transform(document, context):
         execute(tmp_path, source, limits=Limits(enforced=True, output_bytes=1024))
 
 
+def test_pipeline_checkpoints_with_limits_disabled_skip_budget_arithmetic(tmp_path):
+    result = execute(
+        tmp_path,
+        {
+            "kind": "pipeline",
+            "steps": [{"name": "keep", "checkpoint": True}],
+            "definitions": {"keep": "def transform(document, context): pass"},
+        },
+        limits=Limits(),
+    )
+    assert result.checkpoints["checkpoints"]
+    assert result.checkpoint_candidates
+
+
+def test_execution_main_rejects_invalid_request_byte_budgets():
+    import argparse
+
+    from pyxsd.mcp.execution_main import _byte_budget
+
+    for value in ("0", "-1", "abc", "1.5"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _byte_budget(value)
+
+
 def test_pipeline_uses_explicit_definitions_and_returns_advisory_checkpoints(tmp_path):
     source = """from io import StringIO
 def transform(document, context, value, *, extra):

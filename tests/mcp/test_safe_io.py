@@ -444,13 +444,22 @@ def test_glob_reports_a_root_enumeration_failure(tmp_path, monkeypatch):
 def test_glob_reports_an_entry_inspection_failure(tmp_path, monkeypatch):
     from pyxsd.mcp.safe_io import SafeDirectory
 
+    class Entry:
+        name = "a.xml"
+
+        def stat(self, *, follow_symlinks):
+            raise OSError("vanished")
+
+    class Scan:
+        def __enter__(self):
+            return iter((Entry(),))
+
+        def __exit__(self, *args):
+            return False
+
     (tmp_path / "a.xml").write_text("a")
     with SafeDirectory(tmp_path) as directory:
-        monkeypatch.setattr(
-            os.DirEntry,
-            "stat",
-            lambda _self, *, follow_symlinks: (_ for _ in ()).throw(OSError("vanished")),
-        )
+        monkeypatch.setattr(os, "scandir", lambda _fd: Scan())
         with pytest.raises(ToolError, match="unsafe_path"):
             directory.glob("*.xml", max_entries=10, max_matches=10)
 

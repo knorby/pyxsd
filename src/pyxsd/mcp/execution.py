@@ -123,7 +123,17 @@ class TrustedLocalExecution:
                     "pyxsd.mcp.worker_main", "pyxsd.mcp.execution_main"
                 )
                 process = await anyio.open_process(
-                    (sys.executable, "-I", "-u", "-c", bootstrap),
+                    (
+                        sys.executable,
+                        "-I",
+                        "-u",
+                        "-c",
+                        bootstrap,
+                        "--request-bytes",
+                        "unlimited"
+                        if self.limits.request_bytes is None
+                        else str(self.limits.request_bytes),
+                    ),
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,

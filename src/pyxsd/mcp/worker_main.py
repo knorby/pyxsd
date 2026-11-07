@@ -29,6 +29,7 @@ from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 from .cache import CompileRequest, SchemaCache, require_complete_schema
 from .captures import CaptureDependency, InputPolicyError, InputResourcePolicy
+from .config import Limits
 from .contracts import BatchValidationItem, SchemaRef, ToolFault
 from .encoding import encode_value
 from .errors import ToolError
@@ -573,9 +574,28 @@ def _query(
     return {"results": encode_value(value)}
 
 
+def _with_request_defaults(operation: Operation, limits: Limits) -> Operation:
+    """Restore request defaults when enforcement is enabled; stay unlimited otherwise."""
+    updates: dict[str, int | None] = {}
+    if isinstance(operation, ParseOperation) and operation.issue_limit is None:
+        updates["issue_limit"] = limits.page_items
+    elif isinstance(operation, BatchParseOperation) and operation.issue_limit is None:
+        updates["issue_limit"] = limits.batch_issue_items
+    elif (
+        isinstance(
+            operation,
+            (DescribeOperation, FindOperation, QueryOperation, StructuralDiffOperation),
+        )
+        and operation.limit is None
+    ):
+        updates["limit"] = limits.page_items
+    return operation.model_copy(update=updates) if updates else operation
+
+
 def _execute(
     operation: Operation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
+    operation = _with_request_defaults(operation, cache.limits)
     if isinstance(operation, RecordsOperation):
         from .services.records import execute_records
 
@@ -709,9 +729,18 @@ def _parser_details(exc: BaseException) -> dict[str, JsonValue]:
     return {} if match is None else {"line": int(match[1]), "column": int(match[2])}
 
 
+def _byte_budget(value: str) -> int | None:
+    if value == "unlimited":
+        return None
+    if not value.isdecimal() or int(value) <= 0:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'unlimited'")
+    return int(value)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--role", required=True, choices=("clean", "execution"))
+    parser.add_argument("--request-bytes", type=_byte_budget, default=None)
     arguments = parser.parse_args(argv)
     if arguments.role != "clean":
         return 2
@@ -721,9 +750,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         try:
             config = decode_frame(
-                _read_frame(sys.stdin.buffer, None),
+                _read_frame(sys.stdin.buffer, arguments.request_bytes),
                 WorkerConfig,
-                max_bytes=None,
+                max_bytes=arguments.request_bytes,
                 expected={"request_id": "bootstrap", "role": arguments.role},
             )
             cache = SchemaCache(config.limits)

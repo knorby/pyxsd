@@ -292,6 +292,23 @@ def test_default_disabled_limits_return_large_results_without_spilling(tmp_path)
     anyio.run(scenario)
 
 
+def test_artifact_resource_streams_enabled_ranges(tmp_path):
+    from pyxsd.mcp.config import Limits
+
+    async def scenario():
+        async with connected(tmp_path, limits=Limits(enforced=True, result_bytes=2)) as (
+            client,
+            services,
+        ):
+            ref = await services.outputs.put_bytes(
+                b"abcdef", name="chunks.bin", media_type="application/octet-stream", kind="test"
+            )
+            artifact = await client.read_resource(f"pyxsd://artifacts/{ref.id}")
+            assert base64.b64decode(artifact.contents[0].blob) == b"abcdef"
+
+    anyio.run(scenario)
+
+
 def test_query_subtree_returns_exact_bytes_and_spills_large_slices(tmp_path):
     from pyxsd.mcp.config import Limits
 

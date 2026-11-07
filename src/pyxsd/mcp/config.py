@@ -34,6 +34,8 @@ class Limits(WireModel):
     transform_seconds: ResourceBudget = 60
     batch_seconds: ResourceBudget = 300
     transform_source_bytes: ResourceBudget = 64 * 2**10
+    batch_issue_items: ResourceBudget = 10
+    artifact_read_bytes: ResourceBudget = 8 * 2**10
     pipeline_steps: ResourceBudget = 32
     result_bytes: ResourceBudget = 24 * 2**10
     page_items: ResourceBudget = 50
