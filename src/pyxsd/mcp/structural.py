@@ -49,7 +49,7 @@ def compare(operation: StructuralDiffOperation, limits: Limits) -> dict[str, Jso
         if old == new:
             continue
         total += 1
-        if len(changes) < operation.limit:
+        if operation.limit is None or len(changes) < operation.limit:
             changes.append(
                 {
                     "path": [{"name": name, "index": index} for name, index in path],

@@ -50,7 +50,7 @@ async def harness(tmp_path: Path, limits: Limits | None = None):
     from pyxsd.mcp.storage import Storage
     from pyxsd.mcp.workers import WorkerPool
 
-    limits = limits or Limits(workers=1)
+    limits = limits or Limits(enforced=True, workers=1)
     storage = Storage(tmp_path / "state", persist=False)
     outputs = OutputStore(storage, limits)
     inputs = SessionInputs(storage.scratch, limits)
@@ -389,7 +389,7 @@ def test_batch_hints_success_and_malformed_continue(tmp_path):
 
 def test_batch_over_corpus_max_files_quota(tmp_path):
     async def scenario():
-        limits = Limits(workers=1, corpus_files=2, corpus_max_files=2)
+        limits = Limits(enforced=True, workers=1, corpus_files=2, corpus_max_files=2)
         async with harness(tmp_path, limits) as (service, inputs, _pool, workspace):
             await upload(inputs, workspace, {"schema-a.xsd": SCHEMA_A, "good-a.xml": GOOD_A})
             with pytest.raises(ToolError) as raised:

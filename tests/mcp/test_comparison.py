@@ -232,7 +232,7 @@ def test_corpus_cap_is_enforced(tmp_path):
     from pyxsd.mcp.services.comparison import ComparisonService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, corpus_files=2)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, corpus_files=2)) as (
             _,
             inputs,
             pool,
@@ -360,7 +360,7 @@ def test_corpus_glob_respects_the_operator_file_budget(tmp_path):
     from pyxsd.mcp.services.comparison import ComparisonService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, corpus_files=2)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, corpus_files=2)) as (
             _,
             inputs,
             pool,
@@ -392,7 +392,7 @@ def test_corpus_timeout_skips_remaining_files(tmp_path):
     from pyxsd.mcp.workers import capture_to_wire
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, corpus_file_seconds=1)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, corpus_file_seconds=1)) as (
             _,
             inputs,
             _pool,
@@ -1031,7 +1031,7 @@ async def _source_harness(tmp_path):
 
     root = tmp_path / "tree"
     _make_source_comparison_tree(root)
-    limits = Limits(workers=1)
+    limits = Limits(enforced=True, workers=1)
     storage = Storage(tmp_path / "state", persist=False)
     outputs = OutputStore(storage, limits)
     pool = WorkerPool(limits)

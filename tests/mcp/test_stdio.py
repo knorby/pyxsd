@@ -182,6 +182,100 @@ def test_execution_backend_environment_precedence():
     )
 
 
+def test_resource_limits_default_to_disabled_and_enable_current_defaults():
+    from pyxsd.mcp.__main__ import _resolve_resource_limits
+
+    disabled = _resolve_resource_limits(cli_value=None, overrides=(), environment={})
+    assert disabled.enforced is False
+    assert disabled.xml_file_bytes is None
+    assert disabled.workers is None
+
+    enabled = _resolve_resource_limits(cli_value="enabled", overrides=(), environment={})
+    assert enabled.enforced is True
+    assert enabled.xml_file_bytes == 64 * 2**20
+    assert enabled.workers == 4
+
+
+def test_resource_limit_override_precedence_and_environment_toggle():
+    from pyxsd.mcp.__main__ import _resolve_resource_limits
+
+    resolved = _resolve_resource_limits(
+        cli_value=None,
+        overrides=("xml_file_bytes=11",),
+        environment={
+            "PYXSD_MCP_RESOURCE_LIMITS": "enabled",
+            "PYXSD_MCP_XML_FILE_BYTES": "10",
+            "PYXSD_MCP_CORPUS_FILES": "12",
+        },
+    )
+    assert resolved.enforced is True
+    assert resolved.xml_file_bytes == 11
+    assert resolved.corpus_files == 12
+
+    disabled = _resolve_resource_limits(
+        cli_value="disabled",
+        overrides=(),
+        environment={"PYXSD_MCP_RESOURCE_LIMITS": "enabled"},
+    )
+    assert disabled.enforced is False
+    assert disabled.xml_file_bytes is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "environment"),
+    [
+        (("xml_file_bytes=1",), {}),
+        ((), {"PYXSD_MCP_XML_FILE_BYTES": "1"}),
+        (("unknown=1",), {"PYXSD_MCP_RESOURCE_LIMITS": "enabled"}),
+        (("workers=0",), {"PYXSD_MCP_RESOURCE_LIMITS": "enabled"}),
+        (("xml_file_bytes=1.5",), {"PYXSD_MCP_RESOURCE_LIMITS": "enabled"}),
+        (("xml_file_bytes",), {"PYXSD_MCP_RESOURCE_LIMITS": "enabled"}),
+    ],
+)
+def test_invalid_resource_limit_override_fails_before_startup(overrides, environment, monkeypatch):
+    from pyxsd.mcp import server
+    from pyxsd.mcp.__main__ import main
+
+    def forbidden(_settings):
+        raise AssertionError("server must not start")
+
+    monkeypatch.setattr(server, "run", forbidden)
+    for name in list(environment):
+        monkeypatch.setenv(name, environment[name])
+    with pytest.raises(SystemExit) as exited:
+        main(["--limit", *overrides] if overrides else [])
+    assert exited.value.code == 2
+
+
+@pytest.mark.parametrize("value", ["1", "true", "on"])
+def test_invalid_resource_limits_toggle_fails_before_startup(value, monkeypatch):
+    from pyxsd.mcp import server
+    from pyxsd.mcp.__main__ import main
+
+    def forbidden(_settings):
+        raise AssertionError("server must not start")
+
+    monkeypatch.setattr(server, "run", forbidden)
+    monkeypatch.setenv("PYXSD_MCP_RESOURCE_LIMITS", value)
+    with pytest.raises(SystemExit) as exited:
+        main([])
+    assert exited.value.code == 2
+
+
+def test_invalid_resource_limits_environment_fails_even_with_cli_override(monkeypatch):
+    from pyxsd.mcp import server
+    from pyxsd.mcp.__main__ import main
+
+    def forbidden(_settings):
+        raise AssertionError("server must not start")
+
+    monkeypatch.setattr(server, "run", forbidden)
+    monkeypatch.setenv("PYXSD_MCP_RESOURCE_LIMITS", "invalid")
+    with pytest.raises(SystemExit) as exited:
+        main(["--resource-limits", "enabled"])
+    assert exited.value.code == 2
+
+
 @pytest.mark.parametrize("value", ["1", "true", "sandbox"])
 def test_invalid_execution_backend_environment_fails_before_startup(value, monkeypatch):
     from pyxsd.mcp import server

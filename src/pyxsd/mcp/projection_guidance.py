@@ -12,11 +12,8 @@ from pyxsd.integrations import IntegrationError
 from pyxsd.integrations._shape import particle_elements, resolve_route
 from pyxsd.schema import Schema
 
+from .config import Limits
 from .errors import ToolError
-
-_MAX_DEPTH = 8
-_MAX_SEARCHED = 100
-_MAX_CANDIDATES = 10
 
 
 def resolve_global_element(schema: Schema, element: str) -> str:
@@ -79,6 +76,7 @@ def candidate_details(
     element: str,
     path: tuple[str, ...],
     prepare: Callable[[str, tuple[str, ...]], object],
+    limits: Limits | None = None,
 ) -> dict[str, JsonValue]:
     """Search descendants of one route with the caller's real projection backend.
 
@@ -101,12 +99,15 @@ def candidate_details(
     candidates: list[dict[str, JsonValue]] = []
     searched = 0
     truncated = False
+    max_depth = None if limits is None else limits.projection_search_depth
+    max_searched = None if limits is None else limits.projection_searched_declarations
+    max_candidates = None if limits is None else limits.projection_candidates
     queue: deque[_Pending] = deque([start])
 
     while queue and not truncated:
         current = queue.popleft()
         children = particle_elements(getattr(current.declaration.getType(), "_contentModel_", None))
-        if current.depth >= _MAX_DEPTH and children:
+        if max_depth is not None and current.depth >= max_depth and children:
             truncated = True
             break
         seen_names: set[str] = set()
@@ -116,7 +117,7 @@ def candidate_details(
             if name is None or name in seen_names:
                 continue
             seen_names.add(name)
-            if searched >= _MAX_SEARCHED:
+            if max_searched is not None and searched >= max_searched:
                 truncated = True
                 break
             searched += 1
@@ -126,7 +127,7 @@ def candidate_details(
             except IntegrationError:
                 pass
             else:
-                if len(candidates) < _MAX_CANDIDATES:
+                if max_candidates is None or len(candidates) < max_candidates:
                     candidates.append(
                         {
                             "element": resolved,

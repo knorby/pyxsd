@@ -60,10 +60,10 @@ _EXTERNAL_XPATH = re.compile(
 _PARSER_POSITION = re.compile(r"line (\d+), column (\d+)")
 
 
-def _read_frame(stream: BinaryIO, max_bytes: int) -> bytes:
+def _read_frame(stream: BinaryIO, max_bytes: int | None) -> bytes:
     """Bound allocation before JSON decoding; excess input terminates the channel."""
-    frame = stream.readline(max_bytes + 1)
-    if len(frame) > max_bytes:
+    frame = stream.readline() if max_bytes is None else stream.readline(max_bytes + 1)
+    if max_bytes is not None and len(frame) > max_bytes:
         raise ToolError("ipc_limit", "Worker input exceeds its byte limit")
     return frame
 
@@ -108,7 +108,8 @@ def _page(total: int, offset: int, returned: int) -> dict[str, JsonValue]:
 def _report(document: Document, operation: ParseOperation) -> dict[str, JsonValue]:
     data = cast(dict[str, JsonValue], document.report.to_dict())
     issues = cast(list[JsonValue], data["issues"])
-    page_issues = issues[operation.issue_offset : operation.issue_offset + operation.issue_limit]
+    end = None if operation.issue_limit is None else operation.issue_offset + operation.issue_limit
+    page_issues = issues[operation.issue_offset : end]
     data["issues"] = page_issues
     page = _page(len(issues), operation.issue_offset, len(page_issues))
     counts = cast(dict[str, JsonValue], data["counts"])
@@ -135,7 +136,10 @@ def _missing_file(exc: BaseException) -> bool:
 def _parse_batch(
     operation: BatchParseOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
-    if len(operation.items) > cache.limits.corpus_max_files:
+    if (
+        cache.limits.corpus_max_files is not None
+        and len(operation.items) > cache.limits.corpus_max_files
+    ):
         raise ToolError("invalid_argument", "Batch exceeds the operator file budget")
     items: list[dict[str, JsonValue] | None] = [None] * len(operation.items)
     groups: dict[str, list[int]] = {}
@@ -422,7 +426,11 @@ def _describe(
             "counts": counts,
         }
         if operation.view == "constraints" or operation.component_ids:
-            page = selected[operation.offset : operation.offset + operation.limit]
+            page = selected[
+                operation.offset : None
+                if operation.limit is None
+                else operation.offset + operation.limit
+            ]
             result["components"] = encode_value(page)
             result["page"] = _page(len(selected), operation.offset, len(page))
         return result
@@ -473,7 +481,11 @@ def _find(
                     if item.name == operation.name
                     or (item.name is not None and item.name.endswith("}" + operation.name))
                 )
-        page = found[operation.offset : operation.offset + operation.limit]
+        page = found[
+            operation.offset : None
+            if operation.limit is None
+            else operation.offset + operation.limit
+        ]
         return {
             "components": encode_value(page),
             "page": _page(len(found), operation.offset, len(page)),
@@ -544,7 +556,11 @@ def _query(
     except (ElementPathError, ValueError, TypeError) as exc:
         raise ToolError("invalid_query", "XPath or namespace mapping is invalid") from exc
     if isinstance(value, list):
-        page = value[operation.offset : operation.offset + operation.limit]
+        page = value[
+            operation.offset : None
+            if operation.limit is None
+            else operation.offset + operation.limit
+        ]
         results: JsonValue
         if all(isinstance(item, SchemaBase) for item in page):
             index = (
@@ -577,7 +593,11 @@ def _execute(
 
         return execute_model(operation, cache, processor_version)
     limit = getattr(operation, "issue_limit", getattr(operation, "limit", 1))
-    if limit > cache.limits.page_items:
+    if (
+        cache.limits.page_items is not None
+        and limit is not None
+        and limit > cache.limits.page_items
+    ):
         raise ToolError("invalid_argument", "Page limit exceeds the operator budget")
     if isinstance(operation, ParseOperation):
         return _report(_parse(operation, cache, processor_version), operation)
@@ -626,7 +646,7 @@ def _reply_fault(
     role: Literal["clean", "execution"],
     fault: ToolFault,
     operations: int,
-    max_bytes: int,
+    max_bytes: int | None,
 ) -> None:
     """Preserve a fault's code while fitting its reply inside the IPC budget."""
     message = fault.message
@@ -669,7 +689,7 @@ def _reply(
     result: JsonValue = None,
     fault: ToolFault | None = None,
     operations: int,
-    max_bytes: int,
+    max_bytes: int | None,
     request_id: str = "unknown",
 ) -> None:
     message = WorkerReply(
@@ -701,9 +721,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         try:
             config = decode_frame(
-                _read_frame(sys.stdin.buffer, 2 * 2**20),
+                _read_frame(sys.stdin.buffer, None),
                 WorkerConfig,
-                max_bytes=2 * 2**20,
+                max_bytes=None,
                 expected={"request_id": "bootstrap", "role": arguments.role},
             )
             cache = SchemaCache(config.limits)
@@ -720,14 +740,12 @@ def main(argv: list[str] | None = None) -> int:
         except BaseException:
             return 1
         while True:
-            frame = sys.stdin.buffer.readline(config.limits.request_bytes + 1)
-            if not frame:
-                return 0
             operation = None
             fatal = False
             try:
-                if len(frame) > config.limits.request_bytes:
-                    raise ToolError("ipc_limit", "Worker operation exceeds its byte limit")
+                frame = _read_frame(sys.stdin.buffer, config.limits.request_bytes)
+                if not frame:
+                    return 0
                 operation = decode_operation(
                     frame, max_bytes=config.limits.request_bytes, role=arguments.role
                 )

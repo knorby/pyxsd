@@ -675,22 +675,23 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
         artifact_id: str,
         offset: Annotated[int, Field(description="Byte offset into the artifact.", ge=0)] = 0,
         length: Annotated[
-            int,
+            int | None,
             Field(
                 description=(
                     "Bytes to read; the base64 reply must fit the response budget, so request "
-                    "a smaller range instead of expecting a spill."
+                    "a smaller range instead of expecting a spill. Omit to read through EOF."
                 )
             ),
-        ] = 8 * 2**10,
+        ] = None,
     ) -> types.CallToolResult:
         """Read an exact bounded byte range of a retained artifact as base64.
 
         Returns the range plus its actual length and the artifact's total size,
         digest, media type, and local path. Length can be smaller than requested
-        at end of file. Ranges that would exceed the response budget fault with
-        response_limit rather than spilling into another artifact; page large
-        reads with offset/length. Artifacts survive workspace release.
+        at end of file. An omitted length reads through EOF. Ranges that would
+        exceed the response budget fault with response_limit rather than
+        spilling into another artifact; page large reads with offset/length.
+        Artifacts survive workspace release.
         """
         request = ReadArtifactRequest(artifact_id=artifact_id, offset=offset, length=length)
 

@@ -19,7 +19,7 @@ from pyxsd.mcp.services.exploration import (
 @pytest.mark.parametrize("encoding", ["ASCII", "US-ASCII", "ascii"])
 def test_ascii_declaration_upload_preserves_original_bytes(encoding):
     text = f'<?xml version="1.0" encoding="{encoding}"?><root/>'
-    result = admit_inline([InlineFile(path="schema.xsd", text=text)], Limits())
+    result = admit_inline([InlineFile(path="schema.xsd", text=text)], Limits(enforced=True))
     assert result[0].content == text.encode("ascii")
 
 
@@ -28,7 +28,7 @@ def test_ascii_declaration_with_non_ascii_bytes_is_still_rejected(text):
     # A BOM before the declaration is not ASCII either.
     xml = f'<?xml version="1.0" encoding="ASCII"?>{text}'
     with pytest.raises(ToolError, match="invalid_encoding"):
-        admit_inline([InlineFile(path="doc.xml", text=xml)], Limits())
+        admit_inline([InlineFile(path="doc.xml", text=xml)], Limits(enforced=True))
 
 
 def test_compose_cycle_explanation_addresses_the_schema_not_the_instance(tmp_path):
@@ -93,7 +93,7 @@ def test_missing_input_names_its_role(tmp_path, missing, role):
 
 def test_artifact_page_limit_reports_the_configured_bound(tmp_path):
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, page_items=3)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, page_items=3)) as (
             _service,
             inputs,
             _pool,

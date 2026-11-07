@@ -8,6 +8,7 @@ import secrets
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -70,18 +71,23 @@ def capture_from_wire(message: CaptureMessage) -> InputCapture:
     )
 
 
-async def _receive_frame(stream: ByteReceiveStream, max_bytes: int) -> bytes:
+async def _receive_frame(
+    stream: ByteReceiveStream, max_bytes: int | None, chunk_bytes: int = 65536
+) -> bytes:
     """Read exactly one bounded newline frame, rejecting trailing/flooded output."""
     data = bytearray()
     while True:
         try:
-            chunk = await stream.receive(min(65536, max_bytes + 1 - len(data)))
+            if max_bytes is None:
+                chunk = await stream.receive(chunk_bytes)
+            else:
+                chunk = await stream.receive(min(chunk_bytes, max_bytes + 1 - len(data)))
         except (anyio.EndOfStream, anyio.ClosedResourceError, anyio.BrokenResourceError) as exc:
             raise ToolError(
                 "worker_died", "Clean worker ended without a verdict", retryable=True
             ) from exc
         data.extend(chunk)
-        if len(data) > max_bytes:
+        if max_bytes is not None and len(data) > max_bytes:
             raise ToolError("ipc_limit", "Worker reply exceeds its byte limit")
         newline = data.find(b"\n")
         if newline >= 0:
@@ -148,7 +154,11 @@ class _Worker:
             await self.process.stdin.send(frame)
         except (anyio.BrokenResourceError, anyio.ClosedResourceError, OSError) as exc:
             raise ToolError("worker_died", "Clean worker is unavailable", retryable=True) from exc
-        data = await _receive_frame(self.process.stdout, self.limits.output_bytes)
+        data = await _receive_frame(
+            self.process.stdout,
+            self.limits.output_bytes,
+            self.limits.io_chunk_bytes or 65536,
+        )
         return decode_frame(
             data,
             WorkerReply,
@@ -196,8 +206,15 @@ class WorkerPool:
 
     def __init__(self, limits: Limits) -> None:
         self.limits = limits
-        self._lanes = tuple(_Lane() for _ in range(limits.workers))
-        self._slots = anyio.CapacityLimiter(limits.workers + limits.worker_queue)
+        self._lanes: list[_Lane] | None = (
+            None if limits.workers is None else [_Lane() for _ in range(limits.workers)]
+        )
+        self._dynamic: dict[str, _Lane] = {}
+        self._slots = (
+            None
+            if limits.workers is None or limits.worker_queue is None
+            else anyio.CapacityLimiter(limits.workers + limits.worker_queue)
+        )
         self._closed = False
         self._inflight = 0
 
@@ -220,7 +237,14 @@ class WorkerPool:
             [route, [(item.path, item.digest, item.size) for item in operation.capture.files]],
             sort_keys=True,
         ).encode()
-        index = int.from_bytes(hashlib.sha256(identity).digest()[:8]) % len(self._lanes)
+        digest = hashlib.sha256(identity).hexdigest()
+        if self._lanes is None:
+            lane = self._dynamic.get(digest)
+            if lane is None:
+                lane = _Lane()
+                self._dynamic[digest] = lane
+            return lane
+        index = int.from_bytes(bytes.fromhex(digest[:16]), "big") % len(self._lanes)
         return self._lanes[index]
 
     async def _ensure(self, lane: _Lane, operation: Operation) -> _Worker:
@@ -240,7 +264,7 @@ class WorkerPool:
         with anyio.CancelScope(shield=True):
             await worker.close(graceful=graceful)
 
-    async def run(self, operation: Operation, *, deadline: float) -> WorkerReply:
+    async def run(self, operation: Operation, *, deadline: float | None) -> WorkerReply:
         if self._closed:
             raise ToolError("worker_closed", "Worker pool is closed")
         if (
@@ -263,27 +287,38 @@ class WorkerPool:
             or operation.role != "clean"
         ):
             raise ToolError("invalid_argument", "Unsupported clean-worker operation")
-        if type(deadline) not in (int, float) or not math.isfinite(deadline):
+        if deadline is not None and (
+            type(deadline) not in (int, float) or not math.isfinite(deadline)
+        ):
             raise ToolError("invalid_argument", "Worker deadline must be finite")
         lane = self._lane(operation)
         worker = None
         completed = False
         acquired = False
+        self._inflight += 1
         try:
             try:
-                self._slots.acquire_nowait()
-                acquired = True
+                if self._slots is not None:
+                    self._slots.acquire_nowait()
+                    acquired = True
             except anyio.WouldBlock as exc:
                 raise ToolError("queue_overflow", "Worker queue is full", retryable=True) from exc
-            self._inflight += 1
-            with anyio.fail_after(max(0.0, deadline - time.monotonic())):
+            timeout = (
+                nullcontext()
+                if deadline is None
+                else anyio.fail_after(max(0.0, deadline - time.monotonic()))
+            )
+            with timeout:
                 async with lane.lock:
                     if self._closed:
                         raise ToolError("worker_closed", "Worker pool is closed")
                     worker = await self._ensure(lane, operation)
                     reply = await worker.run(self._prepare(operation))
                     completed = True
-                    if reply.operations >= self.limits.worker_operations:
+                    if (
+                        self.limits.worker_operations is not None
+                        and reply.operations >= self.limits.worker_operations
+                    ):
                         await self._retire(lane, worker, graceful=True)
                     return reply
         except TimeoutError as exc:
@@ -298,8 +333,9 @@ class WorkerPool:
             raise
         finally:
             if acquired:
+                assert self._slots is not None
                 self._slots.release()
-                self._inflight -= 1
+            self._inflight -= 1
 
     async def discover(
         self, capture: InputCapture, refs: tuple[FileRef | SchemaRef, ...]
@@ -311,7 +347,12 @@ class WorkerPool:
             refs=refs,
         )
         reply = await self.run(
-            operation, deadline=time.monotonic() + self.limits.compile_query_seconds
+            operation,
+            deadline=(
+                None
+                if self.limits.compile_query_seconds is None
+                else time.monotonic() + self.limits.compile_query_seconds
+            ),
         )
         if reply.status == "error":
             assert reply.fault is not None
@@ -332,7 +373,8 @@ class WorkerPool:
         if self._closed:
             return
         self._closed = True
-        for lane in self._lanes:
+        lanes = [*(self._lanes or ()), *self._dynamic.values()]
+        for lane in lanes:
             async with lane.lock:
                 if lane.worker is not None:
                     await self._retire(lane, lane.worker, graceful=True)

@@ -77,7 +77,9 @@ class FakeProcess:
 
 
 def config(**kwargs):
-    return WorkerConfig(role="clean", limits=Limits(**kwargs), processor_version=__version__)
+    return WorkerConfig(
+        role="clean", limits=Limits(enforced=True, **kwargs), processor_version=__version__
+    )
 
 
 def base_operation(snapshot, role="clean"):
@@ -108,7 +110,7 @@ def test_worker_exchange_rejects_missing_and_broken_streams():
     async def scenario():
         process = SimpleNamespace(stdin=None, stdout=object())
         with pytest.raises(ToolError, match="worker_died"):
-            await workers._Worker(process, Limits())._exchange(
+            await workers._Worker(process, Limits(enforced=True))._exchange(
                 config(), request_id="bootstrap", role="clean"
             )
 
@@ -118,7 +120,7 @@ def test_worker_exchange_rejects_missing_and_broken_streams():
 
         process = SimpleNamespace(stdin=Sending(), stdout=object())
         with pytest.raises(ToolError, match="worker_died"):
-            await workers._Worker(process, Limits())._exchange(
+            await workers._Worker(process, Limits(enforced=True))._exchange(
                 config(), request_id="bootstrap", role="clean"
             )
 
@@ -154,7 +156,7 @@ def test_worker_start_rejects_invalid_ready_and_scrubs_environment(monkeypatch):
 
     async def scenario():
         with pytest.raises(ToolError, match="worker_startup"):
-            await workers._Worker.start(Limits(), role="clean")
+            await workers._Worker.start(Limits(enforced=True), role="clean")
 
     anyio.run(scenario)
     assert closed == [False]
@@ -166,10 +168,10 @@ def test_worker_start_rejects_invalid_ready_and_scrubs_environment(monkeypatch):
 def test_worker_close_escalates_and_tolerates_missing_process():
     async def scenario():
         process = FakeProcess(wait_timeout=True)
-        await workers._Worker(process, Limits()).close(graceful=True)
+        await workers._Worker(process, Limits(enforced=True)).close(graceful=True)
         assert process.killed and process.closed
         missing = FakeProcess(missing=True)
-        await workers._Worker(missing, Limits()).close(graceful=False)
+        await workers._Worker(missing, Limits(enforced=True)).close(graceful=False)
         assert missing.closed
 
     anyio.run(scenario)
@@ -177,7 +179,7 @@ def test_worker_close_escalates_and_tolerates_missing_process():
 
 def test_pool_validation_stale_replacement_routing_and_close(tmp_path):
     snapshot = make_snapshot(tmp_path)
-    pool = workers.WorkerPool(Limits())
+    pool = workers.WorkerPool(Limits(enforced=True))
     operation = parse_operation(workers, snapshot)
     base = base_operation(snapshot)
     assert pool._lane(base) in pool._lanes
@@ -214,7 +216,7 @@ def test_pool_validation_stale_replacement_routing_and_close(tmp_path):
         assert old.closed and lane.worker is replacement
         lane.worker = None
 
-        closed_during_route = workers.WorkerPool(Limits())
+        closed_during_route = workers.WorkerPool(Limits(enforced=True))
         original_lane = closed_during_route._lane
 
         def close_while_routing(op):
@@ -226,7 +228,7 @@ def test_pool_validation_stale_replacement_routing_and_close(tmp_path):
             await closed_during_route.run(operation, deadline=time.monotonic() + 10)
         assert closed_during_route.inflight == 0
 
-        async with LocalRuntime(Limits()) as runtime:
+        async with LocalRuntime(Limits(enforced=True)) as runtime:
             assert runtime.inflight == 0
         await runtime.aclose()
 
@@ -235,7 +237,7 @@ def test_pool_validation_stale_replacement_routing_and_close(tmp_path):
 
 def test_timeout_while_queued_and_unrelated_retire_do_not_touch_a_worker(tmp_path):
     snapshot = make_snapshot(tmp_path)
-    pool = workers.WorkerPool(Limits())
+    pool = workers.WorkerPool(Limits(enforced=True))
     operation = parse_operation(workers, snapshot)
 
     class Closing:
@@ -265,7 +267,7 @@ def test_timeout_while_queued_and_unrelated_retire_do_not_touch_a_worker(tmp_pat
 
 def test_discover_maps_worker_faults(tmp_path, monkeypatch):
     snapshot = make_snapshot(tmp_path)
-    pool = workers.WorkerPool(Limits())
+    pool = workers.WorkerPool(Limits(enforced=True))
 
     async def failed(operation, *, deadline):
         return WorkerReply(
@@ -308,7 +310,9 @@ def test_protocol_outcome_validation_and_unknown_operation(tmp_path):
     with pytest.raises(ToolError, match="ipc_protocol"):
         decode_operation(b'{"role":"clean","kind":"unknown"}\n', max_bytes=100, role="clean")
     snapshot = make_snapshot(tmp_path)
-    cache = __import__("pyxsd.mcp.cache", fromlist=["SchemaCache"]).SchemaCache(Limits())
+    cache = __import__("pyxsd.mcp.cache", fromlist=["SchemaCache"]).SchemaCache(
+        Limits(enforced=True)
+    )
     with pytest.raises(ToolError, match="invalid_operation"):
         worker_main._execute(base_operation(snapshot), cache, __version__)
     cache.close()
@@ -482,7 +486,7 @@ def test_worker_rejects_page_limit_above_operator_budget(tmp_path):
 
     snapshot = make_snapshot(tmp_path)
     operation = parse_operation(workers, snapshot).model_copy(update={"issue_limit": 51})
-    cache = SchemaCache(Limits(page_items=50))
+    cache = SchemaCache(Limits(enforced=True, page_items=50))
     with pytest.raises(ToolError, match="invalid_argument"):
         worker_main._execute(operation, cache, __version__)
     cache.close()
@@ -498,7 +502,7 @@ def test_discovery_ignores_non_schema_references(tmp_path):
         capture=workers.capture_to_wire(snapshot),
         refs=(FileRef(path="document.xml"),),
     )
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     assert worker_main._execute(operation, cache, __version__) == {"dependencies": []}
     cache.close()
 
@@ -541,7 +545,7 @@ def test_parse_fails_closed_on_incomplete_schema_closure(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
     snapshot = snapshot_with(tmp_path, INCOMPLETE)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     operation = parse_operation(workers, snapshot)
     with pytest.raises(ToolError) as raised:
         worker_main._execute(operation, cache, __version__)
@@ -557,7 +561,7 @@ def test_parse_fails_closed_on_schema_report_errors(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
     snapshot = snapshot_with(tmp_path, UNKNOWN_TYPE)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     operation = parse_operation(workers, snapshot)
     with pytest.raises(ToolError) as raised:
         worker_main._execute(operation, cache, __version__)
@@ -571,7 +575,7 @@ def test_introspection_may_inspect_incomplete_schema(tmp_path):
     from pyxsd.mcp.worker_protocol import DescribeOperation
 
     snapshot = snapshot_with(tmp_path, INCOMPLETE)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     result = worker_main._execute(
         DescribeOperation(
             request_id="describe",
@@ -645,7 +649,7 @@ def test_query_subtree_slices_exact_source_bytes_with_one_index(tmp_path, monkey
     from pyxsd.mcp.cache import SchemaCache
 
     snapshot = source_snapshot(tmp_path)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     built: list[bytes] = []
     original = worker_main.SourceIndex
 
@@ -681,7 +685,7 @@ def test_query_subtree_reports_source_unavailable_without_provenance(tmp_path, m
     from pyxsd.mcp.cache import SchemaCache
 
     snapshot = source_snapshot(tmp_path)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     original = worker_main._parse
 
     def provenance_free(operation, current, processor_version):
@@ -708,7 +712,7 @@ def test_query_subtree_reports_a_missing_span_as_source_unavailable(tmp_path, mo
     from pyxsd.mcp.cache import SchemaCache
 
     snapshot = source_snapshot(tmp_path)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
 
     def mismatched(operation, current):
         return worker_main.SourceIndex("other.xml", b'<T:root xmlns:T="urn:t"/>')
@@ -730,7 +734,7 @@ def test_query_subtree_source_change_is_a_typed_fault(tmp_path, monkeypatch):
     from pyxsd.mcp.cache import SchemaCache
 
     snapshot = source_snapshot(tmp_path)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     original = worker_main._parse
 
     def mutate(operation, current, processor_version):
@@ -754,7 +758,7 @@ def test_query_subtree_index_applies_the_strict_parser_policy(tmp_path):
 
     doctype = b"<!DOCTYPE r [<!ELEMENT r (#PCDATA)>]><r>x</r>"
     snapshot = source_snapshot(tmp_path, document=doctype, schema=PLAIN_XSD)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     try:
         with pytest.raises(ResourcePolicyError, match="DOCTYPE"):
             worker_main._source_index(query_operation(snapshot, xpath="/r"), cache)
@@ -766,7 +770,7 @@ def test_query_subtree_empty_page_and_summary_skip_the_source_index(tmp_path, mo
     from pyxsd.mcp.cache import SchemaCache
 
     snapshot = source_snapshot(tmp_path)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
 
     def unexpected(operation, current):
         raise AssertionError("no source index is needed without a selected node")

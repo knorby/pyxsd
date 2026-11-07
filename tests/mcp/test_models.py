@@ -188,7 +188,7 @@ def test_projected_models_reuse_and_expire_with_parent_cache(tmp_path):
     from pyxsd.mcp.workers import capture_to_wire
 
     req = request(tmp_path, files={"root.xsd": XSD})
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     operation = ModelOperation(
         request_id="models",
         capture=capture_to_wire(req.capture),
@@ -216,7 +216,7 @@ def test_local_declaration_selection_and_bounded_error_details(tmp_path):
     from pyxsd.mcp.services.models import InspectModelRequest, ModelService, ValidateDataRequest
 
     async def scenario():
-        async with harness(tmp_path, Limits(collected_issues=1)) as (
+        async with harness(tmp_path, Limits(enforced=True, collected_issues=1)) as (
             _,
             inputs,
             pool,
@@ -399,7 +399,7 @@ def test_oversized_projection_candidates_preserve_the_fault(tmp_path):
     schema = MIXED_NAMESPACED_XSD.replace('name="line"', f'name="{long_name}"')
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, output_bytes=1024)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, output_bytes=1024)) as (
             _,
             inputs,
             pool,
@@ -418,6 +418,38 @@ def test_oversized_projection_candidates_preserve_the_fault(tmp_path):
             assert exc.value.fault.details["details_truncated"] is True
             assert "projection_candidates" not in exc.value.fault.details
             assert len(exc.value.fault.message.encode("utf-8")) <= 4096
+
+    anyio.run(scenario)
+
+
+def test_default_disabled_limits_preserve_large_projection_candidates(tmp_path):
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.services.models import InspectModelRequest, ModelService
+
+    long_name = "line" + "x" * 2000
+    schema = MIXED_NAMESPACED_XSD.replace('name="line"', f'name="{long_name}"')
+
+    async def scenario():
+        async with harness(tmp_path, Limits()) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": schema})
+            with pytest.raises(ToolError) as exc:
+                await ModelService(inputs, pool).inspect_model(
+                    InspectModelRequest(
+                        workspace_id=workspace,
+                        schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                        element="{urn:test}root",
+                    ),
+                )
+            details = exc.value.fault.details
+            assert exc.value.fault.code == "unsupported_projection"
+            assert "details_truncated" not in details
+            assert details["projection_candidates"] == [
+                {
+                    "element": "{urn:test}root",
+                    "path": [f"{{urn:test}}{long_name}"],
+                    "repeated": True,
+                }
+            ]
 
     anyio.run(scenario)
 

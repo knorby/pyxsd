@@ -38,10 +38,11 @@ from pyxsd.mcp.errors import ToolError
     ],
 )
 def test_unsafe_logical_paths_are_rejected(path):
+    from pyxsd.mcp.config import Limits
     from pyxsd.mcp.safe_io import validate_paths
 
     with pytest.raises(ToolError, match="invalid_path"):
-        validate_paths([path])
+        validate_paths([path], Limits(enforced=True))
 
 
 @pytest.mark.parametrize(
@@ -265,13 +266,14 @@ def test_filesystem_encoding_errors_are_typed_denials(tmp_path, monkeypatch):
 
 
 def test_admitted_path_depth_is_bounded_before_recursive_storage_operations():
+    from pyxsd.mcp.config import Limits
     from pyxsd.mcp.errors import ToolError
     from pyxsd.mcp.safe_io import validate_paths
 
     accepted = "/".join(["a"] * 128)
-    assert validate_paths([accepted]) == (accepted,)
+    assert validate_paths([accepted], Limits(enforced=True)) == (accepted,)
     with pytest.raises(ToolError, match="invalid_path"):
-        validate_paths([accepted + "/a"])
+        validate_paths([accepted + "/a"], Limits(enforced=True))
 
 
 def test_glob_enumeration_is_deterministic_and_prunes_the_excluded_state(tmp_path):

@@ -48,7 +48,7 @@ def _classify(schema: Schema, path: str) -> tuple[str, Document | None]:
     return ("valid" if document.report.error_count == 0 else "invalid"), document
 
 
-def _evidence(document: Document, limit: int) -> list[dict[str, JsonValue]]:
+def _evidence(document: Document, limit: int | None) -> list[dict[str, JsonValue]]:
     data = cast(dict[str, JsonValue], document.report.to_dict())
     issues = cast(list[dict[str, JsonValue]], data["issues"])
     return [
@@ -136,7 +136,10 @@ def execute_comparison(
         totals = dict.fromkeys(_CATEGORIES, 0)
         corpus_start = clock()
         for reference in operation.corpus:
-            if clock() - corpus_start >= cache.limits.corpus_file_seconds:
+            if (
+                cache.limits.corpus_file_seconds is not None
+                and clock() - corpus_start >= cache.limits.corpus_file_seconds
+            ):
                 files.append(
                     {
                         "path": reference.path,
@@ -216,7 +219,7 @@ class ComparisonService(ExplorationService):
         if request.corpus_glob is not None:
             corpus = await self.inputs.select_corpus(request.workspace_id, request.corpus_glob)
             selection = {"glob": request.corpus_glob, "matched": len(corpus)}
-        if len(corpus) > self.limits.corpus_files:
+        if self.limits.corpus_files is not None and len(corpus) > self.limits.corpus_files:
             raise ToolError("quota_exceeded", "Corpus exceeds the operator file budget")
         async with self._capture(
             request.workspace_id,
@@ -229,7 +232,11 @@ class ComparisonService(ExplorationService):
                 new_schema=request.new_schema,
                 corpus=corpus,
             )
-            deadline = time.monotonic() + self.limits.batch_seconds
+            deadline = (
+                None
+                if self.limits.batch_seconds is None
+                else time.monotonic() + self.limits.batch_seconds
+            )
             reply = await self.pool.run(operation, deadline=deadline)
         if reply.status == "error":
             assert reply.fault is not None

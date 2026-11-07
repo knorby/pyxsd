@@ -207,13 +207,23 @@ def _chain_schema(depth):
 
 
 def test_search_reports_depth_cap_as_truncated():
+    from pyxsd.mcp.config import Limits
+
     schema = _schema(_chain_schema(9))
-    details = candidate_details(schema, element="root", path=(), prepare=_model_prepare(schema))
+    details = candidate_details(
+        schema,
+        element="root",
+        path=(),
+        prepare=_model_prepare(schema),
+        limits=Limits(enforced=True),
+    )
     assert details["projection_candidates"] == []
     assert details["search_truncated"] is True
 
 
 def test_search_reports_visit_cap_as_truncated_without_candidates():
+    from pyxsd.mcp.config import Limits
+
     children = "".join(f'<xs:element name="w{index:03d}" type="Wrap"/>' for index in range(101))
     schema = _schema(
         f"""<xs:schema xmlns:xs="{XS}">
@@ -224,13 +234,21 @@ def test_search_reports_visit_cap_as_truncated_without_candidates():
           </xs:sequence></xs:complexType></xs:element>
         </xs:schema>"""
     )
-    details = candidate_details(schema, element="root", path=(), prepare=_model_prepare(schema))
+    details = candidate_details(
+        schema,
+        element="root",
+        path=(),
+        prepare=_model_prepare(schema),
+        limits=Limits(enforced=True),
+    )
     assert details["projection_candidates"] == []
     assert details["searched_declarations"] == 100
     assert details["search_truncated"] is True
 
 
 def test_search_reports_candidate_cap_as_truncated():
+    from pyxsd.mcp.config import Limits
+
     children = "".join(
         f'<xs:element name="line{index:02d}" type="xs:string"/>' for index in range(11)
     )
@@ -241,7 +259,13 @@ def test_search_reports_candidate_cap_as_truncated():
           </xs:sequence></xs:complexType></xs:element>
         </xs:schema>"""
     )
-    details = candidate_details(schema, element="root", path=(), prepare=_model_prepare(schema))
+    details = candidate_details(
+        schema,
+        element="root",
+        path=(),
+        prepare=_model_prepare(schema),
+        limits=Limits(enforced=True),
+    )
     assert len(details["projection_candidates"]) == 10
     assert details["search_truncated"] is True
 

@@ -22,7 +22,7 @@ from pyxsd.mcp.storage import Storage
 def limits(**overrides):
     fields = {"output_bytes": 1024, "page_items": 3, "result_bytes": 1024}
     fields.update(overrides)
-    return Limits(**fields)
+    return Limits(enforced=True, **fields)
 
 
 def execute(storage, sql, parameters=()):

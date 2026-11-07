@@ -31,7 +31,7 @@ def test_added_removed_changed_and_unchanged_occurrences_are_bounded(tmp_path, l
     capture = InputCapture("workspace", 1, tmp_path, tuple(manifest))
 
     async def scenario():
-        async with WorkerPool(Limits(workers=1)) as pool:
+        async with WorkerPool(Limits(enforced=True, workers=1)) as pool:
             result = await pool.run(
                 StructuralDiffOperation(
                     request_id="diff",

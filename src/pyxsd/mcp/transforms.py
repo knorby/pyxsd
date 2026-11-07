@@ -42,9 +42,12 @@ _SPEC: TypeAdapter[PythonTransformSpec | PipelineTransformSpec] = TypeAdapter(Tr
 
 
 def _source_budget(sources: list[str], limits: Limits) -> None:
-    if any(not source for source in sources) or sum(
-        len(source.encode("utf-8")) for source in sources
-    ) > min(64 * 2**10, limits.transform_source_bytes):
+    if any(not source for source in sources):
+        raise ToolError("invalid_transform", "Transform source exceeds its UTF-8 byte budget")
+    if (
+        limits.transform_source_bytes is not None
+        and sum(len(source.encode("utf-8")) for source in sources) > limits.transform_source_bytes
+    ):
         raise ToolError("invalid_transform", "Transform source exceeds its UTF-8 byte budget")
 
 
@@ -63,7 +66,11 @@ def normalize_transform(
             else list(spec.definitions.values())
         )
         _source_budget(sources, limits)
-        if isinstance(spec, PipelineTransformSpec) and len(spec.steps) > limits.pipeline_steps:
+        if (
+            isinstance(spec, PipelineTransformSpec)
+            and limits.pipeline_steps is not None
+            and len(spec.steps) > limits.pipeline_steps
+        ):
             raise ToolError("invalid_transform", "Pipeline exceeds its step budget")
         return spec
     except (ValueError, TypeError, UnicodeError, RecursionError) as exc:

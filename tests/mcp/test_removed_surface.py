@@ -55,7 +55,7 @@ def test_fresh_store_has_only_the_artifact_table(tmp_path):
         from pyxsd.mcp.output_store import OutputStore
 
         with Storage(tmp_path / "store") as storage:
-            outputs = OutputStore(storage, Limits())
+            outputs = OutputStore(storage, Limits(enforced=True))
             await outputs.put_bytes(b"x", name="a.txt", media_type="text/plain", kind="result")
             try:
                 tables = await storage.run(

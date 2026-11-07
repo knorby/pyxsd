@@ -94,8 +94,10 @@ def test_artifact_read_verifies_content_once(tmp_path, monkeypatch):
 
 
 def test_artifact_validation_errors_are_structured(tmp_path):
+    from pyxsd.mcp.config import Limits
+
     async def scenario():
-        async with connected(tmp_path) as (client, _services):
+        async with connected(tmp_path, limits=Limits(enforced=True)) as (client, _services):
             workspace = await create_workspace(client)
             await upload(client, workspace)
             invalid_cursor = await client.call_tool(
@@ -110,11 +112,30 @@ def test_artifact_validation_errors_are_structured(tmp_path):
     anyio.run(scenario)
 
 
+def test_read_artifact_without_length_reads_through_eof_when_limits_disabled(tmp_path):
+    from pyxsd.mcp.config import Limits
+
+    async def scenario():
+        async with connected(tmp_path, limits=Limits()) as (client, services):
+            reference = await services.outputs.put_bytes(
+                b"whole-artifact",
+                name="whole.bin",
+                media_type="application/octet-stream",
+                kind="result",
+            )
+            result = await client.call_tool("pyxsd_read_artifact", {"artifact_id": reference.id})
+            data = structured(result)["data"]
+            assert base64.b64decode(data["data"]) == b"whole-artifact"
+            assert data["length"] == len(b"whole-artifact")
+
+    anyio.run(scenario)
+
+
 def test_read_artifact_never_spills_and_fails_with_response_limit(tmp_path):
     from pyxsd.mcp.config import Limits
 
     async def scenario():
-        async with connected(tmp_path, limits=Limits(result_bytes=4 * 2**10)) as (
+        async with connected(tmp_path, limits=Limits(enforced=True, result_bytes=4 * 2**10)) as (
             client,
             services,
         ):
@@ -167,7 +188,7 @@ def test_spilled_list_keeps_cursor_in_envelope_page(tmp_path):
     from pyxsd.mcp.config import Limits
 
     async def scenario():
-        async with connected(tmp_path, limits=Limits(result_bytes=2 * 2**10)) as (
+        async with connected(tmp_path, limits=Limits(enforced=True, result_bytes=2 * 2**10)) as (
             client,
             services,
         ):

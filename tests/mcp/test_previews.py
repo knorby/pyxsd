@@ -26,7 +26,7 @@ from pyxsd.mcp.workers import WorkerPool
 
 @asynccontextmanager
 async def harness(tmp_path, *, backend="trusted-local", limits=None):
-    limits = limits or Limits(workers=1)
+    limits = limits or Limits(enforced=True, workers=1)
     with Storage(tmp_path / "state", persist=False) as storage:
         outputs = OutputStore(storage, limits)
         inputs = SessionInputs(storage.scratch, limits)

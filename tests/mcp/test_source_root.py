@@ -73,7 +73,7 @@ async def harness(tmp_path: Path, *, source: bool = True):
     source_root = tmp_path / "tree"
     source_root.mkdir()
     make_tree(source_root)
-    limits = Limits(workers=1)
+    limits = Limits(enforced=True, workers=1)
     storage = Storage(tmp_path / "state", persist=False)
     outputs = OutputStore(storage, limits)
     pool = WorkerPool(limits)

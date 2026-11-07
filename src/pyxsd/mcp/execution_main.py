@@ -82,7 +82,10 @@ def execute(request: ExecutionRequest) -> dict[str, Any]:
             document = _apply(document, request.sources[step.name], context, step.args, step.kwargs)
             if step.checkpoint:
                 checkpoint = document.to_string().encode("utf-8")
-                if len(checkpoint) > request.limits.output_bytes:
+                if (
+                    request.limits.output_bytes is not None
+                    and len(checkpoint) > request.limits.output_bytes
+                ):
                     raise ToolError("output_limit", "Checkpoint exceeds its output budget")
                 with open(
                     Path(request.output_directory) / f"checkpoint-{index}.xml", "xb"
@@ -92,7 +95,7 @@ def execute(request: ExecutionRequest) -> dict[str, Any]:
                 # coordinator performs the mandatory independent clean parse.
                 checkpoints.append(document.revalidate().report.to_dict())
     candidate = document.to_string().encode("utf-8")
-    if len(candidate) > request.limits.output_bytes:
+    if request.limits.output_bytes is not None and len(candidate) > request.limits.output_bytes:
         raise ToolError("output_limit", "Candidate exceeds its output budget")
     with open(Path(request.output_directory) / "candidate.xml", "xb") as stream:
         stream.write(candidate)
@@ -100,12 +103,11 @@ def execute(request: ExecutionRequest) -> dict[str, Any]:
 
 
 def main() -> int:
-    maximum = 2 * 2**20
     try:
         request = decode_frame(
-            sys.stdin.buffer.readline(maximum + 1),
+            sys.stdin.buffer.readline(),
             ExecutionRequest,
-            max_bytes=maximum,
+            max_bytes=None,
             expected={"request_id": "execution"},
         )
         result = execute(request)
@@ -123,7 +125,7 @@ def main() -> int:
                 code="transform_failed", message="Transform failed without a candidate"
             ),
         )
-    sys.stdout.buffer.write(encode_frame(reply, max_bytes=maximum))
+    sys.stdout.buffer.write(encode_frame(reply, max_bytes=None))
     sys.stdout.buffer.flush()
     return 0
 

@@ -50,7 +50,7 @@ def test_put_files_empty_is_noop(tmp_path):
 
 
 def inputs(root, limits=None, **kwargs):
-    return SessionInputs(root / "scratch", limits or Limits(workspaces=4), **kwargs)
+    return SessionInputs(root / "scratch", limits or Limits(enforced=True, workspaces=4), **kwargs)
 
 
 def test_workspaces_are_session_only_and_outputs_are_independent(tmp_path):
@@ -80,7 +80,7 @@ def test_workspaces_are_session_only_and_outputs_are_independent(tmp_path):
 
 def test_workspace_limit_and_invalid_identifiers(tmp_path):
     async def scenario():
-        store = inputs(tmp_path, Limits(workspaces=1))
+        store = inputs(tmp_path, Limits(enforced=True, workspaces=1))
         workspace = await store.create()
         with pytest.raises(ToolError, match="quota_exceeded"):
             await store.create()
@@ -153,6 +153,7 @@ def test_capture_is_removed_after_an_exception(tmp_path):
 def test_transient_entry_and_byte_limits_apply_per_input_set(tmp_path):
     async def scenario():
         limits = Limits(
+            enforced=True,
             workspaces=2,
             input_entries=3,
             workspace_bytes=16,
@@ -227,7 +228,7 @@ def test_source_capture_materializes_files_for_real_worker_discovery(tmp_path):
         '<xs:element name="root" type="xs:string"/></xs:schema>'
     )
     (source / "included.xsd").write_text(XSD)
-    pool = WorkerPool(Limits(workers=1))
+    pool = WorkerPool(Limits(enforced=True, workers=1))
 
     async def scenario():
         try:
@@ -337,7 +338,7 @@ def test_create_collision_exhaustion_and_empty_capture(tmp_path, monkeypatch):
 
 def test_input_byte_limit_and_tampered_area_detection(tmp_path):
     async def scenario():
-        limits = Limits(workspace_bytes=8, xml_file_bytes=64, inline_bytes=64)
+        limits = Limits(enforced=True, workspace_bytes=8, xml_file_bytes=64, inline_bytes=64)
         store = inputs(tmp_path, limits)
         workspace = await store.create()
         with pytest.raises(ToolError, match="quota_exceeded"):
@@ -383,7 +384,7 @@ def test_source_capture_schema_and_entry_limits(tmp_path):
             return (CaptureDependency("extra.xsd", None, 0),)
 
     async def scenario():
-        limits = Limits(schema_closure_files=2, input_entries=1)
+        limits = Limits(enforced=True, schema_closure_files=2, input_entries=1)
         store = inputs(tmp_path / "store", limits, source_root=tree, discovery=Discovery())
         workspace = await store.create()
         refs = (SchemaRef(source=FileRef(path="schema.xsd")),)
@@ -392,7 +393,7 @@ def test_source_capture_schema_and_entry_limits(tmp_path):
                 pass
         large = inputs(
             tmp_path / "large",
-            Limits(schema_file_bytes=4),
+            Limits(enforced=True, schema_file_bytes=4),
             source_root=tree,
             discovery=Discovery(),
         )
@@ -593,9 +594,31 @@ def test_select_corpus_honors_the_corpus_file_budget(tmp_path):
     make_corpus_tree(source)
 
     async def scenario():
-        store = inputs(tmp_path, Limits(corpus_files=1), source_root=source)
+        store = inputs(tmp_path, Limits(enforced=True, corpus_files=1), source_root=source)
         workspace = await store.create()
         with pytest.raises(ToolError, match="quota_exceeded"):
             await store.select_corpus(workspace.id, "corpus/**/*.xml")
+
+    anyio.run(scenario)
+
+
+def test_default_disabled_limits_allow_more_workspaces_and_corpus_files(tmp_path):
+    source = tmp_path / "source"
+    make_corpus_tree(source)
+
+    async def scenario():
+        store = inputs(
+            tmp_path,
+            Limits(workspaces=1, corpus_files=1),
+            source_root=source,
+        )
+        first = await store.create()
+        await store.create()
+        await store.create()
+        selected = await store.select_corpus(first.id, "corpus/**/*.xml")
+        assert [item.path for item in selected] == [
+            "corpus/a.xml",
+            "corpus/nested/b.xml",
+        ]
 
     anyio.run(scenario)

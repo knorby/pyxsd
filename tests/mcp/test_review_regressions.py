@@ -8,12 +8,12 @@ from pyxsd.mcp.config import Limits
 
 
 def test_corpus_limit_cannot_exceed_operator_maximum():
-    assert Limits(corpus_files=1000).corpus_files == 1000
-    assert Limits(corpus_files=2, corpus_max_files=2).corpus_files == 2
+    assert Limits(enforced=True, corpus_files=1000).corpus_files == 1000
+    assert Limits(enforced=True, corpus_files=2, corpus_max_files=2).corpus_files == 2
     with pytest.raises(ValueError, match="corpus"):
-        Limits(corpus_files=1001)
+        Limits(enforced=True, corpus_files=1001)
     with pytest.raises(ValueError, match="corpus"):
-        Limits(corpus_files=3, corpus_max_files=2)
+        Limits(enforced=True, corpus_files=3, corpus_max_files=2)
 
 
 def test_historical_quota_and_ttl_settings_are_gone():

@@ -15,12 +15,12 @@ from .corpus import CorpusGlob, portable_parts
 from .errors import ToolError
 
 
-def validate_paths(paths: Sequence[str]) -> tuple[str, ...]:
+def validate_paths(paths: Sequence[str], limits: Limits | None = None) -> tuple[str, ...]:
     """Preserve relative POSIX names while rejecting ambiguous portable spellings."""
     spellings: dict[str, str] = {}
     files: set[str] = set()
     for path in paths:
-        parts = portable_parts(path)
+        parts = portable_parts(path, limits)
         for index in range(1, len(parts) + 1):
             prefix = "/".join(parts[:index])
             key = unicodedata.normalize("NFC", unicodedata.normalize("NFC", prefix).casefold())
@@ -46,7 +46,7 @@ def admit_inline(files: Sequence[InlineFile], limits: Limits) -> tuple[AdmittedF
     labels. Well-formedness and hostile XML checks belong to constrained workers;
     other files, such as transformation source, need not contain XML at all.
     """
-    validate_paths([item.path for item in files])
+    validate_paths([item.path for item in files], limits)
     admitted: list[AdmittedFile] = []
     total = 0
     for item in files:
@@ -55,7 +55,9 @@ def admit_inline(files: Sequence[InlineFile], limits: Limits) -> tuple[AdmittedF
         except UnicodeEncodeError as exc:
             raise ToolError("invalid_encoding", "Inline text must be valid UTF-8") from exc
         total += len(content)
-        if total > limits.inline_bytes or len(content) > limits.xml_file_bytes:
+        if (limits.inline_bytes is not None and total > limits.inline_bytes) or (
+            limits.xml_file_bytes is not None and len(content) > limits.xml_file_bytes
+        ):
             raise ToolError("quota_exceeded", "Inline file byte budget exceeded")
         start = re.match(r"\ufeff?<\?xml(?=\s)", item.text)
         if start is not None:
@@ -92,20 +94,26 @@ def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
 class SafeDirectory:
     """An operator-admitted root; client paths cannot replace its open descriptor."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, limits: Limits | None = None) -> None:
         if os.open not in os.supports_dir_fd or not all(
             hasattr(os, name) for name in ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK")
         ):
             raise ToolError("unsupported_platform", "Safe descriptor-relative reads unavailable")
+        self._limits = limits
+        self._chunk_bytes = (
+            limits.io_chunk_bytes
+            if limits is not None and limits.io_chunk_bytes is not None
+            else 65536
+        )
         try:
             self._fd: int | None = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc:
             raise ToolError("unsafe_path", "Input root cannot be admitted") from exc
 
-    def read(self, path: str, *, max_bytes: int) -> CapturedFile:
+    def read(self, path: str, *, max_bytes: int | None) -> CapturedFile:
         """Read original bytes, checking regular-file type and stability on the FD."""
-        validate_paths([path])
-        if type(max_bytes) is not int or max_bytes < 0:
+        validate_paths([path], self._limits)
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
             raise ToolError("invalid_argument", "Read budget must be a nonnegative integer")
         if self._fd is None:
             raise ToolError("closed", "Input directory is closed")
@@ -121,13 +129,18 @@ class SafeDirectory:
                 before = os.fstat(fd)
                 if not stat.S_ISREG(before.st_mode):
                     raise ToolError("unsafe_path", "Only regular input files are admitted")
-                if before.st_size > max_bytes:
+                if max_bytes is not None and before.st_size > max_bytes:
                     raise ToolError("quota_exceeded", "Input file exceeds byte budget")
                 chunks: list[bytes] = []
                 total = 0
-                while chunk := os.read(fd, min(65536, max_bytes - total + 1)):
+                while chunk := os.read(
+                    fd,
+                    self._chunk_bytes
+                    if max_bytes is None
+                    else min(self._chunk_bytes, max_bytes - total + 1),
+                ):
                     total += len(chunk)
-                    if total > max_bytes:
+                    if max_bytes is not None and total > max_bytes:
                         raise ToolError("quota_exceeded", "Input file exceeds byte budget")
                     chunks.append(chunk)
                 if _identity(before) != _identity(os.fstat(fd)) or total != before.st_size:
@@ -152,20 +165,20 @@ class SafeDirectory:
         self,
         pattern: str,
         *,
-        max_entries: int,
-        max_matches: int,
+        max_entries: int | None,
+        max_matches: int | None,
         exclude: str | None = None,
         exclude_identities: Collection[tuple[int, int]] = (),
     ) -> tuple[str, ...]:
         """Enumerate matching regular files without following links or budgets."""
-        glob = CorpusGlob(pattern)
+        glob = CorpusGlob(pattern, self._limits)
         for label, budget in (("Entry budget", max_entries), ("Match budget", max_matches)):
-            if type(budget) is not int or budget <= 0:
+            if budget is not None and (type(budget) is not int or budget <= 0):
                 raise ToolError("invalid_argument", f"{label} must be a positive integer")
         if self._fd is None:
             raise ToolError("closed", "Input directory is closed")
         if exclude is not None:
-            validate_paths([exclude])
+            validate_paths([exclude], self._limits)
 
         def scan(directory_fd: int) -> tuple[os.DirEntry[str], ...]:
             try:
@@ -194,7 +207,7 @@ class SafeDirectory:
                 frames[-1] = (directory_fd, current, entries, index + 1)
                 entry = entries[index]
                 visited += 1
-                if visited > max_entries:
+                if max_entries is not None and visited > max_entries:
                     raise ToolError("quota_exceeded", "Input entry limit exceeded")
                 path = f"{current}/{entry.name}" if current else entry.name
                 if exclude is not None and (path == exclude or path.startswith(f"{exclude}/")):
@@ -236,17 +249,17 @@ class SafeDirectory:
                     if not stat.S_ISREG(info.st_mode):
                         raise ToolError("unsafe_path", "Only regular input files are admitted")
                     matches.append(path)
-                    if len(matches) > max_matches:
+                    if max_matches is not None and len(matches) > max_matches:
                         raise ToolError("quota_exceeded", "Corpus glob exceeds match budget")
         except (OSError, UnicodeError) as exc:
             raise ToolError("unsafe_path", "Input tree cannot be enumerated") from exc
         finally:
             for directory_fd, _, _, _ in frames:
                 os.close(directory_fd)
-        validate_paths(matches)
+        validate_paths(matches, self._limits)
         return tuple(sorted(matches))
 
-    def verify(self, captured: CapturedFile, *, max_bytes: int) -> None:
+    def verify(self, captured: CapturedFile, *, max_bytes: int | None) -> None:
         """Re-read through the root, detecting replacement and content changes."""
         try:
             current = self.read(captured.path, max_bytes=max_bytes)

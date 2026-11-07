@@ -213,11 +213,13 @@ def test_catalog_schema_tools_resources_and_prompts(tmp_path):
 
 
 def test_large_results_spill_and_download_as_exact_json(tmp_path):
+    from pyxsd.mcp.config import Limits
+
     text = "x" * 40_000
     schema = '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="root" type="xs:string"/></xs:schema>'
 
     async def scenario():
-        async with connected(tmp_path) as (client, _services):
+        async with connected(tmp_path, limits=Limits(enforced=True)) as (client, _services):
             workspace = await create_workspace(client)
             await client.call_tool(
                 "pyxsd_put_files",
@@ -245,7 +247,7 @@ def test_large_results_spill_and_download_as_exact_json(tmp_path):
             for offset in range(0, ref["size"], 8 * 1024):
                 downloaded = await client.call_tool(
                     "pyxsd_read_artifact",
-                    {"artifact_id": ref["id"], "offset": offset},
+                    {"artifact_id": ref["id"], "offset": offset, "length": 8 * 1024},
                 )
                 assert downloaded.is_error is False
                 chunks.append(base64.b64decode(structured(downloaded)["data"]["data"]))
@@ -255,7 +257,44 @@ def test_large_results_spill_and_download_as_exact_json(tmp_path):
     anyio.run(scenario)
 
 
+def test_default_disabled_limits_return_large_results_without_spilling(tmp_path):
+    from pyxsd.mcp.config import Limits
+
+    text = "x" * 40_000
+    schema = '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="root" type="xs:string"/></xs:schema>'
+
+    async def scenario():
+        async with connected(tmp_path, limits=Limits()) as (client, _services):
+            workspace = await create_workspace(client)
+            await client.call_tool(
+                "pyxsd_put_files",
+                {
+                    "workspace_id": workspace,
+                    "files": [
+                        {"path": "text.xsd", "text": schema},
+                        {"path": "text.xml", "text": f"<root>{text}</root>"},
+                    ],
+                },
+            )
+            result = await client.call_tool(
+                "pyxsd_query_document",
+                {
+                    "workspace_id": workspace,
+                    "document": {"path": "text.xml"},
+                    "schema_ref": {"source": {"path": "text.xsd"}},
+                    "xpath": "string(/root)",
+                },
+            )
+            summary = structured(result)
+            assert summary["data"]["results"] == text
+            assert summary["artifacts"] == []
+
+    anyio.run(scenario)
+
+
 def test_query_subtree_returns_exact_bytes_and_spills_large_slices(tmp_path):
+    from pyxsd.mcp.config import Limits
+
     text = "x" * 40_000
     body = f"<root><payload>{text}</payload></root>"
     schema = (
@@ -266,7 +305,7 @@ def test_query_subtree_returns_exact_bytes_and_spills_large_slices(tmp_path):
     )
 
     async def scenario():
-        async with connected(tmp_path) as (client, _services):
+        async with connected(tmp_path, limits=Limits(enforced=True)) as (client, _services):
             workspace = await create_workspace(client)
             await client.call_tool(
                 "pyxsd_put_files",
@@ -311,7 +350,7 @@ def test_query_subtree_returns_exact_bytes_and_spills_large_slices(tmp_path):
             for offset in range(0, ref["size"], 8 * 1024):
                 downloaded = await client.call_tool(
                     "pyxsd_read_artifact",
-                    {"artifact_id": ref["id"], "offset": offset},
+                    {"artifact_id": ref["id"], "offset": offset, "length": 8 * 1024},
                 )
                 assert downloaded.is_error is False
                 chunks.append(base64.b64decode(structured(downloaded)["data"]["data"]))
@@ -339,7 +378,7 @@ def test_services_configuration_source_grants_and_shutdown(tmp_path, monkeypatch
         settings = Settings(
             state_dir=tmp_path / "state",
             source_root=tmp_path,
-            limits=Limits(result_bytes=1),
+            limits=Limits(enforced=True, result_bytes=1),
         )
         async with server_module.Services(settings) as services:
             assert services.inputs.source_root == tmp_path
@@ -352,7 +391,7 @@ def test_services_configuration_source_grants_and_shutdown(tmp_path, monkeypatch
                 server_module.create_server(Settings(state_dir=tmp_path / "other"), services)
         assert services.storage._closed
 
-        small = Settings(state_dir=tmp_path / "small", limits=Limits(result_bytes=1))
+        small = Settings(state_dir=tmp_path / "small", limits=Limits(enforced=True, result_bytes=1))
         services = server_module.Services(small)
         client_server = server_module.create_server(small, services)
 
@@ -382,7 +421,10 @@ def test_response_limit_is_a_structured_fault(tmp_path):
     from pyxsd.mcp.config import Limits
 
     async def scenario():
-        async with connected(tmp_path, limits=Limits(result_bytes=1)) as (client, _services):
+        async with connected(tmp_path, limits=Limits(enforced=True, result_bytes=1)) as (
+            client,
+            _services,
+        ):
             result = await client.call_tool("pyxsd_manage_workspace", {"action": "create"})
             assert result.is_error is True
             assert structured(result)["data"]["fault"]["code"] == "response_limit"

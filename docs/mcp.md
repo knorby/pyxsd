@@ -82,6 +82,27 @@ Use that explicit `disabled` form when a wrapper or shell profile has already
 exported `trusted-local` but a particular server must not run supplied Python.
 See {doc}`mcp-deployment` for the trust boundary.
 
+Resource limits are separate from execution and are **disabled by default**:
+file sizes, XML depth and element counts, corpus sizes, IPC/result sizes,
+paging, cache, worker count/queue, and operation deadlines are unlimited unless
+enabled. Enable the current numeric defaults or tune individual values at launch:
+
+```bash
+pyxsd-mcp --resource-limits enabled
+pyxsd-mcp --resource-limits enabled --limit xml_file_bytes=134217728 \
+  --limit corpus_files=500
+PYXSD_MCP_RESOURCE_LIMITS=enabled PYXSD_MCP_CORPUS_FILES=500 pyxsd-mcp
+```
+
+`--resource-limits` wins over `PYXSD_MCP_RESOURCE_LIMITS`; otherwise the default
+is `disabled`. Per-field `--limit FIELD=VALUE` wins over
+`PYXSD_MCP_<UPPERCASE_FIELD>`, which wins over the current default. Values are
+positive decimal integers. Unknown or malformed values, and any override while
+limits resolve disabled, abort startup. `workers` and `worker_queue` are
+ordinary tunable fields under the same toggle. Disabled limits remove guardrails:
+a local server may consume memory, spawn many workers, accept huge IPC frames,
+or spend unbounded time on a pathological input. See {doc}`mcp-deployment`.
+
 See {doc}`mcp-deployment` for source roots, persistent-store layout, shared
 processes, cleanup, and operator limits. Normal session uploads need no source root.
 
@@ -217,7 +238,7 @@ infer a schema revision from a changed capture fingerprint alone.
 | `pyxsd_compare_schemas` | Diffs two schemas and validates an explicit corpus or a bounded `corpus_glob` selection under both. |
 | `pyxsd_preview_transform` | Runs a trusted-local transform, independently validates the candidate, and retains candidate/report/diff outputs. |
 | `pyxsd_list_artifacts` | Lists retained outputs in stable creation order with an opaque cursor. |
-| `pyxsd_read_artifact` | Returns a bounded byte range as base64 with digest, media type, and local path. |
+| `pyxsd_read_artifact` | Returns bytes from an offset as base64 with digest, media type, and local path; omitted `length` reads through EOF. |
 | `pyxsd_delete_artifact` | Explicitly deletes one retained output; repeating the call is harmless. |
 
 ## Artifacts
@@ -228,25 +249,28 @@ response spillover bodies, record exports, and preview outputs are all indexed t
 same way. Listing and reading return the local absolute path, size, SHA-256 digest,
 media type, creation time, and kind.
 
-`pyxsd_read_artifact` reads exact ranges:
+`pyxsd_read_artifact` reads from an offset and either a requested `length` or,
+when `length` is omitted, through end of file:
 
 ```json
 {"artifact_id": "<32-hex ID>", "offset": 0, "length": 8192}
 ```
 
-The MCP envelope carries base64 expansion, so request bounded ranges. The
-coordinator verifies the full file against its indexed digest before returning the
-range. The response's `length` is the actual returned byte count, which can be
+The MCP envelope carries base64 expansion. With resource limits enabled, request
+bounded ranges. The coordinator verifies the full file against its indexed digest
+before returning the range. The response's `length` is the actual returned byte count, which can be
 smaller than requested at end of file; `size` remains the complete artifact size.
 A missing or modified file is a typed error, never substituted content.
-If the base64 reply cannot fit the response budget, `response_limit` asks for a
-smaller range. Artifact reads never spill recursively into another artifact.
+If resource limits are enabled and the base64 reply cannot fit the response
+budget, `response_limit` asks for a smaller range. Artifact reads never spill
+recursively into another artifact.
 Datasets and previews are a set of independent artifacts; deleting one does not
 cascade to another.
 
-Large structured results that exceed the response budget are written once as a
-`result` artifact. The tool returns a summary and artifact reference instead of
-truncated JSON. Read the complete body by range and concatenate it.
+When resource limits are enabled, structured results that exceed the response
+budget are written once as a `result` artifact. The tool returns a summary and
+artifact reference instead of truncated JSON. Read the complete body by range
+and concatenate it. With limits disabled, results return inline.
 The summary preserves pagination, warnings, provenance, and existing artifact
 references. Its `bytes` field measures the serialized envelope, not a source file.
 `pyxsd_list_artifacts` puts `returned`, `next_cursor`, and `truncated` in the
@@ -380,10 +404,10 @@ other groups. Missing uploaded references return item faults whose details name
 the `path`, all `missing` paths, and whether the first missing `role` is the
 `document` or `schema`. Source-tree capture or worker/protocol failures can reject
 the whole call. Omitted `schema_ref` uses document schema-location hints.
-The existing `corpus_max_files` and `batch_seconds` limits apply; split larger
-corpora into batches. Valid documents create no report artifact; invalid documents
-retain all collected issues within the existing collection/output limits. Use the
-singular tool for paged, detailed diagnosis.
+The existing `corpus_max_files` and `batch_seconds` limits apply when resource
+limits are enabled; with limits disabled, no corpus split is required. Valid
+documents create no report artifact; invalid documents retain all collected
+issues. Use the singular tool for paged, detailed diagnosis.
 
 ### Component and model selection
 
@@ -425,8 +449,9 @@ whenever Arrow is healthy; it does not require the trusted-local execution
 backend because it runs no supplied Python transform. The coordinator, never
 the worker, captures bounded regular files, hashes them, and retains them in the
 output store; source inputs are never written. Export rejects invalid documents,
-enforces the document-count corpus limit and output byte budget, and rejects
-non-regular or linked output. Datasets never append to existing output.
+and when resource limits are enabled enforces the document-count corpus limit
+and output byte budget; it always rejects non-regular or linked output. Datasets
+never append to existing output.
 
 ## Schema comparison and migration evidence
 
@@ -446,8 +471,8 @@ can also change when they embed a changed type's constraints.
 An optional corpus validates every supplied document under **both** schemas. Each
 file lands in exactly one category: `valid`, `regressed`, `resolved`, `invalid`,
 `malformed`, `unbindable`, or `skipped`, with per-file old/new verdicts and totals.
-Corpus size is capped (default 100, operator maximum 1,000), and a per-corpus time
-budget marks remaining files `skipped`. Potential impact is reported separately
+Corpus size is capped when limits are enabled (default 100, operator maximum
+1,000), and a per-corpus time budget marks remaining files `skipped`. Potential impact is reported separately
 from observed corpus regressions; no universal compatibility conclusion follows
 from a corpus sample.
 Regressed files include bounded new-schema issue `evidence` (code, message,
@@ -546,8 +571,8 @@ transforms use this form:
 The function receives a `Document` and context and may return a `Document`, a
 bound root, or `None` for in-place changes. Pipeline recipes use explicit
 registered or supplied definitions, never implicit imports from the current
-directory. Source is capped at 64 KiB and recipes at 32 steps, or lower operator
-limits.
+directory. Source is capped at 64 KiB and recipes at 32 steps when resource
+limits are enabled, or lower operator limits.
 
 The call returns a preview record immediately. It contains the workspace and
 generation, input/schema/code digests, candidate/report/diff/structural-diff output
@@ -570,13 +595,19 @@ backend for untrusted code.
 
 ## Worker and resource model
 
-The coordinator verifies inputs and budgets before a clean worker parses or
-evaluates XML. Related operations run serially on one cached `Schema`; separate
-workers provide isolation and parallelism. IPC uses bounded, role-validated
-JSON—never pickle or live `Document` objects. Workers have absolute deadlines,
-queue bounds, operation recycling, death recovery and coordinated shutdown.
+The coordinator verifies inputs before a clean worker parses or evaluates XML.
+Related operations run serially on one cached `Schema`; separate workers provide
+isolation and parallelism. IPC uses bounded, role-validated JSON—never pickle or
+live `Document` objects. When resource limits are enabled, workers also have
+absolute deadlines, queue bounds, operation recycling, death recovery and
+coordinated shutdown.
 
-Important active limits (all operator-configurable in `Settings.limits`):
+Resource enforcement is disabled by default. When enabled
+(`--resource-limits enabled`), the following numeric defaults apply; every field
+is tunable with `--limit` or `PYXSD_MCP_<UPPERCASE_FIELD>`. With limits disabled,
+every field is `null` and no byte, count, time, depth, page, preview, issue,
+message, cache, recycle, worker or queue ceiling applies. Explicit caller-supplied
+page/issue/list bounds still apply; omitted ones are unlimited.
 
 | Limit | Default |
 | --- | --- |
@@ -586,6 +617,9 @@ Important active limits (all operator-configurable in `Settings.limits`):
 | Inline upload / MCP request | 1 MiB / 2 MiB |
 | Session input bytes / workspaces | 512 MiB / 32 |
 | Input entries | 4,096 |
+| Path bytes / segments / segment bytes | 4,096 / 128 / 255 |
+| Projection search depth / visited / candidates | 8 / 100 / 10 |
+| I/O chunk bytes | 65,536 |
 | Result payload / page items | 24 KiB / 50 |
 | Preview rows | 20 |
 | Collected issues / message | 10,000 / 4 KiB |
@@ -629,8 +663,9 @@ retried automatically and produces no partial artifact.
   refers to inputs that have changed.
 - **Invalid versus malformed XML:** inspect the report for validation findings;
   malformed input is an operational `invalid_xml` fault.
-- **Worker timeout or queue overflow:** retry only after reviewing document size,
-  complexity and operator budgets. Neither produces a partial validation verdict.
+- **Worker timeout or queue overflow:** with resource limits enabled, retry only
+  after reviewing document size, complexity and operator budgets. Neither
+  produces a partial validation verdict.
 - **Execution:** disabled by default; trusted-local stdio previews require explicit
   opt-in. Remote user-code execution is not included.
 - **Network transports:** none. The server speaks stdio only; there is no HTTP,

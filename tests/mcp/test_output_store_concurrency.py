@@ -21,7 +21,7 @@ from pyxsd.mcp.storage import Storage
 def _writer(root, barrier, results, content):
     async def scenario():
         with Storage(Path(root)) as storage:
-            store = OutputStore(storage, Limits())
+            store = OutputStore(storage, Limits(enforced=True))
             barrier.wait(timeout=15)
             ref = await store.put_bytes(
                 content, name="a.txt", media_type="text/plain", kind="result"
@@ -38,7 +38,7 @@ def _writer(root, barrier, results, content):
 def _reader(root, identifier, opened, resume, results, before_open=False):
     async def scenario():
         with Storage(Path(root)) as storage:
-            store = OutputStore(storage, Limits())
+            store = OutputStore(storage, Limits(enforced=True))
             original = store._verified
 
             def paused(row, descriptor, *, offset, length):
@@ -96,7 +96,7 @@ def test_first_publication_race(tmp_path):
 
     async def check():
         with Storage(root) as storage:
-            store = OutputStore(storage, Limits())
+            store = OutputStore(storage, Limits(enforced=True))
             assert len((await store.list())[0]) == 2
             for identifier, content in refs:
                 assert await store.read(identifier, offset=0, length=100) == content
@@ -109,7 +109,7 @@ def test_open_reader_survives_delete_without_blocking_publish(tmp_path):
 
     async def seed():
         with Storage(root) as storage:
-            return await OutputStore(storage, Limits()).put_bytes(
+            return await OutputStore(storage, Limits(enforced=True)).put_bytes(
                 b"original", name="a.txt", media_type="text/plain", kind="result"
             )
 
@@ -123,7 +123,7 @@ def test_open_reader_survives_delete_without_blocking_publish(tmp_path):
 
         async def mutate():
             with Storage(root, busy_timeout_ms=100) as storage:
-                store = OutputStore(storage, Limits())
+                store = OutputStore(storage, Limits(enforced=True))
                 await store.delete(ref.id)
                 with pytest.raises(ToolError, match="not_found"):
                     await store.get(ref.id)
@@ -147,7 +147,7 @@ def test_descriptor_open_is_inside_the_delete_reservation(tmp_path):
 
     async def seed():
         with Storage(root) as storage:
-            return await OutputStore(storage, Limits()).put_bytes(
+            return await OutputStore(storage, Limits(enforced=True)).put_bytes(
                 b"original", name="a.txt", media_type="text/plain", kind="result"
             )
 
@@ -164,7 +164,7 @@ def test_descriptor_open_is_inside_the_delete_reservation(tmp_path):
                 Storage(root, busy_timeout_ms=1) as storage,
                 pytest.raises(ToolError, match="state_busy"),
             ):
-                await OutputStore(storage, Limits()).delete(ref.id)
+                await OutputStore(storage, Limits(enforced=True)).delete(ref.id)
 
         anyio.run(blocked_delete)
         resume.wait(timeout=15)
@@ -183,7 +183,7 @@ def _delete(root, identifier, barrier):
         async def scenario():
             with Storage(Path(root)) as storage:
                 barrier.wait(timeout=15)
-                await OutputStore(storage, Limits()).delete(identifier)
+                await OutputStore(storage, Limits(enforced=True)).delete(identifier)
 
         anyio.run(scenario)
     except BaseException:
@@ -196,7 +196,7 @@ def test_concurrent_deletes_are_idempotent(tmp_path):
 
     async def seed():
         with Storage(root) as storage:
-            return await OutputStore(storage, Limits()).put_bytes(
+            return await OutputStore(storage, Limits(enforced=True)).put_bytes(
                 b"original", name="a.txt", media_type="text/plain", kind="result"
             )
 
@@ -228,7 +228,7 @@ def test_busy_timeout_is_typed_and_retryable(tmp_path):
 def _crash(root, phase, identifier, ready):
     async def scenario():
         with Storage(Path(root)) as storage:
-            store = OutputStore(storage, Limits())
+            store = OutputStore(storage, Limits(enforced=True))
             if phase == "publish":
                 original = store._run
 
@@ -266,7 +266,7 @@ def test_crash_orphans_remain_unlisted_and_are_not_reconciled(tmp_path, phase):
 
     async def seed():
         with Storage(root) as storage:
-            return await OutputStore(storage, Limits()).put_bytes(
+            return await OutputStore(storage, Limits(enforced=True)).put_bytes(
                 b"original", name="seed.txt", media_type="text/plain", kind="result"
             )
 
@@ -287,7 +287,7 @@ def test_crash_orphans_remain_unlisted_and_are_not_reconciled(tmp_path, phase):
 
     async def check():
         with Storage(root) as storage:
-            store = OutputStore(storage, Limits())
+            store = OutputStore(storage, Limits(enforced=True))
             listed, _ = await store.list()
             assert [item.id for item in listed] == ([ref.id] if phase == "publish" else [])
             bodies = sorted(path.read_bytes() for path in storage.artifacts.glob("*/*"))
@@ -303,7 +303,7 @@ def test_crash_orphans_remain_unlisted_and_are_not_reconciled(tmp_path, phase):
 def test_verification_error_and_commit_error_close_reader_descriptor(tmp_path, monkeypatch):
     async def scenario():
         with Storage(tmp_path / "state") as storage:
-            store = OutputStore(storage, Limits())
+            store = OutputStore(storage, Limits(enforced=True))
             ref = await store.put_bytes(
                 b"original", name="a.txt", media_type="text/plain", kind="result"
             )
@@ -346,7 +346,7 @@ def test_verification_error_and_commit_error_close_reader_descriptor(tmp_path, m
 def test_cancellation_waits_for_reader_cleanup(tmp_path, monkeypatch):
     async def scenario():
         with Storage(tmp_path / "state") as storage:
-            store = OutputStore(storage, Limits())
+            store = OutputStore(storage, Limits(enforced=True))
             ref = await store.put_bytes(
                 b"original", name="a.txt", media_type="text/plain", kind="result"
             )

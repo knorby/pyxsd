@@ -72,7 +72,7 @@ class _FakeCache:
         self.current = SimpleNamespace(report=current)
         self.alternative = SimpleNamespace(report=alternative)
         self.failure = failure
-        self.limits = Limits(message_bytes=32)
+        self.limits = Limits(enforced=True, message_bytes=32)
         self.requests = []
         self.active = 0
         self.max_active = 0

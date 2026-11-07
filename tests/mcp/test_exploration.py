@@ -44,7 +44,7 @@ async def harness(tmp_path: Path, limits: Limits | None = None):
     from pyxsd.mcp.storage import Storage
     from pyxsd.mcp.workers import WorkerPool
 
-    limits = limits or Limits(workers=1)
+    limits = limits or Limits(enforced=True, workers=1)
     storage = Storage(tmp_path / "state", persist=False)
     outputs = OutputStore(storage, limits)
     inputs = SessionInputs(storage.scratch, limits)
@@ -164,7 +164,7 @@ def test_schema_overview_compact_constraints_and_graph(tmp_path):
 
 def test_validation_pages_preserve_counts_suppression_and_provenance(tmp_path):
     async def scenario():
-        limits = Limits(workers=1, collected_issues=2)
+        limits = Limits(enforced=True, workers=1, collected_issues=2)
         async with harness(tmp_path, limits) as (service, inputs, _pool, workspace):
             await upload(inputs, workspace, {"schema.xsd": XSD, "document.xml": INVALID})
             request = ValidateDocumentRequest(
@@ -348,7 +348,7 @@ def test_large_query_result_exceeds_http_frame_without_truncating_value(tmp_path
     async def scenario():
         text_schema = '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="root" type="xs:string"/></xs:schema>'
         text = "x" * (3 * 2**20)
-        async with harness(tmp_path, Limits(workers=1, inline_bytes=4 * 2**20)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, inline_bytes=4 * 2**20)) as (
             service,
             inputs,
             _pool,

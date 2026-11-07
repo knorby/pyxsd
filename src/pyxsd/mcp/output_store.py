@@ -96,7 +96,7 @@ class OutputStore:
         media_type: str,
         kind: str,
         metadata: dict[str, JsonValue] | None,
-        limit: int,
+        limit: int | None,
     ) -> bytes:
         if (
             _NAME.fullmatch(name) is None
@@ -114,7 +114,7 @@ class OutputStore:
             ).encode("utf-8")
         except (TypeError, ValueError, UnicodeError) as exc:
             raise ToolError("invalid_argument", "Output metadata is not JSON") from exc
-        if len(encoded) > limit:
+        if limit is not None and len(encoded) > limit:
             raise ToolError("metadata_limit", "Output metadata exceeds its byte limit")
         return encoded
 
@@ -141,7 +141,7 @@ class OutputStore:
         encoded = self._arguments(name, media_type, kind, metadata, self.limits.result_bytes)
         if not isinstance(content, bytes):
             raise ToolError("invalid_argument", "Output content must be bytes")
-        if len(content) > self.limits.output_bytes:
+        if self.limits.output_bytes is not None and len(content) > self.limits.output_bytes:
             raise ToolError("quota_exceeded", "Output byte limit exceeded")
         async with self._lock:
             self._ensure_open()
@@ -245,10 +245,13 @@ class OutputStore:
             raise ToolError("artifact_changed", "Artifact cannot be read safely") from exc
         return row, descriptor
 
-    def _verified(self, row: sqlite3.Row, descriptor: int, *, offset: int, length: int) -> bytes:
+    def _verified(
+        self, row: sqlite3.Row, descriptor: int, *, offset: int, length: int | None
+    ) -> bytes:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise ToolError("artifact_changed", "Artifact is not a regular file")
+        end = None if length is None else offset + length
         digest, size = hashlib.sha256(), 0
         selected = bytearray()
         with os.fdopen(descriptor, "rb", closefd=False) as file:
@@ -259,8 +262,10 @@ class OutputStore:
                 start = size
                 size += len(chunk)
                 digest.update(chunk)
-                if start < offset + length and size > offset:
-                    selected.extend(chunk[max(0, offset - start) : offset + length - start])
+                if size > offset and (end is None or start < end):
+                    selected.extend(
+                        chunk[max(0, offset - start) : None if end is None else end - start]
+                    )
         if size != row["size"] or digest.hexdigest() != row["digest"]:
             raise ToolError("artifact_changed", "Artifact bytes no longer match the index")
         return bytes(selected)
@@ -275,10 +280,14 @@ class OutputStore:
         return ref
 
     async def read_with_ref(
-        self, artifact_id: str, *, offset: int, length: int
+        self, artifact_id: str, *, offset: int, length: int | None
     ) -> tuple[OutputRef, bytes]:
         """Return metadata and a range after one integrity scan under one lock."""
-        if type(offset) is not int or offset < 0 or type(length) is not int or length <= 0:
+        if (
+            type(offset) is not int
+            or offset < 0
+            or (length is not None and (type(length) is not int or length <= 0))
+        ):
             raise ToolError("invalid_argument", "Invalid artifact range")
         async with self._lock:
             self._ensure_open()
@@ -287,7 +296,7 @@ class OutputStore:
             )
 
     def _read_with_ref_sync(
-        self, artifact_id: str, offset: int, length: int
+        self, artifact_id: str, offset: int, length: int | None
     ) -> tuple[OutputRef, bytes]:
         opened: list_type[tuple[sqlite3.Row, int]] = []
 
@@ -305,19 +314,29 @@ class OutputStore:
             if opened:
                 os.close(opened[0][1])
 
-    async def read(self, artifact_id: str, *, offset: int, length: int) -> bytes:
+    async def read(self, artifact_id: str, *, offset: int, length: int | None) -> bytes:
         _, content = await self.read_with_ref(artifact_id, offset=offset, length=length)
         return content
 
     async def list(
-        self, *, after: tuple[float, str] | None = None, limit: int = 50
+        self, *, after: tuple[float, str] | None = None, limit: int | None = None
     ) -> tuple[list_type[OutputRef], tuple[float, str] | None]:
-        if type(limit) is not int or not 1 <= limit <= self.limits.page_items:
-            raise ToolError(
-                "invalid_argument",
-                f"Invalid output page size; expected an integer from 1 to {self.limits.page_items}",
-                details={"limit": limit, "maximum": self.limits.page_items},
-            )
+        if limit is not None:
+            maximum = self.limits.page_items
+            if type(limit) is not int:
+                raise ToolError("invalid_argument", "Invalid output page size")
+            if limit < 1:
+                raise ToolError(
+                    "invalid_argument",
+                    "Invalid output page size",
+                    details={"limit": limit},
+                )
+            if maximum is not None and limit > maximum:
+                raise ToolError(
+                    "invalid_argument",
+                    f"Invalid output page size; expected an integer from 1 to {maximum}",
+                    details={"limit": limit, "maximum": maximum},
+                )
         if after is not None and (
             not isinstance(after, tuple)
             or len(after) != 2
@@ -332,23 +351,27 @@ class OutputStore:
             return await anyio.to_thread.run_sync(self._list_sync, after, limit)
 
     def _list_sync(
-        self, after: tuple[float, str] | None, limit: int
+        self, after: tuple[float, str] | None, limit: int | None
     ) -> tuple[list_type[OutputRef], tuple[float, str] | None]:
         return self._run(lambda db: self._list_rows(db, after, limit)) or ([], None)
 
     def _list_rows(
-        self, connection: sqlite3.Connection, after: tuple[float, str] | None, limit: int
+        self,
+        connection: sqlite3.Connection,
+        after: tuple[float, str] | None,
+        limit: int | None,
     ) -> tuple[list_type[OutputRef], tuple[float, str] | None]:
         if after is None:
-            rows = connection.execute(
-                "SELECT * FROM artifacts ORDER BY created,id LIMIT ?", (limit + 1,)
-            ).fetchall()
+            query = "SELECT * FROM artifacts"
+            parameters: tuple[object, ...] = ()
         else:
-            rows = connection.execute(
-                "SELECT * FROM artifacts WHERE created>? OR (created=? AND id>?) "
-                "ORDER BY created,id LIMIT ?",
-                (after[0], after[0], after[1], limit + 1),
-            ).fetchall()
+            query = "SELECT * FROM artifacts WHERE created>? OR (created=? AND id>?)"
+            parameters = (after[0], after[0], after[1])
+        query += " ORDER BY created,id"
+        if limit is None:
+            rows = connection.execute(query, parameters).fetchall()
+            return [self._ref(row) for row in rows], None
+        rows = connection.execute(f"{query} LIMIT ?", (*parameters, limit + 1)).fetchall()
         more = len(rows) > limit
         page = rows[:limit]
         refs = [self._ref(row) for row in page]

@@ -215,11 +215,16 @@ class ExplorationService:
         }
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
-    def _position(self, page: Page, result_id: str) -> tuple[int, int]:
-        if page.limit > self.pool.limits.page_items:
+    def _deadline(self, seconds: int | None) -> float | None:
+        return None if seconds is None else time.monotonic() + seconds
+
+    def _position(self, page: Page, result_id: str) -> tuple[int, int | None]:
+        budget = self.pool.limits.page_items
+        limit = page.limit if page.limit is not None else budget
+        if limit is not None and budget is not None and limit > budget:
             raise ToolError("invalid_argument", "Page limit exceeds the operator budget")
         offset = 0 if page.cursor is None else self.tokens.decode_page(result_id, page.cursor)
-        return offset, page.limit
+        return offset, limit
 
     def _envelope(
         self,
@@ -288,7 +293,7 @@ class ExplorationService:
                         offset=offset,
                         limit=limit,
                     ),
-                    deadline=time.monotonic() + self.pool.limits.compile_query_seconds,
+                    deadline=self._deadline(self.pool.limits.compile_query_seconds),
                 )
                 return self._envelope(
                     reply,
@@ -325,7 +330,7 @@ class ExplorationService:
                         offset=offset,
                         limit=limit,
                     ),
-                    deadline=time.monotonic() + self.pool.limits.compile_query_seconds,
+                    deadline=self._deadline(self.pool.limits.compile_query_seconds),
                 )
                 return self._envelope(
                     reply,
@@ -359,7 +364,7 @@ class ExplorationService:
                         issue_offset=offset,
                         issue_limit=limit,
                     ),
-                    deadline=time.monotonic() + self.pool.limits.compile_query_seconds,
+                    deadline=self._deadline(self.pool.limits.compile_query_seconds),
                 )
                 if reply.status == "ok" and isinstance(reply.result, dict):
                     report = reply.result.get("report")
@@ -427,7 +432,10 @@ class ExplorationService:
         try:
             if not request.documents:
                 raise ToolError("invalid_argument", "Batch validation needs at least one item")
-            if len(request.documents) > self.pool.limits.corpus_max_files:
+            if (
+                self.pool.limits.corpus_max_files is not None
+                and len(request.documents) > self.pool.limits.corpus_max_files
+            ):
                 raise ToolError("quota_exceeded", "Batch exceeds the operator file budget")
             batch_refs: tuple[FileRef | SchemaRef, ...] = (
                 *(entry.schema_ref for entry in request.documents if entry.schema_ref),
@@ -441,7 +449,7 @@ class ExplorationService:
                 )
                 reply = await self.pool.run(
                     operation,
-                    deadline=time.monotonic() + self.pool.limits.batch_seconds,
+                    deadline=self._deadline(self.pool.limits.batch_seconds),
                 )
                 if reply.status == "error":
                     assert reply.fault is not None
@@ -556,7 +564,7 @@ class ExplorationService:
                         offset=offset,
                         limit=limit,
                     ),
-                    deadline=time.monotonic() + self.pool.limits.compile_query_seconds,
+                    deadline=self._deadline(self.pool.limits.compile_query_seconds),
                 )
                 envelope = self._envelope(
                     reply,
@@ -609,12 +617,17 @@ class ExplorationService:
         assert self.outputs is not None
         ref = request.report
         chunks = []
-        for offset in range(0, ref.size, self.outputs.limits.result_bytes):
+        chunk_size = self.outputs.limits.result_bytes
+        if chunk_size is None:
+            data = await self.outputs.read(ref.id, offset=0, length=ref.size)
+            report = json.loads(data)
+            return report["issues"][request.issue_index]
+        for offset in range(0, ref.size, chunk_size):
             chunks.append(
                 await self.outputs.read(
                     ref.id,
                     offset=offset,
-                    length=min(self.outputs.limits.result_bytes, ref.size - offset),
+                    length=min(chunk_size, ref.size - offset),
                 )
             )
         try:

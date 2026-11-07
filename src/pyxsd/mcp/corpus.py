@@ -3,22 +3,29 @@
 import re
 from collections.abc import Iterable
 
+from .config import Limits
 from .errors import ToolError
 
 
-def portable_parts(value: str) -> tuple[str, ...]:
+def portable_parts(value: str, limits: Limits | None = None) -> tuple[str, ...]:
     """Validate relative POSIX spelling and return its path segments."""
+    path_bytes = None if limits is None else limits.path_bytes
+    path_segments = None if limits is None else limits.path_segments
+    segment_bytes = None if limits is None else limits.path_segment_bytes
     try:
+        encoded = len(value.encode("utf-8")) if isinstance(value, str) else 0
+        parts = value.split("/") if isinstance(value, str) else ()
         valid = (
             isinstance(value, str)
             and bool(value)
-            and len(value.encode("utf-8")) <= 4096
-            and len(value.split("/")) <= 128
+            and (path_bytes is None or encoded <= path_bytes)
+            and (path_segments is None or len(parts) <= path_segments)
             and not any(ord(char) < 32 or ord(char) == 127 for char in value)
             and not any(char in value for char in ("\\", ":"))
             and all(
-                part not in ("", ".", "..") and len(part.encode("utf-8")) <= 255
-                for part in value.split("/")
+                part not in ("", ".", "..")
+                and (segment_bytes is None or len(part.encode("utf-8")) <= segment_bytes)
+                for part in parts
             )
         )
     except UnicodeEncodeError:
@@ -69,8 +76,8 @@ def _segment_expression(segment: str, *, final: bool) -> str:
 class CorpusGlob:
     """One validated corpus pattern shared by manifests and source trees."""
 
-    def __init__(self, pattern: str) -> None:
-        parts = portable_parts(pattern)
+    def __init__(self, pattern: str, limits: Limits | None = None) -> None:
+        parts = portable_parts(pattern, limits)
         expressions = [
             _segment_expression(part, final=index == len(parts) - 1)
             for index, part in enumerate(parts)
@@ -84,25 +91,31 @@ class CorpusGlob:
         return self._expression.fullmatch(path) is not None
 
 
-def _positive_budget(value: object, label: str) -> int:
+def _positive_budget(value: object, label: str) -> int | None:
+    if value is None:
+        return None
     if type(value) is not int or value <= 0:
         raise ToolError("invalid_argument", f"{label} must be a positive integer")
     return value
 
 
 def select_manifest_paths(
-    pattern: str, paths: Iterable[str], *, max_matches: int
+    pattern: str,
+    paths: Iterable[str],
+    *,
+    max_matches: int | None,
+    limits: Limits | None = None,
 ) -> tuple[str, ...]:
     """Select lexical manifest paths without reading or capturing their bytes."""
     limit = _positive_budget(max_matches, "Match budget")
     candidates = tuple(paths)
     for path in candidates:
-        portable_parts(path)
-    glob = CorpusGlob(pattern)
+        portable_parts(path, limits)
+    glob = CorpusGlob(pattern, limits)
     selected: list[str] = []
     for path in sorted(set(candidates)):
         if glob.matches(path):
             selected.append(path)
-            if len(selected) > limit:
+            if limit is not None and len(selected) > limit:
                 raise ToolError("quota_exceeded", "Corpus glob exceeds match budget")
     return tuple(selected)

@@ -72,7 +72,7 @@ def test_preview_respects_operator_preview_rows_budget(tmp_path):
     from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, preview_rows=1)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, preview_rows=1)) as (
             _,
             inputs,
             pool,
@@ -275,7 +275,7 @@ def test_export_output_quota_refusal_leaves_no_artifact(tmp_path):
     from pyxsd.mcp.services.records import RecordService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, output_bytes=512)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, output_bytes=512)) as (
             _,
             inputs,
             pool,
@@ -296,7 +296,7 @@ def test_export_dataset_multiple_documents_manifest_and_corpus_quota(tmp_path):
     from pyxsd.mcp.services.records import RecordService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, corpus_files=1)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, corpus_files=1)) as (
             _,
             inputs,
             pool,
@@ -787,7 +787,7 @@ def test_capture_rejects_unsafe_and_overweight_dataset_output(tmp_path, monkeypa
     from pyxsd.mcp.services.records import RecordService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, output_bytes=512)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, output_bytes=512)) as (
             _,
             inputs,
             pool,

@@ -15,7 +15,7 @@ def test_python_source_is_retained_without_execution(tmp_path):
 
     marker = tmp_path / "executed"
     source = f"open({str(marker)!r}, 'w').write('bad')\ndef transform(document, context): pass"
-    result = normalize_transform({"kind": "python", "source": source}, Limits())
+    result = normalize_transform({"kind": "python", "source": source}, Limits(enforced=True))
     assert result.source == source
     assert not marker.exists()
     assert result.kind == "python"
@@ -28,12 +28,16 @@ def test_source_budget_counts_utf8_bytes(size, allowed):
     source = "#" + "x" * (size - 3) + "é"
     if allowed:
         assert (
-            len(normalize_transform({"kind": "python", "source": source}, Limits()).source.encode())
+            len(
+                normalize_transform(
+                    {"kind": "python", "source": source}, Limits(enforced=True)
+                ).source.encode()
+            )
             == size
         )
     else:
         with pytest.raises(ToolError, match="invalid_transform"):
-            normalize_transform({"kind": "python", "source": source}, Limits())
+            normalize_transform({"kind": "python", "source": source}, Limits(enforced=True))
 
 
 def test_pipeline_preserves_json_arguments_checkpoints_and_explicit_code():
@@ -53,7 +57,7 @@ def test_pipeline_preserves_json_arguments_checkpoints_and_explicit_code():
             ],
             "definitions": {"Repair": "def transform(document, context, *args, **kwargs): pass"},
         },
-        Limits(),
+        Limits(enforced=True),
     )
     assert result.steps[0].args == (1, "x")
     assert result.steps[0].kwargs == {"enabled": True}
@@ -68,7 +72,7 @@ def test_cli_recipe_is_parsed_as_literals_without_resolving_imports(tmp_path, mo
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "repair.py").write_text("raise RuntimeError('must not import')", encoding="utf-8")
-    result = parse_pipeline('Repair(2, label="x>y") > Finish()', Limits())
+    result = parse_pipeline('Repair(2, label="x>y") > Finish()', Limits(enforced=True))
     assert [step.name for step in result.steps] == ["Repair", "Finish"]
     assert result.steps[0].kwargs == {"label": "x>y"}
 
@@ -88,7 +92,7 @@ def test_recipe_refuses_executable_or_ambiguous_syntax(expression):
     from pyxsd.mcp.transforms import parse_pipeline
 
     with pytest.raises(ToolError, match="invalid_transform"):
-        parse_pipeline(expression, Limits())
+        parse_pipeline(expression, Limits(enforced=True))
 
 
 @pytest.mark.parametrize(
@@ -108,24 +112,29 @@ def test_invalid_specs_are_typed_errors(value):
     from pyxsd.mcp.transforms import normalize_transform
 
     with pytest.raises(ToolError, match="invalid_transform"):
-        normalize_transform(value, Limits())
+        normalize_transform(value, Limits(enforced=True))
 
 
 def test_operator_budgets_and_explicit_registry_resolution():
     from pyxsd.mcp.transforms import normalize_transform, resolve_sources
 
     with pytest.raises(ToolError, match="invalid_transform"):
-        normalize_transform({"kind": "python", "source": "abcd"}, Limits(transform_source_bytes=3))
+        normalize_transform(
+            {"kind": "python", "source": "abcd"}, Limits(enforced=True, transform_source_bytes=3)
+        )
     with pytest.raises(ToolError, match="invalid_transform"):
         normalize_transform(
-            {"kind": "pipeline", "steps": [{"name": "X"}] * 2}, Limits(pipeline_steps=1)
+            {"kind": "pipeline", "steps": [{"name": "X"}] * 2},
+            Limits(enforced=True, pipeline_steps=1),
         )
-    spec = normalize_transform({"kind": "pipeline", "steps": [{"name": "X"}]}, Limits())
+    spec = normalize_transform(
+        {"kind": "pipeline", "steps": [{"name": "X"}]}, Limits(enforced=True)
+    )
     with pytest.raises(ToolError, match="unknown_transform"):
-        resolve_sources(spec, {}, Limits())
+        resolve_sources(spec, {}, Limits(enforced=True))
     source = "def transform(document, context): return document"
-    assert resolve_sources(spec, {"X": source}, Limits()) == {"X": source}
+    assert resolve_sources(spec, {"X": source}, Limits(enforced=True)) == {"X": source}
     explicit = spec.model_copy(update={"definitions": {"X": source + "\n"}})
-    assert resolve_sources(explicit, {"X": source}, Limits())["X"] == source + "\n"
+    assert resolve_sources(explicit, {"X": source}, Limits(enforced=True))["X"] == source + "\n"
     with pytest.raises(ToolError, match="invalid_transform"):
-        resolve_sources(spec, {"X": "x" * 65537}, Limits())
+        resolve_sources(spec, {"X": "x" * 65537}, Limits(enforced=True))

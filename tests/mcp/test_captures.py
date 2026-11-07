@@ -37,7 +37,7 @@ def capture(tmp_path, files):
 
 def test_read_records_dependencies_and_resolves_virtual_paths(tmp_path):
     item = capture(tmp_path, {"schema.xsd": XSD.encode(), "other.xsd": XSD.encode()})
-    policy = InputResourcePolicy(item, Limits(schema_closure_files=4))
+    policy = InputResourcePolicy(item, Limits(enforced=True, schema_closure_files=4))
     first = policy.read("/workspace/schema.xsd", base=None, purpose="schema")
     assert first.content == XSD.encode()
     policy.read("other.xsd", base="/workspace/schema.xsd", purpose="schema")
@@ -66,13 +66,17 @@ def test_read_records_dependencies_and_resolves_virtual_paths(tmp_path):
     ],
 )
 def test_unadmitted_resource_names_are_rejected(tmp_path, source, base, error):
-    policy = InputResourcePolicy(capture(tmp_path, {"schema.xsd": XSD.encode()}), Limits())
+    policy = InputResourcePolicy(
+        capture(tmp_path, {"schema.xsd": XSD.encode()}), Limits(enforced=True)
+    )
     with pytest.raises(InputPolicyError, match=error):
         policy.read(source, base=base, purpose="schema")
 
 
 def test_empty_normalized_resource_path_is_rejected(tmp_path):
-    policy = InputResourcePolicy(capture(tmp_path, {"schema.xsd": XSD.encode()}), Limits())
+    policy = InputResourcePolicy(
+        capture(tmp_path, {"schema.xsd": XSD.encode()}), Limits(enforced=True)
+    )
     with pytest.raises(InputPolicyError, match="invalid_path"):
         policy.read("/workspace/bad\x01name", base=None, purpose="schema")
 
@@ -86,15 +90,15 @@ def test_manifest_construction_and_capture_bytes_are_verified(tmp_path):
                 tmp_path,
                 (CaptureFile("a", "0" * 64, 1), CaptureFile("a", "0" * 64, 1)),
             ),
-            Limits(),
+            Limits(enforced=True),
         )
     with pytest.raises(InputPolicyError, match="invalid_path"):
         InputResourcePolicy(
             InputCapture("w", 1, tmp_path, (CaptureFile("a/../b", "0" * 64, 1),)),
-            Limits(),
+            Limits(enforced=True),
         )
     item = capture(tmp_path, {"schema.xsd": XSD.encode()})
-    policy = InputResourcePolicy(item, Limits())
+    policy = InputResourcePolicy(item, Limits(enforced=True))
     (item.root / "schema.xsd").write_bytes(b"changed")
     with pytest.raises(InputPolicyError, match="source_changed"):
         policy.read("schema.xsd", base=None, purpose="schema")
@@ -112,18 +116,18 @@ def test_schema_and_instance_budgets_fail_closed(tmp_path):
         {"schema.xsd": XSD.encode(), "other.xsd": XSD.encode(), "doc.xml": b"<root/>"},
     )
     with pytest.raises(InputPolicyError, match="schema_limit"):
-        InputResourcePolicy(item, Limits(schema_file_bytes=4)).read(
+        InputResourcePolicy(item, Limits(enforced=True, schema_file_bytes=4)).read(
             "schema.xsd", base=None, purpose="schema"
         )
     with pytest.raises(InputPolicyError, match="xml_limit"):
-        InputResourcePolicy(item, Limits(xml_file_bytes=4)).read(
+        InputResourcePolicy(item, Limits(enforced=True, xml_file_bytes=4)).read(
             "doc.xml", base=None, purpose="instance"
         )
-    one_file = InputResourcePolicy(item, Limits(schema_closure_files=1))
+    one_file = InputResourcePolicy(item, Limits(enforced=True, schema_closure_files=1))
     one_file.read("schema.xsd", base=None, purpose="schema")
     with pytest.raises(InputPolicyError, match="schema_limit"):
         one_file.read("other.xsd", base="/workspace/schema.xsd", purpose="schema")
-    exact_bytes = InputResourcePolicy(item, Limits(schema_closure_bytes=len(XSD)))
+    exact_bytes = InputResourcePolicy(item, Limits(enforced=True, schema_closure_bytes=len(XSD)))
     exact_bytes.read("schema.xsd", base=None, purpose="schema")
     with pytest.raises(InputPolicyError, match="schema_limit"):
         exact_bytes.read("other.xsd", base="/workspace/schema.xsd", purpose="schema")
@@ -131,7 +135,7 @@ def test_schema_and_instance_budgets_fail_closed(tmp_path):
 
 def test_schema_hint_purpose_is_budgeted_as_a_schema_dependency(tmp_path):
     item = capture(tmp_path, {"schema.xsd": XSD.encode(), "other.xsd": XSD.encode()})
-    policy = InputResourcePolicy(item, Limits(schema_closure_files=2))
+    policy = InputResourcePolicy(item, Limits(enforced=True, schema_closure_files=2))
     policy.read("/workspace/schema.xsd", base=None, purpose="schema")
     policy.read("other.xsd", base="/workspace/schema.xsd", purpose="schema-hint")
     assert [dependency.path for dependency in policy.dependencies] == [
@@ -146,25 +150,25 @@ def test_schema_hint_purpose_is_budgeted_as_a_schema_dependency(tmp_path):
 
 def test_xml_parser_enforces_depth_elements_and_defused_constructs(tmp_path):
     item = capture(tmp_path, {"schema.xsd": XSD.encode()})
-    root = InputResourcePolicy(item, Limits()).parse(
+    root = InputResourcePolicy(item, Limits(enforced=True)).parse(
         ResourceData("/workspace/a.xml", b'<root xmlns:p="urn:test"><p:child/></root>'),
         NamespaceContext(),
     )
     assert root.tag == "root"
     with pytest.raises(InputPolicyError, match="xml_limit"):
-        InputResourcePolicy(item, Limits(xml_file_bytes=4)).parse(
+        InputResourcePolicy(item, Limits(enforced=True, xml_file_bytes=4)).parse(
             ResourceData("/workspace/a.xml", b"<root/>"), NamespaceContext()
         )
     with pytest.raises(InputPolicyError, match="xml_limit"):
-        InputResourcePolicy(item, Limits(xml_depth=1)).parse(
+        InputResourcePolicy(item, Limits(enforced=True, xml_depth=1)).parse(
             ResourceData("/workspace/a.xml", b"<root><child/></root>"), NamespaceContext()
         )
     with pytest.raises(InputPolicyError, match="xml_limit"):
-        InputResourcePolicy(item, Limits(xml_elements=1)).parse(
+        InputResourcePolicy(item, Limits(enforced=True, xml_elements=1)).parse(
             ResourceData("/workspace/a.xml", b"<root><child/></root>"), NamespaceContext()
         )
     with pytest.raises(InputPolicyError, match="dangerous_xml"):
-        InputResourcePolicy(item, Limits()).parse(
+        InputResourcePolicy(item, Limits(enforced=True)).parse(
             ResourceData(
                 "/workspace/a.xml",
                 b'<!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><x>&e;</x>',
@@ -176,6 +180,24 @@ def test_xml_parser_enforces_depth_elements_and_defused_constructs(tmp_path):
 def test_rebind_rejects_invalid_capture_paths(tmp_path):
     from pyxsd.mcp.captures import CaptureFile, InputPolicyError
 
-    policy = InputResourcePolicy(InputCapture("w", 1, tmp_path, ()), Limits())
+    policy = InputResourcePolicy(InputCapture("w", 1, tmp_path, ()), Limits(enforced=True))
     with pytest.raises(InputPolicyError, match="invalid_path"):
         policy.rebind(InputCapture("w", 2, tmp_path, (CaptureFile("../x", "0" * 64, 1),)))
+
+
+def test_default_disabled_limits_read_past_numeric_bounds(tmp_path):
+    from pyxsd.mcp.captures import InputPolicyError
+
+    item = capture(tmp_path, {"schema.xsd": XSD.encode()})
+    disabled = InputResourcePolicy(
+        item,
+        Limits(schema_file_bytes=1, schema_closure_files=1, schema_closure_bytes=1),
+    )
+    assert disabled.read("schema.xsd", base=None, purpose="schema").content == XSD.encode()
+
+    enforced = InputResourcePolicy(
+        item,
+        Limits(enforced=True, schema_file_bytes=1, schema_closure_files=1, schema_closure_bytes=1),
+    )
+    with pytest.raises(InputPolicyError, match="schema_limit"):
+        enforced.read("schema.xsd", base=None, purpose="schema")

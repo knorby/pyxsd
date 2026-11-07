@@ -7,46 +7,68 @@ from pydantic import Field, model_validator
 
 from .contracts import PositiveBudget, WireModel
 
+ResourceBudget = PositiveBudget | None
+
 
 def default_state_dir(project_root: Path) -> Path:
     return project_root / ".pyxsd/mcp"
 
 
 class Limits(WireModel):
-    xml_file_bytes: PositiveBudget = 64 * 2**20
-    schema_file_bytes: PositiveBudget = 16 * 2**20
-    schema_closure_files: PositiveBudget = 128
-    schema_closure_bytes: PositiveBudget = 64 * 2**20
-    xml_depth: PositiveBudget = 256
-    xml_elements: PositiveBudget = 1_000_000
-    inline_bytes: PositiveBudget = 2**20
-    request_bytes: PositiveBudget = 2 * 2**20
-    workspace_bytes: PositiveBudget = 512 * 2**20
-    workspaces: PositiveBudget = 32
-    input_entries: PositiveBudget = 4096
-    cache_entries: PositiveBudget = 8
-    workers: PositiveBudget = 4
-    worker_queue: PositiveBudget = 16
-    compile_query_seconds: PositiveBudget = 30
-    transform_seconds: PositiveBudget = 60
-    batch_seconds: PositiveBudget = 300
-    transform_source_bytes: PositiveBudget = 64 * 2**10
-    pipeline_steps: PositiveBudget = 32
-    result_bytes: PositiveBudget = 24 * 2**10
-    page_items: PositiveBudget = 50
-    preview_rows: PositiveBudget = 20
-    collected_issues: PositiveBudget = 10_000
-    message_bytes: PositiveBudget = 4 * 2**10
-    output_bytes: PositiveBudget = 128 * 2**20
-    cache_idle_seconds: PositiveBudget = 900
-    worker_operations: PositiveBudget = 100
-    corpus_files: PositiveBudget = 100
-    corpus_max_files: PositiveBudget = 1000
-    corpus_file_seconds: PositiveBudget = 10
+    enforced: bool = False
+    xml_file_bytes: ResourceBudget = 64 * 2**20
+    schema_file_bytes: ResourceBudget = 16 * 2**20
+    schema_closure_files: ResourceBudget = 128
+    schema_closure_bytes: ResourceBudget = 64 * 2**20
+    xml_depth: ResourceBudget = 256
+    xml_elements: ResourceBudget = 1_000_000
+    inline_bytes: ResourceBudget = 2**20
+    request_bytes: ResourceBudget = 2 * 2**20
+    workspace_bytes: ResourceBudget = 512 * 2**20
+    workspaces: ResourceBudget = 32
+    input_entries: ResourceBudget = 4096
+    cache_entries: ResourceBudget = 8
+    workers: ResourceBudget = 4
+    worker_queue: ResourceBudget = 16
+    compile_query_seconds: ResourceBudget = 30
+    transform_seconds: ResourceBudget = 60
+    batch_seconds: ResourceBudget = 300
+    transform_source_bytes: ResourceBudget = 64 * 2**10
+    pipeline_steps: ResourceBudget = 32
+    result_bytes: ResourceBudget = 24 * 2**10
+    page_items: ResourceBudget = 50
+    preview_rows: ResourceBudget = 20
+    collected_issues: ResourceBudget = 10_000
+    message_bytes: ResourceBudget = 4 * 2**10
+    output_bytes: ResourceBudget = 128 * 2**20
+    cache_idle_seconds: ResourceBudget = 900
+    worker_operations: ResourceBudget = 100
+    corpus_files: ResourceBudget = 100
+    corpus_max_files: ResourceBudget = 1000
+    corpus_file_seconds: ResourceBudget = 10
+    projection_search_depth: ResourceBudget = 8
+    projection_searched_declarations: ResourceBudget = 100
+    projection_candidates: ResourceBudget = 10
+    path_bytes: ResourceBudget = 4096
+    path_segments: ResourceBudget = 128
+    path_segment_bytes: ResourceBudget = 255
+    io_chunk_bytes: ResourceBudget = 65536
 
     @model_validator(mode="after")
-    def validate_corpus_limit(self) -> Self:
-        if self.corpus_files > self.corpus_max_files:
+    def validate_resource_limits(self) -> Self:
+        resource_fields = (name for name in type(self).model_fields if name != "enforced")
+        if not self.enforced:
+            for name in resource_fields:
+                object.__setattr__(self, name, None)
+            return self
+        for name in resource_fields:
+            if getattr(self, name) is None:
+                raise ValueError(f"{name} must be set when resource limits are enforced")
+        if (
+            self.corpus_files is not None
+            and self.corpus_max_files is not None
+            and self.corpus_files > self.corpus_max_files
+        ):
             raise ValueError("corpus_files must not exceed corpus_max_files")
         return self
 

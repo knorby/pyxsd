@@ -56,7 +56,7 @@ def test_real_worker_parses_discovers_and_recycles(tmp_path):
     snapshot = make_snapshot(tmp_path)
 
     async def scenario():
-        pool = workers.WorkerPool(Limits(workers=1, worker_operations=2))
+        pool = workers.WorkerPool(Limits(enforced=True, workers=1, worker_operations=2))
         operation = parse_operation(workers, snapshot)
         try:
             first = await pool.run(operation, deadline=time.monotonic() + 10)
@@ -93,7 +93,7 @@ def test_worker_death_is_retryable_and_never_a_false_verdict(tmp_path):
     snapshot = make_snapshot(tmp_path)
 
     async def scenario():
-        pool = workers.WorkerPool(Limits(workers=1))
+        pool = workers.WorkerPool(Limits(enforced=True, workers=1))
         operation = parse_operation(workers, snapshot)
         try:
             await pool.run(operation, deadline=time.monotonic() + 10)
@@ -118,7 +118,7 @@ def test_deadline_and_cancellation_terminate_work_and_allow_recovery(tmp_path):
     snapshot = make_snapshot(tmp_path, large=True)
 
     async def scenario():
-        pool = workers.WorkerPool(Limits(workers=1))
+        pool = workers.WorkerPool(Limits(enforced=True, workers=1))
         small = parse_operation(workers, snapshot)
         large = parse_operation(workers, snapshot, "large", "large.xml")
         try:
@@ -156,7 +156,7 @@ def test_queue_capacity_and_cancellation_release_slots(tmp_path):
     snapshot = make_snapshot(tmp_path, large=True)
 
     async def scenario():
-        pool = workers.WorkerPool(Limits(workers=1, worker_queue=1))
+        pool = workers.WorkerPool(Limits(enforced=True, workers=1, worker_queue=1))
         first = parse_operation(workers, snapshot, "first", "large.xml")
         second = parse_operation(workers, snapshot, "second")
 
@@ -198,7 +198,7 @@ def test_repeated_parses_have_a_bounded_process_memory_plateau(tmp_path):
         return int(subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)]).strip())
 
     async def scenario():
-        pool = workers.WorkerPool(Limits(workers=1, worker_operations=1000))
+        pool = workers.WorkerPool(Limits(enforced=True, workers=1, worker_operations=1000))
         operation = parse_operation(workers, snapshot)
         try:
             for _ in range(10):
@@ -211,5 +211,20 @@ def test_repeated_parses_have_a_bounded_process_memory_plateau(tmp_path):
             assert after <= before + 128 * 1024
         finally:
             await pool.aclose()
+
+    anyio.run(scenario)
+
+
+def test_default_disabled_limits_run_without_slots_or_deadline(tmp_path):
+    from pyxsd.mcp import workers
+
+    snapshot = make_snapshot(tmp_path)
+
+    async def scenario():
+        async with workers.WorkerPool(Limits()) as pool:
+            assert pool._slots is None
+            reply = await pool.run(parse_operation(workers, snapshot), deadline=None)
+            assert reply.status == "ok"
+            assert pool._dynamic
 
     anyio.run(scenario)

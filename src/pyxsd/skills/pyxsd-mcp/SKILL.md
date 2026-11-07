@@ -26,7 +26,10 @@ resetting its dedicated MCP directory; startup never cleans crash orphans.
 
 Call `pyxsd_capabilities` first. It reports the version, enabled tool groups,
 execution backend, project root, resolved state directory, persistence policy,
-source root, limits, and adapter availability. Do not assume
+source root, limits, and adapter availability. Resource limits are disabled by
+default; use `--resource-limits enabled` or
+`PYXSD_MCP_RESOURCE_LIMITS=enabled` to restore the numeric defaults, and
+`--limit FIELD=VALUE` / `PYXSD_MCP_<UPPERCASE_FIELD>` to tune them. Do not assume
 execution or Arrow features — check `adapters.arrow.available` and
 `execution_backend`.
 
@@ -73,8 +76,9 @@ For a corpus, use `pyxsd_validate_documents` with `documents` items containing
 `document: {path: ...}` and optional `schema_ref: {source: {path: ...}}`.
 One capture/worker call handles the batch; results retain request order and
 contain per-document verdicts/counts or faults. Reports are retained only for
-invalid documents. Split at `limits.corpus_max_files`; use the singular tool for
-paged diagnostics. Missing uploaded inputs, malformed XML, and schema-group
+invalid documents. When resource limits are enabled, split at
+`limits.corpus_max_files`; with limits disabled, no corpus split is required.
+Use the singular tool for paged diagnostics. Missing uploaded inputs, malformed XML, and schema-group
 failures return item faults; source-tree capture failures may reject a whole batch.
 Missing-input fault details include `role`, `path`, and `missing`.
 
@@ -84,16 +88,18 @@ evidence that a document is invalid. Inspect incomplete schemas to diagnose them
 
 ## Outputs
 
-Validation reports, oversized response bodies, record exports, and transform
-previews are stored as local artifacts with an ID, absolute path, size, SHA-256
-digest, media type, creation time, and kind.
+Validation reports, record exports, and transform previews are stored as local
+artifacts with an ID, absolute path, size, SHA-256 digest, media type, creation
+time, and kind. Oversized response bodies spill to artifacts only when resource
+limits are enabled.
 
 - `pyxsd_list_artifacts` pages in stable creation order using envelope
   `page.next_cursor`; the cursor survives response spillover.
-- `pyxsd_read_artifact` returns a bounded base64 range plus actual `length`, total
-  `size`, digest, media type, and local path. `length` can be smaller than
-  requested at end of file. Concatenate ranged reads for a large body; reduce
-  length on `response_limit` (reads never spill recursively).
+- `pyxsd_read_artifact` returns base64 bytes from `offset` plus actual `length`,
+  total `size`, digest, media type, and local path. Omit `length` to read through
+  EOF (the default when resource limits are disabled); when limits are enabled,
+  request bounded ranges and reduce `length` on `response_limit` (reads never
+  spill recursively).
 - `pyxsd_delete_artifact` explicitly deletes one output. Repeating it is
   harmless. Nothing is removed automatically by time, workspace release, or
   preview completion.

@@ -94,6 +94,7 @@ def _unsupported_projection(
         element=operation.element,
         path=operation.path,
         prepare=lambda element, path: _records_default(schema, element, path),
+        limits=cache.limits,
     )
     return ToolError("unsupported_projection", message, details=details)
 
@@ -127,19 +128,23 @@ def execute_records(
             raise _unsupported_projection(schema, operation, exc, cache, columns=columns) from exc
         rows: list[JsonValue] = []
         count = 0
-        cap = min(20, cache.limits.preview_rows)
+        cap = cache.limits.preview_rows
+        batch_size = cap if cap is not None else 1024
         complete = True
         try:
             for batch in projection.batches(
                 document,
                 selector=operation.selector,
                 namespaces=operation.namespaces,
-                batch_size=cap,
+                batch_size=batch_size,
             ):
                 count += batch.num_rows
-                for row in batch.to_pylist()[: max(0, cap - len(rows))]:
-                    rows.append(encode_value(row))
-                if not operation.exact_count and count > cap:
+                values = batch.to_pylist()
+                if cap is None:
+                    rows.extend(encode_value(row) for row in values)
+                else:
+                    rows.extend(encode_value(row) for row in values[: max(0, cap - len(rows))])
+                if cap is not None and not operation.exact_count and count > cap:
                     complete = False
                     break
         except IntegrationError as exc:
@@ -270,7 +275,12 @@ class RecordService(ExplorationService):
                 **request.model_dump(exclude={"workspace_id"}),
             )
             reply = await self.pool.run(
-                operation, deadline=time.monotonic() + self.pool.limits.compile_query_seconds
+                operation,
+                deadline=(
+                    None
+                    if self.pool.limits.compile_query_seconds is None
+                    else time.monotonic() + self.pool.limits.compile_query_seconds
+                ),
             )
             envelope = self._envelope(
                 reply,
@@ -289,7 +299,10 @@ class RecordService(ExplorationService):
         self._require_arrow()
         if not request.documents:
             raise ToolError("invalid_argument", "Exports require at least one document")
-        if len(request.documents) > self.limits.corpus_files:
+        if (
+            self.limits.corpus_files is not None
+            and len(request.documents) > self.limits.corpus_files
+        ):
             raise ToolError("quota_exceeded", "Export corpus exceeds the operator budget")
         async with self._capture(
             request.workspace_id, (request.schema_ref, *request.documents)
@@ -306,7 +319,11 @@ class RecordService(ExplorationService):
                 columns=request.columns,
                 format=request.format,
             )
-            deadline = time.monotonic() + self.limits.batch_seconds
+            deadline = (
+                None
+                if self.limits.batch_seconds is None
+                else time.monotonic() + self.limits.batch_seconds
+            )
             reply = await self._export(operation, deadline=deadline)
         if reply.status == "error":
             assert reply.fault is not None
@@ -326,7 +343,7 @@ class RecordService(ExplorationService):
             data, name=name.rsplit("/", 1)[-1], media_type=media_type, kind="export"
         )
 
-    async def _export(self, operation: ExportOperation, *, deadline: float) -> WorkerReply:
+    async def _export(self, operation: ExportOperation, *, deadline: float | None) -> WorkerReply:
         """Run the export, then capture coordinator-owned bytes."""
         with tempfile.TemporaryDirectory(prefix="export-", dir=self.staging) as directory:
             root = Path(directory)
@@ -364,17 +381,20 @@ class RecordService(ExplorationService):
                     metadata = path.lstat()
                     if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
                         raise ToolError("unsafe_candidate", "Dataset output must be regular files")
-                    if metadata.st_size > remaining:
+                    if remaining is not None and metadata.st_size > remaining:
                         raise ToolError("output_limit", "Dataset exceeds its output budget")
                     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                     try:
                         with os.fdopen(fd, "rb", closefd=False) as stream:
-                            data = stream.read(remaining + 1)
+                            data = (
+                                stream.read() if remaining is None else stream.read(remaining + 1)
+                            )
                     finally:
                         os.close(fd)
-                    if len(data) > remaining:
+                    if remaining is not None and len(data) > remaining:
                         raise ToolError("output_limit", "Dataset exceeds its output budget")
-                    remaining -= len(data)
+                    if remaining is not None:
+                        remaining -= len(data)
                     media_type = (
                         "application/json"
                         if path.suffix == ".json"

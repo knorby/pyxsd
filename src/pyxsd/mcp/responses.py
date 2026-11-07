@@ -47,13 +47,15 @@ async def render_result(
     """
     body = _json(envelope.model_dump(mode="json"))
     budget = outputs.limits.result_bytes
+    if budget is None:
+        return _pack(envelope, body.decode("utf-8"))
     if len(body) <= budget:
         result = _pack(envelope, body.decode("utf-8"))
         if len(_json(result)) <= budget:
             return result
     if not spill:
         raise ToolError("response_limit", "Response exceeds the budget; request a smaller range")
-    if len(body) > outputs.limits.output_bytes:
+    if outputs.limits.output_bytes is not None and len(body) > outputs.limits.output_bytes:
         raise ToolError("quota_exceeded", "Result exceeds the artifact output limit")
 
     placeholder = ArtifactRef(

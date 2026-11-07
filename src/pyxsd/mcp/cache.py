@@ -132,6 +132,7 @@ class SchemaCache:
             for key, entry in list(self._entries.items()):
                 if (
                     not entry.pins
+                    and self.limits.cache_idle_seconds is not None
                     and self.clock() - entry.last_used >= self.limits.cache_idle_seconds
                 ):
                     del self._entries[key]
@@ -193,7 +194,10 @@ class SchemaCache:
                         self._hits += 1
                         self._entries.move_to_end(key)
                 if entry is None:
-                    if len(self._entries) + self._temporary >= self.limits.cache_entries:
+                    if (
+                        self.limits.cache_entries is not None
+                        and len(self._entries) + self._temporary >= self.limits.cache_entries
+                    ):
                         idle = next((k for k, e in self._entries.items() if not e.pins), None)
                         if idle is None:
                             raise ToolError("cache_busy", "All schema cache entries are leased")

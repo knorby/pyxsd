@@ -13,7 +13,7 @@ from pyxsd.mcp.errors import ToolError
 def test_inline_xml_preserves_utf8_bytes(encoding):
     text = f'\ufeff<?xml version="1.0" encoding="{encoding}"?><r>caf\u00e9</r>'
     admitted = safe_io.admit_inline(
-        [contracts.InlineFile(path="nested/data.xml", text=text)], Limits()
+        [contracts.InlineFile(path="nested/data.xml", text=text)], Limits(enforced=True)
     )
     assert [(item.path, item.content) for item in admitted] == [
         ("nested/data.xml", text.encode("utf-8"))
@@ -24,7 +24,9 @@ def test_inline_xml_preserves_utf8_bytes(encoding):
 def test_inline_conflicting_encoding_is_rejected(encoding):
     text = f"<?xml version='1.0' encoding = '{encoding}'?><r>caf\u00e9</r>"
     with pytest.raises(ToolError, match="invalid_encoding"):
-        safe_io.admit_inline([contracts.InlineFile(path="data.xml", text=text)], Limits())
+        safe_io.admit_inline(
+            [contracts.InlineFile(path="data.xml", text=text)], Limits(enforced=True)
+        )
 
 
 def test_inline_budgets_count_encoded_bytes_across_files():
@@ -32,22 +34,26 @@ def test_inline_budgets_count_encoded_bytes_across_files():
         contracts.InlineFile(path="a.txt", text="\u00e9"),
         contracts.InlineFile(path="b.txt", text="x"),
     ]
-    assert len(safe_io.admit_inline(files, Limits(inline_bytes=3))) == 2
+    assert len(safe_io.admit_inline(files, Limits(enforced=True, inline_bytes=3))) == 2
     with pytest.raises(ToolError, match="quota_exceeded"):
-        safe_io.admit_inline(files, Limits(inline_bytes=2))
+        safe_io.admit_inline(files, Limits(enforced=True, inline_bytes=2))
     with pytest.raises(ToolError, match="quota_exceeded"):
-        safe_io.admit_inline(files, Limits(xml_file_bytes=1))
+        safe_io.admit_inline(files, Limits(enforced=True, xml_file_bytes=1))
 
 
 def test_inline_paths_and_unicode_are_checked_before_publication():
     with pytest.raises(ToolError, match="invalid_path"):
-        safe_io.admit_inline([contracts.InlineFile(path="../outside", text="")], Limits())
+        safe_io.admit_inline(
+            [contracts.InlineFile(path="../outside", text="")], Limits(enforced=True)
+        )
     with pytest.raises(ToolError, match="invalid_encoding"):
-        safe_io.admit_inline([contracts.InlineFile(path="data.xml", text="\ud800")], Limits())
+        safe_io.admit_inline(
+            [contracts.InlineFile(path="data.xml", text="\ud800")], Limits(enforced=True)
+        )
     with pytest.raises(ToolError, match="path_collision"):
         safe_io.admit_inline(
             [contracts.InlineFile(path="A", text=""), contracts.InlineFile(path="a", text="")],
-            Limits(),
+            Limits(enforced=True),
         )
 
 
@@ -56,9 +62,11 @@ def test_inline_paths_and_unicode_are_checked_before_publication():
     ["", "<r/>", "<?xml", "<?xml version='1.0'", "<?xml version='1.0'?><r/>", "print('hello')"],
 )
 def test_inline_admission_does_not_parse_or_repair_contents(text):
-    result = safe_io.admit_inline([contracts.InlineFile(path="source.txt", text=text)], Limits())
+    result = safe_io.admit_inline(
+        [contracts.InlineFile(path="source.txt", text=text)], Limits(enforced=True)
+    )
     assert result[0].content == text.encode("utf-8")
 
 
 def test_inline_empty_bundle_is_a_noop():
-    assert safe_io.admit_inline([], Limits()) == ()
+    assert safe_io.admit_inline([], Limits(enforced=True)) == ()

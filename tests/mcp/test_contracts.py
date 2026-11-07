@@ -41,13 +41,36 @@ DEFAULTS = {
     "corpus_files": 100,
     "corpus_max_files": 1000,
     "corpus_file_seconds": 10,
+    "projection_search_depth": 8,
+    "projection_searched_declarations": 100,
+    "projection_candidates": 10,
+    "path_bytes": 4096,
+    "path_segments": 128,
+    "path_segment_bytes": 255,
+    "io_chunk_bytes": 65536,
 }
 
 
 def test_limits_match_the_design():
     from pyxsd.mcp.config import Limits
 
-    assert Limits().model_dump() == DEFAULTS
+    assert Limits(enforced=True).model_dump(exclude={"enforced"}) == DEFAULTS
+
+
+def test_limits_are_disabled_and_unlimited_by_default():
+    from pyxsd.mcp.config import Limits
+
+    limits = Limits()
+    assert limits.enforced is False
+    assert limits.model_dump(exclude={"enforced"}) == dict.fromkeys(DEFAULTS)
+
+
+def test_enabling_limits_requires_every_resource_bound():
+    import pydantic
+    from pyxsd.mcp.config import Limits
+
+    with pytest.raises(pydantic.ValidationError, match="must be set"):
+        Limits(enforced=True, xml_file_bytes=None)
 
 
 def test_compare_request_corpus_glob_is_optional_and_nonempty():
@@ -104,7 +127,7 @@ def test_configuration_and_wire_models_reject_unknown_or_coerced_fields(tmp_path
     }
     schema = SchemaRef(source=FileRef(path="schema.xsd"))
     assert schema.options == CompileOptions()
-    assert Page().limit == 50
+    assert Page().limit is None
     assert ToolEnvelope(data={"valid": False}).status == "ok"
     for cls, values in [
         (Limits, {"unbounded": True}),

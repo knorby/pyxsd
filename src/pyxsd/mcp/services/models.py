@@ -62,6 +62,7 @@ def execute_model(
                 prepare=lambda candidate_element, candidate_path: registry.model_for(
                     element=candidate_element, path=candidate_path
                 ),
+                limits=cache.limits,
             )
             raise ToolError(
                 "unsupported_projection",
@@ -119,7 +120,12 @@ class ModelService(ExplorationService):
                 data=request.data if isinstance(request, ValidateDataRequest) else None,
             )
             reply = await self.pool.run(
-                operation, deadline=time.monotonic() + self.pool.limits.compile_query_seconds
+                operation,
+                deadline=(
+                    None
+                    if self.pool.limits.compile_query_seconds is None
+                    else time.monotonic() + self.pool.limits.compile_query_seconds
+                ),
             )
             envelope = self._envelope(
                 reply,

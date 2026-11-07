@@ -71,12 +71,15 @@ stdio process through an untrusted relay.
 
 ## Local boundaries
 
-Source roots and the store directory stay under operator control. Bound request
-bodies, queues, reports, artifacts and execution time through `Settings.limits`.
-Each server has independent inputs, scratch and worker subprocesses; project
-scoping is organizational isolation, not an OS-user security boundary. State is
-excluded from source capture, including discovered dependencies. This is not a
-distributed or network-filesystem deployment.
+Source roots and the store directory stay under operator control. Resource
+limits are disabled by default; enable and tune them with `--resource-limits
+enabled` plus `--limit FIELD=VALUE`, or the matching `PYXSD_MCP_*` environment
+variables. Without limits, request bodies, queues, reports, artifacts, workers
+and execution time are unbounded; that is a deliberate local-only tradeoff, not
+a sandbox. Every server has independent inputs, scratch and worker subprocesses;
+project scoping is organizational isolation, not an OS-user security boundary.
+State is excluded from source capture, including discovered dependencies. This
+is not a distributed or network-filesystem deployment.
 
 For mutually untrusted code or tenants, use a separate operator-designed sandbox
 with its own threat model. Local workers do not establish a public-hosting or

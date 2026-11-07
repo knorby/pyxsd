@@ -55,13 +55,13 @@ class ParseOperation(Operation):
     document: FileRef
     hints: tuple[tuple[str | None, str], ...] = ()
     issue_offset: Annotated[int, Field(ge=0)] = 0
-    issue_limit: Annotated[int, Field(gt=0)] = 50
+    issue_limit: Annotated[int, Field(gt=0)] | None = None
 
 
 class BatchParseOperation(Operation):
     kind: Literal["parse-batch"] = "parse-batch"
     items: tuple[BatchValidationItem, ...]
-    issue_limit: Annotated[int, Field(gt=0)] = 10
+    issue_limit: Annotated[int, Field(gt=0)] | None = None
 
 
 class DescribeOperation(Operation):
@@ -71,7 +71,7 @@ class DescribeOperation(Operation):
     view: Literal["overview", "compact", "full", "constraints", "diagnostics"] = "overview"
     depth: Annotated[int, Field(ge=0)] | None = 1
     offset: Annotated[int, Field(ge=0)] = 0
-    limit: Annotated[int, Field(gt=0)] = 50
+    limit: Annotated[int, Field(gt=0)] | None = None
 
 
 class FindOperation(Operation):
@@ -85,7 +85,7 @@ class FindOperation(Operation):
     direction: Literal["uses", "used_by"] = "uses"
     depth: Annotated[int, Field(ge=0)] = 1
     offset: Annotated[int, Field(ge=0)] = 0
-    limit: Annotated[int, Field(gt=0)] = 50
+    limit: Annotated[int, Field(gt=0)] | None = None
 
 
 class QueryOperation(Operation):
@@ -96,7 +96,7 @@ class QueryOperation(Operation):
     namespaces: dict[str, str] = Field(default_factory=dict)
     result: Literal["summary", "subtree"] = "summary"
     offset: Annotated[int, Field(ge=0)] = 0
-    limit: Annotated[int, Field(gt=0)] = 50
+    limit: Annotated[int, Field(gt=0)] | None = None
 
 
 class DiscoverOperation(Operation):
@@ -108,7 +108,7 @@ class StructuralDiffOperation(Operation):
     kind: Literal["structural-diff"] = "structural-diff"
     original: FileRef
     candidate: FileRef
-    limit: Annotated[int, Field(gt=0)] = 50
+    limit: Annotated[int, Field(gt=0)] | None = None
 
 
 class ModelOperation(Operation):
@@ -205,8 +205,8 @@ class WorkerReply(WireModel):
         return self
 
 
-def _budget(max_bytes: int) -> None:
-    if type(max_bytes) is not int or max_bytes <= 0:
+def _budget(max_bytes: int | None) -> None:
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes <= 0):
         raise ToolError("invalid_argument", "IPC byte limit must be a positive integer")
 
 
@@ -223,7 +223,7 @@ def _constant(value: str) -> NoReturn:
     raise ValueError("Nonfinite JSON number")
 
 
-def encode_frame(message: WireModel, *, max_bytes: int) -> bytes:
+def encode_frame(message: WireModel, *, max_bytes: int | None) -> bytes:
     """Serialize one wire model, including its newline in the byte budget."""
     _budget(max_bytes)
     if not isinstance(message, WireModel):
@@ -240,16 +240,16 @@ def encode_frame(message: WireModel, *, max_bytes: int) -> bytes:
         )
     except (ValueError, TypeError, RecursionError) as exc:
         raise ToolError("ipc_protocol", "IPC message cannot be encoded") from exc
-    if len(frame) > max_bytes:
+    if max_bytes is not None and len(frame) > max_bytes:
         raise ToolError("ipc_limit", "IPC frame exceeds its byte limit")
     return frame
 
 
 def _decode_object(
-    frame: bytes, *, max_bytes: int, expected: dict[str, str]
+    frame: bytes, *, max_bytes: int | None, expected: dict[str, str]
 ) -> dict[str, JsonValue]:
     _budget(max_bytes)
-    if len(frame) > max_bytes:
+    if max_bytes is not None and len(frame) > max_bytes:
         raise ToolError("ipc_limit", "IPC frame exceeds its byte limit")
     try:
         if not frame.endswith(b"\n") or frame.count(b"\n") != 1:
@@ -270,7 +270,7 @@ def decode_frame(
     frame: bytes,
     model: type[T],
     *,
-    max_bytes: int,
+    max_bytes: int | None,
     expected: dict[str, str],
 ) -> T:
     """Validate one complete frame against the channel's model and identities."""
@@ -282,7 +282,7 @@ def decode_frame(
 
 
 def decode_operation(
-    frame: bytes, *, max_bytes: int, role: str
+    frame: bytes, *, max_bytes: int | None, role: str
 ) -> (
     ParseOperation
     | BatchParseOperation

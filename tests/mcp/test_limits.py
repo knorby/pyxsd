@@ -35,7 +35,9 @@ def test_only_disabled_and_trusted_local_execution_are_configurable():
 
 def test_session_input_count_entry_and_byte_boundaries(tmp_path):
     async def scenario():
-        inputs = SessionInputs(tmp_path / "scratch", Limits(workspaces=1, workspace_bytes=3))
+        inputs = SessionInputs(
+            tmp_path / "scratch", Limits(enforced=True, workspaces=1, workspace_bytes=3)
+        )
         workspace = await inputs.create()
         with pytest.raises(ToolError, match="quota_exceeded"):
             await inputs.create()
@@ -44,7 +46,7 @@ def test_session_input_count_entry_and_byte_boundaries(tmp_path):
             await inputs.put_files(workspace.id, [InlineFile(path="a.xml", text="<a/>")])
         await inputs.release(workspace.id)
 
-        entries = SessionInputs(tmp_path / "entries", Limits(input_entries=2))
+        entries = SessionInputs(tmp_path / "entries", Limits(enforced=True, input_entries=2))
         workspace = await entries.create()
         with pytest.raises(ToolError, match="quota_exceeded"):
             await entries.put_files(workspace.id, [InlineFile(path="a/b/c.xml", text="")])
@@ -55,7 +57,7 @@ def test_session_input_count_entry_and_byte_boundaries(tmp_path):
 
 def test_report_limits_bound_page_size_issue_collection_and_suppression(tmp_path):
     async def scenario():
-        limits = Limits(workers=1, page_items=1, collected_issues=2)
+        limits = Limits(enforced=True, workers=1, page_items=1, collected_issues=2)
         async with harness(tmp_path, limits) as (
             service,
             inputs,
