@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         archive: [wheel, sdist]
-        extra: ["", mcp]
+        extra: ["", mcp, mcp-all]
     env:
       ARCHIVE: ${{ matrix.archive }}
       EXTRA: ${{ matrix.extra }}
@@ -54,14 +54,42 @@ jobs:
           import importlib.util
           import io
           import os
+          import sys
           import pyxsd
           from pyxsd.skills import list_skills
           assert importlib.metadata.version("pyxsd") == pyxsd.__version__
           schema = pyxsd.compile(io.StringIO('<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="root" type="xs:string"/></xs:schema>'))
           assert schema.parse(io.StringIO("<root>installed</root>")).is_valid
           assert len(list_skills()) == 3
-          assert importlib.util.find_spec("pyarrow") is None
+          if os.environ["EXTRA"] == "mcp-all":
+              assert importlib.util.find_spec("pyarrow") is not None
+          else:
+              assert importlib.util.find_spec("pyarrow") is None
           assert (importlib.util.find_spec("mcp") is not None) == bool(os.environ["EXTRA"])
+          if os.environ["EXTRA"]:
+              import anyio
+              from mcp import ClientSession, StdioServerParameters
+              from mcp.client.stdio import stdio_client
+
+              async def check_tools():
+                  parameters = StdioServerParameters(
+                      command=sys.executable, args=["-m", "pyxsd.mcp", "--no-persist"]
+                  )
+                  async with (
+                      stdio_client(parameters) as (read, write),
+                      ClientSession(read, write) as client,
+                  ):
+                      with anyio.fail_after(30):
+                          await client.initialize()
+                          names = {tool.name for tool in (await client.list_tools()).tools}
+                  if os.environ["EXTRA"] == "mcp-all":
+                      assert {"pyxsd_preview_records", "pyxsd_export_records"} <= names
+                  else:
+                      assert "pyxsd_preview_records" not in names
+                      assert "pyxsd_export_records" not in names
+                  assert "pyxsd_preview_transform" not in names
+
+              anyio.run(check_tools)
           PY
           "$RUNNER_TEMP/pyxsd-release-smoke/bin/pyxsd" --version
           if [ -n "$EXTRA" ]; then

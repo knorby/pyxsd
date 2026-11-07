@@ -79,7 +79,7 @@ jobs:
           uv build --wheel
           uv venv --python "$PYTHON_VERSION"
           WHEEL=$(find dist -name '*.whl' -print -quit)
-          uv pip install "${WHEEL}[mcp,arrow]" 'pytest>=8.4' 'pytest-cov>=7'
+          uv pip install "${WHEEL}[mcp-all]" 'pytest>=8.4' 'pytest-cov>=7'
       - name: Test installed MCP and Arrow integration with branch coverage
         run: >-
           .venv/bin/python -m pytest -q tests/mcp tests/test_mcp_packaging.py

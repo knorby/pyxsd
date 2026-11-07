@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,7 +51,9 @@ class CapturedCandidate:
     checkpoint_candidates: tuple[bytes, ...] = ()
 
 
-def capture_candidate(directory_fd: int, limit: int, *, name: str = "candidate.xml") -> bytes:
+def capture_candidate(
+    directory_fd: int, limit: int | None, *, name: str = "candidate.xml"
+) -> bytes:
     """Read one private regular inode after execution has stopped."""
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
@@ -61,11 +63,11 @@ def capture_candidate(directory_fd: int, limit: int, *, name: str = "candidate.x
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise ToolError("unsafe_candidate", "Candidate must be a private regular file")
-        if metadata.st_size > limit:
+        if limit is not None and metadata.st_size > limit:
             raise ToolError("output_limit", "Candidate exceeds its output budget")
         with os.fdopen(fd, "rb", closefd=False) as stream:
-            content = stream.read(limit + 1)
-        if len(content) > limit:
+            content = stream.read() if limit is None else stream.read(limit + 1)
+        if limit is not None and len(content) > limit:
             raise ToolError("output_limit", "Candidate exceeds its output budget")
         return content
     finally:
@@ -91,7 +93,7 @@ class TrustedLocalExecution:
         transform: PythonTransformSpec | PipelineTransformSpec,
         *,
         registry: dict[str, str],
-        deadline: float,
+        deadline: float | None,
     ) -> CapturedCandidate:
         transform = normalize_transform(transform, self.limits)
         sources = (
@@ -121,7 +123,17 @@ class TrustedLocalExecution:
                     "pyxsd.mcp.worker_main", "pyxsd.mcp.execution_main"
                 )
                 process = await anyio.open_process(
-                    (sys.executable, "-I", "-u", "-c", bootstrap),
+                    (
+                        sys.executable,
+                        "-I",
+                        "-u",
+                        "-c",
+                        bootstrap,
+                        "--request-bytes",
+                        "unlimited"
+                        if self.limits.request_bytes is None
+                        else str(self.limits.request_bytes),
+                    ),
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
@@ -131,19 +143,32 @@ class TrustedLocalExecution:
                 )
                 output = bytearray()
                 try:
-                    with anyio.fail_after(max(0, deadline - time.monotonic())):
+                    timeout = (
+                        nullcontext()
+                        if deadline is None
+                        else anyio.fail_after(max(0, deadline - time.monotonic()))
+                    )
+                    with timeout:
                         assert process.stdin is not None and process.stdout is not None
                         await process.stdin.send(frame)
                         await process.stdin.aclose()
                         while True:
                             try:
                                 chunk = await process.stdout.receive(
-                                    min(65536, self.limits.request_bytes + 1 - len(output))
+                                    self.limits.io_chunk_bytes or 65536
+                                    if self.limits.request_bytes is None
+                                    else min(
+                                        self.limits.io_chunk_bytes or 65536,
+                                        self.limits.request_bytes + 1 - len(output),
+                                    )
                                 )
                             except anyio.EndOfStream:
                                 break
                             output.extend(chunk)
-                            if len(output) > self.limits.request_bytes:
+                            if (
+                                self.limits.request_bytes is not None
+                                and len(output) > self.limits.request_bytes
+                            ):
                                 raise ToolError("ipc_limit", "Execution stdout exceeds its budget")
                         await process.wait()
                 except TimeoutError as exc:
@@ -168,14 +193,19 @@ class TrustedLocalExecution:
                 if reply is None or process.returncode != 0:
                     raise ToolError("ipc_protocol", "Execution ended without a complete result")
                 checkpoints = []
-                remaining = self.limits.output_bytes - len(content)
+                remaining = (
+                    None
+                    if self.limits.output_bytes is None
+                    else self.limits.output_bytes - len(content)
+                )
                 if isinstance(transform, PipelineTransformSpec):
                     for index, step in enumerate(transform.steps):
                         if step.checkpoint:
                             retained = capture_candidate(
                                 directory_fd, remaining, name=f"checkpoint-{index}.xml"
                             )
-                            remaining -= len(retained)
+                            if remaining is not None:
+                                remaining -= len(retained)
                             checkpoints.append(retained)
                 return CapturedCandidate(
                     content,

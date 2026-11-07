@@ -57,7 +57,7 @@ def test_reuses_one_compile_and_restores_legacy_components(tmp_path, monkeypatch
         return original(*args, **kwargs)
 
     monkeypatch.setattr(Schema, "compile", compile)
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     req = request(tmp_path)
     with cache.acquire(req) as first:
         assert first.parse(io.StringIO("<root>3</root>")).root == 3
@@ -80,7 +80,7 @@ def test_cache_applies_collection_and_message_budgets(tmp_path):
         tmp_path,
         files={"root.xsd": schema, "d.xml": "<r><i>bad</i><i>bad</i><i>bad</i></r>"},
     )
-    cache = SchemaCache(Limits(collected_issues=1, message_bytes=16))
+    cache = SchemaCache(Limits(enforced=True, collected_issues=1, message_bytes=16))
     try:
         with cache.acquire(req) as compiled:
             report = compiled.parse("/workspace/d.xml").report
@@ -129,7 +129,7 @@ def test_every_compile_input_separates_keys(tmp_path, field):
             ),
         ),
     }[field]()
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     with cache.acquire(req) as first, cache.acquire(changed) as second:
         assert second is not first
     assert cache.info().misses == 2
@@ -141,7 +141,7 @@ def test_changed_same_stat_dependency_and_missing_appearance(tmp_path):
 
     root = XSD.replace("<xs:element", '<xs:include schemaLocation="dep.xsd"/><xs:element')
     req = request(tmp_path, files={"root.xsd": root})
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     with cache.acquire(req) as absent:
         assert absent.report.warnings
     with cache.acquire(req) as still_absent:
@@ -168,7 +168,7 @@ def test_changed_same_stat_dependency_and_missing_appearance(tmp_path):
 def test_reentrant_failure_keeps_outer_pin_until_close(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     req = request(tmp_path)
     with cache.acquire(req) as schema:
         with pytest.raises(ToolError, match="cache_busy"), cache.acquire(req):
@@ -183,7 +183,7 @@ def test_reentrant_failure_keeps_outer_pin_until_close(tmp_path):
 def test_different_schemas_can_operate_in_parallel(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     request(tmp_path)
     barrier = threading.Barrier(2, timeout=5)
     errors = []
@@ -221,7 +221,7 @@ def test_compile_failure_does_not_retain_entry_or_compatibility_state(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
     remembered = last_components()
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     req = request(tmp_path, files={"root.xsd": "<broken>"})
     with pytest.raises(PyXSDError), cache.acquire(req):
         pytest.fail("Malformed schema cannot produce a lease")
@@ -233,7 +233,7 @@ def test_compile_failure_does_not_retain_entry_or_compatibility_state(tmp_path):
 def test_capture_root_and_generation_do_not_change_cache_identity(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     first = request(tmp_path)
     other_root = tmp_path / "other"
     other_root.mkdir()
@@ -261,7 +261,9 @@ def test_lru_idle_pins_and_derived_lifetime(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
     now = [0.0]
-    cache = SchemaCache(Limits(cache_entries=1, cache_idle_seconds=2), clock=lambda: now[0])
+    cache = SchemaCache(
+        Limits(enforced=True, cache_entries=1, cache_idle_seconds=2), clock=lambda: now[0]
+    )
     req = request(tmp_path)
     with cache.acquire(req) as schema:
         describe_schema(schema)
@@ -288,7 +290,7 @@ def test_lru_idle_pins_and_derived_lifetime(tmp_path):
 def test_disabled_cache_exception_and_closed_leases(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
-    cache = SchemaCache(Limits(), enabled=False)
+    cache = SchemaCache(Limits(enforced=True), enabled=False)
     req = request(tmp_path)
     with pytest.raises(RuntimeError, match="operation"), cache.acquire(req) as first:
         raise RuntimeError("operation")
@@ -305,7 +307,7 @@ def test_disabled_cache_exception_and_closed_leases(tmp_path):
 def test_singleflight_and_serial_operations(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     req = request(tmp_path)
     barrier = threading.Barrier(4, timeout=5)
     seen, errors = [], []
@@ -343,7 +345,7 @@ def test_singleflight_and_serial_operations(tmp_path):
 def test_recent_hit_controls_eviction_and_request_owns_options(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
-    cache = SchemaCache(Limits(cache_entries=2))
+    cache = SchemaCache(Limits(enforced=True, cache_entries=2))
     first_req = request(tmp_path)
     second_req = replace(first_req, processor_version="two")
     third_req = replace(first_req, processor_version="three")
@@ -371,7 +373,7 @@ def test_recent_hit_controls_eviction_and_request_owns_options(tmp_path):
 def test_repeated_parses_release_documents_and_cache_off_is_bounded(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
 
-    cache = SchemaCache(Limits(cache_entries=1), enabled=False)
+    cache = SchemaCache(Limits(enforced=True, cache_entries=1), enabled=False)
     req = request(tmp_path)
     references = []
     with cache.acquire(req) as schema:
@@ -392,7 +394,7 @@ def test_non_source_policy_failure_during_hit_verification_is_not_hidden(tmp_pat
     from pyxsd.mcp.cache import SchemaCache
     from pyxsd.mcp.captures import CaptureDependency, InputPolicyError
 
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     req = request(tmp_path)
     try:
         with cache.acquire(req):
@@ -411,7 +413,7 @@ def test_changed_capture_dependency_evicts_the_cached_schema(tmp_path):
     from pyxsd.mcp.cache import SchemaCache
     from pyxsd.mcp.captures import InputPolicyError
 
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     req = request(tmp_path)
     try:
         with cache.acquire(req):

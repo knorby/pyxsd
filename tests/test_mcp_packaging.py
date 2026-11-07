@@ -5,6 +5,36 @@ from importlib.metadata import metadata
 from packaging.requirements import Requirement
 
 
+def enabled_requirement_names(extra: str) -> set[str]:
+    requirements = [Requirement(raw) for raw in metadata("pyxsd").get_all("Requires-Dist", [])]
+    return {
+        req.name
+        for req in requirements
+        if req.marker is None or req.marker.evaluate({"extra": extra})
+    }
+
+
+def optional_requirements(extra: str) -> set[tuple[str, str]]:
+    base = enabled_requirement_names("")
+    enabled = enabled_requirement_names(extra)
+    requirements = [Requirement(raw) for raw in metadata("pyxsd").get_all("Requires-Dist", [])]
+    return {
+        (req.name, str(req.specifier))
+        for req in requirements
+        if req.name in enabled and req.name not in base
+    }
+
+
+def test_mcp_all_is_exact_union_of_mcp_pydantic_and_arrow():
+    assert optional_requirements("mcp-all") == (
+        optional_requirements("mcp")
+        | optional_requirements("pydantic")
+        | optional_requirements("arrow")
+    )
+    assert ("pyarrow", ">=22") in optional_requirements("mcp-all")
+    assert "pyarrow" not in enabled_requirement_names("mcp")
+
+
 def test_mcp_extra_resolves_without_installing_arrow():
     requirements = [Requirement(raw) for raw in metadata("pyxsd").get_all("Requires-Dist", [])]
     enabled = {

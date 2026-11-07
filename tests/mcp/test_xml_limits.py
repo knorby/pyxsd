@@ -24,7 +24,9 @@ def policy_for(root, contents, **limits):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         records.append(CaptureFile(path, hashlib.sha256(content).hexdigest(), len(content)))
-    return InputResourcePolicy(InputCapture("workspace", 1, root, tuple(records)), Limits(**limits))
+    return InputResourcePolicy(
+        InputCapture("workspace", 1, root, tuple(records)), Limits(enforced=True, **limits)
+    )
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
@@ -180,7 +182,9 @@ def test_duplicate_snapshot_paths_are_rejected(tmp_path):
 
     policy = policy_for(tmp_path, {"one": b"data"})
     with pytest.raises(ResourcePolicyError, match="path_collision"):
-        InputResourcePolicy(replace(policy.capture, files=policy.capture.files * 2), Limits())
+        InputResourcePolicy(
+            replace(policy.capture, files=policy.capture.files * 2), Limits(enforced=True)
+        )
 
 
 def test_canonical_source_names_anonymous_bases_and_missing_instances(tmp_path):

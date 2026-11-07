@@ -73,7 +73,7 @@ async def harness(tmp_path: Path, *, source: bool = True):
     source_root = tmp_path / "tree"
     source_root.mkdir()
     make_tree(source_root)
-    limits = Limits(workers=1)
+    limits = Limits(enforced=True, workers=1)
     storage = Storage(tmp_path / "state", persist=False)
     outputs = OutputStore(storage, limits)
     pool = WorkerPool(limits)
@@ -258,5 +258,28 @@ def test_empty_workspace_no_source_root(tmp_path):
                     )
                 )
             assert raised.value.fault.code == "not_found"
+
+    anyio.run(scenario)
+
+
+def test_comparison_selects_corpus_from_the_source_root(tmp_path):
+    from pyxsd.mcp.services.comparison import CompareSchemasRequest, ComparisonService
+
+    async def scenario():
+        async with harness(tmp_path) as (_service, inputs, pool, workspace):
+            source = inputs.source_root
+            (source / "new-other.xsd").write_text(OTHER.replace("xs:int", "xs:string"))
+            result = await ComparisonService(inputs, pool).compare(
+                CompareSchemasRequest(
+                    workspace_id=workspace,
+                    old_schema=other_ref(),
+                    new_schema=SchemaRef(source=FileRef(path="new-other.xsd")),
+                    corpus_glob="*.xml",
+                )
+            )
+            assert result["corpus_selection"] == {"glob": "*.xml", "matched": 1}
+            assert result["corpus"]["files"] == [
+                {"path": "o.xml", "status": "valid", "old": "valid", "new": "valid"}
+            ]
 
     anyio.run(scenario)

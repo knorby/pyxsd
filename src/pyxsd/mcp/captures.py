@@ -60,7 +60,7 @@ class InputResourcePolicy:
 
     def __init__(self, capture: InputCapture, limits: Limits) -> None:
         try:
-            validate_paths([item.path for item in capture.files])
+            validate_paths([item.path for item in capture.files], limits)
         except ToolError as exc:
             raise InputPolicyError(exc.fault.code, "Invalid capture paths") from exc
         self.capture, self.limits = capture, limits
@@ -71,7 +71,7 @@ class InputResourcePolicy:
     def rebind(self, capture: InputCapture) -> None:
         """Point a cached schema at the current temporary capture of the same bytes."""
         try:
-            validate_paths([item.path for item in capture.files])
+            validate_paths([item.path for item in capture.files], self.limits)
         except ToolError as exc:
             raise InputPolicyError(exc.fault.code, "Invalid capture paths") from exc
         self.capture = capture
@@ -104,7 +104,7 @@ class InputResourcePolicy:
             raise InputPolicyError("invalid_path", "Resource escapes its input capture")
         path = candidate.removeprefix("/workspace/")
         try:
-            validate_paths([path])
+            validate_paths([path], self.limits)
         except ToolError as exc:
             raise InputPolicyError(exc.fault.code, "Invalid resource name") from exc
         return path
@@ -113,7 +113,11 @@ class InputResourcePolicy:
         path = self._path(source, base)
         schema = purpose != "instance"
         new_dependency = schema and path not in self._dependencies
-        if new_dependency and len(self._dependencies) >= self.limits.schema_closure_files:
+        if (
+            new_dependency
+            and self.limits.schema_closure_files is not None
+            and len(self._dependencies) >= self.limits.schema_closure_files
+        ):
             raise InputPolicyError("schema_limit", "Schema closure file limit exceeded")
         item = self._files.get(path)
         if item is None:
@@ -121,14 +125,17 @@ class InputResourcePolicy:
                 self._dependencies[path] = CaptureDependency(path, None, 0)
             raise FileNotFoundError(path)
         budget = self.limits.schema_file_bytes if schema else self.limits.xml_file_bytes
-        if item.size > budget or (
-            new_dependency and self._schema_bytes + item.size > self.limits.schema_closure_bytes
-        ):
+        closure_exceeded = (
+            new_dependency
+            and self.limits.schema_closure_bytes is not None
+            and self._schema_bytes + item.size > self.limits.schema_closure_bytes
+        )
+        if (budget is not None and item.size > budget) or closure_exceeded:
             raise InputPolicyError(
                 "schema_limit" if schema else "xml_limit", "Resource byte limit exceeded"
             )
         try:
-            with SafeDirectory(self.capture.root) as directory:
+            with SafeDirectory(self.capture.root, self.limits) as directory:
                 captured = directory.read(path, max_bytes=budget)
         except FileNotFoundError as exc:
             raise InputPolicyError("source_changed", "Captured resource disappeared") from exc
@@ -142,7 +149,10 @@ class InputResourcePolicy:
         return ResourceData(f"/workspace/{path}", captured.content)
 
     def parse(self, data: ResourceData, context: NamespaceContext) -> ET.Element:
-        if len(data.content) > self.limits.xml_file_bytes:
+        if (
+            self.limits.xml_file_bytes is not None
+            and len(data.content) > self.limits.xml_file_bytes
+        ):
             raise InputPolicyError("xml_limit", "XML byte limit exceeded")
         pending: list[tuple[str, str]] = []
         stack: list[dict[str, str]] = [{}]
@@ -162,7 +172,12 @@ class InputResourcePolicy:
                         pending.append((prefix or "", uri))
                     elif event == "start":
                         count += 1
-                        if len(stack) > self.limits.xml_depth or count > self.limits.xml_elements:
+                        if (
+                            self.limits.xml_depth is not None and len(stack) > self.limits.xml_depth
+                        ) or (
+                            self.limits.xml_elements is not None
+                            and count > self.limits.xml_elements
+                        ):
                             raise InputPolicyError(
                                 "xml_limit", "XML depth or element limit exceeded"
                             )

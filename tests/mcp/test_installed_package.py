@@ -88,6 +88,40 @@ def test_uvx_is_primary_and_direct_install_remains_documented():
     assert "uvx --from 'pyxsd[mcp]' pyxsd-mcp" in skill
 
 
+def test_complete_mcp_install_and_execution_environment_are_documented():
+    guide = (ROOT / "docs/mcp.md").read_text(encoding="utf-8")
+    install = guide.split("## Install and launch", 1)[1].split("##", 1)[0]
+    assert "pyxsd[mcp-all]" in install
+    assert "PYXSD_MCP_EXECUTION_BACKEND" in guide
+    assert "PYXSD_MCP_EXECUTION_BACKEND=disabled" in guide
+    quickstart = (ROOT / "docs/quickstart.md").read_text(encoding="utf-8")
+    assert "pyxsd[mcp-all]" in quickstart
+    integrations = (ROOT / "docs/integrations.md").read_text(encoding="utf-8")
+    assert "pyxsd[mcp-all]" in integrations
+    deployment = (ROOT / "docs/mcp-deployment.md").read_text(encoding="utf-8")
+    assert "PYXSD_MCP_EXECUTION_BACKEND" in deployment
+
+
+def test_new_mcp_workflow_guidance_is_documented():
+    guide = (ROOT / "docs/mcp.md").read_text(encoding="utf-8")
+    assert '"view": "diagnostics"' in guide
+    assert "namespace_probe" in guide
+    assert "projection_candidates" in guide
+    assert "search_truncated" in guide
+    assert "corpus_glob" in guide
+    assert "corpus_selection" in guide
+    skill = (ROOT / "src/pyxsd/skills/pyxsd-mcp/SKILL.md").read_text(encoding="utf-8")
+    assert "pyxsd[mcp-all]" in skill
+    assert "diagnostics" in skill
+    assert "projection_candidates" in skill
+    assert "corpus_glob" in skill
+    assert "execution group + Arrow" not in skill
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "mcp-all" in changelog
+    assert "PYXSD_MCP_EXECUTION_BACKEND" in changelog
+    assert "corpus_glob" in changelog
+
+
 def test_readme_setup_includes_library_mcp_and_skills():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "## Install\n" in readme

@@ -29,6 +29,7 @@ from pyxsd.xml_policy import XmlLimits, XmlParserPolicy
 
 from .cache import CompileRequest, SchemaCache, require_complete_schema
 from .captures import CaptureDependency, InputPolicyError, InputResourcePolicy
+from .config import Limits
 from .contracts import BatchValidationItem, SchemaRef, ToolFault
 from .encoding import encode_value
 from .errors import ToolError
@@ -60,10 +61,10 @@ _EXTERNAL_XPATH = re.compile(
 _PARSER_POSITION = re.compile(r"line (\d+), column (\d+)")
 
 
-def _read_frame(stream: BinaryIO, max_bytes: int) -> bytes:
+def _read_frame(stream: BinaryIO, max_bytes: int | None) -> bytes:
     """Bound allocation before JSON decoding; excess input terminates the channel."""
-    frame = stream.readline(max_bytes + 1)
-    if len(frame) > max_bytes:
+    frame = stream.readline() if max_bytes is None else stream.readline(max_bytes + 1)
+    if max_bytes is not None and len(frame) > max_bytes:
         raise ToolError("ipc_limit", "Worker input exceeds its byte limit")
     return frame
 
@@ -108,7 +109,8 @@ def _page(total: int, offset: int, returned: int) -> dict[str, JsonValue]:
 def _report(document: Document, operation: ParseOperation) -> dict[str, JsonValue]:
     data = cast(dict[str, JsonValue], document.report.to_dict())
     issues = cast(list[JsonValue], data["issues"])
-    page_issues = issues[operation.issue_offset : operation.issue_offset + operation.issue_limit]
+    end = None if operation.issue_limit is None else operation.issue_offset + operation.issue_limit
+    page_issues = issues[operation.issue_offset : end]
     data["issues"] = page_issues
     page = _page(len(issues), operation.issue_offset, len(page_issues))
     counts = cast(dict[str, JsonValue], data["counts"])
@@ -135,7 +137,10 @@ def _missing_file(exc: BaseException) -> bool:
 def _parse_batch(
     operation: BatchParseOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
-    if len(operation.items) > cache.limits.corpus_max_files:
+    if (
+        cache.limits.corpus_max_files is not None
+        and len(operation.items) > cache.limits.corpus_max_files
+    ):
         raise ToolError("invalid_argument", "Batch exceeds the operator file budget")
     items: list[dict[str, JsonValue] | None] = [None] * len(operation.items)
     groups: dict[str, list[int]] = {}
@@ -254,10 +259,139 @@ def _batch_outcome(item: BatchValidationItem, document: Document) -> dict[str, J
     }
 
 
+def _error_code_counts(report: dict[str, object]) -> dict[str, int]:
+    issues = report.get("issues", [])
+    if not isinstance(issues, list):
+        return {}
+    counts: Counter[str] = Counter()
+    for issue in issues:
+        if isinstance(issue, dict) and issue.get("severity") == "error":
+            code = issue.get("code")
+            if isinstance(code, str):
+                counts[code] += 1
+    return dict(sorted(counts.items()))
+
+
+def _probe_summary(report: dict[str, object]) -> dict[str, JsonValue]:
+    counts = report.get("counts")
+    error_count = 0
+    warning_count = 0
+    if isinstance(counts, dict):
+        error_count = int(cast(int, counts.get("error", 0)))
+        warning_count = int(cast(int, counts.get("warning", 0)))
+    return {
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "codes": cast(JsonValue, _error_code_counts(report)),
+    }
+
+
+def _has_prefixed_unknown_head(report: dict[str, object]) -> bool:
+    issues = report.get("issues", [])
+    if not isinstance(issues, list):
+        return False
+    for issue in issues:
+        if not isinstance(issue, dict) or issue.get("code") != "unknown-substitution-head":
+            continue
+        details = issue.get("details")
+        if isinstance(details, dict) and details.get("prefixed") is True:
+            return True
+    return False
+
+
+def _bounded_probe_message(message: str, cache: SchemaCache) -> str:
+    limits = getattr(cache, "limits", None)
+    maximum = getattr(limits, "message_bytes", None)
+    if maximum is None or len(message.encode("utf-8")) <= maximum:
+        return message
+    return message.encode("utf-8")[:maximum].decode("utf-8", errors="ignore")
+
+
+def _namespace_probe(
+    operation: DescribeOperation,
+    cache: SchemaCache,
+    processor_version: str,
+    current_report: dict[str, object],
+) -> dict[str, JsonValue]:
+    """Compile the same schema with strict namespaces and compare measured evidence."""
+    if operation.schema_ref.options.namespaces != "legacy":
+        return {}
+    if not _has_prefixed_unknown_head(current_report):
+        return {}
+    strict_options = operation.schema_ref.options.model_copy(update={"namespaces": "strict"})
+    strict_ref = operation.schema_ref.model_copy(update={"options": strict_options})
+    request = _for_schema(operation, strict_ref, processor_version)
+    alternative: dict[str, object]
+    try:
+        with cache.acquire(request) as schema:
+            alternative = schema.report.to_dict()
+    except ToolError as exc:
+        return {
+            "status": "error",
+            "fault": {
+                "code": exc.fault.code,
+                "message": _bounded_probe_message(exc.fault.message, cache),
+                "details": cast(JsonValue, exc.fault.details),
+            },
+        }
+    except PyXSDError as exc:
+        return {
+            "status": "error",
+            "fault": {
+                "code": "invalid_schema",
+                "message": _bounded_probe_message(str(exc), cache),
+                "details": {},
+            },
+        }
+    current_summary = _probe_summary(current_report)
+    alternative_summary = _probe_summary(alternative)
+    current_codes = cast(dict[str, int], current_summary["codes"])
+    alternative_codes = cast(dict[str, int], alternative_summary["codes"])
+    introduced = sorted(set(alternative_codes) - set(current_codes))
+    resolved = sorted(set(current_codes) - set(alternative_codes))
+    probe: dict[str, JsonValue] = {
+        "status": "ok",
+        "current": current_summary,
+        "alternative": alternative_summary,
+        "introduced_codes": cast(JsonValue, introduced),
+        "resolved_codes": cast(JsonValue, resolved),
+    }
+    head_code = "unknown-substitution-head"
+    measured_improvement = (
+        current_codes.get(head_code, 0) > alternative_codes.get(head_code, 0)
+        and int(cast(int, alternative_summary["error_count"]))
+        < int(cast(int, current_summary["error_count"]))
+        and not introduced
+    )
+    if measured_improvement:
+        probe["recommendation"] = {
+            "schema_ref": encode_value(strict_ref),
+            "explanation": (
+                "Strict namespaces resolved the prefixed substitution head without "
+                "introducing another issue code."
+            ),
+        }
+    return probe
+
+
 def _describe(
     operation: DescribeOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
     request = _for_schema(operation, operation.schema_ref, processor_version)
+    if operation.view == "diagnostics":
+        with cache.acquire(request) as schema:
+            current_report = schema.report.to_dict()
+        probe = _namespace_probe(operation, cache, processor_version, current_report)
+        recommendation = probe.pop("recommendation", None)
+        recommendations: list[dict[str, JsonValue]] = []
+        if isinstance(recommendation, dict):
+            recommendations.append(recommendation)
+        return {
+            "view": "diagnostics",
+            "report": encode_value(current_report),
+            "recommendations": cast(JsonValue, recommendations),
+            "namespace_probe": cast(JsonValue, probe if probe else None),
+        }
     with cache.acquire(request) as schema:
         description = describe_schema(schema)
         selected_ids = operation.component_ids or description.roots
@@ -293,7 +427,11 @@ def _describe(
             "counts": counts,
         }
         if operation.view == "constraints" or operation.component_ids:
-            page = selected[operation.offset : operation.offset + operation.limit]
+            page = selected[
+                operation.offset : None
+                if operation.limit is None
+                else operation.offset + operation.limit
+            ]
             result["components"] = encode_value(page)
             result["page"] = _page(len(selected), operation.offset, len(page))
         return result
@@ -344,7 +482,11 @@ def _find(
                     if item.name == operation.name
                     or (item.name is not None and item.name.endswith("}" + operation.name))
                 )
-        page = found[operation.offset : operation.offset + operation.limit]
+        page = found[
+            operation.offset : None
+            if operation.limit is None
+            else operation.offset + operation.limit
+        ]
         return {
             "components": encode_value(page),
             "page": _page(len(found), operation.offset, len(page)),
@@ -415,7 +557,11 @@ def _query(
     except (ElementPathError, ValueError, TypeError) as exc:
         raise ToolError("invalid_query", "XPath or namespace mapping is invalid") from exc
     if isinstance(value, list):
-        page = value[operation.offset : operation.offset + operation.limit]
+        page = value[
+            operation.offset : None
+            if operation.limit is None
+            else operation.offset + operation.limit
+        ]
         results: JsonValue
         if all(isinstance(item, SchemaBase) for item in page):
             index = (
@@ -428,9 +574,28 @@ def _query(
     return {"results": encode_value(value)}
 
 
+def _with_request_defaults(operation: Operation, limits: Limits) -> Operation:
+    """Restore request defaults when enforcement is enabled; stay unlimited otherwise."""
+    updates: dict[str, int | None] = {}
+    if isinstance(operation, ParseOperation) and operation.issue_limit is None:
+        updates["issue_limit"] = limits.page_items
+    elif isinstance(operation, BatchParseOperation) and operation.issue_limit is None:
+        updates["issue_limit"] = limits.batch_issue_items
+    elif (
+        isinstance(
+            operation,
+            (DescribeOperation, FindOperation, QueryOperation, StructuralDiffOperation),
+        )
+        and operation.limit is None
+    ):
+        updates["limit"] = limits.page_items
+    return operation.model_copy(update=updates) if updates else operation
+
+
 def _execute(
     operation: Operation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
+    operation = _with_request_defaults(operation, cache.limits)
     if isinstance(operation, RecordsOperation):
         from .services.records import execute_records
 
@@ -448,7 +613,11 @@ def _execute(
 
         return execute_model(operation, cache, processor_version)
     limit = getattr(operation, "issue_limit", getattr(operation, "limit", 1))
-    if limit > cache.limits.page_items:
+    if (
+        cache.limits.page_items is not None
+        and limit is not None
+        and limit > cache.limits.page_items
+    ):
         raise ToolError("invalid_argument", "Page limit exceeds the operator budget")
     if isinstance(operation, ParseOperation):
         return _report(_parse(operation, cache, processor_version), operation)
@@ -490,6 +659,47 @@ def _execute(
     raise ToolError("invalid_operation", "Worker operation is not supported")
 
 
+def _reply_fault(
+    stream: BinaryIO,
+    operation: Operation | None,
+    *,
+    role: Literal["clean", "execution"],
+    fault: ToolFault,
+    operations: int,
+    max_bytes: int | None,
+) -> None:
+    """Preserve a fault's code while fitting its reply inside the IPC budget."""
+    message = fault.message
+    details: dict[str, JsonValue] = fault.details
+    reduced_details = False
+    while True:
+        bounded = fault.model_copy(update={"message": message, "details": details})
+        try:
+            _reply(
+                stream,
+                operation,
+                role=role,
+                status="error",
+                fault=bounded,
+                operations=operations,
+                max_bytes=max_bytes,
+            )
+        except ToolError as exc:
+            if exc.fault.code != "ipc_limit":
+                raise
+            if fault.details and not reduced_details:
+                details = {"details_truncated": True}
+                reduced_details = True
+            elif len(message) > 1:
+                message = message[: max(1, len(message) // 2)]
+            elif details:
+                details = {}
+            else:
+                raise
+        else:
+            return
+
+
 def _reply(
     stream: BinaryIO,
     operation: Operation | None,
@@ -499,7 +709,7 @@ def _reply(
     result: JsonValue = None,
     fault: ToolFault | None = None,
     operations: int,
-    max_bytes: int,
+    max_bytes: int | None,
     request_id: str = "unknown",
 ) -> None:
     message = WorkerReply(
@@ -519,9 +729,18 @@ def _parser_details(exc: BaseException) -> dict[str, JsonValue]:
     return {} if match is None else {"line": int(match[1]), "column": int(match[2])}
 
 
+def _byte_budget(value: str) -> int | None:
+    if value == "unlimited":
+        return None
+    if not value.isdecimal() or int(value) <= 0:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'unlimited'")
+    return int(value)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--role", required=True, choices=("clean", "execution"))
+    parser.add_argument("--request-bytes", type=_byte_budget, default=None)
     arguments = parser.parse_args(argv)
     if arguments.role != "clean":
         return 2
@@ -531,9 +750,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         try:
             config = decode_frame(
-                _read_frame(sys.stdin.buffer, 2 * 2**20),
+                _read_frame(sys.stdin.buffer, arguments.request_bytes),
                 WorkerConfig,
-                max_bytes=2 * 2**20,
+                max_bytes=arguments.request_bytes,
                 expected={"request_id": "bootstrap", "role": arguments.role},
             )
             cache = SchemaCache(config.limits)
@@ -550,14 +769,12 @@ def main(argv: list[str] | None = None) -> int:
         except BaseException:
             return 1
         while True:
-            frame = sys.stdin.buffer.readline(config.limits.request_bytes + 1)
-            if not frame:
-                return 0
             operation = None
             fatal = False
             try:
-                if len(frame) > config.limits.request_bytes:
-                    raise ToolError("ipc_limit", "Worker operation exceeds its byte limit")
+                frame = _read_frame(sys.stdin.buffer, config.limits.request_bytes)
+                if not frame:
+                    return 0
                 operation = decode_operation(
                     frame, max_bytes=config.limits.request_bytes, role=arguments.role
                 )
@@ -574,11 +791,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except ToolError as exc:
                 operations += 1
-                _reply(
+                _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    status="error",
                     fault=exc.fault,
                     operations=operations,
                     max_bytes=config.limits.output_bytes,
@@ -590,11 +806,10 @@ def main(argv: list[str] | None = None) -> int:
                     if isinstance(operation, (ParseOperation, QueryOperation))
                     else "invalid_schema"
                 )
-                _reply(
+                _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    status="error",
                     fault=ToolFault(
                         code=code,
                         message=str(exc)[: config.limits.message_bytes],
@@ -606,11 +821,10 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 operations += 1
                 fatal = True
-                _reply(
+                _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    status="error",
                     fault=ToolFault(
                         code="worker_internal",
                         message="Worker operation failed without a verdict",

@@ -24,7 +24,9 @@ pip install pyxsd
 ```
 
 For the MCP server, `pip install 'pyxsd[mcp]'` provides the `pyxsd-mcp`
-command, or configure your client to launch the server with `uvx`:
+command, or configure your client to launch the server with `uvx`. Install
+`pyxsd[mcp-all]` instead when the server should also project records through
+Arrow; transformation execution remains disabled by default.
 
 ```json
 {

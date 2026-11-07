@@ -32,13 +32,16 @@ def register_resources(server: "MCPServer", services: "Services") -> None:
     )
     async def artifact(artifact_id: str) -> bytes:
         ref = await services.outputs.get(artifact_id)
+        chunk = services.settings.limits.result_bytes
+        if chunk is None:
+            return await services.outputs.read(artifact_id, offset=0, length=ref.size)
         chunks = []
-        for offset in range(0, ref.size, services.settings.limits.result_bytes):
+        for offset in range(0, ref.size, chunk):
             chunks.append(
                 await services.outputs.read(
                     artifact_id,
                     offset=offset,
-                    length=min(services.settings.limits.result_bytes, ref.size - offset),
+                    length=min(chunk, ref.size - offset),
                 )
             )
         return b"".join(chunks)

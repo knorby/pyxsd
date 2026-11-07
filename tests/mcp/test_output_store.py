@@ -19,10 +19,21 @@ from pyxsd.mcp.output_store import OutputStore
 from pyxsd.mcp.storage import Storage
 
 
+def test_output_list_rejects_a_non_integer_limit(tmp_path):
+    async def scenario():
+        with Storage(tmp_path / "state") as storage:
+            store = OutputStore(storage, limits())
+            with pytest.raises(ToolError, match="invalid_argument"):
+                await store.list(limit="1")  # type: ignore[arg-type]
+            store.close()
+
+    anyio.run(scenario)
+
+
 def limits(**overrides):
     fields = {"output_bytes": 1024, "page_items": 3, "result_bytes": 1024}
     fields.update(overrides)
-    return Limits(**fields)
+    return Limits(enforced=True, **fields)
 
 
 def execute(storage, sql, parameters=()):
@@ -34,7 +45,36 @@ def initialize(store):
     store._run(lambda db: True, create=True)
 
 
-def test_binary_roundtrip_ranges_and_restart(tmp_path):
+def test_omitted_limits_use_enabled_defaults_and_disabled_stays_unbounded(tmp_path):
+    async def scenario():
+        with Storage(tmp_path / "enabled") as storage:
+            store = OutputStore(storage, limits(page_items=1, artifact_read_bytes=1))
+            first = await store.put_bytes(
+                b"first", name="first.bin", media_type="application/octet-stream", kind="test"
+            )
+            await store.put_bytes(
+                b"second", name="second.bin", media_type="application/octet-stream", kind="test"
+            )
+            page, cursor = await store.list()
+            assert [item.id for item in page] == [first.id]
+            assert cursor is not None
+            assert await store.read(first.id, offset=0, length=None) == b"f"
+            store.close()
+        with Storage(tmp_path / "disabled") as storage:
+            store = OutputStore(storage, Limits(page_items=1, artifact_read_bytes=1))
+            first = await store.put_bytes(
+                b"first", name="first.bin", media_type="application/octet-stream", kind="test"
+            )
+            await store.put_bytes(
+                b"second", name="second.bin", media_type="application/octet-stream", kind="test"
+            )
+            page, cursor = await store.list()
+            assert len(page) == 2
+            assert cursor is None
+            assert await store.read(first.id, offset=0, length=None) == b"first"
+            store.close()
+
+    anyio.run(scenario)
     content = b"\x00prefix-\xff-suffix\x00"
 
     async def scenario():

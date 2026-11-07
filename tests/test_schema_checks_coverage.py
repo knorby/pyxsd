@@ -961,6 +961,25 @@ def test_substitution_group_cycle_walk_revisits_a_head(schema_report):
     assert "circular-substitution-group" not in error_codes(report)
 
 
+def test_unknown_substitution_head_reports_prefixed_details(schema_report):
+    report = schema_report(
+        "<xs:element name='child' type='xs:string' substitutionGroup='t:missing' "
+        "xmlns:t='urn:test'/>"
+    )
+    issue = next(issue for issue in report.errors if issue.code == "unknown-substitution-head")
+
+    assert issue.details == {"substitutionGroup": "t:missing", "prefixed": True}
+
+
+def test_unknown_substitution_head_reports_unprefixed_details(schema_report):
+    report = schema_report(
+        "<xs:element name='child' type='xs:string' substitutionGroup='missing'/>"
+    )
+    issue = next(issue for issue in report.errors if issue.code == "unknown-substitution-head")
+
+    assert issue.details == {"substitutionGroup": "missing", "prefixed": False}
+
+
 def test_substitution_group_exclusions_skip_an_unresolved_head_type(schema_report):
     report = schema_report(
         "<xs:element name='h' type='NoSuchType'/>"

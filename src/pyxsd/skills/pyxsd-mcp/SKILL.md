@@ -7,7 +7,9 @@ description: Drive pyxsd through the local stdio Model Context Protocol — sess
 
 Use this skill when an MCP client must use the pyxsd server. The primary launch
 method is `uvx --from 'pyxsd[mcp]' pyxsd-mcp`. Alternatively, install with
-`pip install 'pyxsd[mcp]'` and launch `pyxsd-mcp` directly. The server is local
+`pip install 'pyxsd[mcp]'` and launch `pyxsd-mcp` directly. Install
+`pyxsd[mcp-all]` when Pydantic and Arrow tools should be available together;
+that install still leaves transform execution disabled. The server is local
 stdio only; there is no HTTP or remote mode. Everything below also has a
 Python/CLI fallback when the server is absent.
 
@@ -24,7 +26,10 @@ resetting its dedicated MCP directory; startup never cleans crash orphans.
 
 Call `pyxsd_capabilities` first. It reports the version, enabled tool groups,
 execution backend, project root, resolved state directory, persistence policy,
-source root, limits, and adapter availability. Do not assume
+source root, limits, and adapter availability. Resource limits are disabled by
+default; use `--resource-limits enabled` or
+`PYXSD_MCP_RESOURCE_LIMITS=enabled` to restore the numeric defaults, and
+`--limit FIELD=VALUE` / `PYXSD_MCP_<UPPERCASE_FIELD>` to tune them. Do not assume
 execution or Arrow features — check `adapters.arrow.available` and
 `execution_backend`.
 
@@ -59,15 +64,21 @@ execution or Arrow features — check `adapters.arrow.available` and
 5. `pyxsd_explain_issue` gives curated guidance. Pass the retained report
    artifact to inspect one exact issue; reports remain readable after session
    inputs are released.
-6. `pyxsd_manage_workspace` with `action: "release"` removes only session inputs.
+6. Before changing namespace options, call `pyxsd_inspect_schema` with
+   `view: "diagnostics"` and inspect `namespace_probe`. It compiles a strict
+   alternative only to measure it; use the returned replacement `schema_ref`
+   only when a recommendation is present. Strict namespaces do not fix
+   `xsd:element ref` navigation or complex-child access.
+7. `pyxsd_manage_workspace` with `action: "release"` removes only session inputs.
    It never deletes retained artifacts.
 
 For a corpus, use `pyxsd_validate_documents` with `documents` items containing
 `document: {path: ...}` and optional `schema_ref: {source: {path: ...}}`.
 One capture/worker call handles the batch; results retain request order and
 contain per-document verdicts/counts or faults. Reports are retained only for
-invalid documents. Split at `limits.corpus_max_files`; use the singular tool for
-paged diagnostics. Missing uploaded inputs, malformed XML, and schema-group
+invalid documents. When resource limits are enabled, split at
+`limits.corpus_max_files`; with limits disabled, no corpus split is required.
+Use the singular tool for paged diagnostics. Missing uploaded inputs, malformed XML, and schema-group
 failures return item faults; source-tree capture failures may reject a whole batch.
 Missing-input fault details include `role`, `path`, and `missing`.
 
@@ -77,16 +88,18 @@ evidence that a document is invalid. Inspect incomplete schemas to diagnose them
 
 ## Outputs
 
-Validation reports, oversized response bodies, record exports, and transform
-previews are stored as local artifacts with an ID, absolute path, size, SHA-256
-digest, media type, creation time, and kind.
+Validation reports, record exports, and transform previews are stored as local
+artifacts with an ID, absolute path, size, SHA-256 digest, media type, creation
+time, and kind. Oversized response bodies spill to artifacts only when resource
+limits are enabled.
 
 - `pyxsd_list_artifacts` pages in stable creation order using envelope
   `page.next_cursor`; the cursor survives response spillover.
-- `pyxsd_read_artifact` returns a bounded base64 range plus actual `length`, total
-  `size`, digest, media type, and local path. `length` can be smaller than
-  requested at end of file. Concatenate ranged reads for a large body; reduce
-  length on `response_limit` (reads never spill recursively).
+- `pyxsd_read_artifact` returns base64 bytes from `offset` plus actual `length`,
+  total `size`, digest, media type, and local path. Omit `length` to read through
+  EOF (the default when resource limits are disabled); when limits are enabled,
+  request bounded ranges and reduce `length` on `response_limit` (reads never
+  spill recursively).
 - `pyxsd_delete_artifact` explicitly deletes one output. Repeating it is
   harmless. Nothing is removed automatically by time, workspace release, or
   preview completion.
@@ -104,6 +117,16 @@ produce an empty diff. Named local declarations stay stable across sibling edits
 items carry bounded issue evidence from the failing side. A no-regressions result
 applies only to the tested files and options.
 
+Select large fixture sets without listing every file: omit `corpus` and pass a
+relative POSIX `corpus_glob` such as `fixtures/**/*.xml` (`*` and `?` stay
+within one segment; `**` crosses directories). Selection is deterministic,
+respects the active corpus budget, and uses the active input set: uploads win,
+while an empty workspace selects from the configured `--source-root`. The reply
+reports `corpus_selection.matched`; empty matches are a valid zero-file corpus,
+and overflow is an error rather than silent truncation. Point `--source-root`
+at the project's own schema/fixture tree; example families document their
+pinned sources in their READMEs.
+
 For a source-to-target migration: compare old/new with the corpus, preview a
 transform (`pyxsd_preview_transform` — validation happens in clean workers on
 the retained candidate bytes), and inspect the candidate, report, byte diff, and
@@ -113,17 +136,25 @@ tools.
 
 ## Previews and exports
 
-`pyxsd_preview_transform` requires explicit trusted-local execution:
-`pyxsd-mcp --execution-backend trusted-local`. It runs code with the launching
-user's privileges, not in a sandbox. Invalid and malformed candidates remain
+`pyxsd_preview_transform` requires explicit trusted-local execution. Select it
+with `pyxsd-mcp --execution-backend trusted-local`; with no CLI value,
+`PYXSD_MCP_EXECUTION_BACKEND=trusted-local` does the same, and an explicit
+`disabled` value overrides it. It runs code with the launching user's
+privileges, not in a sandbox. Invalid and malformed candidates remain
 inspectable. Original inputs are held only in temporary operation space through
 independent validation, then discarded; candidate/report/diff outputs are
 retained.
 
-`pyxsd_export_records` (execution group + Arrow) writes Parquet or a manifested
-dataset as retained digest-verified artifacts. Download via `pyxsd_read_artifact`
-and verify the digest. `pyxsd_preview_records` gives bounded row previews with
-exact/incomplete counts.
+With Arrow available (`pyxsd[mcp-all]`, or the standalone Arrow extra),
+`pyxsd_preview_records` gives bounded row previews with exact/incomplete counts,
+and `pyxsd_export_records` writes Parquet or a manifested dataset as retained
+digest-verified artifacts. Neither needs trusted-local execution. Download via
+`pyxsd_read_artifact` and verify the digest; exports never write source inputs.
+
+When `unsupported_projection` details include `projection_candidates`, pass one
+returned `path` back to the same tool unchanged. Its spelling follows the
+schema's namespace mode, and `search_truncated: true` means the bounded search
+did not cover every descendant.
 
 ## Fallback
 

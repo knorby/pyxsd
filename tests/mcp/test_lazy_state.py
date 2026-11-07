@@ -54,7 +54,10 @@ def test_first_output_and_peer_discovery(tmp_path):
     async def scenario():
         root = tmp_path / "state"
         with Storage(root) as a, Storage(root) as b:
-            first, second = OutputStore(a, Limits()), OutputStore(b, Limits())
+            first, second = (
+                OutputStore(a, Limits(enforced=True)),
+                OutputStore(b, Limits(enforced=True)),
+            )
             assert a.scratch != b.scratch
             assert not a.scratch.is_relative_to(root)
             assert await second.list() == ([], None)
@@ -68,7 +71,7 @@ def test_first_output_and_peer_discovery(tmp_path):
             a.close()
             assert await second.get(ref.id) == ref
         with Storage(root) as reopened:
-            assert await OutputStore(reopened, Limits()).get(ref.id) == ref
+            assert await OutputStore(reopened, Limits(enforced=True)).get(ref.id) == ref
 
     anyio.run(scenario)
 
@@ -80,7 +83,7 @@ def test_constructors_do_not_reconcile_peer_staging(tmp_path):
     marker = staging / "a.tmp"
     marker.write_bytes(b"in progress")
     with Storage(root) as storage:
-        OutputStore(storage, Limits())
+        OutputStore(storage, Limits(enforced=True))
     assert marker.read_bytes() == b"in progress"
 
 

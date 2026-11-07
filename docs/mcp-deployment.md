@@ -11,9 +11,16 @@ multi-tenant service, and no network listener is included.
   serialization, deadlines, recycling and process-group cleanup, but no
   operating-system security boundary.
 - Execution is disabled by default. Trusted-local transformation previews require
-  an explicit `--execution-backend trusted-local` opt-in and run with the
-  launching user's privileges, not in a sandbox. Do not use them for untrusted
-  code, and there is no fallback to another execution mode.
+  an explicit `--execution-backend trusted-local` opt-in, or
+  `PYXSD_MCP_EXECUTION_BACKEND=trusted-local` when no CLI value is supplied.
+  An explicit `disabled` value overrides either. Invalid values abort startup.
+  Trusted-local previews run with the launching user's privileges, not in a
+  sandbox. Do not use them for untrusted code, and there is no fallback to
+  another execution mode.
+- Arrow record preview and export run in clean workers whenever PyArrow is
+  available (`pyxsd[mcp-all]` for the complete server install). Preview returns
+  bounded rows; export retains digest-verified Parquet/dataset artifacts.
+  Neither executes supplied Python transforms.
 - No OCI/Docker backend or worker image is included.
 
 Local workers use a bounded, role-validated JSON protocol. Python objects, pickle,
@@ -64,12 +71,15 @@ stdio process through an untrusted relay.
 
 ## Local boundaries
 
-Source roots and the store directory stay under operator control. Bound request
-bodies, queues, reports, artifacts and execution time through `Settings.limits`.
-Each server has independent inputs, scratch and worker subprocesses; project
-scoping is organizational isolation, not an OS-user security boundary. State is
-excluded from source capture, including discovered dependencies. This is not a
-distributed or network-filesystem deployment.
+Source roots and the store directory stay under operator control. Resource
+limits are disabled by default; enable and tune them with `--resource-limits
+enabled` plus `--limit FIELD=VALUE`, or the matching `PYXSD_MCP_*` environment
+variables. Without limits, request bodies, queues, reports, artifacts, workers
+and execution time are unbounded; that is a deliberate local-only tradeoff, not
+a sandbox. Every server has independent inputs, scratch and worker subprocesses;
+project scoping is organizational isolation, not an OS-user security boundary.
+State is excluded from source capture, including discovered dependencies. This
+is not a distributed or network-filesystem deployment.
 
 For mutually untrusted code or tenants, use a separate operator-designed sandbox
 with its own threat model. Local workers do not establish a public-hosting or
@@ -89,6 +99,15 @@ cannot lie inside the state directory. Uploaded files with similar names are
 ordinary session inputs. Relative configured paths are frozen against the launch
 working directory; there is no Git-root discovery or client-controlled scope
 switching.
+
+`corpus_glob` selection follows the same boundary. Enumeration is
+descriptor-relative and deterministic, never follows file or directory symlinks,
+prunes the excluded state tree before descent, and counts every visited entry
+against the input-entry budget. A matched non-regular entry is an `unsafe_path`
+fault. Selection names files without reading their bytes; the subsequent
+verified capture copies and hashes them, retries once if source bytes change,
+and fails rather than comparing a mixed manifest when changes persist. Matches
+above the corpus budget fail with `quota_exceeded`; no silent prefix is taken.
 
 ## Store layout and recovery
 

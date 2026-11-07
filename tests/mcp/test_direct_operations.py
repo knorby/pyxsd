@@ -81,7 +81,7 @@ def test_batch_parse_reuses_schema_lease_per_unique_schema(tmp_path):
             ),
         ),
     )
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     result = worker_main._execute(operation, cache, __version__)
     paths = [item["document"]["path"] for item in result["items"]]
     assert paths == ["a1.xml", "b1.xml", "a2.xml"]
@@ -119,7 +119,7 @@ def test_batch_parse_rejects_items_over_worker_budget(tmp_path):
         capture=capture_to_wire(capture),
         items=tuple(BatchValidationItem(document=FileRef(path="doc.xml")) for _ in range(3)),
     )
-    cache = SchemaCache(Limits(corpus_files=2, corpus_max_files=2))
+    cache = SchemaCache(Limits(enforced=True, corpus_files=2, corpus_max_files=2))
     with pytest.raises(ToolError) as raised:
         worker_main._execute(operation, cache, __version__)
     assert raised.value.fault.code == "invalid_argument"
@@ -159,7 +159,7 @@ def test_batch_manifested_document_disappeared(tmp_path, hinted):
             ),
         ),
     )
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     try:
         result = worker_main._execute(operation, cache, __version__)
     finally:
@@ -260,8 +260,8 @@ def test_artifacts_survive_session_restart_but_workspaces_do_not(tmp_path):
     async def scenario():
         storage = Storage(tmp_path / "state")
         try:
-            outputs = OutputStore(storage, Limits())
-            inputs = SessionInputs(storage.scratch, Limits())
+            outputs = OutputStore(storage, Limits(enforced=True))
+            inputs = SessionInputs(storage.scratch, Limits(enforced=True))
             workspace = await inputs.create()
             await inputs.put_files(workspace.id, [InlineFile(path="doc.xml", text=DOC)])
             kept = await outputs.put_bytes(
@@ -273,8 +273,8 @@ def test_artifacts_survive_session_restart_but_workspaces_do_not(tmp_path):
 
         restarted = Storage(tmp_path / "state")
         try:
-            outputs = OutputStore(restarted, Limits())
-            inputs = SessionInputs(restarted.scratch, Limits())
+            outputs = OutputStore(restarted, Limits(enforced=True))
+            inputs = SessionInputs(restarted.scratch, Limits(enforced=True))
             assert await inputs.list() == []
             with pytest.raises(ToolError, match="not_found"):
                 await inputs.put_files(workspace.id, [])
@@ -324,7 +324,7 @@ def test_batch_worker_item_fault_for_manifest_missing_document(tmp_path):
             ),
         ),
     )
-    cache = SchemaCache(Limits())
+    cache = SchemaCache(Limits(enforced=True))
     result = worker_main._execute(operation, cache, __version__)
     assert result["items"][0]["valid"] is True
     assert result["items"][1]["valid"] is None

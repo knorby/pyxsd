@@ -27,7 +27,7 @@ def execute(tmp_path, source, *, limits=None, timeout=10):
     snapshot_root = tmp_path / "snapshot"
     snapshot_root.mkdir(exist_ok=True)
     snapshot = make_snapshot(snapshot_root)
-    limits = limits or Limits()
+    limits = limits or Limits(enforced=True)
     runtime = TrustedLocalExecution(tmp_path / "output", limits)
 
     async def scenario():
@@ -101,7 +101,7 @@ def test_stdout_flood_is_not_a_transform_result(tmp_path):
         execute(
             tmp_path,
             "def transform(document, context):\n    print('x' * 20000)",
-            limits=Limits(request_bytes=8192),
+            limits=Limits(enforced=True, request_bytes=8192),
         )
 
 
@@ -112,7 +112,31 @@ def transform(document, context):
     os._exit(0)
 """
     with pytest.raises(ToolError, match="output_limit"):
-        execute(tmp_path, source, limits=Limits(output_bytes=1024))
+        execute(tmp_path, source, limits=Limits(enforced=True, output_bytes=1024))
+
+
+def test_pipeline_checkpoints_with_limits_disabled_skip_budget_arithmetic(tmp_path):
+    result = execute(
+        tmp_path,
+        {
+            "kind": "pipeline",
+            "steps": [{"name": "keep", "checkpoint": True}],
+            "definitions": {"keep": "def transform(document, context): pass"},
+        },
+        limits=Limits(),
+    )
+    assert result.checkpoints["checkpoints"]
+    assert result.checkpoint_candidates
+
+
+def test_execution_main_rejects_invalid_request_byte_budgets():
+    import argparse
+
+    from pyxsd.mcp.execution_main import _byte_budget
+
+    for value in ("0", "-1", "abc", "1.5"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _byte_budget(value)
 
 
 def test_pipeline_uses_explicit_definitions_and_returns_advisory_checkpoints(tmp_path):
@@ -142,7 +166,7 @@ def test_serializer_output_budget_is_enforced(tmp_path):
         execute(
             tmp_path,
             "def transform(document, context):\n    return document",
-            limits=Limits(output_bytes=8),
+            limits=Limits(enforced=True, output_bytes=8),
         )
 
 
@@ -155,7 +179,7 @@ def test_checkpoint_output_budget_is_enforced(tmp_path):
                 "steps": [{"name": "keep", "checkpoint": True}],
                 "definitions": {"keep": "def transform(document, context): pass"},
             },
-            limits=Limits(output_bytes=8),
+            limits=Limits(enforced=True, output_bytes=8),
         )
 
 
@@ -214,7 +238,7 @@ def test_unbound_input_is_rejected_before_loading_user_code(tmp_path):
         transform=PythonTransformSpec(source="raise RuntimeError('must not run')"),
         sources={},
         output_directory=str(tmp_path),
-        limits=Limits(),
+        limits=Limits(enforced=True),
     )
     with pytest.raises(ToolError, match="unbindable"):
         run(request)

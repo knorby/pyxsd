@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import sys
 
 import pytest
 
@@ -37,10 +38,11 @@ from pyxsd.mcp.errors import ToolError
     ],
 )
 def test_unsafe_logical_paths_are_rejected(path):
+    from pyxsd.mcp.config import Limits
     from pyxsd.mcp.safe_io import validate_paths
 
     with pytest.raises(ToolError, match="invalid_path"):
-        validate_paths([path])
+        validate_paths([path], Limits(enforced=True))
 
 
 @pytest.mark.parametrize(
@@ -264,10 +266,251 @@ def test_filesystem_encoding_errors_are_typed_denials(tmp_path, monkeypatch):
 
 
 def test_admitted_path_depth_is_bounded_before_recursive_storage_operations():
+    from pyxsd.mcp.config import Limits
     from pyxsd.mcp.errors import ToolError
     from pyxsd.mcp.safe_io import validate_paths
 
     accepted = "/".join(["a"] * 128)
-    assert validate_paths([accepted]) == (accepted,)
+    assert validate_paths([accepted], Limits(enforced=True)) == (accepted,)
     with pytest.raises(ToolError, match="invalid_path"):
-        validate_paths([accepted + "/a"])
+        validate_paths([accepted + "/a"], Limits(enforced=True))
+
+
+def test_glob_enumeration_is_deterministic_and_prunes_the_excluded_state(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "corpus").mkdir()
+    (tmp_path / "corpus" / "nested").mkdir()
+    (tmp_path / "state" / "nested").mkdir(parents=True)
+    (tmp_path / "corpus" / "a.xml").write_text("a")
+    (tmp_path / "corpus" / "nested" / "b.xml").write_text("b")
+    (tmp_path / "state" / "nested" / "secret.xml").write_text("secret")
+    (tmp_path / "ignored.txt").write_text("ignored")
+    with SafeDirectory(tmp_path) as directory:
+        first = directory.glob("**/*.xml", max_entries=6, max_matches=10, exclude="state")
+        second = directory.glob("**/*.xml", max_entries=6, max_matches=10, exclude="state")
+    assert first == second == ("corpus/a.xml", "corpus/nested/b.xml")
+
+
+def test_glob_results_are_lexical_across_directories(tmp_path):
+    from pyxsd.mcp.corpus import select_manifest_paths
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "b").mkdir()
+    (tmp_path / "aa.xml").write_text("aa")
+    (tmp_path / "b.xml").write_text("b")
+    (tmp_path / "b" / "a.xml").write_text("nested")
+    with SafeDirectory(tmp_path) as directory:
+        selected = directory.glob("**/*.xml", max_entries=10, max_matches=10)
+    lexical = select_manifest_paths("**/*.xml", selected, max_matches=10)
+    assert selected == lexical == ("aa.xml", "b.xml", "b/a.xml")
+
+
+def test_glob_prunes_an_excluded_directory_by_identity(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "public").mkdir()
+    (tmp_path / "public" / "a.xml").write_text("a")
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "secret.xml").write_text("secret")
+    identity = ((tmp_path / "state").stat().st_dev, (tmp_path / "state").stat().st_ino)
+    with SafeDirectory(tmp_path) as directory:
+        unpruned = directory.glob("**/*.xml", max_entries=10, max_matches=10)
+        pruned = directory.glob(
+            "**/*.xml",
+            max_entries=10,
+            max_matches=10,
+            exclude_identities={identity},
+        )
+    assert unpruned == ("public/a.xml", "state/secret.xml")
+    assert pruned == ("public/a.xml",)
+
+
+def test_glob_without_matches_returns_an_empty_tuple(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "input.txt").write_text("text")
+    with SafeDirectory(tmp_path) as directory:
+        assert directory.glob("**/*.xml", max_entries=10, max_matches=10) == ()
+
+
+@pytest.mark.parametrize("budget", [-1, 0, True, 1.5, "2"])
+def test_glob_requires_positive_integer_entry_and_match_budgets(tmp_path, budget):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "a.xml").write_text("a")
+    with SafeDirectory(tmp_path) as directory:
+        with pytest.raises(ToolError, match="invalid_argument"):
+            directory.glob("*.xml", max_entries=budget, max_matches=10)
+        with pytest.raises(ToolError, match="invalid_argument"):
+            directory.glob("*.xml", max_entries=10, max_matches=budget)
+
+
+def test_glob_entry_exhaustion_fails_instead_of_truncating(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    for name in ("a.xml", "b.xml", "c.xml"):
+        (tmp_path / name).write_text(name)
+    with SafeDirectory(tmp_path) as directory, pytest.raises(ToolError, match="quota_exceeded"):
+        directory.glob("*.xml", max_entries=2, max_matches=10)
+
+
+def test_glob_match_overflow_fails_instead_of_returning_a_prefix(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "a.xml").write_text("a")
+    (tmp_path / "b.xml").write_text("b")
+    with SafeDirectory(tmp_path) as directory, pytest.raises(ToolError, match="quota_exceeded"):
+        directory.glob("*.xml", max_entries=10, max_matches=1)
+
+
+def test_glob_rejects_matched_nonregular_entries(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("secret")
+    os.mkfifo(tmp_path / "pipe.xml")
+    (tmp_path / "link.xml").symlink_to(outside / "secret")
+    with SafeDirectory(tmp_path) as directory:
+        for pattern in ("pipe.xml", "link.xml", "*.xml"):
+            with pytest.raises(ToolError, match="unsafe_path"):
+                directory.glob(pattern, max_entries=10, max_matches=10)
+
+
+def test_glob_never_follows_directory_symlinks(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.xml").write_text("secret")
+    (root / "link").symlink_to(outside)
+    with SafeDirectory(root) as directory:
+        assert directory.glob("link/**/*.xml", max_entries=10, max_matches=10) == ()
+        assert directory.glob("**/*.xml", max_entries=10, max_matches=10) == ()
+
+
+def test_glob_after_close_fails_closed(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "a.xml").write_text("a")
+    directory = SafeDirectory(tmp_path)
+    directory.close()
+    with pytest.raises(ToolError, match="closed"):
+        directory.glob("*.xml", max_entries=1, max_matches=1)
+
+
+def test_glob_ignores_an_unmatchable_deep_chain_without_recursing_on_the_stack(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    deep = tmp_path
+    for _ in range(300):
+        deep = deep / "d"
+        deep.mkdir()
+    recursion_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(200)
+    try:
+        with SafeDirectory(tmp_path) as directory:
+            assert directory.glob("shallow/*.xml", max_entries=500, max_matches=10) == ()
+    finally:
+        sys.setrecursionlimit(recursion_limit)
+
+
+def test_glob_rejects_a_matched_directory(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "corpus").mkdir()
+    with SafeDirectory(tmp_path) as directory, pytest.raises(ToolError, match="unsafe_path"):
+        directory.glob("corpus", max_entries=10, max_matches=10)
+
+
+def test_glob_reports_a_root_enumeration_failure(tmp_path, monkeypatch):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "a.xml").write_text("a")
+
+    def fail(_directory_fd):
+        raise OSError("unreadable")
+
+    with SafeDirectory(tmp_path) as directory:
+        monkeypatch.setattr(os, "scandir", fail)
+        with pytest.raises(ToolError, match="unsafe_path"):
+            directory.glob("*.xml", max_entries=10, max_matches=10)
+
+
+def test_glob_reports_an_entry_inspection_failure(tmp_path, monkeypatch):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    class Entry:
+        name = "a.xml"
+
+        def stat(self, *, follow_symlinks):
+            raise OSError("vanished")
+
+    class Scan:
+        def __enter__(self):
+            return iter((Entry(),))
+
+        def __exit__(self, *args):
+            return False
+
+    (tmp_path / "a.xml").write_text("a")
+    with SafeDirectory(tmp_path) as directory:
+        monkeypatch.setattr(os, "scandir", lambda _fd: Scan())
+        with pytest.raises(ToolError, match="unsafe_path"):
+            directory.glob("*.xml", max_entries=10, max_matches=10)
+
+
+def test_glob_reports_a_child_directory_open_failure(tmp_path, monkeypatch):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "corpus").mkdir()
+    (tmp_path / "corpus" / "a.xml").write_text("a")
+    with SafeDirectory(tmp_path) as directory:
+        monkeypatch.setattr(
+            os,
+            "open",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("permission denied")),
+        )
+        with pytest.raises(ToolError, match="unsafe_path"):
+            directory.glob("corpus/*.xml", max_entries=10, max_matches=10)
+
+
+def test_glob_reports_a_child_enumeration_failure_and_closes_the_child(tmp_path, monkeypatch):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "corpus").mkdir()
+    (tmp_path / "corpus" / "a.xml").write_text("a")
+    original_scandir = os.scandir
+    calls = 0
+
+    def flaky(directory_fd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original_scandir(directory_fd)
+        raise OSError("unreadable")
+
+    with SafeDirectory(tmp_path) as directory:
+        monkeypatch.setattr(os, "scandir", flaky)
+        with pytest.raises(ToolError, match="unsafe_path"):
+            directory.glob("corpus/*.xml", max_entries=10, max_matches=10)
+
+
+def test_glob_reports_a_descriptor_close_failure(tmp_path, monkeypatch):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "a.xml").write_text("a")
+    original_close = os.close
+
+    def fail_once(descriptor):
+        original_close(descriptor)
+        raise OSError("closed")
+
+    with SafeDirectory(tmp_path) as directory, monkeypatch.context() as patch:
+        patch.setattr(os, "close", fail_once)
+        with pytest.raises(ToolError, match="unsafe_path"):
+            directory.glob("*.xml", max_entries=10, max_matches=10)

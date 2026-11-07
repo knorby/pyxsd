@@ -71,9 +71,9 @@ class Page(WireModel):
         Nonempty | None, Field(description="Opaque cursor from page.next_cursor.")
     ] = None
     limit: Annotated[
-        PositiveBudget,
+        PositiveBudget | None,
         Field(description="Maximum items to return; must fit the page_items budget."),
-    ] = 50
+    ] = None
 
 
 class PageResult(WireModel):
@@ -103,7 +103,7 @@ class InspectSchemaRequest(WireModel):
     workspace_id: Nonempty
     schema_ref: SchemaRef
     component_ids: tuple[Nonempty, ...] = ()
-    view: Literal["overview", "compact", "full", "constraints"] = "overview"
+    view: Literal["overview", "compact", "full", "constraints", "diagnostics"] = "overview"
     depth: Annotated[int, Field(ge=0)] | None = 1
     page: Page = Field(default_factory=Page)
 
@@ -180,14 +180,19 @@ class ReadArtifactRequest(WireModel):
     artifact_id: Annotated[Nonempty, Field(description="Artifact id from a reference or listing.")]
     offset: Annotated[int, Field(description="Byte offset into the artifact.", ge=0)] = 0
     length: Annotated[
-        PositiveBudget,
-        Field(description="Bytes to read; oversized ranges fault with response_limit."),
-    ] = 8 * 2**10
+        PositiveBudget | None,
+        Field(
+            description=(
+                "Bytes to read; oversized ranges fault with response_limit. "
+                "Omit to read through EOF."
+            )
+        ),
+    ] = None
 
 
 class ListArtifactsRequest(WireModel):
     cursor: Nonempty | None = None
-    limit: PositiveBudget = 50
+    limit: PositiveBudget | None = None
 
 
 class DeleteArtifactRequest(WireModel):

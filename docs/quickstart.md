@@ -33,6 +33,7 @@ environment; it does not make library imports available in another project.
 | Isolated CLI only | `uv tool install pyxsd` |
 | Pydantic or Arrow/Parquet | `python -m pip install 'pyxsd[pydantic]'` or `'pyxsd[arrow]'`; see {doc}`integrations`. |
 | Local MCP server and Python client | `python -m pip install 'pyxsd[mcp]'`; see {doc}`mcp`. |
+| MCP server with every optional adapter | `python -m pip install 'pyxsd[mcp-all]'`; record preview/export need Arrow. |
 | Repository examples | Follow the family's README; `examples-*` dependency groups are checkout-only, not published extras. |
 | Development and documentation | From a checkout, `uv sync --group dev --group docs`; see {doc}`contributing`. |
 

@@ -15,6 +15,7 @@ import anyio
 from .captures import CaptureDependency, CaptureFile, InputCapture
 from .config import Limits
 from .contracts import FileRef, InlineFile, SchemaRef
+from .corpus import select_manifest_paths
 from .errors import ToolError
 from .safe_io import AdmittedFile, CapturedFile, SafeDirectory, admit_inline, validate_paths
 
@@ -75,7 +76,7 @@ class SessionInputs:
 
     async def create(self) -> Workspace:
         async with self._lock:
-            if len(self._areas) >= self.limits.workspaces:
+            if self.limits.workspaces is not None and len(self._areas) >= self.limits.workspaces:
                 raise ToolError("quota_exceeded", "Session workspace limit reached")
             for _ in range(4):
                 identifier = secrets.token_hex(16)
@@ -155,16 +156,74 @@ class SessionInputs:
                 ),
             )
 
+    async def select_corpus(self, workspace_id: str, pattern: str) -> tuple[FileRef, ...]:
+        """Resolve bounded corpus references from the active input set.
+
+        Uploaded files are selected from their manifest and never merge with a
+        configured source tree. Selection itself reads no file bytes, creates
+        no capture, and invokes no worker.
+        """
+        uploaded: tuple[str, ...] = ()
+        async with self._lock:
+            area = self._area(workspace_id)
+            async with area.lock:
+                uploaded = tuple(area.files)
+        if uploaded:
+            paths = await anyio.to_thread.run_sync(
+                lambda: select_manifest_paths(
+                    pattern, uploaded, max_matches=self.limits.corpus_files
+                )
+            )
+            return tuple(FileRef(path=path) for path in paths)
+        if self.source_root is None:
+            return ()
+        paths = await anyio.to_thread.run_sync(self._select_source_corpus, pattern)
+        return tuple(FileRef(path=path) for path in paths)
+
+    def _source_excluded_prefix(self) -> str | None:
+        if self.source_root is None or self.excluded_source_root is None:
+            return None
+        source = self.source_root.resolve()
+        excluded = self.excluded_source_root.resolve()
+        if not excluded.is_relative_to(source):
+            return None
+        return excluded.relative_to(source).as_posix()
+
+    def _source_excluded_identities(self) -> frozenset[tuple[int, int]]:
+        if self.source_root is None or self.excluded_source_root is None:
+            return frozenset()
+        source = self.source_root.resolve()
+        excluded = self.excluded_source_root.resolve()
+        if not excluded.is_relative_to(source):
+            return frozenset()
+        try:
+            info = excluded.stat()
+        except OSError:
+            return frozenset()
+        return frozenset({(info.st_dev, info.st_ino)})
+
+    def _select_source_corpus(self, pattern: str) -> tuple[str, ...]:
+        assert self.source_root is not None
+        with SafeDirectory(self.source_root, self.limits) as source:
+            return source.glob(
+                pattern,
+                max_entries=self.limits.input_entries,
+                max_matches=self.limits.corpus_files,
+                exclude=self._source_excluded_prefix(),
+                exclude_identities=self._source_excluded_identities(),
+            )
+
     def _validate(self, files: dict[str, AdmittedFile]) -> None:
-        validate_paths(list(files))
+        validate_paths(list(files), self.limits)
         entries = set(files)
         for path in files:
             parts = path.split("/")
             for index in range(1, len(parts)):
                 entries.add("/".join(parts[:index]))
-        if len(entries) > self.limits.input_entries:
+        if self.limits.input_entries is not None and len(entries) > self.limits.input_entries:
             raise ToolError("quota_exceeded", "Input entry limit exceeded")
-        if sum(len(item.content) for item in files.values()) > self.limits.workspace_bytes:
+        total = sum(len(item.content) for item in files.values())
+        if self.limits.workspace_bytes is not None and total > self.limits.workspace_bytes:
             raise ToolError("quota_exceeded", "Input byte limit exceeded")
 
     @staticmethod
@@ -197,7 +256,7 @@ class SessionInputs:
         )
         files = []
         if area.files:
-            with SafeDirectory(current) as source:
+            with SafeDirectory(current, self.limits) as source:
                 for path in sorted(area.files):
                     expected = area.files[path]
                     item = source.read(path, max_bytes=self.limits.xml_file_bytes)
@@ -275,7 +334,7 @@ class SessionInputs:
         if not sources:
             raise ToolError("invalid_argument", "Source capture needs at least one file")
         sources = list({file.path: file for file in sources}.values())
-        validate_paths([file.path for file in sources])
+        validate_paths([file.path for file in sources], self.limits)
         schema_paths = {
             file.path
             for ref in refs
@@ -288,14 +347,24 @@ class SessionInputs:
         missing: set[str] = set()
         materialized: set[str] = set()
         source_root = self.source_root
-        with SafeDirectory(source_root) as source:
+        with SafeDirectory(source_root, self.limits) as source:
 
             def check_schema_limits() -> None:
                 items = [captured[path] for path in schema_paths if path in captured]
                 if (
-                    len(schema_paths) > self.limits.schema_closure_files
-                    or any(len(item.content) > self.limits.schema_file_bytes for item in items)
-                    or sum(len(item.content) for item in items) > self.limits.schema_closure_bytes
+                    (
+                        self.limits.schema_closure_files is not None
+                        and len(schema_paths) > self.limits.schema_closure_files
+                    )
+                    or (
+                        self.limits.schema_file_bytes is not None
+                        and any(len(item.content) > self.limits.schema_file_bytes for item in items)
+                    )
+                    or (
+                        self.limits.schema_closure_bytes is not None
+                        and sum(len(item.content) for item in items)
+                        > self.limits.schema_closure_bytes
+                    )
                 ):
                     raise ToolError("schema_limit", "Capture schema closure limit exceeded")
 
@@ -311,15 +380,24 @@ class SessionInputs:
                         raise ToolError("invalid_argument", "MCP state is not a source input")
                     if path in captured or path in missing:
                         continue
-                    if len(captured) + len(missing) >= self.limits.input_entries:
+                    if (
+                        self.limits.input_entries is not None
+                        and len(captured) + len(missing) >= self.limits.input_entries
+                    ):
                         raise ToolError("quota_exceeded", "Capture entry limit exceeded")
-                    remaining = self.limits.workspace_bytes - sum(
-                        len(item.content) for item in captured.values()
+                    remaining = (
+                        None
+                        if self.limits.workspace_bytes is None
+                        else self.limits.workspace_bytes
+                        - sum(len(item.content) for item in captured.values())
                     )
+                    available = [
+                        value
+                        for value in (remaining, self.limits.xml_file_bytes)
+                        if value is not None
+                    ]
                     try:
-                        item = source.read(
-                            path, max_bytes=min(remaining, self.limits.xml_file_bytes)
-                        )
+                        item = source.read(path, max_bytes=min(available) if available else None)
                     except FileNotFoundError as exc:
                         if required:
                             raise ToolError("not_found", "Capture source not found") from exc
@@ -330,7 +408,7 @@ class SessionInputs:
                         observed[path] = item
                         check_schema_limits()
                         changed = True
-                validate_paths([*captured, *missing])
+                validate_paths([*captured, *missing], self.limits)
                 return changed
 
             await anyio.to_thread.run_sync(
@@ -348,7 +426,7 @@ class SessionInputs:
                     InputCapture(workspace_id, 0, directory, files), refs
                 )
                 names = tuple(dict.fromkeys(item.path for item in found))
-                validate_paths(names)
+                validate_paths(names, self.limits)
 
                 def expand(paths: Sequence[str] = names) -> None:
                     changed = read(paths, required=False)

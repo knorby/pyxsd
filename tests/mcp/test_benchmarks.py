@@ -27,7 +27,7 @@ def test_musicxml_unexpected_failure_is_not_a_successful_skip(tmp_path, monkeypa
 
     monkeypatch.setattr(benchmark, "_run", fail)
     with pytest.raises(RuntimeError, match="benchmark harness broke"):
-        benchmark._musicxml_metrics(Limits())
+        benchmark._musicxml_metrics(Limits(enforced=True))
 
 
 def test_musicxml_policy_denial_is_an_explicit_unbenchmarked_result(tmp_path, monkeypatch):
@@ -38,7 +38,7 @@ def test_musicxml_policy_denial_is_an_explicit_unbenchmarked_result(tmp_path, mo
         raise InputPolicyError("dangerous_xml", "DTD is forbidden")
 
     monkeypatch.setattr(benchmark, "_run", deny)
-    result = benchmark._musicxml_metrics(Limits())
+    result = benchmark._musicxml_metrics(Limits(enforced=True))
     assert result["available"] is True
     assert result["benchmarked"] is False
     assert "dangerous_xml" in result["reason"]
@@ -46,7 +46,7 @@ def test_musicxml_policy_denial_is_an_explicit_unbenchmarked_result(tmp_path, mo
 
 def test_musicxml_missing_cache_points_to_existing_downloader(tmp_path, monkeypatch):
     monkeypatch.setattr(benchmark, "ROOT", tmp_path)
-    result = benchmark._musicxml_metrics(Limits())
+    result = benchmark._musicxml_metrics(Limits(enforced=True))
     assert result["available"] is False
     assert "examples/musicxml/download_sources.py" in result["reason"]
 
@@ -61,7 +61,7 @@ def test_musicxml_cached_schema_is_benchmarked_without_unrelated_files(tmp_path,
     )
     (example / "unrelated.txt").write_text("not an input", encoding="utf-8")
     monkeypatch.setattr(benchmark, "ROOT", tmp_path)
-    result = benchmark._musicxml_metrics(Limits())
+    result = benchmark._musicxml_metrics(Limits(enforced=True))
     assert result["available"] is True
     assert result["files"] == 2
     assert (result["cold_compiles"], result["warm_compiles"]) == (1, 0)

@@ -72,7 +72,7 @@ def test_preview_respects_operator_preview_rows_budget(tmp_path):
     from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, preview_rows=1)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, preview_rows=1)) as (
             _,
             inputs,
             pool,
@@ -275,7 +275,7 @@ def test_export_output_quota_refusal_leaves_no_artifact(tmp_path):
     from pyxsd.mcp.services.records import RecordService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, output_bytes=512)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, output_bytes=512)) as (
             _,
             inputs,
             pool,
@@ -296,7 +296,7 @@ def test_export_dataset_multiple_documents_manifest_and_corpus_quota(tmp_path):
     from pyxsd.mcp.services.records import RecordService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, corpus_files=1)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, corpus_files=1)) as (
             _,
             inputs,
             pool,
@@ -356,6 +356,31 @@ def test_export_dataset_multiple_documents_manifest_and_corpus_quota(tmp_path):
     anyio.run(scenario_two)
 
 
+def test_export_dataset_with_limits_disabled_reports_every_output(tmp_path):
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.services.records import RecordService
+
+    async def scenario():
+        async with harness(tmp_path, Limits()) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.xsd": XSD, "a.xml": xml(2), "b.xml": xml(3)},
+            )
+            payload = await RecordService(inputs, pool, outputs=inputs.outputs).export_records(
+                _export_request(
+                    workspace,
+                    documents=(FileRef(path="a.xml"), FileRef(path="b.xml")),
+                    format="dataset",
+                )
+            )
+            assert payload["format"] == "dataset"
+            assert payload["row_count"] == 5
+            assert len(payload["artifacts"]) >= 2
+
+    anyio.run(scenario)
+
+
 def test_arrow_gate_blocks_record_services(tmp_path):
     from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
 
@@ -385,9 +410,12 @@ def test_arrow_tools_work_through_the_sdk_server(tmp_path):
     import hashlib
 
     async def scenario():
-        async with connected(
-            tmp_path, enabled_groups={"exploration", "workspaces", "execution"}
-        ) as (client, _services):
+        async with connected(tmp_path, enabled_groups={"exploration", "workspaces"}) as (
+            client,
+            _services,
+        ):
+            names = {tool.name for tool in (await client.list_tools()).tools}
+            assert "pyxsd_preview_transform" not in names
             workspace = await create_workspace(client)
             await client.call_tool(
                 "pyxsd_put_files",
@@ -399,6 +427,8 @@ def test_arrow_tools_work_through_the_sdk_server(tmp_path):
                     ],
                 },
             )
+            async with _services.inputs.capture(workspace) as capture:
+                before = [(item.path, item.digest, item.size) for item in capture.files]
             preview = await client.call_tool(
                 "pyxsd_preview_records",
                 {
@@ -438,6 +468,9 @@ def test_arrow_tools_work_through_the_sdk_server(tmp_path):
             parquet_bytes = base64.b64decode(structured(downloaded)["data"]["data"])
             assert parquet_bytes[:4] == b"PAR1"
             assert hashlib.sha256(parquet_bytes).hexdigest() == entry["digest"]
+            async with _services.inputs.capture(workspace) as capture:
+                after = [(item.path, item.digest, item.size) for item in capture.files]
+            assert after == before
 
     anyio.run(scenario)
 
@@ -583,6 +616,174 @@ def _fake_pool(monkeypatch, service, write):
     monkeypatch.setattr(service.pool, "run", run)
 
 
+MIXED_RECORDS_XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  targetNamespace="urn:test" elementFormDefault="qualified">
+  <xs:element name="root"><xs:complexType mixed="true"><xs:sequence>
+    <xs:element name="line" type="xs:string" maxOccurs="unbounded"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+MIXED_RECORDS_XML = '<root xmlns="urn:test"><line>one</line><line>two</line></root>'
+
+
+def test_record_preparation_fault_lists_verified_candidates(tmp_path):
+    from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.xsd": MIXED_RECORDS_XSD, "input.xml": MIXED_RECORDS_XML},
+            )
+            service = RecordService(inputs, pool, outputs=inputs.outputs)
+            with pytest.raises(ToolError) as preview_error:
+                await service.preview_records(
+                    PreviewRecordsRequest(
+                        workspace_id=workspace,
+                        schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                        document=FileRef(path="input.xml"),
+                        element="{urn:test}root",
+                    ),
+                )
+            details = preview_error.value.fault.details
+            assert preview_error.value.fault.code == "unsupported_projection"
+            assert details["element"] == "{urn:test}root"
+            assert details["path"] == []
+            assert details["projection_candidates"] == [
+                {
+                    "element": "{urn:test}root",
+                    "path": ["{urn:test}line"],
+                    "repeated": True,
+                }
+            ]
+            assert details["searched_declarations"] == 1
+            assert details["search_truncated"] is False
+            with pytest.raises(ToolError) as export_error:
+                await service.export_records(_export_request(workspace, element="{urn:test}root"))
+            assert (
+                export_error.value.fault.details["projection_candidates"]
+                == (details["projection_candidates"])
+            )
+
+    anyio.run(scenario)
+
+
+def test_invalid_document_fault_has_no_speculative_candidates(tmp_path):
+    from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema.xsd": MIXED_RECORDS_XSD, "input.xml": "<root>broken</root>"},
+            )
+            with pytest.raises(ToolError) as exc:
+                await RecordService(inputs, pool, outputs=inputs.outputs).preview_records(
+                    PreviewRecordsRequest(
+                        workspace_id=workspace,
+                        schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                        document=FileRef(path="input.xml"),
+                        element="{urn:test}root",
+                    ),
+                )
+            assert exc.value.fault.code == "invalid_document"
+            assert "projection_candidates" not in exc.value.fault.details
+
+    anyio.run(scenario)
+
+
+def test_custom_column_failure_has_no_speculative_candidates(tmp_path):
+    from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
+    from pyxsd.mcp.worker_protocol import FieldSourceSpec
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": XSD, "input.xml": xml(1)})
+            with pytest.raises(ToolError) as exc:
+                await RecordService(inputs, pool, outputs=inputs.outputs).preview_records(
+                    PreviewRecordsRequest(
+                        workspace_id=workspace,
+                        schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                        document=FileRef(path="input.xml"),
+                        element="root",
+                        path=("item",),
+                        columns={"absent": FieldSourceSpec(attribute="absent")},
+                    ),
+                )
+            assert exc.value.fault.code == "unsupported_projection"
+            assert "projection_candidates" not in exc.value.fault.details
+
+    anyio.run(scenario)
+
+
+def test_runtime_row_failure_has_no_speculative_candidates(tmp_path, monkeypatch):
+    from pyxsd.integrations import IntegrationError
+    from pyxsd.integrations.arrow import RecordProjection
+    from pyxsd.mcp.cache import SchemaCache
+    from pyxsd.mcp.services.records import execute_export, execute_records
+
+    def broken(self, *args, **kwargs):
+        raise IntegrationError("runtime row conversion failed")
+
+    monkeypatch.setattr(RecordProjection, "batches", broken)
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": XSD, "input.xml": xml(1)})
+            async with inputs.capture(workspace) as capture:
+                records_op, export_op = _worker_operation(capture)
+                cache = SchemaCache(inputs.limits)
+                try:
+                    for operation, execute in (
+                        (records_op, execute_records),
+                        (export_op, execute_export),
+                    ):
+                        with pytest.raises(ToolError) as exc:
+                            execute(operation, cache, "test")
+                        assert exc.value.fault.code == "unsupported_projection"
+                        assert "projection_candidates" not in exc.value.fault.details
+                finally:
+                    cache.close()
+
+    anyio.run(scenario)
+
+
+NAMESPACED_ROOT_XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  targetNamespace="urn:test">
+  <xs:element name="root"><xs:complexType><xs:sequence>
+    <xs:element name="item" type="xs:string"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+
+def test_records_resolve_unambiguous_bare_global_names(tmp_path):
+    from pyxsd.mcp.services.records import PreviewRecordsRequest, RecordService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {
+                    "schema.xsd": NAMESPACED_ROOT_XSD,
+                    "input.xml": '<r:root xmlns:r="urn:test"><item>one</item></r:root>',
+                },
+            )
+            result = await RecordService(inputs, pool, outputs=inputs.outputs).preview_records(
+                PreviewRecordsRequest(
+                    workspace_id=workspace,
+                    schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                    document=FileRef(path="input.xml"),
+                    element="root",
+                ),
+            )
+            assert result.data["row_count"] == 1
+            assert result.data["rows"][0]["item"] == "one"
+
+    anyio.run(scenario)
+
+
 def test_arrow_preview_tool_without_execution_group(tmp_path):
     from pyxsd.mcp.config import Settings
     from pyxsd.mcp.server import Services, create_server
@@ -594,7 +795,7 @@ def test_arrow_preview_tool_without_execution_group(tmp_path):
             tools = await server.list_tools()
             names = {tool.name for tool in tools}
             assert "pyxsd_preview_records" in names
-            assert "pyxsd_export_records" not in names
+            assert "pyxsd_export_records" in names
             services.arrow_available = False
             without_arrow = create_server(settings, services)
             names = {tool.name for tool in await without_arrow.list_tools()}
@@ -611,7 +812,7 @@ def test_capture_rejects_unsafe_and_overweight_dataset_output(tmp_path, monkeypa
     from pyxsd.mcp.services.records import RecordService
 
     async def scenario():
-        async with harness(tmp_path, Limits(workers=1, output_bytes=512)) as (
+        async with harness(tmp_path, Limits(enforced=True, workers=1, output_bytes=512)) as (
             _,
             inputs,
             pool,

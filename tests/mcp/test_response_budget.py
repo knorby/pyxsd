@@ -19,7 +19,7 @@ from pyxsd.mcp.storage import Storage
 
 def _store(tmp_path, limits=None):
     storage = Storage(tmp_path / "state", persist=False)
-    return storage, OutputStore(storage, limits or Limits())
+    return storage, OutputStore(storage, limits or Limits(enforced=True))
 
 
 @pytest.mark.parametrize(
@@ -71,9 +71,9 @@ def test_small_result_does_not_create_artifacts(tmp_path):
 @pytest.mark.parametrize(
     "limits,envelope,code",
     [
-        (Limits(result_bytes=1), ToolEnvelope(data="large"), "response_limit"),
-        (Limits(output_bytes=1), ToolEnvelope(data="x" * 25000), "quota_exceeded"),
-        (Limits(), ToolEnvelope(data="\ud800"), "unsupported_value"),
+        (Limits(enforced=True, result_bytes=1), ToolEnvelope(data="large"), "response_limit"),
+        (Limits(enforced=True, output_bytes=1), ToolEnvelope(data="x" * 25000), "quota_exceeded"),
+        (Limits(enforced=True), ToolEnvelope(data="\ud800"), "unsupported_value"),
     ],
 )
 def test_unrepresentable_results_fail_before_retaining_bytes(tmp_path, limits, envelope, code):

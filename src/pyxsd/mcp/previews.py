@@ -127,7 +127,11 @@ class PreviewService:
             return await self._execute(
                 operation,
                 capture,
-                deadline=time.monotonic() + self.limits.transform_seconds,
+                deadline=(
+                    None
+                    if self.limits.transform_seconds is None
+                    else time.monotonic() + self.limits.transform_seconds
+                ),
             )
 
     async def _put(self, content: bytes, media: str, *, name: str, kind: str) -> ArtifactRef:
@@ -136,7 +140,7 @@ class PreviewService:
         )
 
     async def _execute(
-        self, operation: PreviewOperation, capture: InputCapture, *, deadline: float
+        self, operation: PreviewOperation, capture: InputCapture, *, deadline: float | None
     ) -> PreviewRecord:
         # Preserve inputs before user code runs. Local execution has launching-user
         # privileges; it must not supply the schema bytes used for the final verdict.
@@ -212,7 +216,7 @@ class PreviewService:
         capture: InputCapture,
         originals: dict[str, bytes],
         content: bytes,
-        deadline: float,
+        deadline: float | None,
     ) -> JsonValue:
         with tempfile.TemporaryDirectory(prefix="comparison-", dir=self.staging) as directory:
             root = Path(directory)
@@ -249,7 +253,7 @@ class PreviewService:
         originals: dict[str, bytes],
         content: bytes,
         schema_ref: SchemaRef,
-        deadline: float,
+        deadline: float | None,
     ) -> tuple[bool, bool, JsonValue]:
         # Never reuse a directory the executed code could have changed. Build
         # the validation input only after termination, from retained bytes.

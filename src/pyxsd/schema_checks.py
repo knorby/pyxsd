@@ -2968,12 +2968,17 @@ def build_substitution_groups(ctx: CompileContextProtocol, schemaER: Any, py_xsd
     for element in elements:
         heads = _substitution_head_declarations(element, elements, py_xsd)
         if element.tagAttributes.get("substitutionGroup") and not heads:
+            substitution_group = str(element.tagAttributes["substitutionGroup"])
             ctx.report.add_error(
                 f"element '{element.name}' declares substitutionGroup "
-                f"'{element.tagAttributes['substitutionGroup']}', "
+                f"'{substitution_group}', "
                 "but no global element with that name exists",
                 code="unknown-substitution-head",
                 element=element.name,
+                details={
+                    "substitutionGroup": substitution_group,
+                    "prefixed": any(":" in token for token in substitution_group.split()),
+                },
             )
             continue
         for head in heads:

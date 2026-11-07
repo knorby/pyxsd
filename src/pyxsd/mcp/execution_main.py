@@ -1,5 +1,6 @@
 """One-shot transform process; only the coordinator decides candidate validity."""
 
+import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,7 +83,10 @@ def execute(request: ExecutionRequest) -> dict[str, Any]:
             document = _apply(document, request.sources[step.name], context, step.args, step.kwargs)
             if step.checkpoint:
                 checkpoint = document.to_string().encode("utf-8")
-                if len(checkpoint) > request.limits.output_bytes:
+                if (
+                    request.limits.output_bytes is not None
+                    and len(checkpoint) > request.limits.output_bytes
+                ):
                     raise ToolError("output_limit", "Checkpoint exceeds its output budget")
                 with open(
                     Path(request.output_directory) / f"checkpoint-{index}.xml", "xb"
@@ -92,20 +96,36 @@ def execute(request: ExecutionRequest) -> dict[str, Any]:
                 # coordinator performs the mandatory independent clean parse.
                 checkpoints.append(document.revalidate().report.to_dict())
     candidate = document.to_string().encode("utf-8")
-    if len(candidate) > request.limits.output_bytes:
+    if request.limits.output_bytes is not None and len(candidate) > request.limits.output_bytes:
         raise ToolError("output_limit", "Candidate exceeds its output budget")
     with open(Path(request.output_directory) / "candidate.xml", "xb") as stream:
         stream.write(candidate)
     return {"checkpoints": checkpoints}
 
 
-def main() -> int:
-    maximum = 2 * 2**20
+def _byte_budget(value: str) -> int | None:
+    if value == "unlimited":
+        return None
+    if not value.isdecimal() or int(value) <= 0:
+        raise argparse.ArgumentTypeError("expected a positive integer or 'unlimited'")
+    return int(value)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--request-bytes", type=_byte_budget, default=None)
+    arguments = parser.parse_args(argv)
+    request = None
     try:
+        frame = (
+            sys.stdin.buffer.readline()
+            if arguments.request_bytes is None
+            else sys.stdin.buffer.readline(arguments.request_bytes + 1)
+        )
         request = decode_frame(
-            sys.stdin.buffer.readline(maximum + 1),
+            frame,
             ExecutionRequest,
-            max_bytes=maximum,
+            max_bytes=arguments.request_bytes,
             expected={"request_id": "execution"},
         )
         result = execute(request)
@@ -123,7 +143,8 @@ def main() -> int:
                 code="transform_failed", message="Transform failed without a candidate"
             ),
         )
-    sys.stdout.buffer.write(encode_frame(reply, max_bytes=maximum))
+    reply_budget = request.limits.request_bytes if request is not None else arguments.request_bytes
+    sys.stdout.buffer.write(encode_frame(reply, max_bytes=reply_budget))
     sys.stdout.buffer.flush()
     return 0
 
