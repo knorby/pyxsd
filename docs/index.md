@@ -47,7 +47,7 @@ demo
 :caption: Library comparisons
 
 comparison-xmlschema
-comparison-libxml2
+comparison-lxml
 ```
 
 ```{toctree}

@@ -38,6 +38,8 @@ case, read {doc}`why-pyxsd`.
 | Remote schema download | opt-in `RemoteResourcePolicy`: HTTPS only, explicit origin/hint rules, finite per-compilation budgets, no persistent cache; local-only default | yes, with an offline cache |
 | WSDL | no | yes (WSDL 1.1) |
 
+(where-pyxsd-is-a-good-fit)=
+
 ## Where pyxsd helps
 
 ### A schema-driven application model
@@ -168,6 +170,7 @@ for the populations, skips, scoring rules, and reproduction commands.
 - {doc}`xsts` — verdict-agreement methodology, provenance, and results.
 - {doc}`xsd-validation` — XML/XSD versions and validation terminology.
 - {doc}`comparison-libxml2` — C-engine scope and preliminary XSD 1.0 evidence.
+- {doc}`comparison-lxml` — general XML/HTML tree APIs and objectify bindings.
 - [Data model](data-model.md) — the bound tree, `to_dict`/`to_json`, and the
   projection used by `xpath`/`find`.
 - [xmlschema documentation](https://xmlschema.readthedocs.io/en/stable/) — the
