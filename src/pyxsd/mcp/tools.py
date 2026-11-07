@@ -369,11 +369,24 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 tuple[FileRef, ...],
                 Field(
                     description=(
-                        "Optional documents validated under both schemas; count capped by the "
-                        "corpus_max_files budget."
+                        "Optional explicit documents validated under both schemas; count "
+                        "capped by the corpus_max_files budget. Mutually exclusive with "
+                        "corpus_glob."
                     )
                 ),
             ] = (),
+            corpus_glob: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Select corpus documents with a relative POSIX glob (* and ? within "
+                        "one segment, ** across segments), e.g. corpus/**/*.xml. Uploaded "
+                        "workspace files take precedence; an empty workspace selects from "
+                        "the configured source root. Matches are lexical and capped by the "
+                        "corpus_files budget."
+                    )
+                ),
+            ] = None,
         ) -> types.CallToolResult:
             """Diff two schemas structurally and optionally check a corpus for impact.
 
@@ -381,7 +394,9 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             locations produce an empty diff, and a real edit lists the changed
             components with old/new field values. Corpus documents are
             classified valid/regressed/resolved/invalid, with first-issue
-            evidence for regressions and resolutions.
+            evidence for regressions and resolutions. Select a corpus either
+            explicitly or with corpus_glob; the reply reports the glob and
+            match count when selection was used.
             """
             from .services.comparison import CompareSchemasRequest
 
@@ -390,6 +405,7 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
                 old_schema=old_schema,
                 new_schema=new_schema,
                 corpus=corpus,
+                corpus_glob=corpus_glob,
             )
 
             async def operation() -> ToolEnvelope:
