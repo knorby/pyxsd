@@ -1,53 +1,94 @@
 # pyxsd compared with xmlschema
 
-[`xmlschema`](https://github.com/sissaschool/xmlschema) is the established
-Python library for XML Schema work, and the natural reference point for
-pyxsd. This page describes where the two overlap, where they differ, and
-which is the better fit for a given task. It is a design comparison, not a
-benchmark. {doc}`xsts` describes the shared corpus, each engine's checked
-denominator, and the reviewed baselines used for the generated results.
+```{eval-rst}
+.. meta::
+   :description: Compare pyxsd and xmlschema for runtime XML bindings, validation reports, Python and JSON conversion, schema-derived exports, and code generation.
+```
+
+Choose pyxsd when you want a schema-defined Python object tree that you can
+query, extend, transform, and export. Choose
+[`xmlschema`](https://github.com/sissaschool/xmlschema) when converter-based
+XML/Python/JSON encoding and decoding, lazy processing, or WSDL support is
+central to your application. Both validate XSD 1.0 and 1.1 and offer runtime
+bindings; the difference is how those capabilities fit your workflow.
+
+This is an API and design comparison, not a performance benchmark. For
+validity-verdict evidence, {doc}`xsts` records the shared corpus, each
+engine's checked denominator, and reviewed baselines. For pyxsd's broader
+case, read {doc}`why-pyxsd`.
 
 ## At a glance
 
 | | pyxsd | xmlschema |
 |---|---|---|
-| XSD support | 1.1 processor, opt-in 1.0 mode (`Schema.compile(xsd_version=)`, `--xsd-version`) | Full 1.0 and 1.1 (`XMLSchema10` / `XMLSchema11`; `xmlschema.XMLSchema` is 1.0) |
+| XSD support | 1.1 default; explicit 1.0 mode (`xsd_version="1.0"`); coverage in {doc}`supported` | 1.0 and 1.1 (`XMLSchema10` / `XMLSchema11`; `xmlschema.XMLSchema` is 1.0) |
 | Runtime dependency | `elementpath` + `defusedxml` (both pure Python; `defusedxml` is loaded only for opt-in parser profiles) | `elementpath` only (pure Python) |
 | XML parser | stdlib `xml.etree.ElementTree` by default; opt-in `XmlParserPolicy.protected()` / `.strict()` use defusedxml; no external DTD/entity fetching in any built-in profile | stdlib `ElementTree` (with optional lxml injection for instance resources) |
 | Primary model | validate, bind to a schema-defined Python object tree, query, export, transform | decode/encode XML↔Python/JSON, validate, inspect schema components |
-| Instance → Python | `Document` bound tree of generated classes; `to_dict()` / `to_json()` | converters to nested `dict`, JSON, and `DataElement` bindings |
-| Python/JSON → XML | not provided (transforms can build a `Document`) | `encode()`, `from_json()`, converter classes |
-| Static code generation | no (classes are generated in memory per compiled `Schema`) | yes, Jinja2 templates |
-| XPath/lookup | `Document.xpath()` / `find()` / `findall()` over a projected bound tree; `elementpath` used internally for XSD regular expressions and identity/assertion XPath, but there is no public schema-component XPath API | XPath-based schema component API; `ElementPathMixin` on components and `XMLResource` |
-| Transform framework | callable transforms over the bound tree, addressable by class name from the CLI | converters plus code generation (no general transform hook) |
-| Validation output | `ValidationReport` with stable short codes and phases | exception hierarchy plus `iter_errors()` |
+| Instance → Python | `Document` tree of runtime-generated classes; `to_dict()` / `to_json()` | Converters to nested `dict`, JSON, `DataElement`, and runtime-generated data bindings |
+| XML output | Write an existing bound tree; revalidate edits explicitly | `encode()`, `from_json()`, converter classes |
+| Binding source files | Unnecessary for runtime binding; optional `.pyi` stubs describe the classes | Runtime data bindings available; optional static generation with Jinja2 templates |
+| Application extensions | Compile-time mixins with methods and validation hooks | Custom converters and data-binding classes |
+| Pydantic / Arrow | Optional schema-derived Pydantic models and Arrow/Parquet record projections | Python/JSON conversion; no equivalent built-in adapters documented |
+| XPath/lookup | `Document.xpath()` / `find()` / `findall()` return bound nodes; declaration introspection is separate | XPath-based schema component API; `ElementPathMixin` on components and `XMLResource` |
+| Transform workflow | Python callables over the bound tree, available through the CLI | Custom converters and ordinary Python processing of decoded data |
+| Validation output | `ValidationReport` with stable codes, phases, and optional occurrence locations | Exception hierarchy, `iter_errors()`, and lax decoding with collected errors |
 | Lazy / incremental | no | `XMLResource` lazy modes (`lazy`, `thin_lazy`) |
 | Resource hardening | opt-in parser profiles (`protected` / `strict`), `XmlLimits`, and an opt-in HTTPS remote schema policy with finite budgets; not a sandbox | entity-forbidding parser, `allow`/`defuse` resource policy, timeouts, processing limits |
 | Remote schema download | opt-in `RemoteResourcePolicy`: HTTPS only, explicit origin/hint rules, finite per-compilation budgets, no persistent cache; local-only default | yes, with an offline cache |
 | WSDL | no | yes (WSDL 1.1) |
-| Maturity | modern 1.x line; smaller user base | mature, widely deployed, large user base |
 
-## Where pyxsd is a good fit
+(where-pyxsd-is-a-good-fit)=
 
-- **Runtime binding without code generation.** A schema is compiled once and
-  reused; each parse produces a `Document` whose nodes are typed Python
-  objects (descriptors for declared elements and attributes, XSD datatypes
-  for simple values). There is no build step and no generated source tree.
-- **Validation that continues instead of stopping.** pyxsd collects issues on
-  a `ValidationReport` with stable codes rather than raising on the first
-  error, and `Document.is_valid` / `require_valid()` make the policy explicit.
-- **Callable transforms.** A transform is any callable over the bound tree,
-  and the CLI can address a transform by class name (`-t 'ToDict()'`). This
-  suits pipeline code that post-processes a validated document.
-- **A small, pure-Python base.** The base install depends on `elementpath`
-  and `defusedxml`, has no compiled extensions, and parses locally by default.
-  `defusedxml` is loaded only when a parser profile selects it. Optional extras
-  add their own dependencies. The only built-in remote retrieval is an explicit
-  `RemoteResourcePolicy`, and a custom `ResourcePolicy` is trusted application
-  code; audit any network or file access you implement there.
-- **Direct query and export.** `xpath` / `find` / `findall` and
-  `to_dict` / `to_json` cover the "validate, then pull values out" pattern
-  without a converter configuration step.
+## Where pyxsd helps
+
+### A schema-driven application model
+
+pyxsd's normal compile/parse path produces typed Python objects. XSD type
+derivation becomes class inheritance, simple values use XSD datatype
+classes, and mixins add application methods and validation hooks at compile
+time. Queries return the original bound nodes, so selection and application
+logic work on the same objects. See {doc}`extensions` and {doc}`data-model`.
+
+Static Python source generation is unnecessary for this model. Compile the
+XSD you need and reuse the resulting schema; when the schema changes,
+recompile instead of regenerating and distributing binding modules.
+Optional {doc}`stubs` describe those runtime classes for editors and type
+checkers. They are not a separate runtime implementation.
+
+`xmlschema` also supports runtime-generated bindings through
+`DataBindingConverter`, in addition to `DataElementConverter` and static
+Jinja2 generation. The choice is therefore between binding APIs and
+workflows, not between having Python objects and doing without them. Its
+[data bindings documentation][xmlschema-bindings] describes that model.
+
+### Inspection and repair with explicit validation
+
+pyxsd keeps recoverable findings on `ValidationReport` and lets the caller
+choose where `require_valid()` should stop a pipeline. Stable issue codes,
+phase tags, and optional indexed source locations support automated triage;
+`Document.locate()` can connect a finding to its occurrence. Lax binding
+retention keeps more data available for repair without suppressing findings
+under the same validation settings. See {doc}`validation` and {doc}`binding`.
+
+`xmlschema` also collects errors through `iter_errors()` and lax validation.
+pyxsd's benefit is the report attached to the bound document and the
+separation between data retention and error policy, not an exclusive ability
+to report multiple errors. In both libraries, fatal input failures can
+prevent a usable result.
+
+### A direct route to application output
+
+Use `to_dict()` / `to_json()` for structured extraction, or apply a Python
+callable through `Document.transform()`. The CLI can invoke the same
+transform classes. After changing a tree, `revalidate()` produces a fresh
+document and report before writing. See {doc}`transforms/using`.
+
+The optional {doc}`integrations` derive Pydantic models and Arrow record
+schemas from XSD before any instance XML exists. This suits applications
+that need a declared data contract or typed Parquet output rather than a
+sample-inferred mapping. The projections have their own supported-shape
+limits and do not replace full XML validation.
 
 ## Where xmlschema is a better fit
 
@@ -60,28 +101,25 @@ denominator, and the reviewed baselines used for the generated results.
   `thin_lazy` supports large documents and streaming, which pyxsd does not.
 - **Resource controls and hardening.** `xmlschema` exposes a broader
   resource-policy layer (`allow` / `defuse`), timeouts, processing limits, and
-  remote download with an offline cache. pyxsd offers opt-in parser profiles
-  (`protected` / `strict`), `XmlLimits`, and an HTTPS-only
-  `RemoteResourcePolicy` with finite budgets, but it has no offline cache,
-  lazy/streaming mode, lxml injection, or general per-parse timeout, and its
-  resource policy is not an `allow`/`defuse` sandbox. The default remains the
-  unfettered stdlib parser for compatibility. None of these controls is a
-  sandbox.
-- **Static code generation and WSDL.** Generators and WSDL 1.1 processing
-  have no pyxsd equivalent.
-- **Schema-component inspection.** `xmlschema`'s XPath-based component API
-  and global maps are deeper for tooling that interrogates the schema itself.
-- **Maturity.** `xmlschema` has years of production use, a large body of
-  documentation, and a broad user base. pyxsd's modern 1.x object model is
-  younger and has a smaller user base; the known limitations below matter
-  when choosing between them.
+  remote download with an offline cache. pyxsd has opt-in parser profiles,
+  `XmlLimits`, and budgeted HTTPS schema retrieval, but no persistent cache,
+  lxml parser injection, or general per-parse timeout. Its default parser is
+  the stdlib parser; local-only loading does not confine filesystem access.
+  See {doc}`xml-security` before processing untrusted inputs.
+- **Generated source as a deliverable.** Jinja2 generation suits projects
+  that specifically need source modules to inspect or distribute. pyxsd
+  instead builds its implementation classes at runtime and optionally emits
+  typing stubs; it does not need static source to provide bindings.
+- **WSDL 1.1 processing.** pyxsd does not provide a WSDL API.
+- **XPath over schema components.** `xmlschema` has an XPath-based component
+  API and global maps. pyxsd has declaration introspection, dependency
+  traversal, and filtered stubs, but no public schema-component XPath API.
+  See {doc}`api` for the available introspection surface.
 
 (honest-limitations-of-pyxsd)=
 
 ## Limitations of pyxsd
 
-- **Maturity.** The modern 1.x API has less field hardening than
-  `xmlschema`.
 - **No encode.** There is no Python/JSON→XML serializer beyond writing a
   parsed `Document` back out.
 - **Legacy namespace mode is the default binding policy.** Strict namespace
@@ -132,7 +170,10 @@ for the populations, skips, scoring rules, and reproduction commands.
 - {doc}`xsts` — verdict-agreement methodology, provenance, and results.
 - {doc}`xsd-validation` — XML/XSD versions and validation terminology.
 - {doc}`comparison-libxml2` — C-engine scope and preliminary XSD 1.0 evidence.
+- {doc}`comparison-lxml` — general XML/HTML tree APIs and objectify bindings.
 - [Data model](data-model.md) — the bound tree, `to_dict`/`to_json`, and the
   projection used by `xpath`/`find`.
 - [xmlschema documentation](https://xmlschema.readthedocs.io/en/stable/) — the
-  authoritative description of the features attributed to it above.
+   authoritative description of the features attributed to it above.
+
+[xmlschema-bindings]: https://xmlschema.readthedocs.io/en/stable/api.html#xmlschema.DataBindingConverter

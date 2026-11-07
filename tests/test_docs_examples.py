@@ -87,6 +87,23 @@ def test_quickstart_from_supplied_files(tmp_path, monkeypatch, capsys):
     assert "inventory" in capsys.readouterr().out
 
 
+def test_lxml_comparison_pyxsd_example_uses_schema_types(tmp_path, monkeypatch):
+    from pyxsd.xsd_data_types import XsdDataType
+
+    quickstart = (GUIDE.parent.parent / "quickstart.md").read_text(encoding="utf-8")
+    for filename, block in zip(
+        ("inventory.xsd", "inventory.xml"), quickstart.split("```xml\n")[1:], strict=True
+    ):
+        (tmp_path / filename).write_text(block.split("```", 1)[0], encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    guide = (GUIDE.parent.parent / "comparison-lxml.md").read_text(encoding="utf-8")
+    namespace = {}
+    exec(compile(_python_blocks(guide)[1], "comparison-lxml.md[pyxsd]", "exec"), namespace)
+    assert namespace["document"].is_valid
+    assert namespace["quantity"] == 4
+    assert isinstance(namespace["quantity"], XsdDataType)
+
+
 def test_transform_guide_library_example(tmp_path, monkeypatch):
     guide = GUIDE.parent / "using.md"
     monkeypatch.chdir(tmp_path)

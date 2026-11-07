@@ -8,6 +8,9 @@
 ```
 
 pyxsd validates XML against XSD and binds documents to Python objects.
+The schema supplies the classes at runtime, so you can query, extend, and
+transform typed data without maintaining generated Python source. Read
+{doc}`why-pyxsd` for the strengths of this approach and when to choose it.
 Start with {doc}`quickstart` to parse, query, edit, and save a document with
 supplied inputs. For a runnable custom transform, follow {doc}`demo`.
 
@@ -34,10 +37,17 @@ protection are separate choices.
 :maxdepth: 1
 :caption: Start here
 
+why-pyxsd
 quickstart
 demo
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Library comparisons
+
 comparison-xmlschema
-comparison-libxml2
+comparison-lxml
 ```
 
 ```{toctree}

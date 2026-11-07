@@ -1,15 +1,21 @@
 # pyxsd compared with libxml2
 
-[libxml2][libxml2-readme] is an XML toolkit implemented in C. Its build
-documentation identifies the schema module as **XML Schemas 1.0** support;
-**XSD 1.1 is unsupported**. The upstream [schema API header][schema-header]
-also describes its XML Schemas implementation as incomplete. Neither the
-presence of a schema API nor a high test-suite agreement rate establishes
-complete standards conformance.
+```{eval-rst}
+.. meta::
+   :description: Compare pyxsd with the native libxml2 XSD 1.0 validator, including a dated W3C test-suite probe, paired outcomes, and reproducibility limits.
+```
 
-pyxsd defaults to XSD 1.1 and offers an explicit XSD 1.0 mode. This page
-compares scope and interfaces, then records one dated validity-verdict probe.
-It is not a performance benchmark or a ranking of all releases.
+pyxsd combines XSD validation with runtime Python bindings and defaults to
+XSD 1.1, with an explicit XSD 1.0 mode. [libxml2][libxml2-readme] is an XML
+toolkit implemented in C whose schema module targets XSD 1.0. This page
+compares their native scope and records one dated validity-verdict probe.
+For lxml's Python-level APIs over libxml2, start with {doc}`comparison-lxml`.
+
+libxml2 does not support XSD 1.1; its upstream [schema API
+header][schema-header] also describes the XSD implementation as incomplete.
+Neither an API's presence nor a high test-suite agreement rate establishes
+complete conformance. The probe below is not a performance benchmark, a
+measurement of lxml, or a ranking of all releases.
 
 ## Scope, APIs, and resources
 
@@ -25,7 +31,8 @@ It is not a performance benchmark or a ranking of all releases.
 libxml2's [schema API][schema-header] and [catalog documentation][catalog-api]
 describe its native interfaces. Those interfaces are not pyxsd's generated
 Python binding model. A Python wrapper can add its own APIs and loading
-policies; this comparison does not measure such wrappers.
+policies; {doc}`comparison-lxml` covers that distinction. The probe below
+does not measure such wrappers.
 
 Resource policy must be evaluated separately from schema validity. pyxsd's
 default can read local schema paths named by input; local-only is not path
@@ -129,6 +136,7 @@ wrappers, or XSD 1.1.
 - {doc}`xsd-validation` — validation phases, language versions, and PSVI limits.
 - {doc}`supported` — pyxsd's feature inventory and known gaps.
 - {doc}`comparison-xmlschema` — Python API and feature-selection comparison.
+- {doc}`comparison-lxml` — Python tree APIs, objectify, and schema-driven binding.
 - {doc}`xml-security` — pyxsd parser and resource-policy boundaries.
 
 [libxml2-readme]: https://github.com/GNOME/libxml2/blob/master/README.md
