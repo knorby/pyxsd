@@ -251,7 +251,7 @@ class SafeDirectory:
             for directory_fd, _, _, _ in frames:
                 os.close(directory_fd)
         validate_paths(matches)
-        return tuple(matches)
+        return tuple(sorted(matches))
 
     def verify(self, captured: CapturedFile, *, max_bytes: int) -> None:
         """Re-read through the root, detecting replacement and content changes."""

@@ -290,6 +290,20 @@ def test_glob_enumeration_is_deterministic_and_prunes_the_excluded_state(tmp_pat
     assert first == second == ("corpus/a.xml", "corpus/nested/b.xml")
 
 
+def test_glob_results_are_lexical_across_directories(tmp_path):
+    from pyxsd.mcp.corpus import select_manifest_paths
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "b").mkdir()
+    (tmp_path / "aa.xml").write_text("aa")
+    (tmp_path / "b.xml").write_text("b")
+    (tmp_path / "b" / "a.xml").write_text("nested")
+    with SafeDirectory(tmp_path) as directory:
+        selected = directory.glob("**/*.xml", max_entries=10, max_matches=10)
+    lexical = select_manifest_paths("**/*.xml", selected, max_matches=10)
+    assert selected == lexical == ("aa.xml", "b.xml", "b/a.xml")
+
+
 def test_glob_without_matches_returns_an_empty_tuple(tmp_path):
     from pyxsd.mcp.safe_io import SafeDirectory
 

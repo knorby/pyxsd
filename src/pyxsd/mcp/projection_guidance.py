@@ -69,7 +69,7 @@ def _starting_point(schema: Schema, element: str, path: tuple[str, ...]) -> _Pen
             continue
         declaration = route.declarations[-1]
         type_id = id(declaration.getType())
-        return _Pending(declaration, route_path[1:], frozenset({type_id}), len(route_path[1:]))
+        return _Pending(declaration, route_path, frozenset({type_id}), len(route_path))
     return None
 
 

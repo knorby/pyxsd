@@ -246,6 +246,36 @@ def test_search_reports_candidate_cap_as_truncated():
     assert details["search_truncated"] is True
 
 
+def test_candidates_search_below_a_requested_nested_route():
+    schema = _schema(MIXED_BRANCHES)
+    details = candidate_details(
+        schema,
+        element="root",
+        path=("row",),
+        prepare=_model_prepare(schema),
+    )
+    assert details["path"] == ["row"]
+    assert details["projection_candidates"] == [
+        {"element": "root", "path": ["row", "amount"], "repeated": False}
+    ]
+    assert details["search_truncated"] is False
+
+
+def test_failed_nested_path_searches_from_its_resolvable_parent():
+    schema = _schema(MIXED_BRANCHES)
+    details = candidate_details(
+        schema,
+        element="root",
+        path=("row", "missing"),
+        prepare=_model_prepare(schema),
+    )
+    assert details["path"] == ["row", "missing"]
+    assert details["projection_candidates"] == [
+        {"element": "root", "path": ["row", "amount"], "repeated": False}
+    ]
+    assert details["search_truncated"] is False
+
+
 def test_failed_local_path_searches_from_its_parent_route():
     schema = _schema(MIXED_BRANCHES)
     details = candidate_details(

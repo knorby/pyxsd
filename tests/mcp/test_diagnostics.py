@@ -223,6 +223,39 @@ def test_namespace_probe_no_recommendation_when_modes_agree(tmp_path):
     anyio.run(scenario)
 
 
+STRICT_INTRODUCES_CODE = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  xmlns:t="urn:test" targetNamespace="urn:test">
+  <xs:element name="child" type="xs:string" substitutionGroup="t:missing"/>
+  <xs:element name="other" type="u:whatever"/>
+</xs:schema>"""
+
+
+def test_namespace_probe_rejects_a_real_alternative_that_adds_an_error_code(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": STRICT_INTRODUCES_CODE})
+            envelope = await service.inspect_schema(
+                InspectSchemaRequest(
+                    workspace_id=workspace,
+                    schema_ref=SchemaRef(
+                        source=FileRef(path="schema.xsd"),
+                        options=CompileOptions(namespaces="legacy"),
+                    ),
+                    view="diagnostics",
+                )
+            )
+            probe = envelope.data["namespace_probe"]
+            assert probe["status"] == "ok"
+            assert probe["current"]["codes"] == {"unknown-substitution-head": 1}
+            assert probe["current"]["error_count"] == 1
+            assert probe["alternative"]["codes"]["unknown-substitution-head"] == 1
+            assert probe["alternative"]["codes"]["unknown-namespace-prefix"] >= 1
+            assert "unknown-namespace-prefix" in probe["introduced_codes"]
+            assert envelope.data["recommendations"] == []
+
+    anyio.run(scenario)
+
+
 def test_namespace_probe_recommends_only_measured_improvement():
     from pyxsd.mcp.worker_main import _describe
 
