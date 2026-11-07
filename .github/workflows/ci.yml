@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         archive: [wheel, sdist]
-        extra: ["", mcp]
+        extra: ["", mcp, mcp-all]
     env:
       ARCHIVE: ${{ matrix.archive }}
       EXTRA: ${{ matrix.extra }}
@@ -60,7 +60,10 @@ jobs:
           schema = pyxsd.compile(io.StringIO('<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="root" type="xs:string"/></xs:schema>'))
           assert schema.parse(io.StringIO("<root>installed</root>")).is_valid
           assert len(list_skills()) == 3
-          assert importlib.util.find_spec("pyarrow") is None
+          if os.environ["EXTRA"] == "mcp-all":
+              assert importlib.util.find_spec("pyarrow") is not None
+          else:
+              assert importlib.util.find_spec("pyarrow") is None
           assert (importlib.util.find_spec("mcp") is not None) == bool(os.environ["EXTRA"])
           PY
           "$RUNNER_TEMP/pyxsd-release-smoke/bin/pyxsd" --version
