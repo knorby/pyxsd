@@ -6,9 +6,10 @@ import stat
 import tempfile
 import time
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import Field, JsonValue
+from pyxsd.schema import Schema
 
 from ..cache import CompileRequest, SchemaCache, require_complete_schema
 from ..contracts import FileRef, Nonempty, SchemaRef, ToolEnvelope, WireModel
@@ -17,6 +18,7 @@ from ..errors import ToolError
 from ..execution import capture_candidate
 from ..inputs import SessionInputs
 from ..output_store import OutputRef, OutputStore
+from ..projection_guidance import candidate_details, resolve_global_element
 from ..worker_protocol import (
     ExportOperation,
     FieldSourceSpec,
@@ -51,12 +53,61 @@ class ExportRecordsRequest(WireModel):
     format: Literal["parquet", "dataset"] = "parquet"
 
 
+def _record_columns(
+    operation: RecordsOperation | ExportOperation,
+) -> dict[str, Any] | None:
+    if operation.columns is None:
+        return None
+    from pyxsd.integrations.projection import FieldSource
+
+    return {name: FieldSource(**source.model_dump()) for name, source in operation.columns.items()}
+
+
+def _prepare_records(
+    schema: Schema,
+    operation: RecordsOperation | ExportOperation,
+    columns: dict[str, Any] | None,
+) -> Any:
+    from pyxsd.integrations.arrow import records
+
+    return records(
+        schema,
+        element=resolve_global_element(schema, operation.element),
+        path=operation.path,
+        columns=columns,
+    )
+
+
+def _unsupported_projection(
+    schema: Schema,
+    operation: RecordsOperation | ExportOperation,
+    exc: Exception,
+    cache: SchemaCache,
+    *,
+    columns: dict[str, Any] | None,
+) -> ToolError:
+    message = str(exc)[: cache.limits.message_bytes]
+    if columns is not None:
+        return ToolError("unsupported_projection", message)
+    details = candidate_details(
+        schema,
+        element=operation.element,
+        path=operation.path,
+        prepare=lambda element, path: _records_default(schema, element, path),
+    )
+    return ToolError("unsupported_projection", message, details=details)
+
+
+def _records_default(schema: Schema, element: str, path: tuple[str, ...]) -> Any:
+    from pyxsd.integrations.arrow import records
+
+    return records(schema, element=element, path=path, columns=None)
+
+
 def execute_records(
     operation: RecordsOperation, cache: SchemaCache, processor_version: str
 ) -> dict[str, JsonValue]:
     from pyxsd.integrations import IntegrationError
-    from pyxsd.integrations.arrow import records
-    from pyxsd.integrations.projection import FieldSource
 
     request = CompileRequest(
         capture=capture_from_wire(operation.capture),
@@ -64,27 +115,21 @@ def execute_records(
         hints=(),
         processor_version=processor_version,
     )
-    try:
-        with cache.acquire(request) as schema:
-            require_complete_schema(schema)
-            document = schema.parse("/workspace/" + operation.document.path)
-            if document.report.error_count or document.root is None:
-                raise ToolError("invalid_document", "Record projection requires valid XML")
-            columns = (
-                None
-                if operation.columns is None
-                else {
-                    name: FieldSource(**source.model_dump())
-                    for name, source in operation.columns.items()
-                }
-            )
-            projection = records(
-                schema, element=operation.element, path=operation.path, columns=columns
-            )
-            rows: list[JsonValue] = []
-            count = 0
-            cap = min(20, cache.limits.preview_rows)
-            complete = True
+    with cache.acquire(request) as schema:
+        require_complete_schema(schema)
+        document = schema.parse("/workspace/" + operation.document.path)
+        if document.report.error_count or document.root is None:
+            raise ToolError("invalid_document", "Record projection requires valid XML")
+        columns = _record_columns(operation)
+        try:
+            projection = _prepare_records(schema, operation, columns)
+        except IntegrationError as exc:
+            raise _unsupported_projection(schema, operation, exc, cache, columns=columns) from exc
+        rows: list[JsonValue] = []
+        count = 0
+        cap = min(20, cache.limits.preview_rows)
+        complete = True
+        try:
             for batch in projection.batches(
                 document,
                 selector=operation.selector,
@@ -97,16 +142,18 @@ def execute_records(
                 if not operation.exact_count and count > cap:
                     complete = False
                     break
-            return {
-                "rows": rows,
-                "row_count": count,
-                "count_complete": complete,
-                "truncated": count > len(rows),
-                "declaration_path": list(operation.path),
-                "selector": operation.selector,
-            }
-    except IntegrationError as exc:
-        raise ToolError("unsupported_projection", str(exc)[: cache.limits.message_bytes]) from exc
+        except IntegrationError as exc:
+            raise ToolError(
+                "unsupported_projection", str(exc)[: cache.limits.message_bytes]
+            ) from exc
+        return {
+            "rows": rows,
+            "row_count": count,
+            "count_complete": complete,
+            "truncated": count > len(rows),
+            "declaration_path": list(operation.path),
+            "selector": operation.selector,
+        }
 
 
 def execute_export(
@@ -118,8 +165,6 @@ def execute_export(
     retains them, so no verdict or digest here is trusted.
     """
     from pyxsd.integrations import IntegrationError
-    from pyxsd.integrations.arrow import records
-    from pyxsd.integrations.projection import FieldSource
 
     if not operation.documents:
         raise ToolError("invalid_argument", "Exports require at least one document")
@@ -131,30 +176,24 @@ def execute_export(
         hints=(),
         processor_version=processor_version,
     )
-    try:
-        with cache.acquire(request) as schema:
-            require_complete_schema(schema)
-            documents = []
-            for reference in operation.documents:
-                document = schema.parse("/workspace/" + reference.path)
-                if document.report.error_count or document.root is None:
-                    raise ToolError(
-                        "invalid_document",
-                        "Exports require valid XML",
-                        details={"path": reference.path},
-                    )
-                documents.append(document)
-            columns = (
-                None
-                if operation.columns is None
-                else {
-                    name: FieldSource(**source.model_dump())
-                    for name, source in operation.columns.items()
-                }
-            )
-            projection = records(
-                schema, element=operation.element, path=operation.path, columns=columns
-            )
+    with cache.acquire(request) as schema:
+        require_complete_schema(schema)
+        documents = []
+        for reference in operation.documents:
+            document = schema.parse("/workspace/" + reference.path)
+            if document.report.error_count or document.root is None:
+                raise ToolError(
+                    "invalid_document",
+                    "Exports require valid XML",
+                    details={"path": reference.path},
+                )
+            documents.append(document)
+        columns = _record_columns(operation)
+        try:
+            projection = _prepare_records(schema, operation, columns)
+        except IntegrationError as exc:
+            raise _unsupported_projection(schema, operation, exc, cache, columns=columns) from exc
+        try:
             output = Path(operation.output_directory)
             row_count = 0
             if operation.format == "parquet":
@@ -194,8 +233,10 @@ def execute_export(
                     errors="raise",
                 )
             return {"format": operation.format, "row_count": row_count}
-    except IntegrationError as exc:
-        raise ToolError("unsupported_projection", str(exc)[: cache.limits.message_bytes]) from exc
+        except IntegrationError as exc:
+            raise ToolError(
+                "unsupported_projection", str(exc)[: cache.limits.message_bytes]
+            ) from exc
 
 
 class RecordService(ExplorationService):
@@ -269,7 +310,12 @@ class RecordService(ExplorationService):
             reply = await self._export(operation, deadline=deadline)
         if reply.status == "error":
             assert reply.fault is not None
-            raise ToolError(reply.fault.code, reply.fault.message)
+            raise ToolError(
+                reply.fault.code,
+                reply.fault.message,
+                retryable=reply.fault.retryable,
+                details=reply.fault.details,
+            )
         if not isinstance(reply.result, dict):
             raise ToolError("ipc_protocol", "Export returned no result object")
         return reply.result

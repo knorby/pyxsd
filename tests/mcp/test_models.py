@@ -351,3 +351,61 @@ def test_inspect_model_ambiguous_bare_name_lists_candidates(tmp_path):
             ]
 
     anyio.run(scenario)
+
+
+MIXED_NAMESPACED_XSD = """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+  targetNamespace="urn:test" elementFormDefault="qualified">
+  <xs:element name="root"><xs:complexType mixed="true"><xs:sequence>
+    <xs:element name="line" type="xs:string" maxOccurs="unbounded"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>"""
+
+
+def test_unsupported_projection_fault_lists_verified_candidates(tmp_path):
+    from pyxsd.mcp.services.models import InspectModelRequest, ModelService
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": MIXED_NAMESPACED_XSD})
+            with pytest.raises(ToolError) as exc:
+                await ModelService(inputs, pool).inspect_model(
+                    InspectModelRequest(
+                        workspace_id=workspace,
+                        schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                        element="{urn:test}root",
+                    ),
+                )
+            assert exc.value.fault.code == "unsupported_projection"
+            assert exc.value.fault.details["element"] == "{urn:test}root"
+            assert exc.value.fault.details["path"] == []
+            assert exc.value.fault.details["projection_candidates"] == [
+                {
+                    "element": "{urn:test}root",
+                    "path": ["{urn:test}line"],
+                    "repeated": True,
+                }
+            ]
+            assert exc.value.fault.details["searched_declarations"] == 1
+            assert exc.value.fault.details["search_truncated"] is False
+
+    anyio.run(scenario)
+
+
+def test_pydantic_input_validation_stays_a_validation_verdict(tmp_path):
+    from pyxsd.mcp.services.models import ModelService, ValidateDataRequest
+
+    async def scenario():
+        async with harness(tmp_path) as (_, inputs, pool, workspace):
+            await upload(inputs, workspace, {"schema.xsd": XSD})
+            result = await ModelService(inputs, pool).validate_data(
+                ValidateDataRequest(
+                    workspace_id=workspace,
+                    schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                    element="order",
+                    data={"count": "wrong"},
+                ),
+            )
+            assert result.data["valid"] is False
+            assert "projection_candidates" not in result.data
+
+    anyio.run(scenario)
