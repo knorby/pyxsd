@@ -207,15 +207,19 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             workspace_id: str,
             schema_ref: SchemaRef,
             component_ids: tuple[str, ...] = (),
-            view: Literal["overview", "compact", "full", "constraints"] = "overview",
+            view: Literal["overview", "compact", "full", "constraints", "diagnostics"] = (
+                "overview"
+            ),
             depth: int | None = 1,
             page: Page = _PAGE,
         ) -> types.CallToolResult:
-            """Inspect a schema: overview, compact stubs, full detail, or constraints.
+            """Inspect a schema: overview, stubs, detail, constraints, or diagnostics.
 
             view "overview" summarizes namespaces, roots, and counts; "compact"
             and "full" describe components (depth controls how deep those views
-            go, not the overview); "constraints" shows value/model constraints.
+            go, not the overview); "constraints" shows value/model constraints;
+            "diagnostics" returns the schema compilation report and, for legacy
+            prefixed substitution heads, measured strict-namespace evidence.
             roots/entry_roots values are component IDs like
             "element:{namespace}name". Incomplete schemas may still be inspected
             so their missing pieces can be diagnosed.
