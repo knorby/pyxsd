@@ -6,8 +6,8 @@ from collections.abc import Iterable
 from .errors import ToolError
 
 
-def _portable_parts(value: str) -> tuple[str, ...]:
-    """Validate relative POSIX spelling before any glob syntax is applied."""
+def portable_parts(value: str) -> tuple[str, ...]:
+    """Validate relative POSIX spelling and return its path segments."""
     try:
         valid = (
             isinstance(value, str)
@@ -24,7 +24,7 @@ def _portable_parts(value: str) -> tuple[str, ...]:
     except UnicodeEncodeError:
         valid = False
     if not valid:
-        raise ToolError("invalid_path", "Expected an unambiguous relative POSIX glob")
+        raise ToolError("invalid_path", "Expected an unambiguous relative POSIX path")
     return tuple(value.split("/"))
 
 
@@ -70,7 +70,7 @@ class CorpusGlob:
     """One validated corpus pattern shared by manifests and source trees."""
 
     def __init__(self, pattern: str) -> None:
-        parts = _portable_parts(pattern)
+        parts = portable_parts(pattern)
         expressions = [
             _segment_expression(part, final=index == len(parts) - 1)
             for index, part in enumerate(parts)
@@ -97,7 +97,7 @@ def select_manifest_paths(
     limit = _positive_budget(max_matches, "Match budget")
     candidates = tuple(paths)
     for path in candidates:
-        _portable_parts(path)
+        portable_parts(path)
     glob = CorpusGlob(pattern)
     selected: list[str] = []
     for path in sorted(set(candidates)):

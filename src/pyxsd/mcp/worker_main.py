@@ -619,6 +619,47 @@ def _execute(
     raise ToolError("invalid_operation", "Worker operation is not supported")
 
 
+def _reply_fault(
+    stream: BinaryIO,
+    operation: Operation | None,
+    *,
+    role: Literal["clean", "execution"],
+    fault: ToolFault,
+    operations: int,
+    max_bytes: int,
+) -> None:
+    """Preserve a fault's code while fitting its reply inside the IPC budget."""
+    message = fault.message
+    details: dict[str, JsonValue] = fault.details
+    reduced_details = False
+    while True:
+        bounded = fault.model_copy(update={"message": message, "details": details})
+        try:
+            _reply(
+                stream,
+                operation,
+                role=role,
+                status="error",
+                fault=bounded,
+                operations=operations,
+                max_bytes=max_bytes,
+            )
+        except ToolError as exc:
+            if exc.fault.code != "ipc_limit":
+                raise
+            if fault.details and not reduced_details:
+                details = {"details_truncated": True}
+                reduced_details = True
+            elif len(message) > 1:
+                message = message[: max(1, len(message) // 2)]
+            elif details:
+                details = {}
+            else:
+                raise
+        else:
+            return
+
+
 def _reply(
     stream: BinaryIO,
     operation: Operation | None,
@@ -703,11 +744,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except ToolError as exc:
                 operations += 1
-                _reply(
+                _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    status="error",
                     fault=exc.fault,
                     operations=operations,
                     max_bytes=config.limits.output_bytes,
@@ -719,11 +759,10 @@ def main(argv: list[str] | None = None) -> int:
                     if isinstance(operation, (ParseOperation, QueryOperation))
                     else "invalid_schema"
                 )
-                _reply(
+                _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    status="error",
                     fault=ToolFault(
                         code=code,
                         message=str(exc)[: config.limits.message_bytes],
@@ -735,11 +774,10 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 operations += 1
                 fatal = True
-                _reply(
+                _reply_fault(
                     sys.stdout.buffer,
                     operation,
                     role=arguments.role,
-                    status="error",
                     fault=ToolFault(
                         code="worker_internal",
                         message="Worker operation failed without a verdict",

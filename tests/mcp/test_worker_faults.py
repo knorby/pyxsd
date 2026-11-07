@@ -358,6 +358,93 @@ def test_worker_main_exception_replies(monkeypatch, tmp_path, exception, code, f
         assert b"secret details" not in lines[-1]
 
 
+def test_worker_main_bounds_an_oversized_fault_without_losing_its_code(monkeypatch, tmp_path):
+    snapshot = make_snapshot(tmp_path)
+    operation = parse_operation(workers, snapshot)
+    incoming = encode_frame(config(output_bytes=512), max_bytes=2 * 2**20) + encode_frame(
+        operation, max_bytes=2 * 2**20
+    )
+    outgoing = io.BytesIO()
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(incoming)))
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=outgoing))
+
+    def fail(*args):
+        raise ToolError("denied", "denied", details={"payload": "x" * 5000})
+
+    monkeypatch.setattr(worker_main, "_execute", fail)
+    assert worker_main.main(["--role", "clean"]) == 0
+    lines = outgoing.getvalue().splitlines()
+    assert len(lines) == 2
+    assert len(lines[-1]) <= 512
+    reply = WorkerReply.model_validate_json(lines[-1])
+    assert reply.fault is not None
+    assert reply.fault.code == "denied"
+    assert reply.fault.retryable is False
+    assert reply.fault.details == {"details_truncated": True}
+
+
+def test_reply_fault_preserves_unexpected_reply_errors(monkeypatch):
+    def fail(*args, **kwargs):
+        raise ToolError("denied", "unexpected")
+
+    monkeypatch.setattr(worker_main, "_reply", fail)
+    fault = ToolError("original", "original").fault
+    with pytest.raises(ToolError, match="denied"):
+        worker_main._reply_fault(
+            io.BytesIO(),
+            None,
+            role="clean",
+            fault=fault,
+            operations=0,
+            max_bytes=64,
+        )
+
+
+def test_reply_fault_reduces_details_then_message(monkeypatch):
+    calls = []
+
+    def fail_five(*args, **kwargs):
+        fault = kwargs["fault"]
+        calls.append((fault.message, dict(fault.details)))
+        if len(calls) <= 4:
+            raise ToolError("ipc_limit", "too large")
+
+    monkeypatch.setattr(worker_main, "_reply", fail_five)
+    fault = ToolError("denied", "abcd", details={"payload": "secret"}).fault
+    worker_main._reply_fault(
+        io.BytesIO(),
+        None,
+        role="clean",
+        fault=fault,
+        operations=0,
+        max_bytes=64,
+    )
+    assert calls == [
+        ("abcd", {"payload": "secret"}),
+        ("abcd", {"details_truncated": True}),
+        ("ab", {"details_truncated": True}),
+        ("a", {"details_truncated": True}),
+        ("a", {}),
+    ]
+
+
+def test_reply_fault_reraises_when_no_bounded_reply_fits(monkeypatch):
+    def always_too_large(*args, **kwargs):
+        raise ToolError("ipc_limit", "too large")
+
+    monkeypatch.setattr(worker_main, "_reply", always_too_large)
+    fault = ToolError("denied", "x", details={"payload": "secret"}).fault
+    with pytest.raises(ToolError, match="ipc_limit"):
+        worker_main._reply_fault(
+            io.BytesIO(),
+            None,
+            role="clean",
+            fault=fault,
+            operations=0,
+            max_bytes=1,
+        )
+
+
 def test_worker_main_oversized_operation_and_schema_error_mapping(monkeypatch, tmp_path):
     small = config(request_bytes=1024)
     incoming = encode_frame(small, max_bytes=2 * 2**20) + b"x" * 1025

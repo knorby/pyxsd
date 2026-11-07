@@ -189,6 +189,19 @@ class SessionInputs:
             return None
         return excluded.relative_to(source).as_posix()
 
+    def _source_excluded_identities(self) -> frozenset[tuple[int, int]]:
+        if self.source_root is None or self.excluded_source_root is None:
+            return frozenset()
+        source = self.source_root.resolve()
+        excluded = self.excluded_source_root.resolve()
+        if not excluded.is_relative_to(source):
+            return frozenset()
+        try:
+            info = excluded.stat()
+        except OSError:
+            return frozenset()
+        return frozenset({(info.st_dev, info.st_ino)})
+
     def _select_source_corpus(self, pattern: str) -> tuple[str, ...]:
         assert self.source_root is not None
         with SafeDirectory(self.source_root) as source:
@@ -197,6 +210,7 @@ class SessionInputs:
                 max_entries=self.limits.input_entries,
                 max_matches=self.limits.corpus_files,
                 exclude=self._source_excluded_prefix(),
+                exclude_identities=self._source_excluded_identities(),
             )
 
     def _validate(self, files: dict[str, AdmittedFile]) -> None:

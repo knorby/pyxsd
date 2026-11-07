@@ -5,13 +5,13 @@ import os
 import re
 import stat
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Limits
 from .contracts import InlineFile
-from .corpus import CorpusGlob
+from .corpus import CorpusGlob, portable_parts
 from .errors import ToolError
 
 
@@ -20,24 +20,7 @@ def validate_paths(paths: Sequence[str]) -> tuple[str, ...]:
     spellings: dict[str, str] = {}
     files: set[str] = set()
     for path in paths:
-        try:
-            valid = (
-                isinstance(path, str)
-                and bool(path)
-                and len(path.encode("utf-8")) <= 4096
-                and len(path.split("/")) <= 128
-                and not any(ord(char) < 32 or ord(char) == 127 for char in path)
-                and not any(char in path for char in ("\\", ":"))
-                and all(
-                    part not in ("", ".", "..") and len(part.encode("utf-8")) <= 255
-                    for part in path.split("/")
-                )
-            )
-        except UnicodeEncodeError:
-            valid = False
-        if not valid:
-            raise ToolError("invalid_path", "Expected an unambiguous relative POSIX path")
-        parts = path.split("/")
+        parts = portable_parts(path)
         for index in range(1, len(parts) + 1):
             prefix = "/".join(parts[:index])
             key = unicodedata.normalize("NFC", unicodedata.normalize("NFC", prefix).casefold())
@@ -172,6 +155,7 @@ class SafeDirectory:
         max_entries: int,
         max_matches: int,
         exclude: str | None = None,
+        exclude_identities: Collection[tuple[int, int]] = (),
     ) -> tuple[str, ...]:
         """Enumerate matching regular files without following links or budgets."""
         glob = CorpusGlob(pattern)
@@ -219,6 +203,15 @@ class SafeDirectory:
                     info = entry.stat(follow_symlinks=False)
                 except OSError as exc:
                     raise ToolError("unsafe_path", "Input entry cannot be inspected") from exc
+                if (
+                    stat.S_ISDIR(info.st_mode)
+                    and (
+                        info.st_dev,
+                        info.st_ino,
+                    )
+                    in exclude_identities
+                ):
+                    continue
                 matched = glob.matches(path)
                 if stat.S_ISDIR(info.st_mode):
                     if matched:

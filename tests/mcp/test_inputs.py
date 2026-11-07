@@ -518,6 +518,42 @@ def test_select_corpus_prunes_the_excluded_source_state(tmp_path):
     anyio.run(scenario)
 
 
+def test_select_corpus_prunes_the_excluded_state_through_a_case_alias(tmp_path):
+    import os
+
+    source = tmp_path / "source"
+    make_corpus_tree(source)
+    (source / "state").mkdir()
+    (source / "state" / "secret.xml").write_text("secret")
+    excluded = source / "STATE"
+    if not os.path.samefile(excluded, source / "state"):
+        pytest.skip("filesystem is case-sensitive")
+
+    async def scenario():
+        store = inputs(tmp_path, source_root=source, excluded_source_root=excluded)
+        workspace = await store.create()
+        selected = await store.select_corpus(workspace.id, "**/*.xml")
+        assert [item.path for item in selected] == ["corpus/a.xml", "corpus/nested/b.xml"]
+
+    anyio.run(scenario)
+
+
+def test_select_corpus_tolerates_a_missing_excluded_directory(tmp_path):
+    source = tmp_path / "source"
+    make_corpus_tree(source)
+
+    async def scenario():
+        store = inputs(tmp_path, source_root=source, excluded_source_root=source / "STATE")
+        workspace = await store.create()
+        selected = await store.select_corpus(workspace.id, "corpus/**/*.xml")
+        assert [item.path for item in selected] == [
+            "corpus/a.xml",
+            "corpus/nested/b.xml",
+        ]
+
+    anyio.run(scenario)
+
+
 def test_select_corpus_ignores_an_excluded_root_outside_the_source(tmp_path):
     source = tmp_path / "source"
     make_corpus_tree(source)

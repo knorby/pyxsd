@@ -304,6 +304,26 @@ def test_glob_results_are_lexical_across_directories(tmp_path):
     assert selected == lexical == ("aa.xml", "b.xml", "b/a.xml")
 
 
+def test_glob_prunes_an_excluded_directory_by_identity(tmp_path):
+    from pyxsd.mcp.safe_io import SafeDirectory
+
+    (tmp_path / "public").mkdir()
+    (tmp_path / "public" / "a.xml").write_text("a")
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "secret.xml").write_text("secret")
+    identity = ((tmp_path / "state").stat().st_dev, (tmp_path / "state").stat().st_ino)
+    with SafeDirectory(tmp_path) as directory:
+        unpruned = directory.glob("**/*.xml", max_entries=10, max_matches=10)
+        pruned = directory.glob(
+            "**/*.xml",
+            max_entries=10,
+            max_matches=10,
+            exclude_identities={identity},
+        )
+    assert unpruned == ("public/a.xml", "state/secret.xml")
+    assert pruned == ("public/a.xml",)
+
+
 def test_glob_without_matches_returns_an_empty_tuple(tmp_path):
     from pyxsd.mcp.safe_io import SafeDirectory
 

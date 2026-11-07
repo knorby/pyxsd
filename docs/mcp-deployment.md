@@ -18,8 +18,9 @@ multi-tenant service, and no network listener is included.
   sandbox. Do not use them for untrusted code, and there is no fallback to
   another execution mode.
 - Arrow record preview and export run in clean workers whenever PyArrow is
-  available (`pyxsd[mcp-all]` for the complete server install). They retain
-  output artifacts but execute no supplied Python transform.
+  available (`pyxsd[mcp-all]` for the complete server install). Preview returns
+  bounded rows; export retains digest-verified Parquet/dataset artifacts.
+  Neither executes supplied Python transforms.
 - No OCI/Docker backend or worker image is included.
 
 Local workers use a bounded, role-validated JSON protocol. Python objects, pickle,

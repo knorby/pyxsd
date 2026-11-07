@@ -391,6 +391,37 @@ def test_unsupported_projection_fault_lists_verified_candidates(tmp_path):
     anyio.run(scenario)
 
 
+def test_oversized_projection_candidates_preserve_the_fault(tmp_path):
+    from pyxsd.mcp.config import Limits
+    from pyxsd.mcp.services.models import InspectModelRequest, ModelService
+
+    long_name = "line" + "x" * 2000
+    schema = MIXED_NAMESPACED_XSD.replace('name="line"', f'name="{long_name}"')
+
+    async def scenario():
+        async with harness(tmp_path, Limits(workers=1, output_bytes=1024)) as (
+            _,
+            inputs,
+            pool,
+            workspace,
+        ):
+            await upload(inputs, workspace, {"schema.xsd": schema})
+            with pytest.raises(ToolError) as exc:
+                await ModelService(inputs, pool).inspect_model(
+                    InspectModelRequest(
+                        workspace_id=workspace,
+                        schema_ref=SchemaRef(source=FileRef(path="schema.xsd")),
+                        element="{urn:test}root",
+                    ),
+                )
+            assert exc.value.fault.code == "unsupported_projection"
+            assert exc.value.fault.details["details_truncated"] is True
+            assert "projection_candidates" not in exc.value.fault.details
+            assert len(exc.value.fault.message.encode("utf-8")) <= 4096
+
+    anyio.run(scenario)
+
+
 def test_pydantic_input_validation_stays_a_validation_verdict(tmp_path):
     from pyxsd.mcp.services.models import ModelService, ValidateDataRequest
 
