@@ -526,7 +526,7 @@ def test_select_corpus_prunes_the_excluded_state_through_a_case_alias(tmp_path):
     (source / "state").mkdir()
     (source / "state" / "secret.xml").write_text("secret")
     excluded = source / "STATE"
-    if not os.path.samefile(excluded, source / "state"):
+    if not excluded.exists() or not os.path.samefile(excluded, source / "state"):
         pytest.skip("filesystem is case-sensitive")
 
     async def scenario():
