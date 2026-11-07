@@ -11,6 +11,34 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+### Added
+
+- The `pyxsd[mcp-all]` extra installs the complete MCP integration set — server
+  dependencies plus Pydantic and PyArrow — while `pyxsd[mcp]` remains the
+  minimal server install and the Registry launcher default.
+- `PYXSD_MCP_EXECUTION_BACKEND` configures the MCP transform backend for
+  scripted launches. An explicit `--execution-backend` value wins, then the
+  environment variable, then the unchanged `disabled` default; invalid values
+  abort startup.
+- `pyxsd_inspect_schema` supports `view="diagnostics"`, returning the schema
+  report plus a measured strict-namespace probe for prefixed unresolved
+  substitution heads. A recommendation is emitted only when strict namespaces
+  remove such a head, reduce total errors, and introduce no new issue code.
+- `unsupported_projection` faults from model and Arrow tools can include
+  bounded `projection_candidates` verified by the same backend, with
+  `searched_declarations` and `search_truncated` describing the search.
+- `pyxsd_compare_schemas` accepts `corpus_glob` as an alternative to an explicit
+  corpus. Selection is deterministic, uses the active input set (uploads first,
+  then `--source-root`), excludes state, never follows links, and reports
+  `corpus_selection` metadata.
+
+### Changed
+
+- MCP Arrow record export requires a healthy PyArrow installation but no longer
+  requires the trusted-local execution group: export runs no supplied Python
+  transform. `pyxsd_preview_transform` remains disabled unless execution is
+  explicitly enabled.
+
 ## [1.3.0] - 2026-11-05
 
 ### Added

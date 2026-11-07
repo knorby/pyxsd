@@ -105,6 +105,60 @@ def _legacy_ref() -> SchemaRef:
     )
 
 
+def test_probe_helpers_tolerate_malformed_report_shapes():
+    from pyxsd.mcp.worker_main import _error_code_counts, _has_prefixed_unknown_head, _probe_summary
+
+    assert _error_code_counts({"issues": "not-a-list"}) == {}
+    assert _error_code_counts(
+        {
+            "issues": [
+                "not-an-issue",
+                {"severity": "warning", "code": "warning-code"},
+                {"severity": "error", "code": 42},
+                {"severity": "error", "code": "error-code"},
+            ]
+        }
+    ) == {"error-code": 1}
+    summary = _probe_summary({"issues": [], "counts": "not-a-dictionary"})
+    assert summary == {"error_count": 0, "warning_count": 0, "codes": {}}
+    assert _has_prefixed_unknown_head({"issues": "not-a-list"}) is False
+    assert (
+        _has_prefixed_unknown_head(
+            {
+                "issues": [
+                    "not-an-issue",
+                    {"code": "another-code"},
+                    {"code": "unknown-substitution-head", "details": "not-a-dictionary"},
+                    {"code": "unknown-substitution-head", "details": {"prefixed": False}},
+                ]
+            }
+        )
+        is False
+    )
+    assert _has_prefixed_unknown_head(
+        {"issues": [{"code": "unknown-substitution-head", "details": {"prefixed": True}}]}
+    )
+
+
+def test_probe_messages_honor_the_configured_bound():
+    from pyxsd.mcp.worker_main import _bounded_probe_message
+
+    unbounded = SimpleNamespace(limits=None)
+    assert _bounded_probe_message("alternate failed", unbounded) == "alternate failed"
+    bounded = SimpleNamespace(limits=SimpleNamespace(message_bytes=4))
+    message = "aa" + "\N{SNOWMAN}"
+    assert _bounded_probe_message(message, bounded) == "aa"
+
+
+def test_namespace_probe_skips_report_without_prefixed_head():
+    from pyxsd.mcp.worker_main import _namespace_probe
+
+    cache = _FakeCache(ValidationReport(), ValidationReport())
+    report = ValidationReport().to_dict()
+    assert _namespace_probe(_operation(_legacy_ref()), cache, "test-processor", report) == {}
+    assert cache.requests == []
+
+
 def test_diagnostics_view_returns_original_schema_report(tmp_path):
     async def scenario():
         async with harness(tmp_path) as (service, inputs, _pool, workspace):
