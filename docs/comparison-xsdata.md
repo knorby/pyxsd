@@ -6,17 +6,19 @@
 ```
 
 Choose pyxsd when XSD validation, structured findings, and a schema-defined
-Python object tree belong in the same runtime workflow. Choose
-[`xsdata`](https://github.com/tefra/xsdata) when generated dataclasses,
-binding metadata, and XML or JSON serialization are the deliverables you
-want to maintain. Both libraries bind XML to Python objects, but they start
-from different application models.
+Python object tree belong in the same runtime workflow, without a separate
+source-generation step. Choose [`xsdata`](https://github.com/tefra/xsdata)
+when generated dataclasses, binding metadata, and XML or JSON serialization
+are the deliverables you want to maintain.
 
 pyxsd compiles XSD declarations into classes at runtime. It validates and
 binds an instance to those classes, then supports queries, transforms, and
 exports from the resulting `Document`. xsdata generates Python dataclasses
 and binding metadata from schemas or other inputs; its runtime parsers bind
 XML or JSON into those classes and its serializers write them back out.
+Both approaches support capable, extensible application objects. pyxsd avoids
+a generated binding module that can drift from the schema; xsdata makes that
+source artifact available to projects that need it.
 
 This page compares interfaces and evidence, not performance. The W3C results
 below come from different harness operations and populations. They are not
@@ -27,14 +29,14 @@ two scores on one validator benchmark.
 | Task or property | pyxsd | xsdata |
 | --- | --- | --- |
 | Primary model | Compile XSD at runtime, validate XML, and bind a schema-defined `Document` tree | Generate dataclasses and binding metadata; parse and serialize XML or JSON objects |
-| Binding source | Runtime-generated classes; optional `.pyi` stubs for editors and type checkers | Generated Python source is the normal binding artifact |
+| Binding source | Runtime classes come directly from the current XSD, with no source generation or regeneration; optional `.pyi` stubs support editors and type checkers | Generated Python source is the normal binding artifact |
 | XSD versions | XSD 1.1 by default; explicit XSD 1.0 mode | Generator input includes XSD 1.0 and 1.1; see its documentation for supported constructs |
 | Validation | Direct schema and instance validation with a `ValidationReport`, stable issue codes, phases, and optional occurrence locations | Data binding and generation are the primary APIs; its native W3C harness delegates output validation to xmlschema |
 | Parsing | Bind against the compiled schema without a generated application module | Bind to a target class or discover one through the model context; native and lxml handlers are available |
 | XML output | Write an existing bound tree; call `revalidate()` explicitly after edits | Serialize objects with namespace, wrapper, and mixed-content controls; native and lxml writers are available |
 | JSON | `to_json()` exports a bound document | JSON parsers and serializers bind generated models in both directions |
 | Generator inputs | XSD | XSD, DTD, WSDL 1.1/SOAP 1.1, XML, and JSON |
-| Application extensions | Compile-time mixins and validation hooks on schema-derived classes | Ordinary generated dataclasses and configurable binding metadata |
+| Application extensions | Compile-time mixins add methods and validation hooks to runtime classes | Configured base classes, mixins, decorators, and binding metadata extend generated dataclasses |
 | Data retention and repair | Strict or lax binding modes separate retained data from validation findings | Wildcard and generic models, plus unknown-property controls, support configurable binding behavior |
 | Agent interface | CLI, Python API, and an optional documented local stdio MCP server | Official documentation presents a Python API and CLI |
 | Other integrations | Optional schema-derived Pydantic models and Arrow/Parquet projections | XML, JSON, and Python source serialization through documented handlers, writers, and converters |
@@ -62,16 +64,25 @@ invalid input, not just accept or reject it. See {doc}`validation` and
 
 ### The schema is the runtime application model
 
-pyxsd needs no generated application module. XSD type derivation becomes
-Python inheritance, simple values use XSD datatype classes, and mixins attach
-application behavior when the schema compiles. Queries return nodes from the
-same bound tree that transforms consume. Recompiling a changed schema replaces
-the runtime model; optional {doc}`stubs` describe it to static tools.
+Both approaches can provide typed Python objects with application-specific
+behavior. xsdata's [generator extensions][xsdata-extensions] add configured
+base classes, mixins, and decorators to generated dataclasses. pyxsd applies
+mixins while compiling the schema, adding methods and `__pyxsd_validate__`
+hooks to its runtime classes. Static source is not a prerequisite for a rich
+application object model.
 
-This differs from a workflow built around checking generated dataclasses into
-a project. Prefer pyxsd when schema-driven validation and object behavior
-should stay together at runtime. Prefer checked-in source when reviewing and
-distributing that source is itself a requirement.
+pyxsd's advantage is that the schema directly defines the classes used by the
+application. Generated binding source adds an artifact that can drift from its
+XSD until someone regenerates it. pyxsd removes that synchronization boundary:
+recompile the current schema to replace the runtime model. XSD type derivation
+becomes Python inheritance, simple values use XSD datatype classes, and custom
+behavior stays in separate mixins rather than generated class bodies.
+
+Queries return those same objects, transforms consume them, and validation
+hooks contribute to their document's report. Optional {doc}`stubs` describe the
+classes to static tools without implementing a second model. Prefer pyxsd for
+this direct schema-to-runtime path; prefer checked-in source when the source
+artifact itself is a project requirement. See {doc}`extensions`.
 
 ### Agents can inspect bounded evidence
 
@@ -88,10 +99,10 @@ integrations.
 
 ## Where xsdata is a better fit
 
-- **Generated dataclasses as source.** xsdata's generator produces explicit
-  classes and field metadata to inspect, review, version, and distribute.
-  pyxsd generates its implementation classes at runtime and emits typing
-  stubs, not an equivalent static application model.
+- **Generated source as an explicit deliverable.** xsdata's generator produces
+  classes and field metadata to inspect, review, version, and distribute. Use
+  it when your project requires that source artifact. pyxsd intentionally avoids
+  it and builds extensible application classes directly from the current schema.
 - **XML and JSON object serialization.** xsdata documents parsers and
   serializers for both formats, including native and lxml handlers and
   writers. pyxsd exports a bound document to JSON but does not provide the
@@ -166,8 +177,6 @@ PSVI behavior, security, W3C certification, or correctness on untested inputs.
 
 ## Limitations of pyxsd
 
-- **No static dataclass generator.** Optional stubs support static analysis;
-  they do not replace xsdata's generated application source.
 - **No WSDL or DTD model generator.** pyxsd compiles XSD, not the wider set of
   xsdata generator inputs.
 - **No general JSON-to-object binding API.** `to_dict()` and `to_json()` export
@@ -193,3 +202,4 @@ PSVI behavior, security, W3C certification, or correctness on untested inputs.
 [harness-readme]: https://github.com/tefra/xsdata-w3c-tests/blob/6b845568ea42a2e9540cffe07c4cc48dbad86b7c/README.md
 [harness-utils]: https://github.com/tefra/xsdata-w3c-tests/blob/6b845568ea42a2e9540cffe07c4cc48dbad86b7c/tests/utils.py
 [xsdata-readme]: https://github.com/tefra/xsdata/blob/17ca8c8e754e9a9a7d92827a1f40cc24e4065e4e/README.md
+[xsdata-extensions]: https://github.com/tefra/xsdata/blob/17ca8c8e754e9a9a7d92827a1f40cc24e4065e4e/docs/codegen/config.md

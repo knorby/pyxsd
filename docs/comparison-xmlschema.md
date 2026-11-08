@@ -10,7 +10,9 @@ query, extend, transform, and export. Choose
 [`xmlschema`](https://github.com/sissaschool/xmlschema) when converter-based
 XML/Python/JSON encoding and decoding, lazy processing, or WSDL support is
 central to your application. Both validate XSD 1.0 and 1.1 and offer runtime
-bindings; the difference is how those capabilities fit your workflow.
+bindings. pyxsd makes runtime class generation its primary model: the current
+schema supplies extensible classes directly, with no generated binding module
+to regenerate or drift out of sync.
 
 This is an API and design comparison, not a performance benchmark. For
 validity-verdict evidence, {doc}`xsts` records the shared corpus, each
@@ -27,7 +29,7 @@ case, read {doc}`why-pyxsd`.
 | Primary model | validate, bind to a schema-defined Python object tree, query, export, transform | decode/encode XML↔Python/JSON, validate, inspect schema components |
 | Instance → Python | `Document` tree of runtime-generated classes; `to_dict()` / `to_json()` | Converters to nested `dict`, JSON, `DataElement`, and runtime-generated data bindings |
 | XML output | Write an existing bound tree; revalidate edits explicitly | `encode()`, `from_json()`, converter classes |
-| Binding source files | Unnecessary for runtime binding; optional `.pyi` stubs describe the classes | Runtime data bindings available; optional static generation with Jinja2 templates |
+| Binding source files | None required; classes come directly from the compiled XSD; optional `.pyi` stubs describe them | Runtime data bindings available; optional static generation with Jinja2 templates |
 | Application extensions | Compile-time mixins with methods and validation hooks | Custom converters and data-binding classes |
 | Pydantic / Arrow | Optional schema-derived Pydantic models and Arrow/Parquet record projections | Python/JSON conversion; no equivalent built-in adapters documented |
 | XPath/lookup | `Document.xpath()` / `find()` / `findall()` return bound nodes; declaration introspection is separate | XPath-based schema component API; `ElementPathMixin` on components and `XMLResource` |
@@ -50,11 +52,17 @@ classes, and mixins add application methods and validation hooks at compile
 time. Queries return the original bound nodes, so selection and application
 logic work on the same objects. See {doc}`extensions` and {doc}`data-model`.
 
-Static Python source generation is unnecessary for this model. Compile the
-XSD you need and reuse the resulting schema; when the schema changes,
-recompile instead of regenerating and distributing binding modules.
-Optional {doc}`stubs` describe those runtime classes for editors and type
-checkers. They are not a separate runtime implementation.
+This is an advantage of the runtime model, not a reduction in what the
+application objects can do. Generated binding source adds an artifact that can
+drift from its XSD until someone regenerates it. pyxsd instead compiles the
+current schema into classes, while mixins keep application methods and
+validation hooks separate from the schema-derived structure. There are no
+generated class bodies to edit or preserve across regeneration.
+
+Compile the XSD once and reuse the resulting schema across documents. When the
+schema changes, recompile it instead of regenerating and distributing binding
+modules. Optional {doc}`stubs` describe those runtime classes for editors and
+type checkers without becoming a separate runtime implementation.
 
 `xmlschema` also supports runtime-generated bindings through
 `DataBindingConverter`, in addition to `DataElementConverter` and static
