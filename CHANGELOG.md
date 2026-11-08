@@ -11,6 +11,8 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-07
+
 ### Added
 
 - MCP resource limits are disabled by default: file sizes, XML depth/elements,
@@ -19,9 +21,9 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
   enabled` (or `PYXSD_MCP_RESOURCE_LIMITS=enabled`) restores the numeric
   defaults, and repeatable `--limit FIELD=VALUE` or
   `PYXSD_MCP_<UPPERCASE_FIELD>` tunes individual limits. Overrides while
-  limits are disabled are startup errors. Every former hardcoded cap, including
-  projection search, path lengths, transform source, and I/O buffers, is now
-  governed by the same toggle.
+  limits are disabled are startup errors. Former hardcoded caps for projection
+  search, path lengths, transform source, and I/O buffers are now governed by
+  the same toggle.
 - The `pyxsd[mcp-all]` extra installs the complete MCP integration set — server
   dependencies plus Pydantic and PyArrow — while `pyxsd[mcp]` remains the
   minimal server install and the Registry launcher default.
