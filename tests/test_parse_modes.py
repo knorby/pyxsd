@@ -277,6 +277,42 @@ class TestCliModeFlag:
         self._stage(tmp_path)
         main(["-i", "instance.xml", "--namespaces", "strict", "-o", "/dev/null"])
 
+    def test_default_namespaces_are_strict(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "schema.xsd").write_text(TARGETED_XSD)
+        (tmp_path / "instance.xml").write_text(WRONG_NAMESPACE_XML)
+        with pytest.raises(SystemExit) as exited:
+            main(
+                [
+                    "-i",
+                    "instance.xml",
+                    "-s",
+                    "schema.xsd",
+                    "--strict",
+                    "-o",
+                    "/dev/null",
+                ]
+            )
+        assert exited.value.code == 1
+
+    def test_legacy_namespaces_flag_retains_local_name_binding(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "schema.xsd").write_text(TARGETED_XSD)
+        (tmp_path / "instance.xml").write_text(WRONG_NAMESPACE_XML)
+        main(
+            [
+                "-i",
+                "instance.xml",
+                "-s",
+                "schema.xsd",
+                "--namespaces",
+                "legacy",
+                "--strict",
+                "-o",
+                "/dev/null",
+            ]
+        )
+
     def test_unknown_namespaces_flag_is_rejected(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         self._stage(tmp_path)

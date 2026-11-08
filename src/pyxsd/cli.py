@@ -370,8 +370,11 @@ def _build_document(
         raise PyXSDError(f"the xml file is not well-formed XML: {e}") from e
     hint_report = ValidationReport()
     base_dir = Path(xml_source).resolve().parent if isinstance(xml_source, str) else Path.cwd()
-    _namespace, hint = resolve_schema_hint(tree, base_dir, report=hint_report)
+    # Read the composition pairs before resolving the primary hint: resolving
+    # a malformed schemaLocation rewrites it to noNamespaceSchemaLocation, and
+    # the rewritten (originally malformed) value is not a usable pair.
     pairs = absolute_schema_location_pairs(tree, base_dir)
+    _namespace, hint = resolve_schema_hint(tree, base_dir, report=hint_report)
     source_purpose: ResourcePurpose = "schema"
     if xsd is None:
         if hint is None:
@@ -541,12 +544,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--namespaces",
         choices=["strict", "legacy"],
-        default="legacy",
+        default="strict",
         dest="namespaces",
-        help="namespace handling. 'legacy' (default) matches by local name "
-        "and ignores namespace URIs; 'strict' resolves QNames and matches "
-        "elements and attributes by expanded name, which rejects documents "
-        "that only matched by local name before.",
+        help="namespace handling. 'strict' (default) resolves QNames and "
+        "matches elements and attributes by expanded name; 'legacy' matches "
+        "by local name and ignores namespace URIs for compatibility with "
+        "documents that only match that way.",
     )
     parser.add_argument(
         "--xsd-version",
