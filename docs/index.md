@@ -48,6 +48,7 @@ demo
 
 comparison-xmlschema
 comparison-lxml
+comparison-xsdata
 ```
 
 ```{toctree}
