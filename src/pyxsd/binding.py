@@ -45,11 +45,11 @@ class BindingPolicy:
       (space/tab/CR/LF only); ``"compat"`` additionally folds other
       Unicode whitespace (for example NBSP) the way Python's own
       ``str.strip`` does.
-    - ``namespaces`` - ``"legacy"`` matches elements and attributes by
-      local name, discarding the namespace URI; ``"strict"`` resolves
-      QNames, keys components by expanded name, and matches instances
-      namespace-correctly. ``"strict"`` is opt-in because it rejects
-      documents that previously matched by local name alone.
+    - ``namespaces`` - ``"strict"`` resolves QNames, keys components by
+      expanded name, and matches instances namespace-correctly;
+      ``"legacy"`` matches elements and attributes by local name,
+      discarding the namespace URI. ``"legacy"`` is the explicit
+      compatibility choice for documents that match by local name alone.
     - ``facets`` - ``"strict"`` enforces the XSD facets declared on
       simple types (``enumeration``, ``pattern``, ``length`` and the
       other length facets, ``minInclusive``/``maxInclusive`` and their
@@ -64,7 +64,7 @@ class BindingPolicy:
     unresolved_type: UnresolvedType = "error"
     undeclared_content: UndeclaredContent = "error"
     whitespace: WhitespaceHandling = "xsd"
-    namespaces: NamespaceHandling = "legacy"
+    namespaces: NamespaceHandling = "strict"
     facets: FacetHandling = "strict"
 
     def replace(self, **changes: object) -> BindingPolicy:
@@ -85,20 +85,25 @@ class ParseModes:
     no call signature has to change.
     """
 
-    #: Today's behavior: problems are reported and nothing invalid is
-    #: bound into the tree.
-    STRICT = BindingPolicy()
+    #: Strict binding with local-name namespace matching. Kept explicitly
+    #: for callers that need the pre-namespaced behavior.
+    STRICT = BindingPolicy(namespaces="legacy")
 
     #: Keep the report strict, but bind best-effort values: invalid
     #: lexical values become raw strings, and unresolved or undeclared
-    #: subtrees are bound generically instead of dropped.
+    #: subtrees are bound generically instead of dropped. Kept explicitly
+    #: for callers that need the pre-namespaced behavior.
     LAX = BindingPolicy(
         invalid_value="raw",
         unresolved_type="generic",
         undeclared_content="generic",
+        namespaces="legacy",
     )
 
-    #: Strict binding plus XSD-correct namespace handling. Combine with
-    #: ``.replace()`` for other mixes, for example
-    #: ``ParseModes.LAX.replace(namespaces="strict")``.
-    NAMESPACED = BindingPolicy(namespaces="strict")
+    #: Strict binding plus XSD-correct namespace handling. This is the
+    #: default policy.
+    NAMESPACED = BindingPolicy()
+
+    #: Lax binding plus XSD-correct namespace handling. Combine with
+    #: ``.replace()`` for other mixes.
+    LAX_NAMESPACED = LAX.replace(namespaces="strict")

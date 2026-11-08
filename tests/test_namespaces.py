@@ -1,7 +1,8 @@
 """Tests for namespace capture and namespace-aware parsing.
 
-The default policy is ``legacy``; these tests exercise the capture
-machinery directly and the strict-mode behaviour added on top of it.
+The default policy is ``strict``; these tests exercise the capture
+machinery directly and the explicit legacy-mode behaviour kept for
+compatibility.
 """
 
 import xml.etree.ElementTree as ET
@@ -326,7 +327,7 @@ class TestInstanceMatching:
         assert "missing-attribute" in codes
 
     def test_legacy_mode_matches_by_local_name(self, tmp_path):
-        doc = Schema.compile(StringIO(_TNS_SCHEMA)).parse(
+        doc = Schema.compile(StringIO(_TNS_SCHEMA), mode=ParseModes.STRICT).parse(
             StringIO('<root xmlns="urn:t" xmlns:o="urn:o"><o:a>x</o:a></root>')
         )
         assert not doc.report.has_errors

@@ -16,6 +16,7 @@ The legacy local-name leniency itself is a documented contract for
 guards below pin that it survives.
 """
 
+from pyxsd.binding import ParseModes
 from pyxsd.schema import Schema
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
@@ -65,7 +66,7 @@ class TestPrefixedLegacyReferences:
     def test_prefixed_reference_does_not_bind_a_foreign_declaration(self, tmp_path):
         _write(tmp_path, "N.xsd", FOREIGN_ATTR_IMPORTED)
         _write(tmp_path, "A.xsd", FOREIGN_ATTR_SCHEMA)
-        schema = Schema.compile(str(tmp_path / "A.xsd"))
+        schema = Schema.compile(str(tmp_path / "A.xsd"), mode=ParseModes.STRICT)
         codes = {error.code for error in schema.report.errors}
         assert "unknown-attributeRef" in codes
 
@@ -75,7 +76,7 @@ class TestPrefixedLegacyReferences:
             '<xs:attribute ref="xml:bogus"/>', '<xs:attribute ref="n:bogus"/>'
         )
         _write(tmp_path, "A.xsd", schema_doc)
-        schema = Schema.compile(str(tmp_path / "A.xsd"))
+        schema = Schema.compile(str(tmp_path / "A.xsd"), mode=ParseModes.STRICT)
         assert not schema.report.has_errors
 
     def test_prefixed_reference_still_resolves_a_local_declaration(self, tmp_path):
@@ -91,7 +92,7 @@ class TestPrefixedLegacyReferences:
         </xs:schema>
         """
         _write(tmp_path, "A.xsd", schema_doc)
-        schema = Schema.compile(str(tmp_path / "A.xsd"))
+        schema = Schema.compile(str(tmp_path / "A.xsd"), mode=ParseModes.STRICT)
         assert not schema.report.has_errors
 
     def test_unprefixed_reference_keeps_the_local_name_fallback(self, tmp_path):
@@ -110,7 +111,7 @@ class TestPrefixedLegacyReferences:
         """
         _write(tmp_path, "N.xsd", FOREIGN_ATTR_IMPORTED)
         _write(tmp_path, "A.xsd", schema_doc)
-        schema = Schema.compile(str(tmp_path / "A.xsd"))
+        schema = Schema.compile(str(tmp_path / "A.xsd"), mode=ParseModes.STRICT)
         assert not schema.report.has_errors
 
 
@@ -122,7 +123,7 @@ class TestNamespacedInstanceAttributes:
             "doc.xml",
             '<m:doc xmlns:m="urn:m" xml:lang="en"><m:body>x</m:body></m:doc>',
         )
-        schema = Schema.compile(str(tmp_path / "B.xsd"))
+        schema = Schema.compile(str(tmp_path / "B.xsd"), mode=ParseModes.STRICT)
         assert not schema.report.has_errors
         document = schema.parse(str(tmp_path / "doc.xml"))
         assert not document.report.has_errors
@@ -135,7 +136,7 @@ class TestNamespacedInstanceAttributes:
             "doc.xml",
             '<m:doc xmlns:m="urn:m" xml:bogus="x"><m:body>x</m:body></m:doc>',
         )
-        schema = Schema.compile(str(tmp_path / "B.xsd"))
+        schema = Schema.compile(str(tmp_path / "B.xsd"), mode=ParseModes.STRICT)
         document = schema.parse(str(tmp_path / "doc.xml"))
         codes = {error.code for error in document.report.errors}
         assert "unexpected-attribute" in codes
@@ -155,7 +156,7 @@ class TestNamespacedInstanceAttributes:
         """
         _write(tmp_path, "C.xsd", schema_doc)
         _write(tmp_path, "doc.xml", '<doc plain="v"><body>x</body></doc>')
-        schema = Schema.compile(str(tmp_path / "C.xsd"))
+        schema = Schema.compile(str(tmp_path / "C.xsd"), mode=ParseModes.STRICT)
         document = schema.parse(str(tmp_path / "doc.xml"))
         assert not document.report.has_errors
         assert document.root.plain == "v"

@@ -5,8 +5,11 @@ validation report is always strict. These tests pin both halves of that
 promise for every policy field, plus the CLI switch.
 """
 
+from io import StringIO
+
 import pytest
 
+import pyxsd
 from conftest import fixture_dir
 from pyxsd.binding import BindingPolicy, ParseModes
 from pyxsd.cli import main
@@ -17,6 +20,13 @@ XSD = "http://www.w3.org/2001/XMLSchema"
 
 def _schema(body: str) -> str:
     return f'<xs:schema xmlns:xs="{XSD}">{body}</xs:schema>'
+
+
+TARGETED_XSD = f"""<xs:schema xmlns:xs="{XSD}" targetNamespace="urn:expected"
+    elementFormDefault="qualified">
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>"""
+WRONG_NAMESPACE_XML = '<root xmlns="urn:other">text</root>'
 
 
 def _parse(schema_body, instance_text, tmp_path, mode=ParseModes.STRICT):
@@ -32,7 +42,11 @@ def _codes(doc):
 
 
 class TestPolicyModel:
-    def test_strict_is_the_default_mode(self):
+    def test_default_policy_is_namespaced(self):
+        assert BindingPolicy() == ParseModes.NAMESPACED
+        assert BindingPolicy().namespaces == "strict"
+
+    def test_strict_preset_keeps_legacy_namespaces(self):
         policy = ParseModes.STRICT
         assert policy.invalid_value == "drop"
         assert policy.unresolved_type == "error"
@@ -40,7 +54,7 @@ class TestPolicyModel:
         assert policy.whitespace == "xsd"
         assert policy.namespaces == "legacy"
 
-    def test_lax_preset(self):
+    def test_lax_preset_keeps_legacy_namespaces(self):
         policy = ParseModes.LAX
         assert policy.invalid_value == "raw"
         assert policy.unresolved_type == "generic"
@@ -57,10 +71,20 @@ class TestPolicyModel:
         assert policy.undeclared_content == "error"
         assert policy.whitespace == "xsd"
 
-    def test_namespaces_can_be_composed_with_replace(self):
-        policy = ParseModes.LAX.replace(namespaces="strict")
+    def test_lax_namespaced_preset(self):
+        policy = ParseModes.LAX_NAMESPACED
+        assert policy == ParseModes.LAX.replace(namespaces="strict")
         assert policy.namespaces == "strict"
         assert policy.invalid_value == "raw"
+        assert policy.unresolved_type == "generic"
+        assert policy.undeclared_content == "generic"
+        assert policy.whitespace == "xsd"
+
+    def test_namespaces_can_be_composed_with_replace(self):
+        policy = ParseModes.LAX_NAMESPACED.replace(whitespace="compat")
+        assert policy.namespaces == "strict"
+        assert policy.invalid_value == "raw"
+        assert policy.whitespace == "compat"
 
     def test_replace_returns_a_modified_copy(self):
         base = ParseModes.STRICT
@@ -71,8 +95,51 @@ class TestPolicyModel:
         assert custom.invalid_value == base.invalid_value
 
 
+class TestNamespaceDefaults:
+    @pytest.mark.parametrize("entry_point", ["schema", "module"])
+    def test_omitted_mode_uses_namespaced_binding(self, entry_point):
+        if entry_point == "schema":
+            document = Schema.compile(StringIO(TARGETED_XSD)).parse(StringIO(WRONG_NAMESPACE_XML))
+        else:
+            document = pyxsd.parse(
+                StringIO(WRONG_NAMESPACE_XML),
+                xsd=StringIO(TARGETED_XSD),
+            )
+        assert document.root is None
+        assert "unknown-root" in _codes(document)
+
+    def test_explicit_namespaced_preset_matches_the_default(self):
+        document = Schema.compile(StringIO(TARGETED_XSD), mode=ParseModes.NAMESPACED).parse(
+            StringIO(WRONG_NAMESPACE_XML)
+        )
+        assert document.root is None
+        assert "unknown-root" in _codes(document)
+
+    def test_explicit_strict_preset_retains_legacy_binding(self):
+        document = Schema.compile(StringIO(TARGETED_XSD), mode=ParseModes.STRICT).parse(
+            StringIO(WRONG_NAMESPACE_XML)
+        )
+        assert str(document.root) == "text"
+        assert _codes(document) == []
+
+
 class TestInvalidValueBinding:
     ROOT_INT = '<xs:element name="r" type="xs:int"/>'
+
+    def test_default_mode_drops_an_invalid_no_namespace_value(self):
+        document = Schema.compile(StringIO(_schema(self.ROOT_INT))).parse(StringIO("<r>abc</r>"))
+        assert "value" in _codes(document)
+        assert str(document.root) == "0"
+
+    def test_lax_namespaced_binds_a_raw_value(self, tmp_path):
+        document = _parse(
+            self.ROOT_INT,
+            "<r>abc</r>",
+            tmp_path,
+            mode=ParseModes.LAX_NAMESPACED,
+        )
+        assert "value" in _codes(document)
+        assert str(document.root) == "abc"
 
     def test_strict_drops_an_invalid_root_value(self, tmp_path):
         doc = _parse(self.ROOT_INT, "<r>abc</r>", tmp_path)

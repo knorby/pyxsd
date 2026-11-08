@@ -603,8 +603,8 @@ class XsdType(ElementRepresentative):
         candidates come from there.
         """
         schema = self.getSchema()
-        mode = getattr(host, "mode", ParseModes.STRICT)
-        if getattr(mode, "namespaces", "legacy") != "strict":
+        mode = getattr(host, "mode", ParseModes.NAMESPACED)
+        if getattr(mode, "namespaces", "strict") != "strict":
             candidates = []
             for child in getattr(schema, "processedChildren", None) or ():
                 if (
@@ -1212,7 +1212,7 @@ class XsdType(ElementRepresentative):
             # Binding policy stamped at class-build time; the binding
             # sites in SchemaBase read it to decide what to do with
             # invalid or unresolved content.
-            "_parseMode_": getattr(host, "mode", ParseModes.STRICT),
+            "_parseMode_": getattr(host, "mode", ParseModes.NAMESPACED),
         }
         # XSD 1.1 assertion set owned by this declaration; the bind-time hook
         # unions it with the base classes' sets by walking the MRO. The
