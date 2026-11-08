@@ -159,6 +159,39 @@ def test_request_defaults_apply_only_when_limits_are_enforced():
     assert _with_request_defaults(describe, disabled).limit is None
 
 
+@pytest.mark.parametrize(
+    ("page_items", "batch_issue_items", "issue_limit"),
+    [(50, 100, None), (5, 10, None), (50, 100, 100)],
+)
+def test_batch_issue_limit_uses_its_independent_budget(page_items, batch_issue_items, issue_limit):
+    from pyxsd.mcp.worker_protocol import BatchParseOperation, CaptureMessage
+
+    operation = BatchParseOperation(
+        request_id="batch",
+        capture=CaptureMessage(root="/unused", files=()),
+        items=(),
+        issue_limit=issue_limit,
+    )
+    limits = Limits(enforced=True, page_items=page_items, batch_issue_items=batch_issue_items)
+    cache = SimpleNamespace(limits=limits)
+    assert worker_main._execute(operation, cache, "test") == {"items": []}
+
+
+def test_batch_issue_limit_enforces_its_independent_budget():
+    from pyxsd.mcp.worker_protocol import BatchParseOperation, CaptureMessage
+
+    operation = BatchParseOperation(
+        request_id="batch",
+        capture=CaptureMessage(root="/unused", files=()),
+        items=(),
+        issue_limit=101,
+    )
+    limits = Limits(enforced=True, page_items=200, batch_issue_items=100)
+    cache = SimpleNamespace(limits=limits)
+    with pytest.raises(ToolError, match="Page limit exceeds the operator budget"):
+        worker_main._execute(operation, cache, "test")
+
+
 def test_worker_start_rejects_invalid_ready_and_scrubs_environment(monkeypatch):
     captured = {}
 

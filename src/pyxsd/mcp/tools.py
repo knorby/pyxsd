@@ -632,12 +632,16 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
         )
         _register(server, "pyxsd_put_files", put_files, read_only=False)
 
-    async def list_artifacts(limit: int = 50, cursor: str | None = None) -> types.CallToolResult:
+    async def list_artifacts(
+        limit: int | None = None, cursor: str | None = None
+    ) -> types.CallToolResult:
         """List retained artifacts (reports, exports, oversized responses).
 
         Ordered oldest-first; use envelope page.next_cursor for continuation,
-        including when the listing spills. Every entry carries the id, digest,
-        media type, size, and local path needed for ranged reads.
+        including when the listing spills. An omitted limit uses the configured
+        page_items default when resource limits are enabled and is unlimited
+        otherwise. Every entry carries the id, digest, media type, size, and
+        local path needed for ranged reads.
         """
         request = ListArtifactsRequest(limit=limit, cursor=cursor)
 
@@ -679,7 +683,8 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             Field(
                 description=(
                     "Bytes to read; the base64 reply must fit the response budget, so request "
-                    "a smaller range instead of expecting a spill. Omit to read through EOF."
+                    "a smaller range instead of expecting a spill. Omit to use the configured "
+                    "artifact_read_bytes default, or read through EOF when limits are disabled."
                 )
             ),
         ] = None,
@@ -688,7 +693,8 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
 
         Returns the range plus its actual length and the artifact's total size,
         digest, media type, and local path. Length can be smaller than requested
-        at end of file. An omitted length reads through EOF. Ranges that would
+        at end of file. An omitted length uses artifact_read_bytes when resource
+        limits are enabled and reads through EOF otherwise. Ranges that would
         exceed the response budget fault with response_limit rather than
         spilling into another artifact; page large reads with offset/length.
         Artifacts survive workspace release.

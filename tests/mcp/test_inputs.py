@@ -602,6 +602,17 @@ def test_select_corpus_honors_the_corpus_file_budget(tmp_path):
     anyio.run(scenario)
 
 
+def test_uploaded_corpus_glob_honors_the_path_budget(tmp_path):
+    async def scenario():
+        store = inputs(tmp_path, Limits(enforced=True, path_bytes=5))
+        workspace = await store.create()
+        await store.put_files(workspace.id, [InlineFile(path="a.xml", text=DOC)])
+        with pytest.raises(ToolError, match="invalid_path"):
+            await store.select_corpus(workspace.id, "**/*.xml")
+
+    anyio.run(scenario)
+
+
 def test_default_disabled_limits_allow_more_workspaces_and_corpus_files(tmp_path):
     source = tmp_path / "source"
     make_corpus_tree(source)

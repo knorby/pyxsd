@@ -171,7 +171,10 @@ class SessionInputs:
         if uploaded:
             paths = await anyio.to_thread.run_sync(
                 lambda: select_manifest_paths(
-                    pattern, uploaded, max_matches=self.limits.corpus_files
+                    pattern,
+                    uploaded,
+                    max_matches=self.limits.corpus_files,
+                    limits=self.limits,
                 )
             )
             return tuple(FileRef(path=path) for path in paths)

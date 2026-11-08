@@ -67,6 +67,14 @@ def test_limits_are_disabled_and_unlimited_by_default():
     assert limits.model_dump(exclude={"enforced"}) == dict.fromkeys(DEFAULTS)
 
 
+def test_disabled_limits_normalize_supplied_budgets_to_unlimited():
+    from pyxsd.mcp.config import Limits
+
+    limits = Limits(enforced=False, xml_file_bytes=1, workers=2)
+    assert limits.xml_file_bytes is None
+    assert limits.workers is None
+
+
 def test_enabling_limits_requires_every_resource_bound():
     import pydantic
     from pyxsd.mcp.config import Limits

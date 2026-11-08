@@ -48,29 +48,47 @@ def _character_class(segment: str, start: int) -> tuple[str, int]:
     return ("[^" if negated else "[") + body + "]", end + 1
 
 
-def _segment_expression(segment: str, *, final: bool) -> str:
-    if segment == "**":
-        return "[^/]+(?:/[^/]+)*" if final else "(?:[^/]+/)*"
-    if "**" in segment:
-        raise ToolError("invalid_argument", "Recursive glob must be a complete segment")
-    expression: list[str] = []
+_Token = str | re.Pattern[str]
+_Segment = tuple[_Token, ...] | None
+
+
+def _segment_tokens(segment: str) -> tuple[_Token, ...]:
+    tokens: list[_Token] = []
     index = 0
     while index < len(segment):
         char = segment[index]
-        if char == "*":
-            expression.append("[^/]*")
-        elif char == "?":
-            expression.append("[^/]")
-        elif char == "[":
+        if char == "[":
             class_expression, index = _character_class(segment, index)
-            expression.append(class_expression)
+            tokens.append(re.compile(class_expression))
             continue
-        else:
-            expression.append(re.escape(char))
+        tokens.append(char)
         index += 1
-    if not final:
-        expression.append("/")
-    return "".join(expression)
+    return tuple(tokens)
+
+
+def _token_matches(token: _Token, char: str) -> bool:
+    if token == "?":
+        return True
+    if isinstance(token, str):
+        return token == char
+    return token.fullmatch(char) is not None
+
+
+def _segment_matches(tokens: tuple[_Token, ...], text: str) -> bool:
+    positions = [index == 0 for index in range(len(text) + 1)]
+    for token in tokens:
+        following = [False] * len(positions)
+        if token == "*":
+            reachable = False
+            for index, active in enumerate(positions):
+                reachable = reachable or active
+                following[index] = reachable
+        else:
+            for index, active in enumerate(positions[:-1]):
+                if active and _token_matches(token, text[index]):
+                    following[index + 1] = True
+        positions = following
+    return positions[-1]
 
 
 class CorpusGlob:
@@ -78,17 +96,37 @@ class CorpusGlob:
 
     def __init__(self, pattern: str, limits: Limits | None = None) -> None:
         parts = portable_parts(pattern, limits)
-        expressions = [
-            _segment_expression(part, final=index == len(parts) - 1)
-            for index, part in enumerate(parts)
-        ]
+        segments: list[_Segment] = []
         try:
-            self._expression = re.compile("".join(expressions))
+            for part in parts:
+                if part == "**":
+                    segments.append(None)
+                else:
+                    if "**" in part:
+                        raise ToolError(
+                            "invalid_argument", "Recursive glob must be a complete segment"
+                        )
+                    segments.append(_segment_tokens(part))
         except re.error as exc:
             raise ToolError("invalid_argument", "Malformed corpus glob pattern") from exc
+        self._segments = tuple(segments)
 
     def matches(self, path: str) -> bool:
-        return self._expression.fullmatch(path) is not None
+        parts = path.split("/")
+        states = {0}
+        for index, segment in enumerate(self._segments):
+            if segment is None:
+                minimum = int(index == len(self._segments) - 1)
+                states = {end for start in states for end in range(start + minimum, len(parts) + 1)}
+            else:
+                states = {
+                    start + 1
+                    for start in states
+                    if start < len(parts) and _segment_matches(segment, parts[start])
+                }
+            if not states:
+                return False
+        return len(parts) in states
 
 
 def _positive_budget(value: object, label: str) -> int | None:

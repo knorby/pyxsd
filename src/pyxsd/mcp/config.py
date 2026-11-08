@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from .contracts import PositiveBudget, WireModel
 
@@ -56,12 +56,19 @@ class Limits(WireModel):
     path_segment_bytes: ResourceBudget = 255
     io_chunk_bytes: ResourceBudget = 65536
 
+    @field_validator("*", mode="after")
+    @classmethod
+    def normalize_disabled_limits(
+        cls, value: ResourceBudget | bool, info: ValidationInfo
+    ) -> ResourceBudget | bool:
+        if info.field_name != "enforced" and not info.data.get("enforced", False):
+            return None
+        return value
+
     @model_validator(mode="after")
     def validate_resource_limits(self) -> Self:
         resource_fields = (name for name in type(self).model_fields if name != "enforced")
         if not self.enforced:
-            for name in resource_fields:
-                object.__setattr__(self, name, None)
             return self
         for name in resource_fields:
             if getattr(self, name) is None:

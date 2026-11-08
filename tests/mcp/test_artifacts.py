@@ -67,6 +67,48 @@ def test_artifact_tools_list_read_delete_and_paginate(tmp_path):
     anyio.run(scenario)
 
 
+def test_artifact_listing_is_unlimited_when_limits_are_disabled(tmp_path):
+    from pyxsd.mcp.config import Limits
+
+    async def scenario():
+        async with connected(tmp_path, limits=Limits()) as (client, services):
+            for index in range(51):
+                await services.outputs.put_bytes(
+                    str(index).encode(),
+                    name=f"{index}.txt",
+                    media_type="text/plain",
+                    kind="result",
+                )
+            listed = structured(await client.call_tool("pyxsd_list_artifacts", {}))
+            assert listed["page"]["returned"] == 51
+            assert listed["page"]["next_cursor"] is None
+            assert len(listed["data"]["artifacts"]) == 51
+
+    anyio.run(scenario)
+
+
+def test_artifact_listing_uses_the_configured_page_default(tmp_path):
+    from pyxsd.mcp.config import Limits
+
+    async def scenario():
+        async with connected(tmp_path, limits=Limits(enforced=True, page_items=1)) as (
+            client,
+            services,
+        ):
+            for index in range(2):
+                await services.outputs.put_bytes(
+                    str(index).encode(),
+                    name=f"{index}.txt",
+                    media_type="text/plain",
+                    kind="result",
+                )
+            listed = structured(await client.call_tool("pyxsd_list_artifacts", {}))
+            assert listed["page"]["returned"] == 1
+            assert listed["page"]["truncated"] is True
+
+    anyio.run(scenario)
+
+
 def test_artifact_read_verifies_content_once(tmp_path, monkeypatch):
     async def scenario():
         async with connected(tmp_path) as (client, services):
