@@ -2,7 +2,7 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Export bound XML in five JSON formats and import schema-driven JSON into validated documents, with explicit scalar, namespace, and fidelity rules.
+   :description: Convert bound XML to and from five JSON formats, with explicit scalar, namespace, fidelity, and document validation rules.
 ```
 
 `Document.to_data()` exports the bound tree as JSON-safe Python values.
@@ -24,9 +24,10 @@ These exports need no optional dependencies. The {doc}`integrations`
 provide a separate Pydantic model projection and Arrow/Parquet records;
 their aliases and presence rules are not these document formats.
 
-`Schema.from_data()` and `Schema.from_json()` import `pyxsd-json` into an
-ordinary `Document`. Import currently supports **only `pyxsd-json`**; the
-other four formats are export-only.
+`Schema.from_data()` and `Schema.from_json()` import all five formats into
+an ordinary `Document`. Import defaults to `format="pyxsd-json"`, unlike
+export's native `"pyxsd"` default; select the format explicitly when changing
+between them.
 
 ## Export a document
 
@@ -83,7 +84,7 @@ a valid report. Call `require_valid()` when validity is a prerequisite, or
 follow {doc}`quickstart`'s `revalidate()` workflow after edits. A document
 without a bound root raises `PyXSDError`.
 
-## Import schema-driven JSON
+## Import data or JSON
 
 Both methods return a `Document` and have these signatures (`JsonValue` is
 a JSON-compatible Python value):
@@ -104,10 +105,10 @@ Schema.from_json(
 
 `from_data()` accepts dictionaries with string keys, lists, strings,
 booleans, integers, finite floats, and `None`, subject to the selected
-layout and scalar rules below. The outer value must be a single-entry root
-dictionary. `from_json()` accepts JSON content as `str`, UTF-8 `bytes`, or
-`bytearray`. It does not open a filename, URL, `Path`, or file-like object;
-unsupported source types raise `TypeError`. Read files explicitly with
+format's root, layout, and scalar rules below. `from_json()` accepts JSON
+content as `str`, UTF-8 `bytes`, or `bytearray`. It does not open a filename,
+URL, `Path`, or file-like object; unsupported source types raise `TypeError`.
+Read files explicitly with
 `Path("data.json").read_text(encoding="utf-8")` or `.read_bytes()`, then pass
 the result to `from_json()`.
 
@@ -117,13 +118,11 @@ non-finite values instead use the JSON strings `"NaN"`, `"INF"`, and
 `"-INF"`.
 
 Import defaults to `fidelity="strict"`, unlike export's `"best-effort"`.
-For `pyxsd-json`, both modes use the same decoding rules: there are no
-best-effort fallbacks or loss warnings. Best effort does not coerce wrong
-scalar types, repair containers, discard content, or suppress validation.
-Unknown format or fidelity names raise `ValueError`; requesting import in
-`pyxsd`, `parker`, `badgerfish`, or `jsonml` raises `PyXSDError` with
-`schema-shape-unsupported`. Neither import method accepts `typed` or
-`always_list`; supplying them raises `TypeError`.
+Only the [import fallbacks](#import-fidelity) below are permitted in best
+effort; it does not coerce wrong scalar types, repair containers, discard
+content, or suppress validation. Unknown format or fidelity names raise
+`ValueError`. Neither import method accepts `typed` or `always_list`;
+supplying them raises `TypeError`.
 
 ### Round trip through a document
 
@@ -146,6 +145,13 @@ assert reparsed.to_data(format="pyxsd-json") == data
 checked = restored.revalidate()
 checked.require_valid()
 assert checked.to_data(format="pyxsd-json") == data
+
+for format in ("pyxsd", "parker", "badgerfish", "jsonml"):
+    exported = document.to_data(format=format, fidelity="strict")
+    imported = schema.from_data(exported, format=format, element="dates")
+    imported.require_valid()
+    assert imported.to_data(format=format, fidelity="strict") == exported
+    assert schema.from_json(json.dumps(exported), format=format).is_valid
 ```
 
 Import builds an ElementTree, records its namespace frames, and calls the
@@ -161,23 +167,30 @@ strings merge, and export normalizes layout and scalar spellings.
 
 ### Root selection
 
-The root key selects the global element, even when the compiled schema has
-multiple possible roots. It uses an EQName (`Q{uri}local`) or an
-unnamespaced local name, not a lexical prefix or Clark name. Omitting the
-root wrapper is an error, even for a schema with only one root. An empty
-or multi-entry object raises `root-ambiguous`; a non-object root raises
-`container-invalid`.
+- `pyxsd-json` requires a single-entry root object whose key is an EQName
+  (`Q{uri}local`) or unnamespaced local name, not a lexical prefix or Clark
+  name. The wrapper is required even with only one global declaration.
+- BadgerFish also requires a single-entry root object, but its key is a
+  lexical QName resolved against its namespace declarations.
+- JsonML requires a nonempty array starting with a lexical tag string.
+- Native and Parker absorb the root. Supply `element` when there is not
+  exactly one concrete global root; otherwise selection raises
+  `root-ambiguous`. A native mapping is content, not a root wrapper.
 
-The optional `element` confirms the carried root. It accepts a local name,
-Clark name (`{uri}local`), or EQName. A local selection must resolve
-unambiguously among global declarations (`name-ambiguous` otherwise).
-Selecting a substitution head also accepts its valid substitution members;
-a contradictory selection raises `root-mismatch`. `element` never renames
-the supplied root. An unknown carried root without a contradictory
-selection reaches the binder's `unknown-root` report and can return a
-document whose `root` is `None`.
+An empty or multi-entry root object in the root-carrying formats raises
+`root-ambiguous`; a wrong outer container raises `container-invalid`.
 
-### Layouts and scalar input
+The optional `element` selects an absorbed root or confirms a carried one.
+It accepts a local name, Clark name (`{uri}local`), or EQName. A local
+selection must resolve unambiguously among global declarations
+(`name-ambiguous` otherwise).
+For a carried root, selecting a substitution head also accepts its valid
+substitution members; a contradictory selection raises `root-mismatch`.
+`element` never renames a carried root. An unknown root without a
+contradictory selection reaches the binder's `unknown-root` report and can
+return a document whose `root` is `None`.
+
+### Schema-driven layouts and scalar input
 
 Import reads the `pyxsd-json` layouts described below:
 
@@ -205,12 +218,108 @@ including promotion to a plus layout. Substitution members use their own
 declarations. Conditional type assignment happens in the normal binder;
 the subsequent export uses the selected effective type's layout.
 
+### Conventional input
+
+The [native](#native-pyxsd-structure), [Parker](#parker-structure),
+[BadgerFish](#badgerfish-structure), and [JsonML](#jsonml-structure) sections
+below define their structures. Scalar input follows the
+[scalar table](#scalar-values): for example, decimals require strings,
+booleans are not integers, and `1.0` is not integer input. Native lexical
+strings are the compatibility exception. Import adds these rules:
+
+- **Native:** accepts both typed values and `typed=False` lexical strings,
+  including integer/boolean strings and space-separated XSD lists. A simple
+  root may be a bare scalar or `{"$": value}`. Grouped child arrays accept
+  native `always_list=True` output, including one-item arrays. Local child
+  and attribute names resolve through a unique schema declaration; ambiguous
+  locals raise `name-ambiguous` in both modes. Clark names identify the
+  namespace directly; unresolved locals remain unqualified for validation.
+  Ordinary prefixed keys are not accepted. `@xsi:type` and `@xsi:nil` (or
+  their Clark-key equivalents) are exceptions: the former takes a lexical
+  QName; the latter accepts a boolean or lexical string. A true nil marker
+  permits other attributes but conflicts with any `$` or child property.
+- **Parker:** `{}` supplies empty element-only content, `""` an empty simple
+  string, `[]` an empty XSD list, and `null` always requests nil. Children use
+  local names only: prefixed/Clark keys and `@` attributes are `name-invalid`.
+  `$` is accepted only for mixed content. A local child must resolve uniquely
+  through the schema; unresolved or ambiguous names require the warned
+  best-effort fallback below. No attributes are constructed; defaults still
+  apply, and missing required attributes remain validation errors.
+- **BadgerFish:** accepts scalar leaves or `$`-wrapped text, `@` attributes,
+  and grouped children. Repeatable child properties accept occurrence arrays
+  (including `[]`) or a single non-array occurrence; export normalizes a
+  single occurrence to an array. `@xsi:nil` requires a JSON boolean and its namespace
+  binding. When true, it retains other attributes but conflicts with any `$`
+  or child property, even empty content. Bare `null` is also accepted as nil;
+  export uses the explicit attribute marker. `@xsi:type` takes a lexical QName
+  and selects the actual type before decoding content.
+- **JsonML:** reads attributes only from the optional object at index 1.
+  Remaining nested arrays, direct text, and tails retain supplied order,
+  including mixed whitespace; adjacent strings merge. Whitespace-only
+  element-only text is discarded, while other text reaches validation.
+  Simple content accepts one typed scalar item, or one array-valued item for
+  an XSD list type, rather than interpreting it as a child tag. A sole `null`
+  content item requests nil; combining nil with other content raises
+  `marker-conflict`. The `xsi:type` attribute takes a lexical QName.
+
+In all three grouped formats, an array for a repeatable **list-valued**
+child is ambiguous between one XSD list and repeated elements, so it raises
+`container-invalid` in both modes. For a non-repeatable list-valued child,
+the array is one scalar value; native also accepts its one-item outer
+`always_list` wrapper.
+
+Native element `null` needs special care: a non-nillable target becomes
+empty content; a nillable target becomes nil when empty content is not
+possible. If both empty and nil are possible, strict raises
+`empty-nil-ambiguous`; best effort warns and chooses nil. Empty-content
+possibility depends on the schema, including defaults, required attributes,
+and optional content. To request empty content explicitly, use `{}` or
+`{"$": ""}` (`{"$": null}` also means empty text, not nil). Use
+`{"@xsi:nil": true}` for an explicit nil request.
+
+### Import fidelity
+
+Native, Parker, and BadgerFish reconstruct grouped children in schema order
+only when that reconstruction is unique, including fixed sequences and
+`xs:all` records. Array items retain occurrence order within their group.
+Strict raises for each loss below; best effort emits `PyXSDWarning` and
+applies only the listed fallback:
+
+| Format | Code | Import fallback |
+| --- | --- | --- |
+| Native, Parker, BadgerFish | `order-ambiguous` | Use mapping iteration order and expand arrays at their property position; do not invent interleaving. |
+| Native, Parker, BadgerFish | `mixed-content` | Put concatenated `$` text before the grouped children; lost text positions cannot be restored. |
+| Parker | `name-ambiguous` | Leave an unresolved or ambiguous child name unqualified for normal validation. |
+| Native, Parker, BadgerFish, JsonML | `namespace-unresolved` | Leave an unresolved lexical QName value to the binder. BadgerFish and JsonML also do this for unresolved names and `xsi:type`. |
+| Native | `empty-nil-ambiguous` | Interpret ambiguous element `null` as nil. |
+
+Repeated models allowing several child names can require the ordering
+fallback even if a particular object looks ordered. Mixed content with
+multiple distinct child names also loses child order; text-only mixed
+content needs no positional fallback. JsonML represents order directly and
+needs neither ordering nor mixed-text fallback. `pyxsd-json` has no import
+fallbacks: both fidelities use the same decoding rules without loss warnings.
+
 ### Namespaces and QName values
 
-Element and attribute keys use EQNames, including names admitted through
-wildcards. A `namespaces` mapping seeds the root's inherited prefix-to-URI
-frame; it does not expand prefixed JSON keys or change the EQName contract.
-QName values, QName-list items, and `@xsi:type` values can carry their
+A `namespaces` mapping seeds the root's inherited prefix-to-URI frame for
+every format. Native and Parker need it for prefixed QName values; it does
+not enable prefixed child keys. Native resolves `@xsi:type` when its prefix
+is bound; an unresolved type prefix instead reaches the binder's
+`unknown-namespace-prefix` report, even in strict mode.
+
+BadgerFish merges `@xmlns` declarations (`$` denotes the default namespace);
+JsonML merges `xmlns` and `xmlns:prefix` from the attribute object. Nested
+declarations override inherited bindings and apply to the element carrying
+them, including its own tag, and its descendants. Unprefixed attributes
+never use the default namespace. Required bindings for names, QName values,
+and `xsi:type` must resolve in strict mode. Import accepts supplied prefixes
+and default namespaces; the deterministic explicit prefixes described
+below are export choices, not input requirements.
+
+In `pyxsd-json`, element and attribute keys use EQNames, including wildcard
+names; `namespaces` does not change that contract. QName values, QName-list
+items, and `@xsi:type` values can carry their
 namespace directly as EQNames. Import translates these to lexical XML
 QNames and records inherited/generated bindings on every element before
 binding. Existing suitable prefixes are reused; generated prefixes avoid
@@ -259,19 +368,23 @@ Separate `Schema` objects can compile and parse concurrently.
 
 ### Conversion errors versus validation reports
 
-Conversion raises `PyXSDError` when a trustworthy tree cannot be built:
-for example, duplicate JSON keys (`json-duplicate-key`), malformed JSON
-(`json-invalid`), invalid names (`name-invalid`), wrong containers
+In every format, conversion raises `PyXSDError` when a trustworthy tree
+cannot be built: for example, duplicate JSON keys (`json-duplicate-key`),
+malformed JSON (`json-invalid`), invalid names (`name-invalid`), wrong containers
 (`container-invalid`), wrong scalar types (`scalar-type-invalid`), or
 conflicting nil/content markers (`marker-conflict`). Diagnostics include a
 reason code and JSON Pointer path; the empty pointer identifies the whole
-input. JSON parsing errors use that empty pointer.
+input. JSON parsing errors use that empty pointer. Best-effort warnings
+carry reason codes and paths too; they do not become validation issues.
+Ambiguous root selection, malformed names, wrong containers/scalar types,
+and duplicate or conflicting markers always raise in either fidelity mode.
 
 Correctly shaped content still undergoes XSD validation. Invalid lexical
 strings for string-represented datatypes, missing required content,
 unknown children or attributes in decodable containers, unresolved actual
-types, and non-nillable nil requests reach `Document.report`. Import does
-not drop unknown content or automatically call `require_valid()`.
+types, and non-nillable nil requests reach `Document.report`. Parker names
+must first resolve or use its warned fallback. Import does not drop unknown
+content or automatically call `require_valid()`.
 Inspect the report, or call `require_valid()` to raise `ValidationError`.
 
 Using the dates schema from the first example:
@@ -646,6 +759,8 @@ then sorted wildcard attributes; record children follow schema order.
 Sequence/mixed attribute maps sort their keys instead, because attribute
 order is not semantic.
 
+The following fidelity rules describe **export**; see
+[import fidelity](#import-fidelity) for reconstruction fallbacks.
 `fidelity` concerns representation, not XSD validity:
 
 - Native `best-effort` keeps the existing grouped shape without new warnings.
