@@ -116,7 +116,7 @@ def test_no_extension_client_still_works(tmp_path):
             listed = (
                 await client.send_request(types.Request(method="skills/list", params={}), _RESULT)
             )["skills"]
-            assert len(listed) == 3
+            assert len(listed) == len(list_skills())
 
     anyio.run(scenario)
 

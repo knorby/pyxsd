@@ -186,6 +186,7 @@ PSVI behavior, security, W3C certification, or correctness on untested inputs.
 - {doc}`mcp` — the optional local agent interface and its response limits.
 - {doc}`comparison-xmlschema` — converter-based validation and data bindings.
 - {doc}`comparison-lxml` — general XML trees and objectify bindings.
+- {doc}`comparison-libxml2` — native-validator scope and preliminary evidence.
 - [xsdata documentation](https://xsdata.readthedocs.io/) — authoritative
   generator, parser, serializer, and configuration guidance.
 
