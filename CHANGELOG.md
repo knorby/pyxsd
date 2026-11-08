@@ -11,6 +11,23 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+### Added
+
+- `ParseModes.LAX_NAMESPACED` combines lax value retention with namespace-aware
+  matching. `ParseModes.STRICT` and `ParseModes.LAX` remain available as the
+  explicit legacy local-name presets.
+
+### Changed
+
+- **Behavior change:** namespace-aware binding is now the default.
+  `BindingPolicy()`, `Schema.compile()`, module-level `pyxsd.parse()`, CLI
+  `--namespaces`, and hinted MCP validation use strict namespace handling.
+  The API signatures are unchanged, but documents that only matched by local
+  name now fail namespace-aware validation unless the caller opts into legacy
+  behavior. Use `mode=ParseModes.STRICT`, `mode=ParseModes.LAX`,
+  `BindingPolicy(namespaces="legacy")`, CLI `--namespaces legacy`, or MCP
+  compile options with `namespaces="legacy"` for the previous behavior.
+
 ## [1.3.1] - 2026-11-07
 
 ### Added

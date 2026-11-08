@@ -341,11 +341,10 @@ argument, so a value's expansion is fixed by how it was built:
 - the default is best-effort: a value constructed without a
   `qname_context` returns its lexical form, and a prefixed name whose
   prefix is missing from the context returns the bare local name, its
-  prefix dropped. **This includes every value bound in the default
-  (legacy) namespace mode** — only strict namespace mode resolves
-  `xs:QName` values, so `--namespaces strict` /
-  `ParseModes.NAMESPACED` is what makes expanded names available from
-  parsed documents;
+  prefix dropped. **This includes values bound in explicit legacy namespace
+  mode** — only strict namespace mode resolves `xs:QName` values, and
+  `ParseModes.NAMESPACED` / `--namespaces strict` are the defaults that make
+  expanded names available from parsed documents;
 - with `strict=True`, either inaccurate case raises `ValueError`
   naming the lexical value instead: an unresolved value (one built
   without a `qname_context`), or a prefixed value whose prefix the

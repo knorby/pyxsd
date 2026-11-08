@@ -118,6 +118,7 @@ Check the boundaries before adopting it: pyxsd builds a full instance tree,
 parses one document at a time per compiled `Schema`, and writes bound trees
 rather than providing a general Python/JSON-to-XML encoder. Some parsed
 complex-child descriptors require document queries. Namespace-aware binding
-is opt-in with `ParseModes.NAMESPACED`. For untrusted input, select parser
-protections and resource rules explicitly using {doc}`xml-security`;
-local-only loading is not filesystem confinement.
+is the default with `ParseModes.NAMESPACED`; explicit `ParseModes.STRICT`,
+`ParseModes.LAX`, or `--namespaces legacy` restores local-name matching. For
+untrusted input, select parser protections and resource rules explicitly using
+{doc}`xml-security`; local-only loading is not filesystem confinement.

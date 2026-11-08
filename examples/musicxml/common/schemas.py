@@ -19,7 +19,7 @@ from .sources import require_cache
 SCHEMA_SECTION = "musicxml-schema"
 
 #: Binding policy for the closure.
-MODE: BindingPolicy = ParseModes.LAX.replace(namespaces="strict")
+MODE: BindingPolicy = ParseModes.LAX_NAMESPACED
 
 
 def compile_schema(variant: str | None = None, *, fresh: bool = False) -> Schema:

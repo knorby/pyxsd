@@ -24,7 +24,7 @@ pyxsd [options]
 | `-T FILE` | `--transformFile` | File with transform calls, one per line. Mutually exclusive with `-t`. |
 | `-c FILE` | `--overlayClassesFile` | *Experimental.* Overlay class file that extends/overrides generated classes. |
 | `--mode` | | Binding mode: `strict` (default) reports invalid values and drops them; `lax` retains best-effort values (raw strings, generic subtrees), subject to fidelity limits. See {doc}`binding`. |
-| `--namespaces` | | Namespace handling: `legacy` (default) matches by local name and ignores namespace URIs; `strict` resolves QNames and matches by expanded name. See {doc}`binding`. |
+| `--namespaces` | | Namespace handling: `strict` (default) resolves QNames and matches by expanded name; `legacy` matches by local name and ignores namespace URIs for compatibility. See {doc}`binding`. |
 | `--xsd-version VERSION` | | XSD version to process: `1.1` (default) or `1.0`. In `1.0` mode the XSD 1.1-only vocabulary is rejected (`xsd11-construct`) and the 1.0/1.1 semantic differences are applied. See {doc}`supported`. |
 | `--emit-stubs [PATH]` | | Compile the schema and write a `.pyi` type stub for its generated classes to `PATH` — or to **stdout** when `PATH` is omitted — then exit without reading any XML input. Requires `-s`. See {doc}`api`. |
 | `--stubs-compact` | | Emit the compact, agent-oriented stub description instead of the full `.pyi` document. Requires `--emit-stubs`. |

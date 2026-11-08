@@ -122,9 +122,10 @@ limits and do not replace full XML validation.
 
 - **No encode.** There is no Python/JSON→XML serializer beyond writing a
   parsed `Document` back out.
-- **Legacy namespace mode is the default binding policy.** Strict namespace
-  handling is a distinct opt-in mode (`ParseModes.NAMESPACED`), which
-  surprises users who expect qualified names by default.
+- **Namespace-correct documents are the default expectation.** The default
+  `ParseModes.NAMESPACED` policy rejects documents that only matched by local
+  name; `ParseModes.STRICT`, `ParseModes.LAX`, and `--namespaces legacy` are
+  the explicit compatibility choices.
 - **Mixed content has limited structured export.**
   Interleaved text is kept verbatim in the bound tree (leading text in
   `_value_`, child tails in `_tail_`) and survives serialization and

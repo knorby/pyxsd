@@ -19,7 +19,7 @@ from .sources import require_cache
 SCHEMA_SECTION = "bpmn-schema"
 
 #: Binding policy for the closure.
-MODE: BindingPolicy = ParseModes.STRICT.replace(namespaces="strict")
+MODE: BindingPolicy = ParseModes.NAMESPACED
 
 
 def compile_schema(variant: str | None = None, *, fresh: bool = False) -> Schema:

@@ -6,7 +6,7 @@ from pyxsd.binding import ParseModes
 from .cda_datatypes import cda_extensions
 from .sources import cda_schema_path, fhir_schema_path
 
-MODE = ParseModes.LAX.replace(namespaces="strict")
+MODE = ParseModes.LAX_NAMESPACED
 
 
 def compile_cda(*, with_mixins: bool = True) -> Schema:

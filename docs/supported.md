@@ -114,9 +114,10 @@ exit codes, `require_valid()`, and the `ValidationReport` API for
 library users. `Schema.compile(..., mode=...)` / `--mode`
 selects how invalid or unrecognized content is **bound** (strict vs. lax)
 without changing what is **reported** — see {doc}`binding`. The same policy
-carries a `namespaces` field: `Schema.compile(...,
-mode=ParseModes.NAMESPACED)` or `--namespaces strict` turns on
-namespace-aware validation (the default is legacy local-name matching).
+carries a `namespaces` field. `ParseModes.NAMESPACED` and CLI
+`--namespaces strict` are the defaults; pass `ParseModes.STRICT`,
+`ParseModes.LAX`, or `--namespaces legacy` for explicit legacy local-name
+matching.
 
 ## Extending and typing generated classes
 
@@ -184,11 +185,11 @@ for expectation relationships and reviewed dispositions, and
 * - Namespace-aware schemas
   - `targetNamespace`, `elementFormDefault=qualified`
   - partial
-  - Opt-in in namespaced mode (`ParseModes.NAMESPACED` / `--namespaces strict`); the default legacy mode keeps local-name matching.
+  - Namespaced mode is the default (`ParseModes.NAMESPACED` / `--namespaces strict`); explicit legacy modes keep local-name matching.
 * - Wildcard namespace filtering
   - `processContents`, namespace lists
   - partial
-  - Enforced in namespaced mode (including `wildcard-no-declaration` under `strict`); legacy mode passes undeclared content through permissively.
+  - Enforced in namespaced mode (including `wildcard-no-declaration` under `strict`); explicit legacy modes pass undeclared content through permissively.
 * - General XPath in identity constraints
   - Expressions outside the XSD selector/field subset
   - unsupported
