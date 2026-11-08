@@ -357,6 +357,8 @@ strings, and an XSD list value occupies one array-valued content item:
 ```
 
 Here the schema identifies the content as an XSD list, not a child tag `a`.
+Consumers must understand this schema-typed extension to distinguish list
+values from nested element arrays; the array shape alone is insufficient.
 Empty simple string content is `["root", ""]`; empty complex content is
 `["root"]`. Nil adds one `null` content item after any attributes, with no
 other content: `["root", {"id": "r"}, null]`. It does not add `xsi:nil`.
@@ -384,6 +386,38 @@ BadgerFish `@xmlns` map). QName values and `xsi:type` reuse these bindings,
 including namespaces used only in values. An unresolved QName raises
 `namespace-unresolved` in both fidelity modes. Prefer namespace-aware
 binding so QName values retain their namespace context.
+
+## Interoperability
+
+Format names do not guarantee identical output across implementations.
+The per-format contract tests in `tests/test_data_export.py` compare selected
+fixtures with **xmlschema 4.3.2**, a development-only dependency. Those results
+are comparison evidence, not normative definitions or proof of general
+conformance. The export rules on this page define pyxsd's profiles:
+
+- **Native `pyxsd` and `pyxsd-json`:** xmlschema has no equivalent profiles.
+  Explicit expected-output fixtures pin native grouped mixed content and
+  profile 1's ordered sequence arrays instead.
+- **Parker:** the tested simple, repeated, ordered, nilled, and local-name
+  projections agree. Intentional differences include keeping mixed text
+  under `$` in best effort rather than dropping it, and using `{}` for empty
+  complex content where xmlschema's tested empty leaf uses `null`.
+- **BadgerFish:** the recursive fixture agrees, but pyxsd emits simple leaves
+  directly as typed scalars where xmlschema wraps them under `$`. pyxsd uses
+  boolean `@xsi:nil` and concatenates mixed text under `$` in best effort;
+  xmlschema's fixtures use lexical `"true"` and numbered `$1`/`$2` text keys.
+- **JsonML:** simple, attributed, repeated, ordered, and recursive fixtures
+  agree. pyxsd preserves mixed whitespace that xmlschema trims in the tested
+  fixture, and uses one `null` content item for nil rather than an `xsi:nil`
+  attribute. Consumers also need the schema-typed extension described above.
+
+In all three conventional formats, pyxsd keeps decimal `1.20` as `"1.20"`
+where xmlschema's comparison fixtures emit the number `1.2`. BadgerFish and
+JsonML use explicit deterministic prefixes with root-scoped declarations;
+the namespaced comparison fixtures use a default namespace in xmlschema.
+Check these scalar, nil, namespace, and mixed-content choices before passing
+exports to another implementation. Strict fidelity does not switch profiles
+or guarantee that another implementation accepts the result.
 
 ## Ordering and fidelity
 
@@ -439,4 +473,12 @@ attribute defaults are not added to the actual attribute map.
 Conversion errors carry reason codes such as `container-invalid` and a
 JSON Pointer path (RFC 6901); loss warnings carry them too. The empty pointer
 denotes the whole value.
+
+JsonML diagnostics are relative to the output array, not an XML tag path.
+A root container error uses `""`; a root attribute named `ref` uses `/1/ref`.
+Content starts at `/1` without an attribute object or `/2` with one, including
+an object added solely for root namespace declarations. A child at `/1` has
+its own attribute at `/1/1/ref`; its tag name is not a pointer segment.
+Object-key tokens escape `~` as `~0` and `/` as `~1`.
+
 Unknown format or fidelity names and inapplicable options raise `ValueError`.
