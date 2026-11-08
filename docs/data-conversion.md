@@ -2,7 +2,7 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Export bound XML as JSON-safe Python data or JSON text in native, schema-driven, Parker, BadgerFish, or JsonML formats with explicit fidelity rules.
+   :description: Export bound XML in five JSON formats and import schema-driven JSON into validated documents, with explicit scalar, namespace, and fidelity rules.
 ```
 
 `Document.to_data()` exports the bound tree as JSON-safe Python values.
@@ -23,6 +23,10 @@
 These exports need no optional dependencies. The {doc}`integrations`
 provide a separate Pydantic model projection and Arrow/Parquet records;
 their aliases and presence rules are not these document formats.
+
+`Schema.from_data()` and `Schema.from_json()` import `pyxsd-json` into an
+ordinary `Document`. Import currently supports **only `pyxsd-json`**; the
+other four formats are export-only.
 
 ## Export a document
 
@@ -79,6 +83,212 @@ a valid report. Call `require_valid()` when validity is a prerequisite, or
 follow {doc}`quickstart`'s `revalidate()` workflow after edits. A document
 without a bound root raises `PyXSDError`.
 
+## Import schema-driven JSON
+
+Both methods return a `Document` and have these signatures (`JsonValue` is
+a JSON-compatible Python value):
+
+```text
+Schema.from_data(
+    self, data: JsonValue, *, format: FormatName = "pyxsd-json",
+    element: str | None = None, namespaces: Mapping[str, str] | None = None,
+    fidelity: Fidelity = "strict",
+) -> Document
+
+Schema.from_json(
+    self, source: str | bytes | bytearray, *, format: FormatName = "pyxsd-json",
+    element: str | None = None, namespaces: Mapping[str, str] | None = None,
+    fidelity: Fidelity = "strict",
+) -> Document
+```
+
+`from_data()` accepts dictionaries with string keys, lists, strings,
+booleans, integers, finite floats, and `None`, subject to the selected
+layout and scalar rules below. The outer value must be a single-entry root
+dictionary. `from_json()` accepts JSON content as `str`, UTF-8 `bytes`, or
+`bytearray`. It does not open a filename, URL, `Path`, or file-like object;
+unsupported source types raise `TypeError`. Read files explicitly with
+`Path("data.json").read_text(encoding="utf-8")` or `.read_bytes()`, then pass
+the result to `from_json()`.
+
+JSON parsing rejects duplicate object keys at any depth, malformed JSON,
+non-UTF-8 bytes, and bare `NaN`, `Infinity`, or `-Infinity` tokens. XSD
+non-finite values instead use the JSON strings `"NaN"`, `"INF"`, and
+`"-INF"`.
+
+Import defaults to `fidelity="strict"`, unlike export's `"best-effort"`.
+For `pyxsd-json`, both modes use the same decoding rules: there are no
+best-effort fallbacks or loss warnings. Best effort does not coerce wrong
+scalar types, repair containers, discard content, or suppress validation.
+Unknown format or fidelity names raise `ValueError`; requesting import in
+`pyxsd`, `parker`, `badgerfish`, or `jsonml` raises `PyXSDError` with
+`schema-shape-unsupported`. Neither import method accepts `typed` or
+`always_list`; supplying them raises `TypeError`.
+
+### Round trip through a document
+
+Continuing the dates example above:
+
+```python
+restored = schema.from_data(data)
+restored.require_valid()
+assert restored.root is not None
+assert [str(date) for date in restored.root.date] == ["2026-01-01", "2026-02-01"]
+assert restored.to_data(format="pyxsd-json") == data
+
+for source in (text, text.encode("utf-8"), bytearray(text.encode("utf-8"))):
+    assert schema.from_json(source).to_data(format="pyxsd-json") == data
+
+xml = restored.to_string()
+reparsed = schema.parse(StringIO(xml))
+reparsed.require_valid()
+assert reparsed.to_data(format="pyxsd-json") == data
+checked = restored.revalidate()
+checked.require_valid()
+assert checked.to_data(format="pyxsd-json") == data
+```
+
+Import builds an ElementTree, records its namespace frames, and calls the
+normal `Schema.parse()` binder. The result exposes generated classes,
+datatype values, defaults, validation reports, transforms, and XML output
+just like an XML-parsed document. Empty lexical content can activate an
+element default; omitted attributes receive the binder's normal effective
+defaults. See {doc}`data-model` for attribute presence versus defaults.
+
+Round trips preserve represented values and order, not source bytes or
+every input spelling. Defaults may replace empty input, adjacent mixed-text
+strings merge, and export normalizes layout and scalar spellings.
+
+### Root selection
+
+The root key selects the global element, even when the compiled schema has
+multiple possible roots. It uses an EQName (`Q{uri}local`) or an
+unnamespaced local name, not a lexical prefix or Clark name. Omitting the
+root wrapper is an error, even for a schema with only one root. An empty
+or multi-entry object raises `root-ambiguous`; a non-object root raises
+`container-invalid`.
+
+The optional `element` confirms the carried root. It accepts a local name,
+Clark name (`{uri}local`), or EQName. A local selection must resolve
+unambiguously among global declarations (`name-ambiguous` otherwise).
+Selecting a substitution head also accepts its valid substitution members;
+a contradictory selection raises `root-mismatch`. `element` never renames
+the supplied root. An unknown carried root without a contradictory
+selection reaches the binder's `unknown-root` report and can return a
+document whose `root` is `None`.
+
+### Layouts and scalar input
+
+Import reads the `pyxsd-json` layouts described below:
+
+- Simple values use the fixed scalar policy, including decimal strings
+  and XSD-list arrays. A boolean is not an integer, and `1.0` is not an
+  integer input. There is no general lexical-string coercion: `"42"` does
+  not stand in for an integer JSON number.
+- List layouts create one child per array item, retaining each child's
+  attributes. Non-nil list-plus objects require their child-name array,
+  including `[]` when empty.
+- Record properties become children in schema order, regardless of JSON
+  object order. Sequence arrays retain supplied child order and
+  interleaving. Attribute maps must precede content; each child map has
+  exactly one entry.
+- Mixed arrays retain leading text, child elements, and tails. Adjacent
+  strings merge into one text region. In element-only sequence input,
+  whitespace-only strings are discarded; non-whitespace strings reach
+  normal content validation rather than disappearing.
+- `None`/`null` requests nil. Object and ordered layouts also accept their
+  `#content: null` markers as shown below. Nil cannot carry other content;
+  a non-nillable target is a validation problem, not a conversion failure.
+
+An explicit `@xsi:type` EQName selects the type before layout decoding,
+including promotion to a plus layout. Substitution members use their own
+declarations. Conditional type assignment happens in the normal binder;
+the subsequent export uses the selected effective type's layout.
+
+### Namespaces and QName values
+
+Element and attribute keys use EQNames, including names admitted through
+wildcards. A `namespaces` mapping seeds the root's inherited prefix-to-URI
+frame; it does not expand prefixed JSON keys or change the EQName contract.
+QName values, QName-list items, and `@xsi:type` values can carry their
+namespace directly as EQNames. Import translates these to lexical XML
+QNames and records inherited/generated bindings on every element before
+binding. Existing suitable prefixes are reused; generated prefixes avoid
+collisions. Original prefix spelling is not preserved.
+
+This complete example needs no caller-supplied prefix declarations:
+
+```python
+from io import StringIO
+
+import pyxsd
+
+qname_schema = pyxsd.compile(
+    StringIO("""
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:example">
+  <xs:element name="ref" type="xs:QName"/>
+</xs:schema>
+""")
+)
+qname_data = {"Q{urn:example}ref": "Q{urn:values}item"}
+qname_document = qname_schema.from_data(qname_data, element="{urn:example}ref")
+qname_document.require_valid()
+assert qname_document.to_data(format="pyxsd-json") == qname_data
+qname_copy = qname_schema.from_json(qname_document.to_json(format="pyxsd-json"))
+qname_copy.require_valid()
+assert qname_copy.to_data(format="pyxsd-json") == qname_data
+```
+
+QName JSON round trips retain expanded names. XML output has a current
+limitation: a generated QName-value prefix can collide with a prefix the
+XML writer assigns to an element name. A value-only namespace can then be
+lost or rebound in `to_string()` output. Check expanded QName values after
+reparsing XML; a valid report alone does not detect a changed namespace.
+
+The same schema must not import or parse concurrently or reentrantly.
+Separate `Schema` objects can compile and parse concurrently.
+
+### Conversion errors versus validation reports
+
+Conversion raises `PyXSDError` when a trustworthy tree cannot be built:
+for example, duplicate JSON keys (`json-duplicate-key`), malformed JSON
+(`json-invalid`), invalid names (`name-invalid`), wrong containers
+(`container-invalid`), wrong scalar types (`scalar-type-invalid`), or
+conflicting nil/content markers (`marker-conflict`). Diagnostics include a
+reason code and JSON Pointer path; the empty pointer identifies the whole
+input. JSON parsing errors use that empty pointer.
+
+Correctly shaped content still undergoes XSD validation. Invalid lexical
+strings for string-represented datatypes, missing required content,
+unknown children or attributes in decodable containers, unresolved actual
+types, and non-nillable nil requests reach `Document.report`. Import does
+not drop unknown content or automatically call `require_valid()`.
+Inspect the report, or call `require_valid()` to raise `ValidationError`.
+
+Using the dates schema from the first example:
+
+```python
+from pyxsd.exceptions import PyXSDError, ValidationError
+
+try:
+    schema.from_data({"dates": [5]})
+except PyXSDError as error:
+    assert "scalar-type-invalid at '/dates/0'" in str(error)
+else:
+    raise AssertionError("A date requires a JSON string")
+
+invalid = schema.from_data({"dates": ["not-a-date"]})
+assert invalid.root is not None
+assert invalid.report.has_errors
+try:
+    invalid.require_valid()
+except ValidationError:
+    pass
+else:
+    raise AssertionError("Invalid date content must fail validation")
+```
+
 ## Scalar values
 
 With the default `typed=True`, all five formats use these JSON-safe values:
@@ -133,8 +343,8 @@ This is profile 1. The root is always a single-entry object. Every
 namespaced element or attribute uses an EQName: `Q{uri}local`; an
 unnamespaced name stays `local`. Attributes add `@`, for example
 `@Q{urn:example}id`. Namespace declarations and source prefixes are not data.
-QName scalar values also use EQNames; unresolved QName namespace context
-raises `namespace-unresolved`, even in best-effort mode. Prefer the default
+QName scalar values also use EQNames; on export, unresolved QName namespace
+context raises `namespace-unresolved`, even in best-effort mode. Prefer the default
 namespace-aware binding; see {doc}`binding` for namespace modes.
 
 The effective bound type selects each layout, including types selected by
