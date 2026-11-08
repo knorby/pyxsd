@@ -626,25 +626,33 @@ def _parker_name_losses(
 ) -> None:
     """Reject a local child name the compiled schema cannot resolve uniquely."""
     plan_names = {child.name for child in plan.children}
-    reported: set[str] = set()
+    observed: dict[str, set[str]] = {}
     for child in children:
-        local = _local_name(_element_expanded_name(child))
-        if local in reported:
-            continue
-        candidates = {name for name in plan_names if _local_name(name) == local}
-        if not candidates:
-            candidates = {
-                element.expandedInstanceName()
-                for element in _global_elements(node)
-                if _local_name(element.expandedInstanceName()) == local
-            }
-        if len(candidates) > 1:
-            reported.add(local)
+        expanded = _element_expanded_name(child)
+        observed.setdefault(_local_name(expanded), set()).add(expanded)
+
+    globals_by_local: dict[str, set[str]] | None = None
+    for local, names in observed.items():
+        declared = {name for name in plan_names if _local_name(name) == local}
+        ambiguous = len(declared) > 1 or (len(declared) == 1 and names != declared)
+        relevant = declared | names
+        if not declared and len(names) > 1:
+            ambiguous = True
+        elif not declared and len(names) == 1:
+            if globals_by_local is None:
+                globals_by_local = {}
+                for element in _global_elements(node):
+                    expanded = element.expandedInstanceName()
+                    globals_by_local.setdefault(_local_name(expanded), set()).add(expanded)
+            global_names = globals_by_local.get(local, set())
+            relevant |= global_names
+            ambiguous = ambiguous or len(global_names) > 1
+        if ambiguous:
             _loss(
                 "name-ambiguous",
                 (*path, local),
                 f"Parker cannot reconstruct the local child name {local!r} "
-                f"from {sorted(candidates)!r}",
+                f"from {sorted(relevant)!r}",
                 fidelity,
             )
 

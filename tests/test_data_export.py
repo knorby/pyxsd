@@ -643,6 +643,22 @@ WILDCARD_NAMESPACED_SCHEMA = """\
   </xs:element>
 </xs:schema>"""
 
+PARKER_DECLARED_WILDCARD_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:example"
+           targetNamespace="urn:example"
+           elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item" type="xs:string" minOccurs="0"/>
+        <xs:any namespace="##other" minOccurs="0" maxOccurs="unbounded"
+                processContents="lax"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
 ORDERED_SCHEMA_FOR_PARKER = """\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="section">
@@ -1826,6 +1842,95 @@ def test_parker_best_effort_merges_a_local_name_collision():
 
     with pytest.warns(PyXSDWarning, match="name-ambiguous"):
         assert document.to_data(format="parker") == {"item": ["A", "B"]}
+
+
+def test_parker_strict_rejects_a_declared_wildcard_local_collision():
+    document = _compile(
+        PARKER_DECLARED_WILDCARD_SCHEMA,
+        '<t:root xmlns:t="urn:example" xmlns:o="urn:other">'
+        "<t:item>A</t:item><o:item>B</o:item></t:root>",
+    )
+
+    with pytest.raises(PyXSDError, match="name-ambiguous") as caught:
+        document.to_data(format="parker", fidelity="strict")
+
+    assert "/item" in str(caught.value)
+
+
+def test_parker_best_effort_warns_for_a_declared_wildcard_local_collision():
+    document = _compile(
+        PARKER_DECLARED_WILDCARD_SCHEMA,
+        '<t:root xmlns:t="urn:example" xmlns:o="urn:other">'
+        "<t:item>A</t:item><o:item>B</o:item></t:root>",
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert document.to_data(format="parker") == {"item": ["A", "B"]}
+
+    texts = _warning_texts(caught)
+    assert any("name-ambiguous" in text and "at '/item'" in text for text in texts)
+
+
+def test_parker_strict_rejects_a_lone_wildcard_with_a_declared_local_name():
+    document = _compile(
+        PARKER_DECLARED_WILDCARD_SCHEMA,
+        '<t:root xmlns:t="urn:example" xmlns:o="urn:other"><o:item>B</o:item></t:root>',
+    )
+
+    with pytest.raises(PyXSDError, match="name-ambiguous") as caught:
+        document.to_data(format="parker", fidelity="strict")
+
+    assert "/item" in str(caught.value)
+
+
+def test_parker_best_effort_warns_for_a_lone_wildcard_with_a_declared_local_name():
+    document = _compile(
+        PARKER_DECLARED_WILDCARD_SCHEMA,
+        '<t:root xmlns:t="urn:example" xmlns:o="urn:other"><o:item>B</o:item></t:root>',
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert document.to_data(format="parker") == {"item": "B"}
+
+    texts = _warning_texts(caught)
+    assert any("name-ambiguous" in text and "at '/item'" in text for text in texts)
+
+
+def test_parker_strict_rejects_a_wildcard_wildcard_local_collision():
+    document = _compile(
+        WILDCARD_NAMESPACED_SCHEMA,
+        '<root xmlns:a="urn:a" xmlns:b="urn:b"><a:x>1</a:x><b:x>2</b:x></root>',
+    )
+
+    with pytest.raises(PyXSDError, match="name-ambiguous") as caught:
+        document.to_data(format="parker", fidelity="strict")
+
+    assert "/x" in str(caught.value)
+
+
+def test_parker_best_effort_warns_for_a_wildcard_wildcard_local_collision():
+    document = _compile(
+        WILDCARD_NAMESPACED_SCHEMA,
+        '<root xmlns:a="urn:a" xmlns:b="urn:b"><a:x>1</a:x><b:x>2</b:x></root>',
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert document.to_data(format="parker") == {"x": ["1", "2"]}
+
+    texts = _warning_texts(caught)
+    assert any("name-ambiguous" in text and "at '/x'" in text for text in texts)
+
+
+def test_parker_accepts_distinct_wildcard_local_names():
+    document = _compile(
+        WILDCARD_NAMESPACED_SCHEMA,
+        '<root xmlns:a="urn:a" xmlns:b="urn:b"><a:x>1</a:x><b:y>2</b:y></root>',
+    )
+
+    assert document.to_data(format="parker", fidelity="strict") == {"x": "1", "y": "2"}
 
 
 def test_parker_strict_rejects_an_ambiguous_root(tmp_path):
