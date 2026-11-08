@@ -5,7 +5,7 @@
       <xs:element name="title" type="xs:string"/>
       <xs:any namespace="##any" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
     </xs:sequence>
-    <xs:anyAttribute namespace="##any"/>
+    <xs:anyAttribute namespace="##any" processContents="lax"/>
   </xs:complexType>
   <xs:element name="metadata" type="metadata"/>
 </xs:schema>

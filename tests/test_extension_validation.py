@@ -28,6 +28,8 @@ from pyxsd.validation import IssueSeverity, ValidationIssue
 
 XSD = "http://www.w3.org/2001/XMLSchema"
 NS = "http://example.com/u"
+ENDPOINT = f"{{{NS}}}endpoint"
+THING = f"{{{NS}}}thing"
 
 SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" xmlns:m="{NS}"
     targetNamespace="{NS}" elementFormDefault="qualified">
@@ -150,7 +152,7 @@ class TestBareSimpleTypeElement:
         issue = hook_issues[0]
         assert issue.severity is IssueSeverity.ERROR
         assert issue.phase == "instance"
-        assert issue.element == "endpoint"
+        assert issue.element == ENDPOINT
         assert issue.message == "the service URI 'relative/path' has no host"
         # Base anyURI validation ran intact: no base ``value`` issue.
         assert not [i for i in doc.report.issues if i.code == "value"]
@@ -165,7 +167,7 @@ class TestBareSimpleTypeElement:
         )
         hook_issues = [i for i in doc.report.issues if i.code == "extension-validation"]
         assert len(hook_issues) == 1
-        assert hook_issues[0].element == "endpoint"
+        assert hook_issues[0].element == ENDPOINT
         assert hook_issues[0].phase == "instance"
         assert mixin.calls == 1
 
@@ -206,7 +208,7 @@ class TestElementValueHook:
         assert issue.severity is IssueSeverity.ERROR
         assert issue.phase == "instance"
         # The element filled from the declaring element's name.
-        assert issue.element == "endpoint"
+        assert issue.element == ENDPOINT
         assert issue.message == "the service URI 'relative/path' has no host"
         # Base anyURI validation ran intact: the value is lexically
         # valid, so no base ``value`` issue was recorded.
@@ -284,7 +286,7 @@ class TestWarningSeverityPassthrough:
         assert len(kept) == 1
         assert kept[0].severity is IssueSeverity.WARNING
         assert kept[0].phase == "instance"
-        assert kept[0].element == "endpoint"
+        assert kept[0].element == ENDPOINT
         assert kept[0].message == "the service URI 'http://example.com/x' uses plain http"
         # No error string was returned for a URI with a host.
         assert not [i for i in doc.report.issues if i.code == "extension-validation"]
@@ -348,7 +350,7 @@ class TestHookExceptionIsolated:
         assert len(errors) == 1
         assert errors[0].severity is IssueSeverity.ERROR
         assert errors[0].phase == "instance"
-        assert errors[0].element == "endpoint"
+        assert errors[0].element == ENDPOINT
         assert "hook exploded" in errors[0].message
         # Binding continued: the root is present and its content bound.
         assert doc.root is not None
@@ -380,7 +382,7 @@ class TestReturnShapeNormalization:
         issue = errors[0]
         assert issue.severity is IssueSeverity.ERROR
         assert issue.phase == "instance"
-        assert issue.element == "endpoint"
+        assert issue.element == ENDPOINT
         assert f"unsupported finding of type {type_name}" in issue.message
         # The finding is unsupported, not an exception escaping the hook.
         assert "raised" not in issue.message
@@ -439,7 +441,7 @@ class TestReturnShapeNormalization:
         assert len(errors) == 1
         assert errors[0].severity is IssueSeverity.ERROR
         assert errors[0].phase == "instance"
-        assert errors[0].element == "endpoint"
+        assert errors[0].element == ENDPOINT
         assert "hook raised RuntimeError: generator exploded" in errors[0].message
         assert doc.root is not None
 
@@ -466,12 +468,12 @@ class TestUnionTypeHook:
         ext = Extensions()
         ext.for_type("IntOrStr", mixin=IntOrStrMixin)
         schema = Schema.compile(StringIO(UNION_SCHEMA), extensions=ext)
-        doc = schema.parse(StringIO('<m:thing xmlns:m="%s">abc</m:thing>'))
+        doc = schema.parse(StringIO(f'<m:thing xmlns:m="{NS}">abc</m:thing>'))
         hook_issues = [i for i in doc.report.issues if i.code == "extension-validation"]
         assert len(hook_issues) == 1
         assert hook_issues[0].severity is IssueSeverity.ERROR
         assert hook_issues[0].phase == "instance"
-        assert hook_issues[0].element == "thing"
+        assert hook_issues[0].element == THING
         assert hook_issues[0].message == "union value 'abc' is not all digits"
         # The union itself accepted 'abc' through the string member: no
         # base ``value`` error, and the value bound.
@@ -490,7 +492,7 @@ class TestUnionTypeHook:
         ext = Extensions()
         ext.for_type("IntOrStr", mixin=IntOrStrMixin)
         schema = Schema.compile(StringIO(UNION_SCHEMA), extensions=ext)
-        doc = schema.parse(StringIO('<m:thing xmlns:m="%s">42</m:thing>'))
+        doc = schema.parse(StringIO(f'<m:thing xmlns:m="{NS}">42</m:thing>'))
         assert not doc.report.issues
         assert calls == ["42"]
 

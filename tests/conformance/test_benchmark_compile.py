@@ -14,6 +14,8 @@ import pytest
 from tests.conformance.fetch import SCHEMAS, entry_point
 from tests.conformance.run import EXPECTED, run_benchmark
 
+from pyxsd.binding import ParseModes
+
 CEILING_SECONDS = 30
 
 
@@ -30,7 +32,7 @@ def test_benchmark_compiles_under_the_tripwire_ceiling(name):
         pytest.skip(
             f"benchmark schema '{name}' not downloaded; run python -m tests.conformance.fetch"
         )
-    row = run_benchmark(name, repeats=1)
+    row = run_benchmark(name, repeats=1, mode=ParseModes.STRICT)
     assert row["best_seconds"] < CEILING_SECONDS, (
         f"{name} compile exceeded the {CEILING_SECONDS}s tripwire: {row['best_seconds']:.3f}s"
     )

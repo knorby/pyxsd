@@ -18,7 +18,7 @@
 #   instance_valid  false => parsing the instance must report errors (default: true)
 #   expected_codes  report codes that must appear in the failing step
 #   expected_values dotted paths whose mapped values must equal the manifest
-#   mode            binding policy: legacy (default), lax, namespaced, namespaced-lax
+#   mode            binding policy: legacy (corpus default), lax, namespaced, namespaced-lax
 #   [case.files]    auxiliary schema files, keyed by name relative to schema.xsd
 
 [provenance]

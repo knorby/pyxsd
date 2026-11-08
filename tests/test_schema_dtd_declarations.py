@@ -456,6 +456,7 @@ def test_custom_resource_policy_stays_lexical_only(tmp_path: Path) -> None:
     document = parse(
         "memory:instance.xml",
         xsd=schema_path,
+        mode=ParseModes.STRICT,
         resource_policy=_MemoryPolicy(
             {"memory:instance.xml": instance, schema_path: _ENTITY_ROOT_XSD}
         ),

@@ -14,7 +14,7 @@ import pytest
 from tests.conformance.fetch import SCHEMAS, entry_point
 from tests.conformance.run import EXPECTED, errors_by_code
 
-from pyxsd import Schema
+from pyxsd import ParseModes, Schema
 
 
 def _available(name: str) -> bool:
@@ -30,7 +30,7 @@ def test_conformance_errors_match_pinned_tally(name):
         pytest.skip(
             f"conformance schema '{name}' not downloaded; run python -m tests.conformance.fetch"
         )
-    schema = Schema.compile(str(entry_point(name)))
+    schema = Schema.compile(str(entry_point(name)), mode=ParseModes.STRICT)
     expected = EXPECTED[name]
     if expected["classes"] is None:  # pragma: no cover - placeholder
         pytest.skip(f"conformance schema '{name}' outcome not yet pinned")

@@ -218,8 +218,9 @@ def register_tools(server: "MCPServer", services: "Services") -> None:
             view "overview" summarizes namespaces, roots, and counts; "compact"
             and "full" describe components (depth controls how deep those views
             go, not the overview); "constraints" shows value/model constraints;
-            "diagnostics" returns the schema compilation report and, for legacy
-            prefixed substitution heads, measured strict-namespace evidence.
+            "diagnostics" returns the schema compilation report and, for explicit
+            legacy references with prefixed substitution heads, measured
+            strict-namespace evidence.
             roots/entry_roots values are component IDs like
             "element:{namespace}name". Incomplete schemas may still be inspected
             so their missing pieces can be diagnosed.

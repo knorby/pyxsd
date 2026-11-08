@@ -24,9 +24,9 @@ HERE = Path(__file__).parent
 CASES_PATH = HERE / "conformance" / "cases.toml"
 UNSUPPORTED_PATH = HERE / "conformance" / "unsupported.toml"
 
-# Manifest ``mode`` value -> binding policy. ``legacy`` is the default and
-# keeps the historical no-namespace behavior; ``namespaced`` opts into the
-# strict XML Namespaces pipeline.
+# Manifest ``mode`` value -> binding policy. ``legacy`` is the corpus default
+# (independent of the library default) and keeps the historical no-namespace
+# behavior; ``namespaced`` opts into the strict XML Namespaces pipeline.
 MODE_PRESETS: dict[str, BindingPolicy] = {
     "legacy": ParseModes.STRICT,
     "lax": ParseModes.LAX,
@@ -36,7 +36,7 @@ MODE_PRESETS: dict[str, BindingPolicy] = {
 
 
 def case_mode(case: dict[str, Any]) -> BindingPolicy:
-    """Return the binding policy a case selects (default: legacy/strict)."""
+    """Return the binding policy a case selects (corpus default: legacy/strict)."""
     return MODE_PRESETS.get(case.get("mode", "legacy"), ParseModes.STRICT)
 
 

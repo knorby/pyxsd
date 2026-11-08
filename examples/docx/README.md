@@ -2,8 +2,9 @@
 
 Parse a realistic `word/document.xml` against the real ECMA-376
 WordprocessingML schema and render it as style-aware Markdown. This is the
-`examples/` proof that opt-in namespace support handles a large, genuine
-schema — the full OOXML schema set is roughly 26 files and 700 KB.
+`examples/` proof that namespace-aware support handles a large, genuine
+schema — the full OOXML schema set is roughly 26 files and 700 KB. The
+example states `--namespaces strict` explicitly, although it is the default.
 
 ## Fetch the schema
 

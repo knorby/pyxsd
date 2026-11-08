@@ -8,13 +8,13 @@
 name = "XML Namespaces"
 construct = "targetNamespace, elementFormDefault/attributeFormDefault, prefixed QNames"
 status = "partial"
-note = "Namespace-aware validation is opt-in via ParseModes.NAMESPACED (CLI --namespaces strict): component identity, form-default-aware instance matching, xsi:type and type/ref QName resolution, cross-namespace imports, wildcard namespace/processContents, qualified identity-constraint selectors, and QName value-space identity are honored. Legacy mode (the default) keeps local-name matching for backward compatibility."
+note = "Namespace-aware validation is the default via ParseModes.NAMESPACED (CLI --namespaces strict): component identity, form-default-aware instance matching, xsi:type and type/ref QName resolution, cross-namespace imports, wildcard namespace/processContents, qualified identity-constraint selectors, and QName value-space identity are honored. Explicit legacy modes (ParseModes.STRICT/LAX or --namespaces legacy) keep local-name matching for backward compatibility."
 
 [[feature]]
 name = "Wildcards with namespace filtering"
 construct = "xs:any / xs:anyAttribute processContents, namespace lists"
 status = "partial"
-note = "In namespaced mode, namespace lists (##any, ##other, ##local, ##targetNamespace, explicit URIs) and processContents (strict, lax, skip) are enforced, including the wildcard-no-declaration error under strict. Legacy mode continues to pass undeclared content through permissively."
+note = "In namespaced mode (the default), namespace lists (##any, ##other, ##local, ##targetNamespace, explicit URIs) and processContents (strict, lax, skip) are enforced, including the wildcard-no-declaration error under strict. Explicit legacy modes continue to pass undeclared content through permissively."
 
 [[feature]]
 name = "General XPath in identity constraints"

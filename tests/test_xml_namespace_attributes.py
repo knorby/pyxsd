@@ -139,7 +139,7 @@ class TestNamespaceOnlyXmlImport:
     <xs:attribute ref="t:id"/>
     <xs:attribute ref="xml:lang"/>
   </xs:complexType>
-  <xs:element name="root" type="Holder"/>
+  <xs:element name="root" type="t:Holder"/>
 </xs:schema>""",
         )
         assert _error_codes(schema) == []
@@ -288,7 +288,7 @@ class TestDuplicateUsesAcrossNamespaces:
   <xs:complexType name="div">
     <xs:attributeGroup ref="t:i18n"/>
   </xs:complexType>
-  <xs:element name="root" type="div"/>
+  <xs:element name="root" type="t:div"/>
 </xs:schema>""",
         )
         assert _error_codes(schema) == []
@@ -320,7 +320,7 @@ class TestDuplicateUsesAcrossNamespaces:
     <xs:attributeGroup ref="t:i18n"/>
     <xs:attribute ref="xml:lang"/>
   </xs:complexType>
-  <xs:element name="root" type="dup"/>
+  <xs:element name="root" type="t:dup"/>
 </xs:schema>""",
         )
         assert _error_codes(schema) == ["duplicate-attribute"]
