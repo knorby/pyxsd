@@ -13,7 +13,7 @@ import logging
 import os.path
 import warnings
 import weakref
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal
@@ -21,6 +21,7 @@ from xml.etree import ElementTree as ET
 
 from pyxsd.binding import ParseModes
 from pyxsd.cli import _load_module_from_file
+from pyxsd.data_conversion.contracts import Fidelity, FormatName, JsonValue
 from pyxsd.document import Document
 from pyxsd.dtd_declarations import (
     DocumentDeclarations,
@@ -690,6 +691,86 @@ class Schema:
         (the ``unknown-root`` issue records why).
         """
         return self._parse_instance(xml, xml_policy=xml_policy, xml_limits=xml_limits)
+
+    def from_data(
+        self,
+        data: JsonValue,
+        *,
+        format: FormatName = "pyxsd-json",
+        element: str | None = None,
+        namespaces: Mapping[str, str] | None = None,
+        fidelity: Fidelity = "strict",
+    ) -> "Document":
+        """Binds JSON-compatible *data* through the normal instance parser.
+
+        The data is converted to a Clark-named ElementTree with recorded
+        namespace frames and then bound by :meth:`parse`, so generated
+        classes, defaults, and the validation report behave exactly as
+        for an XML document. Conversion problems (malformed structure,
+        wrong containers, wrong scalar types, conflicting markers) raise
+        :class:`~pyxsd.exceptions.PyXSDError` before binding; content
+        problems land on the returned document's report.
+
+        - ``format`` - the data format contract; ``"pyxsd-json"`` is the
+          schema-driven profile this method documents.
+
+        - ``element`` - an optional local, Clark, or EQName spelling that
+          selects or confirms the global root.
+
+        - ``namespaces`` - an optional prefix-to-URI mapping used as the
+          root's inherited namespace frame.
+
+        - ``fidelity`` - ``"strict"`` or ``"best-effort"`` representation
+          handling; an unknown value raises ``ValueError``.
+        """
+        # Deferred like ``Document.to_data``: the conversion package is
+        # not needed for a cold XML-only import of this module.
+        from pyxsd.data_conversion.import_data import data_to_element
+
+        return self.parse(
+            data_to_element(
+                self,
+                data,
+                format=format,
+                element=element,
+                namespaces=namespaces,
+                fidelity=fidelity,
+            )
+        )
+
+    def from_json(
+        self,
+        source: str | bytes | bytearray,
+        *,
+        format: FormatName = "pyxsd-json",
+        element: str | None = None,
+        namespaces: Mapping[str, str] | None = None,
+        fidelity: Fidelity = "strict",
+    ) -> "Document":
+        """Binds JSON text (or UTF-8 bytes) through :meth:`from_data`.
+
+        *source* is JSON content, not a path; callers reading files use
+        ``Path.read_text()`` first. Parsing rejects duplicate object
+        keys and the non-standard ``NaN``/``Infinity`` constants before
+        any conversion, and the format name is validated before the
+        JSON is parsed. The remaining options and error behavior match
+        :meth:`from_data`.
+        """
+        from pyxsd.data_conversion.contracts import validate_fidelity, validate_format
+        from pyxsd.data_conversion.import_data import data_to_element, json_to_data
+
+        requested_format = validate_format(format)
+        validate_fidelity(fidelity)
+        return self.parse(
+            data_to_element(
+                self,
+                json_to_data(source),
+                format=requested_format,
+                element=element,
+                namespaces=namespaces,
+                fidelity=fidelity,
+            )
+        )
 
     def _parse_instance(
         self,
