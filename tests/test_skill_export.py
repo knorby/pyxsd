@@ -9,7 +9,7 @@ import pytest
 
 from pyxsd.skills import SkillInfo, export_skill, list_skills
 
-EXPECTED = {"pyxsd-development", "pyxsd-mcp", "pyxsd-xml-doctor"}
+EXPECTED = {"pyxsd-cli", "pyxsd-development", "pyxsd-mcp", "pyxsd-xml-doctor"}
 
 
 @pytest.mark.parametrize("declared", ["different-name", ""])

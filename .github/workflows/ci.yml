@@ -60,7 +60,12 @@ jobs:
           assert importlib.metadata.version("pyxsd") == pyxsd.__version__
           schema = pyxsd.compile(io.StringIO('<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="root" type="xs:string"/></xs:schema>'))
           assert schema.parse(io.StringIO("<root>installed</root>")).is_valid
-          assert len(list_skills()) == 3
+          assert {skill.name for skill in list_skills()} == {
+              "pyxsd-cli",
+              "pyxsd-development",
+              "pyxsd-mcp",
+              "pyxsd-xml-doctor",
+          }
           if os.environ["EXTRA"] == "mcp-all":
               assert importlib.util.find_spec("pyarrow") is not None
           else:

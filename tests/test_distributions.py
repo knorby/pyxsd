@@ -56,7 +56,7 @@ def test_built_distributions_have_complete_sources_and_bundled_skills(tmp_path):
     assert "4 passed" in result.stdout
     with zipfile.ZipFile(dist / f"pyxsd-{__version__}-py3-none-any.whl") as wheel:
         names = wheel.namelist()
-        for skill in ("pyxsd-development", "pyxsd-mcp", "pyxsd-xml-doctor"):
+        for skill in ("pyxsd-cli", "pyxsd-development", "pyxsd-mcp", "pyxsd-xml-doctor"):
             assert f"pyxsd/skills/{skill}/SKILL.md" in names
         entries = wheel.read(f"pyxsd-{__version__}.dist-info/entry_points.txt").decode()
         assert "pyxsd = pyxsd.__main__:main" in entries

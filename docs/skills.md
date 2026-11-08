@@ -6,6 +6,8 @@ environment without the optional MCP dependencies installed.
 
 ## Packaged skills
 
+- **pyxsd-cli** — use the command line without MCP: validate XML, control streams
+  and outputs, run trusted transforms, and emit full or compact schema stubs.
 - **pyxsd-development** — build Python bindings from XML Schemas: compile once,
   parse many, repair exact occurrences, and revalidate fresh.
 - **pyxsd-xml-doctor** — diagnose XML validation failures: read constraint
@@ -32,7 +34,7 @@ you name. There is no global home-directory install.
 ## Install with npx skills
 
 With Node.js 22.20 or newer, the [Vercel Skills CLI](https://github.com/vercel-labs/skills)
-discovers all three skills from the repository root. To inspect them without
+discovers all four skills from the repository root. To inspect them without
 installing anything:
 
 ```bash
@@ -58,12 +60,14 @@ for skill in list_skills():
 export_skill("pyxsd-xml-doctor", destination_dir)
 ```
 
-Skill bodies teach the workflows the test suite actually verifies: compiling
-a schema once and parsing many documents, locating the exact repeated-node
-occurrence an issue points at, repairing it, and revalidating the whole
-document fresh (a stale `require_valid` verdict describes the old bytes).
-The MCP skill covers local stdio session inputs, cursor-paginated issues, direct
-results, schema comparison, transform previews, retained output artifacts, and
+Skill bodies teach the workflows the test suite actually verifies: validating
+from the CLI with explicit output and exit-status rules, compiling a schema once
+and parsing many documents, locating the exact repeated-node occurrence an issue
+points at, repairing it, and revalidating the whole document fresh (a stale
+`require_valid` verdict describes the old bytes). The CLI skill works without
+optional dependencies and routes structured or occurrence-level work to Python
+or MCP. The MCP skill covers local stdio session inputs, cursor-paginated issues,
+direct results, schema comparison, transform previews, retained output artifacts, and
 how each falls back to the Python/CLI workflow when the server is not installed.
 
 ## Evaluation status

@@ -44,3 +44,25 @@ separate, user-approved trials. No implicit model spend is authorized here.
 10. **Missing-dependency fallback**: with `pyxsd[mcp]` not installed, the same
     tasks must fall back to the Python/CLI workflow without claiming MCP
     features are available.
+
+## pyxsd-cli
+
+These scenarios were recorded before the CLI skill was drafted. They exercise
+retrieval and application of CLI guidance without requiring an MCP server.
+
+11. **CI validity status**: validate an invalid document in automation. The
+    workflow must use `--strict` and distinguish a validation failure from a
+    fatal input error, while recognizing that a run without `--strict` can exit
+    zero despite validation findings.
+12. **Stream and file boundaries**: read XML from stdin with an explicit schema,
+    keep diagnostics on stderr, and direct data output to stdout or a named file
+    without creating a temporary input or overwriting the source document.
+13. **Schema-only inspection**: request full and compact stubs from an explicit
+    schema. The workflow must not read an instance or describe successful stub
+    emission as proof that the schema has no findings.
+14. **Trusted transform pipeline**: chain known transforms with `>` or read calls
+    from a transform file, retain pre-transform XML when requested, and state
+    that transform and overlay Python runs with the user's privileges.
+15. **Capability routing**: when a task needs structured reports, exact source
+    occurrences, programmatic tree edits, or retained artifacts, select the
+    Python API or MCP rather than inventing CLI flags.
