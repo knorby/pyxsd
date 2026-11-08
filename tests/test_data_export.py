@@ -787,6 +787,20 @@ def test_list_layout_rejects_observed_attributes():
         document.to_data(format="pyxsd-json")
 
 
+def test_list_layout_rejects_non_whitespace_text():
+    document = _compile(REPEATED_SCHEMA, "<dates>oops<date>2026-01-01</date></dates>")
+
+    with pytest.raises(PyXSDError, match="container-invalid"):
+        document.to_data(format="pyxsd-json")
+
+
+def test_list_layout_rejects_non_whitespace_child_tails():
+    document = _compile(REPEATED_SCHEMA, "<dates><date>2026-01-01</date>oops</dates>")
+
+    with pytest.raises(PyXSDError, match="container-invalid"):
+        document.to_data(format="pyxsd-json")
+
+
 def test_list_nil_is_null():
     document = _compile(
         REPEATED_NILABLE_SCHEMA,
@@ -850,6 +864,26 @@ def test_list_plus_nil_omits_the_child_array():
     }
 
 
+def test_list_plus_rejects_non_whitespace_text():
+    document = _compile(
+        REPEATED_ATTRIBUTE_SCHEMA,
+        '<dates source="known">oops<date>2026-01-01</date></dates>',
+    )
+
+    with pytest.raises(PyXSDError, match="container-invalid"):
+        document.to_data(format="pyxsd-json")
+
+
+def test_list_plus_rejects_non_whitespace_child_tails():
+    document = _compile(
+        REPEATED_ATTRIBUTE_SCHEMA,
+        '<dates source="known"><date>2026-01-01</date>oops</dates>',
+    )
+
+    with pytest.raises(PyXSDError, match="container-invalid"):
+        document.to_data(format="pyxsd-json")
+
+
 def test_record_uses_schema_order_and_omits_absent_children():
     document = _compile(RECORD_SCHEMA, '<root id="r"><b>B</b><a>A</a></root>')
 
@@ -889,6 +923,20 @@ def test_record_repeated_child_is_a_container_error():
 def test_record_unknown_child_is_a_container_error():
     document = _compile(RECORD_SCHEMA, "<root><a>A</a></root>")
     document.root._children_[0]._name_ = "unknown"
+
+    with pytest.raises(PyXSDError, match="container-invalid"):
+        document.to_data(format="pyxsd-json")
+
+
+def test_record_rejects_non_whitespace_text():
+    document = _compile(RECORD_SCHEMA, "<root>oops<a>A</a></root>")
+
+    with pytest.raises(PyXSDError, match="container-invalid"):
+        document.to_data(format="pyxsd-json")
+
+
+def test_record_rejects_non_whitespace_child_tails():
+    document = _compile(RECORD_SCHEMA, "<root><a>A</a>oops</root>")
 
     with pytest.raises(PyXSDError, match="container-invalid"):
         document.to_data(format="pyxsd-json")
@@ -1354,6 +1402,17 @@ def test_native_strict_accepts_an_explicit_nil_marker():
     )
 
     assert document.to_data(fidelity="strict") == {"empty": {"@xsi:nil": "true"}}
+
+
+def test_native_strict_accepts_an_xsi_type_only_empty_element():
+    document = _compile(
+        EMPTY_XSITYPE_SCHEMA,
+        '<t:root xmlns:t="urn:example" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:type="t:EmptyType"/>',
+    )
+
+    assert document.to_data(fidelity="strict") == {"@xsi:type": "t:EmptyType"}
 
 
 def test_native_strict_rejects_a_nil_state_without_its_marker():

@@ -118,7 +118,7 @@ def _check_native_strict(node: Any, path: tuple[str, ...]) -> None:
         )
 
     children = _content_children(node)
-    attributes = _usable_attribs(node)
+    attributes = getattr(node, "_attribs_", None) or {}
     nilled = _is_nil(node)
 
     if nilled and not _has_nil_marker(node):
@@ -245,11 +245,21 @@ def _export_node(node: Any, path: tuple[str | int, ...]) -> JsonValue:
                 path,
                 f"list layout for {_element_eqname(node)!r} has no attribute map",
             )
+        if _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"element-only list {_element_eqname(node)!r} cannot carry non-whitespace text",
+            )
         if nilled:
             return None
         return _list_values(node, plan, children, path)
 
     if layout is Layout.LIST_PLUS:
+        if _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"element-only list {_element_eqname(node)!r} cannot carry non-whitespace text",
+            )
         result = _attribute_map(node, type_name, sort=False)
         if nilled:
             result[CONTENT_KEY] = None
@@ -259,6 +269,11 @@ def _export_node(node: Any, path: tuple[str | int, ...]) -> JsonValue:
         return result
 
     if layout is Layout.RECORD:
+        if _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"element-only record {_element_eqname(node)!r} cannot carry non-whitespace text",
+            )
         result = _attribute_map(node, type_name, sort=False)
         if nilled:
             result[CONTENT_KEY] = None
