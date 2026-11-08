@@ -48,6 +48,19 @@ def _children(plan: LayoutPlan) -> list[tuple[str, int, int | None]]:
     return [(child.name, child.min_occurs, child.max_occurs) for child in plan.children]
 
 
+def _model_elements(particle) -> list[tuple[str, int, int | None]]:
+    """Flatten one compiled particle tree into its element occurrence list."""
+    elements: list[tuple[str, int, int | None]] = []
+    pending = [particle]
+    while pending:
+        current = pending.pop()
+        if current.kind == "element":
+            elements.append((current.name, current.min_occurs, current.max_occurs))
+        else:
+            pending.extend(reversed(current.children))
+    return elements
+
+
 EMPTY_SCHEMA = """\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="root">
@@ -128,6 +141,35 @@ DECLARED_SIMPLE_TYPE_SCHEMA = """\
     </xs:restriction>
   </xs:simpleType>
   <xs:element name="root" type="Code"/>
+</xs:schema>"""
+
+COMPLEX_DERIVATION_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="BaseType">
+    <xs:sequence>
+      <xs:element name="base" type="xs:string" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="ExtensionType">
+    <xs:complexContent>
+      <xs:extension base="BaseType">
+        <xs:sequence>
+          <xs:element name="own" type="xs:string" minOccurs="0" maxOccurs="2"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:complexType name="RestrictionType">
+    <xs:complexContent>
+      <xs:restriction base="BaseType">
+        <xs:sequence>
+          <xs:element name="base" type="xs:string" maxOccurs="2"/>
+        </xs:sequence>
+      </xs:restriction>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="extensionRoot" type="ExtensionType"/>
+  <xs:element name="restrictionRoot" type="RestrictionType"/>
 </xs:schema>"""
 
 ALL_SCHEMA = """\
@@ -715,6 +757,46 @@ def test_a_declared_simple_type_uses_simple_layouts():
     assert plan.has_wildcards is False
 
     assert plan_layout(simple_type, explicit_type=True).layout is Layout.SIMPLE_PLUS
+
+
+def test_complex_content_extension_plans_its_flattened_effective_model():
+    schema = pyxsd.Schema.compile(StringIO(COMPLEX_DERIVATION_SCHEMA))
+    assert not schema.report.errors, [str(error) for error in schema.report.errors]
+    base_type = schema.classes["BaseType"]
+    extension_type = _root_declaration(schema, "extensionRoot").getType()
+
+    # The planner reads only the class's own stamp, so a derived class must
+    # carry its effective composed model rather than inherit the base's.
+    assert "_contentModel_" in extension_type.__dict__
+    assert extension_type.__dict__["_contentModel_"] is not base_type.__dict__["_contentModel_"]
+    assert _model_elements(extension_type.__dict__["_contentModel_"]) == [
+        ("base", 1, None),
+        ("own", 0, 2),
+    ]
+
+    plan = plan_layout(extension_type)
+    assert plan.layout is Layout.SEQUENCE
+    assert _children(plan) == [("base", 1, None), ("own", 0, 2)]
+    assert plan.has_attributes is False
+    assert plan.has_wildcards is False
+
+
+def test_complex_content_restriction_plans_its_restricted_model():
+    schema = pyxsd.Schema.compile(StringIO(COMPLEX_DERIVATION_SCHEMA))
+    assert not schema.report.errors, [str(error) for error in schema.report.errors]
+    base_type = schema.classes["BaseType"]
+    restriction_type = _root_declaration(schema, "restrictionRoot").getType()
+
+    assert "_contentModel_" in restriction_type.__dict__
+    assert restriction_type.__dict__["_contentModel_"] is not base_type.__dict__["_contentModel_"]
+    assert _model_elements(base_type.__dict__["_contentModel_"]) == [("base", 1, None)]
+    assert _model_elements(restriction_type.__dict__["_contentModel_"]) == [("base", 1, 2)]
+
+    plan = plan_layout(restriction_type)
+    assert plan.layout is Layout.LIST
+    assert _children(plan) == [("base", 1, 2)]
+    assert plan.has_attributes is False
+    assert plan.has_wildcards is False
 
 
 # ---------------------------------------------------------------------------
