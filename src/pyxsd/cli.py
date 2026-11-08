@@ -315,6 +315,16 @@ def _materialize(
     return obj, args, kwargs
 
 
+def _is_json_transform_result(result: Any) -> bool:
+    """Whether a final transform result is written as JSON.
+
+    A mapping, list, string, number, boolean, or ``None`` is a JSON
+    result; any other value keeps the historic no-output pass-through
+    behavior.
+    """
+    return isinstance(result, (Mapping, list, str, int, float)) or result is None
+
+
 def _default_transform_output(xml_source: str | IO[str]) -> Path:
     """The default name for the transformed output (the ``-d`` flag).
 
@@ -685,7 +695,7 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 lastWasDocument = False
 
-        if transforms and (lastWasDocument or isinstance(lastResult, Mapping)):
+        if transforms and (lastWasDocument or _is_json_transform_result(lastResult)):
             transformOutput: str | Path = options.transformOutputFile
             if not transformOutput:
                 transformOutput = _default_transform_output(inputXmlFile)
@@ -696,11 +706,12 @@ def main(argv: list[str] | None = None) -> None:
             if lastWasDocument:
                 text = document.to_string()
             else:
-                # A mapping-returning transform (for example ``ToDict``, or
-                # the 3.15 builtin ``frozendict``) is rendered as JSON rather
-                # than XML. Convert to a plain dict first: ``json`` only
-                # learned to serialize arbitrary mappings in 3.15.
-                text = json.dumps(dict(lastResult), indent=2, default=str)
+                # A transform returning a mapping, list, or scalar (including
+                # None) is rendered as JSON rather than XML. Convert a mapping
+                # to a plain dict first: ``json`` only learned to serialize
+                # arbitrary mappings in 3.15.
+                payload = dict(lastResult) if isinstance(lastResult, Mapping) else lastResult
+                text = json.dumps(payload, indent=2, default=str)
             if transformOutput == "stdout":
                 sys.stdout.write(text)
             else:

@@ -102,13 +102,23 @@ def test_stream_input_default_transform_output(tmp_path, monkeypatch):
     assert (tmp_path / "output.xml").exists()
 
 
-def test_pass_through_final_transform_skips_output(tmp_path, monkeypatch):
-    """A last transform that does not return a tree skips the output write."""
+def test_scalar_final_transform_writes_json_output(tmp_path, monkeypatch):
+    """A last transform returning a string is a JSON scalar result."""
     monkeypatch.chdir(tmp_path)
     stage_fixture(tmp_path, "inventory")
     (tmp_path / "noop_probe.py").write_text("def NoopProbe(root):\n    return 'plain'\n")
-    output = tmp_path / "out.xml"
+    output = tmp_path / "out.json"
     main(["-i", "instance.xml", "-t", "NoopProbe()", "-o", str(output)])
+    assert json.loads(output.read_text(encoding="utf-8")) == "plain"
+
+
+def test_non_json_final_transform_still_skips_output(tmp_path, monkeypatch):
+    """A final result outside the JSON result types writes no output."""
+    monkeypatch.chdir(tmp_path)
+    stage_fixture(tmp_path, "inventory")
+    (tmp_path / "object_probe.py").write_text("def ObjectProbe(root):\n    return object()\n")
+    output = tmp_path / "out.xml"
+    main(["-i", "instance.xml", "-t", "ObjectProbe()", "-o", str(output)])
     assert not output.exists()
 
 

@@ -3665,3 +3665,214 @@ def test_export_cli_is_not_changed_here():
     # Task 3 adds no CLI surface; ToDict JSON output remains the existing path.
     document = _compile(NATIVE_SCHEMA, NATIVE_INSTANCE)
     assert json.loads(document.to_json()) == document.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# ToData transform and general CLI JSON results
+# ---------------------------------------------------------------------------
+
+
+def test_to_data_transform_matches_document_to_data():
+    from pyxsd.transforms import ToData
+
+    document = _compile(NATIVE_SCHEMA, NATIVE_INSTANCE)
+
+    assert document.transform(ToData()) == document.to_data()
+    assert document.transform(ToData(format="jsonml")) == document.to_data(format="jsonml")
+
+
+def test_to_data_transform_is_root_based():
+    from pyxsd.transforms import ToData
+
+    document = _compile(NATIVE_SCHEMA, NATIVE_INSTANCE)
+
+    assert ToData(format="jsonml")(document.root) == document.to_data(format="jsonml")
+    assert ToData(document.root, format="badgerfish")() == document.to_data(format="badgerfish")
+
+
+def test_to_data_transform_call_keywords_override_construction():
+    from pyxsd.transforms import ToData
+
+    document = _compile(NATIVE_SCHEMA, NATIVE_INSTANCE)
+
+    assert document.transform(ToData(format="badgerfish"), format="jsonml") == document.to_data(
+        format="jsonml"
+    )
+    assert document.transform(ToData(always_list=True), always_list=False) == document.to_data()
+
+
+def test_to_data_transform_rejects_invalid_options():
+    from pyxsd.transforms import ToData
+
+    document = _compile(NATIVE_SCHEMA, NATIVE_INSTANCE)
+
+    with pytest.raises(ValueError, match="unknown data format"):
+        document.transform(ToData(format="xml"))
+    with pytest.raises(ValueError, match="unknown fidelity mode"):
+        document.transform(ToData(fidelity="lossy"))
+    with pytest.raises(ValueError, match="native-only"):
+        document.transform(ToData(format="pyxsd-json", typed=False))
+
+
+def test_to_data_transform_without_a_bound_root_raises():
+    from pyxsd.transforms import ToData
+
+    document = pyxsd.Schema.compile(StringIO(NATIVE_SCHEMA)).parse(StringIO("<memo/>"))
+
+    with pytest.raises(PyXSDError, match="no root"):
+        document.transform(ToData())
+
+
+def _stage_data_cli_fixture(tmp_path):
+    schema = tmp_path / "schema.xsd"
+    instance = tmp_path / "instance.xml"
+    schema.write_text(NATIVE_SCHEMA, encoding="utf-8")
+    instance.write_text(NATIVE_INSTANCE, encoding="utf-8")
+    return schema, instance
+
+
+SCALAR_PROBE = """\
+import math
+
+
+def ScalarProbe(root, kind):
+    values = {
+        "none": None,
+        "true": True,
+        "false": False,
+        "integer": 7,
+        "float": 1.25,
+        "infinite": math.inf,
+        "not-a-number": math.nan,
+        "string": "plain",
+        "list": ["a", 1, None],
+        "mapping": {"a": 1},
+    }
+    return values[kind]
+"""
+
+
+def _write_scalar_probe(tmp_path):
+    (tmp_path / "scalar_probe.py").write_text(SCALAR_PROBE, encoding="utf-8")
+
+
+def test_cli_to_data_writes_the_document_export(tmp_path, capsys):
+    from pyxsd.cli import main
+
+    schema, instance = _stage_data_cli_fixture(tmp_path)
+    document = _compile(NATIVE_SCHEMA, NATIVE_INSTANCE)
+
+    main(["-i", str(instance), "-s", str(schema), "-t", 'ToData(format="jsonml")'])
+
+    assert json.loads(capsys.readouterr().out) == document.to_data(format="jsonml")
+
+
+def test_cli_to_data_native_output_matches_document(tmp_path, capsys):
+    from pyxsd.cli import main
+
+    schema, instance = _stage_data_cli_fixture(tmp_path)
+    document = _compile(NATIVE_SCHEMA, NATIVE_INSTANCE)
+
+    main(["-i", str(instance), "-s", str(schema), "-t", "ToData()"])
+
+    assert json.loads(capsys.readouterr().out) == document.to_data()
+
+
+def test_cli_to_data_scalar_and_null_results_are_json_output(tmp_path, capsys):
+    from pyxsd.cli import main
+
+    schema = tmp_path / "schema.xsd"
+    instance = tmp_path / "instance.xml"
+    schema.write_text(
+        """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="simple" type="xs:int"/>
+  <xs:element name="nillable" type="xs:string" nillable="true"/>
+</xs:schema>""",
+        encoding="utf-8",
+    )
+
+    instance.write_text("<simple>42</simple>", encoding="utf-8")
+    main(["-i", str(instance), "-s", str(schema), "-t", 'ToData(format="parker")'])
+    assert json.loads(capsys.readouterr().out) == 42
+
+    instance.write_text(
+        '<nillable xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/>',
+        encoding="utf-8",
+    )
+    main(["-i", str(instance), "-s", str(schema), "-t", 'ToData(format="parker")'])
+    assert json.loads(capsys.readouterr().out) is None
+
+
+def test_cli_to_data_reports_invalid_options(tmp_path, capsys):
+    from pyxsd.cli import main
+
+    schema, instance = _stage_data_cli_fixture(tmp_path)
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["-i", str(instance), "-s", str(schema), "-t", 'ToData(fidelity="lossy")'])
+
+    assert excinfo.value.code == 1
+    assert "unknown fidelity mode" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("none", None),
+        ("true", True),
+        ("false", False),
+        ("integer", 7),
+        ("float", 1.25),
+        ("string", "plain"),
+        ("list", ["a", 1, None]),
+        ("mapping", {"a": 1}),
+    ],
+)
+def test_scalar_transform_final_result_is_json_output(tmp_path, capsys, kind, expected):
+    from pyxsd.cli import main
+
+    schema, instance = _stage_data_cli_fixture(tmp_path)
+    _write_scalar_probe(tmp_path)
+
+    main(["-i", str(instance), "-s", str(schema), "-t", f'ScalarProbe(kind="{kind}")'])
+
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed == expected
+    assert type(parsed) is type(expected)
+
+
+def test_scalar_transform_non_finite_float_uses_json_dumps_spelling(tmp_path, capsys):
+    from pyxsd.cli import main
+
+    schema, instance = _stage_data_cli_fixture(tmp_path)
+    _write_scalar_probe(tmp_path)
+
+    main(["-i", str(instance), "-s", str(schema), "-t", 'ScalarProbe(kind="infinite")'])
+    assert capsys.readouterr().out.strip() == "Infinity"
+
+    main(["-i", str(instance), "-s", str(schema), "-t", 'ScalarProbe(kind="not-a-number")'])
+    assert capsys.readouterr().out.strip() == "NaN"
+
+
+def test_scalar_transform_result_is_written_to_a_file(tmp_path):
+    from pyxsd.cli import main
+
+    schema, instance = _stage_data_cli_fixture(tmp_path)
+    _write_scalar_probe(tmp_path)
+    output = tmp_path / "result.json"
+
+    main(
+        [
+            "-i",
+            str(instance),
+            "-s",
+            str(schema),
+            "-t",
+            'ScalarProbe(kind="string")',
+            "-o",
+            str(output),
+        ]
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8")) == "plain"
