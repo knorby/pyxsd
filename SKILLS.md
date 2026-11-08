@@ -6,6 +6,7 @@ optional MCP dependencies.
 
 | Skill | Purpose |
 | --- | --- |
+| `pyxsd-cli` | Use the command line without MCP — validate XML, control streams and outputs, run trusted transforms, and emit schema stubs. |
 | `pyxsd-development` | Build Python bindings from XML Schemas — compile once, parse many, repair exact occurrences, revalidate fresh. |
 | `pyxsd-xml-doctor` | Diagnose validation failures — read constraint evidence, fix the exact occurrence, revalidate the whole document. |
 | `pyxsd-mcp` | Drive pyxsd through local stdio MCP — session inputs, paginated issues, direct results, transform previews, exports, and retained local outputs. |
@@ -25,7 +26,7 @@ available through MCP resources and the official skills extension.
 ## Install with npx skills
 
 With Node.js 22.20 or newer, the [Vercel Skills CLI](https://github.com/vercel-labs/skills)
-discovers all three skills from the repository root. Discovery is read-only:
+discovers all four skills from the repository root. Discovery is read-only:
 
 ```bash
 npx skills add https://github.com/knorby/pyxsd --list
