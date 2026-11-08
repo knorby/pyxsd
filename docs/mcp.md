@@ -207,6 +207,10 @@ artifacts.
 }
 ```
 
+`CompileOptions` defaults to lax value retention with strict namespace handling,
+matching the Python and CLI defaults. To match historical local names, set
+`"namespaces": "legacy"` on that schema reference explicitly.
+
 References contain only a path. There are no input revisions, leases, owners, or
 revision pins. Each operation copies the current uploaded set into a private
 temporary capture, verifies its manifest, and deletes it when the operation ends.
@@ -365,10 +369,13 @@ repair. Unrecognized issue codes return `known: false` and no curated actions.
 ```
 
 The result contains the complete schema report, a `recommendations` list, and
-`namespace_probe`. When a legacy report contains a prefixed
-`unknown-substitution-head`, the server compiles the same captured schema once
-with strict namespaces solely to measure the alternative. It does not change
-the requested reference or reuse the strict schema for the current operation.
+`namespace_probe`. The probe measures a legacy reference against the default
+strict behavior, so it runs only when the request sets `"namespaces": "legacy"`
+explicitly and the report contains a prefixed `unknown-substitution-head`. The
+server compiles the same captured schema once with strict namespaces solely to
+measure the alternative. It does not change the requested reference or reuse
+the strict schema for the current operation. A default strict reference emits
+no probe because there is no alternative to measure.
 
 A successful probe reports current and alternative error/warning counts and
 issue-code counts, plus codes introduced and resolved by strict mode. A
@@ -380,9 +387,9 @@ explicitly. If the alternate compile fails, `namespace_probe.status` is
 recommendation list remain available.
 
 Use `pyxsd_explain_issue` for curated `unknown-substitution-head` checks
-(prefix bindings and declaration identity) before changing namespace options.
-Strict namespaces are not a remedy for `xsd:element ref` navigation or complex
-child access; those remain separate declaration-path concerns.
+(prefix bindings and declaration identity) before opting into legacy namespace
+handling. Strict namespaces are not a remedy for `xsd:element ref` navigation or
+complex child access; those remain separate declaration-path concerns.
 
 ### Batch validation
 
@@ -635,10 +642,10 @@ page/issue/list bounds still apply; omitted ones are unlimited.
 | Transform source / pipeline steps | 64 KiB / 32 |
 | Corpus files / file validation budget | 100 / 10 seconds |
 
-Compilation and binding choices are explicit per schema reference: XSD 1.0 or 1.1,
-strict or lax best-effort binding, and legacy or strict namespace handling.
-Serialized XML is UTF-8, and preview byte diffs report serialization-only changes
-rather than hiding them.
+Compilation and binding choices are explicit per schema reference: XSD 1.0 or
+1.1, strict or lax value retention, and strict (default) or legacy namespace
+handling. Serialized XML is UTF-8, and preview byte diffs report
+serialization-only changes rather than hiding them.
 
 The local subprocess runtime is not a sandbox for untrusted Python. Remote or
 untrusted-code execution is not included. See {doc}`mcp-deployment` for the

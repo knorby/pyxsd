@@ -64,11 +64,12 @@ execution or Arrow features — check `adapters.arrow.available` and
 5. `pyxsd_explain_issue` gives curated guidance. Pass the retained report
    artifact to inspect one exact issue; reports remain readable after session
    inputs are released.
-6. Before changing namespace options, call `pyxsd_inspect_schema` with
-   `view: "diagnostics"` and inspect `namespace_probe`. It compiles a strict
-   alternative only to measure it; use the returned replacement `schema_ref`
-   only when a recommendation is present. Strict namespaces do not fix
-   `xsd:element ref` navigation or complex-child access.
+6. When a schema reference explicitly uses `"namespaces": "legacy"`, call
+   `pyxsd_inspect_schema` with `view: "diagnostics"` and inspect
+   `namespace_probe`. It compiles the default strict handling only to measure
+   the alternative; use the returned replacement `schema_ref` only when a
+   recommendation is present. Default strict references emit no probe. Strict
+   namespaces do not fix `xsd:element ref` navigation or complex-child access.
 7. `pyxsd_manage_workspace` with `action: "release"` removes only session inputs.
    It never deletes retained artifacts.
 

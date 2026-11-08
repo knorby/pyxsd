@@ -1301,8 +1301,8 @@ def match_content_associations(
     """Matches children and reports which particle admitted each node.
 
     ``name_of`` extracts the name an instance node is matched by: the
-    local name in legacy mode (the default) or the expanded tag in
-    strict namespace mode. ``namespace_checked`` turns on namespace
+    local name in explicit legacy mode or the expanded tag in strict
+    namespace mode, the default. ``namespace_checked`` turns on namespace
     checking for wildcard particles (strict namespace mode); in legacy
     mode a wildcard absorbs any name no declared particle claims.
     ``defined`` supplies the schema's top-level declaration names for
