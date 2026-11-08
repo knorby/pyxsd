@@ -27,6 +27,7 @@ from pyxsd.validation import ValidationReport
 from pyxsd.writers.xml_tree_writer import XmlTreeWriter
 
 if TYPE_CHECKING:
+    from pyxsd.data_conversion.contracts import Fidelity, FormatName, JsonValue
     from pyxsd.dtd_declarations import DocumentDeclarations
     from pyxsd.schema import Schema
 
@@ -125,7 +126,7 @@ class Document:
         return output.getvalue()
 
     def to_dict(self, *, typed: bool = True, always_list: bool = False) -> dict:
-        """Returns the bound tree as a plain dict.
+        """Returns the bound tree as a plain dict with raw Python scalars.
 
         The export convention (child element keys, ``@`` attributes, the
         ``$`` text key, repeated children as lists) is documented in
@@ -136,6 +137,9 @@ class Document:
         ``_tail_``, concatenated. The dict shape cannot represent
         text/element interleaving; :meth:`to_string` and :meth:`xpath`
         are the faithful mixed-content views.
+
+        This is the raw native interface: typed values remain the bound
+        XSD scalar objects. :meth:`to_data` is its JSON-safe counterpart.
         """
         if self.root is None:
             raise PyXSDError("the document has no root to export")
@@ -145,14 +149,60 @@ class Document:
 
         return bound_to_dict(self.root, typed=typed, always_list=always_list)
 
-    def to_json(self, *, indent: int | None = None, **to_dict_kwargs: Any) -> str:
-        """Returns :meth:`to_dict` encoded as JSON text.
+    def to_data(
+        self,
+        *,
+        format: FormatName = "pyxsd",
+        fidelity: Fidelity = "best-effort",
+        typed: bool = True,
+        always_list: bool = False,
+    ) -> JsonValue:
+        """Returns the bound tree under an explicit JSON data contract.
 
-        Keyword arguments are forwarded to :meth:`to_dict`. Values the
-        JSON encoder cannot represent natively (for example a
-        ``decimal.Decimal``) are encoded as strings.
+        ``format="pyxsd"`` keeps the native :meth:`to_dict` structure and
+        converts its scalars to JSON-safe values. ``format="pyxsd-json"``
+        uses the compiled schema's layout and the root-preserving
+        ``Q{uri}local`` profile. ``typed`` and ``always_list`` are
+        native-only options; another format rejects a non-default value
+        with ``ValueError``.
         """
-        return json.dumps(self.to_dict(**to_dict_kwargs), indent=indent, default=str)
+        if self.root is None:
+            raise PyXSDError("the document has no root to export")
+        # Deferred for the same cold-import reason as ``to_dict``.
+        from pyxsd.data_conversion.export import bound_to_data
+
+        return bound_to_data(
+            self.root,
+            format=format,
+            fidelity=fidelity,
+            typed=typed,
+            always_list=always_list,
+        )
+
+    def to_json(
+        self,
+        *,
+        indent: int | None = None,
+        format: FormatName = "pyxsd",
+        fidelity: Fidelity = "best-effort",
+        typed: bool = True,
+        always_list: bool = False,
+    ) -> str:
+        """Returns :meth:`to_data` encoded as standards-compliant JSON text.
+
+        No fallback serializer is used: every value is already JSON-safe
+        and non-finite floats use their ``INF``/``-INF``/``NaN`` strings.
+        """
+        return json.dumps(
+            self.to_data(
+                format=format,
+                fidelity=fidelity,
+                typed=typed,
+                always_list=always_list,
+            ),
+            indent=indent,
+            allow_nan=False,
+        )
 
     def transform(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Document | Any:
         """Applies *fn* to the bound tree.
