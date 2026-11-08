@@ -32,7 +32,7 @@ from pyxsd.validation import ValidationReport
 from pyxsd.version_gates import check_xsd10_vocabulary
 from pyxsd.versioning import apply_conditional_inclusion
 from pyxsd.wildcards import WildcardSpec, _namespace_constraint
-from pyxsd.writers.xml_tree_writer import XmlTreeWriter, _display_attribute
+from pyxsd.writers.xml_tree_writer import XmlTreeWriter, _display_attribute, _respelled_qname
 from pyxsd.xpath_assertions import _CTAChecker
 from pyxsd.xpath_subset import (
     XPathError,
@@ -290,6 +290,18 @@ def test_gate_skips_comments_foreign_elements_and_non_string_attribute_names():
 
 def test_display_attribute_leaves_a_foreign_clark_name_alone():
     assert _display_attribute("{urn:x}a", None) == "{urn:x}a"
+
+
+def test_respelled_qname_without_a_prefix_for_its_namespace_is_none():
+    # A caller-supplied prefix map may not bind the value's namespace;
+    # the value is then left in its recorded spelling rather than
+    # mis-spelled against another prefix.
+    from pyxsd.xsd_data_types import QName, qname_context
+
+    with qname_context({"v": "urn:values"}):
+        value = QName("v:att")
+    assert _respelled_qname(value, {"urn:other": "ns0"}) is None
+    assert _respelled_qname("plain", {"urn:other": "ns0"}) is None
 
 
 def test_display_attribute_uses_the_implicit_xml_prefix():

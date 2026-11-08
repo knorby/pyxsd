@@ -41,6 +41,7 @@ from typing import IO, Any
 from pyxsd import xsi
 from pyxsd.namespaces import XML_NS
 from pyxsd.writers.xml_tag_writer import XmlTagWriter, _escape_text
+from pyxsd.xsd_data_types import QName, XsdList
 
 
 def _clark_uri(name: str) -> str | None:
@@ -48,6 +49,114 @@ def _clark_uri(name: str) -> str | None:
     if isinstance(name, str) and name.startswith("{"):
         return name[1:].split("}", 1)[0]
     return None
+
+
+def _resolved_qname_uri(value: Any) -> str | None:
+    """The namespace URI a resolved QName value carries, or ``None``."""
+    if isinstance(value, QName) and value._resolved_ and value._uri_:
+        return value._uri_
+    return None
+
+
+def _qname_value_uris(value: Any) -> list[str]:
+    """Namespace URIs used by resolved QName values inside *value*.
+
+    A simple-content element carries its typed value on the instance
+    itself (a QName subclass); an ``xs:list`` value carries it on its
+    items. Values built without a resolution context never contribute:
+    their namespace is unknown, not merely undeclared.
+    """
+    uris: list[str] = []
+    uri = _resolved_qname_uri(value)
+    if uri is not None:
+        uris.append(uri)
+    if isinstance(value, XsdList):
+        for item in value:
+            uri = _resolved_qname_uri(item)
+            if uri is not None:
+                uris.append(uri)
+    return uris
+
+
+def _respelled_qname(value: Any, prefix_map: dict[str, str]) -> str | None:
+    """A writer-prefixed spelling for a resolved QName, or ``None``."""
+    uri = _resolved_qname_uri(value)
+    if uri is None:
+        return None
+    prefix = prefix_map.get(uri)
+    if prefix is None:
+        return None
+    return f"{prefix}:{value._local_}"
+
+
+def _respelled_lexical(value: Any, prefix_map: dict[str, str]) -> str | None:
+    """A writer-prefixed spelling for a QName or QName-list value.
+
+    Returns ``None`` when *value* holds no resolved QName, so callers
+    keep the recorded lexical content. An ``xs:list`` re-spells its
+    resolved items and keeps unresolved ones verbatim.
+    """
+    spelled = _respelled_qname(value, prefix_map)
+    if spelled is not None:
+        return spelled
+    if isinstance(value, XsdList):
+        parts: list[str] = []
+        respelled = False
+        for item in value:
+            item_spelling = _respelled_qname(item, prefix_map)
+            if item_spelling is None:
+                parts.append(str(item))
+            else:
+                parts.append(item_spelling)
+                respelled = True
+        if respelled:
+            return " ".join(parts)
+    return None
+
+
+def _typed_attribute(element: Any, key: str) -> Any:
+    """The typed value stored for one declared attribute, or ``None``.
+
+    ``_attribs_`` holds lexical strings; the declaration's converted
+    value (a resolved QName for ``xs:QName`` uses) is stored under the
+    descriptor's storage key. Wildcard and XSI attributes have no
+    declaration and return ``None``.
+    """
+    getter = getattr(element, "descAttributes", None)
+    if not callable(getter):
+        return None
+    for storage, descriptor in getter().items():
+        if key == storage or key == getattr(descriptor, "expandedName", None):
+            return element.__dict__.get(storage)
+    return None
+
+
+def _display_content(element: Any, value: Any, prefix_map: dict[str, str]) -> Any:
+    """Re-spell an element's QName content with the writer's prefixes.
+
+    The recorded ``_value_`` holds the input's lexical spelling, whose
+    prefixes the output may not declare (a value-only namespace) or may
+    reuse for a different namespace. A resolved QName element or
+    ``xs:list`` is rewritten with the writer's prefixes; unresolved
+    values, plain strings, and multi-entry mixed values pass through
+    unchanged.
+    """
+    if value is None:
+        return None
+    if isinstance(value, list) and len(value) != 1:
+        return value
+    spelled = _respelled_lexical(element, prefix_map)
+    if spelled is None:
+        return value
+    return [spelled] if isinstance(value, list) else spelled
+
+
+def _display_attribute_value(typed: Any, raw: Any, prefix_map: dict[str, str]) -> Any:
+    """Re-spell a QName attribute value with the writer's prefixes."""
+    if typed is None:
+        return raw
+    spelled = _respelled_lexical(typed, prefix_map)
+    return spelled if spelled is not None else raw
 
 
 def _display_name(name: str, prefix_map: dict[str, str]) -> str:
@@ -139,10 +248,19 @@ class XmlTreeWriter:
             uri = _clark_uri(getattr(element, "_name_", ""))
             if uri and uri not in uris:
                 uris.append(uri)
-            for key in getattr(element, "_attribs_", {}):
+            # Namespaces used only by QName values must be declared in
+            # the output too, or the value's prefix would resolve
+            # differently (or not at all) when the output is reparsed.
+            for value_uri in _qname_value_uris(element):
+                if value_uri not in uris:
+                    uris.append(value_uri)
+            for key, _raw in getattr(element, "_attribs_", {}).items():
                 uri = _clark_uri(xsi.xsi_attr_key(key))
                 if uri and uri not in uris:
                     uris.append(uri)
+                for value_uri in _qname_value_uris(_typed_attribute(element, key)):
+                    if value_uri not in uris:
+                        uris.append(value_uri)
             for child in getattr(element, "_children_", []):
                 visit(child)
 
@@ -208,6 +326,8 @@ class XmlTreeWriter:
         children = element._children_
         attribs: dict[str, str] = {}
         for key, value in element._attribs_.items():
+            if prefix_map is not None:
+                value = _display_attribute_value(_typed_attribute(element, key), value, prefix_map)
             attribs[_display_attribute(key, prefix_map)] = value
 
         if tabs == 0:
@@ -224,6 +344,8 @@ class XmlTreeWriter:
                 attribs["xmlns:xsi"] = xsi.XSI_NAMESPACE
 
         value = element._value_
+        if prefix_map is not None:
+            value = _display_content(element, value, prefix_map)
         hasChildren = bool(children)
 
         if len(children) == 1 and children[0]._name_ == "_comment_":

@@ -716,6 +716,134 @@ class TestQNameValueSemantics:
         assert xsd_value_key(QName("p:a")) == ("QName", "p:a")
 
 
+_QNAME_VALUE_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
+    targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:simpleType name="QNameList">
+    <xs:list itemType="xs:QName"/>
+  </xs:simpleType>
+  <xs:simpleType name="StringList">
+    <xs:list itemType="xs:string"/>
+  </xs:simpleType>
+  <xs:complexType name="Holder">
+    <xs:sequence>
+      <xs:element name="ref" type="xs:QName" minOccurs="0"/>
+      <xs:element name="refs" type="t:QNameList" minOccurs="0"/>
+      <xs:element name="strs" type="t:StringList" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="qattr" type="xs:QName"/>
+    <xs:attribute name="qlist" type="t:QNameList"/>
+  </xs:complexType>
+  <xs:element name="root" type="t:Holder"/>
+</xs:schema>"""
+
+
+def _qname_value_parse(instance, tmp_path):
+    schema_path = tmp_path / "schema.xsd"
+    schema_path.write_text(_QNAME_VALUE_SCHEMA)
+    instance_path = tmp_path / "instance.xml"
+    instance_path.write_text(instance)
+    return Schema.compile(str(schema_path), mode=ParseModes.NAMESPACED).parse(str(instance_path))
+
+
+class TestQNameValueSerialization:
+    """``to_string()`` keeps QName value namespaces across a reparse.
+
+    A QName value's namespace is often used by no element or attribute
+    name in the tree, so its binding must still be declared in the
+    output, and its lexical prefix must never silently resolve to a
+    different namespace there.
+    """
+
+    def test_value_only_prefix_bindings_are_written(self, tmp_path):
+        doc = _qname_value_parse(
+            '<t:root xmlns:t="urn:t" xmlns:v="urn:values" qattr="v:att" '
+            'qlist="v:a v:b">'
+            "<t:ref>v:item</t:ref><t:refs>v:a v:b</t:refs></t:root>",
+            tmp_path,
+        )
+        text = doc.to_string()
+        assert "urn:values" in text
+
+        reparsed = _qname_value_parse(text, tmp_path)
+        reparsed.require_valid()
+        assert reparsed.root.qattr.to_expanded_name() == "{urn:values}att"
+        assert [item.to_expanded_name() for item in reparsed.root.qlist] == [
+            "{urn:values}a",
+            "{urn:values}b",
+        ]
+        assert reparsed.root.ref.to_expanded_name() == "{urn:values}item"
+        assert [item.to_expanded_name() for item in reparsed.root.refs] == [
+            "{urn:values}a",
+            "{urn:values}b",
+        ]
+
+    def test_a_colliding_value_prefix_is_respelled_not_rebound(self, tmp_path):
+        # The input binds the writer's first generated prefix (ns0) to
+        # another namespace; writing the lexical value unchanged would
+        # silently rebind it to the element namespace.
+        doc = _qname_value_parse(
+            '<t:root xmlns:t="urn:t" xmlns:ns0="urn:values" qattr="ns0:att">'
+            "<t:ref>ns0:item</t:ref></t:root>",
+            tmp_path,
+        )
+        reparsed = _qname_value_parse(doc.to_string(), tmp_path)
+        reparsed.require_valid()
+        assert reparsed.root.qattr.to_expanded_name() == "{urn:values}att"
+        assert reparsed.root.ref.to_expanded_name() == "{urn:values}item"
+
+    def test_a_default_namespace_qname_value_is_respelled_with_a_prefix(self, tmp_path):
+        # The writer never declares a default namespace, so an
+        # unprefixed value resolved through one needs an explicit
+        # prefix in the output or it would lose its namespace.
+        doc = _qname_value_parse(
+            '<t:root xmlns:t="urn:t" xmlns="urn:values"><t:ref>item</t:ref></t:root>',
+            tmp_path,
+        )
+        assert doc.root.ref.to_expanded_name() == "{urn:values}item"
+
+        reparsed = _qname_value_parse(doc.to_string(), tmp_path)
+        reparsed.require_valid()
+        assert reparsed.root.ref.to_expanded_name() == "{urn:values}item"
+
+    def test_an_unresolved_value_prefix_passes_through(self, tmp_path):
+        # The input itself never binds the value's prefix; the value is
+        # already invalid there, and the writer must not invent a
+        # binding for it.
+        doc = _qname_value_parse('<t:root xmlns:t="urn:t"><t:ref>u:x</t:ref></t:root>', tmp_path)
+        text = doc.to_string()
+
+        assert "urn:values" not in text
+        assert "<ns0:ref>u:x</ns0:ref>" in text
+
+    def test_non_qname_list_content_passes_through_unchanged(self, tmp_path):
+        # A string list carries no QName resolution; its recorded value
+        # is written exactly as bound, with no re-spelling and no extra
+        # namespace declarations.
+        doc = _qname_value_parse(
+            '<t:root xmlns:t="urn:t"><t:strs>a b c</t:strs></t:root>', tmp_path
+        )
+        text = doc.to_string()
+
+        reparsed = _qname_value_parse(text, tmp_path)
+        reparsed.require_valid()
+        assert list(reparsed.root.strs) == ["a", "b", "c"]
+        assert "xmlns:ns1" not in text
+
+    def test_multi_entry_stray_text_passes_through_unchanged(self, tmp_path):
+        # Element-only stray text binds as several value entries; the
+        # writer keeps every entry rather than collapsing them into
+        # the QName re-spelling path.
+        doc = _qname_value_parse(
+            '<t:root xmlns:t="urn:t">\n    stray one\n    stray two\n'
+            "    <t:ref>item</t:ref>\n  </t:root>",
+            tmp_path,
+        )
+        assert doc.root._value_ == ["stray one", "stray two"]
+
+        reparsed = _qname_value_parse(doc.to_string(), tmp_path)
+        assert reparsed.root._value_ == ["stray one", "stray two"]
+
+
 _QNAME_SCHEMA = f"""<xs:schema xmlns:xs="{XSD_NS}" xmlns:t="urn:t"
     targetNamespace="urn:t" elementFormDefault="qualified">
   <xs:complexType name="Holder">

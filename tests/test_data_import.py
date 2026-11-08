@@ -796,6 +796,86 @@ def test_namespaced_elements_and_attributes_round_trip_with_eqnames():
     }
 
 
+NAMESPACED_QNAME_ROOT_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:example"
+           targetNamespace="urn:example"
+           elementFormDefault="qualified">
+  <xs:element name="ref" type="xs:QName"/>
+</xs:schema>"""
+
+NAMESPACED_QNAME_ATTRIBUTE_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:example"
+           targetNamespace="urn:example"
+           elementFormDefault="qualified">
+  <xs:simpleType name="QNameList">
+    <xs:list itemType="xs:QName"/>
+  </xs:simpleType>
+  <xs:element name="holder">
+    <xs:complexType>
+      <xs:attribute name="qattr" type="xs:QName"/>
+      <xs:attribute name="qlist" type="t:QNameList"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
+
+def test_imported_qname_values_keep_their_namespace_in_xml_output():
+    # The importer binds the generated prefix ns0 to the value's
+    # namespace while the writer assigns ns0 to the element namespace;
+    # the serialized value must not silently rebind.
+    schema = _schema(NAMESPACED_QNAME_ROOT_SCHEMA)
+    imported = schema.from_data({"Q{urn:example}ref": "Q{urn:values}item"})
+
+    imported.require_valid()
+    assert imported.root.to_expanded_name() == "{urn:values}item"
+
+    reparsed = schema.parse(StringIO(imported.to_string()))
+    reparsed.require_valid()
+    assert reparsed.root.to_expanded_name() == "{urn:values}item"
+
+
+def test_imported_qname_attributes_keep_their_namespace_in_xml_output():
+    schema = _schema(NAMESPACED_QNAME_ATTRIBUTE_SCHEMA)
+    imported = schema.from_data(
+        {
+            "Q{urn:example}holder": {
+                "@qattr": "Q{urn:values}att",
+                "@qlist": ["Q{urn:values}a", "Q{urn:other}b"],
+            }
+        }
+    )
+
+    imported.require_valid()
+    assert imported.root.qattr.to_expanded_name() == "{urn:values}att"
+    assert [item.to_expanded_name() for item in imported.root.qlist] == [
+        "{urn:values}a",
+        "{urn:other}b",
+    ]
+
+    reparsed = schema.parse(StringIO(imported.to_string()))
+    reparsed.require_valid()
+    assert reparsed.root.qattr.to_expanded_name() == "{urn:values}att"
+    assert [item.to_expanded_name() for item in reparsed.root.qlist] == [
+        "{urn:values}a",
+        "{urn:other}b",
+    ]
+
+
+def test_imported_qname_lists_keep_their_namespaces_in_xml_output():
+    schema = _schema(QNAME_LIST_SCHEMA)
+    imported = schema.from_data({"Q{urn:example}root": ["Q{urn:values}a", "Q{urn:other}b"]})
+
+    imported.require_valid()
+    expected = ["{urn:values}a", "{urn:other}b"]
+    assert [item.to_expanded_name() for item in imported.root] == expected
+
+    reparsed = schema.parse(StringIO(imported.to_string()))
+    reparsed.require_valid()
+    assert [item.to_expanded_name() for item in reparsed.root] == expected
+
+
 # ---------------------------------------------------------------------------
 # Substitutions and wildcards
 # ---------------------------------------------------------------------------
@@ -1033,6 +1113,21 @@ def test_a_record_child_requires_its_scalar_container():
     assert "/root/a" in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    "keys",
+    [
+        ("a", "Q{}a"),
+        ("Q{}a", "a"),
+    ],
+)
+def test_two_record_keys_denoting_one_expanded_name_are_rejected(keys):
+    schema = _schema(RECORD_SCHEMA)
+
+    with pytest.raises(PyXSDError, match="json-duplicate-key") as caught:
+        schema.from_data({"root": {keys[0]: "A", keys[1]: "B"}})
+    assert "/root" in str(caught.value)
+
+
 def test_a_sequence_child_map_has_exactly_one_entry():
     schema = _schema(SEQUENCE_ATTRIBUTE_SCHEMA)
 
@@ -1121,6 +1216,14 @@ def test_a_boolean_is_not_an_integer_at_the_root():
 
     with pytest.raises(PyXSDError, match="scalar-type-invalid") as caught:
         schema.from_data({"simple": True})
+    assert "/simple" in str(caught.value)
+
+
+def test_a_float_is_not_an_integer_at_the_root():
+    schema = _schema(FIXTURES["simple"][0])
+
+    with pytest.raises(PyXSDError, match="scalar-type-invalid") as caught:
+        schema.from_data({"simple": 1.0})
     assert "/simple" in str(caught.value)
 
 

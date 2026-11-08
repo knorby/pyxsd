@@ -777,7 +777,15 @@ class _Builder:
                     json_pointer((*path, key)),
                     "a nilled element may carry attributes but no text or child content",
                 )
-            entries[self._expanded(key, json_pointer((*path, key)))] = (key, raw)
+            expanded = self._expanded(key, json_pointer((*path, key)))
+            if expanded in entries:
+                raise_conversion(
+                    "json-duplicate-key",
+                    json_pointer((*path, key)),
+                    f"the record declares the expanded name {expanded!r} through "
+                    f"more than one key ({entries[expanded][0]!r} and {key!r})",
+                )
+            entries[expanded] = (key, raw)
             content_seen = True
         for child in plan.children:
             entry = entries.pop(child.name, None)
