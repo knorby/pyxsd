@@ -8,16 +8,16 @@
     "source": "github"
   },
   "websiteUrl": "https://pyxsd.knorby.com/mcp.html",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "pyxsd",
-      "version": "1.3.1",
+      "version": "1.4.0",
       "transport": {"type": "stdio"},
       "runtimeHint": "uvx",
       "runtimeArguments": [
-        {"type": "named", "name": "--with", "value": "pyxsd[mcp]==1.3.1"}
+        {"type": "named", "name": "--with", "value": "pyxsd[mcp]==1.4.0"}
       ],
       "packageArguments": [{"type": "positional", "value": "mcp"}]
     }

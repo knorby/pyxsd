@@ -11,11 +11,19 @@ complete breaking-changes table and step-by-step upgrade instructions — see th
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-08
+
 ### Added
 
 - `ParseModes.LAX_NAMESPACED` combines lax value retention with namespace-aware
   matching. `ParseModes.STRICT` and `ParseModes.LAX` remain available as the
   explicit legacy local-name presets.
+- A bundled `pyxsd-cli` agent skill covers validation, exit statuses, stream
+  and output control, trusted transforms, and schema-only stub emission without
+  the MCP extra. Export it with
+  `python -m pyxsd.skills export pyxsd-cli DEST`.
+- An xsdata comparison page distinguishes pyxsd's runtime schema binding from
+  generated dataclass workflows, with provenance for the reported W3C results.
 
 ### Changed
 
