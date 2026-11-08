@@ -1,5 +1,8 @@
 """Corpus globs stay portable, deterministic, and bounded."""
 
+import subprocess
+import sys
+
 import pytest
 
 pytest.importorskip("pydantic")
@@ -28,6 +31,30 @@ def test_glob_character_classes_apply_to_one_character():
     assert not pattern.matches("data/d1.xml")
     assert not pattern.matches("data/a12.xml")
     assert not pattern.matches("data/a1.json")
+
+
+@pytest.mark.parametrize(
+    ("pattern", "path", "expected"),
+    [("*a*b", "xxaYYb", True), ("*a*b", "xxaYY", False)],
+)
+def test_glob_stars_preserve_literal_matching(pattern, path, expected):
+    from pyxsd.mcp.corpus import CorpusGlob
+
+    assert CorpusGlob(pattern).matches(path) is expected
+
+
+def test_glob_matching_avoids_exponential_backtracking():
+    script = (
+        "from pyxsd.mcp.corpus import CorpusGlob; "
+        "assert not CorpusGlob('*' + 'a*' * 12 + 'b').matches('a' * 34)"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("Corpus glob matching exceeded five seconds")
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_manifest_selection_is_lexical_and_overflow_fails_closed():
