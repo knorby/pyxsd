@@ -621,6 +621,59 @@ QNAME_ATTRIBUTE_SCHEMA = """\
   </xs:element>
 </xs:schema>"""
 
+NESTED_QNAME_ATTRIBUTE_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item">
+          <xs:complexType>
+            <xs:attribute name="ref" type="xs:QName"/>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
+NESTED_ELEMENT_ONLY_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="a" type="xs:string"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:string"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
+NAMESPACED_NESTED_ELEMENT_ONLY_SCHEMA = """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:outer"
+           targetNamespace="urn:outer"
+           elementFormDefault="qualified">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="item">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="a" type="xs:string"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+
 QNAME_LIST_SCHEMA = """\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            xmlns:t="urn:example"
@@ -1431,10 +1484,10 @@ def _warning_texts(record) -> list[str]:
     return [str(item.message) for item in record if isinstance(item.message, PyXSDWarning)]
 
 
-def _qname_node(text: str) -> QName:
+def _qname_node(text: str, *, name: str = "root") -> QName:
     """A QName outside any qname context, shaped as one bound simple node."""
     node = QName(text)
-    node._name_ = "root"
+    node._name_ = name
     node._attribs_ = {}
     node._children_ = []
     node._nil_ = None
@@ -2642,6 +2695,76 @@ def test_jsonml_omits_an_empty_attribute_object():
     ]
 
 
+def test_jsonml_keeps_interleaved_repeated_children_in_place():
+    document = _compile(
+        SEQUENCE_REPEATED_CHOICE_SCHEMA,
+        "<root><a>1</a><b>x</b><a>2</a></root>",
+    )
+
+    assert document.to_data(format="jsonml") == [
+        "root",
+        ["a", 1],
+        ["b", "x"],
+        ["a", 2],
+    ]
+
+
+def test_jsonml_declares_nested_element_namespaces_once_at_the_root(tmp_path):
+    (tmp_path / "inner.xsd").write_text(
+        """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:inner"
+           elementFormDefault="qualified">
+  <xs:element name="inner" type="xs:string"/>
+</xs:schema>"""
+    )
+    (tmp_path / "outer.xsd").write_text(
+        """\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:i="urn:inner"
+           targetNamespace="urn:outer"
+           elementFormDefault="qualified">
+  <xs:import namespace="urn:inner" schemaLocation="inner.xsd"/>
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="i:inner"/>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:string"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>"""
+    )
+    schema = pyxsd.Schema.compile(tmp_path / "outer.xsd")
+    document = schema.parse(
+        StringIO(
+            '<t:root xmlns:t="urn:outer" xmlns:i="urn:inner" id="r"><i:inner>v</i:inner></t:root>'
+        )
+    )
+
+    assert document.to_data(format="jsonml") == [
+        "ns1:root",
+        {"xmlns:ns0": "urn:inner", "xmlns:ns1": "urn:outer", "id": "r"},
+        ["ns0:inner", "v"],
+    ]
+
+
+def test_jsonml_keeps_every_mixed_text_tail_after_its_child():
+    document = _compile(
+        MIXED_TWO_CHILD_SCHEMA,
+        "<root>intro<i>x</i>middle<b>y</b>end</root>",
+    )
+
+    assert document.to_data(format="jsonml") == [
+        "root",
+        "intro",
+        ["i", "x"],
+        "middle",
+        ["b", "y"],
+        "end",
+    ]
+
+
 def test_jsonml_children_only_and_text_only_mixed_content():
     children = _compile(MIXED_NO_ATTRIBUTE_SCHEMA, "<root><i>x</i></root>")
     assert children.to_data(format="jsonml") == ["root", ["i", "x"]]
@@ -2744,6 +2867,10 @@ def test_jsonml_qname_content_allocates_a_declaration():
     ]
 
 
+def test_jsonml_unqualified_qname_content_needs_no_declaration():
+    assert _compile(QNAME_ROOT_SCHEMA, "<root>v</root>").to_data(format="jsonml") == ["root", "v"]
+
+
 def test_jsonml_qname_attribute_allocates_a_declaration():
     document = _compile(
         QNAME_ATTRIBUTE_SCHEMA,
@@ -2779,8 +2906,79 @@ def test_jsonml_qname_lists_are_content_items():
 def test_jsonml_rejects_an_unresolved_qname(fidelity):
     node = _qname_node("p:v")
 
-    with pytest.raises(PyXSDError, match="namespace-unresolved"):
+    with pytest.raises(PyXSDError, match="namespace-unresolved") as caught:
         bound_to_data(node, format="jsonml", fidelity=fidelity)
+
+    assert "namespace-unresolved at '/1'" in str(caught.value)
+
+
+def test_jsonml_root_diagnostic_pointer_is_the_empty_pointer():
+    document = _compile(
+        EMPTY_SCHEMA,
+        "<root><x/></root>",
+        mode=BindingPolicy(undeclared_content="generic"),
+    )
+
+    with pytest.raises(PyXSDError) as caught:
+        document.to_data(format="jsonml")
+
+    assert "container-invalid at ''" in str(caught.value)
+
+
+def test_jsonml_nested_diagnostic_pointer_addresses_the_content_index():
+    document = _compile(
+        NESTED_ELEMENT_ONLY_SCHEMA,
+        '<root id="r"><item>oops<a>v</a></item></root>',
+    )
+
+    with pytest.raises(PyXSDError) as caught:
+        document.to_data(format="jsonml")
+
+    assert "container-invalid at '/2'" in str(caught.value)
+
+
+def test_jsonml_nested_diagnostic_pointer_counts_root_declarations():
+    document = _compile(
+        NAMESPACED_NESTED_ELEMENT_ONLY_SCHEMA,
+        '<t:root xmlns:t="urn:outer"><t:item>oops<t:a>v</t:a></t:item></t:root>',
+    )
+
+    with pytest.raises(PyXSDError) as caught:
+        document.to_data(format="jsonml")
+
+    assert "container-invalid at '/2'" in str(caught.value)
+
+
+def test_jsonml_attribute_diagnostic_pointer_addresses_the_attribute_key():
+    document = _compile(QNAME_ATTRIBUTE_SCHEMA, '<root xmlns:p="urn:example" ref="p:v"/>')
+    document.root.__dict__["ref"] = QName("p:v")
+
+    with pytest.raises(PyXSDError) as caught:
+        document.to_data(format="jsonml")
+
+    assert "namespace-unresolved at '/1/ref'" in str(caught.value)
+
+
+def test_jsonml_nested_attribute_diagnostic_pointer_addresses_both_levels():
+    document = _compile(
+        NESTED_QNAME_ATTRIBUTE_SCHEMA,
+        '<root><item xmlns:p="urn:example" ref="p:v"/></root>',
+    )
+    document.root._children_[0].__dict__["ref"] = QName("p:v")
+
+    with pytest.raises(PyXSDError) as caught:
+        document.to_data(format="jsonml")
+
+    assert "namespace-unresolved at '/1/1/ref'" in str(caught.value)
+
+
+def test_jsonml_content_diagnostic_pointer_counts_the_declaration_object():
+    node = _qname_node("p:v", name="{urn:example}root")
+
+    with pytest.raises(PyXSDError) as caught:
+        bound_to_data(node, format="jsonml")
+
+    assert "namespace-unresolved at '/2'" in str(caught.value)
 
 
 def test_jsonml_xsi_type_is_an_attribute():
@@ -2917,6 +3115,229 @@ def test_jsonml_export_is_deterministic():
     document = _compile_fixture("recursive")
 
     assert document.to_data(format="jsonml") == document.to_data(format="jsonml")
+
+
+# ---------------------------------------------------------------------------
+# Interoperability contracts
+# ---------------------------------------------------------------------------
+
+
+def _xmlschema_json(schema_source: str, instance_source: str, converter: str) -> object:
+    """Convert one fixture with xmlschema 4.3.2's converter of the same name.
+
+    The development-only oracle is skipped when absent, so the export suite
+    still runs in a minimal environment.
+    """
+    xmlschema = pytest.importorskip("xmlschema")
+    schema = xmlschema.XMLSchema(schema_source)
+    output = xmlschema.to_json(
+        instance_source,
+        schema=schema,
+        converter=getattr(xmlschema.converters, converter),
+        json_options={"indent": None},
+    )
+    assert output is not None
+    return json.loads(output)
+
+
+def test_native_interoperability_profile_fixture():
+    """Verification: no xmlschema native profile exists, so pin this fixture.
+
+    Native ``pyxsd`` groups mixed children and concatenates direct text under
+    ``$``; that documented loss is why this test carries an explicit expected
+    value instead of comparing against another implementation.
+    """
+    document = _compile_fixture("mixed")
+
+    assert document.to_data(format="pyxsd") == {
+        "@id": "p1",
+        "i": "fine",
+        "$": "This is a  mess!",
+    }
+
+
+def test_pyxsd_json_interoperability_profile_fixture():
+    """Verification: pin the versioned profile shape that xmlschema lacks."""
+    document = _compile_fixture("ordered")
+
+    assert document.to_data(format="pyxsd-json") == {
+        "section": [
+            {"head": "Introduction"},
+            {"p": "First"},
+            {"p": "Second"},
+            {"note": "End"},
+        ]
+    }
+
+
+def test_parker_interoperability_contract():
+    """Compare Parker with xmlschema 4.3.2 and pin the intentional differences.
+
+    xmlschema drops mixed text and maps an empty element to ``null``; pyxsd
+    retains the text under ``$`` and keeps empty (``{}``) distinct from nil
+    (``null``). Decimals stay canonical fixed-point strings, not binary floats.
+    """
+    assert _xmlschema_json(*FIXTURES["simple"], "ParkerConverter") == 42
+    assert _compile_fixture("simple").to_data(format="parker") == 42
+
+    repeated = {"date": ["2026-01-01", "2026-02-01"]}
+    assert _xmlschema_json(*FIXTURES["repeated"], "ParkerConverter") == repeated
+    assert _compile_fixture("repeated").to_data(format="parker") == repeated
+
+    ordered = {
+        "head": "Introduction",
+        "p": ["First", "Second"],
+        "note": "End",
+    }
+    assert _xmlschema_json(*FIXTURES["ordered"], "ParkerConverter") == ordered
+    assert _compile_fixture("ordered").to_data(format="parker") == ordered
+
+    assert _xmlschema_json(*FIXTURES["nillable"], "ParkerConverter") is None
+    assert _compile_fixture("nillable").to_data(format="parker") is None
+
+    assert _xmlschema_json(*FIXTURES["namespaced"], "ParkerConverter") == {"child": "v"}
+    with pytest.warns(PyXSDWarning, match="attributes-lost"):
+        assert _compile_fixture("namespaced").to_data(format="parker") == {"child": "v"}
+
+    # Divergence: xmlschema drops direct mixed text; pyxsd keeps it under ``$``.
+    assert _xmlschema_json(*FIXTURES["mixed"], "ParkerConverter") == {"i": "fine"}
+    with pytest.warns(PyXSDWarning):
+        mixed = _compile_fixture("mixed").to_data(format="parker")
+    assert mixed == {"$": "This is a  mess!", "i": "fine"}
+
+    # Divergence: xmlschema uses null for an empty element; pyxsd keeps {}.
+    assert _xmlschema_json(*FIXTURES["recursive"], "ParkerConverter") == {"node": {"node": None}}
+    with pytest.warns(PyXSDWarning):
+        recursive = _compile_fixture("recursive").to_data(format="parker")
+    assert recursive == {"node": {"node": {}}}
+
+    # Divergence: a canonical decimal string never passes through binary float.
+    assert _xmlschema_json(DECIMAL_ROOT_SCHEMA, "<root>1.20</root>", "ParkerConverter") == 1.2
+    assert _compile(DECIMAL_ROOT_SCHEMA, "<root>1.20</root>").to_data(format="parker") == "1.20"
+
+
+def test_badgerfish_interoperability_contract():
+    """Compare BadgerFish with xmlschema 4.3.2 and pin the scalar profile.
+
+    xmlschema wraps leaf text in ``$``; pyxsd's schema-aware profile emits the
+    typed scalar directly. For the recursive fixture (no text leaves) both
+    implementations agree exactly.
+    """
+    recursive = {
+        "node": {
+            "@name": "a",
+            "node": [{"@name": "b", "node": [{"@name": "c"}]}],
+        }
+    }
+    assert _xmlschema_json(*FIXTURES["recursive"], "BadgerFishConverter") == recursive
+    assert _compile_fixture("recursive").to_data(format="badgerfish") == recursive
+
+    # Divergence: xmlschema wraps the scalar; pyxsd emits it directly.
+    assert _xmlschema_json(*FIXTURES["simple"], "BadgerFishConverter") == {"simple": {"$": 42}}
+    assert _compile_fixture("simple").to_data(format="badgerfish") == {"simple": 42}
+
+    # Divergence: canonical decimal string versus xmlschema's binary float.
+    assert _xmlschema_json(DECIMAL_ROOT_SCHEMA, "<root>1.20</root>", "BadgerFishConverter") == {
+        "root": {"$": 1.2}
+    }
+    assert _compile(DECIMAL_ROOT_SCHEMA, "<root>1.20</root>").to_data(format="badgerfish") == {
+        "root": "1.20"
+    }
+
+    # Divergence: booleans, and root-scoped rather than local declarations.
+    assert _xmlschema_json(*FIXTURES["nillable"], "BadgerFishConverter") == {
+        "nillable": {"@xsi:nil": "true", "@xmlns": {"xsi": XSI_NAMESPACE}}
+    }
+    assert _compile_fixture("nillable").to_data(format="badgerfish") == {
+        "nillable": {"@xmlns": {"xsi": XSI_NAMESPACE}, "@xsi:nil": True}
+    }
+
+    # Divergence: both bind urn:example, with different prefix strategies.
+    assert _xmlschema_json(*FIXTURES["namespaced"], "BadgerFishConverter") == {
+        "root": {
+            "@attr": "a",
+            "@xmlns": {"$": "urn:example"},
+            "child": {"$": "v"},
+        }
+    }
+    assert _compile_fixture("namespaced").to_data(format="badgerfish") == {
+        "ns0:root": {
+            "@xmlns": {"ns0": "urn:example"},
+            "@attr": "a",
+            "ns0:child": "v",
+        }
+    }
+
+    # Divergence: xmlschema numbers mixed text pieces; pyxsd concatenates them.
+    assert _xmlschema_json(*FIXTURES["mixed"], "BadgerFishConverter") == {
+        "para": {
+            "@id": "p1",
+            "$1": "This is a",
+            "i": [{"$": "fine"}],
+            "$2": "mess!",
+        }
+    }
+    with pytest.warns(PyXSDWarning):
+        mixed = _compile_fixture("mixed").to_data(format="badgerfish")
+    assert mixed == {"para": {"@id": "p1", "$": "This is a  mess!", "i": ["fine"]}}
+
+
+def test_jsonml_interoperability_contract():
+    """Compare JsonML with xmlschema 4.3.2 and pin pyxsd's positional choices.
+
+    Both agree on the positional arrays for simple, attribute, repeated,
+    ordered, and recursive content. pyxsd preserves mixed whitespace, allocates
+    explicit ``nsN`` prefixes, uses a single ``null`` content item for nil, and
+    keeps canonical decimal strings.
+    """
+    for name in ("simple", "attribute", "repeated", "ordered", "recursive"):
+        expected = _xmlschema_json(*FIXTURES[name], "JsonMLConverter")
+        assert _compile_fixture(name).to_data(format="jsonml") == expected
+
+    # Divergence: xmlschema trims mixed text; pyxsd keeps whitespace verbatim.
+    assert _xmlschema_json(*FIXTURES["mixed"], "JsonMLConverter") == [
+        "para",
+        {"id": "p1"},
+        "This is a",
+        ["i", "fine"],
+        "mess!",
+    ]
+    assert _compile_fixture("mixed").to_data(format="jsonml") == [
+        "para",
+        {"id": "p1"},
+        "This is a ",
+        ["i", "fine"],
+        " mess!",
+    ]
+
+    # Divergence: default namespace versus explicit deterministic prefix.
+    assert _xmlschema_json(*FIXTURES["namespaced"], "JsonMLConverter") == [
+        "root",
+        {"attr": "a", "xmlns": "urn:example"},
+        ["child", "v"],
+    ]
+    assert _compile_fixture("namespaced").to_data(format="jsonml") == [
+        "ns0:root",
+        {"xmlns:ns0": "urn:example", "attr": "a"},
+        ["ns0:child", "v"],
+    ]
+
+    # Divergence: xmlschema keeps xsi:nil as an attribute; pyxsd uses null.
+    assert _xmlschema_json(*FIXTURES["nillable"], "JsonMLConverter") == [
+        "nillable",
+        {"xsi:nil": "true", "xmlns:xsi": XSI_NAMESPACE},
+    ]
+    assert _compile_fixture("nillable").to_data(format="jsonml") == ["nillable", None]
+
+    # Divergence: canonical decimal string versus xmlschema's binary float.
+    assert _xmlschema_json(DECIMAL_ROOT_SCHEMA, "<root>1.20</root>", "JsonMLConverter") == [
+        "root",
+        1.2,
+    ]
+    assert _compile(DECIMAL_ROOT_SCHEMA, "<root>1.20</root>").to_data(format="jsonml") == [
+        "root",
+        "1.20",
+    ]
 
 
 # ---------------------------------------------------------------------------

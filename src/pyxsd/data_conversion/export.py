@@ -941,9 +941,9 @@ def _badgerfish_children(
 def _export_jsonml(root: Any) -> JsonValue:
     """Export the root as a nested JsonML array with root declarations."""
     names = _LexicalNames(_known_names(root))
-    tag = names.lexical(_element_expanded_name(root))
-    result = _jsonml_node(root, (tag,), names=names)
+    _reserve_jsonml_names(root, names)
     declarations = names.declarations()
+    result = _jsonml_node(root, (), names=names, root_declarations=bool(declarations))
     if declarations:
         attrs: dict[str, JsonValue] = {
             f"xmlns:{prefix}": uri for prefix, uri in declarations.items()
@@ -956,13 +956,61 @@ def _export_jsonml(root: Any) -> JsonValue:
     return result
 
 
+def _reserve_jsonml_names(node: Any, names: _LexicalNames) -> None:
+    """Reserve every lexical name JsonML will emit before converting content.
+
+    Root-scoped declarations are inserted only after the tree is converted,
+    but that attribute object shifts every content index by one when the
+    root has no attributes of its own. Reserving the names first makes the
+    final array positions known while a diagnostic path is still built.
+    Unresolved QNames stay for the export pass, which reports their path.
+    """
+    names.lexical(_element_expanded_name(node))
+    actual_type = _explicit_type(node)
+    if actual_type is not None:
+        names.lexical(f"{{{XSI_NAMESPACE}}}type", attribute=True)
+        names.lexical(_type_expanded_name(actual_type), attribute=True)
+    for key in _attribute_keys(node):
+        names.lexical(_attribute_expanded_name(node, key), attribute=True)
+        declared = _declared_attribute(node, key)
+        if declared is not None:
+            typed = node.__dict__.get(declared[0])
+            if typed is not None:
+                _reserve_jsonml_value_names(typed, names)
+    if isinstance(node, XsdDataType):
+        _reserve_jsonml_value_names(node, names)
+    for child in _content_children(node):
+        _reserve_jsonml_names(child, names)
+
+
+def _reserve_jsonml_value_names(value: Any, names: _LexicalNames) -> None:
+    """Reserve the namespace of every resolved QName in a scalar value."""
+    if isinstance(value, QName):
+        try:
+            expanded = value.to_expanded_name(strict=True)
+        except ValueError:
+            return
+        if expanded.startswith("{"):
+            names.lexical(expanded)
+    elif isinstance(value, list):
+        for item in value:
+            _reserve_jsonml_value_names(item, names)
+
+
 def _jsonml_node(
     node: Any,
     path: tuple[str | int, ...],
     *,
     names: _LexicalNames,
+    root_declarations: bool = False,
 ) -> list[JsonValue]:
-    """Export one bound node as a positional JsonML array."""
+    """Export one bound node as a positional JsonML array.
+
+    *root_declarations* says the top-level exporter will insert a namespace
+    declaration object after this call. When the node has no attributes of
+    its own, that object occupies index 1 and every content item moves one
+    position, which the diagnostic paths must reflect.
+    """
     children = _content_children(node)
     nilled = _is_nil(node)
     actual_type = _explicit_type(node)
@@ -979,11 +1027,12 @@ def _jsonml_node(
     attrs = _jsonml_attributes(
         node,
         actual_type,
-        path=path,
+        path=(*path, 1),
         names=names,
     )
     if attrs:
         result.append(attrs)
+    shift = 1 if root_declarations and not attrs and not path else 0
 
     if nilled:
         result.append(None)
@@ -1005,7 +1054,14 @@ def _jsonml_node(
                 path,
                 f"simple content for {_element_eqname(node)!r} cannot carry child elements",
             )
-        result.append(_lexical_scalar(node, format="jsonml", path=path, names=names))
+        result.append(
+            _lexical_scalar(
+                node,
+                format="jsonml",
+                path=(*path, len(result) + shift),
+                names=names,
+            )
+        )
         return result
 
     if layout is Layout.LIST or layout is Layout.LIST_PLUS:
@@ -1014,7 +1070,7 @@ def _jsonml_node(
                 path,
                 f"element-only list {_element_eqname(node)!r} cannot carry non-whitespace text",
             )
-        _append_jsonml_children(result, children, path, names)
+        _append_jsonml_children(result, children, path, names, shift=shift)
         return result
 
     if layout is Layout.RECORD or layout is Layout.SEQUENCE:
@@ -1023,13 +1079,21 @@ def _jsonml_node(
                 path,
                 f"element-only content {_element_eqname(node)!r} cannot carry non-whitespace text",
             )
-        _append_jsonml_children(result, children, path, names)
+        _append_jsonml_children(result, children, path, names, shift=shift)
         return result
 
     text = _node_text(node)
     if text:
-        result.append(_lexical_text_value(node, text, format="jsonml", path=path, names=names))
-    _append_jsonml_children(result, children, path, names, with_tails=True)
+        result.append(
+            _lexical_text_value(
+                node,
+                text,
+                format="jsonml",
+                path=(*path, len(result) + shift),
+                names=names,
+            )
+        )
+    _append_jsonml_children(result, children, path, names, with_tails=True, shift=shift)
     return result
 
 
@@ -1040,10 +1104,11 @@ def _append_jsonml_children(
     names: _LexicalNames,
     *,
     with_tails: bool = False,
+    shift: int = 0,
 ) -> None:
-    for index, child in enumerate(children):
-        child_tag = names.lexical(_element_expanded_name(child))
-        result.append(_jsonml_node(child, (*path, index, child_tag), names=names))
+    for child in children:
+        child_path = (*path, len(result) + shift)
+        result.append(_jsonml_node(child, child_path, names=names))
         if with_tails:
             tail = getattr(child, "_tail_", None)
             if tail:
