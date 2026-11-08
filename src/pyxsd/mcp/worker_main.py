@@ -613,11 +613,12 @@ def _execute(
 
         return execute_model(operation, cache, processor_version)
     limit = getattr(operation, "issue_limit", getattr(operation, "limit", 1))
-    if (
-        cache.limits.page_items is not None
-        and limit is not None
-        and limit > cache.limits.page_items
-    ):
+    maximum = (
+        cache.limits.batch_issue_items
+        if isinstance(operation, BatchParseOperation)
+        else cache.limits.page_items
+    )
+    if maximum is not None and limit is not None and limit > maximum:
         raise ToolError("invalid_argument", "Page limit exceeds the operator budget")
     if isinstance(operation, ParseOperation):
         return _report(_parse(operation, cache, processor_version), operation)
