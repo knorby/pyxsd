@@ -6,6 +6,12 @@ bound tree directly: the compiled effective type and its layout plan decide
 the shape, never the observed number of children. Attributes use ``@``,
 simple content in an object layout uses ``#content``, and names use the
 profile's ``Q{uri}local`` EQName spelling.
+
+Parker absorbs the root and groups children by local name. BadgerFish keeps
+the root object, carries attributes under ``@``, text under ``$``, and
+namespace declarations under ``@xmlns``. JsonML emits nested arrays in
+bound order. BadgerFish and JsonML allocate deterministic lexical prefixes
+from one shared :class:`PrefixAllocator`.
 """
 
 from __future__ import annotations
@@ -20,14 +26,15 @@ from pyxsd.data_conversion.contracts import (
     raise_conversion,
     validate_fidelity,
     validate_format,
+    warn_conversion,
 )
 from pyxsd.data_conversion.layouts import Layout, LayoutPlan, plan_layout
-from pyxsd.data_conversion.names import expanded_to_eqname
+from pyxsd.data_conversion.names import PrefixAllocator, expanded_to_eqname
 from pyxsd.data_conversion.values import scalar_to_json
 from pyxsd.dict_export import bound_to_dict
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import XSD_NS
-from pyxsd.xsd_data_types import XsdDataType
+from pyxsd.xsd_data_types import QName, XsdDataType
 from pyxsd.xsi import XSI_NAMESPACE, XSI_NIL, XSI_TYPE
 
 #: Key carrying simple content inside an object layout.
@@ -35,6 +42,14 @@ CONTENT_KEY = "#content"
 
 #: Reserved attribute key for an explicit actual type.
 TYPE_KEY = "@xsi:type"
+
+#: BadgerFish's namespace-declaration object.
+XMLNS_KEY = "@xmlns"
+
+#: BadgerFish's direct-text key.
+TEXT_KEY = "$"
+
+_XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
 
 _COMMENT_NAME = "_comment_"
 
@@ -51,9 +66,10 @@ def bound_to_data(
 
     ``pyxsd`` preserves the existing ``to_dict`` structure and returns
     JSON-safe scalar values. ``pyxsd-json`` uses the schema-selected
-    layout and fixed profile shape. ``typed`` and ``always_list`` are
-    native-only options; another format rejects a non-default value with
-    ``ValueError`` before conversion.
+    layout and fixed profile shape. ``parker``, ``badgerfish``, and
+    ``jsonml`` implement the conventional grouped and positional shapes.
+    ``typed`` and ``always_list`` are native-only options; another format
+    rejects a non-default value with ``ValueError`` before conversion.
 
     A missing root raises :class:`~pyxsd.exceptions.PyXSDError`. Conversion
     failures carry a stable reason code and a JSON Pointer path.
@@ -61,13 +77,11 @@ def bound_to_data(
     requested_format = validate_format(format)
     requested_fidelity = validate_fidelity(fidelity)
 
-    if requested_format == "pyxsd-json":
+    if requested_format != "pyxsd":
         if typed is not True:
             raise ValueError("typed is a native-only data-export option")
         if always_list is not False:
             raise ValueError("always_list is a native-only data-export option")
-    elif requested_format != "pyxsd":
-        raise ValueError(f"data format {requested_format!r} is not implemented")
 
     if root is None:
         raise PyXSDError("the document has no root to export")
@@ -79,7 +93,13 @@ def bound_to_data(
             typed=typed,
             always_list=always_list,
         )
-    return _export_hybrid(root)
+    if requested_format == "pyxsd-json":
+        return _export_hybrid(root)
+    if requested_format == "parker":
+        return _export_parker(root, fidelity=requested_fidelity)
+    if requested_format == "badgerfish":
+        return _export_badgerfish(root, fidelity=requested_fidelity)
+    return _export_jsonml(root)
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +430,855 @@ def _simple_value(node: Any) -> JsonValue:
 
 
 # ---------------------------------------------------------------------------
+# Parker
+# ---------------------------------------------------------------------------
+
+
+def _export_parker(root: Any, *, fidelity: Fidelity) -> JsonValue:
+    """Export the root under Parker's root-absorbed grouped structure."""
+    return _parker_node(root, (), fidelity=fidelity)
+
+
+def _parker_node(
+    node: Any,
+    path: tuple[str | int, ...],
+    *,
+    fidelity: Fidelity,
+) -> JsonValue:
+    """Export one bound node without attributes or namespace declarations."""
+    children = _content_children(node)
+    nilled = _is_nil(node)
+    actual_type = _explicit_type(node)
+    plan = plan_layout(type(node), explicit_type=actual_type is not None)
+
+    if nilled and (children or _node_text(node) or _has_non_whitespace_tail(node)):
+        _container_error(
+            path,
+            "a nilled element may carry attributes but no text or child content",
+        )
+
+    if not path:
+        _parker_root_loss(node, path, fidelity)
+    _parker_name_losses(node, plan, children, path, fidelity)
+
+    if _usable_attribs(node):
+        _loss(
+            "attributes-lost",
+            path,
+            f"Parker cannot carry the attributes of element {_element_eqname(node)!r}",
+            fidelity,
+        )
+    if actual_type is not None:
+        _loss(
+            "attributes-lost",
+            path,
+            f"Parker cannot carry the xsi:type marker of element {_element_eqname(node)!r}",
+            fidelity,
+        )
+
+    layout = plan.layout
+    if layout is Layout.EMPTY or layout is Layout.EMPTY_PLUS:
+        if children or _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"empty content for {_element_eqname(node)!r} has no container "
+                "for observed text or child elements",
+            )
+        return None if nilled else {}
+
+    if layout is Layout.SIMPLE or layout is Layout.SIMPLE_PLUS:
+        if children:
+            _container_error(
+                path,
+                f"simple content for {_element_eqname(node)!r} cannot carry child elements",
+            )
+        if nilled:
+            return None
+        return _parker_scalar(node, fidelity=fidelity, path=path)
+
+    if nilled:
+        return None
+
+    if layout is Layout.LIST or layout is Layout.LIST_PLUS:
+        if _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"element-only list {_element_eqname(node)!r} cannot carry non-whitespace text",
+            )
+        return _parker_children(plan, children, path, fidelity=fidelity)
+
+    if layout is Layout.RECORD or layout is Layout.SEQUENCE:
+        if _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"element-only content {_element_eqname(node)!r} cannot carry non-whitespace text",
+            )
+        if layout is Layout.SEQUENCE:
+            _check_grouped_order(node, plan, children, path, fidelity)
+        return _parker_children(plan, children, path, fidelity=fidelity)
+
+    return _parker_mixed(node, plan, children, path, fidelity)
+
+
+def _parker_mixed(
+    node: Any,
+    plan: LayoutPlan,
+    children: list[Any],
+    path: tuple[str | int, ...],
+    fidelity: Fidelity,
+) -> JsonValue:
+    """Export mixed content as grouped children plus concatenated direct text."""
+    text = _mixed_text(node, children)
+    if not children:
+        if not text:
+            return {}
+        return _parker_text_value(node, text, fidelity=fidelity, path=path)
+    if text:
+        _loss(
+            "mixed-content",
+            path,
+            f"Parker cannot retain the text positions of element {_element_eqname(node)!r}",
+            fidelity,
+        )
+    if len({_element_expanded_name(child) for child in children}) > 1:
+        _loss(
+            "order-ambiguous",
+            path,
+            f"Parker cannot retain the child order of mixed element {_element_eqname(node)!r}",
+            fidelity,
+        )
+    else:
+        _check_grouped_order(node, plan, children, path, fidelity)
+    result: dict[str, JsonValue] = {}
+    if text:
+        result[TEXT_KEY] = text
+    result.update(_parker_children(plan, children, path, fidelity=fidelity))
+    return result
+
+
+def _parker_text_value(
+    node: Any,
+    text: str,
+    *,
+    fidelity: Fidelity,
+    path: tuple[str | int, ...],
+) -> JsonValue:
+    if isinstance(node, XsdDataType):
+        return _parker_scalar(node, fidelity=fidelity, path=path)
+    return text
+
+
+def _parker_children(
+    plan: LayoutPlan,
+    children: list[Any],
+    path: tuple[str | int, ...],
+    *,
+    fidelity: Fidelity,
+) -> dict[str, JsonValue]:
+    """Group children by local name; actual repeats become arrays."""
+    groups: dict[str, list[Any]] = {}
+    for child in children:
+        groups.setdefault(_local_name(_element_expanded_name(child)), []).append(child)
+    keys: list[str] = []
+    for child_plan in plan.children:
+        key = _local_name(child_plan.name)
+        if key in groups and key not in keys:
+            keys.append(key)
+    keys.extend(key for key in groups if key not in keys)
+
+    result: dict[str, JsonValue] = {}
+    for key in keys:
+        group = groups[key]
+        values: list[JsonValue] = []
+        for index, child in enumerate(group):
+            child_path = (*path, key, index) if len(group) > 1 else (*path, key)
+            values.append(_parker_node(child, child_path, fidelity=fidelity))
+        result[key] = values if len(values) > 1 else values[0]
+    return result
+
+
+def _parker_root_loss(node: Any, path: tuple[str | int, ...], fidelity: Fidelity) -> None:
+    """Reject a root local name that names several concrete global elements."""
+    local = _local_name(_element_expanded_name(node))
+    candidates: set[str] = set()
+    for element in _global_elements(node):
+        if element.isAbstract():
+            continue
+        expanded = element.expandedInstanceName()
+        if _local_name(expanded) == local:
+            candidates.add(expanded)
+    if len(candidates) > 1:
+        _loss(
+            "root-ambiguous",
+            path,
+            f"Parker cannot select among the global elements named {local!r}: "
+            f"{sorted(candidates)!r}",
+            fidelity,
+        )
+
+
+def _parker_name_losses(
+    node: Any,
+    plan: LayoutPlan,
+    children: list[Any],
+    path: tuple[str | int, ...],
+    fidelity: Fidelity,
+) -> None:
+    """Reject a local child name the compiled schema cannot resolve uniquely."""
+    plan_names = {child.name for child in plan.children}
+    reported: set[str] = set()
+    for child in children:
+        local = _local_name(_element_expanded_name(child))
+        if local in reported:
+            continue
+        candidates = {name for name in plan_names if _local_name(name) == local}
+        if not candidates:
+            candidates = {
+                element.expandedInstanceName()
+                for element in _global_elements(node)
+                if _local_name(element.expandedInstanceName()) == local
+            }
+        if len(candidates) > 1:
+            reported.add(local)
+            _loss(
+                "name-ambiguous",
+                (*path, local),
+                f"Parker cannot reconstruct the local child name {local!r} "
+                f"from {sorted(candidates)!r}",
+                fidelity,
+            )
+
+
+def _parker_scalar(
+    value: Any,
+    *,
+    fidelity: Fidelity,
+    path: tuple[str | int, ...],
+) -> JsonValue:
+    """Convert a Parker scalar, reporting any QName namespace loss."""
+    if isinstance(value, QName):
+        return _parker_qname(value, fidelity=fidelity, path=path)
+    if isinstance(value, list):
+        return [
+            _parker_scalar(item, fidelity=fidelity, path=(*path, index))
+            for index, item in enumerate(value)
+        ]
+    return scalar_to_json(value, format="parker")
+
+
+def _parker_qname(
+    value: QName,
+    *,
+    fidelity: Fidelity,
+    path: tuple[str | int, ...],
+) -> str:
+    try:
+        expanded = value.to_expanded_name(strict=True)
+    except ValueError:
+        _loss(
+            "namespace-lost",
+            path,
+            f"Parker cannot carry the namespace of xs:QName {str(value)!r}",
+            fidelity,
+        )
+        return str(value)
+    if expanded.startswith("{"):
+        _loss(
+            "namespace-lost",
+            path,
+            f"Parker cannot carry the namespace of xs:QName {str(value)!r}",
+            fidelity,
+        )
+        return str(value)
+    return expanded
+
+
+# ---------------------------------------------------------------------------
+# BadgerFish
+# ---------------------------------------------------------------------------
+
+
+def _export_badgerfish(root: Any, *, fidelity: Fidelity) -> JsonValue:
+    """Export a root-retained BadgerFish object with deterministic prefixes."""
+    names = _LexicalNames(_known_names(root))
+    root_name = names.lexical(_element_expanded_name(root))
+    value = _badgerfish_node(root, (root_name,), fidelity=fidelity, names=names)
+    declarations = names.declarations()
+    if declarations:
+        declaration_values: dict[str, JsonValue] = dict(declarations)
+        if isinstance(value, dict):
+            value = {XMLNS_KEY: declaration_values, **value}
+        else:
+            value = {XMLNS_KEY: declaration_values, TEXT_KEY: value}
+    return {root_name: value}
+
+
+def _badgerfish_node(
+    node: Any,
+    path: tuple[str | int, ...],
+    *,
+    fidelity: Fidelity,
+    names: _LexicalNames,
+) -> JsonValue:
+    """Export one bound node with attributes, text, and grouped children."""
+    children = _content_children(node)
+    nilled = _is_nil(node)
+    actual_type = _explicit_type(node)
+    plan = plan_layout(type(node), explicit_type=actual_type is not None)
+
+    if nilled and (children or _node_text(node) or _has_non_whitespace_tail(node)):
+        _container_error(
+            path,
+            "a nilled element may carry attributes but no text or child content",
+        )
+
+    layout = plan.layout
+    attrs = _badgerfish_attributes(
+        node,
+        actual_type,
+        nilled=nilled,
+        path=path,
+        names=names,
+    )
+
+    if layout is Layout.EMPTY or layout is Layout.EMPTY_PLUS:
+        if children or _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"empty content for {_element_eqname(node)!r} has no container "
+                "for observed text or child elements",
+            )
+        return attrs
+
+    if layout is Layout.SIMPLE or layout is Layout.SIMPLE_PLUS:
+        if children:
+            _container_error(
+                path,
+                f"simple content for {_element_eqname(node)!r} cannot carry child elements",
+            )
+        if nilled:
+            return attrs
+        value = _lexical_scalar(node, format="badgerfish", path=path, names=names)
+        if attrs:
+            attrs[TEXT_KEY] = value
+            return attrs
+        return value
+
+    if nilled:
+        return attrs
+
+    if layout is Layout.LIST or layout is Layout.LIST_PLUS:
+        if _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"element-only list {_element_eqname(node)!r} cannot carry non-whitespace text",
+            )
+        result = attrs
+        result.update(
+            _badgerfish_list_children(plan, children, path, fidelity=fidelity, names=names)
+        )
+        return result
+
+    if layout is Layout.RECORD or layout is Layout.SEQUENCE:
+        if _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"element-only content {_element_eqname(node)!r} cannot carry non-whitespace text",
+            )
+        if layout is Layout.SEQUENCE:
+            _check_grouped_order(node, plan, children, path, fidelity)
+        result = attrs
+        result.update(_badgerfish_children(plan, children, path, fidelity=fidelity, names=names))
+        return result
+
+    return _badgerfish_mixed(node, plan, children, attrs, path, fidelity, names)
+
+
+def _badgerfish_mixed(
+    node: Any,
+    plan: LayoutPlan,
+    children: list[Any],
+    attrs: dict[str, JsonValue],
+    path: tuple[str | int, ...],
+    fidelity: Fidelity,
+    names: _LexicalNames,
+) -> JsonValue:
+    """Group mixed children and put concatenated direct text under ``$``."""
+    text = _mixed_text(node, children)
+    if not children:
+        if not text:
+            return attrs
+        value = _lexical_text_value(node, text, format="badgerfish", path=path, names=names)
+        if attrs:
+            attrs[TEXT_KEY] = value
+            return attrs
+        return value
+    if text:
+        _loss(
+            "mixed-content",
+            path,
+            f"BadgerFish cannot retain the text positions of element {_element_eqname(node)!r}",
+            fidelity,
+        )
+    if len({_element_expanded_name(child) for child in children}) > 1:
+        _loss(
+            "order-ambiguous",
+            path,
+            f"BadgerFish cannot retain the child order of mixed element {_element_eqname(node)!r}",
+            fidelity,
+        )
+    else:
+        _check_grouped_order(node, plan, children, path, fidelity)
+    result = attrs
+    if text:
+        result[TEXT_KEY] = text
+    result.update(_badgerfish_children(plan, children, path, fidelity=fidelity, names=names))
+    return result
+
+
+def _badgerfish_attributes(
+    node: Any,
+    actual_type: type | None,
+    *,
+    nilled: bool,
+    path: tuple[str | int, ...],
+    names: _LexicalNames,
+) -> dict[str, JsonValue]:
+    attrs: dict[str, JsonValue] = {}
+    if nilled:
+        attrs["@" + names.lexical(f"{{{XSI_NAMESPACE}}}nil", attribute=True)] = True
+    if actual_type is not None:
+        attrs["@" + names.lexical(f"{{{XSI_NAMESPACE}}}type", attribute=True)] = names.lexical(
+            _type_expanded_name(actual_type), attribute=True
+        )
+    raw_attributes = _usable_attribs(node)
+    for key in _attribute_keys(node):
+        lexical = names.lexical(_attribute_expanded_name(node, key), attribute=True)
+        attrs["@" + lexical] = _formatted_attribute_value(
+            node,
+            key,
+            raw_attributes[key],
+            format="badgerfish",
+            path=(*path, "@" + lexical),
+            names=names,
+        )
+    return attrs
+
+
+def _badgerfish_list_children(
+    plan: LayoutPlan,
+    children: list[Any],
+    path: tuple[str | int, ...],
+    *,
+    fidelity: Fidelity,
+    names: _LexicalNames,
+) -> dict[str, JsonValue]:
+    expected = plan.children[0].name
+    lexical = names.lexical(expected)
+    values: list[JsonValue] = []
+    for index, child in enumerate(children):
+        actual = _element_expanded_name(child)
+        if actual != expected:
+            _container_error(
+                (*path, lexical, index),
+                f"list content expected the child {expected!r}, not {actual!r}",
+            )
+        values.append(
+            _badgerfish_node(child, (*path, lexical, index), fidelity=fidelity, names=names)
+        )
+    if not values:
+        return {}
+    return {lexical: values}
+
+
+def _badgerfish_children(
+    plan: LayoutPlan,
+    children: list[Any],
+    path: tuple[str | int, ...],
+    *,
+    fidelity: Fidelity,
+    names: _LexicalNames,
+) -> dict[str, JsonValue]:
+    """Group children by expanded name in schema order, arrays per schema."""
+    groups: dict[str, list[Any]] = {}
+    for child in children:
+        groups.setdefault(_element_expanded_name(child), []).append(child)
+
+    plan_order = [child.name for child in plan.children]
+    repeatable = {
+        child.name: child.max_occurs is None or child.max_occurs > 1 for child in plan.children
+    }
+    plan_set = set(plan_order)
+    ordered = [name for name in plan_order if name in groups]
+    ordered.extend(name for name in groups if name not in plan_set)
+
+    result: dict[str, JsonValue] = {}
+    for name in ordered:
+        group = groups[name]
+        lexical = names.lexical(name)
+        is_array = repeatable.get(name, False) or len(group) > 1
+        values: list[JsonValue] = []
+        for index, child in enumerate(group):
+            child_path = (*path, lexical, index) if is_array else (*path, lexical)
+            values.append(_badgerfish_node(child, child_path, fidelity=fidelity, names=names))
+        result[lexical] = values if is_array else values[0]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# JsonML
+# ---------------------------------------------------------------------------
+
+
+def _export_jsonml(root: Any) -> JsonValue:
+    """Export the root as a nested JsonML array with root declarations."""
+    names = _LexicalNames(_known_names(root))
+    tag = names.lexical(_element_expanded_name(root))
+    result = _jsonml_node(root, (tag,), names=names)
+    declarations = names.declarations()
+    if declarations:
+        attrs: dict[str, JsonValue] = {
+            f"xmlns:{prefix}": uri for prefix, uri in declarations.items()
+        }
+        if len(result) > 1 and isinstance(result[1], dict):
+            attrs.update(result[1])
+            result[1] = attrs
+        else:
+            result.insert(1, attrs)
+    return result
+
+
+def _jsonml_node(
+    node: Any,
+    path: tuple[str | int, ...],
+    *,
+    names: _LexicalNames,
+) -> list[JsonValue]:
+    """Export one bound node as a positional JsonML array."""
+    children = _content_children(node)
+    nilled = _is_nil(node)
+    actual_type = _explicit_type(node)
+    plan = plan_layout(type(node), explicit_type=actual_type is not None)
+
+    if nilled and (children or _node_text(node) or _has_non_whitespace_tail(node)):
+        _container_error(
+            path,
+            "a nilled element may carry attributes but no text or child content",
+        )
+
+    tag = names.lexical(_element_expanded_name(node))
+    result: list[JsonValue] = [tag]
+    attrs = _jsonml_attributes(
+        node,
+        actual_type,
+        path=path,
+        names=names,
+    )
+    if attrs:
+        result.append(attrs)
+
+    if nilled:
+        result.append(None)
+        return result
+
+    layout = plan.layout
+    if layout is Layout.EMPTY or layout is Layout.EMPTY_PLUS:
+        if children or _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"empty content for {_element_eqname(node)!r} has no container "
+                "for observed text or child elements",
+            )
+        return result
+
+    if layout is Layout.SIMPLE or layout is Layout.SIMPLE_PLUS:
+        if children:
+            _container_error(
+                path,
+                f"simple content for {_element_eqname(node)!r} cannot carry child elements",
+            )
+        result.append(_lexical_scalar(node, format="jsonml", path=path, names=names))
+        return result
+
+    if layout is Layout.LIST or layout is Layout.LIST_PLUS:
+        if _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"element-only list {_element_eqname(node)!r} cannot carry non-whitespace text",
+            )
+        _append_jsonml_children(result, children, path, names)
+        return result
+
+    if layout is Layout.RECORD or layout is Layout.SEQUENCE:
+        if _has_non_whitespace_content(node):
+            _container_error(
+                path,
+                f"element-only content {_element_eqname(node)!r} cannot carry non-whitespace text",
+            )
+        _append_jsonml_children(result, children, path, names)
+        return result
+
+    text = _node_text(node)
+    if text:
+        result.append(_lexical_text_value(node, text, format="jsonml", path=path, names=names))
+    _append_jsonml_children(result, children, path, names, with_tails=True)
+    return result
+
+
+def _append_jsonml_children(
+    result: list[JsonValue],
+    children: list[Any],
+    path: tuple[str | int, ...],
+    names: _LexicalNames,
+    *,
+    with_tails: bool = False,
+) -> None:
+    for index, child in enumerate(children):
+        child_tag = names.lexical(_element_expanded_name(child))
+        result.append(_jsonml_node(child, (*path, index, child_tag), names=names))
+        if with_tails:
+            tail = getattr(child, "_tail_", None)
+            if tail:
+                result.append(str(tail))
+
+
+def _jsonml_attributes(
+    node: Any,
+    actual_type: type | None,
+    *,
+    path: tuple[str | int, ...],
+    names: _LexicalNames,
+) -> dict[str, JsonValue]:
+    attrs: dict[str, JsonValue] = {}
+    if actual_type is not None:
+        attrs[names.lexical(f"{{{XSI_NAMESPACE}}}type", attribute=True)] = names.lexical(
+            _type_expanded_name(actual_type), attribute=True
+        )
+    raw_attributes = _usable_attribs(node)
+    for key in _attribute_keys(node):
+        lexical = names.lexical(_attribute_expanded_name(node, key), attribute=True)
+        attrs[lexical] = _formatted_attribute_value(
+            node,
+            key,
+            raw_attributes[key],
+            format="jsonml",
+            path=(*path, lexical),
+            names=names,
+        )
+    return attrs
+
+
+# ---------------------------------------------------------------------------
+# Shared conventional-format helpers
+# ---------------------------------------------------------------------------
+
+
+class _LexicalNames:
+    """Deterministic lexical QNames and the declarations they require."""
+
+    def __init__(self, known_names: list[str]) -> None:
+        self._allocator = PrefixAllocator(known_names)
+        self._xsi = False
+
+    def lexical(self, expanded_name: str, *, attribute: bool = False) -> str:
+        uri, local = _uri_local(expanded_name)
+        if not uri:
+            return local
+        if uri == XSI_NAMESPACE:
+            self._xsi = True
+            return f"xsi:{local}"
+        if uri == _XML_NAMESPACE:
+            return f"xml:{local}"
+        return self._allocator.lexical(expanded_name, attribute=attribute)
+
+    def declarations(self) -> dict[str, str]:
+        result = dict(self._allocator.frame())
+        if self._xsi:
+            result["xsi"] = XSI_NAMESPACE
+        return dict(sorted(result.items()))
+
+
+def _known_names(root: Any) -> list[str]:
+    """Schema-known element and attribute names used for prefix allocation."""
+    names: set[str] = {_element_expanded_name(root)}
+    pending: list[type] = [type(root)]
+    for node in _walk_nodes(root):
+        if getattr(node, "_descriptor_", None) is not None:
+            names.add(_element_expanded_name(node))
+            pending.append(type(node))
+
+    seen: set[type] = set()
+    while pending:
+        datatype = pending.pop()
+        if datatype in seen:
+            continue
+        seen.add(datatype)
+        plan = plan_layout(datatype)
+        for child_plan in plan.children:
+            names.add(child_plan.name)
+            pending.append(child_plan.declaration.getType())
+        for klass in datatype.__mro__:
+            for key in klass.__dict__.get("_attributeNames_", ()):
+                descriptor = klass.__dict__[key]
+                names.add(descriptor.expandedInstanceName(is_attribute=True))
+    return sorted(names)
+
+
+def _walk_nodes(node: Any) -> list[Any]:
+    nodes = [node]
+    for child in _content_children(node):
+        nodes.extend(_walk_nodes(child))
+    return nodes
+
+
+def _global_elements(node: Any) -> tuple[Any, ...]:
+    descriptor = getattr(node, "_descriptor_", None)
+    if descriptor is None:
+        return ()
+    schema = descriptor.getSchema()
+    return tuple(schema.elements)
+
+
+def _uri_local(expanded_name: str) -> tuple[str, str]:
+    eqname = expanded_to_eqname(expanded_name)
+    if not eqname.startswith("Q{"):
+        return "", eqname
+    end = eqname.find("}", 2)
+    return eqname[2:end], eqname[end + 1 :]
+
+
+def _local_name(expanded_name: str) -> str:
+    return _uri_local(expanded_name)[1]
+
+
+def _lexical_scalar(
+    value: Any,
+    *,
+    format: FormatName,
+    path: tuple[str | int, ...],
+    names: _LexicalNames,
+) -> JsonValue:
+    if isinstance(value, QName):
+        return _lexical_qname(value, path=path, names=names)
+    if isinstance(value, list):
+        return [
+            _lexical_scalar(item, format=format, path=(*path, index), names=names)
+            for index, item in enumerate(value)
+        ]
+    return scalar_to_json(value, format=format)
+
+
+def _lexical_qname(
+    value: QName,
+    *,
+    path: tuple[str | int, ...],
+    names: _LexicalNames,
+) -> str:
+    try:
+        expanded = value.to_expanded_name(strict=True)
+    except ValueError as exc:
+        raise_conversion("namespace-unresolved", json_pointer(path), str(exc))
+    if not expanded.startswith("{"):
+        return expanded
+    return names.lexical(expanded)
+
+
+def _lexical_text_value(
+    node: Any,
+    text: str,
+    *,
+    format: FormatName,
+    path: tuple[str | int, ...],
+    names: _LexicalNames,
+) -> JsonValue:
+    if isinstance(node, XsdDataType):
+        return _lexical_scalar(node, format=format, path=path, names=names)
+    return text
+
+
+def _formatted_attribute_value(
+    node: Any,
+    key: str,
+    raw: str,
+    *,
+    format: FormatName,
+    path: tuple[str | int, ...],
+    names: _LexicalNames,
+) -> JsonValue:
+    declared = _declared_attribute(node, key)
+    if declared is not None:
+        typed = node.__dict__.get(declared[0])
+        if typed is not None:
+            return _lexical_scalar(typed, format=format, path=path, names=names)
+    return raw
+
+
+def _check_grouped_order(
+    node: Any,
+    plan: LayoutPlan,
+    children: list[Any],
+    path: tuple[str | int, ...],
+    fidelity: Fidelity,
+) -> None:
+    """Reject child order a grouped object cannot reconstruct."""
+    if not children:
+        return
+    observed = [_element_expanded_name(child) for child in children]
+    seen: set[str] = set()
+    first_order: list[str] = []
+    previous: str | None = None
+    for name in observed:
+        if name != previous and name in seen:
+            _loss(
+                "order-ambiguous",
+                path,
+                f"grouped export of element {_element_eqname(node)!r} cannot retain "
+                f"the interleaving of child {name!r}",
+                fidelity,
+            )
+            return
+        if name not in seen:
+            seen.add(name)
+            first_order.append(name)
+        previous = name
+
+    plan_order = [child.name for child in plan.children]
+    known = [name for name in plan_order if name in seen]
+    extras = [name for name in first_order if name not in set(plan_order)]
+    if first_order != known + extras:
+        _loss(
+            "order-ambiguous",
+            path,
+            f"grouped export of element {_element_eqname(node)!r} cannot reconstruct "
+            "its child order",
+            fidelity,
+        )
+
+
+def _mixed_text(node: Any, children: list[Any]) -> str:
+    pieces: list[str] = []
+    text = _node_text(node)
+    if text:
+        pieces.append(text)
+    for child in children:
+        tail = getattr(child, "_tail_", None)
+        if tail:
+            pieces.append(str(tail))
+    return "".join(pieces)
+
+
+def _loss(
+    code: str,
+    path: tuple[str | int, ...],
+    message: str,
+    fidelity: Fidelity,
+) -> None:
+    if fidelity == "strict":
+        raise_conversion(code, json_pointer(path), message)
+    warn_conversion(code, json_pointer(path), message)
+
+
+# ---------------------------------------------------------------------------
 # Names, attributes, and nil
 # ---------------------------------------------------------------------------
 
@@ -504,6 +1373,18 @@ def _attribute_eqname(node: Any, key: str) -> str:
     return expanded_to_eqname(key)
 
 
+def _attribute_expanded_name(node: Any, key: str) -> str:
+    """The Clark expanded name of one observed attribute."""
+    if key.startswith("{"):
+        return key
+    if key.startswith("xsi:"):
+        return f"{{{XSI_NAMESPACE}}}{key.split(':', 1)[1]}"
+    declared = _declared_attribute(node, key)
+    if declared is not None:
+        return declared[1].expandedInstanceName(is_attribute=True)
+    return key
+
+
 def _attribute_value(node: Any, key: str, raw: str) -> JsonValue:
     declared = _declared_attribute(node, key)
     if declared is not None:
@@ -549,8 +1430,8 @@ def _attribute_map(node: Any, type_name: str | None, *, sort: bool) -> dict[str,
     return dict(sorted(result.items()))
 
 
-def _explicit_type_eqname(node: Any) -> str | None:
-    """The marker for an actual type the declared type does not determine."""
+def _explicit_type(node: Any) -> type | None:
+    """The actual type when the declared type does not determine it."""
     attributes = getattr(node, "_attribs_", None) or {}
     raw = attributes.get("xsi:type", attributes.get(XSI_TYPE))
     if raw is None:
@@ -560,10 +1441,20 @@ def _explicit_type_eqname(node: Any) -> str | None:
     declared = getter() if callable(getter) else None
     if declared is type(node):
         return None
-    return _type_eqname(type(node))
+    return type(node)
+
+
+def _explicit_type_eqname(node: Any) -> str | None:
+    """The marker for an actual type the declared type does not determine."""
+    datatype = _explicit_type(node)
+    return None if datatype is None else _type_eqname(datatype)
 
 
 def _type_eqname(datatype: type) -> str:
+    return expanded_to_eqname(_type_expanded_name(datatype))
+
+
+def _type_expanded_name(datatype: type) -> str:
     name = getattr(datatype, "name", None) or datatype.__name__
     namespace = getattr(datatype, "_targetNamespace_", None)
     if (
@@ -572,8 +1463,7 @@ def _type_eqname(datatype: type) -> str:
         and datatype.__module__ == "pyxsd.xsd_data_types"
     ):
         namespace = XSD_NS
-    expanded = f"{{{namespace}}}{name}" if namespace else name
-    return expanded_to_eqname(expanded)
+    return f"{{{namespace}}}{name}" if namespace else name
 
 
 def _has_non_whitespace_content(node: Any) -> bool:
