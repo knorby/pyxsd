@@ -238,13 +238,21 @@ assert qname_document.to_data(format="pyxsd-json") == qname_data
 qname_copy = qname_schema.from_json(qname_document.to_json(format="pyxsd-json"))
 qname_copy.require_valid()
 assert qname_copy.to_data(format="pyxsd-json") == qname_data
+
+qname_reparsed = qname_schema.parse(StringIO(qname_document.to_string()))
+qname_reparsed.require_valid()
+assert qname_reparsed.to_data(format="pyxsd-json") == qname_data
 ```
 
-QName JSON round trips retain expanded names. XML output has a current
-limitation: a generated QName-value prefix can collide with a prefix the
-XML writer assigns to an element name. A value-only namespace can then be
-lost or rebound in `to_string()` output. Check expanded QName values after
-reparsing XML; a valid report alone does not detect a changed namespace.
+QName JSON round trips retain expanded names (namespace URI and local name).
+In namespace-aware mode, `to_string()` also preserves resolved QName values
+in element content, declared attributes, and XSD lists, for both imported
+and XML-parsed documents. The writer declares namespaces used only by these
+values and re-spells the values with its selected prefixes, including values
+originally resolved through a default namespace. Prefixes and source bytes
+are not preserved; compare expanded names rather than lexical spellings.
+Unresolved QName values pass through unchanged; the writer does not invent
+missing namespace bindings.
 
 The same schema must not import or parse concurrently or reentrantly.
 Separate `Schema` objects can compile and parse concurrently.
