@@ -207,9 +207,9 @@ artifacts.
 }
 ```
 
-`CompileOptions` defaults to lax value retention with strict namespace handling,
-matching the Python and CLI defaults. To match historical local names, set
-`"namespaces": "legacy"` on that schema reference explicitly.
+`CompileOptions` defaults to lax value retention with strict namespace handling;
+strict namespaces match the Python and CLI default. To match historical local
+names, set `"namespaces": "legacy"` on that schema reference explicitly.
 
 References contain only a path. There are no input revisions, leases, owners, or
 revision pins. Each operation copies the current uploaded set into a private
