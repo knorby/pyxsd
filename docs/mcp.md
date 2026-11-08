@@ -238,7 +238,7 @@ infer a schema revision from a changed capture fingerprint alone.
 | `pyxsd_compare_schemas` | Diffs two schemas and validates an explicit corpus or a bounded `corpus_glob` selection under both. |
 | `pyxsd_preview_transform` | Runs a trusted-local transform, independently validates the candidate, and retains candidate/report/diff outputs. |
 | `pyxsd_list_artifacts` | Lists retained outputs in stable creation order with an opaque cursor. |
-| `pyxsd_read_artifact` | Returns bytes from an offset as base64 with digest, media type, and local path; omitted `length` reads through EOF. |
+| `pyxsd_read_artifact` | Returns bytes from an offset as base64 with digest, media type, and local path; omitted `length` uses the configured read default when limits are enabled and reads through EOF otherwise. |
 | `pyxsd_delete_artifact` | Explicitly deletes one retained output; repeating the call is harmless. |
 
 ## Artifacts
@@ -250,7 +250,8 @@ same way. Listing and reading return the local absolute path, size, SHA-256 dige
 media type, creation time, and kind.
 
 `pyxsd_read_artifact` reads from an offset and either a requested `length` or,
-when `length` is omitted, through end of file:
+when `length` is omitted, the configured `artifact_read_bytes` default. With
+resource limits disabled, an omitted length reads through end of file:
 
 ```json
 {"artifact_id": "<32-hex ID>", "offset": 0, "length": 8192}

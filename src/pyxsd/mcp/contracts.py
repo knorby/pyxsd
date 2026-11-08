@@ -184,7 +184,8 @@ class ReadArtifactRequest(WireModel):
         Field(
             description=(
                 "Bytes to read; oversized ranges fault with response_limit. "
-                "Omit to read through EOF."
+                "Omit to use artifact_read_bytes when limits are enabled, or read "
+                "through EOF when disabled."
             )
         ),
     ] = None
