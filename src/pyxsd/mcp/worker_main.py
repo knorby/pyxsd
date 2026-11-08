@@ -87,7 +87,7 @@ def _parse(
         policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
         document = parse_document(
             "/workspace/" + operation.document.path,
-            mode=ParseModes.LAX,
+            mode=ParseModes.LAX_NAMESPACED,
             resource_policy=policy,
         )
         require_complete_schema(document.schema)
@@ -181,7 +181,7 @@ def _parse_batch(
                     policy = InputResourcePolicy(capture_from_wire(operation.capture), cache.limits)
                     document = parse_document(
                         "/workspace/" + current.document.path,
-                        mode=ParseModes.LAX,
+                        mode=ParseModes.LAX_NAMESPACED,
                         resource_policy=policy,
                     )
                     require_complete_schema(document.schema)

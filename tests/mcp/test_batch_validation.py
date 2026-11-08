@@ -14,8 +14,11 @@ import anyio
 from pyxsd.mcp.config import Limits
 from pyxsd.mcp.contracts import (
     BatchValidationItem,
+    CompileOptions,
     FileRef,
     InlineFile,
+    SchemaRef,
+    ValidateDocumentRequest,
     ValidateDocumentsRequest,
 )
 from pyxsd.mcp.errors import ToolError
@@ -40,6 +43,16 @@ GOOD_A = "<root-a><value>1</value></root-a>"
 BAD_A = "<root-a><value>nope</value></root-a>"
 GOOD_B = "<root-b><name>x</name></root-b>"
 MALFORMED = "<root-a><value>1</value>"
+SCHEMA_NS = """<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="urn:expected" elementFormDefault="qualified">
+  <xs:element name="root" type="xs:string"/>
+</xs:schema>"""
+WRONG_NS_HINT = (
+    '<root xmlns="urn:other" '
+    'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+    'xsi:schemaLocation="urn:expected schema-ns.xsd">text</root>'
+)
 
 
 @asynccontextmanager
@@ -79,9 +92,14 @@ def item(path, schema):
 
 
 def ref(path):
-    from pyxsd.mcp.contracts import SchemaRef
-
     return SchemaRef(source=FileRef(path=path))
+
+
+def legacy_ref(path):
+    return SchemaRef(
+        source=FileRef(path=path),
+        options=CompileOptions(namespaces="legacy"),
+    )
 
 
 def spy(service):
@@ -259,6 +277,69 @@ def test_hinted_schema_missing_include_fails_closed(tmp_path):
                         document=FileRef(path="hinted.xml"),
                     )
                 )
+
+    anyio.run(scenario)
+
+
+def test_singular_hinted_validation_matches_explicit_default_namespaces(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema-ns.xsd": SCHEMA_NS, "wrong-ns.xml": WRONG_NS_HINT},
+            )
+            hinted = await service.validate_document(
+                ValidateDocumentRequest(
+                    workspace_id=workspace,
+                    document=FileRef(path="wrong-ns.xml"),
+                )
+            )
+            explicit = await service.validate_document(
+                ValidateDocumentRequest(
+                    workspace_id=workspace,
+                    document=FileRef(path="wrong-ns.xml"),
+                    schema_ref=ref("schema-ns.xsd"),
+                )
+            )
+            legacy = await service.validate_document(
+                ValidateDocumentRequest(
+                    workspace_id=workspace,
+                    document=FileRef(path="wrong-ns.xml"),
+                    schema_ref=legacy_ref("schema-ns.xsd"),
+                )
+            )
+            assert hinted.data["valid"] is False
+            assert hinted.data.get("fault") is None
+            assert explicit.data["valid"] is False
+            assert explicit.data.get("fault") is None
+            assert legacy.data["valid"] is True
+            assert legacy.data.get("fault") is None
+
+    anyio.run(scenario)
+
+
+def test_batch_hinted_validation_matches_explicit_default_namespaces(tmp_path):
+    async def scenario():
+        async with harness(tmp_path) as (service, inputs, _pool, workspace):
+            await upload(
+                inputs,
+                workspace,
+                {"schema-ns.xsd": SCHEMA_NS, "wrong-ns.xml": WRONG_NS_HINT},
+            )
+            envelope = await service.validate_documents(
+                ValidateDocumentsRequest(
+                    workspace_id=workspace,
+                    documents=(
+                        item("wrong-ns.xml", None),
+                        item("wrong-ns.xml", ref("schema-ns.xsd")),
+                        item("wrong-ns.xml", legacy_ref("schema-ns.xsd")),
+                    ),
+                )
+            )
+            results = envelope.data["results"]
+            assert [result["valid"] for result in results] == [False, False, True]
+            assert all(result["fault"] is None for result in results)
 
     anyio.run(scenario)
 
