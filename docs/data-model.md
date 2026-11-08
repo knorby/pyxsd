@@ -46,10 +46,12 @@ comments.
 ## Dict and JSON export
 
 `Document.to_dict()` exports the native structure with raw Python/XSD
-scalar values. `Document.to_data()` keeps that structure with JSON-safe
-values, and `Document.to_json()` encodes those values with the standard
-`json` module. Both default to `format="pyxsd"`; `format="pyxsd-json"`
-selects root-preserving, schema-driven layouts instead.
+scalar values. `Document.to_data()` exports JSON-safe values, and
+`Document.to_json()` encodes those values with the standard `json` module.
+Both default to the native structure (`format="pyxsd"`). Other formats are
+`pyxsd-json` (root-preserving, schema-driven layouts), `parker` (root-absorbed
+grouped content without attributes), `badgerfish` (root-preserving grouped
+content with attributes and namespaces), and `jsonml` (positional arrays).
 
 The shipped `ToDict` transform exposes the raw native export to
 `Document.transform` and the CLI (`--transform ToDict()`), which renders
@@ -81,15 +83,19 @@ content, `xs:anyType`, wildcard pass-through), `$` holds all of the
 element's recorded character data in document order: the verbatim leading
 text followed by every child's `_tail_`, concatenated. The dict shape
 cannot represent text/element interleaving or interleaved repeated child
-names. Use `to_string()`, `xpath()`, or schema-driven `pyxsd-json` export
-when those positions matter. A wildcard attribute has only its lexical form.
+names. Use `to_string()`, `xpath()`, `pyxsd-json`, or `jsonml` export when
+those positions matter. Parker and BadgerFish also group children; strict
+export rejects their representational losses, while best effort warns and
+uses documented fallbacks. A wildcard attribute has only its lexical form.
 
 `to_dict()` keeps raw scalar objects. JSON-safe export converts decimals
 and dates to strings, typed XSD list values to arrays, and non-finite floats
 to `"INF"`, `"-INF"`, or `"NaN"`. Native `fidelity="strict"` audits
 representation losses; the default best-effort export keeps the grouped
-shape without new warnings. For exact layouts, namespace and scalar rules,
-nil markers, and fidelity errors, see:
+shape without new warnings. Only native export accepts non-default `typed`
+and `always_list` options. JsonML uses typed content items as an extension
+to lexical-only JsonML. For exact layouts, namespace and scalar rules, nil
+markers, and fidelity errors, see:
 
 ```{toctree}
 :maxdepth: 1

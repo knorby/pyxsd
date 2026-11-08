@@ -2,7 +2,7 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Export bound XML as JSON-safe Python data or JSON text, using native or schema-driven structures with explicit value and fidelity rules.
+   :description: Export bound XML as JSON-safe Python data or JSON text in native, schema-driven, Parker, BadgerFish, or JsonML formats with explicit fidelity rules.
 ```
 
 `Document.to_data()` exports the bound tree as JSON-safe Python values.
@@ -13,6 +13,12 @@
 - `format="pyxsd-json"` retains the root name and uses the compiled schema
   to select scalar, object, or array layouts. Ordered and mixed content
   keep their positions.
+- `format="parker"` absorbs the root, omits attributes, and groups children
+  by local name.
+- `format="badgerfish"` retains the root, attributes, and namespace bindings
+  in a grouped structure.
+- `format="jsonml"` uses nested arrays to retain tags, attributes, and
+  text/element order.
 
 These exports need no optional dependencies. The {doc}`integrations`
 provide a separate Pydantic model projection and Arrow/Parquet records;
@@ -50,12 +56,23 @@ data = document.to_data(format="pyxsd-json")
 assert data == {"dates": ["2026-01-01", "2026-02-01"]}
 text = document.to_json(format="pyxsd-json", indent=2)
 assert json.loads(text) == data
+assert document.to_data(format="parker", fidelity="strict") == {
+    "date": ["2026-01-01", "2026-02-01"]
+}
+assert document.to_data(format="badgerfish", fidelity="strict") == {
+    "dates": {"date": ["2026-01-01", "2026-02-01"]}
+}
+assert document.to_data(format="jsonml", fidelity="strict") == [
+    "dates",
+    ["date", "2026-01-01"],
+    ["date", "2026-02-01"],
+]
 ```
 
 Both methods accept keyword-only `format`, `fidelity="best-effort"`,
 `typed=True`, and `always_list=False`. `to_json()` also accepts `indent=None`.
 `typed` and `always_list` are native-only options: `typed=False` or
-`always_list=True` with `pyxsd-json` raises `ValueError`.
+`always_list=True` with any other format raises `ValueError`.
 
 Export reads the current bound tree; it neither revalidates it nor requires
 a valid report. Call `require_valid()` when validity is a prerequisite, or
@@ -64,7 +81,7 @@ without a bound root raises `PyXSDError`.
 
 ## Scalar values
 
-With the default `typed=True`, both formats use these JSON-safe values:
+With the default `typed=True`, all five formats use these JSON-safe values:
 
 | Bound value | JSON value |
 | --- | --- |
@@ -74,7 +91,7 @@ With the default `typed=True`, both formats use these JSON-safe values:
 | Finite float or double | Number |
 | Non-finite float or double | `"INF"`, `"-INF"`, or `"NaN"` |
 | XSD list value | Array, including zero or one item |
-| QName | EQName string in `pyxsd-json`; lexical QName in native export |
+| QName | EQName string in `pyxsd-json`; lexical QName in the other formats |
 | Other atomic values, including dates, durations, binary values, and URIs | Datatype lexical string |
 
 Python data uses `bool` and `None` where JSON uses booleans and `null`.
@@ -241,6 +258,133 @@ an empty repeated-child container is `[]`; an empty record or attribute
 object is `{}`. Defaults already applied by binding are exported as bound
 values, not as their original empty lexical input.
 
+## Parker structure
+
+Parker absorbs the root without a `$` wrapper: a simple root is its scalar
+value, a nilled root is `null`, and empty element-only content is `{}`.
+Children use local-name properties. Only actual repeats become arrays;
+one occurrence stays a scalar or object even when the schema permits more.
+Absent children have no property.
+
+```json
+{"date": ["2026-01-01", "2026-02-01"]}
+```
+
+Parker omits attributes and namespace declarations. It can retain
+unambiguous local names, but not namespace-dependent QName values or
+ambiguous names. Strict mode rejects those losses; best effort warns and
+uses the fallbacks below. Text-only mixed content becomes a scalar. With
+children, best effort concatenates leading text and child tails under `$`,
+losing their positions:
+
+```json
+{"$": "This is a  mess!", "i": "fine"}
+```
+
+Empty simple string content is `""`, an empty XSD list value is `[]`, and
+nil is `null`; absence means an omitted child property. Parker's nil marker
+does not require keeping the source `xsi:nil` attribute.
+
+## BadgerFish structure
+
+BadgerFish retains the root as a single-entry object. Attributes use `@`
+plus a lexical name. A simple element without attributes is a scalar;
+with attributes, its text uses `$`:
+
+```json
+{"root": {"@id": "r", "$": "text"}}
+```
+
+Children become lexical-name properties. A schema-repeatable child uses an
+array whenever present, even for one occurrence. Absent children, including
+repeatable ones, have no property. Actual repeats of a non-repeatable name
+also become an array rather than discarding values.
+
+```json
+{"dates": {"date": ["2026-01-01"]}}
+```
+
+Empty complex content is an attribute object, or `{}` without attributes.
+Empty simple string content is `""`; an empty XSD list value is `[]`.
+Nil uses `"@xsi:nil": true`, not `null` or `$`, and retains other attributes
+but no text or children:
+
+```json
+{"root": {
+  "@xmlns": {"xsi": "http://www.w3.org/2001/XMLSchema-instance"},
+  "@xsi:nil": true,
+  "@id": "r"
+}}
+```
+
+An explicit actual type uses `@xsi:type` with a lexical QName value; a
+redundant type equal to the declared type is omitted. Namespace declarations
+use `@xmlns` on the root value. If that value would be a scalar or XSD list
+array, declarations require wrapping it under `$`:
+
+```json
+{"ns0:root": {"@xmlns": {"ns0": "urn:example"}, "$": "x"}}
+```
+
+Mixed text with children and unreconstructable child order use the same
+grouping fallbacks as Parker, with warnings in best-effort mode. BadgerFish
+does not add an ordered-array extension.
+
+## JsonML structure
+
+JsonML returns an array, not a root object: `[tag, attributes?, ...content]`.
+Child elements are nested JsonML arrays. Attribute names have no `@` prefix;
+the attribute object is omitted when empty. Repetition never changes this
+shape: every child occurrence has its own array, and absent children have
+no entry.
+
+```json
+["para", {"id": "p1"}, "This is a ", ["i", "fine"], " mess!"]
+```
+
+Direct text, children, and child tails retain their bound positions. Mixed
+whitespace is preserved; whitespace-only element-only layout text is
+discarded. Like `pyxsd-json`, this retains bound content, not source text-node
+segmentation, comments, or original prefixes.
+
+Simple content uses the common typed scalar policy. **Typed content items
+are a pyxsd extension to JsonML**, not a claim that lexical-only JsonML
+consumers accept them. Numbers and booleans remain typed, decimals remain
+strings, and an XSD list value occupies one array-valued content item:
+
+```json
+["root", ["a", "b"]]
+```
+
+Here the schema identifies the content as an XSD list, not a child tag `a`.
+Empty simple string content is `["root", ""]`; empty complex content is
+`["root"]`. Nil adds one `null` content item after any attributes, with no
+other content: `["root", {"id": "r"}, null]`. It does not add `xsi:nil`.
+An explicit actual type uses an `xsi:type` attribute with a lexical QName.
+
+## Lexical namespaces in BadgerFish and JsonML
+
+Both formats synthesize deterministic lexical QNames rather than preserving
+source prefixes. Schema-known namespace URIs receive sorted `ns0`, `ns1`,
+… prefixes, including reservations for optional absent declarations.
+Wildcard-only names and QName-value-only namespaces use stable
+`ns_<hex(uri)>` prefixes. Unnamespaced names stay local; `xsi` is declared
+when used, while `xml` is implicitly bound.
+
+Only used bindings are emitted, sorted by prefix, once at the root for the
+whole subtree. BadgerFish uses `@xmlns`; JsonML adds `xmlns:prefix` keys to
+the root attribute object:
+
+```json
+["ns0:root", {"xmlns:ns0": "urn:example"}, ["ns0:child", "v"]]
+```
+
+Export uses explicit prefixes, not a default namespace (`$` inside a
+BadgerFish `@xmlns` map). QName values and `xsi:type` reuse these bindings,
+including namespaces used only in values. An unresolved QName raises
+`namespace-unresolved` in both fidelity modes. Prefer namespace-aware
+binding so QName values retain their namespace context.
+
 ## Ordering and fidelity
 
 Export is deterministic for the same bound tree. In `pyxsd-json`, repeated,
@@ -263,7 +407,36 @@ order is not semantic.
   layout, such as unexpected attributes on a scalar, repeated record
   children, or a nilled element carrying content. They do not silently drop
   that content to fit the layout.
+- Parker and BadgerFish raise `PyXSDError` for the losses below in strict
+  mode. Best effort applies the listed fallback and emits `PyXSDWarning`
+  for each reported loss.
+- JsonML defines no representational-loss fallback: both modes preserve
+  ordered/mixed content and return the same data without loss warnings.
+
+| Format | Loss code | Best-effort fallback |
+| --- | --- | --- |
+| Parker | `attributes-lost` | Omit actual ordinary attributes and any required explicit type marker. |
+| Parker | `namespace-lost` | Keep a namespace-dependent or unresolved QName's lexical spelling without its context. |
+| Parker | `name-ambiguous` | Keep the local child key; colliding values share an array rather than selecting a declaration. |
+| Parker | `root-ambiguous` | Keep root absorption without resolving which concrete global root shares the local name. |
+| Parker, BadgerFish | `mixed-content` | Group children and concatenate leading text and tails under `$`. |
+| Parker, BadgerFish | `order-ambiguous` | Group children in schema order, then wildcard extras in first-observed order; retain occurrence order within each group. |
+
+The grouped-order audit detects interleaved repeats (`a, b, a`), child
+order that differs from the schema's reconstructable order, and mixed
+content with more than one distinct child name. Ordered unique children
+that follow schema order need not raise. Text-only mixed content does not
+lose positions and need not raise either.
+
+Parker, BadgerFish, and JsonML reject incompatible bound containers with
+`container-invalid` in either mode: for example, children in simple/empty
+content, non-whitespace text in element-only content, or content on a
+nilled element. Best effort is not permission to silently discard invalid
+content. BadgerFish and JsonML export actual attributes with bound typed
+values where available, otherwise lexical strings; binding-synthesized
+attribute defaults are not added to the actual attribute map.
 
 Conversion errors carry reason codes such as `container-invalid` and a
-JSON Pointer path (RFC 6901); the empty pointer denotes the whole value.
+JSON Pointer path (RFC 6901); loss warnings carry them too. The empty pointer
+denotes the whole value.
 Unknown format or fidelity names and inapplicable options raise `ValueError`.
