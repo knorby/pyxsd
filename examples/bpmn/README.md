@@ -100,14 +100,14 @@ semantic id (not the shape's own DI id).
 
 ## Two things worth knowing
 
-**Strict namespace mode is mandatory.** In pyxsd's default (legacy)
-namespace mode, components merge by local name, so `BPMNShape` and
-`BPMNEdge` no longer see `di:DiagramElement` as their substitution-group
-head; schema compilation reports two errors and every document then fails
-with sixteen. `examples/bpmn/common/schemas.py` pins
-`ParseModes.STRICT.replace(namespaces="strict")` for `bpmn`: the schema
-compiles with zero issues, and all four pinned samples parse with zero
-report issues.
+**Namespace-aware mode is mandatory.** `ParseModes.NAMESPACED` is now the
+default, and this example pins it explicitly. In the legacy local-name mode,
+components merge by local name, so `BPMNShape` and `BPMNEdge` no longer see
+`di:DiagramElement` as their substitution-group head; schema compilation
+reports two errors and every document then fails with sixteen.
+`examples/bpmn/common/schemas.py` uses `ParseModes.NAMESPACED` for `bpmn`:
+the schema compiles with zero issues, and all four pinned samples parse with
+zero report issues.
 
 **Ignore the file's `xsi:schemaLocation`.** Real files often point at dead
 URLs (the starter diagram points at a `20100501` path that returns 404).

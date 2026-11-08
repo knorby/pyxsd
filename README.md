@@ -110,11 +110,13 @@ and analytical workflows. Each family documents its inputs and setup.
 ## Scope and limits
 
 pyxsd supports XSD 1.1 with an optional XSD 1.0 mode. Namespace-aware binding
-is opt-in (`ParseModes.NAMESPACED` or `--namespaces strict`); the default matches
-local names for compatibility. See [binding modes](https://pyxsd.knorby.com/binding.html),
+is the default (`ParseModes.NAMESPACED` and CLI `--namespaces strict`). Pass
+`ParseModes.STRICT`, `ParseModes.LAX`, or `--namespaces legacy` explicitly when
+a document needs the historical local-name matching. See
+[binding modes](https://pyxsd.knorby.com/binding.html),
 [supported features and gaps](https://pyxsd.knorby.com/supported.html), and
-[W3C test-suite results](https://pyxsd.knorby.com/xsts.html) before choosing it
-for a particular schema.
+[W3C test-suite results](https://pyxsd.knorby.com/xsts.html) before choosing
+it for a particular schema.
 
 Parsing materializes the XML tree. Validation does not repair invalid input,
 and the Python object tree is not a lossless source representation. Read the

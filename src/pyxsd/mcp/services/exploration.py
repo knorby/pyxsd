@@ -117,9 +117,10 @@ _EXPLANATIONS: dict[str, dict[str, JsonValue]] = {
         "summary": "A substitutionGroup QName names no global element declaration.",
         "actions": [
             "Check the QName's prefix binding and the expanded head declaration identity.",
-            "Call pyxsd_inspect_schema with view diagnostics for measured strict-namespace evidence.",
+            "For an explicit legacy reference, call pyxsd_inspect_schema with view "
+            "diagnostics for measured strict-namespace evidence.",
         ],
-        "uncertainty": "Legacy mode already resolves many prefixed heads; strict namespaces are not guaranteed to help.",
+        "uncertainty": "Default strict handling has no further namespace alternative to probe; legacy mode already resolves many prefixed heads.",
     },
 }
 

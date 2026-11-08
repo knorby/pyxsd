@@ -116,7 +116,7 @@
         </w:numPr>
       </w:pPr>
       <w:r>
-        <w:t>Legacy parsing is unchanged by default.</w:t>
+        <w:t>Legacy parsing remains available on request.</w:t>
       </w:r>
     </w:p>
     <w:tbl>

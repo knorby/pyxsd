@@ -17,13 +17,14 @@ _xs = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 _XS = 'xmlns:xs="http://www.w3.org/2001/XMLSchema"'
 
 
-def _parse(schema_text, instance_text, tmp_path):
+def _parse(schema_text, instance_text, tmp_path, *, mode=None):
     """Compiles an inline schema and binds an inline instance document."""
     schema_path = tmp_path / "schema.xsd"
     schema_path.write_text(schema_text)
     instance_path = tmp_path / "instance.xml"
     instance_path.write_text(instance_text)
-    return Schema.compile(str(schema_path)).parse(str(instance_path))
+    kwargs = {} if mode is None else {"mode": mode}
+    return Schema.compile(str(schema_path), **kwargs).parse(str(instance_path))
 
 
 def _catalog_schema(constraints, item_content="", item_attrs=""):
@@ -646,7 +647,7 @@ class TestKeyrefReferLegality:
     def test_refer_to_key_in_target_namespace_resolves(self, tmp_path):
         """A prefixed ``refer`` naming a key in the keyref's own target
         namespace resolves by Clark name."""
-        target = 'xmlns:t="urn:t" targetNamespace="urn:t"'
+        target = 'xmlns:t="urn:t" targetNamespace="urn:t" elementFormDefault="qualified"'
         schema = (
             f"<xs:schema {_xs} {target}>\n"
             '  <xs:element name="root"><xs:complexType><xs:sequence>\n'
@@ -656,17 +657,17 @@ class TestKeyrefReferLegality:
             "      </xs:complexType>\n"
             "    </xs:element>\n"
             "  </xs:sequence></xs:complexType>\n"
-            '    <xs:key name="k"><xs:selector xpath="uid"/>\n'
+            '    <xs:key name="k"><xs:selector xpath="t:uid"/>\n'
             '      <xs:field xpath="@val"/></xs:key>\n'
             '    <xs:keyref name="kr" refer="t:k">\n'
-            '      <xs:selector xpath="uid"/>\n'
+            '      <xs:selector xpath="t:uid"/>\n'
             '      <xs:field xpath="@val"/>\n'
             "    </xs:keyref>\n"
             "  </xs:element>\n"
             "</xs:schema>"
         )
         instance = '<t:root xmlns:t="urn:t"><t:uid val="1"/></t:root>'
-        doc = _parse(schema, instance, tmp_path)
+        doc = _parse(schema, instance, tmp_path, mode=ParseModes.NAMESPACED)
         assert not doc.report.has_errors
 
     def test_chameleon_adopted_refer_resolves(self, tmp_path):

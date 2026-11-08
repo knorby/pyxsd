@@ -575,8 +575,8 @@ BUILTIN_SCHEMA = f"""<xs:schema xmlns:xs="{XSD}" targetNamespace="{NS_M}"
 
 
 def _child(instance, name):
-    """The one child instance bound under *name*."""
-    return next(child for child in instance._children_ if child._name_ == name)
+    """The one child instance bound under the local name *name*."""
+    return next(child for child in instance._children_ if child._name_.rpartition("}")[2] == name)
 
 
 class TestPathSelection:

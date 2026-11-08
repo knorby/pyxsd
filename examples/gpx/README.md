@@ -39,9 +39,10 @@ great-circle distance, elevation gain/loss, and the sensor averages:
 
 ## What it exercises
 
-- **Namespaced validation.** The document is parsed with
-  `ParseModes.NAMESPACED` (`--namespaces strict`), so `gpx`, `trk`, and
-  `trkpt` are matched by expanded name.
+- **Namespaced validation.** The document is parsed in the default
+  namespace-aware mode (`ParseModes.NAMESPACED` / `--namespaces strict`, stated
+  explicitly in the command), so `gpx`, `trk`, and `trkpt` are matched by
+  expanded name.
 - **Wildcard pass-through.** GPX permits extension content from other
   namespaces with `xs:any namespace="##other" processContents="lax"`.
   The Garmin `TrackPointExtension` block is therefore bound generically;

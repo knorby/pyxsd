@@ -26,14 +26,18 @@ from typing import TYPE_CHECKING
 
 from tests.conformance.fetch import SCHEMAS, entry_point
 
+from pyxsd.binding import BindingPolicy, ParseModes
+
 if TYPE_CHECKING:
     from pyxsd.validation import ValidationReport
 
 # Machine-independent compile outcomes, pinned by the conformance and
-# smoke tests. Each schema carries its full per-error-code tally, so a
-# parse-correctness fix moves exactly its own lines. A ``None``
-# ``classes`` value means "measured but not yet pinned" and the smoke
-# test skips for that schema.
+# smoke tests. These pins intentionally use the explicit legacy policy:
+# the corpus' clean outcomes document the local-name compatibility mode,
+# while namespace-aware behavior is gated by the XSTS suite. Each schema
+# carries its full per-error-code tally, so a parse-correctness fix moves
+# exactly its own lines. A ``None`` ``classes`` value means "measured but
+# not yet pinned" and the smoke test skips for that schema.
 EXPECTED: dict[str, dict] = {
     # FHIR release 5. The XHTML content types' ``xml:lang``/``xml:space``
     # attribute references resolve (unknown-attributeRef 53 -> 0) and so
@@ -118,7 +122,7 @@ def errors_by_code(report: ValidationReport) -> dict[str, int]:
 BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"
 
 
-def run_benchmark(name: str, repeats: int = 3) -> dict:
+def run_benchmark(name: str, repeats: int = 3, *, mode: BindingPolicy = ParseModes.STRICT) -> dict:
     """Compiles benchmark *name* *repeats* times; returns timing + outcome."""
     from pyxsd import Schema
 
@@ -128,7 +132,7 @@ def run_benchmark(name: str, repeats: int = 3) -> dict:
         schema = None
         for _ in range(max(1, repeats)):
             start = time.perf_counter()
-            schema = Schema.compile(str(entry_point(name)))
+            schema = Schema.compile(str(entry_point(name)), mode=mode)
             timings.append(time.perf_counter() - start)
         assert schema is not None
         return {

@@ -62,8 +62,8 @@ def _source_location(node, *, attribute=None):
 
 
 def _mode_for(cls) -> BindingPolicy:
-    """The binding policy stamped on a generated class (or STRICT)."""
-    return getattr(cls, "_parseMode_", ParseModes.STRICT)
+    """The binding policy stamped on a generated class (or NAMESPACED)."""
+    return getattr(cls, "_parseMode_", ParseModes.NAMESPACED)
 
 
 def _model_is_empty(model: Any) -> bool:

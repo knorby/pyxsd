@@ -14,8 +14,9 @@ direction so the result can be triaged. Internal crashes on either side
 are failures: "both crashed" is not agreement. Only xmlschema's own
 parse/namespace/validation errors are treated as verdicts; any other
 exception fails the test. Each case runs under the binding policy named
-by its manifest ``mode`` (``legacy`` by default), so the ``namespaced``
-cases exercise namespace-aware matching alongside the oracle.
+by its manifest ``mode`` (``legacy`` is the corpus default, independent of
+the library default), so the ``namespaced`` cases exercise namespace-aware
+matching alongside the oracle.
 
 Cases flagged ``xsd11 = true`` in the manifest are XSD 1.1-only and are
 compared against ``xmlschema.XMLSchema11``; the default oracle parser is

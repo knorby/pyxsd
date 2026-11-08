@@ -36,10 +36,11 @@ repair it.
      root is unbindable, so query nothing from that tree.
 
 4. **Fix the exact occurrence.** Compile the schema with
-   `mode=ParseModes.LAX`, then reach the precise node among repeated
+   `mode=ParseModes.LAX_NAMESPACED`, then reach the precise node among repeated
    same-name siblings via `document.findall("./item")` (repeated members
-   live in `_children_`, not named attributes). Repairing the first match is
-   the classic wrong-node bug.
+   live in `_children_`, not named attributes). Use `ParseModes.LAX` only for
+   an explicit legacy local-name document. Repairing the first match is the
+   classic wrong-node bug.
 
 5. **Revalidate the whole document fresh.** Serialize the edited tree and
    parse it again with the same schema. The new report is the verdict; a
@@ -49,7 +50,7 @@ repair it.
    from pyxsd import Schema
    from pyxsd.binding import ParseModes
 
-   schema = Schema.compile("schema.xsd", mode=ParseModes.LAX)
+   schema = Schema.compile("schema.xsd", mode=ParseModes.LAX_NAMESPACED)
    parsed = schema.parse("doc.xml")
    node = parsed.findall("./item")[1]  # the exact offending occurrence
    node.sku = "ABC-2222"

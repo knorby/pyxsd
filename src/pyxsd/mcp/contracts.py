@@ -40,7 +40,12 @@ class CompileOptions(WireModel):
     ] = "lax"
     namespaces: Annotated[
         Literal["strict", "legacy"],
-        Field(description="Namespace handling mode; strict requires qualified names."),
+        Field(
+            description=(
+                "Namespace handling mode; strict (default) matches expanded names, "
+                "legacy matches local names."
+            )
+        ),
     ] = "strict"
     xsd_version: Annotated[Literal["1.0", "1.1"], Field(description="XSD spec version target.")] = (
         "1.1"

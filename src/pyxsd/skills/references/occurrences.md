@@ -24,7 +24,7 @@ result:
 from pyxsd import Schema
 from pyxsd.binding import ParseModes
 
-schema = Schema.compile("schema.xsd", mode=ParseModes.LAX)
+schema = Schema.compile("schema.xsd", mode=ParseModes.LAX_NAMESPACED)
 parsed = schema.parse("doc.xml")
 parsed.findall("./item")[1].sku = "ABC-2222"
 fixed = Path("fixed.xml")

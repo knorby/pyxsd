@@ -92,9 +92,9 @@ def test_strict_namespace_collision_suffixes():
     with tempfile.TemporaryDirectory() as tmp:
         pathlib.Path(tmp, "b.xsd").write_text(other)
         pathlib.Path(tmp, "a.xsd").write_text(xsd)
-        # Strict namespace handling is ParseModes.NAMESPACED; the default
-        # (legacy) mode merges same-local-name imports into one component,
-        # so only strict mode produces two classes.
+        # Strict namespace handling is ParseModes.NAMESPACED (the default);
+        # explicit legacy mode merges same-local-name imports into one
+        # component, so only strict mode produces two classes.
         schema = Schema.compile(pathlib.Path(tmp, "a.xsd"), mode=ParseModes.NAMESPACED)
     names = [e.name for e in _inventory(schema)]
     assert "thing" in names and "thing_ns2" in names

@@ -375,7 +375,9 @@ class TestCompositionCorrectness:
             "</xs:schema>"
         )
         (tmp_path / "instance.xml").write_text("<r><a>x</a><b>y</b></r>")
-        doc = Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
+        doc = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.STRICT).parse(
+            str(tmp_path / "instance.xml")
+        )
         assert not doc.report.has_errors
         assert "derivedType" in doc.schema.classes
         base_names = [base.__name__ for base in doc.schema.classes["derivedType"].__mro__]
@@ -459,7 +461,7 @@ class TestCompositionCorrectness:
         )
         # Legacy mode matches by local name.
         (tmp_path / "legacy.xml").write_text('<base-e base-a="1"><a>x</a><b>y</b></base-e>')
-        schema = Schema.compile(str(tmp_path / "schema.xsd"))
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.STRICT)
         assert [issue.code for issue in schema.report.errors] == []
         doc = schema.parse(str(tmp_path / "legacy.xml"))
         assert not doc.report.has_errors
@@ -524,7 +526,7 @@ class TestCompositionCorrectness:
         # Legacy mode matches by local name; the adopted chain is not
         # otherwise disturbed.
         (tmp_path / "legacy.xml").write_text("<base-e><c>x</c></base-e>")
-        schema = Schema.compile(str(tmp_path / "schema.xsd"))
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.STRICT)
         assert [issue.code for issue in schema.report.errors] == []
         doc = schema.parse(str(tmp_path / "legacy.xml"))
         assert not doc.report.has_errors
@@ -818,7 +820,7 @@ class TestCompositionCorrectness:
         # Legacy mode matches by local name; the adopted chain is not
         # otherwise disturbed.
         (tmp_path / "legacy.xml").write_text("<root><helper>x</helper></root>")
-        schema = Schema.compile(str(tmp_path / "schema.xsd"))
+        schema = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.STRICT)
         assert [issue.code for issue in schema.report.errors] == []
         doc = schema.parse(str(tmp_path / "legacy.xml"))
         assert not doc.report.has_errors
@@ -854,7 +856,9 @@ class TestCompositionCorrectness:
             "</xs:schema>"
         )
         (tmp_path / "instance.xml").write_text("<r><b>y</b><a>x</a></r>")
-        doc = Schema.compile(str(tmp_path / "schema.xsd")).parse(str(tmp_path / "instance.xml"))
+        doc = Schema.compile(str(tmp_path / "schema.xsd"), mode=ParseModes.STRICT).parse(
+            str(tmp_path / "instance.xml")
+        )
         assert not [issue for issue in doc.report.errors if issue.code == "unknown-type"]
         assert not doc.report.has_errors
         assert "aType" in doc.schema.classes

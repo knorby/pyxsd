@@ -174,13 +174,16 @@ ORDINARY_NAMESPACED = f"""<xs:schema {XS} targetNamespace="urn:ordinary" xmlns:o
 </xs:schema>"""
 
 
-def _compile(tmp_path, host_xml, files, *, mode=None):
-    """Writes *files* beside ``host.xsd`` and compiles the host schema."""
+def _compile(tmp_path, host_xml, files, *, mode=ParseModes.STRICT):
+    """Writes *files* beside ``host.xsd`` and compiles the host schema.
+
+    These value-constraint cases exercise the documented legacy merge
+    behavior; namespace-aware cases pass ``ParseModes.NAMESPACED``.
+    """
     (tmp_path / "host.xsd").write_text(host_xml, encoding="utf-8")
     for name, content in files.items():
         (tmp_path / name).write_text(content, encoding="utf-8")
-    kwargs = {} if mode is None else {"mode": mode}
-    return Schema.compile(str(tmp_path / "host.xsd"), **kwargs)
+    return Schema.compile(str(tmp_path / "host.xsd"), mode=mode)
 
 
 def _declaration_errors(schema, element=None):
@@ -192,7 +195,7 @@ def _declaration_errors(schema, element=None):
     ]
 
 
-def _percent_schema(tmp_path, *, font="100%", lspc="0%", mode=None):
+def _percent_schema(tmp_path, *, font="100%", lspc="0%", mode=ParseModes.STRICT):
     return _compile(
         tmp_path,
         HOST_TEMPLATE,

@@ -31,16 +31,17 @@ Use this skill whenever you map XML documents to Python objects with pyxsd.
    exact occurrence, not the first element with a matching name.
 
 4. **Repair then revalidate fresh.** Compile with
-   `mode=ParseModes.LAX` so best-effort values stay bound, edit the exact
-   occurrence, serialize, and parse the result again. Never trust the
-   pre-edit report — a stale `require_valid` verdict describes the old
-   document.
+   `mode=ParseModes.LAX_NAMESPACED` so best-effort values stay bound under the
+   default namespace-aware matching, edit the exact occurrence, serialize, and
+   parse the result again. Use `ParseModes.LAX` only for an explicit legacy
+   local-name document. Never trust the pre-edit report — a stale
+   `require_valid` verdict describes the old document.
 
    ```python
    from pyxsd import Schema
    from pyxsd.binding import ParseModes
 
-   schema = Schema.compile("items.xsd", mode=ParseModes.LAX)
+   schema = Schema.compile("items.xsd", mode=ParseModes.LAX_NAMESPACED)
    parsed = schema.parse("broken.xml")
    occurrences = parsed.findall("./item")  # repeated members live here,
    occurrences[1].value = 2  # not in a named list attribute
@@ -67,9 +68,12 @@ occurrence children DO bind as named attributes.
 
 ## Namespaces
 
-Bind by expanded name, never by prefix string. `targetNamespace` decides the
-object attribute layout; prefixes are serialization detail. When two schemas
-share a namespace, compile each separately and keep their documents apart.
+Namespace-aware binding is the default (`ParseModes.NAMESPACED`); choose
+`ParseModes.STRICT` or `ParseModes.LAX` explicitly only for legacy local-name
+documents. Bind by expanded name, never by prefix string. `targetNamespace`
+decides the object attribute layout; prefixes are serialization detail. When two
+schemas share a namespace, compile each separately and keep their documents
+apart.
 
 ## Mixed content
 

@@ -1660,7 +1660,7 @@ def test_default_attributes_form_distinct_locals_are_distinct_uses(tmp_path) -> 
     )
     (tmp_path / "main.xsd").write_text(
         '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"'
-        ' targetNamespace="urn:main" defaultAttributes="G">'
+        ' targetNamespace="urn:main" xmlns="urn:main" defaultAttributes="G">'
         '<xs:include schemaLocation="side.xsd"/>'
         '<xs:complexType name="T">'
         '<xs:attribute name="lang" type="xs:string"/>'

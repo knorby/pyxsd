@@ -150,7 +150,7 @@ def test_candidates_skip_ambiguous_declaration_positions(tmp_path):
     (tmp_path / "a.xsd").write_text(AMBIGUOUS_A, encoding="utf-8")
     (tmp_path / "b.xsd").write_text(AMBIGUOUS_B, encoding="utf-8")
     (tmp_path / "root.xsd").write_text(AMBIGUOUS_ROOT, encoding="utf-8")
-    schema = Schema.compile(str(tmp_path / "root.xsd"))
+    schema = Schema.compile(str(tmp_path / "root.xsd"), mode=ParseModes.STRICT)
     details = candidate_details(schema, element="root", path=(), prepare=_model_prepare(schema))
     assert [item["path"] for item in details["projection_candidates"]] == [["leaf"]]
     assert details["search_truncated"] is False

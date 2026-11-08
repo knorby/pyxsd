@@ -386,9 +386,9 @@ class TestSchemaBaseEdges:
     <xs:complexType>
       <xs:sequence>
         <xs:element name="title" type="xs:string"/>
-        <xs:any maxOccurs="unbounded"/>
+        <xs:any maxOccurs="unbounded" processContents="lax"/>
       </xs:sequence>
-      <xs:anyAttribute/>
+      <xs:anyAttribute processContents="lax"/>
     </xs:complexType>
   </xs:element>
 </xs:schema>

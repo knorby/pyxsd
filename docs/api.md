@@ -91,15 +91,22 @@ descriptors read as `None` after parsing even when the node exists in
 
 .. py:attribute:: pyxsd.binding.ParseModes.STRICT
 
-   Drop invalid values; retain legacy local-name binding.
+   Drop invalid values; retain explicit legacy local-name binding.
 
 .. py:attribute:: pyxsd.binding.ParseModes.LAX
 
-   Retain best-effort values without suppressing findings.
+   Retain best-effort values with explicit legacy local-name binding, without
+   suppressing findings.
 
 .. py:attribute:: pyxsd.binding.ParseModes.NAMESPACED
 
-   Match expanded XML names with strict value retention.
+   Match expanded XML names with strict value retention. This is the default
+   policy.
+
+.. py:attribute:: pyxsd.binding.ParseModes.LAX_NAMESPACED
+
+   Match expanded XML names and retain best-effort values without suppressing
+   findings.
 
 .. py:class:: pyxsd.schema_base.SchemaBase
 

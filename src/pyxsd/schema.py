@@ -372,7 +372,7 @@ class Schema:
         cls,
         source: str | Path | os.PathLike[str] | IO[str],
         *,
-        mode: Any = ParseModes.STRICT,
+        mode: Any = ParseModes.NAMESPACED,
         xsd_version: Literal["1.0", "1.1"] = "1.1",
         namespace_schemas: dict[str, str | Path] | None = None,
         overlay: str | Path | os.PathLike[str] | None = None,
@@ -394,7 +394,7 @@ class Schema:
 
         - ``mode`` - a :class:`~pyxsd.binding.BindingPolicy` (usually a
           :class:`~pyxsd.binding.ParseModes` preset). Defaults to
-          :attr:`~pyxsd.binding.ParseModes.STRICT`.
+          :attr:`~pyxsd.binding.ParseModes.NAMESPACED`.
 
         - ``xsd_version`` - the XSD processor version the document is
           compiled as, ``"1.0"`` or ``"1.1"`` (default ``"1.1"``). It is
@@ -929,7 +929,7 @@ def parse(
     xml: str | Path | os.PathLike[str] | IO[str] | ET.Element,
     *,
     xsd: str | Path | os.PathLike[str] | IO[str] | None = None,
-    mode: Any = ParseModes.STRICT,
+    mode: Any = ParseModes.NAMESPACED,
     namespace_schemas: dict[str, str | Path] | None = None,
     overlay: str | Path | os.PathLike[str] | None = None,
     resource_policy: ResourcePolicy | None = None,

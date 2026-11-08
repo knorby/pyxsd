@@ -6,7 +6,7 @@ See [<u>the full changelog</u>](rId4) for details.
   1. Component identity is by expanded name.
   2. Wildcards honor processContents.
 - Still zero runtime dependencies.
-- Legacy parsing is unchanged by default.
+- Legacy parsing remains available on request.
 | Checks | 845 |
 | --- | --- |
 | Coverage | 91% |
