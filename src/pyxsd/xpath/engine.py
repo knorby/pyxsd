@@ -295,7 +295,7 @@ class _PoolSchemaProxy:
         return self._pool.xsd_version
 
     def is_fully_valid(self) -> bool:
-        return True
+        return all(proxy.is_fully_valid() for proxy in self._pool.schemas.values())
 
     def expand(self, qname: str) -> str:
         if qname.startswith("{"):
@@ -510,7 +510,8 @@ class _ValueBridge:
     def _function_item(self, token: XPathFunction) -> XdmFunction:
         context = self._context
         assert context is not None
-        arity = _arity_tuple(getattr(token, "nargs", None) or (0, None))
+        nargs = getattr(token, "nargs", None)
+        arity = (0, None) if nargs is None else _arity_tuple(nargs)
         name = getattr(token, "name", None)
         if not isinstance(name, str) or not name:
             name = None
@@ -537,7 +538,6 @@ class CompiledExpression:
 
     source: str
     static_context: XPathStaticContext
-    parser_class: type[Any]
     version: str
     continuation_plan: continuation.CompiledExpression | None = field(default=None)
 
@@ -546,8 +546,6 @@ class CompiledExpression:
             raise ValueError("an XPath expression requires non-empty source")
         if not isinstance(self.static_context, XPathStaticContext):
             raise TypeError("static_context must be an XPathStaticContext")
-        if not isinstance(self.parser_class, type):
-            raise TypeError("parser_class must be a parser type")
         if self.version not in _PARSERS:
             raise ValueError(f"unsupported XPath version: {self.version!r}")
 
@@ -587,7 +585,9 @@ class XPathEngine:
         if self._version == "3.1":
             try:
                 plan = continuation.compile_expression(
-                    source, variable_types=static_context.variable_types
+                    source,
+                    variable_types=static_context.variable_types,
+                    default_collation=static_context.default_collation,
                 )
             except Exception:
                 # The optional seam lowers a subset; any parse/lowering miss
@@ -596,7 +596,6 @@ class XPathEngine:
         return CompiledExpression(
             source=source,
             static_context=static_context,
-            parser_class=self._parser_class,
             version=self._version,
             continuation_plan=plan,
         )
@@ -625,6 +624,7 @@ class XPathEngine:
             compiled.static_context,
             functions=environment.functions,
             key=True,
+            base_uri=environment.base_uri,
         )
         bridge = _ValueBridge(parser, compiled.static_context, environment)
         context = _build_context(compiled.static_context, environment, resolved, bridge)
@@ -653,6 +653,7 @@ def _build_parser(
     *,
     functions: Mapping[str, Any] | None,
     key: bool,
+    base_uri: str | None = None,
 ) -> Any:
     parser_class = _PARSERS[version]
     holder = _BridgeHolder()
@@ -660,13 +661,14 @@ def _build_parser(
         namespaces=dict(static_context.namespaces),
         default_namespace=static_context.default_namespace,
         variable_types=dict(static_context.variable_types),
-        base_uri=static_context.base_uri,
+        base_uri=base_uri if base_uri is not None else static_context.base_uri,
         default_collation=static_context.default_collation,
         xsd_version=static_context.xsd_version,
     )
     parser._pyxsd_bridge_holder = holder
     _install_syntax_only_parse(parser)
     _install_focus_token(parser)
+    _install_focus_functions(parser)
     _register_schema_constructors(parser, static_context)
 
     for name in static_context.functions:
@@ -706,6 +708,30 @@ def _install_focus_token(parser: Any) -> None:
     )
 
 
+def _install_focus_functions(parser: Any) -> None:
+    """Make position()/last() reject an absent context item explicitly."""
+
+    for symbol in ("position", "last"):
+        base = parser.symbol_table.get(symbol)
+        if base is None:  # pragma: no cover - built into every supported parser
+            continue
+
+        def evaluate(self: Any, context: Any = None, _base: Any = base) -> Any:
+            if context is None or context.item is None:
+                raise self.missing_context()
+            return _base.evaluate(self, context)
+
+        parser._register(
+            symbol,
+            f"_Focus{symbol.title()}Function",
+            bases=(base,),
+            label=base.label,
+            nargs=base.nargs,
+            sequence_types=base.sequence_types,
+            evaluate=evaluate,
+        )
+
+
 def _register_schema_constructors(parser: Any, static_context: XPathStaticContext) -> None:
     pool = static_context.schema
     if pool is None:
@@ -735,8 +761,10 @@ def _register_declared_function(
 
     def callback(*arguments: Any) -> Any:
         bridge = holder.bridge
-        if bridge is None or target is None:
-            return []
+        if bridge is None:
+            raise RuntimeError(f"host function {name!r} has no evaluation context")
+        if target is None:
+            raise RuntimeError(f"host function {name!r} has no environment implementation")
         return bridge.sequence_to_elementpath(
             call_host_function(
                 target,
@@ -806,6 +834,7 @@ def _register_key_function(parser: Any, holder: _BridgeHolder) -> None:
             value = cast(XdmAtomic, item)
             nodes.extend(index.get(value.lexical, ()))
             nodes.extend(index.get(value.value, ()))
+            nodes.extend(index.get(value, ()))
         unique: dict[int, XdmNode] = {id(node): node for node in nodes}
         ordered = sorted(unique.values(), key=lambda node: node.document_order)
         return [bridge.adapt_item(node) for node in ordered]
@@ -861,6 +890,8 @@ def _build_context(
         cast(Any, context).item = None
         context.root = None
         context.document = None
+        cast(Any, context).position = None
+        cast(Any, context).size = None
     elif focus.item is not None and isinstance(focus.item, XdmNode):
         item = bridge.adapt_item(focus.item)
         if isinstance(item, DocumentNode):
@@ -873,8 +904,9 @@ def _build_context(
         context = XPathContext(item=bridge.adapt_item(focus.item), **kwargs)
     else:  # pragma: no cover - Focus validates this
         raise ValueError("focus item is missing")
-    context.position = focus.position
-    context.size = focus.size
+    if focus.kind is not FocusKind.ABSENT:
+        context.position = focus.position
+        context.size = focus.size
     return context
 
 
@@ -907,6 +939,8 @@ def _continuation_variables(
 ) -> dict[str, Any] | None:
     values: dict[str, Any] = {}
     for name, value in environment.variables.items():
+        if isinstance(value, XdmFunction) and isinstance(value.closure, XPathClosure):
+            return None
         if isinstance(value, XdmFunction) or (callable(value) and not isinstance(value, XdmItem)):
             values[name] = _continuation_host_function(value, bridge, name)
             continue
@@ -916,6 +950,8 @@ def _continuation_variables(
             if isinstance(item, XdmAtomic):
                 converted.append(atomic_to_elementpath(item))
             elif isinstance(item, XdmFunction):
+                if isinstance(item.closure, XPathClosure):
+                    return None
                 converted.append(_continuation_host_function(item, bridge, name))
             else:
                 return None
@@ -946,4 +982,4 @@ def _xpath_closure_to_xdm(closure: XPathClosure, bridge: _ValueBridge) -> XdmFun
         native = tuple(bridge.sequence_to_elementpath(argument) for argument in arguments)
         return bridge.to_xdm_sequence(continuation.evaluate_closure(closure, native))
 
-    return XdmFunction(implementation, arity=closure.arity)
+    return XdmFunction(implementation, arity=closure.arity, closure=closure)

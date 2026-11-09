@@ -229,6 +229,7 @@ class CompiledExpression:
     variable_types: Mapping[str, str] = field(default_factory=dict)
     parser_class: type[Any] = XPath31Parser
     parser_version: str = "3.1"
+    default_collation: str | None = None
 
     def __post_init__(self) -> None:
         if not self.source:
@@ -365,17 +366,19 @@ def compile_expression(
     source: str,
     *,
     variable_types: Mapping[str, str] | None = None,
+    default_collation: str | None = None,
 ) -> CompiledExpression:
     """Compile *source* with elementpath and lower it to a continuation plan."""
     if not isinstance(source, str) or not source.strip():
         raise ValueError("an expression source must be a non-empty string")
     types = dict(variable_types or {})
-    parser = XPath31Parser(variable_types=types)
+    parser = XPath31Parser(variable_types=types, default_collation=default_collation)
     token = parser.parse(source)
     return CompiledExpression(
         source=source,
         plan=_Compiler(parser).compile(token),
         variable_types=types,
+        default_collation=default_collation,
     )
 
 
@@ -473,7 +476,7 @@ class ContinuationMachine:
         variables: Mapping[str, object] | None = None,
     ) -> None:
         self._compiled = compiled
-        self._parser: Any = compiled.parser_class()
+        self._parser: Any = compiled.parser_class(default_collation=compiled.default_collation)
         self._context = XPathContext(item="")
         self._actions: list[object] = [
             _EvalAction(compiled.plan, dict(variables or {})),

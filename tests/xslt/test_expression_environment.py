@@ -163,6 +163,30 @@ def test_continuation_subset_uses_the_task5_machine(
     assert len(runs) == 1
 
 
+def test_engine_closure_does_not_nest_continuation_machines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = XPathEngine("3.1")
+    closure = engine.evaluate(engine.compile("function($x) { $x + 1 }"), ExpressionEnvironment())[0]
+    assert isinstance(closure, XdmFunction)
+    static = XPathStaticContext(variable_types={"f": "function(xs:integer) as xs:integer"})
+    compiled = engine.compile("$f(2)", static)
+    assert compiled.continuation_plan is not None
+
+    runs: list[Any] = []
+    original_run = ContinuationMachine.run
+
+    def spy_run(self: ContinuationMachine) -> Any:
+        runs.append(self)
+        return original_run(self)
+
+    monkeypatch.setattr(engine_module.ContinuationMachine, "run", spy_run)
+    result = engine.evaluate(compiled, ExpressionEnvironment(variables={"f": closure}))
+
+    assert result == (XdmAtomic.integer(3),)
+    assert len(runs) == 1
+
+
 def test_non_subset_expression_falls_back_in_absence_of_a_plan() -> None:
     engine = XPathEngine("3.1")
     compiled = engine.compile("count((1, 2, 3))", NODE_CONTEXT)
@@ -188,6 +212,15 @@ def test_absent_focus_is_distinct_from_empty_focus() -> None:
         engine.evaluate(engine.compile("1 + 1", NODE_CONTEXT), ExpressionEnvironment(), focus=())
         == ()
     )
+
+
+def test_absent_focus_rejects_position_and_last() -> None:
+    engine = XPathEngine("3.1")
+    for source in ("position()", "last()"):
+        compiled = engine.compile(source, NODE_CONTEXT)
+        with pytest.raises(Exception) as caught:
+            engine.evaluate(compiled, ExpressionEnvironment())
+        assert _error_code(caught.value) == "XPDY0002"
 
 
 def test_singleton_focus_and_position() -> None:
@@ -264,8 +297,8 @@ def test_current_date_time_and_implicit_timezone_are_stable() -> None:
 
 def test_environment_defaults_are_stable_and_immutable() -> None:
     environment = ExpressionEnvironment(variables={"n": 1})
-    assert environment.current_datetime.tzinfo is not None
-    assert environment.current_datetime == environment.current_datetime
+    assert environment.current_datetime.tzinfo is environment.timezone
+    assert environment.current_date_time is environment.current_datetime
 
     with pytest.raises(TypeError):
         environment.variables["n"] = 2  # type: ignore[index]
@@ -580,7 +613,7 @@ def test_environment_rejects_invalid_names_and_arity() -> None:
     with pytest.raises(TypeError, match="document"):
         ExpressionEnvironment(documents={"": _document()})
     with pytest.raises(TypeError, match="collection"):
-        ExpressionEnvironment(collections={"": ()} if False else {"": "bad"})  # type: ignore[dict-item]
+        ExpressionEnvironment(collections={"": "bad"})  # type: ignore[dict-item]
     with pytest.raises(TypeError, match="text resource"):
         ExpressionEnvironment(text_resources={"": "x"})
 
@@ -736,13 +769,11 @@ def test_compiled_expression_validation() -> None:
 
     static = XPathStaticContext()
     with pytest.raises(ValueError, match="non-empty"):
-        CompiledExpression("", static, XPath31Parser, "3.1")
+        CompiledExpression("", static, "3.1")
     with pytest.raises(TypeError, match="static_context"):
-        CompiledExpression("1", object(), XPath31Parser, "3.1")  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="parser_class"):
-        CompiledExpression("1", static, object(), "3.1")  # type: ignore[arg-type]
+        CompiledExpression("1", object(), "3.1")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="version"):
-        CompiledExpression("1", static, XPath31Parser, "9.9")
+        CompiledExpression("1", static, "9.9")
 
 
 def test_focus_forms_cover_every_resolution_arm() -> None:
@@ -922,7 +953,8 @@ def test_function_declaration_errors_and_unavailable_target() -> None:
         engine.compile("m:inc(1)", XPathStaticContext(functions={"m:inc": 1}))
     static = XPathStaticContext(namespaces={"m": "urn:test"}, functions={"m:inc": 1})
     compiled = engine.compile("m:inc($n)", static)
-    assert engine.evaluate(compiled, ExpressionEnvironment(variables={"n": 1})) == ()
+    with pytest.raises(RuntimeError, match="no environment implementation"):
+        engine.evaluate(compiled, ExpressionEnvironment(variables={"n": 1}))
     with pytest.raises(ValueError, match="prefix"):
         from pyxsd.xpath.engine import _split_function_name
 
@@ -1013,10 +1045,7 @@ def test_host_argument_shapes_and_invalid_target() -> None:
         capture,
         [(), (XdmAtomic.integer(2),), (document.root_element,), (1, (2, 3))],
     )
-    assert (
-        seen == [((), (XdmAtomic.integer(2),), document.root_element, (1, 2, 3))]
-        or seen[0][0] == ()
-    )
+    assert seen == [((), 2, document.root_element, (1, 2, 3))]
     assert seen[0][1] == 2
     assert seen[0][2] is document.root_element
     assert seen[0][3] == (1, 2, 3)
@@ -1052,8 +1081,8 @@ def test_function_arity_signatures(monkeypatch: pytest.MonkeyPatch) -> None:
     assert function_arity(exact) == 2
     assert function_arity(defaults) == (1, 2)
     assert function_arity(varargs) == (0, None)
-    assert function_arity(varargs_keyword_only) == (0, None)
-    assert function_arity(varargs_required) == (0, None)
+    assert function_arity(varargs_keyword_only) == (1, None)
+    assert function_arity(varargs_required) == (1, None)
     assert function_arity(varargs_default) == (0, None)
     with pytest.raises(TypeError, match="not callable"):
         function_arity(object())
@@ -1238,7 +1267,7 @@ def test_schema_constructor_without_namespace_is_skipped(tmp_path: Path) -> None
     )
     pool = SchemaPool.from_imports([schema_path])
     parser = _build_parser("3.1", XPathStaticContext(schema=pool), functions=None, key=False)
-    assert parser.schema is not None
+    assert "Plain" not in parser.symbol_table
 
 
 def test_schema_constructor_registration_is_idempotent(tmp_path: Path) -> None:
@@ -1247,8 +1276,9 @@ def test_schema_constructor_registration_is_idempotent(tmp_path: Path) -> None:
     pool = _money_schema(tmp_path)
     static = XPathStaticContext(namespaces={"m": MONEY}, schema=pool)
     parser = _build_parser("3.1", static, functions=None, key=False)
+    constructor = parser.symbol_table["m:Amount"]
     _register_schema_constructors(parser, static)
-    assert parser.schema is not None
+    assert parser.symbol_table["m:Amount"] is constructor
 
 
 def test_function_target_expanded_and_lexical_lookups() -> None:
@@ -1315,3 +1345,112 @@ def test_token_tree_clone_handles_non_tokens_and_map_values() -> None:
 
     bare = XPathToken.__new__(XPathToken)
     assert isinstance(_clone_token_tree(bare), XPathToken)
+
+
+def test_zero_argument_function_item_retains_arity() -> None:
+    engine = XPathEngine()
+    result = engine.evaluate(engine.compile("fn:true#0"), ExpressionEnvironment())
+    function = result[0]
+    assert isinstance(function, XdmFunction)
+    assert function.arity == (0, 0)
+    assert function.invoke(()) == (XdmAtomic.boolean(True),)
+
+
+def test_default_collation_applies_on_both_evaluator_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collation = "http://www.w3.org/2005/xpath-functions/collation/html-ascii-case-insensitive"
+    static = XPathStaticContext(
+        default_collation=collation,
+        variable_types={"a": "xs:string", "b": "xs:string"},
+    )
+    engine = XPathEngine()
+    continuation = engine.compile("$a = $b", static)
+    fallback = engine.compile("compare($a, $b) = 0", static)
+    assert continuation.continuation_plan is not None
+    assert continuation.continuation_plan.default_collation == collation
+    assert fallback.continuation_plan is None
+    environment = ExpressionEnvironment(variables={"a": "A", "b": "a"})
+
+    seen: list[str | None] = []
+    original_run = ContinuationMachine.run
+
+    def spy_run(self: ContinuationMachine) -> Any:
+        seen.append(self._parser.default_collation)
+        return original_run(self)
+
+    monkeypatch.setattr(engine_module.ContinuationMachine, "run", spy_run)
+    assert engine.evaluate(continuation, environment) == (XdmAtomic.boolean(False),)
+    assert seen == [collation]
+    assert engine.evaluate(fallback, environment) == (XdmAtomic.boolean(True),)
+
+    default_engine = XPathEngine()
+    default_static = XPathStaticContext(variable_types={"a": "xs:string", "b": "xs:string"})
+    assert default_engine.evaluate(
+        default_engine.compile("$a = $b", default_static),
+        ExpressionEnvironment(variables={"a": "A", "b": "a"}),
+    ) == (XdmAtomic.boolean(False),)
+
+
+def test_environment_base_uri_drives_uri_resolution() -> None:
+    engine = XPathEngine()
+    static = XPathStaticContext(base_uri="https://static.example/base/")
+    compiled = engine.compile("resolve-uri('x')", static)
+
+    assert engine.evaluate(compiled, ExpressionEnvironment()) == (
+        XdmAtomic.any_uri("https://static.example/base/x"),
+    )
+    assert engine.evaluate(
+        compiled, ExpressionEnvironment(base_uri="https://dynamic.example/base/")
+    ) == (XdmAtomic.any_uri("https://dynamic.example/base/x"),)
+
+
+def test_key_accepts_xdm_atomic_index_keys() -> None:
+    document = _document(b"<root><item id='a'>one</item></root>")
+    first = document.root_element.children[0]
+    engine = XPathEngine()
+    environment = ExpressionEnvironment(key_indexes={"by-id": {XdmAtomic.string("a"): (first,)}})
+    assert engine.evaluate(engine.compile("key('by-id', 'a')"), environment) == (first,)
+
+
+def test_pool_schema_validity_consults_every_schema() -> None:
+    from types import SimpleNamespace
+
+    from pyxsd.xpath.engine import _PoolSchemaProxy
+
+    valid = SimpleNamespace(is_fully_valid=lambda: True)
+    invalid = SimpleNamespace(is_fully_valid=lambda: False)
+    assert _PoolSchemaProxy(SimpleNamespace(schemas={"a": valid}), {}).is_fully_valid()
+    assert not _PoolSchemaProxy(
+        SimpleNamespace(schemas={"a": valid, "b": invalid}), {}
+    ).is_fully_valid()
+
+
+def test_declared_function_callback_requires_a_bridge() -> None:
+    from pyxsd.xpath.engine import (
+        _BridgeHolder,
+        _build_parser,
+        _register_declared_function,
+    )
+
+    parser_static = XPathStaticContext(namespaces={"m": "urn:test"})
+    static = XPathStaticContext(namespaces={"m": "urn:test"}, functions={"m:inc": 1})
+    parser = _build_parser("3.1", parser_static, functions=None, key=False)
+    holder = _BridgeHolder()
+    _register_declared_function(parser, "m:inc", static, increment, holder)
+    with pytest.raises(RuntimeError, match="no evaluation context"):
+        parser.symbol_table["inc"].callback(1)
+
+
+def test_sequence_with_engine_closure_falls_back_to_elementpath() -> None:
+    engine = XPathEngine()
+    closure = engine.evaluate(engine.compile("function($x) { $x + 1 }"), ExpressionEnvironment())[0]
+    assert isinstance(closure, XdmFunction)
+    compiled = engine.compile("$items", XPathStaticContext(variable_types={"items": "item()*"}))
+    assert compiled.continuation_plan is not None
+    result = engine.evaluate(
+        compiled,
+        ExpressionEnvironment(variables={"items": (closure, XdmAtomic.integer(1))}),
+    )
+    assert result[0] is closure
+    assert result[1] == XdmAtomic.integer(1)

@@ -99,10 +99,11 @@ def function_arity(target: Any) -> int | tuple[int, int | None]:
     minimum = 0
     maximum: int | None = 0
     for parameter in signature.parameters.values():
-        if parameter.kind in (
-            inspect.Parameter.VAR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        ):
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            continue
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY:
+            if parameter.default is inspect.Parameter.empty:
+                minimum += 1
             continue
         if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
             maximum = None
