@@ -27,8 +27,9 @@ case, read {doc}`why-pyxsd`.
 | Runtime dependency | `elementpath` + `defusedxml` (both pure Python; `defusedxml` is loaded only for opt-in parser profiles) | `elementpath` only (pure Python) |
 | XML parser | stdlib `xml.etree.ElementTree` by default; opt-in `XmlParserPolicy.protected()` / `.strict()` use defusedxml; no external DTD/entity fetching in any built-in profile | stdlib `ElementTree` (with optional lxml injection for instance resources) |
 | Primary model | validate, bind to a schema-defined Python object tree, query, export, transform | decode/encode XML↔Python/JSON, validate, inspect schema components |
-| Instance → Python | `Document` tree of runtime-generated classes; `to_dict()` / `to_json()` | Converters to nested `dict`, JSON, `DataElement`, and runtime-generated data bindings |
-| XML output | Write an existing bound tree; revalidate edits explicitly | `encode()`, `from_json()`, converter classes |
+| Instance → Python | `Document` tree of runtime-generated classes; raw `to_dict()` or JSON-safe `to_data()` / `to_json()` | Converters to nested `dict`, JSON, `DataElement`, and runtime-generated data bindings |
+| Python/JSON → XML | `Schema.from_data()` / `from_json()` bind five formats into a `Document`; `to_string()` / `write()` serialize it | `encode()`, `from_json()`, converter classes |
+| JSON Schema | `Schema.json_schema()` describes all five export formats as Draft 2020-12; explicit XSD validation limits | Converter-based Python/JSON contracts; consult its API for supported exports |
 | Binding source files | None required; classes come directly from the compiled XSD; optional `.pyi` stubs describe them | Runtime data bindings available; optional static generation with Jinja2 templates |
 | Application extensions | Compile-time mixins with methods and validation hooks | Custom converters and data-binding classes |
 | Pydantic / Arrow | Optional schema-derived Pydantic models and Arrow/Parquet record projections | Python/JSON conversion; no equivalent built-in adapters documented |
@@ -87,7 +88,7 @@ prevent a usable result.
 
 ### A direct route to application output
 
-Use `to_dict()` / `to_json()` for structured extraction, or apply a Python
+Use `to_dict()` / `to_data()` / `to_json()` for structured extraction, or apply a Python
 callable through `Document.transform()`. The CLI can invoke the same
 transform classes. After changing a tree, `revalidate()` produces a fresh
 document and report before writing. See {doc}`transforms/using`.
@@ -98,13 +99,41 @@ that need a declared data contract or typed Parquet output rather than a
 sample-inferred mapping. The projections have their own supported-shape
 limits and do not replace full XML validation.
 
+### Document data contracts
+
+pyxsd exports and imports native `pyxsd`, schema-driven `pyxsd-json`, Parker,
+BadgerFish, and JsonML data. `Schema.from_data()` / `from_json()` reconstruct
+an XML tree and run the normal binder, returning generated classes and a
+`Document.report`; call `require_valid()` when invalid content must stop the
+pipeline. Export defaults to native `pyxsd` and best effort, while import
+defaults to `pyxsd-json` and strict fidelity. Fidelity governs representation
+loss, not XSD validity. Ordered and mixed content retain their positions in
+`pyxsd-json` and JsonML; grouped formats have explicit limits.
+
+`Schema.json_schema()` constructs Draft 2020-12 descriptions for all five
+export formats before any instance exists. It records unvalidated XSD rules
+under `x-pyxsd-validation`; structural acceptance is neither full XSD
+validation nor a guarantee of import acceptance. Native export options must
+match generation, and root-absorbed formats need an unambiguous selection.
+The optional Pydantic models' JSON Schema describes a separate projection.
+See {doc}`data-conversion` for examples and the precise limits.
+
+`xmlschema` offers converter classes and configurable encoding/decoding.
+Shared convention names do not promise interchangeable JSON. pyxsd's tested
+profiles differ in decimal strings, nil markers, namespace prefixes, and
+mixed text. Parker comparisons may produce identical data while pyxsd emits
+`attributes-lost` warnings for attributes xmlschema silently drops; strict
+pyxsd export rejects that loss. The pinned interoperability fixtures on the
+data-conversion page are evidence for those cases, not general conformance.
+
 ## Where xmlschema is a better fit
 
-- **Encoding and JSON round-tripping.** `xmlschema` encodes Python data and
+- **Converter customization and breadth.** `xmlschema` encodes Python data and
   JSON back to XML, with converter classes (`ParkerConverter`,
   `BadgerFishConverter`, `JsonMLConverter`, `ColumnarConverter`,
-  `DataElementConverter`, and more). pyxsd does not implement encode; a
-  transform can construct XML, but that is not the same tool.
+  `DataElementConverter`, and more), plus custom converter subclasses.
+  pyxsd exposes five fixed document formats through its import/export APIs,
+  not a caller-configurable converter framework.
 - **Lazy and incremental processing.** `XMLResource` with `lazy` /
   `thin_lazy` supports large documents and streaming, which pyxsd does not.
 - **Resource controls and hardening.** `xmlschema` exposes a broader
@@ -128,18 +157,16 @@ limits and do not replace full XML validation.
 
 ## Limitations of pyxsd
 
-- **No encode.** There is no Python/JSON→XML serializer beyond writing a
-  parsed `Document` back out.
 - **Namespace-correct documents are the default expectation.** The default
   `ParseModes.NAMESPACED` policy rejects documents that only matched by local
   name; `ParseModes.STRICT`, `ParseModes.LAX`, and `--namespaces legacy` are
   the explicit compatibility choices.
-- **Mixed content has limited structured export.**
+- **Grouped exports lose mixed-content positions.**
   Interleaved text is kept verbatim in the bound tree (leading text in
   `_value_`, child tails in `_tail_`) and survives serialization and
   XPath queries, but the dict export can only concatenate the character
-  data under `$`, and the Arrow/Pydantic integrations reject mixed
-  content.
+  data under `$`. Use `pyxsd-json` or JsonML for ordered mixed export;
+  the Arrow/Pydantic integrations reject mixed content.
 - **DTD-dependent checks have limited evidence.** `ENTITY`/`ENTITIES` checks
   depend on available unparsed-entity declarations; external subsets are not
   fetched. See [DTD evidence and input limitations](validation.md#dtd-dependent-entity-and-entities-values).
@@ -153,7 +180,8 @@ limits and do not replace full XML validation.
 
 ## Using them together
 
-pyxsd uses xmlschema in two distinct test roles:
+pyxsd uses xmlschema for conversion fixtures as described above, and in two
+distinct validation test roles:
 
 - **Manifest differential oracle.** `tests/test_oracle.py`, enabled by
   `PYXSD_RUN_ORACLE=1`, compares the engines' schema and available instance

@@ -29,6 +29,9 @@ an ordinary `Document`. Import defaults to `format="pyxsd-json"`, unlike
 export's native `"pyxsd"` default; select the format explicitly when changing
 between them.
 
+`Schema.json_schema()` constructs a Draft 2020-12 description for any of
+these formats directly from the compiled XSD, without a sample document.
+
 ## Export a document
 
 This complete example uses in-memory schema and XML inputs:
@@ -417,6 +420,103 @@ else:
     raise AssertionError("Invalid date content must fail validation")
 ```
 
+## Construct a JSON Schema
+
+`Schema.json_schema(*, format="pyxsd-json", element=None, fidelity="strict",
+typed=True, always_list=False)` returns a JSON-safe dictionary. Generation
+needs no optional dependency. To check data with the separate
+[`jsonschema`](https://python-jsonschema.readthedocs.io/en/stable/) package,
+install it with `pip install jsonschema`.
+
+Continuing the dates example:
+
+```python
+from jsonschema import Draft202012Validator
+
+for format in ("pyxsd", "pyxsd-json", "parker", "badgerfish", "jsonml"):
+    contract = schema.json_schema(format=format, element="dates")
+    Draft202012Validator.check_schema(contract)
+    exported = document.to_data(format=format, fidelity="strict")
+    Draft202012Validator(contract).validate(exported)
+
+native_contract = schema.json_schema(format="pyxsd", element="dates", typed=False, always_list=True)
+Draft202012Validator(native_contract).validate(
+    document.to_data(format="pyxsd", typed=False, always_list=True)
+)
+```
+
+### Roots and export options
+
+`element` accepts the same local, Clark, and EQName selections as import;
+selecting a substitution head includes its permitted members. An ambiguous
+local name raises `name-ambiguous`; malformed names raise `name-invalid`.
+Without `element`, root-carrying `pyxsd-json`, BadgerFish, and JsonML describe
+all concrete global roots, using `anyOf` for alternatives. No concrete roots
+produces a schema that rejects every value. Native and Parker instead require
+exactly one concrete global root or an explicit selection (`root-ambiguous`
+otherwise). An unknown explicit selection yields a general format shape,
+not evidence that the XSD declares that root.
+
+Match native `typed` and `always_list` to the intended export. Lexical mode
+describes strings, including space-separated XSD lists; `always_list=True`
+requires arrays for child properties. Other formats reject non-default values
+for these options with `ValueError`. There is no `namespaces` override.
+
+The schemas describe the [structures below](#native-pyxsd-structure), not
+every spelling import accepts. In particular, native primitive roots have
+their `$` wrapper, BadgerFish schema-repeatable children use arrays and its
+nil marker is boolean, and JsonML fixes tags with `prefixItems`. Generated
+namespace-declaration properties describe root-scoped export, not every
+nested namespace frame accepted on import. Native `$` text inside an object
+is lexical even in typed mode; BadgerFish `$` simple content stays typed.
+Parker keeps empty element-only `{}` distinct from nil `null`.
+
+### Metadata and validation limits
+
+Every result includes `$schema: "https://json-schema.org/draft/2020-12/schema"`,
+`x-pyxsd-format`, and `x-pyxsd-validation` with `level: "structural"` and a
+sorted `unvalidated` list. Only `pyxsd-json` adds `x-pyxsd-profile-version: 1`.
+Reusable and recursive shapes use deterministic `$defs`/`$ref`; annotations
+such as `x-pyxsd-qname`, `x-pyxsd-type`, and `x-pyxsd-layout` identify their
+XSD origin or representation.
+
+Generation encodes scalar types, expressible bounds, enumerations, lengths,
+and tested pattern equivalents. It discloses remaining rules as applicable:
+`xsd-particle-order`, `xsd-mixed-order`, `xsd-wildcard-namespace`,
+`xsd-conditional-type`, `xsd-identity-constraints`, `xsd-assertions`,
+`xsd-regex-dialect`, and `xsd-facet`. Native typed null ambiguity adds
+`native-null-ambiguity`; Parker QName context loss adds `namespace-lost`.
+Lexical QName schemas carry `x-pyxsd-namespace-context: true`; matching their
+pattern does not resolve their prefixes. JSON Schema `format` and
+`contentEncoding`, when present, are annotations unless a validator enforces
+them.
+
+The description is deliberately broader than the conversion rules in places.
+Sequence/mixed item alternatives do not enforce every particle, cardinality,
+or attribute-first rule. JsonML's optional attribute object shifts content
+positions; tag and item schemas do not fully validate that placement.
+Native and BadgerFish merge effective-type properties without expressing
+every dependency between an actual type, required attributes, text, and nil.
+Even an empty `unvalidated` list is not a promise of complete XSD validation
+or import acceptance. Import with the matching format, inspect the report,
+and call `require_valid()` for the normal XSD checks.
+
+Both generation fidelities currently produce the same description for
+supported compiled schemas, without loss warnings. `fidelity="strict"`
+does not make JSON Schema an XSD validator, nor does successful generation
+guarantee that strict export or import can represent a particular document.
+
+BadgerFish/JsonML generated keys use deterministic lexical prefixes. A known
+limit remains when conditional or explicit actual types introduce extra
+namespace URIs: the schema's reachable-name set and an instance's used-name
+set can allocate different `nsN` numbers. Check such exports against the
+generated schema; use `pyxsd-json`'s prefix-independent EQNames when needed.
+
+This API is separate from the optional {doc}`integrations`:
+`ModelSet` models' `model_json_schema()` describes Pydantic's aliases,
+presence rules, and supported projection shapes, not these five document
+formats. Neither projection changes the other's contract.
+
 ## Scalar values
 
 With the default `typed=True`, all five formats use these JSON-safe values:
@@ -740,6 +840,8 @@ conformance. The export rules on this page define pyxsd's profiles:
   projections agree. Intentional differences include keeping mixed text
   under `$` in best effort rather than dropping it, and using `{}` for empty
   complex content where xmlschema's tested empty leaf uses `null`.
+  Matching projections can still emit pyxsd `attributes-lost` warnings where
+  xmlschema silently drops attributes; strict pyxsd export rejects that loss.
 - **BadgerFish:** the recursive fixture agrees, but pyxsd emits simple leaves
   directly as typed scalars where xmlschema wraps them under `$`. pyxsd uses
   boolean `@xsi:nil` and concatenates mixed text under `$` in best effort;
