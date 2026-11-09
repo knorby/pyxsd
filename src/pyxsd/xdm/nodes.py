@@ -367,11 +367,18 @@ class XdmNode(XdmItem):
 
     @property
     def typed_value(self) -> XdmSequence:
+        captured = getattr(self._annotations, "typed_values", None)
+        if captured is not None:
+            return captured
         if self._kind in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
             return (XdmAtomic.untyped_atomic(self.string_value),)
         if self._kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
             return (XdmAtomic.untyped_atomic(self._value),)
         return (XdmAtomic.string(self._value),)
+
+    def _apply_occurrence_annotation(self, annotation: Any) -> None:
+        """Install one captured schema occurrence annotation (internal)."""
+        self._annotations = annotation
 
     # -- namespaces and base URIs ---------------------------------------------
 

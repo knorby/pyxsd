@@ -29,6 +29,11 @@ from pyxsd.wildcards import (
     NAMESPACE_ANY,
     WildcardSpec,
 )
+from pyxsd.xdm.annotations import (
+    capture_element_occurrence,
+    capture_remaining_attributes,
+    occurrence_capture_active,
+)
 from pyxsd.xsd_data_types import (
     AnySimpleType,
     AnyType,
@@ -213,6 +218,16 @@ def bind_instance(schema: BoundSchemaProtocol, xml_root: Any, report: Validation
                 subInstance._xsi_type_context_ = (
                     raw_type,
                     dict(schema.namespace_context.bindings_for(xml_root)),
+                )
+            if occurrence_capture_active():
+                capture_remaining_attributes(xml_root)
+                capture_element_occurrence(
+                    xml_root,
+                    governing_declaration=rootElement,
+                    actual_type=subCls,
+                    nilled=xsi.xsi_nil_is_true(xml_root) and rootElement.isNillable(),
+                    validation_attempted="full",
+                    bound=subInstance,
                 )
             check_identity_constraints_entry(schema, subInstance, report)
 
