@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import base64
 import math
+import struct
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any, TypeAlias, cast
 
 from elementpath.datatypes import AnyAtomicType as _ElementPathAtomic
@@ -116,7 +118,6 @@ _DURATION_LOCALS = frozenset({"dayTimeDuration", "duration", "yearMonthDuration"
 _BINARY_LOCALS = frozenset({"base64Binary", "hexBinary"})
 _QNAME_LOCALS = frozenset({"NOTATION", "QName"})
 _LIST_LOCALS = frozenset({"ENTITIES", "IDREFS", "List", "NMTOKENS"})
-_FLOAT_NUMERIC_LOCALS = frozenset({"float", "double"})
 
 _FAMILIES: dict[str, str] = {}
 _FAMILIES.update((local, "string") for local in _STRING_LOCALS)
@@ -284,27 +285,87 @@ def _as_float(value: Any) -> float:
         return math.inf if value > 0 else -math.inf
 
 
-def _numeric_values_equal(
-    left_value: Any, left_local: str, right_value: Any, right_local: str
-) -> bool:
-    """Equality under XPath numeric type promotion.
+def _as_float32(value: Any) -> float:
+    number = _as_float(value)
+    try:
+        return struct.unpack(">f", struct.pack(">f", number))[0]
+    except OverflowError:
+        return math.inf if number > 0 else -math.inf
 
-    Two exact integer/decimal values compare exactly.  If either operand is a
-    float or double, both are promoted to the binary64 value space, matching
-    XPath numeric promotion.  Normalising every number to float for storage
-    would incorrectly merge distinct decimal values, so the exact arm remains.
+
+def _is_infinite(value: Any) -> bool:
+    if isinstance(value, float):
+        return math.isinf(value)
+    if isinstance(value, Decimal):
+        return value.is_infinite()
+    return False
+
+
+def _numeric_eq(left_value: Any, left_local: str, right_value: Any, right_local: str) -> bool:
+    """XPath numeric ``eq`` using the least common numeric type.
+
+    A decimal/double pair converts to binary64, while a decimal/float pair
+    converts to binary32 (the least common type is ``xs:float``).  Two exact
+    integer/decimal values stay exact.  XPath promotion is intentionally
+    non-transitive across mixed numeric types; ``same_key`` has the separate,
+    transitive exact comparison required for map keys.
     """
-    if left_local in _FLOAT_NUMERIC_LOCALS or right_local in _FLOAT_NUMERIC_LOCALS:
+    if left_local == "double" or right_local == "double":
         return _as_float(left_value) == _as_float(right_value)
+    if left_local == "float" or right_local == "float":
+        return _as_float32(left_value) == _as_float32(right_value)
     return left_value == right_value
+
+
+def _numeric_same_key(left_value: Any, right_value: Any) -> bool:
+    """F&O 3.1 ``op:same-key`` numeric equality.
+
+    Finite numeric values compare as exact rational numbers with no rounding,
+    so a binary64 or binary32 value can differ from the exact decimal it would
+    be promoted to by ``eq``.  NaNs and equal-signed infinities are the same
+    key; positive and negative zero compare equal.
+    """
+    left_nan = _is_nan(left_value)
+    right_nan = _is_nan(right_value)
+    if left_nan or right_nan:
+        return left_nan and right_nan
+    left_infinite = _is_infinite(left_value)
+    right_infinite = _is_infinite(right_value)
+    if left_infinite or right_infinite:
+        if not (left_infinite and right_infinite):
+            return False
+        return (_as_float(left_value) > 0) == (_as_float(right_value) > 0)
+    return Fraction(left_value) == Fraction(right_value)
+
+
+def _actual_atomic_datatype(value: Any) -> type[Any] | None:
+    """The payload's actual XSD datatype class, if it carries one.
+
+    Python storage inheritance is deliberately not consulted: an
+    ``xsd.NMTOKENS``, ``xsd.Date``, ``xsd.QName``, or ``xsd.Float`` value has
+    its own XSD datatype identity regardless of its Python base class.
+    """
+    if isinstance(value, _xsd.XsdDataType):
+        return type(value)
+    if _is_elementpath_atomic(value):
+        return type(value)
+    return None
 
 
 def _validate_atomic_payload(value: Any, type_name: str) -> None:
     """Enforce the public atomic invariant for a value and its type name."""
     if value is None:
         raise TypeError("None is not an XDM atomic value")
-    if isinstance(value, _xsd.TypeList) or _local_type_name(type_name) in _LIST_LOCALS:
+    declared_local = _local_type_name(type_name)
+    if isinstance(value, _xsd.TypeList) or declared_local in _LIST_LOCALS:
         raise TypeError("XSD list values are not atomic XDM items")
+    actual_type = _actual_atomic_datatype(value)
+    if actual_type is not None:
+        actual_local = _datatype_local_name(actual_type)
+        if actual_local in _LIST_LOCALS:
+            raise TypeError("XSD list values are not atomic XDM items")
+        if actual_local != declared_local:
+            raise TypeError("an XDM atomic value must use its actual XSD datatype")
     try:
         hash(value)
     except TypeError as exc:
@@ -395,17 +456,20 @@ class XdmAtomic(XdmItem):
     def typed(cls, value: Any, datatype: type[Any]) -> XdmAtomic:
         """Wrap a value and its XSD datatype at the atomic invariant boundary.
 
-        List values are not atomic, the payload must be an instance of its
-        declared datatype, and the payload must be hashable so it can serve as
-        an XDM map key.  The function-item layer never constructs an atomic
-        from a mutable Python container.
+        List values are not atomic, the payload must carry its actual XSD
+        datatype class (Python storage bases are not accepted), and the payload
+        must be hashable so it can serve as an XDM map key.  The function-item
+        layer never constructs an atomic from a mutable Python container.
         """
         if not isinstance(datatype, type):
             raise TypeError("an XDM atomic datatype must be a type")
         type_name = _xsd_type_name(datatype)
         _validate_atomic_payload(value, type_name)
-        if not isinstance(value, datatype):
+        actual_type = _actual_atomic_datatype(value)
+        if actual_type is None:
             raise TypeError("an XDM atomic value must be an instance of its datatype")
+        if actual_type is not datatype:
+            raise TypeError("an XDM atomic value must use its actual XSD datatype")
         return cls(value, type_name, datatype)
 
     @property
@@ -453,7 +517,7 @@ class XdmAtomic(XdmItem):
         if self._is_numeric and other._is_numeric:
             if _is_nan(self.value) or _is_nan(other.value):
                 return False
-            return _numeric_values_equal(
+            return _numeric_eq(
                 self.value,
                 _local_type_name(self.type_name),
                 other.value,
@@ -465,29 +529,26 @@ class XdmAtomic(XdmItem):
         if self._is_numeric:
             if _is_nan(self.value):
                 return hash(("numeric", "nan"))
-            return hash(("numeric", _as_float(self.value)))
+            # Binary32 is the coarsest numeric value space used by any ``eq``
+            # arm.  Hashing to it keeps the Python invariant that equal values
+            # share a hash even though mixed-type XPath ``eq`` is not
+            # transitive.
+            return hash(("numeric", _as_float32(self.value)))
         return hash(self._equality_key())
 
     def same_key(self, other: object) -> bool:
         """XDM ``op:same-key`` map-key equality.
 
-        Numeric values compare under XPath numeric promotion, strings and
-        their derived types compare by value, QNames compare by expanded name,
-        and two NaNs are the same key even though ``NaN eq NaN`` is false.
+        Numeric keys compare by exact mathematical value with no rounding, so
+        map keys stay transitive and distinct ``xs:decimal``/``xs:double``
+        values are not collapsed.  Strings and their derived types compare by
+        value, QNames compare by expanded name, and two NaNs are the same key
+        even though ``NaN eq NaN`` is false.
         """
         if not isinstance(other, XdmAtomic):
             return False
         if self._is_numeric and other._is_numeric:
-            left_nan = _is_nan(self.value)
-            right_nan = _is_nan(other.value)
-            if left_nan or right_nan:
-                return left_nan and right_nan
-            return _numeric_values_equal(
-                self.value,
-                _local_type_name(self.type_name),
-                other.value,
-                _local_type_name(other.type_name),
-            )
+            return _numeric_same_key(self.value, other.value)
         return self._equality_key() == other._equality_key()
 
     def cast(self, type_name: str) -> XdmAtomic:

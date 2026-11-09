@@ -287,6 +287,54 @@ def test_atomic_constructor_enforces_the_atomic_value_invariant():
         XdmAtomic(UnhashableAtomicPayload(), "{urn:test}unhashable")
 
 
+@pytest.mark.parametrize(
+    ("value", "datatype", "message"),
+    [
+        (xsd.NMTOKENS("a b"), xsd.String, "list"),
+        (xsd.Date("2000-01-01"), xsd.String, "XSD datatype"),
+        (xsd.QName("p:a"), xsd.String, "XSD datatype"),
+        (xsd.Duration("P1Y"), xsd.String, "XSD datatype"),
+        (xsd.Base64Binary("YWJj"), xsd.String, "XSD datatype"),
+        (xsd.Float("1.5"), xsd.Double, "XSD datatype"),
+    ],
+)
+def test_typed_rejects_payloads_by_actual_xsd_datatype(value, datatype, message):
+    with pytest.raises(TypeError, match=message):
+        XdmAtomic.typed(value, datatype)
+
+
+@pytest.mark.parametrize(
+    ("value", "type_name", "message"),
+    [
+        (xsd.NMTOKENS("a b"), f"{{{XSD}}}string", "list"),
+        (xsd.Date("2000-01-01"), f"{{{XSD}}}string", "XSD datatype"),
+        (xsd.QName("p:a"), f"{{{XSD}}}string", "XSD datatype"),
+        (xsd.Duration("P1Y"), f"{{{XSD}}}string", "XSD datatype"),
+        (xsd.Base64Binary("YWJj"), f"{{{XSD}}}string", "XSD datatype"),
+        (xsd.Float("1.5"), f"{{{XSD}}}double", "XSD datatype"),
+    ],
+)
+def test_constructor_rejects_payloads_by_actual_xsd_datatype(value, type_name, message):
+    with pytest.raises(TypeError, match=message):
+        XdmAtomic(value, type_name)
+
+
+def test_constructor_and_typed_accept_the_actual_xsd_datatype():
+    date = xsd.Date("2000-01-01")
+    assert XdmAtomic(date, f"{{{XSD}}}date").type_name == f"{{{XSD}}}date"
+    assert XdmAtomic.typed(date, xsd.Date).datatype is xsd.Date
+    float_value = xsd.Float("1.5")
+    assert XdmAtomic(float_value, f"{{{XSD}}}float").type_name == f"{{{XSD}}}float"
+    assert XdmAtomic.typed(float_value, xsd.Float).datatype is xsd.Float
+
+
+def test_typed_rejects_a_same_local_name_from_a_different_datatype_model():
+    with pytest.raises(TypeError, match="actual XSD datatype"):
+        XdmAtomic.typed(xsd.Float("1.5"), ep.Float)
+    with pytest.raises(TypeError, match="actual XSD datatype"):
+        XdmAtomic.typed(ep.Float(1.5), xsd.Float)
+
+
 @pytest.mark.parametrize("value", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")])
 def test_decimal_factory_rejects_non_finite_values(value):
     with pytest.raises(TypeError, match="finite"):
@@ -353,22 +401,57 @@ def test_atomic_equality_uses_xsd_value_space_lexical_variants():
     assert _atomic(xsd.Date("2000-01-01")) != _atomic(xsd.Date("2000-01-01Z"))
 
 
-def test_atomic_numeric_equality_uses_xpath_numeric_promotion():
+def test_atomic_numeric_eq_uses_least_common_type():
     assert _atomic(XdmAtomic.decimal("1.1")) == _atomic(XdmAtomic.double(1.1))
-    assert _atomic(XdmAtomic.decimal("1.1")).same_key(_atomic(XdmAtomic.double(1.1)))
     assert hash(_atomic(XdmAtomic.decimal("1.1"))) == hash(_atomic(XdmAtomic.double(1.1)))
+    assert _atomic(XdmAtomic.decimal("0.1")) == _atomic(XdmAtomic.float(0.1))
+    assert hash(_atomic(XdmAtomic.decimal("0.1"))) == hash(_atomic(XdmAtomic.float(0.1)))
+    assert _atomic(XdmAtomic.float(0.1)) != _atomic(XdmAtomic.double(0.1))
     assert _atomic(XdmAtomic.decimal("0.1")) != _atomic(XdmAtomic.decimal("0.10000000000000001"))
-    assert not _atomic(XdmAtomic.decimal("0.1")).same_key(
-        _atomic(XdmAtomic.decimal("0.10000000000000001"))
+    assert _atomic(XdmAtomic.integer(2**53 + 1)) == _atomic(XdmAtomic.double(float(2**53)))
+    assert hash(_atomic(XdmAtomic.integer(2**53 + 1))) == hash(
+        _atomic(XdmAtomic.double(float(2**53)))
     )
     assert _atomic(XdmAtomic.integer(10**400)) == _atomic(XdmAtomic.double(float("inf")))
-    assert _atomic(XdmAtomic.integer(10**400)).same_key(_atomic(XdmAtomic.double(float("inf"))))
+    assert hash(_atomic(XdmAtomic.integer(10**400))) == hash(
+        _atomic(XdmAtomic.double(float("inf")))
+    )
     assert _atomic(XdmAtomic.integer(1)) != _atomic(XdmAtomic.double(float("nan")))
-    assert not _atomic(XdmAtomic.integer(1)).same_key(_atomic(XdmAtomic.double(float("nan"))))
-    assert not _atomic(XdmAtomic.double(float("nan"))).same_key(_atomic(XdmAtomic.integer(1)))
+    assert _atomic(XdmAtomic.double(float("nan"))) != _atomic(XdmAtomic.integer(1))
     assert hash(_atomic(XdmAtomic.double(float("nan")))) == hash(
         _atomic(XdmAtomic.double(float("nan")))
     )
+    assert isinstance(hash(_atomic(XdmAtomic.integer(10**40))), int)
+    assert isinstance(hash(_atomic(XdmAtomic.integer(-(10**40)))), int)
+
+
+def test_atomic_numeric_same_key_is_exact_and_transitive():
+    large_integer = XdmAtomic.integer(2**53 + 1)
+    exact_integer = XdmAtomic.integer(2**53)
+    exact_double = XdmAtomic.double(float(2**53))
+    assert not large_integer.same_key(exact_double)
+    assert not exact_double.same_key(large_integer)
+    assert exact_integer.same_key(exact_double)
+    assert exact_double.same_key(exact_integer)
+    assert not large_integer.same_key(exact_integer)
+
+    assert not _atomic(XdmAtomic.integer(10**400)).same_key(_atomic(XdmAtomic.double(float("inf"))))
+    assert not _atomic(XdmAtomic.decimal("1.1")).same_key(_atomic(XdmAtomic.double(1.1)))
+    assert _atomic(XdmAtomic.decimal("1.1")).same_key(_atomic(XdmAtomic.decimal("1.1")))
+    assert _atomic(XdmAtomic.integer(1)).same_key(_atomic(XdmAtomic.double(1.0)))
+    assert _atomic(XdmAtomic.decimal("0.5")).same_key(_atomic(XdmAtomic.double(0.5)))
+    assert not _atomic(XdmAtomic.decimal("0.1")).same_key(_atomic(XdmAtomic.float(0.1)))
+    assert not _atomic(XdmAtomic.decimal("0.1")).same_key(_atomic(XdmAtomic.double(0.1)))
+    assert _atomic(XdmAtomic.integer(0)).same_key(_atomic(XdmAtomic.double(-0.0)))
+
+    assert _atomic(XdmAtomic.float(float("nan"))).same_key(_atomic(XdmAtomic.double(float("nan"))))
+    assert _atomic(XdmAtomic.float(math.inf)).same_key(_atomic(XdmAtomic.double(math.inf)))
+    assert not _atomic(XdmAtomic.double(math.inf)).same_key(_atomic(XdmAtomic.double(-math.inf)))
+    assert not _atomic(XdmAtomic.double(math.inf)).same_key(_atomic(XdmAtomic.integer(1)))
+    assert not _atomic(XdmAtomic.integer(1)).same_key(_atomic(XdmAtomic.double(math.inf)))
+    decimal_infinity = XdmAtomic(Decimal("Infinity"), f"{{{XSD}}}decimal")
+    assert decimal_infinity.same_key(_atomic(XdmAtomic.double(math.inf)))
+    assert not decimal_infinity.same_key(_atomic(XdmAtomic.double(-math.inf)))
 
 
 def test_atomic_qname_equality_uses_expanded_names():
@@ -624,14 +707,40 @@ def test_map_key_equality_uses_xsd_value_space_variants():
     assert mapping.size == 1
     assert mapping.get(date_key) == as_xdm(2)
 
-    decimal_key = XdmAtomic.decimal("1.1")
+    decimal_key = XdmAtomic.decimal("0.5")
     mapping = (
         XdmMap.empty()
         .put(decimal_key, as_xdm("decimal"))
-        .put(XdmAtomic.double(1.1), as_xdm("double"))
+        .put(XdmAtomic.double(0.5), as_xdm("double"))
     )
     assert mapping.size == 1
     assert mapping.get(decimal_key) == as_xdm("double")
+
+    mapping = (
+        XdmMap.empty()
+        .put(XdmAtomic.decimal("1.1"), as_xdm("decimal"))
+        .put(XdmAtomic.double(1.1), as_xdm("double"))
+    )
+    assert mapping.size == 2
+
+    mapping = (
+        XdmMap.empty()
+        .put(XdmAtomic.integer(2**53 + 1), as_xdm(1))
+        .put(XdmAtomic.double(float(2**53)), as_xdm(2))
+    )
+    assert mapping.size == 2
+
+    mapping = (
+        XdmMap.empty()
+        .put(XdmAtomic.integer(10**400), as_xdm(1))
+        .put(XdmAtomic.double(float("inf")), as_xdm(2))
+    )
+    assert mapping.size == 2
+
+    mapping = (
+        XdmMap.empty().put(XdmAtomic.decimal("0.1"), as_xdm(1)).put(XdmAtomic.float(0.1), as_xdm(2))
+    )
+    assert mapping.size == 2
 
     mapping = (
         XdmMap.empty()
