@@ -535,8 +535,48 @@ def test_parse_result_covers_every_catalog_assertion_shape() -> None:
 def test_evaluate_assertion_binds_a_single_raw_item_as_the_context() -> None:
     assert evaluate_assertion(AssertionXPath(". = 3"), raw_result=3)
     assert not evaluate_assertion(AssertionXPath(". = 3"), raw_result=4)
-    assert evaluate_assertion(AssertionXPath("count($result) = 2"), raw_result=(1, 2))
+    assert evaluate_assertion(AssertionXPath("count($result) = 1"), raw_result=3)
     assert evaluate_assertion(AssertionXPath("count($result) = 0"), raw_result=())
+
+
+def test_zero_item_xpath_context_is_an_empty_document_node() -> None:
+    # Upstream uses a document node built with <xsl:document/>, not an element.
+    assert evaluate_assertion(AssertionXPath("count(.) = 1"), raw_result=())
+    assert evaluate_assertion(AssertionXPath("string(.) = ''"), raw_result=())
+    assert evaluate_assertion(AssertionXPath("empty(/*)"), raw_result=())
+    assert evaluate_assertion(AssertionXPath("boolean(.)"), raw_result=())
+    assert not evaluate_assertion(AssertionXPath("empty(.)"), raw_result=())
+    assert evaluate_assertion(AssertionXPath("count($result) = 0"), raw_result=())
+
+
+def test_multi_item_xpath_context_is_an_explicit_adapter_gap() -> None:
+    for expression in (
+        ". = 1",
+        "count(.) = 1",
+        "string(.) = ''",
+        "boolean(.)",
+        "empty(.)",
+        "count($result) = 2",
+    ):
+        with pytest.raises(AssertionGap, match="multi-item"):
+            evaluate_assertion(AssertionXPath(expression), raw_result=(1, 2))
+
+
+def test_multi_item_raw_results_gap_only_context_using_assertions() -> None:
+    context_using = make_case("<result><assert>. = 1</assert></result>")
+    empty_expression = make_case("<result><assert-empty>count($result) = 2</assert-empty></result>")
+    type_case = make_case("<result><assert-type>xs:integer*</assert-type></result>")
+    count_case = make_case("<result><assert-count>2</assert-count></result>")
+    value_case = make_case("<result><assert-deep-eq>(1, 2)</assert-deep-eq></result>")
+    empty_case = make_case("<result><assert-empty/></result>")
+
+    assert assert_case(context_using, raw_result=(1, 2)).outcome is Outcome.ADAPTER_GAP
+    assert assert_case(empty_expression, raw_result=(1, 2)).outcome is Outcome.ADAPTER_GAP
+    assert assert_case(context_using, raw_result=(1, 2)).coverage == frozenset()
+    assert assert_case(type_case, raw_result=(1, 2)).outcome is Outcome.PASS
+    assert assert_case(count_case, raw_result=(1, 2)).outcome is Outcome.PASS
+    assert assert_case(value_case, raw_result=(1, 2)).outcome is Outcome.PASS
+    assert assert_case(empty_case, raw_result=(1, 2)).outcome is Outcome.FAIL
 
 
 def test_assertion_base_requires_an_implementation() -> None:
@@ -1016,3 +1056,8 @@ def test_secondary_results_match_absolute_uris_by_suffix() -> None:
     )
     with pytest.raises(AssertionGap, match="ambiguous"):
         evaluate_assertion(assertion, result=ambiguous)
+
+
+def test_invalid_type_assertions_are_adapter_gaps() -> None:
+    with pytest.raises(AssertionGap, match="type assertion"):
+        evaluate_assertion(AssertionType("not a type"), raw_result=1)

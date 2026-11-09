@@ -31,7 +31,7 @@ import xml.parsers.expat as expat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NoReturn
 
 from elementpath import UnsupportedFeatureError, XPathContext, build_node_tree
 from elementpath.exceptions import ElementPathSyntaxError
@@ -258,10 +258,19 @@ def _xpath_value(value: Any, parser: XPath31Parser) -> Any:
 
 
 def _context_item(items: tuple[Any, ...], parser: XPath31Parser) -> Any:
+    """The catalog's initial context item for an XPath assertion.
+
+    The upstream runner supplies an empty document when ``$result`` is empty,
+    the single item when there is exactly one, and the empty sequence when
+    there are several.  elementpath cannot represent an absent context item,
+    so a multi-item result is an explicit adapter gap rather than a substituted
+    document.
+    """
+    if not items:
+        return build_node_tree(ET.ElementTree())
     if len(items) == 1:
         return _xpath_value(items[0], parser)
-    tree = ET.ElementTree(ET.Element("empty"))
-    return build_node_tree(tree)
+    raise AssertionGap("an XPath assertion context is absent for a multi-item result")
 
 
 def _parser(declarations: Sequence[tuple[str, str]]) -> XPath31Parser:
@@ -277,6 +286,20 @@ def _is_gap(exc: BaseException) -> bool:
     return code.rsplit(":", 1)[-1] in _GAP_CODES
 
 
+def _binding(
+    declarations: Sequence[tuple[str, str]], items: tuple[Any, ...]
+) -> tuple[XPath31Parser, dict[str, Any]]:
+    parser = _parser(declarations)
+    variables: dict[str, Any] = {"result": [_xpath_value(item, parser) for item in items]}
+    return parser, variables
+
+
+def _translate_evaluation_error(exc: Exception, description: str) -> NoReturn:
+    if _is_gap(exc):
+        raise AssertionGap(f"cannot evaluate {description}: {exc}") from exc
+    raise AssertionFailure(f"{description} failed: {exc}") from exc
+
+
 def _evaluate(
     expression: str,
     *,
@@ -284,15 +307,36 @@ def _evaluate(
     items: tuple[Any, ...] = (),
 ) -> Any:
     """Compile and evaluate one XPath expression with ``$result`` bound."""
-    parser = _parser(declarations)
-    variables: dict[str, Any] = {"result": [_xpath_value(item, parser) for item in items]}
     try:
+        parser, variables = _binding(declarations, items)
         ast = parser.parse(expression)
-        return ast.evaluate(XPathContext(item=_context_item(items, parser), variables=variables))
+        context_item = _context_item(items, parser)
+        return ast.evaluate(XPathContext(item=context_item, variables=variables))
+    except AssertionGap:
+        raise
     except Exception as exc:  # elementpath's hierarchy is broad
-        if _is_gap(exc):
-            raise AssertionGap(f"cannot evaluate assertion XPath {expression!r}: {exc}") from exc
-        raise AssertionFailure(f"assertion XPath failed: {exc}") from exc
+        _translate_evaluation_error(exc, f"assertion XPath {expression!r}")
+
+
+def _evaluate_context_free(
+    expression: str,
+    *,
+    declarations: Sequence[tuple[str, str]],
+    items: tuple[Any, ...] = (),
+) -> Any:
+    """Evaluate a constructed expression that cannot refer to the context.
+
+    ``assert-type`` is the only caller: its expression is
+    ``$result instance of <SequenceType>``, a variable reference followed by a
+    sequence type.  Sequence types contain no expressions, so the placeholder
+    context item cannot affect the verdict.
+    """
+    try:
+        parser, variables = _binding(declarations, items)
+        ast = parser.parse(expression)
+        return ast.evaluate(XPathContext(item="", variables=variables))
+    except Exception as exc:  # elementpath's hierarchy is broad
+        _translate_evaluation_error(exc, f"type assertion {expression!r}")
 
 
 def _as_expression_items(value: Any) -> tuple[Any, ...]:
@@ -672,7 +716,7 @@ class AssertionType(Assertion):
     def evaluate_verdict(self, context: AssertionContext) -> Verdict:
         if context.error_mode:
             return _failed("the transformation raised an unexpected error")
-        matched = _evaluate(
+        matched = _evaluate_context_free(
             f"$result instance of {self.type_name}",
             declarations=self.namespaces,
             items=_raw_items(context.result),
