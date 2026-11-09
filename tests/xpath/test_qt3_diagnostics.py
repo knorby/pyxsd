@@ -486,6 +486,8 @@ def test_context_item_analysis_is_static_and_variable_aware() -> None:
         "a",
         "./a",
         ".//a",
+        "..",
+        "../a",
         "child::a",
         "count(a)",
         "position()",

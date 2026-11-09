@@ -551,7 +551,7 @@ _TYPE_PARENT_SYMBOLS = frozenset(
 
 def _is_step(token: Any) -> bool:
     symbol = getattr(token, "symbol", None)
-    return symbol in _STEP_SYMBOLS or symbol == "." or (symbol == "*" and len(token) == 0)
+    return symbol in _STEP_SYMBOLS or symbol in {".", ".."} or (symbol == "*" and len(token) == 0)
 
 
 def _uses_context_item(ast: Any) -> bool:
