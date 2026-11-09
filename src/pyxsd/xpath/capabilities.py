@@ -393,15 +393,23 @@ def _probe_function_call_mutation(parser: Any, version: str) -> tuple[str, ...]:
     function = _evaluate(parser, "fn:concat#2")
     reference_before = function.is_reference()
     _require(reference_before, "a named function reference did not report is_reference()")
+    name_before = function.as_function().__name__
+    _require(
+        name_before == "<fn:concat#2>",
+        f"named function reference exposed the wrong wrapper name: {name_before!r}",
+    )
     result = function("a", "b")
     _require(result == "ab", f"named function reference returned {result!r}, expected ab")
+    name_after = function.as_function().__name__
     if function.is_reference():
         return ("named function reference retained its token identity after invocation",)
     raise CapabilityRequirement(
         "XPathFunction.__call__ mutates the reusable function token: "
-        "is_reference() changed from True to False and the token keeps invocation arguments; "
+        "is_reference() changed from True to False, the token keeps invocation arguments, "
+        f"and as_function().__name__ changed from {name_before!r} to {name_after!r}; "
         "the adapter must clone or recreate callable tokens for each invocation",
         evidence=(
+            f"as_function().__name__ changed from {name_before!r} to {name_after!r}",
             f"source changed from {function.source!r} after invocation",
             "is_reference() changed from True to False",
         ),

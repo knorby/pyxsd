@@ -100,7 +100,9 @@ def test_capability_matrix_records_source_confirmed_substrate_limits(
     mutation = xpath31_outcomes["function-call-mutation"]
     assert mutation.status == "adapter-requirement"
     assert "is_reference" in mutation.detail
+    assert "as_function" in mutation.detail
     assert any("is_reference" in evidence for evidence in mutation.evidence)
+    assert any("as_function" in evidence for evidence in mutation.evidence)
 
     copying = xpath31_outcomes["context-copy-aliasing"]
     assert copying.status == "adapter-requirement"
@@ -349,6 +351,12 @@ def test_function_call_mutation_probe_passes_for_a_stable_token(
         def is_reference(self) -> bool:
             return True
 
+        def as_function(self) -> Any:
+            class Wrapper:
+                __name__ = "<fn:concat#2>"
+
+            return Wrapper()
+
         def __call__(self, *args: Any, **kwargs: Any) -> str:
             return "".join(str(arg) for arg in args)
 
@@ -383,6 +391,15 @@ def test_function_call_mutation_is_visible_in_the_installed_source() -> None:
     assert "self.clear()" in source
     assert "self._items.append" in source
     assert "tk.value = self.validated_argument" in source
+
+
+def test_named_reference_as_function_name_changes_after_invocation() -> None:
+    parser = capabilities._parser_for("3.1")
+    function = parser.parse("fn:concat#2").evaluate(XPathContext(item=""))
+
+    assert function.as_function().__name__ == "<fn:concat#2>"
+    assert function("a", "b") == "ab"
+    assert function.as_function().__name__ == "<fn:concat>"
 
 
 def test_partial_application_placeholders_mutate_after_invocation() -> None:
