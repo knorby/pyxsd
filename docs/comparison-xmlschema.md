@@ -7,10 +7,10 @@
 
 Choose pyxsd when you want a schema-defined Python object tree that you can
 query, extend, transform, and export. Choose
-[`xmlschema`](https://github.com/sissaschool/xmlschema) when converter-based
-XML/Python/JSON encoding and decoding, lazy processing, or WSDL support is
-central to your application. Both validate XSD 1.0 and 1.1 and offer runtime
-bindings. pyxsd makes runtime class generation its primary model: the current
+[`xmlschema`](https://github.com/sissaschool/xmlschema) when lazy processing
+or WSDL support is central to your application. Both validate XSD 1.0 and 1.1,
+offer runtime bindings, and support common JSON formats for encoding and
+decoding. pyxsd makes runtime class generation its primary model: the current
 schema supplies extensible classes directly, with no generated binding module
 to regenerate or drift out of sync.
 
@@ -27,8 +27,9 @@ case, read {doc}`why-pyxsd`.
 | Runtime dependency | `elementpath` + `defusedxml` (both pure Python; `defusedxml` is loaded only for opt-in parser profiles) | `elementpath` only (pure Python) |
 | XML parser | stdlib `xml.etree.ElementTree` by default; opt-in `XmlParserPolicy.protected()` / `.strict()` use defusedxml; no external DTD/entity fetching in any built-in profile | stdlib `ElementTree` (with optional lxml injection for instance resources) |
 | Primary model | validate, bind to a schema-defined Python object tree, query, export, transform | decode/encode XML↔Python/JSON, validate, inspect schema components |
-| Instance → Python | `Document` tree of runtime-generated classes; `to_dict()` / `to_json()` | Converters to nested `dict`, JSON, `DataElement`, and runtime-generated data bindings |
-| XML output | Write an existing bound tree; revalidate edits explicitly | `encode()`, `from_json()`, converter classes |
+| Instance → Python | `Document` tree of runtime-generated classes; raw `to_dict()` or JSON-safe `to_data()` / `to_json()` | Converters to nested `dict`, JSON, `DataElement`, and runtime-generated data bindings |
+| Python/JSON → XML | `Schema.from_data()` / `from_json()` bind five formats into a `Document`; `to_string()` / `write()` serialize it | `encode()`, `from_json()`, converter classes |
+| JSON Schema | `Schema.json_schema()` describes all five export formats as Draft 2020-12; explicit XSD validation limits | Converter-based Python/JSON contracts; consult its API for supported exports |
 | Binding source files | None required; classes come directly from the compiled XSD; optional `.pyi` stubs describe them | Runtime data bindings available; optional static generation with Jinja2 templates |
 | Application extensions | Compile-time mixins with methods and validation hooks | Custom converters and data-binding classes |
 | Pydantic / Arrow | Optional schema-derived Pydantic models and Arrow/Parquet record projections | Python/JSON conversion; no equivalent built-in adapters documented |
@@ -87,7 +88,7 @@ prevent a usable result.
 
 ### A direct route to application output
 
-Use `to_dict()` / `to_json()` for structured extraction, or apply a Python
+Use `to_dict()` / `to_data()` / `to_json()` for structured extraction, or apply a Python
 callable through `Document.transform()`. The CLI can invoke the same
 transform classes. After changing a tree, `revalidate()` produces a fresh
 document and report before writing. See {doc}`transforms/using`.
@@ -98,13 +99,16 @@ that need a declared data contract or typed Parquet output rather than a
 sample-inferred mapping. The projections have their own supported-shape
 limits and do not replace full XML validation.
 
+### Document data contracts
+
+Both libraries encode and decode [Parker][parker], [BadgerFish][badgerfish],
+and [JsonML][jsonml]. pyxsd also supports native `pyxsd` and schema-driven
+`pyxsd-json`, and generates Draft 2020-12 JSON Schema for all five formats.
+Shared format names do not guarantee identical JSON; see {doc}`data-conversion`
+for examples, interoperability differences, and validation limits.
+
 ## Where xmlschema is a better fit
 
-- **Encoding and JSON round-tripping.** `xmlschema` encodes Python data and
-  JSON back to XML, with converter classes (`ParkerConverter`,
-  `BadgerFishConverter`, `JsonMLConverter`, `ColumnarConverter`,
-  `DataElementConverter`, and more). pyxsd does not implement encode; a
-  transform can construct XML, but that is not the same tool.
 - **Lazy and incremental processing.** `XMLResource` with `lazy` /
   `thin_lazy` supports large documents and streaming, which pyxsd does not.
 - **Resource controls and hardening.** `xmlschema` exposes a broader
@@ -128,18 +132,16 @@ limits and do not replace full XML validation.
 
 ## Limitations of pyxsd
 
-- **No encode.** There is no Python/JSON→XML serializer beyond writing a
-  parsed `Document` back out.
 - **Namespace-correct documents are the default expectation.** The default
   `ParseModes.NAMESPACED` policy rejects documents that only matched by local
   name; `ParseModes.STRICT`, `ParseModes.LAX`, and `--namespaces legacy` are
   the explicit compatibility choices.
-- **Mixed content has limited structured export.**
+- **Grouped exports lose mixed-content positions.**
   Interleaved text is kept verbatim in the bound tree (leading text in
   `_value_`, child tails in `_tail_`) and survives serialization and
   XPath queries, but the dict export can only concatenate the character
-  data under `$`, and the Arrow/Pydantic integrations reject mixed
-  content.
+  data under `$`. Use `pyxsd-json` or JsonML for ordered mixed export;
+  the Arrow/Pydantic integrations reject mixed content.
 - **DTD-dependent checks have limited evidence.** `ENTITY`/`ENTITIES` checks
   depend on available unparsed-entity declarations; external subsets are not
   fetched. See [DTD evidence and input limitations](validation.md#dtd-dependent-entity-and-entities-values).
@@ -153,7 +155,8 @@ limits and do not replace full XML validation.
 
 ## Using them together
 
-pyxsd uses xmlschema in two distinct test roles:
+pyxsd uses xmlschema for conversion fixtures as described above, and in two
+distinct validation test roles:
 
 - **Manifest differential oracle.** `tests/test_oracle.py`, enabled by
   `PYXSD_RUN_ORACLE=1`, compares the engines' schema and available instance
@@ -186,3 +189,6 @@ for the populations, skips, scoring rules, and reproduction commands.
    authoritative description of the features attributed to it above.
 
 [xmlschema-bindings]: https://xmlschema.readthedocs.io/en/stable/api.html#xmlschema.DataBindingConverter
+[parker]: https://wiki.open311.org/JSON_and_XML_Conversion/#the-parker-convention
+[badgerfish]: http://www.sklar.com/badgerfish/
+[jsonml]: https://jsonml.org/

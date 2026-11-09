@@ -208,6 +208,12 @@ def bind_instance(schema: BoundSchemaProtocol, xml_root: Any, report: Validation
                 # the declared element type.
             schemaClassInstance.__dict__[rootElementName] = subInstance
             subInstance._descriptor_ = rootElement
+            raw_type = xsi.xsi_type_name(xml_root)
+            if raw_type is not None:
+                subInstance._xsi_type_context_ = (
+                    raw_type,
+                    dict(schema.namespace_context.bindings_for(xml_root)),
+                )
             check_identity_constraints_entry(schema, subInstance, report)
 
     return subInstance

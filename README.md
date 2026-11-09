@@ -93,6 +93,9 @@ makes validation errors fail the command; a bare run does not write XML.
   issue codes, phases, and exact source occurrences.
 - [Query and edit documents](https://pyxsd.knorby.com/quickstart.html#query-the-document):
   use XPath or ElementTree paths, export dictionaries/JSON, and revalidate edits.
+- [Convert JSON data](https://pyxsd.knorby.com/data-conversion.html): import and
+  export [Parker][parker], [BadgerFish][badgerfish], [JsonML][jsonml], native
+  `pyxsd`, and schema-driven `pyxsd-json` formats, and generate JSON Schema from XSD.
 - [Write transforms](https://pyxsd.knorby.com/transforms/writing.html): apply
   Python functions or reusable transform classes to the bound tree.
 - [Process multiple documents](https://pyxsd.knorby.com/batch.html): reuse a
@@ -141,3 +144,7 @@ Python 3 in 2026. See the [project history](https://pyxsd.knorby.com/history/ori
 ## License
 
 BSD 3-Clause. [LICENSE](LICENSE) includes the original ORNL provenance note.
+
+[parker]: https://wiki.open311.org/JSON_and_XML_Conversion/#the-parker-convention
+[badgerfish]: http://www.sklar.com/badgerfish/
+[jsonml]: https://jsonml.org/

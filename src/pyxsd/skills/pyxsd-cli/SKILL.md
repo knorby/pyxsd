@@ -21,7 +21,8 @@ paths and quote transform calls for the shell.
 | Validate using the instance's schema hints | `pyxsd -i document.xml --strict` |
 | Read XML from stdin | `pyxsd -s schema.xsd --strict < document.xml` |
 | Write the parsed tree before any transforms | `pyxsd -i document.xml -s schema.xsd -k -p parsed.xml` |
-| Export a bound tree as JSON | `pyxsd -i document.xml -s schema.xsd -t 'ToDict()' -o data.json` |
+| Export schema-driven JSON | `pyxsd -i document.xml -s schema.xsd -t 'ToData(format="pyxsd-json")' -o data.json` |
+| Export ordered JsonML arrays | `pyxsd -i document.xml -s schema.xsd -t 'ToData(format="jsonml")' -o data.json` |
 | Run a transform chain | `pyxsd -i document.xml -s schema.xsd -t 'PrintData() > PrintData()'` |
 | Read transform calls from a file | `pyxsd -i document.xml -s schema.xsd -T transforms.txt` |
 | Emit a full typing stub to stdout | `pyxsd --emit-stubs -s schema.xsd` |
@@ -66,8 +67,9 @@ formats.
 - Transform output defaults to stdout. Use `-o PATH` for a named file or
   `-d` for the default `<stem>Transformed.xml`; stream input with `-d` writes
   `output.xml` in the current directory.
-- A final `Document` result writes XML. A mapping result, such as `ToDict()`,
-  writes JSON. Other final Python values produce no final output file.
+- A final `Document` result writes XML. Mappings, lists, strings, booleans,
+  integers, floats, and `None` write JSON, including scalar and `null` results.
+  Other final Python objects produce no final output file.
 - Choose a new output path rather than overwriting the source document. Review
   generated content before replacing project files.
 
@@ -77,6 +79,14 @@ Use `-t 'Class(args...)'` for literal arguments and chain top-level calls with
 `>`. Alternatively, put calls in a UTF-8 text file and pass `-T FILE`; `-t` and
 `-T` are mutually exclusive. `-k` retains the pre-transform tree alongside the
 transform output.
+
+Use `ToData(format="...")` for JSON-safe export: `pyxsd` (native, the default),
+`pyxsd-json`, `parker`, `badgerfish`, or `jsonml`. `ToDict()` retains raw bound
+values; prefer `ToData()` for JSON output. `typed=False` and `always_list=True`
+are native-only options. Export defaults to `fidelity="best-effort"`; choose
+`fidelity="strict"` to reject representation losses. This is separate from
+the CLI's `--strict` validation-exit policy. `pyxsd-json` and JsonML preserve
+ordered and mixed content; grouped formats have fidelity limits.
 
 Transform resolution imports Python modules from pyxsd, the working directory,
 and the instance directory. Overlay files supplied with `-c` are also Python.
@@ -100,6 +110,17 @@ API's `Schema.require_valid()` when schema findings must stop a workflow.
 The CLI prints a human-readable report but does not expose structured report
 objects, exact source-occurrence lookup, or programmatic tree editing. Use the
 Python API for those tasks, for parser hardening and resource policies, and for
-fresh `Document.revalidate()` checks after edits. Use MCP when a client needs
-workspace inputs, paginated issues, exact captured subtrees, comparisons, or
-retained artifacts. Do not invent CLI flags for those capabilities.
+fresh `Document.revalidate()` checks after edits. JSON import and JSON Schema
+generation also use Python: `Schema.from_data()` / `Schema.from_json()` import
+all five formats, and `Schema.json_schema()` generates Draft 2020-12 contracts
+from XSD. Import and generation default to `format="pyxsd-json"` and
+`fidelity="strict"`; choose the format explicitly to match export. Pass JSON
+text or bytes to `from_json()`, not a filename, and call `require_valid()` on
+the imported document when XSD errors must stop processing. JSON Schema does
+not enforce every XSD rule. See the
+[data conversion guide](https://pyxsd.knorby.com/data-conversion.html).
+The CLI has no JSON-input or JSON-Schema-generation flags.
+
+Use MCP when a client needs workspace inputs, paginated issues, exact captured
+subtrees, comparisons, or retained artifacts. Do not invent CLI flags for those
+capabilities.

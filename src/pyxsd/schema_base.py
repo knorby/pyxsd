@@ -2117,6 +2117,9 @@ class SchemaBase:
         - ``subInstance`` - the bound instance for the child element.
         - ``subElement`` - the xml element the instance was built from.
         """
+        raw_type = xsi.xsi_type_name(subElement)
+        if raw_type is not None:
+            subInstance._xsi_type_context_ = (raw_type, dict(cls._qname_bindings(subElement) or {}))
         context = current_context()
         if context is not None and context.provenance is not None:
             context.provenance.bind(subElement, subInstance)

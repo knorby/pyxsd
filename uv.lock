@@ -2415,6 +2415,7 @@ pydantic = [
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
+    { name = "jsonschema" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -2467,6 +2468,7 @@ provides-extras = ["arrow", "mcp", "mcp-all", "pydantic"]
 [package.metadata.requires-dev]
 dev = [
     { name = "hypothesis", specifier = ">=6.140" },
+    { name = "jsonschema", specifier = ">=4.25" },
     { name = "mypy", specifier = ">=1.18" },
     { name = "pre-commit", specifier = ">=4.6" },
     { name = "pytest", specifier = ">=8.4" },

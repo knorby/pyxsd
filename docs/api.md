@@ -2,7 +2,7 @@
 
 ```{eval-rst}
 .. meta::
-   :description: Look up pyxsd Schema and Document APIs, XML queries, validation errors, sequential batches, stubs, and schema introspection.
+   :description: Look up pyxsd Schema and Document APIs, JSON data conversion and JSON Schema, XML queries, validation errors, batches, and introspection.
 ```
 
 Use {doc}`quickstart` for a complete first example. This page documents public
@@ -30,6 +30,9 @@ Common schema entry points; full signatures and contracts below.
 
    ~pyxsd.schema.Schema.compile
    ~pyxsd.schema.Schema.parse
+   ~pyxsd.schema.Schema.from_data
+   ~pyxsd.schema.Schema.from_json
+   ~pyxsd.schema.Schema.json_schema
    ~pyxsd.schema.Schema.iter_parse
    ~pyxsd.schema.Schema.stub
    ~pyxsd.schema.Schema.require_valid
@@ -61,6 +64,7 @@ Common document entry points; full signatures and contracts are in the
    ~pyxsd.document.Document.findall
    ~pyxsd.document.Document.xpath
    ~pyxsd.document.Document.to_dict
+   ~pyxsd.document.Document.to_data
    ~pyxsd.document.Document.to_json
    ~pyxsd.document.Document.to_string
    ~pyxsd.document.Document.transform
@@ -76,6 +80,49 @@ document root. `xpath(expr, *, namespaces=None)` returns original bound
 nodes for node results and passes scalar results through. Absolute XPath
 paths include the root name. See {doc}`data-model` for whitespace, namespace,
 and source-fidelity limits, and {doc}`quickstart` for runnable queries.
+
+## JSON data conversion
+
+See {doc}`data-conversion` for all five format contracts, executable round
+trips, root selection, fidelity, and JSON Schema validation limits.
+
+- `Document.to_data()` returns JSON-safe Python values; `to_json()` encodes
+  the same data, with optional `indent`. Both default to `format="pyxsd"`,
+  `fidelity="best-effort"`, `typed=True`, and `always_list=False`. Export
+  reads the current tree without revalidation; `to_dict()` retains raw
+  Python/XSD values instead.
+- `Schema.from_data()` and `from_json()` return a normally bound `Document`
+  with a validation report. Both default to `format="pyxsd-json"` and
+  `fidelity="strict"`, and accept `element` and `namespaces`. JSON input is
+  content, not a filename. Conversion failures raise `PyXSDError`; XSD
+  findings remain on the report until `require_valid()` is called.
+- `Schema.json_schema()` constructs Draft 2020-12 JSON Schema for any of the
+  five export formats, without instance data or optional dependencies. It
+  defaults to `format="pyxsd-json"`, `element=None`, `fidelity="strict"`,
+  `typed=True`, and `always_list=False`. Root-absorbed native/Parker require
+  one concrete global root or explicit selection; the other formats describe
+  all concrete globals when unselected. Native options must match export;
+  both generation fidelities currently yield the same structural description.
+  This is not full XSD validation or the separate Pydantic projection.
+
+The following type aliases describe conversion annotations, not additional
+runtime entry points:
+
+```{eval-rst}
+.. py:type:: FormatName
+
+   One of ``"pyxsd"``, ``"pyxsd-json"``, ``"parker"``, ``"badgerfish"``,
+   or ``"jsonml"``.
+
+.. py:type:: Fidelity
+
+   ``"strict"`` or ``"best-effort"``; representation policy, not XSD validity.
+
+.. py:type:: JsonValue
+
+   A recursive JSON-compatible value: ``None``, boolean, integer, finite
+   float, string, list of such values, or string-keyed dictionary of them.
+```
 
 ## Modes and the node protocol
 
@@ -279,6 +326,15 @@ locations do.
 See {doc}`transforms/using` for return and revalidation behavior and
 {doc}`transforms/class` for `Transform`, `Displayer`, `iter_tree`, and built-ins.
 
+`doc.transform(ToData(...))` uses the same options and defaults as
+`Document.to_data()`. `ToData` is also available through the CLI transform
+loader; call-time keyword options override its construction options.
+
+```{eval-rst}
+.. autoclass:: pyxsd.transforms.to_data.ToData
+   :members: __call__
+```
+
 ### Supporting records and entry-point aliases
 
 These records describe introspection and resource-policy results. The aliases
@@ -309,6 +365,8 @@ below point to the same implementations documented above.
 
 .. autofunction:: pyxsd.dict_export.bound_to_dict
 
+.. autofunction:: pyxsd.data_conversion.export.bound_to_data
+
 .. py:module:: pyxsd.introspection
 
 .. py:module:: pyxsd.version_gates
@@ -337,6 +395,14 @@ below point to the same implementations documented above.
 .. py:method:: to_dict
 
    See :meth:`pyxsd.document.Document.to_dict` for dictionary export.
+
+.. py:method:: to_data
+
+   See :meth:`pyxsd.document.Document.to_data` for JSON-safe data export.
+
+.. py:method:: from_data
+
+   See :meth:`pyxsd.schema.Schema.from_data` for document data import.
 
 .. py:method:: XmlParserPolicy.strict
    :canonical: pyxsd.xml_policy.XmlParserPolicy.strict

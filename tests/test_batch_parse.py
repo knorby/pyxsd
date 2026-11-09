@@ -242,7 +242,14 @@ def test_keys_and_qname_evidence_remain_per_document(tmp_path):
         "QName",
         ("urn:later", "Thing"),
     )
-    assert "p:Thing" in a.document.to_string()
+    # Prefix spelling is not a document contract; value-only namespaces must
+    # remain bound when an earlier document is written after later parses.
+    copied = schema.parse(StringIO(a.document.to_string()))
+    copied.require_valid()
+    assert xsd_value_key(getattr(copied.find("item"), "name|2")) == (
+        "QName",
+        ("urn:first", "Thing"),
+    )
 
 
 def test_no_prefetch_or_consumption_after_close(schema, mixed_sources):

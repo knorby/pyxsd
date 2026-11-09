@@ -45,25 +45,34 @@ comments.
 
 ## Dict and JSON export
 
-`Document.to_dict()` exports the bound tree as plain Python data, and
-`Document.to_json()` encodes that with the standard `json` module. The
-shipped `ToDict` transform exposes the same codec to `Document.transform`
-and the CLI (`--transform ToDict()`), which renders a dict result as
-JSON.
+`Document.to_dict()` exports the native structure with raw Python/XSD
+scalar values. `Document.to_data()` exports JSON-safe values, and
+`Document.to_json()` encodes those values with the standard `json` module.
+Both default to the native structure (`format="pyxsd"`). Other formats are
+`pyxsd-json` (root-preserving, schema-driven layouts), `parker` (root-absorbed
+grouped content without attributes), `badgerfish` (root-preserving grouped
+content with attributes and namespaces), and `jsonml` (positional arrays).
+
+The shipped `ToDict` transform exposes the raw native export to
+`Document.transform` and the CLI (`--transform ToDict()`), which renders
+a dict result as JSON. The native structure is:
 
 | Input | Dict key/value |
 | ----- | -------------- |
-| Child element | Key = the child name in Clark notation when namespace-qualified, otherwise the local name. |
+| Child element | Key = the Clark name when namespace-qualified in namespace-aware mode; the local name otherwise, including legacy mode. |
 | Repeated child | A list of values (a single occurrence is the value itself). |
 | `always_list=True` | Every child value is a list, even a single occurrence. |
 | Attribute | Key = `"@"` + the document attribute name. |
 | Element text | The scalar value for a text-only element; the `"$"` key when the element also has attributes or children. |
-| Nilled element | `None`. |
+| Root | Name absorbed; a scalar or empty root uses `{"$": value}`. |
+| Nilled leaf without attributes | `None`; an actual `xsi:nil` attribute remains an `@` property. |
+| Empty complex leaf without attributes | Also `None` with `typed=True`; native null does not uniquely mean nil. |
 | `typed=False` | Lexical text instead of typed Python values. |
 
 ```python
 doc.to_dict()  # {"@a": 1, "item": [1, 2], "note": "hi"}
 doc.to_dict(typed=False)
+doc.to_data()
 doc.to_json(indent=2)
 ```
 
@@ -73,9 +82,26 @@ serializes. For an element whose content admits character data (mixed
 content, `xs:anyType`, wildcard pass-through), `$` holds all of the
 element's recorded character data in document order: the verbatim leading
 text followed by every child's `_tail_`, concatenated. The dict shape
-cannot represent text/element interleaving, so `to_string()` and `xpath()`
-are the faithful mixed-content views. The remaining known loss matches the
-node model: a wildcard attribute has only its lexical form.
+cannot represent text/element interleaving or interleaved repeated child
+names. Use `to_string()`, `xpath()`, `pyxsd-json`, or `jsonml` export when
+those positions matter. Parker and BadgerFish also group children; strict
+export rejects their representational losses, while best effort warns and
+uses documented fallbacks. A wildcard attribute has only its lexical form.
+
+`to_dict()` keeps raw scalar objects. JSON-safe export converts decimals
+and dates to strings, typed XSD list values to arrays, and non-finite floats
+to `"INF"`, `"-INF"`, or `"NaN"`. Native `fidelity="strict"` audits
+representation losses; the default best-effort export keeps the grouped
+shape without new warnings. Only native export accepts non-default `typed`
+and `always_list` options. JsonML uses typed content items as an extension
+to lexical-only JsonML. For exact layouts, namespace and scalar rules, nil
+markers, and fidelity errors, see:
+
+```{toctree}
+:maxdepth: 1
+
+data-conversion
+```
 
 ## XPath projection
 
