@@ -280,8 +280,8 @@ and optional content. To request empty content explicitly, use `{}` or
 ### Import fidelity
 
 Native, Parker, and BadgerFish reconstruct grouped children in schema order
-only when that reconstruction is unique, including fixed sequences and
-`xs:all` records. Array items retain occurrence order within their group.
+for supported models, including fixed sequences with distinct child names
+and `xs:all` records. Array items retain occurrence order within their group.
 Strict raises for each loss below; best effort emits `PyXSDWarning` and
 applies only the listed fallback:
 
@@ -294,11 +294,18 @@ applies only the listed fallback:
 | Native | `empty-nil-ambiguous` | Interpret ambiguous element `null` as nil. |
 
 Repeated models allowing several child names can require the ordering
-fallback even if a particular object looks ordered. Mixed content with
-multiple distinct child names also loses child order; text-only mixed
-content needs no positional fallback. JsonML represents order directly and
-needs neither ordering nor mixed-text fallback. `pyxsd-json` has no import
-fallbacks: both fidelities use the same decoding rules without loss warnings.
+fallback even if a particular object looks ordered. When multiple distinct
+child names are present, grouped input also conservatively rejects a present
+expanded child name with multiple possible content-model positions, such as
+`a` in `a?, b, a?`, even if occurrence counts could force one allocation.
+Strict raises `order-ambiguous`; best effort warns and uses mapping order.
+Use `pyxsd-json` or JsonML when explicit interleaving is needed.
+
+Mixed content with multiple distinct child names also loses child order;
+text-only mixed content needs no positional fallback. JsonML represents order
+directly and needs neither ordering nor mixed-text fallback. `pyxsd-json` has
+no import fallbacks: both fidelities use the same decoding rules without loss
+warnings.
 
 ### Namespaces and QName values
 
