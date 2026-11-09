@@ -119,6 +119,54 @@ def _description(element: ET.Element) -> str:
     return description.text.strip()
 
 
+def _parse_document(
+    path: Path, failure: str
+) -> tuple[ET.Element, dict[int, tuple[tuple[str, str], ...]]]:
+    """Parse one document and retain each element's in-scope namespaces.
+
+    ``xml.etree`` discards namespace declarations that are only referenced
+    from assertion text.  The returned map preserves the full in-scope scope
+    for every element, keyed by identity, so the catalog can attach the result
+    subtree's scopes to its :class:`TestCase`.
+    """
+    scopes: dict[int, tuple[tuple[str, str], ...]] = {}
+    stack: list[dict[str, str]] = []
+    pending: list[tuple[str, str]] = []
+    root: ET.Element | None = None
+    try:
+        for event, element in ET.iterparse(path, events=("start", "start-ns", "end")):
+            if event == "start-ns":
+                pending.append((element[0] or "", element[1]))
+            elif event == "start":
+                scope = dict(stack[-1]) if stack else {}
+                scope.update(pending)
+                pending = []
+                stack.append(scope)
+                scopes[id(element)] = tuple(scope.items())
+                if root is None:
+                    root = element
+            else:
+                stack.pop()
+    except (OSError, ET.ParseError) as exc:
+        raise CatalogError(f"{failure}: {exc}") from exc
+    assert root is not None
+    return root, scopes
+
+
+def _result_namespace_scopes(
+    case_element: ET.Element, scopes: dict[int, tuple[tuple[str, str], ...]]
+) -> tuple[tuple[tuple[str, str], ...], ...]:
+    """In-scope namespaces for each element of a case's result subtree.
+
+    Entries follow document order, matching ``Element.iter()`` and therefore
+    the assertion parser's traversal.
+    """
+    result = _element(case_element, "result")
+    if result is None:
+        return ()
+    return tuple(scopes.get(id(element), ()) for element in result.iter())
+
+
 def _content(element: ET.Element) -> str | None:
     content = _element(element, "content")
     if content is None:
@@ -446,10 +494,7 @@ class _CatalogLoader:
             raise CatalogError(f"cannot read test-set document {path}: file not found")
         if path in self._active:
             raise CatalogError(f"cyclic catalog include: {path}")
-        try:
-            root = ET.parse(path).getroot()
-        except (OSError, ET.ParseError) as exc:
-            raise CatalogError(f"cannot read catalog document {path}: {exc}") from exc
+        root, namespace_scopes = _parse_document(path, f"cannot read catalog document {path}")
         if not isinstance(root.tag, str) or not _in_catalog_namespace(root.tag):
             raise CatalogError(f"{path}: not an XSLT test catalog document")
         document = self._document_path(path)
@@ -460,7 +505,9 @@ class _CatalogLoader:
             if kind == "catalog":
                 self._read_catalog(root, document, base, inherited)
             elif kind == "test-set":
-                self._read_test_set(root, document, base, inherited, fallback_set_name)
+                self._read_test_set(
+                    root, document, base, inherited, fallback_set_name, namespace_scopes
+                )
             else:
                 raise CatalogError(f"{document}: expected <catalog> or <test-set>, found <{kind}>")
         finally:
@@ -495,6 +542,7 @@ class _CatalogLoader:
         base: PurePosixPath,
         inherited: dict[str, Environment],
         fallback_set_name: str | None,
+        namespace_scopes: dict[int, tuple[tuple[str, str], ...]],
     ) -> None:
         name = _attribute(root, "name") or fallback_set_name or ""
         if not name:
@@ -513,7 +561,15 @@ class _CatalogLoader:
         set_dependencies = _parse_dependencies(root)
         self.test_sets.append(name)
         for element in _elements(root, "test-case"):
-            self._read_case(element, document, base, name, environments, set_dependencies)
+            self._read_case(
+                element,
+                document,
+                base,
+                name,
+                environments,
+                set_dependencies,
+                _result_namespace_scopes(element, namespace_scopes),
+            )
         for reference in _elements(root, "test-set"):
             self._follow_test_set(reference, document, base, environments)
 
@@ -541,6 +597,7 @@ class _CatalogLoader:
         set_name: str,
         environments: dict[str, Environment],
         set_dependencies: tuple[Dependency, ...],
+        namespace_scopes: tuple[tuple[tuple[str, str], ...], ...] = (),
     ) -> None:
         local_name_value = _attribute(element, "name")
         if local_name_value is None:
@@ -569,12 +626,14 @@ class _CatalogLoader:
         else:
             invocation = _parse_invocation(test_element, case_base)
         result_element = _element(element, "result")
+        result_base: PurePosixPath | None = None
         if result_element is None:
             self._error(f"{document}: test case {name!r} has no <result> element")
             result_xml = ""
             early_exit = False
         else:
             result_xml = ET.tostring(result_element, encoding="unicode").strip()
+            result_base = _base(result_element, case_base)
             early_exit = _bool(result_element.get("early-exit-possible"))
         covers = tuple((_attribute(element, "covers") or "").split())
         if name in self.cases:
@@ -592,6 +651,9 @@ class _CatalogLoader:
             result_xml=result_xml,
             early_exit_possible=early_exit,
             covers=covers,
+            document_root=self.root,
+            result_base=result_base,
+            namespace_scopes=namespace_scopes,
         )
 
 

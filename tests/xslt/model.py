@@ -247,6 +247,9 @@ class TestCase:
     result_xml: str = ""
     early_exit_possible: bool = False
     covers: tuple[str, ...] = ()
+    document_root: Path | None = None
+    result_base: PurePosixPath | None = None
+    namespace_scopes: tuple[tuple[tuple[str, str], ...], ...] = ()
 
     @property
     def specs(self) -> tuple[str, ...]:
