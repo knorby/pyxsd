@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from elementpath import XPathContext
 from elementpath.xpath3 import XPath31Parser
+from elementpath.xpath_tokens import XPathArray, XPathMap
 
 from pyxsd.xpath import continuation
 from pyxsd.xpath.capabilities import CapabilityOutcome
@@ -54,6 +55,7 @@ def test_continuation_probe() -> None:
     assert outcome.status == "pass", outcome.diagnostic
     assert "RecursionError" not in outcome.diagnostic
     assert outcome.details["tail_marker_leaked"] is False
+    assert outcome.details["python_depth_delta"] <= continuation.PYTHON_DEPTH_BUDGET
     assert sys.getrecursionlimit() == recursion_limit
 
 
@@ -70,7 +72,10 @@ def test_continuation_probe_metadata_and_checks() -> None:
     assert outcome.evaluator_version == "1"
     assert outcome.diagnostic == outcome.detail
     assert outcome.details["depth"] == 1
-    assert outcome.details["max_python_depth"] <= continuation.PYTHON_DEPTH_BUDGET
+    assert outcome.details["max_python_depth"] == (
+        outcome.details["baseline_python_depth"] + outcome.details["python_depth_delta"]
+    )
+    assert outcome.details["python_depth_delta"] <= continuation.PYTHON_DEPTH_BUDGET
     assert outcome.details["checks"] == {
         "pending_arithmetic": True,
         "higher_order_xpath": True,
@@ -198,17 +203,55 @@ def test_probe_reports_changed_recursion_limit(monkeypatch: pytest.MonkeyPatch) 
     assert "recursion limit" in outcome.detail
 
 
-def test_probe_reports_excessive_python_depth(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_probe_uses_a_relative_python_depth_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = 500
+    monkeypatch.setattr(continuation, "_python_frame_depth", lambda: baseline)
     monkeypatch.setattr(
         continuation,
         "_run_probe",
-        lambda _: _probe_run(max_python_depth=continuation.PYTHON_DEPTH_BUDGET + 1),
+        lambda _: _probe_run(max_python_depth=baseline + continuation.PYTHON_DEPTH_BUDGET + 1),
     )
 
     outcome = probe_mixed_recursion(depth=2)
 
     assert outcome.status == "defect"
-    assert "frame depth" in outcome.detail
+    assert "depth delta" in outcome.detail
+    assert outcome.details["baseline_python_depth"] == baseline
+    assert outcome.details["python_depth_delta"] == continuation.PYTHON_DEPTH_BUDGET + 1
+
+
+def test_probe_accepts_a_deep_baseline_without_frame_accumulation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = 900
+    monkeypatch.setattr(continuation, "_python_frame_depth", lambda: baseline)
+    monkeypatch.setattr(
+        continuation,
+        "_run_probe",
+        lambda _: _probe_run(max_python_depth=baseline + 10),
+    )
+
+    outcome = probe_mixed_recursion(depth=2)
+
+    assert outcome.status == "pass", outcome.detail
+    assert outcome.details["baseline_python_depth"] == baseline
+    assert outcome.details["python_depth_delta"] == 10
+
+
+def _probe_from_deep_caller(levels: int) -> ContinuationProbe:
+    if levels:
+        return _probe_from_deep_caller(levels - 1)
+    return probe_mixed_recursion(depth=10)
+
+
+def test_probe_passes_from_a_deep_caller() -> None:
+    outcome = _probe_from_deep_caller(250)
+
+    assert outcome.status == "pass", outcome.detail
+    assert outcome.details["baseline_python_depth"] >= 250
+    assert outcome.details["python_depth_delta"] <= continuation.PYTHON_DEPTH_BUDGET
 
 
 def test_probe_builds_an_outcome_without_optional_details() -> None:
@@ -392,6 +435,10 @@ def test_plan_validation_and_host_protocol_validation() -> None:
         LiteralPlan(control)
     with pytest.raises(TailControlLeak):
         LiteralPlan([control])
+    with pytest.raises(TailControlLeak):
+        LiteralPlan({"control": control})
+    with pytest.raises(TailControlLeak):
+        LiteralPlan({control})
     assert LiteralPlan([1, (2, 3)]).value == [1, (2, 3)]
     with pytest.raises(ValueError, match="name"):
         VariablePlan("")
@@ -476,6 +523,73 @@ def test_nested_tail_control_in_a_host_result_is_rejected() -> None:
 
     with pytest.raises(TailControlLeak):
         evaluate(compiled, {"host": host})
+
+
+class _ControlCollection:
+    """A non-list host container that still implements Collection."""
+
+    def __init__(self, item: object) -> None:
+        self._item = item
+
+    def __len__(self) -> int:
+        return 1
+
+    def __iter__(self) -> Any:
+        return iter((self._item,))
+
+    def __contains__(self, item: object) -> bool:
+        return item is self._item
+
+
+def test_tail_control_is_rejected_in_mappings_sets_and_host_containers() -> None:
+    control = TailCall(HostFunction(lambda: 1))
+    containers = [
+        [control],
+        (control,),
+        {"control": control},
+        {control: "value"},
+        {control},
+        frozenset({control}),
+        _ControlCollection(control),
+    ]
+    compiled = compile_expression("$host()", variable_types={"host": "function(*)"})
+
+    for value in containers:
+        host = HostFunction(lambda value=value: value, arity=0)
+        with pytest.raises(TailControlLeak):
+            evaluate(compiled, {"host": host})
+
+
+def test_tail_control_is_rejected_in_xdm_maps_and_arrays() -> None:
+    parser = XPath31Parser()
+    control = TailCall(HostFunction(lambda: 1))
+    xdm_values = [
+        XPathMap(parser, items={"control": control}),
+        XPathArray(parser, items=[control]),
+    ]
+    compiled = compile_expression("$host()", variable_types={"host": "function(*)"})
+
+    for value in xdm_values:
+        host = HostFunction(lambda value=value: value, arity=0)
+        with pytest.raises(TailControlLeak):
+            evaluate(compiled, {"host": host})
+
+
+def test_contains_control_scans_all_supported_containers() -> None:
+    parser = XPath31Parser()
+    control = TailCall(HostFunction(lambda: 1))
+
+    assert continuation._contains_control({}) is False
+    assert continuation._contains_control({"control": control}) is True
+    assert continuation._contains_control({control: "value"}) is True
+    assert continuation._contains_control({control}) is True
+    assert continuation._contains_control(frozenset({control})) is True
+    assert continuation._contains_control(XPathMap(parser, items={"control": control})) is True
+    assert continuation._contains_control(XPathArray(parser, items=[control])) is True
+    assert continuation._contains_control("text") is False
+    assert continuation._contains_control(b"text") is False
+    assert continuation._contains_control(bytearray(b"text")) is False
+    assert continuation._contains_control(1) is False
 
 
 def test_tail_call_to_a_non_function_is_rejected() -> None:

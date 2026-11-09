@@ -32,7 +32,7 @@ reports the result as a Task 4 :class:`CapabilityOutcome` subtype.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from types import MappingProxyType
@@ -40,6 +40,7 @@ from typing import Any
 
 from elementpath import XPathContext
 from elementpath.xpath3 import XPath31Parser
+from elementpath.xpath_tokens import XPathArray, XPathMap
 from elementpath.xpath_tokens.tokens import ValueToken
 
 from pyxsd.xpath.capabilities import CapabilityOutcome
@@ -257,12 +258,31 @@ _OPERATOR_SYMBOLS = frozenset(
 )
 
 
+def _control_candidates(value: object) -> Iterator[object]:
+    """Yield every nested value the seam must inspect for tail-control values.
+
+    Mappings and the elementpath XDM map/array token types are scanned by their
+    items rather than by their (empty or token-only) sequence iteration.
+    Text scalars are skipped; every other collection is iterated, so an
+    arbitrary host-returned container cannot hide a control value.
+    """
+    if isinstance(value, (Mapping, XPathMap)):
+        for key, item in value.items():
+            yield key
+            yield item
+    elif isinstance(value, XPathArray):
+        yield from value.items()
+    elif isinstance(value, (str, bytes, bytearray)):
+        return
+    elif isinstance(value, Collection):
+        yield from value
+
+
 def _reject_nested_control(value: object, label: str) -> None:
     if isinstance(value, (TailCall, Invoke)):
         raise TailControlLeak(f"tail control value escaped as {label}")
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            _reject_nested_control(item, label)
+    for item in _control_candidates(value):
+        _reject_nested_control(item, label)
 
 
 class _Compiler:
@@ -705,9 +725,7 @@ class _ProbeRun:
 def _contains_control(value: object) -> bool:
     if isinstance(value, (TailCall, Invoke)):
         return True
-    if isinstance(value, (list, tuple)):
-        return any(_contains_control(item) for item in value)
-    return False
+    return any(_contains_control(item) for item in _control_candidates(value))
 
 
 def _mixed_recursion(depth: int) -> tuple[object, int]:
@@ -871,8 +889,13 @@ def _probe_outcome(
     depth: int,
     details: Mapping[str, object] | None = None,
     evidence: Sequence[str] = (),
+    baseline_python_depth: int | None = None,
 ) -> ContinuationProbe:
     evidence_lines = (*evidence, detail)
+    base_details: dict[str, object] = {"depth": depth, "tail_marker_leaked": False}
+    if baseline_python_depth is not None:
+        base_details["baseline_python_depth"] = baseline_python_depth
+    base_details.update(details or {})
     return ContinuationProbe(
         name="mixed-continuation",
         status=status,
@@ -883,7 +906,7 @@ def _probe_outcome(
         parser_version="3.1",
         evaluator="pyxsd.xpath.continuation",
         evaluator_version="1",
-        details={"depth": depth, "tail_marker_leaked": False, **(details or {})},
+        details=base_details,
     )
 
 
@@ -898,6 +921,7 @@ def probe_mixed_recursion(depth: int = 10_000) -> ContinuationProbe:
     """
     if not isinstance(depth, int) or isinstance(depth, bool) or depth < 1:
         raise ValueError("depth must be a positive integer")
+    baseline_python_depth = _python_frame_depth()
     details: dict[str, object]
     try:
         run = _run_probe(depth)
@@ -907,25 +931,31 @@ def probe_mixed_recursion(depth: int = 10_000) -> ContinuationProbe:
             f"RecursionError: {exc}",
             depth=depth,
             details={"python_recursion_limit": sys.getrecursionlimit()},
+            baseline_python_depth=baseline_python_depth,
         )
     except UnsupportedContinuationExpression as exc:
         return _probe_outcome(
             "adapter-requirement",
             f"continuation compiler gap: {exc}",
             depth=depth,
+            baseline_python_depth=baseline_python_depth,
         )
     except Exception as exc:
         return _probe_outcome(
             "defect",
             f"{type(exc).__name__}: {exc}",
             depth=depth,
+            baseline_python_depth=baseline_python_depth,
         )
 
     leaked = _contains_control(run.result)
+    python_depth_delta = run.max_python_depth - baseline_python_depth
     details = {
         "depth": depth,
         "tail_marker_leaked": leaked,
         "max_python_depth": run.max_python_depth,
+        "baseline_python_depth": baseline_python_depth,
+        "python_depth_delta": python_depth_delta,
         "python_depth_budget": PYTHON_DEPTH_BUDGET,
         "python_recursion_limit": run.recursion_limit,
         "checks": dict(run.checks),
@@ -933,13 +963,29 @@ def probe_mixed_recursion(depth: int = 10_000) -> ContinuationProbe:
     failed = sorted(name for name, passed in run.checks.items() if not passed)
     if run.result != run.expected:
         detail = f"mixed recursion returned {run.result!r}, expected {run.expected!r}"
-        return _probe_outcome("defect", detail, depth=depth, details=details)
+        return _probe_outcome(
+            "defect",
+            detail,
+            depth=depth,
+            details=details,
+            baseline_python_depth=baseline_python_depth,
+        )
     if failed:
         detail = "continuation checks failed: " + ", ".join(failed)
-        return _probe_outcome("defect", detail, depth=depth, details=details)
+        return _probe_outcome(
+            "defect",
+            detail,
+            depth=depth,
+            details=details,
+            baseline_python_depth=baseline_python_depth,
+        )
     if leaked:
         return _probe_outcome(
-            "defect", "a tail-control value escaped as an XDM result", depth=depth, details=details
+            "defect",
+            "a tail-control value escaped as an XDM result",
+            depth=depth,
+            details=details,
+            baseline_python_depth=baseline_python_depth,
         )
     if run.recursion_limit != sys.getrecursionlimit():
         return _probe_outcome(
@@ -947,23 +993,32 @@ def probe_mixed_recursion(depth: int = 10_000) -> ContinuationProbe:
             "the Python recursion limit changed during the probe",
             depth=depth,
             details=details,
+            baseline_python_depth=baseline_python_depth,
         )
-    if run.max_python_depth > PYTHON_DEPTH_BUDGET:
+    if python_depth_delta > PYTHON_DEPTH_BUDGET:
         detail = (
-            f"Python frame depth {run.max_python_depth} exceeded the "
+            f"Python frame depth delta {python_depth_delta} exceeded the "
             f"{PYTHON_DEPTH_BUDGET}-frame budget"
         )
-        return _probe_outcome("defect", detail, depth=depth, details=details)
+        return _probe_outcome(
+            "defect",
+            detail,
+            depth=depth,
+            details=details,
+            baseline_python_depth=baseline_python_depth,
+        )
     return _probe_outcome(
         "pass",
         f"evaluated {depth} mixed XPath/host recursion steps with pending operands",
         depth=depth,
         details=details,
+        baseline_python_depth=baseline_python_depth,
         evidence=(
             "compiled plans evaluated with an explicit heap continuation stack",
             "supported subset: literals, variables, arithmetic/comparison, if, let, "
             "inline functions, dynamic calls",
-            f"maximum Python frame depth {run.max_python_depth}",
+            f"maximum Python frame depth delta {python_depth_delta} "
+            f"(baseline {baseline_python_depth})",
             "tail-control values consumed before XDM delivery",
         ),
     )
