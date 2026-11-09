@@ -103,7 +103,10 @@ def function_arity(target: Any) -> int | tuple[int, int | None]:
             continue
         if parameter.kind is inspect.Parameter.KEYWORD_ONLY:
             if parameter.default is inspect.Parameter.empty:
-                minimum += 1
+                raise TypeError(
+                    f"callable {target!r} has required keyword-only parameter "
+                    f"{parameter.name!r}; XPath host functions are invoked positionally"
+                )
             continue
         if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
             maximum = None

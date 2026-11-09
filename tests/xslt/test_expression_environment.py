@@ -1065,13 +1065,16 @@ def test_function_arity_signatures(monkeypatch: pytest.MonkeyPatch) -> None:
     def varargs(*args: Any, **kwargs: Any) -> Any:
         return args
 
-    def varargs_keyword_only(*args: Any, required: Any, optional: Any = 1) -> Any:
+    def varargs_optional_keyword_only(*args: Any, optional: Any = 1) -> Any:
         return args
 
-    def varargs_required(*args: Any, required: Any) -> Any:
-        return args
+    def mixed_required_keyword_only(value: Any, *, required: Any) -> Any:
+        return value
 
-    def varargs_default(*args: Any, optional: Any = 1) -> Any:
+    def required_keyword_only(*, required: Any) -> Any:
+        return required
+
+    def varargs_required_keyword_only(*args: Any, required: Any) -> Any:
         return args
 
     assert function_arity(XdmFunction(lambda arguments, environment, closure: (), arity=2)) == (
@@ -1081,9 +1084,13 @@ def test_function_arity_signatures(monkeypatch: pytest.MonkeyPatch) -> None:
     assert function_arity(exact) == 2
     assert function_arity(defaults) == (1, 2)
     assert function_arity(varargs) == (0, None)
-    assert function_arity(varargs_keyword_only) == (1, None)
-    assert function_arity(varargs_required) == (1, None)
-    assert function_arity(varargs_default) == (0, None)
+    assert function_arity(varargs_optional_keyword_only) == (0, None)
+    with pytest.raises(TypeError, match="keyword-only"):
+        function_arity(mixed_required_keyword_only)
+    with pytest.raises(TypeError, match="keyword-only"):
+        function_arity(required_keyword_only)
+    with pytest.raises(TypeError, match="keyword-only"):
+        function_arity(varargs_required_keyword_only)
     with pytest.raises(TypeError, match="not callable"):
         function_arity(object())
 
@@ -1099,7 +1106,17 @@ def test_host_function_token_protocol() -> None:
 
     parser = _build_parser("3.1", XPathStaticContext(), functions=None, key=False)
     token = HostFunctionToken(parser, lambda value=1: value, item_converter=lambda item: item)
-    assert token.arity == (0, 1)[0] or token.arity == 1
+    assert token.arity == 0
+
+    def mixed_required_keyword_only(value: Any, *, required: Any) -> Any:
+        return value
+
+    def required_keyword_only(*, required: Any) -> Any:
+        return required
+
+    for callable_value in (mixed_required_keyword_only, required_keyword_only):
+        with pytest.raises(TypeError, match="keyword-only"):
+            HostFunctionToken(parser, callable_value, item_converter=lambda item: item)
     assert "HostFunctionToken" in repr(token)
     assert token(2) == XdmAtomic.integer(2)
     token.append(ValueToken(parser, value=3))
