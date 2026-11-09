@@ -772,6 +772,51 @@ class Schema:
             )
         )
 
+    def json_schema(
+        self,
+        *,
+        format: FormatName = "pyxsd-json",
+        element: str | None = None,
+        fidelity: Fidelity = "strict",
+        typed: bool = True,
+        always_list: bool = False,
+    ) -> dict[str, object]:
+        """Describe this schema's JSON data contract as Draft 2020-12 JSON Schema.
+
+        The generated schema matches what :meth:`from_data` accepts and
+        ``Document.to_data()`` produces for the selected format, so every
+        exported document validates against it. It is a structural
+        description, never full XSD validation: the rules JSON Schema
+        cannot carry are listed under ``x-pyxsd-validation.unvalidated``,
+        and :meth:`~pyxsd.document.Document.require_valid` remains the
+        complete-validation gate.
+
+        - ``format`` - the data format contract; ``"pyxsd-json"`` is the
+          schema-driven profile this method documents.
+
+        - ``element`` - an optional local, Clark, or EQName spelling that
+          selects the described root; ``None`` describes every concrete
+          global root with ``anyOf``.
+
+        - ``fidelity`` - ``"strict"`` or ``"best-effort"`` representation
+          handling; an unknown value raises ``ValueError``.
+
+        - ``typed`` / ``always_list`` - native-only export options; they
+          must keep their defaults for every other format.
+        """
+        # Deferred like ``from_data``: the conversion package is not needed
+        # for a cold XML-only import of this module.
+        from pyxsd.data_conversion.json_schema import build_json_schema
+
+        return build_json_schema(
+            self,
+            format=format,
+            element=element,
+            fidelity=fidelity,
+            typed=typed,
+            always_list=always_list,
+        )
+
     def _parse_instance(
         self,
         xml: str | Path | os.PathLike[str] | IO[str] | ET.Element,
