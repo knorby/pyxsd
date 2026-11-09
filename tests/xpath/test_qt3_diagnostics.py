@@ -12,7 +12,6 @@ import json
 import runpy
 import sys
 from pathlib import Path
-from typing import Any
 from xml.sax.saxutils import escape
 
 import elementpath
@@ -99,6 +98,10 @@ def test_synthetic_catalog_reports_every_status(tmp_path: Path) -> None:
             _case("unexpected-error", "xs:integer('x')", "<assert-eq>1</assert-eq>"),
             _case("missing-error", "1 + 2", '<error code="FOAR0002"/>'),
             _case("context-sensitive", ".", "<assert-eq>1</assert-eq>"),
+            _case("context-error", ".", '<error code="XPDY0002"/>'),
+            _case(
+                "elementpath-context-limited", "let $x := 1 return $x", "<assert-eq>1</assert-eq>"
+            ),
             _case(
                 "version",
                 "1 + 2",
@@ -154,6 +157,10 @@ def test_synthetic_catalog_reports_every_status(tmp_path: Path) -> None:
     assert "FORG0001" in messages(report)["probe-set/unexpected-error"]
     assert by_name["probe-set/missing-error"] == "defect"
     assert by_name["probe-set/context-sensitive"] == "adapter-requirement"
+    assert "absent context item" in messages(report)["probe-set/context-sensitive"]
+    assert by_name["probe-set/context-error"] == "pass"
+    assert by_name["probe-set/elementpath-context-limited"] == "adapter-requirement"
+    assert "absent context item" in messages(report)["probe-set/elementpath-context-limited"]
     assert by_name["probe-set/version"] == "untested"
     assert by_name["probe-set/language"] == "untested"
     assert by_name["probe-set/feature"] == "untested"
@@ -161,7 +168,7 @@ def test_synthetic_catalog_reports_every_status(tmp_path: Path) -> None:
     assert by_name["probe-set/source"] == "adapter-requirement"
     assert by_name["probe-set/missing-environment"] == "adapter-requirement"
     assert by_name["probe-set/context-item"] == "adapter-requirement"
-    assert report.summary()["pass"] == 2
+    assert report.summary()["pass"] == 3
     assert sum(report.summary().values()) == len(report.cases)
     assert report.parser == "XPath31Parser"
     assert report.parser_version == "3.1"
@@ -469,15 +476,53 @@ def test_error_labels_fall_back_to_the_exception_type() -> None:
     assert qt3._error_label(RuntimeError("boom")) == "RuntimeError"
 
 
-def test_same_result_treats_comparison_errors_as_sensitivity(
-    monkeypatch: pytest.MonkeyPatch,
+def test_context_item_analysis_is_static_and_variable_aware() -> None:
+    from elementpath.xpath3 import XPath31Parser
+
+    parser = XPath31Parser()
+    assert not qt3._accepts_absent_context_error(None)
+    for expression in (
+        ".",
+        "a",
+        "./a",
+        ".//a",
+        "child::a",
+        "count(a)",
+        "position()",
+        "last()",
+        "/out",
+        "root()",
+        "[a]",
+    ):
+        assert qt3._uses_context_item(parser.parse(expression)), expression
+    for expression in (
+        "1 + 2",
+        "[]",
+        "$result/a",
+        "$result//a",
+        "$result/a[1]",
+        "count($result/a)",
+        "1 instance of xs:integer",
+        "xs:integer('1')",
+        "$result instance of array(*)",
+        "$result instance of map(*)",
+        "let $x := 1 return $x",
+    ):
+        assert not qt3._uses_context_item(parser.parse(expression)), expression
+
+
+def test_assertion_that_requires_a_context_item_is_an_adapter_requirement(
+    tmp_path: Path,
 ) -> None:
-    def failing_deep_equal(first: Any, second: Any) -> bool:
-        raise RuntimeError("uncomparable")
+    root = write_corpus(
+        tmp_path / "corpus",
+        [_case("assert-context", "1", "<assert>. = 1</assert>")],
+    )
 
-    monkeypatch.setattr(qt3, "deep_equal", failing_deep_equal)
+    report = run_synthetic(root)
 
-    assert not qt3._same_result(1, None, 1, None)
+    assert statuses(report)["probe-set/assert-context"] == "adapter-requirement"
+    assert "assertion requires" in messages(report)["probe-set/assert-context"]
 
 
 def test_missing_result_is_an_adapter_requirement(tmp_path: Path) -> None:
@@ -692,7 +737,7 @@ def test_real_corpus_pins_observed_substrate_defects(
 ) -> None:
     latest = statuses(real_reports["3.1"])
 
-    assert latest["prod-InlineFunctionExpr/inline-fn-005"] == "defect"
+    assert latest["prod-InlineFunctionExpr/inline-fn-005"] == "pass"
     assert latest["map-size/map-size-012"] == "defect"
     assert latest["fn-apply/fn-apply-13"] == "defect"
     assert "fn-function-lookup/fn-function-lookup-701" in latest

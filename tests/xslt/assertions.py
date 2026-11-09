@@ -262,21 +262,131 @@ def _xpath_value(value: Any, parser: XPath31Parser) -> Any:
     return value
 
 
-def _rooted_path(ast: Any) -> bool:
-    """Whether an expression contains an absolute path step.
+_STEP_SYMBOLS = frozenset(
+    {
+        "(name)",
+        "@",
+        "attribute",
+        "child",
+        "descendant",
+        "self",
+        "parent",
+        "ancestor",
+        "ancestor-or-self",
+        "following",
+        "following-sibling",
+        "preceding",
+        "preceding-sibling",
+        "text",
+        "node",
+        "comment",
+        "processing-instruction",
+    }
+)
 
-    elementpath represents a rooted ``/`` step with at most one operand; a
-    relative path has two (the left and right steps).  The distinction lets the
-    assertion evaluator reject an absolute path that lacks a node context
-    instead of accepting elementpath's empty sequence in place of XPTY0020.
+_TYPE_PARENT_SYMBOLS = frozenset(
+    {
+        ":",
+        "array",
+        "map",
+        "function",
+        "element",
+        "attribute",
+        "document-node",
+        "schema-element",
+        "schema-attribute",
+        "comment",
+        "text",
+        "node",
+        "processing-instruction",
+        "empty-sequence",
+        "item",
+        "instance",
+        "treat",
+        "cast",
+        "castable",
+        "as",
+    }
+)
+
+
+def _is_step(token: Any) -> bool:
+    symbol = getattr(token, "symbol", None)
+    return symbol in _STEP_SYMBOLS or symbol == "." or (symbol == "*" and len(token) == 0)
+
+
+def _context_node_path(ast: Any) -> bool:
+    """Whether an expression has a step that needs the context item as a node.
+
+    A bare ``.`` is valid with any context item, and a variable-rooted path
+    such as ``$result/a`` does not depend on the assertion's context item.
+    Relative name/axis steps at the top level, ``./a``/``.//a``, and
+    context-rooted absolute paths do require a node context.  Predicate focus
+    is local to the filtered sequence, so a step inside a predicate is not an
+    outer-context dependency.
     """
-    pending = [ast]
-    while pending:
-        token = pending.pop()
-        if getattr(token, "symbol", None) in ("/", "//") and len(token) <= 1:
-            return True
-        pending.extend(token)
-    return False
+
+    def walk(
+        token: Any,
+        *,
+        local_focus: bool,
+        rooted_step: bool = False,
+        parent: Any | None = None,
+    ) -> bool:
+        symbol = getattr(token, "symbol", None)
+        type_context = (
+            parent is not None and getattr(parent, "symbol", None) in _TYPE_PARENT_SYMBOLS
+        )
+        if symbol in ("/", "//"):
+            if len(token) < 2:
+                return not local_focus
+            left, right = token[0], token[1]
+            if _is_step(left):
+                if not local_focus:
+                    return not type_context
+                return walk(left, local_focus=True, rooted_step=True, parent=token) or walk(
+                    right, local_focus=True, rooted_step=True, parent=token
+                )
+            return walk(left, local_focus=local_focus, parent=token) or walk(
+                right, local_focus=local_focus, rooted_step=True, parent=token
+            )
+        if symbol == "[" and len(token) == 2:
+            return walk(
+                token[0], local_focus=local_focus, rooted_step=rooted_step, parent=token
+            ) or walk(token[1], local_focus=True, parent=token)
+        if symbol == "[":
+            return any(
+                walk(
+                    child,
+                    local_focus=local_focus,
+                    rooted_step=rooted_step,
+                    parent=token,
+                )
+                for child in token
+            )
+        if symbol == ".":
+            return False
+        if symbol == "$":
+            return False
+        if symbol == "(name)":
+            if type_context or (parent is not None and getattr(parent, "symbol", None) == "$"):
+                return False
+            return not (rooted_step or local_focus)
+        if _is_step(token):
+            if type_context:
+                return False
+            return not (rooted_step or local_focus)
+        return any(
+            walk(
+                child,
+                local_focus=local_focus,
+                rooted_step=rooted_step,
+                parent=token,
+            )
+            for child in token
+        )
+
+    return walk(ast, local_focus=False)
 
 
 def _context_root(item: Any) -> Any | None:
@@ -349,9 +459,9 @@ def _evaluate(
         ast = parser.parse(expression)
         context_item = _context_item(items, parser)
         root = _context_root(context_item)
-        if root is None and _rooted_path(ast):
+        if root is None and _context_node_path(ast):
             raise AssertionGap(
-                "an absolute XPath path requires a node context item: "
+                "an XPath path step requires a node context item: "
                 "elementpath would return an empty sequence instead of XPTY0020"
             )
         if root is None:
@@ -399,9 +509,9 @@ def _evaluate_expression(
     parser = _parser(declarations)
     try:
         ast = parser.parse(expression)
-        if _rooted_path(ast):
+        if _context_node_path(ast):
             raise AssertionGap(
-                f"expected expression {expression!r} uses an absolute path "
+                f"expected expression {expression!r} uses a context-item path "
                 "but no node context is available"
             )
         return _as_expression_items(ast.evaluate(XPathContext(item="")))

@@ -28,7 +28,6 @@ from typing import Any
 
 import elementpath
 from elementpath import XPathContext
-from elementpath.compare import deep_equal
 from elementpath.xpath2 import XPath2Parser
 from elementpath.xpath3 import XPath30Parser, XPath31Parser
 
@@ -417,8 +416,19 @@ def _feature_requirement(
     return None
 
 
-def _evaluate(parser: Any, expression: str, item: Any = "") -> Any:
-    return parser.parse(expression).evaluate(XPathContext(item=item))
+class _AssertionContextRequired(Exception):
+    """A QT3 assertion expression depends on the absent query context item."""
+
+
+def _evaluate(parser: Any, expression: str) -> Any:
+    """Evaluate a QT3 test expression with an exactly absent context item.
+
+    ``XPathToken.evaluate(None)`` is elementpath's absent-context path: a
+    context-independent expression evaluates, while an expression that needs
+    the context item raises ``XPDY0002``.  No placeholder context item is
+    supplied.
+    """
+    return parser.parse(expression).evaluate(None)
 
 
 def _error_code(error: BaseException) -> str:
@@ -445,6 +455,15 @@ def _first_declared_error(element: ET.Element) -> str | None:
     return None
 
 
+def _accepts_absent_context_error(element: ET.Element | None) -> bool:
+    if element is None:
+        return False
+    return any(
+        _local_name(child.tag) == "error" and _declared_error_code(child) in {"XPDY0002", "*"}
+        for child in element.iter()
+    )
+
+
 def _first_unsupported_assertion(element: ET.Element) -> str | None:
     if _local_name(element.tag) in _UNSUPPORTED_ASSERTIONS:
         return _local_name(element.tag)
@@ -461,23 +480,150 @@ def _items(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else [value]
 
 
-def _same_result(
-    first: Any,
-    first_error: BaseException | None,
-    second: Any,
-    second_error: BaseException | None,
-) -> bool:
-    if first_error is not None or second_error is not None:
-        return (
-            first_error is not None
-            and second_error is not None
-            and type(first_error) is type(second_error)
-            and _error_code(first_error) == _error_code(second_error)
+_CONTEXT_FUNCTIONS = frozenset(
+    {
+        "position",
+        "last",
+        "string",
+        "string-length",
+        "normalize-space",
+        "number",
+        "name",
+        "local-name",
+        "namespace-uri",
+        "root",
+        "base-uri",
+        "document-uri",
+        "node-name",
+        "lang",
+        "nilled",
+        "data",
+    }
+)
+
+_STEP_SYMBOLS = frozenset(
+    {
+        "(name)",
+        "@",
+        "attribute",
+        "child",
+        "descendant",
+        "self",
+        "parent",
+        "ancestor",
+        "ancestor-or-self",
+        "following",
+        "following-sibling",
+        "preceding",
+        "preceding-sibling",
+        "text",
+        "node",
+        "comment",
+        "processing-instruction",
+    }
+)
+
+_TYPE_PARENT_SYMBOLS = frozenset(
+    {
+        ":",
+        "array",
+        "map",
+        "function",
+        "element",
+        "attribute",
+        "document-node",
+        "schema-element",
+        "schema-attribute",
+        "comment",
+        "text",
+        "node",
+        "processing-instruction",
+        "empty-sequence",
+        "item",
+        "instance",
+        "treat",
+        "cast",
+        "castable",
+        "as",
+    }
+)
+
+
+def _is_step(token: Any) -> bool:
+    symbol = getattr(token, "symbol", None)
+    return symbol in _STEP_SYMBOLS or symbol == "." or (symbol == "*" and len(token) == 0)
+
+
+def _uses_context_item(ast: Any) -> bool:
+    """Whether an assertion expression statically depends on the query context.
+
+    This is deliberately conservative: a bare ``.``, focus functions, a
+    context-rooted path, or a top-level/axis step is context-dependent.  A
+    variable-rooted path such as ``$result/a`` is not.
+    """
+
+    def walk(
+        token: Any,
+        *,
+        local_focus: bool = False,
+        rooted_step: bool = False,
+        parent: Any | None = None,
+    ) -> bool:
+        symbol = getattr(token, "symbol", None)
+        type_context = (
+            parent is not None and getattr(parent, "symbol", None) in _TYPE_PARENT_SYMBOLS
         )
-    try:
-        return bool(deep_equal(_items(first), _items(second)))
-    except Exception:
-        return False
+        if symbol == "." or symbol in {"position", "last"}:
+            return True
+        if symbol in _CONTEXT_FUNCTIONS and len(token) == 0:
+            return True
+        if symbol in ("/", "//"):
+            if len(token) < 2:
+                return True
+            left, right = token[0], token[1]
+            if _is_step(left):
+                return not type_context
+            return walk(left, local_focus=local_focus, parent=token) or walk(
+                right,
+                local_focus=local_focus,
+                rooted_step=True,
+                parent=token,
+            )
+        if symbol == "[" and len(token) == 2:
+            return walk(
+                token[0], local_focus=local_focus, rooted_step=rooted_step, parent=token
+            ) or walk(token[1], local_focus=True, parent=token)
+        if symbol == "[":
+            return any(
+                walk(
+                    child,
+                    local_focus=local_focus,
+                    rooted_step=rooted_step,
+                    parent=token,
+                )
+                for child in token
+            )
+        if symbol == "$":
+            return False
+        if symbol == "(name)":
+            if type_context or (parent is not None and getattr(parent, "symbol", None) == "$"):
+                return False
+            return not rooted_step and not local_focus
+        if _is_step(token):
+            if type_context:
+                return False
+            return not rooted_step and not local_focus
+        return any(
+            walk(
+                child,
+                local_focus=local_focus,
+                rooted_step=rooted_step,
+                parent=token,
+            )
+            for child in token
+        )
+
+    return walk(ast)
 
 
 def _assertion_value(
@@ -486,11 +632,10 @@ def _assertion_value(
     parser_class: Any,
     variables: Mapping[str, Any] | None = None,
 ) -> Any:
-    return (
-        parser_class(namespaces=namespaces)
-        .parse(expression)
-        .evaluate(XPathContext(item="", variables=dict(variables or {})))
-    )
+    ast = parser_class(namespaces=namespaces).parse(expression)
+    if _uses_context_item(ast):
+        raise _AssertionContextRequired(expression)
+    return ast.evaluate(XPathContext(item="", variables=dict(variables or {})))
 
 
 def _assert_element(
@@ -634,19 +779,17 @@ def _evaluate_case(case: Qt3Case, version: str, parser_class: Any) -> Qt3CaseRes
     except Exception as exc:
         first = None
         first_error = exc
-    try:
-        second = _evaluate(parser, case.expression, item="__pyxsd_qt3_sentinel__")
-        second_error = None
-    except Exception as exc:
-        second = None
-        second_error = exc
-    if not _same_result(first, first_error, second, second_error):
+    if (
+        first_error is not None
+        and _error_code(first_error) == "XPDY0002"
+        and not _accepts_absent_context_error(case.result)
+    ):
         return Qt3CaseResult(
             case.name,
             case.test_set,
             "adapter-requirement",
-            "the QT3 empty environment requires an absent context item; "
-            "elementpath always has a context item",
+            "requires an absent context item that elementpath cannot "
+            "evaluate this expression without",
         )
 
     if case.result is None:
@@ -675,6 +818,13 @@ def _evaluate_case(case: Qt3Case, version: str, parser_class: Any) -> Qt3CaseRes
             )
             for assertion in assertions
         ]
+    except _AssertionContextRequired:
+        return Qt3CaseResult(
+            case.name,
+            case.test_set,
+            "adapter-requirement",
+            "the expected assertion requires a query context item",
+        )
     except Exception as exc:
         return Qt3CaseResult(
             case.name,

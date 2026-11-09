@@ -44,11 +44,11 @@ from tests.xslt.assertions import (
     AssertionXPath,
     Not,
     ResultSnapshot,
+    _context_node_path,
     _context_root,
     _deep_equal,
     _is_gap,
     _namespace_map,
-    _rooted_path,
     _xml_namespace_scopes,
     assert_case,
     evaluate_assertion,
@@ -1081,12 +1081,64 @@ def test_absolute_xpath_paths_use_an_element_item_document_root() -> None:
     assert evaluate_assertion(AssertionXPath("count(//a) = 1"), raw_result=(element,))
 
 
-def test_rooted_path_detection_distinguishes_absolute_and_relative_paths() -> None:
+def test_context_node_path_detection_separates_context_and_variable_roots() -> None:
     parser = XPath31Parser()
-    for expression in ("/out", "/", "count(//a)", "(//a)[1]", "/out/a"):
-        assert _rooted_path(parser.parse(expression)), expression
-    for expression in ("out", "$result/a", "a/b", "1 + 2", "$result//a"):
-        assert not _rooted_path(parser.parse(expression)), expression
+    for expression in (
+        "/out",
+        "/",
+        "count(//a)",
+        "(//a)[1]",
+        "/out/a",
+        "a",
+        "a/b",
+        "./a",
+        ".//a",
+        "child::a",
+        "descendant::a",
+        "@a",
+        "attribute::a",
+        "*",
+        "text()",
+        "node()",
+        "count(a)",
+        "[a]",
+    ):
+        assert _context_node_path(parser.parse(expression)), expression
+    for expression in (
+        "1 + 2",
+        "$result/a",
+        "$result//a",
+        "$result/a[1]",
+        "$result[foo/bar]",
+        "$result[child::foo]",
+        "$result/(a|b)",
+        "doc('x')/a",
+        "(1 to 5)[. > 2]",
+        "[]",
+        "$v + 1",
+        "let $x := 1 return $x",
+        "1 instance of xs:integer",
+        "1 instance of array(*)",
+        "1 instance of map(*)",
+        "xs:integer('1')",
+    ):
+        assert not _context_node_path(parser.parse(expression)), expression
+
+
+_CONTEXT_PATH_EXPRESSIONS = (
+    "/out",
+    "a",
+    "./a",
+    ".//a",
+    "child::a",
+    "descendant::a",
+    "@a",
+    "attribute::a",
+    "*",
+    "text()",
+    "node()",
+    "count(a)",
+)
 
 
 @pytest.mark.parametrize(
@@ -1099,22 +1151,43 @@ def test_rooted_path_detection_distinguishes_absolute_and_relative_paths() -> No
     ],
     ids=["integer", "string", "map", "array"],
 )
-def test_absolute_xpath_path_with_non_node_context_is_an_adapter_gap(
+@pytest.mark.parametrize("expression", _CONTEXT_PATH_EXPRESSIONS)
+def test_context_node_paths_with_non_node_context_are_adapter_gaps(
+    expression: str,
     raw: tuple[Any, ...],
 ) -> None:
     with pytest.raises(AssertionGap, match="XPTY0020"):
-        evaluate_assertion(AssertionXPath("/out"), raw_result=raw)
-    with pytest.raises(AssertionGap, match="XPTY0020"):
-        evaluate_assertion(AssertionXPath("count(/out)"), raw_result=raw)
+        evaluate_assertion(AssertionXPath(expression), raw_result=raw)
 
 
 def test_absolute_expected_expression_without_node_context_is_an_adapter_gap() -> None:
-    with pytest.raises(AssertionGap, match="absolute path"):
+    with pytest.raises(AssertionGap, match="context-item path"):
         evaluate_assertion(AssertionEq("/out"), raw_result=(1,))
+    with pytest.raises(AssertionGap, match="context-item path"):
+        evaluate_assertion(AssertionEq("count(a)"), raw_result=(1,))
 
 
-def test_assert_case_reports_absolute_atomic_context_as_adapter_gap() -> None:
+def test_variable_rooted_paths_remain_evaluable() -> None:
+    element = ET.fromstring("<out><a>1</a><a>2</a></out>")
+    snapshot = ResultSnapshot(raw=(element,))
+
+    assert evaluate_assertion(AssertionXPath("$result/a[1] = 1"), result=snapshot)
+    assert evaluate_assertion(AssertionXPath("count($result/a) = 2"), result=snapshot)
+    assert evaluate_assertion(AssertionXPath("count($result//a) = 2"), result=snapshot)
+    assert not _context_node_path(XPath31Parser().parse("$result/a[1]"))
+
+
+def test_assert_case_reports_context_path_atomic_context_as_adapter_gap() -> None:
     case = make_case("<result><assert>/out</assert></result>")
+
+    result = assert_case(case, raw_result=(1,))
+
+    assert result.outcome is Outcome.ADAPTER_GAP
+    assert "XPTY0020" in result.message
+
+
+def test_assert_case_reports_relative_path_atomic_context_as_adapter_gap() -> None:
+    case = make_case("<result><assert>a</assert></result>")
 
     result = assert_case(case, raw_result=(1,))
 
