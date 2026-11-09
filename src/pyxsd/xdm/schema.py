@@ -21,8 +21,13 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
+from pyxsd import xsd_data_types as xsd
 from pyxsd.namespaces import XML_NS, XSD_NS, XSI_NS, clark, local_name, namespace_of
-from pyxsd.xdm.annotations import id_kind_for, schema_type_name
+from pyxsd.xdm.annotations import (
+    builtin_type_classes,
+    id_kind_for,
+    schema_type_name,
+)
 from pyxsd.xdm.values import XdmAtomic, XdmFunction, XdmSequence, as_xdm
 
 __all__ = [
@@ -38,10 +43,40 @@ __all__ = [
 
 _XSD_VERSION_NAMES = frozenset({"1.0", "1.1"})
 _INJECTED_NAMESPACES = frozenset({XML_NS, XSI_NS, "http://www.w3.org/1999/xlink"})
-_BUILTIN_CLASSES: dict[str, type[Any]] | None = None
 _ELEMENT_KINDS = frozenset({"Element"})
 _TYPE_KINDS = frozenset({"SimpleType", "ComplexType"})
 _ATTRIBUTE_KINDS = frozenset({"Attribute"})
+_SPECIAL_ROOT_NAMES = frozenset(
+    {"anySimpleType", "anyAtomicType", "ID", "IDREF", "ENTITY", "NMTOKEN", "QName", "NOTATION"}
+)
+_PRIMITIVE_ROOT_NAMES = {
+    "normalizedString": "string",
+    "token": "string",
+    "language": "string",
+    "Name": "string",
+    "NCName": "string",
+    "integer": "decimal",
+    "nonPositiveInteger": "decimal",
+    "negativeInteger": "decimal",
+    "long": "decimal",
+    "int": "decimal",
+    "short": "decimal",
+    "byte": "decimal",
+    "nonNegativeInteger": "decimal",
+    "unsignedLong": "decimal",
+    "unsignedInt": "decimal",
+    "unsignedShort": "decimal",
+    "unsignedByte": "decimal",
+    "positiveInteger": "decimal",
+    "dateTimeStamp": "dateTime",
+    "yearMonthDuration": "duration",
+    "dayTimeDuration": "duration",
+}
+_STRING_LIST_ROOTS = (
+    (xsd.IDREFS, xsd.IDREF),
+    (xsd.ENTITIES, xsd.ENTITY),
+    (xsd.NMTOKENS, xsd.NMTOKEN),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,17 +210,12 @@ class PyxsdType:
     @property
     def _variety(self) -> str:
         type_class = self._type_class
-        from pyxsd import xsd_data_types as xsd
-
-        if type_class is xsd.AnyType:
+        if issubclass(type_class, xsd.AnyType):
             return "complex"
         if getattr(type_class, "_unionMembers", None):
             return "union"
-        class_names = {base.__name__ for base in getattr(type_class, "__mro__", ())}
-        if (
-            "XsdList" in class_names
-            or "TypeList" in class_names
-            or getattr(type_class, "__name__", None) in {"IDREFS", "ENTITIES", "NMTOKENS"}
+        if issubclass(type_class, xsd.XsdList) or any(
+            issubclass(type_class, list_class) for list_class, _ in _STRING_LIST_ROOTS
         ):
             return "list"
         if getattr(type_class, "_contentKind_", None) == "complex":
@@ -247,9 +277,11 @@ class PyxsdType:
         return self._has_builtin_base("NOTATION")
 
     def _has_builtin_base(self, name: str) -> bool:
-        return any(
-            base.__dict__.get("name") == name or base.__name__ == name
-            for base in self._type_class.__mro__
+        target = getattr(xsd, name, None)
+        return (
+            isinstance(target, type)
+            and isinstance(self._type_class, type)
+            and issubclass(self._type_class, target)
         )
 
     # -- derivation ------------------------------------------------------------
@@ -258,20 +290,36 @@ class PyxsdType:
     def root_type(self) -> PyxsdType:
         variety = self._variety
         if variety == "complex":
-            return self._pool.get_type(clark(XSD_NS, "anyType"))  # type: ignore[return-value]
+            root = self._pool.get_type(clark(XSD_NS, "anyType"))
+            assert root is not None
+            return root
         if variety == "union":
             return self
         if variety == "list":
             item_class = self._list_item_class()
-            if item_class is not None:
-                return self._pool.type_for_class(item_class)
-            return self
-        for base in self._type_class.__mro__[1:]:
-            if base in _builtin_class_map().values():
-                return self._pool.type_for_class(base)
-        return self
+            assert item_class is not None
+            return self._pool.type_for_class(item_class).root_type
+        builtins = builtin_type_classes()
+        for base in self._type_class.__mro__:
+            local = base.__dict__.get("name")
+            if isinstance(local, str) and builtins.get(local) is base:
+                return self._primitive_root(cast(type[Any], base))
+        return self  # pragma: no cover - atomic types inherit a builtin
+
+    def _primitive_root(self, builtin: type[Any]) -> PyxsdType:
+        name = builtin.__dict__.get("name")
+        assert isinstance(name, str)
+        if name in _SPECIAL_ROOT_NAMES:
+            return self._pool.type_for_class(builtin)
+        primitive = _PRIMITIVE_ROOT_NAMES.get(name, name)
+        adapter = self._pool.get_type(clark(XSD_NS, primitive))
+        assert adapter is not None
+        return adapter
 
     def _list_item_class(self) -> Any:
+        for list_class, item_class in _STRING_LIST_ROOTS:
+            if issubclass(self._type_class, list_class):
+                return item_class
         item = getattr(self._type_class, "itemType", None)
         return item if isinstance(item, type) else None
 
@@ -880,12 +928,10 @@ class SchemaPool:
     _constructors: dict[str, AtomicConstructor]
 
     __slots__ = (
-        "_attribute_cache",
         "_attributes",
         "_constructors",
         "_element_cache",
         "_elements",
-        "_owners",
         "_schemas",
         "_substitution_groups",
         "_type_cache",
@@ -899,8 +945,6 @@ class SchemaPool:
         self._xsd_version = xsd_version
         self._type_cache: dict[int, PyxsdType] = {}
         self._element_cache: dict[int, PyxsdElement] = {}
-        self._attribute_cache: dict[int, PyxsdAttribute] = {}
-        self._owners: dict[int, PyxsdSchemaProxy] = {}
         self._schemas: dict[str | None, PyxsdSchemaProxy] = {}
         self._types: dict[str, PyxsdType] = {}
         self._elements: dict[str, PyxsdElement] = {}
@@ -908,7 +952,7 @@ class SchemaPool:
         self._substitution_groups: dict[str, frozenset[PyxsdElement]] = {}
         self._constructors: dict[str, AtomicConstructor] = {}
 
-        for name, type_class in _builtin_class_map().items():
+        for name, type_class in builtin_type_classes().items():
             adapter = PyxsdType(
                 self,
                 type_class,
@@ -921,14 +965,12 @@ class SchemaPool:
             if adapter.is_atomic():
                 self._constructors[adapter.name] = AtomicConstructor(adapter.name, adapter)
 
-        proxies: list[PyxsdSchemaProxy] = []
         for schema in schemas:
             proxy = PyxsdSchemaProxy(schema, self, xsd_version=xsd_version)
             namespace = proxy.target_namespace
             if namespace in self._schemas:
                 raise ValueError(f"duplicate schema namespace {namespace!r}")
             self._schemas[namespace] = proxy
-            proxies.append(proxy)
             self._register_schema(proxy)
 
         # The slots stay dict-typed for the private registration helpers;
@@ -1027,9 +1069,16 @@ class SchemaPool:
 
     def type_for_class(self, type_class: Any) -> PyxsdType:
         adapter = self._type_cache.get(id(type_class))
-        if adapter is None:
-            adapter = PyxsdType(self, type_class)
-            self._type_cache[id(type_class)] = adapter
+        if adapter is not None:
+            return adapter
+        name = schema_type_name(type_class)
+        if name is not None:
+            canonical = self._types.get(name)
+            if canonical is not None:
+                self._type_cache[id(type_class)] = canonical
+                return canonical
+        adapter = PyxsdType(self, type_class)
+        self._type_cache[id(type_class)] = adapter
         return adapter
 
     def type_for_declaration(self, declaration: Any) -> PyxsdType | None:
@@ -1056,20 +1105,23 @@ class SchemaPool:
 
     def _register_schema(self, proxy: PyxsdSchemaProxy) -> None:
         schema = proxy._schema
-        namespace = proxy.target_namespace
-        for entries in getattr(schema, "components", {}).values():
-            for entry in entries:
-                kind = type(entry).__name__
-                if kind in _TYPE_KINDS and entry.isGlobalDeclaration():
-                    self._register_type(proxy, entry)
-                elif kind in _ELEMENT_KINDS and entry.isGlobalDeclaration():
-                    self._register_element(proxy, entry)
-                elif kind in _ATTRIBUTE_KINDS and entry.isGlobalDeclaration():
-                    if entry.getNamespace() in _INJECTED_NAMESPACES:
-                        continue
-                    if entry.getNamespace() != namespace:
-                        continue
-                    self._register_attribute(proxy, entry)
+        entries = [
+            entry
+            for values in getattr(schema, "components", {}).values()
+            for entry in values
+            if entry.isGlobalDeclaration()
+        ]
+        # Types precede declarations so every named type has its canonical
+        # adapter before an element or attribute references it.
+        for entry in entries:
+            if type(entry).__name__ in _TYPE_KINDS:
+                self._register_type(proxy, entry)
+        for entry in entries:
+            kind = type(entry).__name__
+            if kind in _ELEMENT_KINDS:
+                self._register_element(proxy, entry)
+            elif kind in _ATTRIBUTE_KINDS and entry.getNamespace() not in _INJECTED_NAMESPACES:
+                self._register_attribute(proxy, entry)
         schema_entries = getattr(schema, "components", {}).get("schema") or ()
         schema_er = next(iter(schema_entries), None)
         substitution_groups = getattr(schema_er, "substitutionGroups", {}) or {}
@@ -1091,12 +1143,13 @@ class SchemaPool:
         if name is None:
             return
         type_class = self._class_for_er(proxy._schema, er)
-        if type_class is None:
+        if type_class is None:  # pragma: no cover - compiled global types have classes
             return
         adapter = PyxsdType(self, type_class, er=er, proxy=proxy, name=name)
-        self._types.setdefault(name, adapter)
-        if adapter.is_atomic():
-            self._constructors.setdefault(name, AtomicConstructor(name, adapter))
+        canonical = self._types.setdefault(name, adapter)
+        self._type_cache[id(type_class)] = canonical
+        if canonical.is_atomic():
+            self._constructors.setdefault(name, AtomicConstructor(name, canonical))
 
     def _register_element(self, proxy: PyxsdSchemaProxy, er: Any) -> None:
         adapter = self._element_for_er(proxy, er, global_declaration=True)
@@ -1107,11 +1160,7 @@ class SchemaPool:
         name = er.expandedName or er.name
         if name is None:
             return
-        adapter = self._attribute_cache.get(id(er))
-        if adapter is None:
-            adapter = PyxsdAttribute(self, er, proxy, name=name)
-            self._attribute_cache[id(er)] = adapter
-        self._attributes.setdefault(name, adapter)
+        self._attributes.setdefault(name, PyxsdAttribute(self, er, proxy, name=name))
 
     def _element_for_er(
         self, proxy: PyxsdSchemaProxy, er: Any, *, global_declaration: bool
@@ -1129,10 +1178,10 @@ class SchemaPool:
     @staticmethod
     def _class_for_er(schema: Any, er: Any) -> Any:
         classes = getattr(schema, "classes", {})
-        for key in (getattr(er, "expandedName", None), getattr(er, "name", None)):
-            if key is not None and key in classes:
-                return classes[key]
-        return None
+        key = getattr(er, "expandedName", None) or getattr(er, "name", None)
+        if key is not None and key in classes:
+            return classes[key]
+        return None  # pragma: no cover - compiled global types have classes
 
 
 # ---------------------------------------------------------------------------
@@ -1166,56 +1215,29 @@ def schema_type_name_for_er(er: Any, schema: Any) -> str | None:
 def _instance_name(
     er: Any, proxy: PyxsdSchemaProxy | None, *, is_attribute: bool = False
 ) -> str | None:
-    method = getattr(er, "expandedInstanceName", None)
+    method = er.expandedInstanceName
     parser = getattr(proxy._schema, "_host", None) if proxy is not None else None
-    if method is not None:
-        try:
-            return method(is_attribute=is_attribute, parser=parser)
-        except Exception:
-            pass
-    return getattr(er, "expandedName", None) or getattr(er, "name", None)
+    try:
+        return method(is_attribute=is_attribute, parser=parser)
+    except Exception:  # pragma: no cover - unresolved refs fall back below
+        return getattr(er, "expandedName", None) or getattr(er, "name", None)
 
 
 def _element_descriptors(type_class: Any) -> tuple[Any, ...]:
-    if not isinstance(type_class, type):
+    collector = getattr(type_class, "_getElements", None)
+    if collector is None:
         return ()
     try:
         instance: Any = object.__new__(type_class)
-        collector = cast(Any, type_class)._getElements
-        return tuple(collector(instance))
-    except Exception:
-        descriptors: dict[str, Any] = {}
-        for klass in reversed(type_class.__mro__):
-            for key in klass.__dict__.get("_elementNames_", ()):
-                descriptor = klass.__dict__[key]
-                descriptors[descriptor.name] = descriptor
-        return tuple(descriptors.values())
+    except TypeError:
+        return ()
+    return tuple(collector(instance))
 
 
 def _attribute_descriptors(type_class: Any) -> tuple[Any, ...]:
-    if not isinstance(type_class, type):
-        return ()
     descriptors: dict[str, Any] = {}
     for klass in reversed(type_class.__mro__):
         for key in klass.__dict__.get("_attributeNames_", ()):
             descriptor = klass.__dict__[key]
             descriptors[descriptor.name] = descriptor
     return tuple(descriptors.values())
-
-
-def _builtin_class_map() -> dict[str, type[Any]]:
-    global _BUILTIN_CLASSES
-    if _BUILTIN_CLASSES is None:
-        from pyxsd import xsd_data_types as xsd
-
-        builtins: dict[str, type[Any]] = {}
-        for export in xsd.__all__:
-            datatype = getattr(xsd, export)
-            if (
-                isinstance(datatype, type)
-                and issubclass(datatype, xsd.XsdDataType)
-                and "name" in datatype.__dict__
-            ):
-                builtins[datatype.name] = datatype
-        _BUILTIN_CLASSES = builtins
-    return _BUILTIN_CLASSES

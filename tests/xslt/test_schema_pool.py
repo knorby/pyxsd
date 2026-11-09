@@ -12,13 +12,11 @@ from __future__ import annotations
 import io
 from decimal import Decimal
 from pathlib import Path
-from typing import ClassVar
 
 import pytest
 
 from pyxsd import xsd_data_types as xsd
 from pyxsd.schema import Schema
-from pyxsd.xdm import schema as schema_module
 from pyxsd.xdm.schema import (
     AtomicConstructor,
     PyxsdElement,
@@ -37,6 +35,10 @@ OTHER = "urn:other"
 def _write(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def _compile_text(text: str) -> Schema:
+    return Schema.compile(io.StringIO(text))
 
 
 def money_schema() -> str:
@@ -65,6 +67,25 @@ def money_schema() -> str:
       <xs:simpleType name="QNameAlias">
         <xs:restriction base="xs:QName"/>
       </xs:simpleType>
+      <xs:simpleType name="ID"><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType name="IDREF"><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType name="IDREFS"><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType name="ENTITIES"><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType name="QName"><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType name="NOTATION"><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType name="XsdList"><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType name="TypeList"><xs:restriction base="xs:string"/></xs:simpleType>
+      <xs:simpleType name="SmallInt">
+        <xs:restriction base="xs:int"><xs:minInclusive value="0"/></xs:restriction>
+      </xs:simpleType>
+      <xs:simpleType name="IntList"><xs:list itemType="xs:int"/></xs:simpleType>
+      <xs:simpleType name="SmallIntList"><xs:list itemType="m:SmallInt"/></xs:simpleType>
+      <xs:simpleType name="RenamedIDREFS">
+        <xs:restriction base="xs:IDREFS"/>
+      </xs:simpleType>
+      <xs:simpleType name="RenamedNMTOKENS">
+        <xs:restriction base="xs:NMTOKENS"/>
+      </xs:simpleType>
       <xs:complexType name="SimpleText">
         <xs:simpleContent><xs:extension base="xs:string"/></xs:simpleContent>
       </xs:complexType>
@@ -72,6 +93,7 @@ def money_schema() -> str:
       <xs:complexType name="Mixed" mixed="true">
         <xs:sequence><xs:element name="child" type="xs:string" minOccurs="0"/></xs:sequence>
       </xs:complexType>
+      <xs:element name="typed" type="m:Amount"/>
       <xs:element name="payment">
         <xs:complexType>
           <xs:sequence>
@@ -288,7 +310,10 @@ def test_schema_proxy_protocol_and_lookup(tmp_path: Path):
     assert not proxy.is_matching("urn:other")
 
     elements = list(proxy)
-    assert {element.name for element in elements} == {f"{{{MONEY}}}payment"}
+    assert {element.name for element in elements} == {
+        f"{{{MONEY}}}payment",
+        f"{{{MONEY}}}typed",
+    }
     assert proxy.find(f"{{{MONEY}}}payment") is pool.get_element(f"{{{MONEY}}}payment")
     assert proxy.find("{urn:missing}Nothing") is None
     assert len(proxy) == len(elements)
@@ -414,12 +439,51 @@ def test_type_adapter_surface_and_derivation(tmp_path: Path):
     assert amount.is_matching("m:Amount")
     assert not amount.is_matching("m:Other")
 
+    typed = pool.get_element(f"{{{MONEY}}}typed")
+    assert typed is not None
+    assert typed.type is amount
+    assert typed.type.schema is proxy
+    assert typed.type.is_matching("m:Amount")
+    assert pool.type_for_class(amount._type_class) is amount
+
     notation = pool.get_type(f"{{{XSD_NS}}}NOTATION")
     assert notation.is_notation()
     assert not notation.is_qname()
     idrefs = pool.get_type(f"{{{XSD_NS}}}IDREFS")
     assert idrefs.is_list()
-    assert idrefs.root_type is idrefs
+    assert idrefs.root_type.name == f"{{{XSD_NS}}}IDREF"
+
+    assert pool.get_type(f"{{{XSD_NS}}}anyAtomicType") is not None
+    assert pool.get_type(f"{{{XSD_NS}}}List") is None
+    assert f"{{{XSD_NS}}}List" not in pool.types
+
+    assert pool.get_type(f"{{{XSD_NS}}}int").root_type.name == f"{{{XSD_NS}}}decimal"
+    assert pool.get_type(f"{{{XSD_NS}}}ID").root_type.name == f"{{{XSD_NS}}}ID"
+    assert pool.get_type(f"{{{XSD_NS}}}IDREF").root_type.name == f"{{{XSD_NS}}}IDREF"
+    assert pool.get_type(f"{{{XSD_NS}}}anySimpleType").root_type.name == (
+        f"{{{XSD_NS}}}anySimpleType"
+    )
+    assert pool.get_type(f"{{{XSD_NS}}}NMTOKENS").root_type.name == f"{{{XSD_NS}}}NMTOKEN"
+
+    int_list = pool.get_type(f"{{{MONEY}}}IntList")
+    assert int_list.is_list()
+    assert int_list.root_type.name == f"{{{XSD_NS}}}decimal"
+    small_int_list = pool.get_type(f"{{{MONEY}}}SmallIntList")
+    assert small_int_list.root_type.name == f"{{{XSD_NS}}}decimal"
+
+    user_id = pool.get_type(f"{{{MONEY}}}ID")
+    assert not user_id.is_key()
+    assert user_id.root_type.name == f"{{{XSD_NS}}}string"
+    assert not pool.get_type(f"{{{MONEY}}}IDREF").is_key()
+    assert not pool.get_type(f"{{{MONEY}}}IDREFS").is_list()
+    assert not pool.get_type(f"{{{MONEY}}}ENTITIES").is_list()
+    assert not pool.get_type(f"{{{MONEY}}}QName").is_qname()
+    assert not pool.get_type(f"{{{MONEY}}}NOTATION").is_notation()
+    assert not pool.get_type(f"{{{MONEY}}}XsdList").is_list()
+    assert not pool.get_type(f"{{{MONEY}}}TypeList").is_list()
+    assert pool.get_type(f"{{{MONEY}}}RenamedIDREFS").is_list()
+    assert pool.get_type(f"{{{MONEY}}}RenamedIDREFS").root_type.name == (f"{{{XSD_NS}}}IDREF")
+    assert pool.get_type(f"{{{MONEY}}}RenamedNMTOKENS").root_type.name == (f"{{{XSD_NS}}}NMTOKEN")
 
     assert amount.is_empty() is True
 
@@ -664,7 +728,7 @@ def test_duplicate_local_type_lookup_is_ambiguous(tmp_path: Path):
     assert pool.get_type("{urn:right}Dup") is not None
 
 
-def test_imported_attribute_namespaces_are_not_mixed(tmp_path: Path):
+def test_imported_global_attributes_are_registered(tmp_path: Path):
     _write(
         tmp_path / "other.xsd",
         f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{OTHER}">
@@ -680,7 +744,9 @@ def test_imported_attribute_namespaces_are_not_mixed(tmp_path: Path):
     )
     pool = SchemaPool.from_imports([main])
     assert pool.get_attribute(f"{{{MONEY}}}ownAttr") is not None
-    assert pool.get_attribute(f"{{{OTHER}}}otherAttr") is None
+    imported = pool.get_attribute(f"{{{OTHER}}}otherAttr")
+    assert imported is not None
+    assert imported.type.name == f"{{{XSD_NS}}}string"
 
 
 def test_schema_invalidity_and_identity_matching(tmp_path: Path):
@@ -703,129 +769,103 @@ def test_schema_invalidity_and_identity_matching(tmp_path: Path):
     assert not proxy.is_matching("urn:other")
 
 
-def test_helper_fallbacks_and_registration_defences(tmp_path: Path):
-    pool = _pool(tmp_path)
-    proxy = pool.proxy(MONEY)
-    assert proxy is not None
-
-    class Bare:
-        name = None
-        expandedName = None
-
-    assert schema_module.schema_type_name_for_er(Bare(), proxy._schema) is None
-
-    class Named:
-        name = "Named"
-
-        def getNamespace(self):
-            return None
-
-    assert schema_module.schema_type_name_for_er(Named(), proxy._schema) == f"{{{MONEY}}}Named"
-
-    class BrokenInstanceName:
-        name = "x"
-        expandedName = "x"
-
-        def expandedInstanceName(self, **kwargs):
-            raise RuntimeError("broken")
-
-    assert schema_module._instance_name(BrokenInstanceName(), proxy) == "x"
-    assert schema_module._instance_name(Bare(), proxy) is None
-    assert schema_module._element_descriptors(object()) == ()
-    assert schema_module._attribute_descriptors(object()) == ()
-
-    class DescriptorOnly:
-        _elementNames_: ClassVar[list[str]] = ["child"]
-        child = type("Descriptor", (), {"name": "child"})()
-
-    descriptors = schema_module._element_descriptors(DescriptorOnly)
-    assert [descriptor.name for descriptor in descriptors] == ["child"]
-
-    class FakeAttributeER:
-        name = None
-        expandedName = None
-
-    assert pool._element_for_er(proxy, Bare(), global_declaration=True) is None
-    assert pool._class_for_er(proxy._schema, Bare()) is None
-    pool._register_element(proxy, Bare())
-    pool._register_attribute(proxy, FakeAttributeER())
-    pool._register_type(proxy, Bare())
-    payment_element = pool.get_element(f"{{{MONEY}}}payment")
-    assert payment_element is not None
-    assert (
-        pool._element_for_er(proxy, payment_element._er, global_declaration=True) is payment_element
-    )
-
-    class NoComponentSchema:
-        components: ClassVar[dict] = {}
-        target_namespace = "urn:none"
-        xsd_version = "1.1"
-        classes: ClassVar[dict] = {}
-        report = None
-
-    class NoComponentProxy:
-        _schema = NoComponentSchema()
-        target_namespace = "urn:none"
-
-    local_pool = SchemaPool()
-    local_pool._register_schema(NoComponentProxy())
-
-    class HeadlessER:
-        name = "head"
-        expandedName = "{urn:none}head"
-
-    class HeadlessSchema(NoComponentSchema):
-        components: ClassVar[dict] = {
-            "schema": [type("SchemaER", (), {"substitutionGroups": {"{urn:none}head": [Bare()]}})()]
-        }
-
-    class HeadlessProxy:
-        _schema = HeadlessSchema()
-        target_namespace = "urn:none"
-
-    local_pool._register_schema(HeadlessProxy())
-
-    headless_proxy = HeadlessProxy()
-    local_pool._elements = {
-        "{urn:none}head": PyxsdElement(
-            local_pool, HeadlessER(), headless_proxy, name="{urn:none}head"
-        )
-    }
-    local_pool._register_schema(headless_proxy)
-
-    class Orphan:
-        name = "Orphan"
-
-        def getNamespace(self):
-            return MONEY
-
-    pool._register_type(proxy, Orphan())
-
-    class CacheAttributeER:
-        name = "cached"
-        expandedName = "{urn:none}cached"
-
-        def getType(self):
-            return xsd.String
-
-    class CacheSchema(NoComponentSchema):
-        components: ClassVar[dict] = {"cached": [CacheAttributeER()]}
-
-    class CacheProxy:
-        _schema = CacheSchema()
-        target_namespace = "urn:none"
-
-    cache_pool = SchemaPool()
-    cache_pool._attributes = {}
-    cache_pool._attribute_cache = {}
-    cached_er = CacheAttributeER()
-    cache_pool._register_attribute(CacheProxy(), cached_er)
-    cache_pool._register_attribute(CacheProxy(), cached_er)
-    assert cache_pool.get_attribute("{urn:none}cached") is not None
-
-
 def test_constructor_invoke_rejects_non_iterable(tmp_path: Path):
     pool = _pool(tmp_path)
     constructor = pool.constructor(f"{{{MONEY}}}Amount")
     with pytest.raises(TypeError):
         constructor.invoke("12.5")
+
+
+def test_malformed_global_declarations_are_skipped_without_crashing():
+    anon_type = _compile_text(
+        f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>
+          <xs:element name="root" type="xs:string"/>
+        </xs:schema>"""
+    )
+    pool = SchemaPool.from_schema(anon_type)
+    assert pool.get_element("root") is not None
+
+    nameless = _compile_text(
+        f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:element type="xs:string"/>
+          <xs:attribute type="xs:string"/>
+          <xs:element name="root" type="xs:string"/>
+        </xs:schema>"""
+    )
+    nameless_pool = SchemaPool.from_schema(nameless)
+    assert nameless_pool.get_element("root") is not None
+    assert nameless_pool.elements == {"root": nameless_pool.get_element("root")}
+
+    headless_member = _compile_text(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{OTHER}"
+            xmlns:o="{OTHER}" elementFormDefault="qualified">
+          <xs:element name="head" type="xs:string" abstract="true"/>
+          <xs:element type="xs:string" substitutionGroup="o:head"/>
+          <xs:element name="root" type="xs:string"/>
+        </xs:schema>"""
+    )
+    assert (
+        SchemaPool.from_schema(headless_member).get_substitution_group(f"{{{OTHER}}}head") is None
+    )
+
+
+def test_no_target_namespace_type_names_remain_local():
+    schema = _compile_text(
+        f"""<xs:schema xmlns:xs="{XSD_NS}">
+          <xs:simpleType name="Local"><xs:restriction base="xs:string"/></xs:simpleType>
+          <xs:element name="root" type="Local"/>
+        </xs:schema>"""
+    )
+    pool = SchemaPool.from_schema(schema)
+    local = pool.get_type("Local")
+    assert local is not None
+    assert local.name == "Local"
+    assert pool.get_element("root").type is local
+
+
+def test_canonical_named_type_adapter_is_reused_by_clark_name(tmp_path: Path):
+    pool = _pool(tmp_path)
+    amount = pool.get_type(f"{{{MONEY}}}Amount")
+    assert amount is not None
+    # A second class object carrying the same schema type identity resolves
+    # to the one canonical adapter rather than creating a proxy-less clone.
+    clone = type(
+        "Amount",
+        (xsd.String,),
+        {"_targetNamespace_": MONEY, "schema": amount.schema},
+    )
+    assert pool.type_for_class(clone) is amount
+
+    unknown = type(
+        "Unknown",
+        (xsd.String,),
+        {"_targetNamespace_": "urn:unknown", "schema": amount.schema},
+    )
+    unknown_adapter = pool.type_for_class(unknown)
+    assert unknown_adapter.name == "{urn:unknown}Unknown"
+    assert unknown_adapter.schema is None
+
+
+def test_imported_substitution_group_registers_once(tmp_path: Path):
+    other = _write(
+        tmp_path / "other.xsd",
+        f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{OTHER}"
+            xmlns:o="{OTHER}" elementFormDefault="qualified">
+          <xs:element name="head" type="xs:string" abstract="true"/>
+          <xs:element name="member" type="xs:string" substitutionGroup="o:head"/>
+        </xs:schema>""",
+    )
+    main = _write(
+        tmp_path / "main.xsd",
+        f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{MONEY}"
+            xmlns:m="{MONEY}">
+          <xs:import namespace="{OTHER}" schemaLocation="other.xsd"/>
+          <xs:element name="root" type="xs:string"/>
+        </xs:schema>""",
+    )
+    pool = SchemaPool.from_imports([main, other])
+    group = pool.get_substitution_group(f"{{{OTHER}}}head")
+    assert group is not None
+    assert len(group) == 1
+    assert next(iter(group)).name == f"{{{OTHER}}}member"

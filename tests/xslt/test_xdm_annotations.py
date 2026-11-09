@@ -13,7 +13,6 @@ from __future__ import annotations
 import io
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import ClassVar
 
 from pyxsd import xsd_data_types as xsd
 from pyxsd.binding import ParseModes
@@ -156,7 +155,8 @@ def test_repeated_siblings_distinguish_xsi_type_by_occurrence():
     assert first.annotation.type_name == _type_name("Base", SHOP)
     assert second.annotation.type_name == _type_name("Wide", SHOP)
     assert first.annotation.xsi_type is None
-    assert second.annotation.xsi_type == "s:Wide"
+    assert second.annotation.xsi_type == f"{{{SHOP}}}Wide"
+    assert second.annotation.xsi_type_lexical == "s:Wide"
     assert first.annotation.validity == "valid"
     assert second.annotation.validity == "valid"
     assert first.source_location().path != second.source_location().path
@@ -210,6 +210,10 @@ def test_list_union_and_id_typed_values():
     assert ref.annotation.id_kind == "IDREF"
     assert refs.annotation.id_kind == "IDREFS"
     assert refs.annotation.type_name == _type_name("IDREFS")
+    assert [item.type_name for item in refs.annotation.typed_values] == [
+        _type_name("IDREF"),
+        _type_name("IDREF"),
+    ]
 
 
 def test_defaults_nilled_and_invalid_nil():
@@ -369,7 +373,8 @@ def test_skip_and_strict_wildcard_states():
     assert dynamic.annotation.wildcard.process_contents == "strict"
     assert dynamic.annotation.validation_attempted == "full"
     assert dynamic.annotation.validity == "valid"
-    assert dynamic.annotation.xsi_type == "xsd:string"
+    assert dynamic.annotation.xsi_type == f"{{{XSD_NS}}}string"
+    assert dynamic.annotation.xsi_type_lexical == "xsd:string"
     assert dynamic.annotation.typed_values == (XdmAtomic.string("x"),)
 
 
@@ -566,103 +571,6 @@ def test_finish_and_apply_edge_cases():
         root_element = TextNode()
 
     capture.apply(TextDocument())
-
-
-def test_declaration_and_value_helpers_handle_defensive_shapes():
-    class NoMethods:
-        pass
-
-    class Raising:
-        def getDefault(self):
-            raise RuntimeError("broken")
-
-        def isList(self):
-            raise RuntimeError("broken")
-
-        def isGlobalDeclaration(self):
-            raise RuntimeError("broken")
-
-    class NonString:
-        def getDefault(self):
-            return 42
-
-    assert annotations_module._declaration_constraint(NoMethods(), "getDefault") is None
-    assert annotations_module._declaration_constraint(Raising(), "getDefault") is None
-    assert annotations_module._declaration_constraint(NonString(), "getDefault") is None
-    assert not annotations_module._declaration_is_list(NoMethods())
-    assert not annotations_module._declaration_is_list(Raising())
-    assert not annotations_module._is_local_declaration(NoMethods())
-    assert not annotations_module._is_local_declaration(Raising())
-
-    assert annotations_module._value_source(None, True, None, "f") == "fixed"
-    assert annotations_module._value_source(None, True, "d", None) == "default"
-    assert annotations_module._value_source(None, True, "d", "f") == "fixed"
-    assert annotations_module._value_source(None, False, "d", None) == "instance"
-    assert annotations_module._value_source(None, False, None, None) is None
-
-    class TextOnly:
-        text = "value"
-
-    assert annotations_module._string_value(TextOnly()) == "value"
-
-    assert annotations_module._atomize(None) == ()
-    atomic = XdmAtomic.string("x")
-    assert annotations_module._atomize(atomic) == (atomic,)
-    fallback = annotations_module._atomize(object())
-    assert isinstance(fallback[0], XdmAtomic)
-    assert fallback[0].type_name == f"{{{XSD_NS}}}untypedAtomic"
-
-    class FakeUnion(xsd.XsdDataType):
-        name = "FakeUnion"
-        _unionMembers: ClassVar[list[type]] = [xsd.String]
-
-    fake_union = FakeUnion()
-    assert annotations_module._atomize(fake_union)[0].type_name == "FakeUnion"
-
-    broken = type(
-        "tag|simpleType",
-        (xsd.Decimal,),
-        {"__str__": lambda self: "not-a-decimal"},
-    )("1")
-    assert annotations_module._atomize(broken) == (XdmAtomic.untyped_atomic("not-a-decimal"),)
-
-    class MidType(xsd.XsdDataType):
-        pass
-
-    no_base = type("tag|simpleType", (MidType,), {})()
-    assert annotations_module._atomize(no_base) == (XdmAtomic.untyped_atomic(str(no_base)),)
-
-    class BrokenContent:
-        @classmethod
-        def __new__(cls, value):
-            raise ValueError("cannot rebuild")
-
-    class SimpleContentType:
-        _contentKind_ = "complex"
-        _simpleContentType_ = BrokenContent
-        _elementOnly_ = False
-
-    element = ET.fromstring("<r>bad</r>")
-    assert annotations_module._element_typed_values(
-        None, element, False, SimpleContentType, "full"
-    ) == (XdmAtomic.untyped_atomic("bad"),)
-
-    assert annotations_module._attribute_typed_values(None, xsd.String) == ()
-
-    with annotations_module._qname_context_for(object(), ET.fromstring("<r/>")):
-        pass
-
-    class BrokenBindings:
-        def _qname_bindings(self, element):
-            raise RuntimeError("no bindings")
-
-    with annotations_module._qname_context_for(BrokenBindings(), ET.fromstring("<r/>")):
-        pass
-
-    bare_class = type("Bare", (), {})
-    assert annotations_module.schema_type_name(bare_class) == "Bare"
-    assert not annotations_module.is_anonymous_type(bare_class)
-    assert annotations_module.schema_type_name(None) is None
 
 
 def test_any_type_simple_content_mixed_and_invalid_values():
@@ -915,3 +823,371 @@ def test_legacy_generic_wildcard_and_ordinary_parse():
 
     ordinary = schema.parse(io.BytesIO(xml.encode("utf-8")))
     assert ordinary.root is not None
+
+
+def test_any_atomic_type_element_and_attribute_capture():
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" elementFormDefault="qualified">
+          <xs:element name="value" type="xs:anyAtomicType"/>
+          <xs:element name="holder">
+            <xs:complexType>
+              <xs:attribute name="a" type="xs:anyAtomicType"/>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>"""
+    )
+    value_document, _ = _annotated(schema, "<value>text</value>")
+    value = value_document.root_element
+    assert value.annotation.type_name == f"{{{XSD_NS}}}anyAtomicType"
+    assert value.annotation.typed_values[0].lexical == "text"
+    assert value.annotation.typed_values[0].type_name == f"{{{XSD_NS}}}anyAtomicType"
+
+    holder_document, _ = _annotated(schema, '<holder a="v"/>')
+    attribute = holder_document.root_element.attribute("a")
+    assert attribute is not None
+    assert attribute.annotation.type_name == f"{{{XSD_NS}}}anyAtomicType"
+    assert attribute.annotation.typed_values[0].type_name == f"{{{XSD_NS}}}anyAtomicType"
+
+
+def test_user_types_named_like_builtins_are_not_misclassified():
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{SHOP}"
+            xmlns:s="{SHOP}" elementFormDefault="qualified">
+          <xs:simpleType name="IDREFS"><xs:restriction base="xs:string"/></xs:simpleType>
+          <xs:simpleType name="ID"><xs:restriction base="xs:string"/></xs:simpleType>
+          <xs:simpleType name="RenamedIDREFS">
+            <xs:restriction base="xs:IDREFS"/>
+          </xs:simpleType>
+          <xs:element name="root">
+            <xs:complexType><xs:sequence>
+              <xs:element name="user" type="s:IDREFS"/>
+              <xs:element name="userid" type="s:ID"/>
+              <xs:element name="renamed" type="s:RenamedIDREFS"/>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:schema>"""
+    )
+    document, _ = _annotated(
+        schema,
+        f'<s:root xmlns:s="{SHOP}"><s:user>a</s:user>'
+        "<s:userid>ID1</s:userid><s:renamed>a b</s:renamed></s:root>",
+    )
+    user, userid, renamed = _element_children(document.root_element)
+    assert user.annotation.type_name == f"{{{SHOP}}}IDREFS"
+    assert user.annotation.id_kind is None
+    assert user.annotation.typed_values[0].type_name == f"{{{XSD_NS}}}string"
+    assert userid.annotation.id_kind is None
+    assert renamed.annotation.id_kind == "IDREFS"
+    assert [item.type_name for item in renamed.annotation.typed_values] == [
+        f"{{{XSD_NS}}}IDREF",
+        f"{{{XSD_NS}}}IDREF",
+    ]
+
+
+def test_parent_invalidity_follows_an_invalid_child_but_not_siblings():
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" elementFormDefault="qualified">
+          <xs:element name="root">
+            <xs:complexType><xs:sequence>
+              <xs:element name="item" type="xs:int" maxOccurs="unbounded"/>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        mode=ParseModes.NAMESPACED,
+    )
+    document, _ = _annotated(schema, "<root><item>1</item><item>oops</item></root>")
+    first, second = _element_children(document.root_element)
+    assert first.annotation.validity == "valid"
+    assert second.annotation.validity == "invalid"
+    assert document.root_element.annotation.validity == "invalid"
+
+
+def test_union_attribute_keeps_the_bound_member_type():
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" elementFormDefault="qualified">
+          <xs:simpleType name="U">
+            <xs:union memberTypes="xs:int xs:string"/>
+          </xs:simpleType>
+          <xs:simpleType name="Later">
+            <xs:union memberTypes="xs:int xs:string"/>
+          </xs:simpleType>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:attribute name="u" type="U"/>
+              <xs:attribute name="later" type="Later"/>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>"""
+    )
+    document, _ = _annotated(schema, '<root u="5" later="abc"/>')
+    u = document.root_element.attribute("u")
+    later = document.root_element.attribute("later")
+    assert u is not None and later is not None
+    assert u.annotation.typed_values == (XdmAtomic.integer(5),)
+    assert later.annotation.typed_values == (XdmAtomic.string("abc"),)
+
+
+def test_complex_simple_content_defaults_and_fixed_values():
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{SHOP}"
+            xmlns:s="{SHOP}" elementFormDefault="qualified">
+          <xs:complexType name="NamedAmount">
+            <xs:simpleContent><xs:extension base="xs:decimal"/></xs:simpleContent>
+          </xs:complexType>
+          <xs:element name="root">
+            <xs:complexType><xs:sequence>
+              <xs:element name="namedDefault" type="s:NamedAmount" default="12.5"/>
+              <xs:element name="namedFixed" type="s:NamedAmount" fixed="13.5"/>
+              <xs:element name="anonDefault" default="14.5">
+                <xs:complexType><xs:simpleContent>
+                  <xs:extension base="xs:decimal"/>
+                </xs:simpleContent></xs:complexType>
+              </xs:element>
+              <xs:element name="anonFixed" fixed="15.5">
+                <xs:complexType><xs:simpleContent>
+                  <xs:extension base="xs:decimal"/>
+                </xs:simpleContent></xs:complexType>
+              </xs:element>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:schema>"""
+    )
+    document, _ = _annotated(
+        schema,
+        f'<s:root xmlns:s="{SHOP}"><s:namedDefault/><s:namedFixed/>'
+        "<s:anonDefault/><s:anonFixed/></s:root>",
+    )
+    named_default, named_fixed, anon_default, anon_fixed = _element_children(document.root_element)
+    assert named_default.annotation.typed_values == (XdmAtomic.decimal("12.5"),)
+    assert named_default.annotation.value_source == "default"
+    assert named_fixed.annotation.typed_values == (XdmAtomic.decimal("13.5"),)
+    assert named_fixed.annotation.value_source == "fixed"
+    assert anon_default.annotation.typed_values == (XdmAtomic.decimal("14.5"),)
+    assert anon_default.annotation.value_source == "default"
+    assert anon_fixed.annotation.typed_values == (XdmAtomic.decimal("15.5"),)
+    assert anon_fixed.annotation.value_source == "fixed"
+
+
+def test_default_namespace_xsi_type_is_resolved():
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{SHOP}"
+            xmlns:s="{SHOP}" elementFormDefault="qualified">
+          <xs:complexType name="Base">
+            <xs:sequence><xs:element name="name" type="xs:string"/></xs:sequence>
+          </xs:complexType>
+          <xs:complexType name="Wide">
+            <xs:complexContent><xs:extension base="s:Base">
+              <xs:sequence><xs:element name="extra" type="xs:string" minOccurs="0"/></xs:sequence>
+            </xs:extension></xs:complexContent>
+          </xs:complexType>
+          <xs:element name="catalog">
+            <xs:complexType><xs:sequence>
+              <xs:element name="item" type="s:Base"/>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:schema>"""
+    )
+    xml = (
+        f'<catalog xmlns="{SHOP}" xmlns:xsi="{XSI_NS}">'
+        '<item xsi:type="Wide"><name>a</name><extra>b</extra></item></catalog>'
+    )
+    document, _ = _annotated(schema, xml)
+    item = _element_children(document.root_element)[0]
+    assert item.annotation.xsi_type == f"{{{SHOP}}}Wide"
+    assert item.annotation.xsi_type_lexical == "Wide"
+    assert item.annotation.type_name == f"{{{SHOP}}}Wide"
+
+
+def test_abstract_element_matched_by_strict_wildcard_is_annotated(tmp_path: Path):
+    other = tmp_path / "other.xsd"
+    other.write_text(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{OTHER}"
+            xmlns:o="{OTHER}" elementFormDefault="qualified">
+          <xs:element name="abstractHead" type="xs:string" abstract="true"/>
+        </xs:schema>""",
+        encoding="utf-8",
+    )
+    main = tmp_path / "main.xsd"
+    main.write_text(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" elementFormDefault="qualified">
+          <xs:import namespace="{OTHER}" schemaLocation="other.xsd"/>
+          <xs:element name="root">
+            <xs:complexType><xs:sequence>
+              <xs:any namespace="##other" processContents="strict"/>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        encoding="utf-8",
+    )
+    schema = _compile(main)
+    abstract_xml = f'<root xmlns:o="{OTHER}"><o:abstractHead>x</o:abstractHead></root>'
+    schema.parse(io.BytesIO(abstract_xml.encode("utf-8")))
+    document, _ = _annotated(schema, abstract_xml)
+    abstract = _element_children(document.root_element)[0]
+    assert abstract.annotation.governing_declaration.name == "abstractHead"
+    assert abstract.annotation.validation_attempted == "none"
+    assert abstract.annotation.validity == "invalid"
+
+
+def test_undeclared_attributes_on_primitive_elements_and_roots():
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" elementFormDefault="qualified">
+          <xs:element name="root" type="xs:int"/>
+          <xs:element name="parent">
+            <xs:complexType><xs:sequence>
+              <xs:element name="num" type="xs:int"/>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        mode=ParseModes.NAMESPACED,
+    )
+    root_document, _ = _annotated(schema, '<root bad="x">1</root>')
+    root_attribute = root_document.root_element.attribute("bad")
+    assert root_attribute is not None
+    assert root_attribute.annotation.validity == "invalid"
+    assert root_document.root_element.annotation.validity == "invalid"
+
+    child_document, _ = _annotated(schema, '<parent><num bad="x">1</num></parent>')
+    num = _element_children(child_document.root_element)[0]
+    child_attribute = num.attribute("bad")
+    assert child_attribute is not None
+    assert child_attribute.annotation.validity == "invalid"
+    assert num.annotation.validity == "invalid"
+    assert child_document.root_element.annotation.validity == "invalid"
+
+
+def test_capture_digest_rejects_same_structure_different_content():
+    import hashlib
+
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" elementFormDefault="qualified">
+          <xs:element name="root">
+            <xs:complexType><xs:sequence>
+              <xs:element name="item" type="xs:int"/>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        mode=ParseModes.NAMESPACED,
+    )
+    xml = b"<root><item>1</item></root>"
+    capture = capture_schema_annotations(schema, io.BytesIO(xml))
+    assert capture.source_digest == hashlib.sha256(xml).hexdigest()
+
+    same = XdmDocument.parse(xml)
+    assert same.source_index.digest == capture.source_digest
+    capture.apply(same)
+    assert same.root_element.annotation.validity == "valid"
+
+    different = XdmDocument.parse(b"<root><item>2</item></root>")
+    capture.apply(different)
+    assert different.root_element.annotation.validity == "not-validated"
+
+
+def test_finish_ignores_schema_phase_errors():
+    path = (PathStep("r", 1),)
+    report = ValidationReport()
+    report.add_error(
+        "schema problem",
+        code="schema",
+        phase="schema",
+        location=IssueLocation("schema.xsd", path),
+    )
+    capture = OccurrenceCapture()
+    capture.record(OccurrenceKey(path), OccurrenceAnnotation(validation_attempted="full"))
+    capture.finish(report)
+    assert capture.annotation(path).validity == "valid"
+
+
+def test_capture_source_digest_forms(tmp_path: Path):
+    import hashlib
+
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" elementFormDefault="qualified">
+          <xs:element name="root" type="xs:string"/>
+        </xs:schema>"""
+    )
+    xml = b"<root>text</root>"
+    path = tmp_path / "doc.xml"
+    path.write_bytes(xml)
+    expected = hashlib.sha256(xml).hexdigest()
+
+    assert capture_schema_annotations(schema, path).source_digest == expected
+    assert capture_schema_annotations(schema, io.StringIO(xml.decode())).source_digest == expected
+    assert annotations_module._source_digest(tmp_path / "missing.xml") is None
+
+    element_capture = capture_schema_annotations(schema, ET.fromstring(xml))
+    assert element_capture.source_digest is None
+
+    class NonSeekable:
+        def __init__(self, data: bytes) -> None:
+            self._data = data
+
+        def read(self, size: int = -1) -> bytes:
+            del size
+            data, self._data = self._data, b""
+            return data
+
+    non_seekable = NonSeekable(xml)
+    assert capture_schema_annotations(schema, non_seekable).source_digest is None
+
+    class BrokenSeekable:
+        def read(self) -> bytes:
+            raise OSError("broken")
+
+        def seekable(self) -> bool:
+            return True
+
+        def tell(self) -> int:
+            return 0
+
+        def seek(self, position: int) -> None:
+            del position
+
+    assert annotations_module._source_digest(BrokenSeekable()) is None
+
+    class OddData:
+        def read(self):
+            return object()
+
+        def seekable(self) -> bool:
+            return True
+
+        def tell(self) -> int:
+            return 0
+
+        def seek(self, position: int) -> None:
+            del position
+
+    assert annotations_module._source_digest(OddData()) is None
+
+
+def test_apply_without_matching_occurrences_leaves_everything_untyped():
+    capture = OccurrenceCapture()
+    document = XdmDocument.parse(b'<root a="1"><child/></root>')
+    capture.apply(document)
+    assert isinstance(document.root_element.annotation, XdmAnnotation)
+    assert isinstance(document.root_element.children[0].annotation, XdmAnnotation)
+    attribute = document.root_element.attribute("a")
+    assert attribute is not None
+    assert isinstance(attribute.annotation, XdmAnnotation)
+
+
+def test_invalid_complex_simple_content_keeps_raw_typed_value():
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" elementFormDefault="qualified">
+          <xs:element name="root">
+            <xs:complexType><xs:sequence>
+              <xs:element name="amount">
+                <xs:complexType><xs:simpleContent>
+                  <xs:extension base="xs:decimal"/>
+                </xs:simpleContent></xs:complexType>
+              </xs:element>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        mode=ParseModes.NAMESPACED,
+    )
+    document, _ = _annotated(schema, "<root><amount>oops</amount></root>")
+    amount = _element_children(document.root_element)[0]
+    assert amount.annotation.typed_values == (XdmAtomic.untyped_atomic("oops"),)
+    assert amount.annotation.validity == "invalid"

@@ -14,6 +14,7 @@ external-resource fetcher.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from xml.parsers import expat
 
@@ -58,6 +59,7 @@ class SourceIndex:
     ) -> None:
         self.source = source
         self._content = content
+        self._digest = hashlib.sha256(content).hexdigest()
         effective = XmlParserPolicy.default() if policy is None else policy
         if limits is not None and limits.max_bytes is not None and len(content) > limits.max_bytes:
             raise ResourcePolicyError(f"the XML input exceeds max_bytes={limits.max_bytes}")
@@ -86,6 +88,11 @@ class SourceIndex:
         except expat.ExpatError as exc:
             raise PyXSDError(f"{source}: malformed XML: {exc}") from exc
         self._spans = state.spans
+
+    @property
+    def digest(self) -> str:
+        """The SHA-256 of the indexed source bytes."""
+        return self._digest
 
     def span(self, path: tuple[PathStep, ...]) -> SourceSpan | None:
         """Return this occurrence's exact byte range, or ``None`` if unknown."""

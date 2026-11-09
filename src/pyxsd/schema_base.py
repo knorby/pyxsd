@@ -67,6 +67,18 @@ def _source_location(node, *, attribute=None):
     return None
 
 
+def _annotation_namespaces(cls, element) -> dict[str, str] | None:
+    """In-scope prefix bindings for resolving ``xsi:type`` evidence."""
+    parser = cls._parserHost()
+    namespace_context = getattr(parser, "namespaceContext", None)
+    if namespace_context is None:  # pragma: no cover - generated classes have a host
+        return None
+    try:
+        return namespace_context.bindings_for(element)
+    except Exception:  # pragma: no cover - binding context records parsed elements
+        return None
+
+
 def _mode_for(cls) -> BindingPolicy:
     """The binding policy stamped on a generated class (or NAMESPACED)."""
     return getattr(cls, "_parseMode_", ParseModes.NAMESPACED)
@@ -634,6 +646,7 @@ class SchemaBase:
                     if occurrence_capture_active():
                         capture_element_occurrence(
                             subElement,
+                            xsi_type_namespaces=_annotation_namespaces(cls, subElement),
                             actual_type=subElCls,
                             validation_attempted="full",
                             wildcard=spec,
@@ -663,6 +676,7 @@ class SchemaBase:
             if occurrence_capture_active():
                 capture_element_occurrence(
                     subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
                     actual_type=None,
                     validation_attempted="none",
                     bound=subInstance,
@@ -678,6 +692,7 @@ class SchemaBase:
             if occurrence_capture_active():
                 capture_element_occurrence(
                     subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
                     actual_type=None,
                     validation_attempted="none",
                     wildcard=spec,
@@ -696,6 +711,15 @@ class SchemaBase:
                     code="abstract-element",
                     element=cls.__name__,
                 )
+                if occurrence_capture_active():
+                    capture_element_occurrence(
+                        subElement,
+                        xsi_type_namespaces=_annotation_namespaces(cls, subElement),
+                        governing_declaration=descriptor,
+                        actual_type=None,
+                        validation_attempted="none",
+                        wildcard=spec,
+                    )
                 return
             descriptor.host = parser
             subElCls = cls._classForChild(descriptor, subElement)
@@ -714,6 +738,7 @@ class SchemaBase:
             if occurrence_capture_active():
                 capture_element_occurrence(
                     subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
                     actual_type=None,
                     validation_attempted="partial",
                     wildcard=spec,
@@ -740,6 +765,7 @@ class SchemaBase:
                     if occurrence_capture_active():
                         capture_element_occurrence(
                             subElement,
+                            xsi_type_namespaces=_annotation_namespaces(cls, subElement),
                             actual_type=governing,
                             validation_attempted="full",
                             wildcard=spec,
@@ -760,6 +786,7 @@ class SchemaBase:
         if occurrence_capture_active():
             capture_element_occurrence(
                 subElement,
+                xsi_type_namespaces=_annotation_namespaces(cls, subElement),
                 actual_type=None,
                 validation_attempted="none",
                 wildcard=spec,
@@ -1713,6 +1740,7 @@ class SchemaBase:
             if occurrence_capture_active():
                 capture_element_occurrence(
                     subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
                     governing_declaration=descriptor,
                     actual_type=subElCls,
                     nilled=nilled,
@@ -1774,6 +1802,7 @@ class SchemaBase:
             if occurrence_capture_active():
                 capture_element_occurrence(
                     subElement,
+                    xsi_type_namespaces=_annotation_namespaces(cls, subElement),
                     governing_declaration=descriptor,
                     actual_type=subElCls,
                     nilled=nilled,
@@ -1806,6 +1835,7 @@ class SchemaBase:
         if occurrence_capture_active():
             capture_element_occurrence(
                 subElement,
+                xsi_type_namespaces=_annotation_namespaces(cls, subElement),
                 governing_declaration=descriptor,
                 actual_type=subElCls,
                 nilled=nilled,
@@ -1894,6 +1924,7 @@ class SchemaBase:
                 "schema and was not parsed",
                 code="unexpected-attribute",
                 element=subElementName,
+                location=_source_location(subElement, attribute=attr),
             )
 
     @classmethod
@@ -2626,6 +2657,7 @@ class SchemaBase:
             capture_remaining_attributes(elementTag)
             capture_element_occurrence(
                 elementTag,
+                xsi_type_namespaces=_annotation_namespaces(cls, elementTag),
                 actual_type=None,
                 validation_attempted="none",
                 bound=instance,

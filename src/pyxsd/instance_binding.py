@@ -11,6 +11,7 @@ compiled schema (with ``self`` replaced by the explicit ``schema`` /
 """
 
 import logging
+from dataclasses import replace
 from typing import Any, Protocol
 
 from pyxsd import xsi
@@ -21,8 +22,10 @@ from pyxsd.derivation import (
 )
 from pyxsd.element_representatives.element_representative import ElementRepresentative
 from pyxsd.extensions import run_validation_hooks
+from pyxsd.locations import IssueLocation
 from pyxsd.namespaces import NamespaceError
 from pyxsd.schema_base import SchemaBase, nil_content_kind
+from pyxsd.schema_context import current_context
 from pyxsd.schema_hints import schema_location_info
 from pyxsd.validation import ValidationReport
 from pyxsd.wildcards import (
@@ -228,6 +231,7 @@ def bind_instance(schema: BoundSchemaProtocol, xml_root: Any, report: Validation
                     nilled=xsi.xsi_nil_is_true(xml_root) and rootElement.isNillable(),
                     validation_attempted="full",
                     bound=subInstance,
+                    xsi_type_namespaces=schema.namespace_context.bindings_for(xml_root),
                 )
             check_identity_constraints_entry(schema, subInstance, report)
 
@@ -577,6 +581,14 @@ def primitive_root_instance(
     return instance
 
 
+def _attribute_location(element: Any, attribute: str) -> IssueLocation | None:
+    """The exact source address of one attribute, when provenance exists."""
+    context = current_context()
+    assert context is not None and context.provenance is not None
+    location = context.provenance.source_location(element)
+    return None if location is None else replace(location, attribute=attribute)
+
+
 def report_undeclared_simple_attributes(
     schema: BoundSchemaProtocol, elementTag: Any, elementName: str, report: ValidationReport
 ) -> None:
@@ -598,6 +610,7 @@ def report_undeclared_simple_attributes(
             "schema and was not parsed",
             code="unexpected-attribute",
             element=elementName,
+            location=_attribute_location(elementTag, attr),
         )
 
 
@@ -618,6 +631,7 @@ def report_unknown_xsi_attributes(
                 f"attribute '{attr}' is not declared in the schema and was not parsed",
                 code="unexpected-attribute",
                 element=elementName,
+                location=_attribute_location(elementTag, attr),
             )
 
 
