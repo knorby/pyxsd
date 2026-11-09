@@ -1191,3 +1191,99 @@ def test_invalid_complex_simple_content_keeps_raw_typed_value():
     amount = _element_children(document.root_element)[0]
     assert amount.annotation.typed_values == (XdmAtomic.untyped_atomic("oops"),)
     assert amount.annotation.validity == "invalid"
+
+
+def test_complex_simple_content_preserves_lexical_forms():
+    schema = _compile(
+        f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="{SHOP}"
+            xmlns:s="{SHOP}" elementFormDefault="qualified">
+          <xs:simpleType name="Codes"><xs:list itemType="xs:string"/></xs:simpleType>
+          <xs:complexType name="NamedList">
+            <xs:simpleContent><xs:extension base="s:Codes"/></xs:simpleContent>
+          </xs:complexType>
+          <xs:complexType name="NamedDecimal">
+            <xs:simpleContent><xs:extension base="xs:decimal"/></xs:simpleContent>
+          </xs:complexType>
+          <xs:complexType name="NamedDouble">
+            <xs:simpleContent><xs:extension base="xs:double"/></xs:simpleContent>
+          </xs:complexType>
+          <xs:complexType name="NamedFloat">
+            <xs:simpleContent><xs:extension base="xs:float"/></xs:simpleContent>
+          </xs:complexType>
+          <xs:element name="root">
+            <xs:complexType><xs:sequence>
+              <xs:element name="namedListDefault" type="s:NamedList" default="a b"/>
+              <xs:element name="namedListFixed" type="s:NamedList" fixed="c d"/>
+              <xs:element name="namedListInstance" type="s:NamedList"/>
+              <xs:element name="namedDecimalDefault" type="s:NamedDecimal" default=".0000001"/>
+              <xs:element name="namedDecimalFixed" type="s:NamedDecimal" fixed=".0000001"/>
+              <xs:element name="namedDecimalInstance" type="s:NamedDecimal"/>
+              <xs:element name="namedDoubleDefault" type="s:NamedDouble" default="INF"/>
+              <xs:element name="namedDoubleFixed" type="s:NamedDouble" fixed="-INF"/>
+              <xs:element name="namedDoubleInstance" type="s:NamedDouble"/>
+              <xs:element name="namedFloatDefault" type="s:NamedFloat" default="-INF"/>
+              <xs:element name="namedFloatInstance" type="s:NamedFloat"/>
+              <xs:element name="anonListDefault" default="a b">
+                <xs:complexType><xs:simpleContent>
+                  <xs:extension base="s:Codes"/>
+                </xs:simpleContent></xs:complexType>
+              </xs:element>
+              <xs:element name="anonDecimalDefault" default=".0000001">
+                <xs:complexType><xs:simpleContent>
+                  <xs:extension base="xs:decimal"/>
+                </xs:simpleContent></xs:complexType>
+              </xs:element>
+              <xs:element name="anonDoubleDefault" default="INF">
+                <xs:complexType><xs:simpleContent>
+                  <xs:extension base="xs:double"/>
+                </xs:simpleContent></xs:complexType>
+              </xs:element>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:schema>"""
+    )
+    xml = (
+        f'<s:root xmlns:s="{SHOP}">'
+        "<s:namedListDefault/><s:namedListFixed/><s:namedListInstance>x y</s:namedListInstance>"
+        "<s:namedDecimalDefault/><s:namedDecimalFixed/>"
+        "<s:namedDecimalInstance>.0000001</s:namedDecimalInstance>"
+        "<s:namedDoubleDefault/><s:namedDoubleFixed/><s:namedDoubleInstance>NaN</s:namedDoubleInstance>"
+        "<s:namedFloatDefault/><s:namedFloatInstance>NaN</s:namedFloatInstance>"
+        "<s:anonListDefault/><s:anonDecimalDefault/><s:anonDoubleDefault/>"
+        "</s:root>"
+    )
+    document, _ = _annotated(schema, xml)
+
+    def typed(name: str):
+        node = next(
+            child for child in _element_children(document.root_element) if child.local_name == name
+        )
+        return node.annotation.typed_values
+
+    assert [item.lexical for item in typed("namedListDefault")] == ["a", "b"]
+    assert [item.lexical for item in typed("namedListFixed")] == ["c", "d"]
+    assert [item.lexical for item in typed("namedListInstance")] == ["x", "y"]
+    assert [item.lexical for item in typed("anonListDefault")] == ["a", "b"]
+
+    for name in (
+        "namedDecimalDefault",
+        "namedDecimalFixed",
+        "namedDecimalInstance",
+        "anonDecimalDefault",
+    ):
+        assert typed(name) == (XdmAtomic.decimal(".0000001"),)
+        assert typed(name)[0].type_name == f"{{{XSD_NS}}}decimal"
+
+    for name in ("namedDoubleDefault", "anonDoubleDefault"):
+        assert typed(name)[0].type_name == f"{{{XSD_NS}}}double"
+        assert typed(name)[0].lexical == "INF"
+
+    assert typed("namedDoubleFixed")[0].type_name == f"{{{XSD_NS}}}double"
+    assert typed("namedDoubleFixed")[0].lexical == "-INF"
+
+    assert typed("namedDoubleInstance")[0].type_name == f"{{{XSD_NS}}}double"
+    assert typed("namedDoubleInstance")[0].lexical == "NaN"
+    assert typed("namedFloatDefault")[0].type_name == f"{{{XSD_NS}}}float"
+    assert typed("namedFloatDefault")[0].lexical == "-INF"
+    assert typed("namedFloatInstance")[0].type_name == f"{{{XSD_NS}}}float"
+    assert typed("namedFloatInstance")[0].lexical == "NaN"

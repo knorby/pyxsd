@@ -331,6 +331,7 @@ def capture_element_occurrence(
         if lexical_type is None or xsi_type_namespaces is None
         else _resolve_lexical_qname(lexical_type, xsi_type_namespaces)
     )
+    simple_content_lexical = _simple_content_lexical(element, default_value, fixed_value)
     schema_name = schema_type_name(actual_type)
     type_name: str | None = UNTYPED if validation_attempted != "full" else schema_name
     capture.record(
@@ -352,7 +353,12 @@ def capture_element_occurrence(
             repeated=bool(repeated) or _declaration_is_list(declaration),
             is_attribute=False,
             typed_values=_element_typed_values(
-                bound, element, nilled, actual_type, validation_attempted
+                bound,
+                element,
+                nilled,
+                actual_type,
+                validation_attempted,
+                simple_content_lexical,
             ),
             default_value=default_value,
             fixed_value=fixed_value,
@@ -585,6 +591,7 @@ def _element_typed_values(
     nilled: bool,
     actual_type: Any,
     validation_attempted: str,
+    simple_content_lexical: str,
 ) -> tuple[Any, ...]:
     if nilled:
         return ()
@@ -599,7 +606,7 @@ def _element_typed_values(
     if is_complex:
         simple_content = getattr(actual_type, "_simpleContentType_", None)
         if isinstance(simple_content, type):
-            lexical = _bound_lexical_value(bound, element)
+            lexical = simple_content_lexical
             try:
                 with _qname_context_for(actual_type, element):
                     return _atomize(simple_content(lexical))
@@ -613,12 +620,22 @@ def _element_typed_values(
     return (XdmAtomic.untyped_atomic(_string_value(element)),)
 
 
-def _bound_lexical_value(bound: Any, element: Any) -> str:
-    """Prefer the bound default/fixed lexical over the raw element text."""
-    values = getattr(bound, "_value_", None) if bound is not None else None
-    if isinstance(values, (list, tuple)) and values:
-        return " ".join(str(value) for value in values)
-    return _string_value(element)
+def _simple_content_lexical(
+    element: Any, default_value: str | None, fixed_value: str | None
+) -> str:
+    """The source lexical for simple content, or the declared default/fixed.
+
+    ``bound._value_`` is deliberately not used: it stores ``str(typed)`` and
+    is lossy for lists, exponent decimals, and INF/NaN lexical forms.
+    """
+    if element.text is not None:
+        return element.text
+    if len(element) == 0:
+        if fixed_value is not None:
+            return fixed_value
+        if default_value is not None:
+            return default_value
+    return ""
 
 
 def _attribute_typed_values(value: Any, actual_type: Any) -> tuple[Any, ...]:
