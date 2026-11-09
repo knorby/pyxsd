@@ -33,7 +33,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, NoReturn
 
-from elementpath import UnsupportedFeatureError, XPathContext, build_node_tree
+from elementpath import (
+    DocumentNode,
+    ElementNode,
+    UnsupportedFeatureError,
+    XPathContext,
+    XPathNode,
+    build_node_tree,
+)
 from elementpath.exceptions import ElementPathSyntaxError
 from elementpath.xpath3 import XPath31Parser
 from elementpath.xpath_tokens import XPathArray, XPathMap
@@ -232,10 +239,8 @@ def _parse_actual_xml(xml: str) -> ET.Element:
 
 def _document_node(xml: str) -> Any:
     if not xml.strip():
-        tree = ET.ElementTree(ET.Element("empty"))
-    else:
-        tree = ET.ElementTree(_parse_actual_xml(xml))
-    return build_node_tree(tree)
+        return build_node_tree(ET.ElementTree())
+    return build_node_tree(ET.ElementTree(_parse_actual_xml(xml)))
 
 
 def _xpath_value(value: Any, parser: XPath31Parser) -> Any:
@@ -255,6 +260,21 @@ def _xpath_value(value: Any, parser: XPath31Parser) -> Any:
     if isinstance(value, tuple):
         return XPathArray(parser, [_xpath_value(item, parser) for item in value])
     return value
+
+
+def _context_root(item: Any) -> Any | None:
+    """The root node required for absolute paths in an XPath assertion."""
+    if isinstance(item, DocumentNode):
+        return item
+    if isinstance(item, ElementNode):
+        return item.get_document_node()
+    if isinstance(item, XPathNode):
+        parent = getattr(item, "parent", None)
+        if isinstance(parent, DocumentNode):
+            return parent
+        if isinstance(parent, ElementNode):
+            return parent.get_document_node()
+    return None
 
 
 def _context_item(items: tuple[Any, ...], parser: XPath31Parser) -> Any:
@@ -311,7 +331,10 @@ def _evaluate(
         parser, variables = _binding(declarations, items)
         ast = parser.parse(expression)
         context_item = _context_item(items, parser)
-        return ast.evaluate(XPathContext(item=context_item, variables=variables))
+        root = _context_root(context_item)
+        if root is None:
+            return ast.evaluate(XPathContext(item=context_item, variables=variables))
+        return ast.evaluate(XPathContext(root=root, item=context_item, variables=variables))
     except AssertionGap:
         raise
     except Exception as exc:  # elementpath's hierarchy is broad
@@ -364,14 +387,19 @@ def _evaluate_expression(
 
 
 def _string_value(items: tuple[Any, ...], declarations: Sequence[tuple[str, str]]) -> str:
-    parser = _parser(declarations)
-    variables: dict[str, Any] = {"result": [_xpath_value(item, parser) for item in items]}
+    """The catalog's string value of the result sequence.
+
+    ``string-join(for $r in $result return string($r), ' ')`` reads only the
+    bound ``$result`` variable, never the XPath context item.  It is therefore
+    evaluated context-free and works exactly for zero, one, and multiple items.
+    """
     expression = "string-join(for $r in $result return string($r), ' ')"
     try:
+        parser, variables = _binding(declarations, items)
         ast = parser.parse(expression)
-        value = ast.evaluate(XPathContext(item=_context_item(items, parser), variables=variables))
-    except Exception:
-        return ""
+        value = ast.evaluate(XPathContext(item="", variables=variables))
+    except Exception as exc:
+        _translate_evaluation_error(exc, "result string value")
     return value if isinstance(value, str) else str(value)
 
 
@@ -939,21 +967,20 @@ class AssertionSerialization(Assertion):
                 raise AssertionGap("serialization BOM state is unavailable")
             if context.result.serialization_bom != self.bom:
                 return _failed("serialization BOM differs")
-        if (
-            self.method is not None
-            and context.result.serialization_method is not None
-            and self.method != context.result.serialization_method
-        ):
-            raise AssertionGap(
-                f"the result was serialized with {context.result.serialization_method!r}, "
-                f"not {self.method!r}"
-            )
-        if (
-            self.encoding is not None
-            and context.result.serialization_encoding is not None
-            and self.encoding != context.result.serialization_encoding
-        ):
-            return _failed("serialization encoding differs")
+        if self.method is not None:
+            actual_method = context.result.serialization_method
+            if actual_method is None:
+                raise AssertionGap("the serialization method is unavailable")
+            if self.method != actual_method:
+                raise AssertionGap(
+                    f"the result was serialized with {actual_method!r}, not {self.method!r}"
+                )
+        if self.encoding is not None:
+            actual_encoding = context.result.serialization_encoding
+            if actual_encoding is None:
+                raise AssertionGap("the serialization encoding is unavailable")
+            if self.encoding != actual_encoding:
+                return _failed("serialization encoding differs")
         expected = _expected_text(context.case, self.expected, self.file, self.encoding)
         if actual.replace("\r\n", "\n").replace("\r", "\n") == expected.replace(
             "\r\n", "\n"

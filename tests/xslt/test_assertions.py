@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
-from elementpath import UnsupportedFeatureError
+from elementpath import AttributeNode, TextNode, UnsupportedFeatureError, build_node_tree
 from elementpath.exceptions import ElementPathSyntaxError
 from elementpath.xpath3 import XPath31Parser
 from elementpath.xpath_tokens import XPathArray, XPathMap
@@ -44,6 +44,7 @@ from tests.xslt.assertions import (
     AssertionXPath,
     Not,
     ResultSnapshot,
+    _context_root,
     _deep_equal,
     _is_gap,
     _namespace_map,
@@ -1005,7 +1006,7 @@ def test_expected_serialization_files_use_declared_or_assertion_encoding(
     )
     assert evaluate_assertion(
         AssertionSerialization(file="explicit.out", encoding="iso-8859-1"),
-        result=ResultSnapshot(serialized="<out>café</out>"),
+        result=ResultSnapshot(serialized="<out>café</out>", serialization_encoding="iso-8859-1"),
         case=case,
     )
     with pytest.raises(AssertionDispute, match="decode"):
@@ -1061,3 +1062,115 @@ def test_secondary_results_match_absolute_uris_by_suffix() -> None:
 def test_invalid_type_assertions_are_adapter_gaps() -> None:
     with pytest.raises(AssertionGap, match="type assertion"):
         evaluate_assertion(AssertionType("not a type"), raw_result=1)
+
+
+def test_absolute_xpath_paths_use_the_result_document_root() -> None:
+    snapshot = ResultSnapshot(xml="<out><a>1</a><a>2</a></out>")
+
+    assert evaluate_assertion(AssertionXPath("/out"), result=snapshot)
+    assert evaluate_assertion(AssertionXPath("count(//a) = 2"), result=snapshot)
+    assert not evaluate_assertion(AssertionXPath("empty(/out/node())"), result=snapshot)
+    assert evaluate_assertion(AssertionXPath("count(/*) = 1"), result=snapshot)
+
+
+def test_absolute_xpath_paths_use_an_element_item_document_root() -> None:
+    element = ET.fromstring("<out><a/></out>")
+
+    assert evaluate_assertion(AssertionXPath("/out"), raw_result=(element,))
+    assert evaluate_assertion(AssertionXPath("count(//a) = 1"), raw_result=(element,))
+
+
+def test_blank_xml_result_is_a_true_empty_document() -> None:
+    snapshot = ResultSnapshot(xml="")
+
+    assert evaluate_assertion(AssertionXPath("count(/*) = 0"), result=snapshot)
+    assert evaluate_assertion(AssertionXPath("empty(/*)"), result=snapshot)
+    assert evaluate_assertion(AssertionXPath("count(.) = 1"), result=snapshot)
+
+
+def test_assert_case_absolute_paths_are_not_empty() -> None:
+    case = make_case("<result><assert>/out</assert></result>")
+
+    result = assert_case(case, ResultSnapshot(xml="<out/>"))
+
+    assert result.outcome is Outcome.PASS
+    assert result.coverage == frozenset({"xpath"})
+
+
+def test_string_value_joins_multi_item_results_context_free() -> None:
+    snapshot = ResultSnapshot(raw=(1, 2))
+
+    assert evaluate_assertion(AssertionStringValue("1 2"), result=snapshot)
+    assert not evaluate_assertion(AssertionStringValue(""), result=snapshot)
+    assert evaluate_assertion(AssertionStringValue(""), result=ResultSnapshot(raw=()))
+
+
+def test_assert_case_string_value_joins_multi_item_results() -> None:
+    case = make_case("<result><assert-string-value>1 2</assert-string-value></result>")
+
+    result = assert_case(case, raw_result=(1, 2))
+
+    assert result.outcome is Outcome.PASS
+    assert result.coverage == frozenset({"string"})
+
+
+def test_declared_serialization_method_and_encoding_must_be_reported() -> None:
+    with pytest.raises(AssertionGap, match="method is unavailable"):
+        evaluate_assertion(
+            AssertionSerialization("<a/>", method="xml"),
+            result=ResultSnapshot(serialized="<a/>"),
+        )
+    assert evaluate_assertion(
+        AssertionSerialization("<a/>", method="xml"),
+        result=ResultSnapshot(serialized="<a/>", serialization_method="xml"),
+    )
+    with pytest.raises(AssertionGap, match="not 'html'"):
+        evaluate_assertion(
+            AssertionSerialization("<a/>", method="html"),
+            result=ResultSnapshot(serialized="<a/>", serialization_method="xml"),
+        )
+    with pytest.raises(AssertionGap, match="encoding is unavailable"):
+        evaluate_assertion(
+            AssertionSerialization("<a/>", encoding="utf-8"),
+            result=ResultSnapshot(serialized="<a/>"),
+        )
+    assert evaluate_assertion(
+        AssertionSerialization("<a/>", encoding="utf-8"),
+        result=ResultSnapshot(serialized="<a/>", serialization_encoding="utf-8"),
+    )
+    assert not evaluate_assertion(
+        AssertionSerialization("<a/>", encoding="utf-16"),
+        result=ResultSnapshot(serialized="<a/>", serialization_encoding="utf-8"),
+    )
+
+
+def test_assert_case_gaps_unreported_serialization_metadata() -> None:
+    method_case = make_case(
+        '<result><assert-serialization method="xml"><![CDATA[<a/>]]></assert-serialization></result>'
+    )
+    encoding_case = make_case(
+        '<result><assert-serialization encoding="utf-8"><![CDATA[<a/>]]></assert-serialization></result>'
+    )
+
+    method_result = assert_case(method_case, ResultSnapshot(serialized="<a/>"))
+    encoding_result = assert_case(encoding_case, ResultSnapshot(serialized="<a/>"))
+
+    assert method_result.outcome is Outcome.ADAPTER_GAP
+    assert "method is unavailable" in method_result.message
+    assert encoding_result.outcome is Outcome.ADAPTER_GAP
+    assert "encoding is unavailable" in encoding_result.message
+
+
+def test_context_root_for_document_element_text_and_attribute_nodes() -> None:
+    document = build_node_tree(ET.ElementTree(ET.fromstring("<out a='1'>text</out>")))
+    element = document.children[0]
+    text = next(node for node in document.iter() if isinstance(node, TextNode))
+    attribute = next(node for node in document.iter() if isinstance(node, AttributeNode))
+
+    assert _context_root(document) is document
+    assert _context_root(element) is document
+    assert _context_root(text) is document
+    assert _context_root(attribute) is document
+    assert _context_root(TextNode("x", parent=document)) is document
+    assert _context_root(TextNode("x")) is None
+    assert _context_root(1) is None
