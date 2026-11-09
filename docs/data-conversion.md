@@ -497,6 +497,8 @@ or attribute-first rule. JsonML's optional attribute object shifts content
 positions; tag and item schemas do not fully validate that placement.
 Native and BadgerFish merge effective-type properties without expressing
 every dependency between an actual type, required attributes, text, and nil.
+For nillable parents, their child properties are not unconditionally required:
+a nilled element has no children. Required attributes remain required.
 Even an empty `unvalidated` list is not a promise of complete XSD validation
 or import acceptance. Import with the matching format, inspect the report,
 and call `require_valid()` for the normal XSD checks.
@@ -505,12 +507,6 @@ Both generation fidelities currently produce the same description for
 supported compiled schemas, without loss warnings. `fidelity="strict"`
 does not make JSON Schema an XSD validator, nor does successful generation
 guarantee that strict export or import can represent a particular document.
-
-BadgerFish/JsonML generated keys use deterministic lexical prefixes. A known
-limit remains when conditional or explicit actual types introduce extra
-namespace URIs: the schema's reachable-name set and an instance's used-name
-set can allocate different `nsN` numbers. Check such exports against the
-generated schema; use `pyxsd-json`'s prefix-independent EQNames when needed.
 
 This API is separate from the optional {doc}`integrations`:
 `ModelSet` models' `model_json_schema()` describes Pydantic's aliases,
@@ -805,8 +801,11 @@ An explicit actual type uses an `xsi:type` attribute with a lexical QName.
 ## Lexical namespaces in BadgerFish and JsonML
 
 Both formats synthesize deterministic lexical QNames rather than preserving
-source prefixes. Schema-known namespace URIs receive sorted `ns0`, `ns1`,
-… prefixes, including reservations for optional absent declarations.
+source prefixes. Export and JSON Schema generation use the same compiled-schema
+closure of declared types, conditional alternatives, and `xsi:type` target
+types. Namespace URIs reachable through that closure receive sorted `ns0`,
+`ns1`, … prefixes, including reservations for absent declarations and unselected
+types; numbering does not depend on which types an instance uses.
 Wildcard-only names and QName-value-only namespaces use stable
 `ns_<hex(uri)>` prefixes. Unnamespaced names stay local; `xsi` is declared
 when used, while `xml` is implicitly bound.
