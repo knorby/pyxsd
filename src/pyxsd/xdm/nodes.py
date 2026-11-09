@@ -761,24 +761,71 @@ class _Builder:
         return node
 
 
-def _read_source(source: Any) -> tuple[bytes | str, str | None]:
-    """Read one path, bytes-like object, or readable stream."""
+_READ_CHUNK = 65536
+
+
+def _read_source(source: Any, *, max_bytes: int | None = None) -> tuple[bytes | str, str | None]:
+    """Read one path, bytes-like object, or readable stream.
+
+    Streams are read until EOF because a readable stream may return short
+    chunks.  ``max_bytes`` stops one byte past the limit, letting a caller
+    raise the standard budget error without materializing an unbounded
+    source.  Text and binary chunks are preserved and never mixed.
+    """
     if isinstance(source, (str, os.PathLike)):
         path = os.fspath(source)
-        return Path(path).read_bytes(), path
+        with open(path, "rb") as stream:
+            return _read_stream(stream.read, max_bytes), path
     if isinstance(source, (bytes, bytearray, memoryview)):
         return bytes(source), None
     read = getattr(source, "read", None)
     if read is None:
         raise TypeError("XdmDocument.parse requires a path, bytes, or readable stream")
-    data = read()
     name = getattr(source, "name", None)
     natural_name = name if isinstance(name, str) else None
-    if isinstance(data, str):
-        return data, natural_name
-    if isinstance(data, (bytes, bytearray, memoryview)):
-        return bytes(data), natural_name
-    raise TypeError("an XML source stream must return str or bytes")
+    return _read_stream(read, max_bytes), natural_name
+
+
+def _read_stream(read: Any, max_bytes: int | None) -> bytes | str:
+    """Read a readable stream to EOF, optionally stopping past a byte cap."""
+    parts: list[bytes | str] = []
+    total = 0
+    text: bool | None = None
+    while True:
+        size = _READ_CHUNK
+        if max_bytes is not None:
+            remaining = max_bytes + 1 - total
+            if remaining <= 0:
+                break
+            size = min(size, remaining)
+        one_shot = False
+        try:
+            chunk = read(size)
+        except TypeError:
+            # A reader that accepts no size argument has no chunking
+            # contract; its single return value is the whole source.
+            one_shot = True
+            chunk = read()
+        if isinstance(chunk, str):
+            if text is False:
+                raise TypeError("an XML source stream mixed str and bytes chunks")
+            text = True
+        elif isinstance(chunk, (bytes, bytearray, memoryview)):
+            if text is True:
+                raise TypeError("an XML source stream mixed str and bytes chunks")
+            text = False
+            chunk = bytes(chunk)
+        else:
+            raise TypeError("an XML source stream must return str or bytes")
+        if not chunk:
+            break
+        parts.append(chunk)
+        total += len(chunk.encode("utf-8")) if isinstance(chunk, str) else len(chunk)
+        if one_shot:
+            break
+    if text:
+        return "".join(cast(list[str], parts))
+    return b"".join(cast(list[bytes], parts))
 
 
 def _document_uri_from_source(source: Any, natural_name: str | None) -> str | None:

@@ -24,11 +24,12 @@ import pytest
 from pyxsd.document import Document
 from pyxsd.exceptions import PyXSDError
 from pyxsd.namespaces import parse_with_namespaces
-from pyxsd.resource_policy import ResourceData
+from pyxsd.resource_policy import ResourceData, ResourcePolicyError
 from pyxsd.schema import Schema
 from pyxsd.xdm.annotations import occurrence_capture_active
 from pyxsd.xdm.errors import XdmInputError
 from pyxsd.xdm.nodes import NodeKind, XdmDocument
+from pyxsd.xml_policy import XmlLimits
 
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 
@@ -136,10 +137,15 @@ def _replace_first_child(document: Document) -> None:
     document.root._children_[0] = other.root._children_[0]
 
 
+def _insert_new_child(document: Document) -> None:
+    first = document.root._children_[0]
+    document.root._children_.append(type(first)())
+
+
 def _edit_existing_value_list(document: Document) -> None:
-    child = document.root._children_[0]
-    child._value_ = child._value_ or []
-    child._value_.append("changed")
+    name = document.root._children_[0]._children_[0]
+    assert name._value_ == ["one"]
+    name._value_.append("changed")
 
 
 MUTATIONS = {
@@ -152,7 +158,7 @@ MUTATIONS = {
     "attribute-container-not-mapping": lambda document: setattr(document.root, "_attribs_", []),
     "child-container-not-walkable": lambda document: setattr(document.root, "_children_", 1),
     "child-cycle": lambda document: document.root._children_.append(document.root),
-    "child-insert": lambda document: document.root._children_.append(document.root._children_[0]),
+    "child-insert": _insert_new_child,
     "child-remove": lambda document: document.root._children_.pop(),
     "child-reorder": lambda document: document.root._children_.reverse(),
     "child-replace-object": _replace_first_child,
@@ -191,11 +197,12 @@ def test_restoring_the_captured_shape_makes_the_view_coherent_again():
     assert document.to_xdm().root_element.name == "catalog"
 
 
-def test_value_edit_requires_an_existing_value_container():
+def test_value_list_edit_mutates_an_existing_list():
     document = _capture()
-    assert document.root._children_[0]._value_ is None
+    name = document.root._children_[0]._children_[0]
+    assert name._value_ == ["one"]
 
-    document.root._children_[0]._value_ = ["changed"]
+    name._value_.append("changed")
     with pytest.raises(XdmInputError, match="changed since XDM capture"):
         document.to_xdm()
 
@@ -307,6 +314,169 @@ class _NonSeekable:
 
     def seekable(self) -> bool:
         return False
+
+
+class _Chunked:
+    """A non-seekable reader that returns one stored chunk per read call."""
+
+    def __init__(self, chunks: list[bytes] | list[str]) -> None:
+        self._chunks = list(chunks)
+        self._empty: bytes | str = chunks[0][:0]
+        self.reads = 0
+
+    def read(self, size: int = -1) -> bytes | str:
+        del size
+        self.reads += 1
+        return self._chunks.pop(0) if self._chunks else self._empty
+
+    def seekable(self) -> bool:
+        return False
+
+
+def test_chunked_non_seekable_stream_reads_to_eof_for_capture():
+    chunks = [
+        b'<catalog status="ok">',
+        b'<item status="ok">',
+        b"<name>one</name>",
+        b"</item>",
+        b"<!--tail-->",
+        b"<?work done?>",
+        b"</catalog>",
+    ]
+    content = b"".join(chunks)
+    stream = _Chunked(chunks)
+
+    document = _schema().parse(stream, capture_xdm=True)
+    xdm = document.to_xdm()
+
+    assert stream.reads > len(chunks) - 1  # EOF was probed, not assumed
+    assert xdm.source_index.digest == hashlib.sha256(content).hexdigest()
+    assert [child.kind for child in xdm.root_element.children] == [
+        NodeKind.ELEMENT,
+        NodeKind.COMMENT,
+        NodeKind.PROCESSING_INSTRUCTION,
+    ]
+    assert _texts(xdm.root_element) == ["one"]
+    assert xdm.root_element.annotation.actual_type is type(document.root)
+
+
+def test_chunked_non_seekable_text_stream_reads_to_eof():
+    chunks = [
+        '<catalog status="ok">',
+        '<item status="ok">',
+        "<name>one</name>",
+        "</item>",
+        "<!--tail-->",
+        "</catalog>",
+    ]
+    content = "".join(chunks).encode("utf-8")
+    stream = _Chunked(chunks)
+
+    document = _schema().parse(stream, capture_xdm=True)
+    xdm = document.to_xdm()
+
+    assert xdm.source_index.digest == hashlib.sha256(content).hexdigest()
+    assert xdm.root_element.children[-1].kind is NodeKind.COMMENT
+
+
+def test_xdm_document_parse_reads_chunked_stream_to_eof():
+    chunks = [
+        b'<catalog status="ok">',
+        b'<item status="ok"><name>one</name></item>',
+        b"<!--tail-->",
+        b"</catalog>",
+    ]
+    content = b"".join(chunks)
+
+    xdm = XdmDocument.parse(_Chunked(chunks))
+
+    assert xdm.source_index.digest == hashlib.sha256(content).hexdigest()
+    assert xdm.root_element.children[-1].kind is NodeKind.COMMENT
+
+
+@pytest.mark.parametrize("chunks", [[b"<r", "<x/>"], ["<r", b"<x/>"]])
+def test_stream_rejects_mixed_chunk_types(chunks):
+    with pytest.raises(TypeError, match="mixed"):
+        XdmDocument.parse(_Chunked(chunks))
+
+
+class _GuardedStream:
+    """A non-seekable stream that records how many source bytes were read."""
+
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+        self.position = 0
+        self.consumed = 0
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            size = len(self._content) - self.position
+        chunk = self._content[self.position : self.position + size]
+        self.position += len(chunk)
+        self.consumed += len(chunk)
+        return chunk
+
+    def seekable(self) -> bool:
+        return False
+
+
+def test_capture_read_is_capped_by_max_bytes():
+    stream = _GuardedStream(b"<catalog/>" + b" " * 64)
+
+    with pytest.raises(ResourcePolicyError, match="max_bytes=8"):
+        _schema().parse(stream, xml_limits=XmlLimits(max_bytes=8), capture_xdm=True)
+
+    assert stream.consumed == 9
+
+
+def _unicode_schema() -> Schema:
+    source = f"""<xs:schema xmlns:xs="{XSD_NS}" targetNamespace="urn:café"
+        xmlns:u="urn:café" elementFormDefault="qualified">
+      <xs:element name="café" type="xs:string"/>
+    </xs:schema>"""
+    schema = Schema.compile(io.StringIO(source))
+    assert not schema.report.has_errors, schema.report
+    return schema
+
+
+def test_text_stream_encoding_declaration_is_rewritten_and_coherent():
+    text = '<?xml version="1.0" encoding="ISO-8859-1"?><café xmlns="urn:café">hé</café>'
+    normalized = text.replace('encoding="ISO-8859-1"', 'encoding="UTF-8"').encode("utf-8")
+
+    document = _unicode_schema().parse(io.StringIO(text), capture_xdm=True)
+    xdm = document.to_xdm()
+
+    assert xdm.source_index.digest == hashlib.sha256(normalized).hexdigest()
+    assert xdm.root_element.name == "{urn:café}café"
+    assert xdm.root_element.source_span() is not None
+    assert xdm.root_element.annotation.actual_type is type(document.root)
+
+
+def test_text_stream_utf16_declaration_is_rewritten_and_coherent():
+    text = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<catalog status="ok"><item status="ok"><name>one</name></item></catalog>'
+    )
+    normalized = text.replace('encoding="UTF-16"', 'encoding="UTF-8"').encode("utf-8")
+
+    document = _schema().parse(io.StringIO(text), capture_xdm=True)
+    xdm = document.to_xdm()
+
+    assert xdm.source_index.digest == hashlib.sha256(normalized).hexdigest()
+    assert xdm.root_element.name == "catalog"
+    assert xdm.root_element.source_span() is not None
+    assert xdm.root_element.annotation.actual_type is type(document.root)
+
+
+def test_text_stream_bom_is_removed_before_digest():
+    text = "\ufeff" + '<catalog status="ok"><item status="ok"><name>one</name></item></catalog>'
+
+    document = _schema().parse(io.StringIO(text), capture_xdm=True)
+    xdm = document.to_xdm()
+
+    assert xdm.source_index.digest == hashlib.sha256(text[1:].encode("utf-8")).hexdigest()
+    assert xdm.root_element.name == "catalog"
+    assert xdm.root_element.source_span() is not None
 
 
 def test_non_seekable_stream_capture_is_digested_and_coherent():

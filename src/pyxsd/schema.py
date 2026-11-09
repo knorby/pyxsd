@@ -15,7 +15,7 @@ import warnings
 import weakref
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
-from io import BytesIO, StringIO
+from io import BytesIO
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Literal
 from xml.etree import ElementTree as ET
@@ -689,9 +689,17 @@ class Schema:
           :class:`~pyxsd.xdm.nodes.XdmDocument` and the document retains
           an immutable bound-tree snapshot.
           :meth:`~pyxsd.document.Document.to_xdm` returns that view and
-          rejects later edits to the bound tree.
-          The default keeps ordinary parsing's cost and behavior: no XDM
-          state is built or retained.
+          rejects later edits to the bound tree. Paths and readable
+          streams are read to EOF once (short chunks included), capped at
+          ``xml_limits.max_bytes`` so an over-limit source still raises
+          the normal budget error. A text stream is normalized to UTF-8
+          and its XML declaration encoding is rewritten to match; a
+          pre-parsed ``Element`` is captured as its ElementTree
+          serialization, so lexical comments and original prefixes that
+          the tree no longer holds are absent. The default keeps ordinary
+          parsing's cost and behavior: no XDM state is built or retained.
+          As with ordinary parsing, parses on one schema must not run
+          concurrently or reentrantly.
 
         Each parse binds with its own fresh instance report, so a
         schema may serve many documents without their findings mixing:
@@ -907,13 +915,10 @@ class Schema:
             from pyxsd.xdm.document import CaptureSource
 
             try:
-                xdm_source = CaptureSource.from_input(xml)
+                xdm_source = CaptureSource.from_input(xml, max_bytes=_max_bytes(xml_limits))
             except OSError as exc:
                 raise PyXSDError(f"the xml input could not be read: {exc}") from exc
-            if isinstance(xdm_source.content, str):
-                parse_source = StringIO(xdm_source.content)
-            else:
-                parse_source = BytesIO(xdm_source.content)
+            parse_source = BytesIO(xdm_source.data)
         if (
             collect_declarations
             and self._needs_entity_declarations()

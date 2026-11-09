@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from io import StringIO
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -40,31 +40,36 @@ _CHANGED_MESSAGE = (
     "parse the document again with capture_xdm=True for a coherent XDM view"
 )
 
+_XML_DECLARATION = re.compile(r"\A<\?xml\b.*?\?>", re.DOTALL)
+_ENCODING_ATTRIBUTE = re.compile(r"(?i)(\bencoding\s*=\s*)([\"'])[^\"']*\2")
+
 
 @dataclass(frozen=True, slots=True)
 class CaptureSource:
-    """The materialized source bytes for one captured parse.
+    """The materialized bytes for one captured parse.
 
-    ``content`` is what the semantic XDM parser consumes (``str`` for text
-    streams, ``bytes`` otherwise), while ``data`` is the UTF-8/byte
-    serialization used for the source index and its digest.  A text stream
-    is therefore digested in one canonical form even though Expat parses
-    the text object directly.
+    ``data`` is the single revision both the semantic and XDM parsers
+    consume.  A text stream is normalized to UTF-8 here: a leading BOM is
+    removed and an XML declaration's ``encoding`` pseudo-attribute is
+    rewritten to UTF-8, because the text is already decoded and the
+    declaration can no longer describe the bytes.  A pre-parsed
+    ``Element`` is captured as its ElementTree serialization.
     """
 
-    content: bytes | str
     data: bytes
     source_name: str
     document_uri: str | None
 
     @classmethod
-    def from_input(cls, source: Any) -> CaptureSource:
+    def from_input(cls, source: Any, *, max_bytes: int | None = None) -> CaptureSource:
         """Materialize one path, readable stream, byte string, or Element.
 
-        Paths and streams are read exactly once, so the XDM tree and the
-        bound tree are built from the same revision even for a non-seekable
-        stream.  A pre-parsed ``Element`` has no lexical source left, so its
-        ElementTree serialization is the captured revision.
+        Paths and streams are read to EOF exactly once, so short chunks are
+        never mistaken for the whole document: the XDM tree and the bound
+        tree are built from the same revision even for a non-seekable
+        stream.  ``max_bytes`` caps that read at one byte past the budget;
+        the normal parser then raises the standard limit error without the
+        rest of the source being materialized.
         """
         if isinstance(source, ET.Element):
             captured = source
@@ -77,15 +82,13 @@ class CaptureSource:
                 captured.tail = None
             data = ET.tostring(captured, encoding="utf-8")
             return cls(
-                content=data,
                 data=data,
                 source_name="<memory>",
                 document_uri=None,
             )
-        content, natural_name = _read_source(source)
-        data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+        content, natural_name = _read_source(source, max_bytes=max_bytes)
+        data = _normalize_text_source(content) if isinstance(content, str) else bytes(content)
         return cls(
-            content=content,
             data=data,
             source_name=natural_name or "<memory>",
             document_uri=_document_uri_from_source(source, natural_name),
@@ -94,9 +97,8 @@ class CaptureSource:
     @classmethod
     def from_content(cls, content: bytes | str, *, source_name: str) -> CaptureSource:
         """Capture already-admitted bytes, such as a resource policy's data."""
-        data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+        data = _normalize_text_source(content) if isinstance(content, str) else bytes(content)
         return cls(
-            content=content,
             data=data,
             source_name=source_name,
             document_uri=None,
@@ -106,6 +108,18 @@ class CaptureSource:
     def digest(self) -> str:
         """The SHA-256 of the captured byte revision."""
         return hashlib.sha256(self.data).hexdigest()
+
+
+def _normalize_text_source(text: str) -> bytes:
+    """Encode already-decoded XML text so its declaration describes its bytes."""
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    match = _XML_DECLARATION.match(text)
+    if match is not None:
+        declaration = match.group(0)
+        normalized = _ENCODING_ATTRIBUTE.sub('encoding="UTF-8"', declaration, count=1)
+        text = normalized + text[match.end() :]
+    return text.encode("utf-8")
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +176,7 @@ def capture_document(
     """
     index = SourceIndex(source.source_name, source.data)
     xdm = XdmDocument.parse(
-        StringIO(source.content) if isinstance(source.content, str) else source.content,
+        source.data,
         source_index=index,
         source_name=source.source_name,
         document_uri=source.document_uri,

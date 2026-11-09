@@ -132,9 +132,12 @@ class Document:
         """Returns the coherent XDM view captured by this parse.
 
         Capture is opt-in: the document must have been parsed with
-        ``Schema.parse(..., capture_xdm=True)``.  The returned tree is
-        source-complete (comments, processing instructions, namespace
-        declarations, and occurrence annotations survive) and immutable.
+        ``Schema.parse(..., capture_xdm=True)``.  For a path or readable
+        stream the returned tree is source-complete (comments, processing
+        instructions, namespace declarations, and occurrence annotations
+        survive) and immutable. A pre-parsed ``Element`` is represented by
+        its ElementTree serialization, and a text stream is normalized to
+        UTF-8 with the declaration encoding rewritten to match the bytes.
         If the bound tree was edited, replaced, or built by the caller, this
         raises :class:`~pyxsd.xdm.errors.XdmInputError` instead of returning
         a view that disagrees with the document.
