@@ -452,6 +452,72 @@ def test_text_stream_encoding_declaration_is_rewritten_and_coherent():
     assert xdm.root_element.annotation.actual_type is type(document.root)
 
 
+def test_xml_stylesheet_pi_is_not_treated_as_an_xml_declaration():
+    text = (
+        '<?xml-stylesheet encoding="ISO-8859-1"?>'
+        '<catalog status="ok"><item status="ok"><name>one</name></item></catalog>'
+    )
+
+    document = _schema().parse(io.StringIO(text), capture_xdm=True)
+    xdm = document.to_xdm()
+
+    assert xdm.source_index.digest == hashlib.sha256(text.encode("utf-8")).hexdigest()
+    [pi] = [child for child in xdm.children if child.kind is NodeKind.PROCESSING_INSTRUCTION]
+    assert pi.target == "xml-stylesheet"
+    assert pi.string_value == 'encoding="ISO-8859-1"'
+    assert xdm.root_element.source_span() is not None
+
+
+_TAIL_COMMENT = "<!--tail-->"
+
+
+def _text_budget_limit(text: str) -> int:
+    """A budget that leaves a well-formed prefix once the tail is cut."""
+    return len(text) - len(_TAIL_COMMENT) - 1
+
+
+def test_text_stream_iso_declaration_budget_error_precedes_normalization():
+    text = (
+        '<?xml version="1.0" encoding="ISO-8859-1"?>'
+        '<catalog status="ok"><item status="ok"><name>one</name></item></catalog>' + _TAIL_COMMENT
+    )
+    limit = _text_budget_limit(text)
+    assert len(text) > limit
+    assert len(text.replace('encoding="ISO-8859-1"', 'encoding="UTF-8"')) > limit
+
+    with pytest.raises(ResourcePolicyError, match=f"max_bytes={limit}"):
+        _schema().parse(io.StringIO(text), xml_limits=XmlLimits(max_bytes=limit), capture_xdm=True)
+
+
+def test_text_stream_bom_budget_error_precedes_normalization():
+    text = (
+        "\ufeff"
+        '<catalog status="ok"><item status="ok"><name>one</name></item></catalog>' + _TAIL_COMMENT
+    )
+    limit = _text_budget_limit(text)
+    assert len(text) > limit
+    assert len(text.replace("\ufeff", "")) > limit
+
+    with pytest.raises(ResourcePolicyError, match=f"max_bytes={limit}"):
+        _schema().parse(io.StringIO(text), xml_limits=XmlLimits(max_bytes=limit), capture_xdm=True)
+
+
+def test_text_stream_within_budget_keeps_the_trailing_comment():
+    text = (
+        '<?xml version="1.0" encoding="ISO-8859-1"?>'
+        '<catalog status="ok"><item status="ok"><name>one</name></item></catalog>' + _TAIL_COMMENT
+    )
+    limit = len(text.encode("utf-8"))
+
+    document = _schema().parse(
+        io.StringIO(text), xml_limits=XmlLimits(max_bytes=limit), capture_xdm=True
+    )
+    xdm = document.to_xdm()
+
+    assert xdm.children[-1].kind is NodeKind.COMMENT
+    assert xdm.root_element.source_span() is not None
+
+
 def test_text_stream_utf16_declaration_is_rewritten_and_coherent():
     text = (
         '<?xml version="1.0" encoding="UTF-16"?>'

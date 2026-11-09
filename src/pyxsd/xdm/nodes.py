@@ -768,9 +768,9 @@ def _read_source(source: Any, *, max_bytes: int | None = None) -> tuple[bytes | 
     """Read one path, bytes-like object, or readable stream.
 
     Streams are read until EOF because a readable stream may return short
-    chunks.  ``max_bytes`` stops one byte past the limit, letting a caller
-    raise the standard budget error without materializing an unbounded
-    source.  Text and binary chunks are preserved and never mixed.
+    chunks.  ``max_bytes`` raises the standard budget error as soon as the
+    read exceeds the limit, so a truncated prefix is never returned.  Text
+    and binary chunks are preserved and never mixed.
     """
     if isinstance(source, (str, os.PathLike)):
         path = os.fspath(source)
@@ -794,10 +794,7 @@ def _read_stream(read: Any, max_bytes: int | None) -> bytes | str:
     while True:
         size = _READ_CHUNK
         if max_bytes is not None:
-            remaining = max_bytes + 1 - total
-            if remaining <= 0:
-                break
-            size = min(size, remaining)
+            size = min(size, max_bytes + 1 - total)
         one_shot = False
         try:
             chunk = read(size)
@@ -821,11 +818,24 @@ def _read_stream(read: Any, max_bytes: int | None) -> bytes | str:
             break
         parts.append(chunk)
         total += len(chunk.encode("utf-8")) if isinstance(chunk, str) else len(chunk)
+        if max_bytes is not None and total > max_bytes:
+            # Never hand a truncated source to the semantic parser: a
+            # shortened prefix can still be well-formed (for example after
+            # BOM removal or declaration normalization) and would silently
+            # become the captured revision.
+            raise _budget_error(max_bytes)
         if one_shot:
             break
     if text:
         return "".join(cast(list[str], parts))
     return b"".join(cast(list[bytes], parts))
+
+
+def _budget_error(max_bytes: int) -> Exception:
+    """The standard byte-budget failure, imported lazily to avoid a cycle."""
+    from pyxsd.resource_policy import ResourcePolicyError
+
+    return ResourcePolicyError(f"the XML input exceeds max_bytes={max_bytes}")
 
 
 def _document_uri_from_source(source: Any, natural_name: str | None) -> str | None:

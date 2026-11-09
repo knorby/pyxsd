@@ -40,7 +40,7 @@ _CHANGED_MESSAGE = (
     "parse the document again with capture_xdm=True for a coherent XDM view"
 )
 
-_XML_DECLARATION = re.compile(r"\A<\?xml\b.*?\?>", re.DOTALL)
+_XML_DECLARATION = re.compile(r"\A<\?xml(?=\s).*?\?>", re.DOTALL)
 _ENCODING_ATTRIBUTE = re.compile(r"(?i)(\bencoding\s*=\s*)([\"'])[^\"']*\2")
 
 
@@ -67,9 +67,11 @@ class CaptureSource:
         Paths and streams are read to EOF exactly once, so short chunks are
         never mistaken for the whole document: the XDM tree and the bound
         tree are built from the same revision even for a non-seekable
-        stream.  ``max_bytes`` caps that read at one byte past the budget;
-        the normal parser then raises the standard limit error without the
-        rest of the source being materialized.
+        stream.  ``max_bytes`` raises the standard budget error as soon as
+        the read exceeds it, before normalization, so a shortened prefix can
+        never become the captured revision.  A reader that rejects a
+        ``size`` argument has no chunking contract; its single value is
+        accepted or rejected as a whole.
         """
         if isinstance(source, ET.Element):
             captured = source

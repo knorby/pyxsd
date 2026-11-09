@@ -690,11 +690,14 @@ class Schema:
           an immutable bound-tree snapshot.
           :meth:`~pyxsd.document.Document.to_xdm` returns that view and
           rejects later edits to the bound tree. Paths and readable
-          streams are read to EOF once (short chunks included), capped at
-          ``xml_limits.max_bytes`` so an over-limit source still raises
-          the normal budget error. A text stream is normalized to UTF-8
-          and its XML declaration encoding is rewritten to match; a
-          pre-parsed ``Element`` is captured as its ElementTree
+          streams are read to EOF once (short chunks included); the byte
+          budget is enforced on the consumed source before normalization,
+          so an over-limit text stream raises the normal budget error
+          instead of parsing a shortened valid prefix. A reader whose
+          ``read()`` rejects a size argument is read once and its single
+          value is accepted or rejected whole. A text stream is normalized
+          to UTF-8 and its XML declaration encoding is rewritten to match;
+          a pre-parsed ``Element`` is captured as its ElementTree
           serialization, so lexical comments and original prefixes that
           the tree no longer holds are absent. The default keeps ordinary
           parsing's cost and behavior: no XDM state is built or retained.
