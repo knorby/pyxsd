@@ -100,14 +100,17 @@ include = [
     "README.md",
     "pyproject.toml",
 ]
-# The pinned upstream corpus is a checkout-only validation input, not part of
+# The pinned upstream corpora are checkout-only validation inputs, not part of
 # the published source. Keep archive contents independent of submodule state.
-exclude = ["tests/xsts/corpus/**"]
+exclude = ["tests/xsts/corpus/**", "tests/xslt/corpus/**"]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
 src = ["src", "tests", "examples"]
+# Pinned upstream corpora are checkout-only test inputs, not this project's
+# source; some contain Python 2 samples and intentionally unusual fixtures.
+extend-exclude = ["tests/xsts/corpus", "tests/xslt/corpus"]
 
 [tool.ruff.lint]
 select = [

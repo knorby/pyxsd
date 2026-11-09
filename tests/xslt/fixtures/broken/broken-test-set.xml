@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog" name="broken">
+  <description>A test case referring to an environment that does not exist.</description>
+
+  <test-case name="broken-001">
+    <description>The environment reference cannot be resolved.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment ref="absent-env"/>
+    <test>
+      <stylesheet file="broken-001.xsl"/>
+    </test>
+    <result>
+      <assert>true()</assert>
+    </result>
+  </test-case>
+</test-set>

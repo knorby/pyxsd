@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog" name="nested">
+  <description>A test set included by another test set.</description>
+
+  <test-case name="nested-001">
+    <description>Relative references resolve against this document's xml:base.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment xml:base="../../shared/">
+      <source file="nested-source.xml" uri="nested-source.xml"/>
+    </environment>
+    <dependencies>
+      <spec value="XSLT30"/>
+      <feature value="schema_aware"/>
+    </dependencies>
+    <test>
+      <stylesheet file="nested-001.xsl" role="principal"/>
+    </test>
+    <result>
+      <any-of>
+        <assert>/a</assert>
+        <assert>/b</assert>
+      </any-of>
+    </result>
+  </test-case>
+</test-set>

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<test-set xmlns="http://www.w3.org/2012/10/xslt-test-catalog"
+          xmlns:xs="http://www.w3.org/2001/XMLSchema"
+          name="mini">
+  <description>Synthetic catalog used to exercise the independent parser.</description>
+
+  <dependencies>
+    <spec value="XSLT30"/>
+    <feature value="higher_order_functions"/>
+  </dependencies>
+
+  <environment name="shared-env">
+    <source file="../shared/source.xml" uri="../shared/source.xml"/>
+    <schema role="source-reference" file="schema.xsd" xsd-version="1.1"/>
+    <resource file="resource.txt" uri="resource.txt"
+              media-type="text/plain" encoding="utf-8"/>
+    <collection uri="collection-1">
+      <source file="collection-a.xml"/>
+    </collection>
+    <package file="pkg-extra.xsl"/>
+    <param name="env-param" select="1"/>
+    <output tree="no"/>
+  </environment>
+
+  <environment name="based-env" xml:base="../shared/">
+    <source file="based.xml" uri="based.xml"/>
+  </environment>
+
+  <test-set name="nested" file="nested/nested-test-set.xml"/>
+
+  <test-case name="package-001">
+    <description>Simplest possible package.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment ref="shared-env"/>
+    <test>
+      <package file="package-001.xsl" role="principal"/>
+      <stylesheet file="package-001.xsl" role="principal"/>
+      <param name="arg" select="41" as="xs:integer"/>
+      <initial-template name="main">
+        <param name="tunnel-arg" select="2" tunnel="true"/>
+      </initial-template>
+      <output file="out/" serialize="yes" well-formed="yes" result-var="result"/>
+    </test>
+    <result>
+      <all-of>
+        <assert>/ok</assert>
+        <assert-count>1</assert-count>
+      </all-of>
+    </result>
+  </test-case>
+
+  <test-case name="local-override">
+    <description>A local environment extends and overrides a shared one.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment ref="shared-env">
+      <source file="local.xml" uri="local.xml"/>
+      <param name="local-param" select="'local'"/>
+      <output serialize="yes"/>
+    </environment>
+    <test>
+      <stylesheet file="local-override.xsl"/>
+    </test>
+    <result>
+      <assert>/local</assert>
+    </result>
+  </test-case>
+
+  <test-case name="based-001">
+    <description>xml:base is honoured on a shared environment.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment ref="based-env"/>
+    <test>
+      <stylesheet file="based-001.xsl"/>
+    </test>
+    <result>
+      <assert>true()</assert>
+    </result>
+  </test-case>
+
+  <test-case name="function-001">
+    <description>Initial function invocation with a positional argument.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment ref="shared-env"/>
+    <dependencies>
+      <feature value="schema_aware" satisfied="false"/>
+    </dependencies>
+    <test>
+      <stylesheet file="function-001.xsl"/>
+      <initial-function name="f">
+        <param select="1"/>
+      </initial-function>
+    </test>
+    <result>
+      <assert-eq>1</assert-eq>
+    </result>
+  </test-case>
+
+  <test-case name="global-001">
+    <description>A catalog-level shared environment is visible to test sets.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment ref="global-env"/>
+    <test>
+      <stylesheet file="global-001.xsl"/>
+    </test>
+    <result>
+      <assert>true()</assert>
+    </result>
+  </test-case>
+</test-set>
