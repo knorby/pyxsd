@@ -19,14 +19,19 @@ from pyxsd.exceptions import PyXSDError
 from pyxsd.locations import IssueLocation, PathStep
 from pyxsd.source_spans import SourceIndex, SourceSpan
 from pyxsd.xdm import XdmAtomic, as_xdm
-from pyxsd.xdm.nodes import NodeKind, XdmAnnotations, XdmDocument, XdmNode
+from pyxsd.xdm.nodes import (
+    NodeKind,
+    XdmAnnotation,
+    XdmAnnotations,
+    XdmDocument,
+    XdmNode,
+)
 
 XSD_NS = "http://www.w3.org/2001/XMLSchema"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 UNTYPED = f"{{{XSD_NS}}}untyped"
 UNTYPED_ATOMIC = f"{{{XSD_NS}}}untypedAtomic"
-STRING = f"{{{XSD_NS}}}string"
 
 
 def _write(tmp_path: Path, content: bytes, name: str = "doc.xml") -> Path:
@@ -109,6 +114,45 @@ def test_all_node_kinds_identity_and_provenance(tmp_path: Path) -> None:
     assert doc.root_element.node_id != child.node_id
 
 
+def test_dtd_internal_comments_and_pis_are_not_nodes(tmp_path: Path) -> None:
+    content = (
+        b"<!DOCTYPE r [<!--dtd comment--><?dtd pi?>"
+        b'<!ENTITY e "x<!--entity--><?entity pi?>y">]>'
+        b"<r>&e;</r>"
+        b"<!--document comment-->"
+        b"<?document pi?>"
+    )
+    doc = XdmDocument.parse(content)
+
+    assert [child.kind for child in doc.children] == [
+        NodeKind.ELEMENT,
+        NodeKind.COMMENT,
+        NodeKind.PROCESSING_INSTRUCTION,
+    ]
+    assert [child.string_value for child in doc.children] == ["xy", "document comment", "pi"]
+    assert doc.children[1].string_value == "document comment"
+    assert doc.children[2].target == "document"
+    assert doc.children[2].string_value == "pi"
+
+    root = doc.root_element
+    assert [child.kind for child in root.children] == [
+        NodeKind.TEXT,
+        NodeKind.COMMENT,
+        NodeKind.PROCESSING_INSTRUCTION,
+        NodeKind.TEXT,
+    ]
+    assert [child.string_value for child in root.children] == ["x", "entity", "pi", "y"]
+    assert root.children[1].string_value == "entity"
+    assert root.children[2].target == "entity"
+    assert root.children[2].string_value == "pi"
+
+    assert all(child.string_value != "dtd comment" for child in doc.descendants)
+    assert all(child.target != "dtd" for child in doc.descendants)
+    assert doc.descendants[0] is root
+    descendant_orders = [node.document_order for node in doc.descendants]
+    assert descendant_orders == sorted(descendant_orders)
+
+
 def test_comments_text_attributes_and_processing_instructions(tmp_path: Path) -> None:
     content = b'<r a="1" xmlns:p="urn:p" p:b="2"><p:e p:c="3">text</p:e></r>'
     _, _, doc = _parse_indexed(tmp_path, content)
@@ -146,16 +190,23 @@ def test_comments_text_attributes_and_processing_instructions(tmp_path: Path) ->
     assert namespace.name == "p"
     assert namespace.local_name == "p"
     assert namespace.prefix == "p"
-    assert namespace.namespace_uri == "urn:p"
+    assert namespace.namespace_uri is None
+    assert namespace.namespace_binding == "urn:p"
+    assert namespace.bound_uri == "urn:p"
+    assert namespace.base_uri is None
+    assert namespace.document_uri is None
+    assert namespace.owner_document_uri == doc.document_uri
     assert namespace.string_value == "urn:p"
     assert namespace.children == ()
     assert namespace.attributes == ()
     assert namespace.namespace_nodes == ()
+    assert root.namespace_binding is None
 
-    assert root.children[0].annotations == XdmAnnotations(UNTYPED)
-    assert root.attributes[0].annotations == XdmAnnotations(UNTYPED_ATOMIC)
-    assert child.children[0].annotations == XdmAnnotations(UNTYPED_ATOMIC)
-    assert namespace.annotations == XdmAnnotations(STRING)
+    assert root.children[0].annotations == XdmAnnotation(UNTYPED, False)
+    assert root.attributes[0].annotations == XdmAnnotation(UNTYPED_ATOMIC, None)
+    assert child.children[0].annotations == XdmAnnotation(UNTYPED_ATOMIC, None)
+    assert namespace.annotations == XdmAnnotation(None, None)
+    assert namespace.annotation is namespace.annotations
 
 
 def test_namespace_declarations_and_prefix_rebinding(tmp_path: Path) -> None:
@@ -191,7 +242,7 @@ def test_namespace_declarations_and_prefix_rebinding(tmp_path: Path) -> None:
         "xml": XML_NS,
     }
     assert dict(child.namespace_declarations) == {"a": "urn:two", "b": "urn:b"}
-    assert {node.prefix: node.namespace_uri for node in child.namespace_nodes} == {
+    assert {node.prefix: node.namespace_binding for node in child.namespace_nodes} == {
         "": "urn:def",
         "a": "urn:two",
         "b": "urn:b",
@@ -199,16 +250,19 @@ def test_namespace_declarations_and_prefix_rebinding(tmp_path: Path) -> None:
         "xml": XML_NS,
     }
     assert child.namespace_node("a") is not None
-    assert child.namespace_node("a").namespace_uri == "urn:two"  # type: ignore[union-attr]
+    assert child.namespace_node("a").namespace_binding == "urn:two"  # type: ignore[union-attr]
     assert root.namespace_node("a") is not None
-    assert root.namespace_node("a").namespace_uri == "urn:one"  # type: ignore[union-attr]
+    assert root.namespace_node("a").namespace_binding == "urn:one"  # type: ignore[union-attr]
     assert child.children[0].name == "{urn:two}d"
 
     default_namespace = root.namespace_node("")
     assert default_namespace is not None
-    assert default_namespace.name == ""
-    assert default_namespace.local_name == ""
-    assert default_namespace.namespace_uri == "urn:def"
+    assert default_namespace.name is None
+    assert default_namespace.local_name is None
+    assert default_namespace.prefix == ""
+    assert default_namespace.namespace_uri is None
+    assert default_namespace.namespace_binding == "urn:def"
+    assert all(node.namespace_uri is None for node in child.namespace_nodes)
 
     undeclared = root.children[1]
     assert undeclared.name == "u"
@@ -246,63 +300,93 @@ def test_annotations_and_typed_values(tmp_path: Path) -> None:
     root = doc.root_element
     children = {child.name: child for child in root.children if child.kind is NodeKind.ELEMENT}
 
-    assert doc.annotations == XdmAnnotations(UNTYPED)
-    assert root.annotations == XdmAnnotations(UNTYPED)
+    assert XdmAnnotations is XdmAnnotation
+    assert doc.annotation is doc.annotations
+    assert doc.annotation == XdmAnnotation(None, None)
+    assert doc.type_name is None
+    assert doc.nilled is None
+    assert root.annotation is root.annotations
+    assert root.annotation.actual_type == UNTYPED
+    assert root.annotations == XdmAnnotation(UNTYPED, False)
+    assert root.annotation.validity == "not-validated"
+    assert root.annotation.governing_declaration is None
     assert not root.nilled
     assert root.type_name == UNTYPED
 
     untyped = children["u"]
-    assert untyped.annotations == XdmAnnotations(UNTYPED)
+    assert untyped.annotations == XdmAnnotation(UNTYPED, False)
+    assert untyped.annotation.actual_type == UNTYPED
+    assert untyped.annotation.xsi_type is None
+    assert untyped.annotation.nil_lexical is None
+    assert not untyped.annotation.nil_declared
     assert untyped.typed_value == (XdmAtomic.untyped_atomic("x"),)
     assert untyped.children[0].typed_value == (XdmAtomic.untyped_atomic("x"),)
 
     nilled = children["n"]
-    assert nilled.annotations.nilled
-    assert nilled.nilled
-    assert nilled.typed_value == ()
+    assert nilled.annotations == XdmAnnotation(
+        UNTYPED, False, nil_lexical="true", nil_declared=True
+    )
+    assert not nilled.nilled
+    assert nilled.type_name == UNTYPED
+    assert nilled.annotation.nil_declared
+    assert nilled.annotation.nil_lexical == "true"
+    assert nilled.typed_value == (XdmAtomic.untyped_atomic(""),)
 
     not_nilled = children["f"]
     assert not not_nilled.nilled
+    assert not not_nilled.annotation.nil_declared
+    assert not_nilled.annotation.nil_lexical == "false"
     assert not_nilled.typed_value == (XdmAtomic.untyped_atomic("v"),)
 
     invalid_nil = children["g"]
     assert not invalid_nil.nilled
+    assert not invalid_nil.annotation.nil_declared
+    assert invalid_nil.annotation.nil_lexical == "maybe"
     assert invalid_nil.typed_value == (XdmAtomic.untyped_atomic(""),)
 
     integer = children["i"]
-    assert integer.annotations == XdmAnnotations(f"{{{XSD_NS}}}integer")
-    assert integer.typed_value == (XdmAtomic.integer(42),)
+    assert integer.annotations == XdmAnnotation(UNTYPED, False, xsi_type=f"{{{XSD_NS}}}integer")
+    assert integer.annotation.actual_type == UNTYPED
+    assert integer.typed_value == (XdmAtomic.untyped_atomic("42"),)
 
     string = children["s"]
-    assert string.annotations == XdmAnnotations(STRING)
-    assert string.typed_value == (XdmAtomic.string("v"),)
+    assert string.annotations == XdmAnnotation(UNTYPED, False, xsi_type=f"{{{XSD_NS}}}string")
+    assert string.typed_value == (XdmAtomic.untyped_atomic("v"),)
 
     qname = children["q"]
-    assert qname.annotations == XdmAnnotations(f"{{{XSD_NS}}}QName")
+    assert qname.annotations == XdmAnnotation(UNTYPED, False, xsi_type=f"{{{XSD_NS}}}QName")
     assert qname.typed_value == (XdmAtomic.untyped_atomic("a"),)
 
     custom = children["c"]
-    assert custom.annotations == XdmAnnotations("{urn:p}Custom")
+    assert custom.annotations == XdmAnnotation(UNTYPED, False, xsi_type="{urn:p}Custom")
     assert custom.typed_value == (XdmAtomic.untyped_atomic("z"),)
 
     defaulted = children["{urn:d}d"]
-    assert defaulted.annotations == XdmAnnotations("{urn:d}T2")
+    assert defaulted.annotations == XdmAnnotation(UNTYPED, False, xsi_type="{urn:d}T2")
     assert defaulted.typed_value == (XdmAtomic.untyped_atomic(""),)
 
     no_default = children["e"]
-    assert no_default.annotations == XdmAnnotations("T3")
+    assert no_default.annotations == XdmAnnotation(UNTYPED, False, xsi_type="T3")
     assert no_default.typed_value == (XdmAtomic.untyped_atomic(""),)
 
     unbound = children["m"]
-    assert unbound.annotations == XdmAnnotations("missing:T4")
+    assert unbound.annotations == XdmAnnotation(UNTYPED, False, xsi_type="missing:T4")
     assert unbound.typed_value == (XdmAtomic.untyped_atomic(""),)
 
     attribute = root.attribute("xmlns:xs")
     assert attribute is None  # namespace declarations are never attributes
     typed_attribute = nilled.attribute(f"{{{XSI_NS}}}nil")
     assert typed_attribute is not None
-    assert typed_attribute.annotations == XdmAnnotations(UNTYPED_ATOMIC)
+    assert typed_attribute.annotations == XdmAnnotation(UNTYPED_ATOMIC, None)
+    assert typed_attribute.type_name == UNTYPED_ATOMIC
+    assert typed_attribute.nilled is None
     assert typed_attribute.typed_value == (XdmAtomic.untyped_atomic("true"),)
+
+    text = untyped.children[0]
+    assert text.annotations == XdmAnnotation(UNTYPED_ATOMIC, None)
+    assert text.type_name == UNTYPED_ATOMIC
+    assert text.nilled is None
+    assert text.typed_value == (XdmAtomic.untyped_atomic("x"),)
 
     comment = next(child for child in root.children if child.kind is NodeKind.COMMENT)
     instruction = next(
@@ -310,11 +394,13 @@ def test_annotations_and_typed_values(tmp_path: Path) -> None:
     )
     namespace = root.namespace_node("p")
     assert namespace is not None
-    assert comment.annotations == XdmAnnotations(STRING)
+    for absent in (comment, instruction, namespace):
+        assert absent.annotations == XdmAnnotation(None, None)
+        assert absent.type_name is None
+        assert absent.nilled is None
+        assert absent.annotation.actual_type is None
     assert comment.typed_value == (XdmAtomic.string("comment"),)
-    assert instruction.annotations == XdmAnnotations(STRING)
     assert instruction.typed_value == (XdmAtomic.string("data"),)
-    assert namespace.annotations == XdmAnnotations(STRING)
     assert namespace.typed_value == (XdmAtomic.string("urn:p"),)
 
 
@@ -370,8 +456,12 @@ def test_base_and_document_uris(tmp_path: Path) -> None:
     assert root.children[3].base_uri == "http://other/x"
     assert root.attribute(f"{{{XML_NS}}}base") is root.attributes[0]
     assert root.attributes[0].base_uri == "http://example.com/a/"
-    assert root.namespace_nodes[0].base_uri == "http://example.com/a/"
-    assert root.children[0].document_uri == "http://example.com/root.xml"
+    namespace = root.namespace_nodes[0]
+    assert namespace.base_uri is None
+    assert namespace.document_uri is None
+    assert namespace.owner_document_uri == "http://example.com/root.xml"
+    assert root.children[0].document_uri is None
+    assert root.children[0].owner_document_uri == "http://example.com/root.xml"
 
     _, _, explicit_base = _parse_indexed(
         tmp_path,
@@ -503,6 +593,9 @@ def test_parentless_document_node(tmp_path: Path) -> None:
     assert doc.namespace_nodes == ()
     assert doc.in_scope_namespaces == {}
     assert doc.namespace_declarations == ()
+    assert doc.annotation == XdmAnnotation(None, None)
+    assert doc.type_name is None
+    assert doc.nilled is None
     assert doc.name is None
     assert doc.local_name is None
     assert doc.prefix == ""

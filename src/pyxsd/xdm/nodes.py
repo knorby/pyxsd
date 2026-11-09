@@ -33,6 +33,7 @@ from pyxsd.xdm.values import XdmAtomic, XdmItem, XdmSequence
 
 __all__ = [
     "NodeKind",
+    "XdmAnnotation",
     "XdmAnnotations",
     "XdmDocument",
     "XdmNode",
@@ -42,8 +43,6 @@ _NAMESPACE_SEPARATOR = "\x1f"
 _XSD_PREFIX = f"{{{XSD_NS}}}"
 _UNTYPED = f"{_XSD_PREFIX}untyped"
 _UNTYPED_ATOMIC = f"{_XSD_PREFIX}untypedAtomic"
-_STRING = f"{_XSD_PREFIX}string"
-_UNTYPED_LOCALS = frozenset({"untyped", "untypedAtomic"})
 _EMPTY_NAMESPACES: Mapping[str, str] = MappingProxyType({})
 
 
@@ -60,16 +59,33 @@ class NodeKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class XdmAnnotations:
-    """An element's XDM type annotation and nilled property.
+class XdmAnnotation:
+    """An XDM type annotation with source evidence kept separate.
 
-    An unvalidated parse supplies ``xs:untyped`` for elements and
-    ``xs:untypedAtomic`` for text and attributes.  A schema-aware pool may
-    replace these annotations in a later layer.
+    ``type_name`` is the node's XDM type annotation, or ``None`` when the
+    node kind has no type annotation.  ``nilled`` is the XDM nilled property,
+    present only on elements.  ``xsi_type``, ``nil_lexical``, and
+    ``nil_declared`` are recorded source evidence from an unvalidated parse;
+    they do not change the XDM properties.  ``validity`` and
+    ``governing_declaration`` are provisional fields for the later
+    schema-aware annotation layer.
     """
 
-    type_name: str
-    nilled: bool = False
+    type_name: str | None
+    nilled: bool | None = False
+    validity: str = "not-validated"
+    governing_declaration: Any = None
+    xsi_type: str | None = None
+    nil_lexical: str | None = None
+    nil_declared: bool = False
+
+    @property
+    def actual_type(self) -> str | None:
+        """The actual type name, matching the eventual occurrence API."""
+        return self.type_name
+
+
+XdmAnnotations = XdmAnnotation
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +101,7 @@ class _ExpandedName:
         return clark(self.uri, self.local)
 
 
-_DEFAULT_ANNOTATIONS = XdmAnnotations(_UNTYPED_ATOMIC)
+_DEFAULT_ANNOTATIONS = XdmAnnotation(None, None)
 
 
 class XdmNode(XdmItem):
@@ -133,7 +149,7 @@ class XdmNode(XdmItem):
         name: str | None = None,
         value: str = "",
         target: str | None = None,
-        annotations: XdmAnnotations = _DEFAULT_ANNOTATIONS,
+        annotations: XdmAnnotation = _DEFAULT_ANNOTATIONS,
         base_uri: str | None = None,
         document_uri: str | None = None,
         in_scope_namespaces: Mapping[str, str] = _EMPTY_NAMESPACES,
@@ -294,13 +310,13 @@ class XdmNode(XdmItem):
 
     @property
     def name(self) -> str | None:
-        """The expanded name, PI target, namespace prefix, or ``None``."""
+        """The node name, PI target, or ``None`` when the node name is absent."""
         return self._name
 
     @property
     def local_name(self) -> str | None:
         if self._kind is NodeKind.NAMESPACE:
-            return self._prefix
+            return self._name
         if self._kind in (NodeKind.ELEMENT, NodeKind.ATTRIBUTE):
             return local_name(cast(str, self._name))
         return None
@@ -319,15 +335,22 @@ class XdmNode(XdmItem):
         return self._target
 
     @property
-    def annotations(self) -> XdmAnnotations:
+    def annotations(self) -> XdmAnnotation:
         return self._annotations
 
     @property
-    def type_name(self) -> str:
+    def annotation(self) -> XdmAnnotation:
+        """The occurrence annotation; singular forward-compatible accessor."""
+        return self._annotations
+
+    @property
+    def type_name(self) -> str | None:
+        """The XDM type annotation, or ``None`` when the kind has none."""
         return self._annotations.type_name
 
     @property
-    def nilled(self) -> bool:
+    def nilled(self) -> bool | None:
+        """The XDM nilled property, present only on elements."""
         return self._annotations.nilled
 
     @property
@@ -344,15 +367,25 @@ class XdmNode(XdmItem):
 
     @property
     def typed_value(self) -> XdmSequence:
-        if self._kind is NodeKind.DOCUMENT:
+        if self._kind in (NodeKind.DOCUMENT, NodeKind.ELEMENT):
             return (XdmAtomic.untyped_atomic(self.string_value),)
-        if self._kind is NodeKind.ELEMENT:
-            return _element_typed_value(self)
         if self._kind in (NodeKind.TEXT, NodeKind.ATTRIBUTE):
             return (XdmAtomic.untyped_atomic(self._value),)
         return (XdmAtomic.string(self._value),)
 
     # -- namespaces and base URIs ---------------------------------------------
+
+    @property
+    def namespace_binding(self) -> str | None:
+        """The URI bound by a namespace node, or ``None`` for other kinds."""
+        if self._kind is not NodeKind.NAMESPACE:
+            return None
+        return self._value
+
+    @property
+    def bound_uri(self) -> str | None:
+        """Alias for :attr:`namespace_binding`."""
+        return self.namespace_binding
 
     @property
     def in_scope_namespaces(self) -> Mapping[str, str]:
@@ -365,10 +398,19 @@ class XdmNode(XdmItem):
 
     @property
     def base_uri(self) -> str | None:
+        """The XDM base URI; namespace nodes have no base URI."""
         return self._base_uri
 
     @property
     def document_uri(self) -> str | None:
+        """The XDM document URI, present only on the document node."""
+        if self._kind is not NodeKind.DOCUMENT:
+            return None
+        return self._document_uri
+
+    @property
+    def owner_document_uri(self) -> str | None:
+        """The document URI of the document that owns this node."""
         return self._document_uri
 
     # -- provenance ------------------------------------------------------------
@@ -422,7 +464,7 @@ class XdmDocument(XdmNode):
             node_id=0,
             source_name=source_name,
             source_index=source_index,
-            annotations=XdmAnnotations(_UNTYPED),
+            annotations=XdmAnnotation(None, None),
             base_uri=base_uri,
             document_uri=document_uri,
             in_scope_namespaces=_EMPTY_NAMESPACES,
@@ -471,6 +513,8 @@ class XdmDocument(XdmNode):
         builder = _Builder(document)
         parser = expat.ParserCreate(namespace_separator=_NAMESPACE_SEPARATOR)
         parser.namespace_prefixes = True
+        parser.StartDoctypeDeclHandler = builder.start_doctype
+        parser.EndDoctypeDeclHandler = builder.end_doctype
         parser.StartNamespaceDeclHandler = builder.start_namespace_declaration
         parser.StartElementHandler = builder.start_element
         parser.EndElementHandler = builder.end_element
@@ -524,6 +568,20 @@ class _Builder:
         self._pending_declarations: list[tuple[str, str | None]] = []
         self._paths: list[PathStep] = []
         self._counts: list[dict[str, int]] = [{}]
+        self._in_doctype = False
+
+    def start_doctype(
+        self,
+        name: str,
+        system_id: str | None,
+        public_id: str | None,
+        has_internal_subset: bool,
+    ) -> None:
+        del name, system_id, public_id, has_internal_subset
+        self._in_doctype = True
+
+    def end_doctype(self) -> None:
+        self._in_doctype = False
 
     def start_namespace_declaration(self, prefix: str | None, uri: str | None) -> None:
         self._pending_declarations.append((prefix or "", uri))
@@ -581,7 +639,7 @@ class _Builder:
                 parent=element,
                 name=name.clark,
                 value=value,
-                annotations=XdmAnnotations(_UNTYPED_ATOMIC),
+                annotations=XdmAnnotation(_UNTYPED_ATOMIC, None),
                 base_uri=base_uri,
                 in_scope_namespaces=in_scope_namespaces,
                 path=path,
@@ -595,13 +653,13 @@ class _Builder:
             namespace = self._new_node(
                 NodeKind.NAMESPACE,
                 parent=element,
-                name=prefix,
+                name=prefix or None,
                 value=uri,
-                annotations=XdmAnnotations(_STRING),
-                base_uri=base_uri,
+                annotations=XdmAnnotation(None, None),
+                base_uri=None,
                 in_scope_namespaces=in_scope_namespaces,
                 prefix=prefix,
-                namespace_uri=uri,
+                namespace_uri=None,
             )
             element._append_namespace_node(namespace)
 
@@ -621,25 +679,29 @@ class _Builder:
             NodeKind.TEXT,
             parent=parent,
             value=data,
-            annotations=XdmAnnotations(_UNTYPED_ATOMIC),
+            annotations=XdmAnnotation(_UNTYPED_ATOMIC, None),
             base_uri=parent.base_uri,
             in_scope_namespaces=parent.in_scope_namespaces,
         )
         parent._append_child(text)
 
     def comment(self, data: str) -> None:
+        if self._in_doctype:
+            return
         parent = self._elements[-1] if self._elements else self._document
         node = self._new_node(
             NodeKind.COMMENT,
             parent=parent,
             value=data,
-            annotations=XdmAnnotations(_STRING),
+            annotations=XdmAnnotation(None, None),
             base_uri=parent.base_uri,
             in_scope_namespaces=parent.in_scope_namespaces,
         )
         parent._append_child(node)
 
     def processing_instruction(self, target: str, data: str) -> None:
+        if self._in_doctype:
+            return
         parent = self._elements[-1] if self._elements else self._document
         node = self._new_node(
             NodeKind.PROCESSING_INSTRUCTION,
@@ -647,7 +709,7 @@ class _Builder:
             name=target,
             value=data,
             target=target,
-            annotations=XdmAnnotations(_STRING),
+            annotations=XdmAnnotation(None, None),
             base_uri=parent.base_uri,
             in_scope_namespaces=parent.in_scope_namespaces,
         )
@@ -661,7 +723,7 @@ class _Builder:
         name: str | None = None,
         value: str = "",
         target: str | None = None,
-        annotations: XdmAnnotations,
+        annotations: XdmAnnotation,
         base_uri: str | None,
         in_scope_namespaces: Mapping[str, str],
         namespace_declarations: tuple[tuple[str, str | None], ...] = (),
@@ -758,31 +820,15 @@ def _resolve_qname(lexical: str, namespaces: Mapping[str, str]) -> str:
 
 def _element_annotations(
     attributes: Mapping[str, str], namespaces: Mapping[str, str]
-) -> XdmAnnotations:
+) -> XdmAnnotation:
     lexical_type = attributes.get(f"{{{XSI_NS}}}type")
-    type_name = _UNTYPED if lexical_type is None else _resolve_qname(lexical_type, namespaces)
-    lexical_nilled = attributes.get(f"{{{XSI_NS}}}nil")
-    nilled = False if lexical_nilled is None else lexical_nilled.strip() in {"true", "1"}
-    return XdmAnnotations(type_name, nilled)
-
-
-def _local_type_name(type_name: str) -> str:
-    if type_name.startswith("{"):
-        return type_name.partition("}")[2]
-    return type_name.rpartition(":")[2]
-
-
-def _element_typed_value(node: XdmNode) -> XdmSequence:
-    if node.nilled:
-        return ()
-    type_name = node.type_name
-    local = _local_type_name(type_name)
-    untyped = (XdmAtomic.untyped_atomic(node.string_value),)
-    if local in _UNTYPED_LOCALS:
-        return untyped
-    if not type_name.startswith(_XSD_PREFIX):
-        return untyped
-    try:
-        return (XdmAtomic.untyped_atomic(node.string_value).cast(type_name),)
-    except TypeError:
-        return untyped
+    xsi_type = None if lexical_type is None else _resolve_qname(lexical_type, namespaces)
+    nil_lexical = attributes.get(f"{{{XSI_NS}}}nil")
+    nil_declared = False if nil_lexical is None else nil_lexical.strip() in {"true", "1"}
+    return XdmAnnotation(
+        _UNTYPED,
+        False,
+        xsi_type=xsi_type,
+        nil_lexical=nil_lexical,
+        nil_declared=nil_declared,
+    )
