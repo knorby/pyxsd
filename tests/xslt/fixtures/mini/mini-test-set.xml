@@ -11,14 +11,22 @@
 
   <environment name="shared-env">
     <source file="../shared/source.xml" uri="../shared/source.xml"/>
+    <source uri="inline-source">
+      <content><![CDATA[<doc><inline/></doc>]]></content>
+    </source>
     <schema role="source-reference" file="schema.xsd" xsd-version="1.1"/>
     <resource file="resource.txt" uri="resource.txt"
               media-type="text/plain" encoding="utf-8"/>
     <collection uri="collection-1">
       <source file="collection-a.xml"/>
+      <source uri="collection-inline"><content><![CDATA[<doc/>]]></content></source>
     </collection>
     <package file="pkg-extra.xsl"/>
     <param name="env-param" select="1"/>
+    <context-item select="."/>
+    <collation uri="http://www.w3.org/2005/xpath-functions/collation/codepoint"
+               default="true"/>
+    <collation uri="http://www.w3.org/2013/collation/UCA?lang=en"/>
     <output tree="no"/>
   </environment>
 
@@ -101,6 +109,47 @@
     <environment ref="global-env"/>
     <test>
       <stylesheet file="global-001.xsl"/>
+    </test>
+    <result>
+      <assert>true()</assert>
+    </result>
+  </test-case>
+
+  <test-case name="mode-001">
+    <description>Initial mode invocation, tunnel parameter and posture assertion.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment ref="shared-env"/>
+    <test>
+      <stylesheet file="mode-001.xsl"/>
+      <initial-mode name="start" select="42">
+        <param name="mode-arg" select="7" tunnel="true"/>
+      </initial-mode>
+      <posture-and-sweep context-posture="grounded" result-posture="grounded">
+        <xpath>.</xpath>
+      </posture-and-sweep>
+    </test>
+    <result>
+      <assert>true()</assert>
+    </result>
+  </test-case>
+
+  <test-case name="package-only-001">
+    <description>A package-only case has no stylesheet role.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <environment ref="shared-env"/>
+    <test>
+      <package file="pkg-extra.xsl"/>
+    </test>
+    <result>
+      <error code="XTDE0040"/>
+    </result>
+  </test-case>
+
+  <test-case name="secondary-001">
+    <description>A case with only a secondary stylesheet.</description>
+    <created by="Mini Author" on="2026-01-01"/>
+    <test>
+      <stylesheet file="included.xsl" role="secondary"/>
     </test>
     <result>
       <assert>true()</assert>

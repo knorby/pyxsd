@@ -158,8 +158,6 @@ def resolve_reference(base: PurePosixPath, href: str | None) -> PurePosixPath | 
         return None
     parts: list[str] = []
     for part in (base / href).parts:
-        if part in ("", "."):
-            continue
         if part == "..":
             if parts and parts[-1] != "..":
                 parts.pop()
