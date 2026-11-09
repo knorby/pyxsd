@@ -7,10 +7,10 @@
 
 Choose pyxsd when you want a schema-defined Python object tree that you can
 query, extend, transform, and export. Choose
-[`xmlschema`](https://github.com/sissaschool/xmlschema) when converter-based
-XML/Python/JSON encoding and decoding, lazy processing, or WSDL support is
-central to your application. Both validate XSD 1.0 and 1.1 and offer runtime
-bindings. pyxsd makes runtime class generation its primary model: the current
+[`xmlschema`](https://github.com/sissaschool/xmlschema) when lazy processing
+or WSDL support is central to your application. Both validate XSD 1.0 and 1.1,
+offer runtime bindings, and support common JSON formats for encoding and
+decoding. pyxsd makes runtime class generation its primary model: the current
 schema supplies extensible classes directly, with no generated binding module
 to regenerate or drift out of sync.
 
@@ -101,39 +101,14 @@ limits and do not replace full XML validation.
 
 ### Document data contracts
 
-pyxsd exports and imports native `pyxsd`, schema-driven `pyxsd-json`, Parker,
-BadgerFish, and JsonML data. `Schema.from_data()` / `from_json()` reconstruct
-an XML tree and run the normal binder, returning generated classes and a
-`Document.report`; call `require_valid()` when invalid content must stop the
-pipeline. Export defaults to native `pyxsd` and best effort, while import
-defaults to `pyxsd-json` and strict fidelity. Fidelity governs representation
-loss, not XSD validity. Ordered and mixed content retain their positions in
-`pyxsd-json` and JsonML; grouped formats have explicit limits.
-
-`Schema.json_schema()` constructs Draft 2020-12 descriptions for all five
-export formats before any instance exists. It records unvalidated XSD rules
-under `x-pyxsd-validation`; structural acceptance is neither full XSD
-validation nor a guarantee of import acceptance. Native export options must
-match generation, and root-absorbed formats need an unambiguous selection.
-The optional Pydantic models' JSON Schema describes a separate projection.
-See {doc}`data-conversion` for examples and the precise limits.
-
-`xmlschema` offers converter classes and configurable encoding/decoding.
-Shared convention names do not promise interchangeable JSON. pyxsd's tested
-profiles differ in decimal strings, nil markers, namespace prefixes, and
-mixed text. Parker comparisons may produce identical data while pyxsd emits
-`attributes-lost` warnings for attributes xmlschema silently drops; strict
-pyxsd export rejects that loss. The pinned interoperability fixtures on the
-data-conversion page are evidence for those cases, not general conformance.
+Both libraries encode and decode [Parker][parker], [BadgerFish][badgerfish],
+and [JsonML][jsonml]. pyxsd also supports native `pyxsd` and schema-driven
+`pyxsd-json`, and generates Draft 2020-12 JSON Schema for all five formats.
+Shared format names do not guarantee identical JSON; see {doc}`data-conversion`
+for examples, interoperability differences, and validation limits.
 
 ## Where xmlschema is a better fit
 
-- **Converter customization and breadth.** `xmlschema` encodes Python data and
-  JSON back to XML, with converter classes (`ParkerConverter`,
-  `BadgerFishConverter`, `JsonMLConverter`, `ColumnarConverter`,
-  `DataElementConverter`, and more), plus custom converter subclasses.
-  pyxsd exposes five fixed document formats through its import/export APIs,
-  not a caller-configurable converter framework.
 - **Lazy and incremental processing.** `XMLResource` with `lazy` /
   `thin_lazy` supports large documents and streaming, which pyxsd does not.
 - **Resource controls and hardening.** `xmlschema` exposes a broader
@@ -214,3 +189,6 @@ for the populations, skips, scoring rules, and reproduction commands.
    authoritative description of the features attributed to it above.
 
 [xmlschema-bindings]: https://xmlschema.readthedocs.io/en/stable/api.html#xmlschema.DataBindingConverter
+[parker]: https://wiki.open311.org/JSON_and_XML_Conversion/#the-parker-convention
+[badgerfish]: http://www.sklar.com/badgerfish/
+[jsonml]: https://jsonml.org/

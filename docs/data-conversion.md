@@ -10,15 +10,16 @@
 
 - `format="pyxsd"` (the default) keeps the native {doc}`data-model`
   structure: it absorbs the root name and groups children by name.
-- `format="pyxsd-json"` retains the root name and uses the compiled schema
-  to select scalar, object, or array layouts. Ordered and mixed content
-  keep their positions.
-- `format="parker"` absorbs the root, omits attributes, and groups children
-  by local name.
-- `format="badgerfish"` retains the root, attributes, and namespace bindings
-  in a grouped structure.
-- `format="jsonml"` uses nested arrays to retain tags, attributes, and
-  text/element order.
+- `format="pyxsd-json"` is pyxsd's schema-driven format. It retains the root
+  name and namespaces, and uses the XSD rather than observed child counts to
+  choose scalar, object, or array layouts. Child order and mixed text positions
+  are preserved where grouped formats would lose them.
+- `format="parker"` ([Parker][parker]) absorbs the root, omits attributes,
+  and groups children by local name.
+- `format="badgerfish"` ([BadgerFish][badgerfish]) retains the root,
+  attributes, and namespace bindings in a grouped structure.
+- `format="jsonml"` ([JsonML][jsonml]) uses nested arrays to retain tags,
+  attributes, and text/element order.
 
 These exports need no optional dependencies. The {doc}`integrations`
 provide a separate Pydantic model projection and Arrow/Parquet records;
@@ -943,3 +944,7 @@ its own attribute at `/1/1/ref`; its tag name is not a pointer segment.
 Object-key tokens escape `~` as `~0` and `/` as `~1`.
 
 Unknown format or fidelity names and inapplicable options raise `ValueError`.
+
+[parker]: https://wiki.open311.org/JSON_and_XML_Conversion/#the-parker-convention
+[badgerfish]: http://www.sklar.com/badgerfish/
+[jsonml]: https://jsonml.org/

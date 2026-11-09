@@ -82,6 +82,13 @@ to the document's report alongside XSD findings. You keep handwritten
 behavior separate from the schema-derived structure, without editing
 generated files. See {doc}`extensions` and {doc}`transforms/using`.
 
+Import and export JSON using [Parker][parker], [BadgerFish][badgerfish],
+[JsonML][jsonml], or pyxsd's own formats. Native `pyxsd` keeps the dictionary
+layout; `pyxsd-json` uses the XSD to choose scalar, object, and array layouts
+while retaining namespaces, child order, and mixed text positions. Generate
+JSON Schema for any of these formats directly from XSD. See
+{doc}`data-conversion` for examples and limits.
+
 ## Derive application models and tables from XSD
 
 Optional Pydantic and Arrow integrations prepare models and record schemas
@@ -108,17 +115,19 @@ source-linked diagnostics, queries, and exports for agent clients. See
 ## Choose for your workflow
 
 Choose pyxsd when you want the XSD to drive a Python object model and the
-work that follows validation. Start with {doc}`quickstart`, or compare
-{doc}`comparison-xmlschema` for converter-based encoding and decoding and
-{doc}`comparison-lxml` for general XML/HTML tree processing. The nested
-{doc}`comparison-libxml2` page covers native-validator scope and measured
-evidence.
+work that follows validation. Start with {doc}`quickstart`, or see how pyxsd
+compares with {doc}`xmlschema <comparison-xmlschema>`,
+{doc}`lxml <comparison-lxml>`, and {doc}`libxml2 <comparison-libxml2>`.
 
 Check the boundaries before adopting it: pyxsd builds a full instance tree,
-parses one document at a time per compiled `Schema`, and writes bound trees
-rather than providing a general Python/JSON-to-XML encoder. Some parsed
-complex-child descriptors require document queries. Namespace-aware binding
+parses one document at a time per compiled `Schema`, and requires a schema
+for Python/JSON-to-XML conversion. Some parsed complex-child descriptors
+require document queries. Namespace-aware binding
 is the default with `ParseModes.NAMESPACED`; explicit `ParseModes.STRICT`,
 `ParseModes.LAX`, or `--namespaces legacy` restores local-name matching. For
 untrusted input, select parser protections and resource rules explicitly using
 {doc}`xml-security`; local-only loading is not filesystem confinement.
+
+[parker]: https://wiki.open311.org/JSON_and_XML_Conversion/#the-parker-convention
+[badgerfish]: http://www.sklar.com/badgerfish/
+[jsonml]: https://jsonml.org/
